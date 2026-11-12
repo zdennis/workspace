@@ -26,6 +26,9 @@ module Workspace
       # Longest stage summary written to the event log.
       MAX_LOGGED_SUMMARY = 500
 
+      # Longest confirm wait a restart_agent message may ask for, in seconds ({AgentdRestartDesk::MAX_TIMEOUT}).
+      MAX_RESTART_TIMEOUT = AgentdRestartDesk::MAX_TIMEOUT
+
       # @param config [Workspace::Config] path configuration
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
@@ -45,9 +48,6 @@ module Workspace
       # @param event_log [Workspace::EventLog, nil] records dispatches, stage
       #   completions and failures, and (through the session monitor) each agent
       #   pane's state changes; nil records nothing
-      # @param context_reader [Workspace::ContextReader, nil] resolves each
-      #   coding-agent pane's context usage for `sessions --json` and
-      #   `restart_agent`; nil omits context fields and refuses restarts
       # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes a workflow run when a turn ends in
       #   its pane, and on a timer; nil leaves workflow runs alone
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
@@ -71,7 +71,6 @@ module Workspace
         clock: -> { Time.now },
         retry_backoff: 0.5,
         event_log: nil,
-        context_reader: nil,
         workflow_nudger: nil,
         restart_registry: RestartRegistry.new,
         current_name: nil,
@@ -97,12 +96,11 @@ module Workspace
         @clock = clock
         @parts = parts
         @session_monitor = nil
-        @context_reader = context_reader
         @workflow_nudger = workflow_nudger
         @agent_recovery_desk = nil
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = restart_registry
-        @restart_runner = nil
+        @restart_desk = nil
         # When the main agent's current turn began, by pane id, for the workflow nudger.
         @turn_starts = {}
         @retry_backoff = retry_backoff
@@ -177,7 +175,7 @@ module Workspace
           recovering: ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false })
         @hook_event_log = parts.hook_event_log
         @session_monitor = parts.monitor
-        @restart_runner = parts.restart_runner
+        @restart_desk = parts.restart_desk
         @session_monitor.start
         @plan_progress_watcher = parts.plan_progress_watcher
         @plan_progress_watcher&.start
@@ -362,7 +360,9 @@ module Workspace
         when AgentProtocol::COMMAND
           reply_to(client, handle_command(message))
         when AgentProtocol::INJECT then handle_inject(message, client)
-        when AgentProtocol::RESTART_AGENT then handle_restart_agent(message, client)
+        when AgentProtocol::RESTART_AGENT
+          # Before #call has built the parts there is no desk, and no context reader to confirm a /clear with.
+          @restart_desk ? @restart_desk.handle(message, client) : reply_to(client, AgentdRestartDesk.refusal_before_start(message))
         when AgentProtocol::SESSION_EVENT
           # Before the monitor records it: a /clear moves the pane's session_id there, and a poll
           # in the gap would end the watch session_changed, not carried_out.
@@ -521,177 +521,6 @@ module Workspace
           end
         end
         :handed_off
-      end
-
-      # A pane named as "window.pane", optionally prefixed with its session.
-      RESTART_PANE_TARGET = /\A(?:(?<session>[^:]+):)?(?<window>\d+)\.(?<index>\d+)\z/
-      private_constant :RESTART_PANE_TARGET
-
-      # Longest confirm wait a restart_agent message may ask for, in seconds.
-      MAX_RESTART_TIMEOUT = 600
-
-      # Session monitor pane kinds restart_agent will type /clear into: the
-      # providers marked restartable (Claude Code and Codex), and a pane not
-      # identified yet.
-      RESTARTABLE_KINDS = AgentProvider.restartable_kinds.freeze
-      private_constant :RESTARTABLE_KINDS
-
-      # Clears the coding agent in one explicitly named pane and types a
-      # fresh prompt into it. Nothing here guesses the pane: a caller that
-      # could only say "the Claude pane" could clear the wrong agent in a
-      # workspace running several.
-      #
-      # Everything that can be checked at once is checked before replying:
-      # the pane exists and runs an agent, no pipeline stage is running on
-      # it (unless "force"), a /clear on it could be confirmed from its
-      # status-line readings, and no other restart is running on it.
-      # The waiting and typing then happen on a worker thread, so the accept
-      # loop keeps serving hook events meanwhile. With "wait", the worker
-      # sends the outcome on this connection instead of an immediate
-      # "started" reply.
-      #
-      # @return [Symbol, nil] :handed_off when the worker owns +client+
-      def handle_restart_agent(message, client)
-        started, error = start_restart(message)
-        return reply_to(client, error) if error
-
-        pane_id = started["pane_id"]
-        spawned = false
-        begin
-          timeout = started["confirm_timeout"]
-          started = started.except("confirm_timeout")
-          wait = message["wait"] == true
-          reply_to(client, started) unless wait
-          @restarts.start_worker(pane_id) do
-            @restart_runner.run(started, message["prompt"], message["force"] == true,
-              timeout, wait ? client : nil, run_id: message["run_id"])
-          end
-          spawned = true
-        ensure
-          # A pane left claimed with no worker would refuse every later
-          # restart on it until the daemon restarts.
-          @restarts.abandon_pending(pane_id) unless spawned
-        end
-        wait ? :handed_off : nil
-      end
-
-      # Validates a restart_agent message and claims its pane.
-      #
-      # @return [Array(Hash, Hash)] the "started" reply, or nil and the error reply
-      def start_restart(message)
-        prompt = message["prompt"]
-        unless prompt.is_a?(String) && !prompt.strip.empty?
-          return [nil, restart_error("missing_prompt", "restart_agent needs a non-empty \"prompt\"")]
-        end
-        unless @context_reader
-          return [nil, restart_error("context_unavailable", "this agent can't read context usage, so a /clear couldn't be confirmed")]
-        end
-        timeout = restart_timeout(message["timeout"])
-        unless timeout
-          return [nil, restart_error("bad_timeout", "\"timeout\" must be a number of seconds from 1 to #{MAX_RESTART_TIMEOUT}")]
-        end
-
-        detail, error = resolve_restart_pane(message["pane"])
-        return [nil, error] if error
-        pane_id = detail[:id]
-        target = "#{detail[:window]}.#{detail[:index]}"
-
-        kind = @session_monitor&.pane_kind(pane_id)
-        if kind == "shell"
-          # The agent may have started since the last scan; look once more.
-          @session_monitor.rescan_pane(pane_id)
-          kind = @session_monitor.pane_kind(pane_id)
-        end
-        if kind == "shell"
-          return [nil, restart_error("not_an_agent", "pane #{target} (#{pane_id}) is running a shell, not a coding agent", target)]
-        end
-        # /clear is the clear command of Claude Code and Codex; another agent
-        # would take it as a prompt. A pane the monitor hasn't identified yet is let through.
-        if kind && !RESTARTABLE_KINDS.include?(kind)
-          label = AgentProvider.find(kind)&.label || kind
-          return [nil, restart_error("unsupported_agent",
-            "pane #{target} (#{pane_id}) is running #{label}; restart_agent only restarts Claude Code and Codex, whose /clear it types", target)]
-        end
-
-        ref = (detail[:window] == 0) ? pipeline_ref_on(detail[:index]) : nil
-        if ref && message["force"] != true
-          return [nil, restart_error("pane_in_pipeline",
-            "#{ref} has a pipeline stage running on pane #{target}; clearing it would leave the stage unfinished. " \
-            "Pass --force to restart it anyway", target).merge("work_item_ref" => ref)]
-        end
-
-        # The usage needn't be known, only confirmable: a pane that has no
-        # reading at all is let through once the monitor knows it's Claude,
-        # whose first status-line render after /clear confirms it. A
-        # freshly launched Claude pane may not have rendered its status
-        # line yet, so NO_READING is expected there; an unknown-kind pane
-        # with no reading is refused with FIX_HINT instead of guessed at.
-        # A pane whose hooks reach this daemon is let through whatever the reading
-        # says: its SessionStart with source clear confirms the clear
-        # (AgentRestart.hooks?, also checked by AgentRestart#call). The rest mirrors
-        # AgentRestart.confirmable? (lib/workspace/agent_restart.rb) — keep both in
-        # sync if this changes.
-        # Looked up as `sessions` and `handoff check` do: a reading recorded
-        # without $TMUX_PANE is keyed by the agent's pid, not the pane id.
-        reading = @context_reader.read(pane_id: pane_id, agent_pid: @session_monitor&.agent_pid(pane_id), kind: kind)
-        confirmable = AgentRestart.hooks?(@session_monitor&.delivery_facts(pane_id)) ||
-          (AgentRestart.confirmable?(reading) &&
-            (reading[:error] != ContextReasons::NO_READING || kind == "claude"))
-        unless confirmable
-          return [nil, restart_error("context_unknown",
-            "can't read context usage for pane #{target} (#{reading[:error]}), so a /clear couldn't be confirmed; " \
-            "nothing was typed", target).merge("reason" => reading[:error], "fix" => ContextReasons.fix_hint(kind))]
-        end
-
-        claimed = @restarts.claim_pending(pane_id)
-        return [nil, restart_error("restart_in_progress", "a restart is already running on pane #{target}", target)] unless claimed
-
-        started = AgentProtocol.ok(status: "started", pane: target, pane_id: pane_id,
-          context_pct: reading[:pct], confirm_timeout: timeout)
-        if ref
-          started = started.merge("warning" => "#{ref} has a pipeline stage running on this pane; " \
-            "it will only finish if the new conversation prints its sentinel")
-        end
-        [started, nil]
-      end
-
-      def restart_error(error, message, pane = nil)
-        pane ? AgentProtocol.error(error, message, pane: pane) : AgentProtocol.error(error, message)
-      end
-
-      # @return [Numeric, nil] the confirm timeout, the default when absent,
-      #   or nil when the value is out of range
-      def restart_timeout(value)
-        return AgentRestart::CONFIRM_TIMEOUT if value.nil?
-        return nil unless value.is_a?(Numeric) && value >= 1 && value <= MAX_RESTART_TIMEOUT
-        value
-      end
-
-      # Resolves an explicit pane: a tmux pane id ("%12"), "window.pane"
-      # ("0.1"), "session:window.pane", or a bare pane index in window 0.
-      #
-      # @return [Array(Hash, Hash)] the pane's details, or nil and an error reply
-      def resolve_restart_pane(spec)
-        spec = spec.to_s.strip
-        return [nil, restart_error("missing_pane", "restart_agent needs a \"pane\": a pane id (%12), window.pane (0.1), or a pane index")] if spec.empty?
-
-        details = @tmux.pane_details(@tmux_session, window: nil)
-        detail =
-          if spec.match?(Workspace::TmuxPane::PANE_ID)
-            details.find { |d| d[:id] == spec }
-          elsif (match = RESTART_PANE_TARGET.match(spec))
-            session = match[:session]
-            if session && ![@tmux_session, @current_name].any? { |own| WorkspaceName.same?(own, session) }
-              return [nil, restart_error("wrong_session", "pane #{spec} is not in this workspace's tmux session (#{@tmux_session})")]
-            end
-            details.find { |d| d[:window] == match[:window].to_i && d[:index] == match[:index].to_i }
-          elsif spec.match?(/\A\d+\z/)
-            details.find { |d| d[:window] == 0 && d[:index] == spec.to_i }
-          else
-            return [nil, restart_error("bad_pane", "#{spec.inspect} is not a pane id (%12), window.pane (0.1), session:window.pane, or a pane index")]
-          end
-        return [nil, restart_error("no_such_pane", "no pane #{spec} in tmux session #{@tmux_session}")] unless detail
-        [detail, nil]
       end
 
       # The work item whose current pipeline stage runs on pane +index+ of

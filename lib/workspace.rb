@@ -460,6 +460,7 @@ require_relative "workspace/pipeline_config"
 require_relative "workspace/pipeline_state"
 require_relative "workspace/sentinel_poller"
 require_relative "workspace/agentd_parts"
+require_relative "workspace/agentd_restart_desk"
 require_relative "workspace/commands/agent"
 require_relative "workspace/run_result"
 require_relative "workspace/run_result_cleaner"
@@ -531,6 +532,7 @@ module Workspace
   # @param session_monitor_factory [#call] given the workspace name, builds its {Workspace::SessionMonitor}
   # @param event_log [Workspace::EventLog, nil] gets the desks' and the handoff watcher's events
   # @param context_reader [Workspace::ContextReader, nil] reads a pane's context use for the default {Workspace::AgentRestart}
+  #   and the restart desk; nil refuses every `restart_agent` as `context_unavailable`
   # @param agent_restart_factory [#call, nil] builds the {Workspace::AgentRestart} that runs one `restart_agent`
   #   message; nil builds the real one
   # @param handoff_typer [Workspace::PromptTyper, Symbol, nil] what the default handoff watcher types through:
@@ -620,6 +622,9 @@ module Workspace
       plan_progress_watcher = plan_progress_watcher_factory&.call(workspace)
       spine_owner_report = spine_owner_report_factory&.call(workspace)
       spine_watcher = spine_watcher_factory&.call(workspace)
+      restart_desk = AgentdRestartDesk.new(workspace: workspace, session_name: session_name,
+        pane_details: -> { tmux.pane_details(session_name, window: nil) }, monitor: monitor, context_reader: context_reader,
+        registry: registry, runner: restart_runner, pipeline_ref: pipeline_ref, logger: logger)
       restarting = ->(pane_id) { registry.held?(pane_id) }
       status_desk = agent_status_desk_factory.call(workspace: workspace, session_name: session_name,
         session_monitor: monitor, hook_event_log: hook_event_log, delivery_lock: delivery_lock, restarting: restarting)
@@ -644,7 +649,7 @@ module Workspace
       handoff_watcher = handoff_watcher_factory.call(workspace: workspace, session_name: session_name,
         session_monitor: monitor, delivery_lock: delivery_lock, event_log: event_log,
         restarting: ->(pane_id) { restarting.call(pane_id) || recovering.call(pane_id) })
-      AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner,
+      AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner, restart_desk: restart_desk,
         plan_progress_watcher: plan_progress_watcher, spine_owner_report: spine_owner_report, spine_watcher: spine_watcher,
         status_desk: status_desk, queue_desk: queue_desk, recovery_desk: recovery_desk, handoff_watcher: handoff_watcher).freeze
     end
@@ -1108,7 +1113,6 @@ module Workspace
       pipeline_config: pipeline_config,
       parts: agentd_parts,
       event_log: event_log,
-      context_reader: context_reader,
       workflow_nudger: workflow_nudger,
       name_migration: name_migration,
       restart_registry: RestartRegistry.new,

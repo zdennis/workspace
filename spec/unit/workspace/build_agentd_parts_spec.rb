@@ -48,7 +48,7 @@ RSpec.describe "Workspace.build_agentd_parts" do
     events.select { |type, _| type == Workspace::EventLog::HANDOFF_FOLLOWUP }.map { |_, data| data["outcome"] }
   end
 
-  it "returns a builder that makes a frozen AgentdParts with its ten members" do
+  it "returns a builder that makes a frozen AgentdParts with its eleven members" do
     builder = Workspace.build_agentd_parts(**options)
     expect(builder).to respond_to(:call)
 
@@ -56,10 +56,11 @@ RSpec.describe "Workspace.build_agentd_parts" do
 
     expect(parts).to be_a(Workspace::AgentdParts)
     expect(parts).to be_frozen
-    expect(parts.members).to eq(%i[hook_event_log monitor restart_runner plan_progress_watcher spine_owner_report
+    expect(parts.members).to eq(%i[hook_event_log monitor restart_runner restart_desk plan_progress_watcher spine_owner_report
       spine_watcher status_desk queue_desk recovery_desk handoff_watcher])
     expect(parts.monitor).to equal(monitor)
     expect(parts.restart_runner).to be_a(Workspace::RestartRunner)
+    expect(parts.restart_desk).to be_a(Workspace::AgentdRestartDesk)
     expect(parts.status_desk).to be_a(Workspace::AgentStatusDesk)
     expect(parts.queue_desk).to be_a(Workspace::PromptQueueDesk)
     expect(parts.handoff_watcher).to be_a(Workspace::HandoffWatcher)
@@ -97,6 +98,39 @@ RSpec.describe "Workspace.build_agentd_parts" do
 
     expect(seen[:restarting].call("%5")).to be(true)
     registry.release("%5", token)
+  end
+
+  describe "the restart desk" do
+    let(:registry) { RecordingRestartRegistry.new }
+    let(:runner) { RecordingRestartRunner.new }
+    let(:restart) { {"type" => "restart_agent", "workspace" => "ws", "pane" => "0.1", "prompt" => "carry on"} }
+
+    before do
+      allow(monitor).to receive(:pane_kind).and_return("claude")
+      allow(monitor).to receive(:agent_pid).and_return(101)
+      allow(monitor).to receive(:delivery_facts).and_return(nil)
+    end
+
+    it "finds the pane in the workspace's session, reads it through the context reader and runs it on the restart runner" do
+      reader = RecordingContextReader.new
+      parts = build(context_reader: reader, restart_runner_factory: ->(_monitor) { runner })
+      reply = StringIO.new
+
+      parts.restart_desk.handle(restart, reply)
+      registry.workers.fetch("%5").call
+
+      expect(JSON.parse(reply.string)).to include("ok" => true, "status" => "started", "pane" => "0.1", "pane_id" => "%5")
+      expect(reader.calls).to eq([[:read, {pane_id: "%5", agent_pid: 101, current_session_id: nil, kind: "claude"}]])
+      expect(runner.calls.first.drop(2)).to eq(["carry on", false, Workspace::AgentRestart::CONFIRM_TIMEOUT, nil, {run_id: nil}])
+    end
+
+    it "refuses every restart with no context reader" do
+      reply = StringIO.new
+
+      build.restart_desk.handle(restart, reply)
+
+      expect(JSON.parse(reply.string)).to include("ok" => false, "error" => "context_unavailable")
+    end
   end
 
   it "types a handoff follow-up through a PromptTyper by default" do

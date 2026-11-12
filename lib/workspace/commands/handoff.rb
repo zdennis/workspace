@@ -439,7 +439,7 @@ module Workspace
       # Session monitor pane kinds `check` will type the save-state prompt
       # into: the providers marked restartable (Claude Code and Codex), and a
       # pane not identified yet. Mirrors
-      # RESTARTABLE_KINDS in lib/workspace/commands/agent.rb -- keep both in
+      # RESTARTABLE_KINDS in lib/workspace/agentd_restart_desk.rb -- keep both in
       # sync if this changes. Unlike `new` (which hands the pane to the
       # daemon's own restart_agent, already gated this way), `check` delivers
       # directly via Tmux#deliver, so it must gate the pane kind itself.

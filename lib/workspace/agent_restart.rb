@@ -239,8 +239,8 @@ module Workspace
     # no reading yet can be confirmed by the new conversation's first one.
     # Scrape mode with no pattern, or one that doesn't match, never could.
     #
-    # Mirrors the pane-kind gate in Commands::Agent#restart_agent
-    # (lib/workspace/commands/agent.rb) — keep both in sync if this changes.
+    # Mirrors the pane-kind gate in AgentdRestartDesk#handle
+    # (lib/workspace/agentd_restart_desk.rb) — keep both in sync if this changes.
     #
     # @param reading [Hash] a {Workspace::ContextReader#read} result
     # @return [Boolean]
@@ -250,7 +250,7 @@ module Workspace
 
     # Whether a pane's delivery facts say its agent's hooks reach the daemon, so
     # a SessionStart with source `clear` can confirm a /clear. Shared by the
-    # pre-check in Commands::Agent#restart_agent and {#call}.
+    # pre-check in AgentdRestartDesk#handle and {#call}.
     #
     # @param facts [Hash, nil] {Workspace::SessionMonitor#delivery_facts}
     # @return [Boolean]
