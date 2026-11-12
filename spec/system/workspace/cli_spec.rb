@@ -4960,7 +4960,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["library", "remove", "play/kickoff", "--yes", "--project", "api", "--json"])
 
-      expect(library_command.calls).to eq([[:remove, where.merge(ref: "play/kickoff", scope: "project", project: "api", yes: true, dry_run: false)]])
+      expect(library_command.calls).to eq([[:remove, where.merge(ref: "play/kickoff", scope: "project", project: "api", yes: true, dry_run: false, force: false)]])
       expect(JSON.parse(output.string)).to include("action" => "library remove", "status" => "ok",
         "results" => [include("workspace" => "api", "outcome" => "removed")])
     end
@@ -5061,7 +5061,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["library", "remove", "play/kickoff"])
 
-      expect(library_command.calls).to eq([[:remove, where.merge(ref: "play/kickoff", yes: false, dry_run: false)]])
+      expect(library_command.calls).to eq([[:remove, where.merge(ref: "play/kickoff", yes: false, dry_run: false, force: false)]])
     end
 
     it "never prompts for remove under --json, --no-input or without a terminal" do
