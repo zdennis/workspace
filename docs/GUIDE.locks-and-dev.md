@@ -18,7 +18,7 @@ Clone the repo and add `bin/` to your `PATH`, then run:
 workspace init
 ```
 
-This installs tmuxinator templates into `~/.config/tmuxinator/`, creates
+This creates `~/.config/tmuxinator/`, creates
 `~/.config/workspace/` and `~/.config/workspace/projects/`, and writes a
 default `~/.config/workspace/config.yml`. It's safe to run more than once.
 

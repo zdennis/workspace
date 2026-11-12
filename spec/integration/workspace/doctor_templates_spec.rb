@@ -102,6 +102,11 @@ RSpec.describe Workspace::Doctor, "templates" do
       expect(rows("templates")).to contain_exactly(include(status: "warn", message: include("new tmuxinator configs still use your edited copy from `workspace init`"), fix_command: "workspace template import"))
     end
 
+    it "offers template import only for the edited copy: a built-in pick (a stock copy) has no fix_command" do
+      allow(library).to receive(:tmuxinator_template).and_return({"name" => "default", "path" => template_path})
+
+      expect(rows("templates")).to contain_exactly(include(status: "ok", fix_command: nil))
+    end
     it "adds no row without a library" do
       bare = described_class.new(config: config, state: CLITestHelpers::FakeState.new, hook_installer: double("h", statusline_installed?: true, local_statusline_command: nil, settings_path_for: "/x", install: false, installed?: true),
         project_detector: double("d", detect: nil), output: output, project_settings: CLITestHelpers::FakeProjectSettings.new, command_probe: ->(_n, f) { f ? "99.0" : "" }, app_probe: ->(_i) { true })

@@ -19,6 +19,9 @@ module Workspace
       # The kinds of tmuxinator config a set has a file for, in the order they are shown.
       KINDS = %i[project worktree].freeze
 
+      # The name of the global set `import` with no path makes from the installed copies.
+      LEGACY_IMPORT_NAME = "local"
+
       # The scopes `list --scope` takes.
       SCOPES = %w[global project builtin].freeze
 
@@ -34,9 +37,10 @@ module Workspace
       # @param adopt [Workspace::TemplateAdopt, nil] builds render records for configs that have none; nil refuses `adopt` (and `variables` shows no recovered values)
       # @param backups [Workspace::TmuxinatorBackupStore, nil] `import` copies a set it replaces into a batch of its own; nil refuses replacing one
       # @param template_in_use [Workspace::TemplateInUse, nil] `import` refuses to replace a set a key selects; nil checks nothing
+      # @param tmuxinator_dir [String, nil] where `workspace init` once installed its copies; `import` with no path reads them; nil refuses that
       # @param output [IO] output stream
       # @param error_output [IO] where `render`'s problems go in text mode
-      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, selection: nil, status: nil, apply: nil, adopt: nil, backups: nil, template_in_use: nil, output: $stdout, error_output: $stderr)
+      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, selection: nil, status: nil, apply: nil, adopt: nil, backups: nil, template_in_use: nil, tmuxinator_dir: nil, output: $stdout, error_output: $stderr)
         @config_command = config_command
         @selection = selection
         @status = status
@@ -44,6 +48,7 @@ module Workspace
         @adopt = adopt
         @backups = backups
         @template_in_use = template_in_use
+        @tmuxinator_dir = tmuxinator_dir
         @library = library
         @project_config = project_config
         @writer = writer
@@ -471,7 +476,12 @@ module Workspace
       # refused. A set that already exists with other content is copied into a backup batch (reason `import`, put back by
       # `template restore`) and replaced, and a set it adds is recorded in the batch so a restore removes it again, unless a key selects it and not +force+; a new set that hides a lower scope's is warned about.
       #
-      # @param path [String] a set's folder, or an exported folder of sets
+      # With no +path+ it brings the edited copies `workspace init` once put in `~/.config/tmuxinator/` into the library: when
+      # either is edited (not byte for byte any version workspace shipped) both kinds become the global set `local` (a kind
+      # that is missing or stock is taken from the built-in `default`), checked like any import, and `tmuxinator.template` is
+      # set to `local` globally. The old files are left. With nothing edited it does nothing and says so.
+      #
+      # @param path [String, nil] a set's folder, or an exported folder of sets; nil reads the installed copies
       # @param scope [String, nil] `global` (default) or `project`
       # @param force [Boolean] replace a set a key selects, or add a `default` that hides the built-in one
       # @param workspace [String, nil] the workspace whose project `--scope project` writes to
@@ -479,13 +489,31 @@ module Workspace
       # @return [Hash] the action row: `scope`, `backup` (the batch id, or nil), `templates` (each `template`, `outcome` `added`, `replaced` or `unchanged`, `scope`, `path`, `warnings`)
       # @raise [Workspace::UsageError] for a bad scope or set name
       # @raise [Workspace::Error] `library_source_missing`, `invalid_template` (a problem, or a symbolic link), `template_in_use`
-      def import(path:, scope: nil, force: false, workspace: nil, cwd: nil)
+      def import(path: nil, scope: nil, force: false, workspace: nil, cwd: nil)
         raise UsageError, "Unknown scope: #{scope}. One of global, project." unless [nil, "global", "project"].include?(scope)
 
-        source = File.expand_path(path, cwd || Dir.pwd)
+        legacy = path.nil?
+        if legacy
+          raise UsageError, "'template import' with no PATH imports into the global library; --scope project needs a PATH." if scope == "project"
+          raise Error, "template import with no PATH is not available: no tmuxinator directory was wired" unless @tmuxinator_dir
+          edited = LegacyTmuxinatorTemplates::FILES.keys.select { |kind| LegacyTmuxinatorTemplates.edited?(kind, LegacyTmuxinatorTemplates.path(kind, @tmuxinator_dir)) }
+          if edited.empty?
+            @output.puts "Nothing to import: no edited copy of a tmuxinator template in #{@tmuxinator_dir}; new configs render from the built-in set."
+            return {"workspace" => nil, "outcome" => "unchanged", "reason" => nil, "message" => nil, "scope" => "global", "backup" => nil, "templates" => [], "selected" => nil}
+          end
+        else
+          source = File.expand_path(path, cwd || Dir.pwd)
+        end
         store = @library.write_store(scope: scope, project: (WorkspaceName.project_of(workspace) if workspace && scope == "project"), cwd: cwd)
         Dir.mktmpdir("template-import") do |stage|
-          plan = import_sources(source).map { |name, dir| import_plan(store, name, dir, stage, force) }
+          pairs = legacy ? [[LEGACY_IMPORT_NAME, legacy_set(stage, edited)]] : import_sources(source)
+          plan = pairs.map do |name, dir|
+            import_plan(store, name, dir, stage, force)
+          rescue Error => e
+            raise unless legacy && e.code == "invalid_template"
+            files = edited.map { |kind| LegacyTmuxinatorTemplates.path(kind, @tmuxinator_dir) }.join(" and ")
+            raise Error.new("#{e.message} (in your edited copy at #{files})", code: e.code, details: e.details)
+          end
           batch = nil
           written = plan.reject { |item| item["outcome"] == "unchanged" }
           unless written.empty?
@@ -502,8 +530,24 @@ module Workspace
           plan.each { |item| @output.puts "#{item["outcome"].capitalize} #{item["template"]} (#{item["path"]})" }
           @output.puts "Backed up what was replaced as #{batch.id}; put it back with `workspace template restore #{batch.id}`." if batch
           changed = plan.count { |item| item["outcome"] != "unchanged" }
-          {"workspace" => nil, "outcome" => changed.zero? ? "unchanged" : "imported", "reason" => nil, "message" => nil, "scope" => store.scope,
-           "backup" => batch&.id, "templates" => plan.map { |item| item.except("staged") }}
+          if legacy
+            kept = selecting_key
+            if kept
+              message = "#{kept["key"]} already selects #{kept["name"]}; kept it. Run `workspace template use #{LEGACY_IMPORT_NAME}` to switch."
+              @output.puts message
+              warning = {"severity" => "warning", "code" => "selection_kept", "kind" => nil, "message" => message}
+            else
+              selected = use(name: LEGACY_IMPORT_NAME, scope: "global", cwd: cwd).fetch("template")
+              @output.puts "Selected #{selected} for new configs; the old files in #{@tmuxinator_dir} are left in place."
+            end
+          end
+          row = {"workspace" => nil, "outcome" => changed.zero? ? "unchanged" : "imported", "reason" => nil, "message" => nil, "scope" => store.scope,
+                 "backup" => batch&.id, "templates" => plan.map { |item| item.except("staged") }}
+          if legacy
+            row["selected"] = selected
+            row["warnings"] = [warning].compact
+          end
+          row
         end
       end
 
@@ -578,6 +622,33 @@ module Workspace
           current = File.dirname(current)
         end
         File.join(File.realpath(current), *tail)
+      end
+
+      # The first `tmuxinator.template` or `tmuxinator.worktree_template` any layer (global, each project or worktree) sets to a
+      # set, as `{"key", "name"}`; nil when none does, which is when the installed copy is what renders.
+      def selecting_key
+        ([nil] + @project_config.available_projects).each do |workspace|
+          KINDS.each do |kind|
+            pick = @library.tmuxinator_template(kind, workspace: workspace)
+            next if %w[legacy default].include?(pick["source"])
+            return {"key" => (kind == :worktree) ? "tmuxinator.worktree_template" : "tmuxinator.template", "name" => pick["name"]}
+          rescue Error, ConfigParseError
+            next
+          end
+        end
+        nil
+      end
+
+      # The set `template import` with no path stages: each kind's edited copy, else the built-in default's file.
+      def legacy_set(stage, edited)
+        dir = File.join(stage, "legacy-source")
+        FileUtils.mkdir_p(dir)
+        default = @library.builtin_store.path_for("template", "default")
+        KINDS.each do |kind|
+          from = edited.include?(kind) ? LegacyTmuxinatorTemplates.path(kind, @tmuxinator_dir) : File.join(default, "#{kind}.yml")
+          FileUtils.cp(from, File.join(dir, "#{kind}.yml"))
+        end
+        dir
       end
 
       # The `[name, folder]` pairs at +source+.

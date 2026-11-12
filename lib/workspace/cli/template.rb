@@ -70,7 +70,6 @@ module Workspace
         end
         raise UsageError, "'template #{subcommand}' needs a tmuxinator template NAME. Run 'workspace template #{subcommand} --help'." if %w[new use].include?(subcommand) && args.empty?
         raise UsageError, "'template export' needs a DIR to write into. Run 'workspace template export --help'." if subcommand == "export" && args.empty?
-        raise UsageError, "'template import' needs a PATH to read (a template folder, or a folder of them). Run 'workspace template import --help'." if subcommand == "import" && args.empty?
         raise UsageError, "'template restore' needs a backup ID (see 'workspace template backups list'). Run 'workspace template restore --help'." if subcommand == "restore" && args.empty?
         limit = {"list" => 0, "variables" => 0, "status" => nil, "apply" => nil, "adopt" => nil, "backup" => nil, "restore" => nil, "backups list" => 0, "backups prune" => 0}.fetch(subcommand, 1)
         raise UsageError, "Unexpected argument: #{args[limit]}. Run 'workspace template --help'." if limit && args.size > limit

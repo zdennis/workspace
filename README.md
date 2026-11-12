@@ -41,13 +41,13 @@ git clone git@github.com:zdennis/workspace.git ~/source/opensource/workspace
 export PATH="$HOME/source/opensource/workspace/bin:$PATH"
 ```
 
-2. Run the init command to install tmuxinator templates:
+2. Run the init command to create the config directories:
 
 ```sh
 workspace init
 ```
 
-This creates `~/.config/tmuxinator/` (if needed) and copies the project templates into it. Use `--dry-run` to preview what would happen:
+This creates `~/.config/tmuxinator/` (if needed); the tmuxinator templates are built in (see `workspace template list`). Use `--dry-run` to preview what would happen:
 
 ```sh
 workspace init --dry-run
@@ -110,7 +110,7 @@ workspace <subcommand> [options]
 | go | [README](docs/README.go.md) | Start a workflow with one argument: a ticket, pull request, issue or branch, or free text for a new branch (a sentence holding one pull request or issue link, or one uppercase ticket key or link, is read as that ref; `--text` keeps it plain). Free text makes a new worktree workspace (`--here` runs it in the current one); a ref makes or reuses one, or runs in place for the current branch; prints the workflow it chose and why |
 | goal | [README](docs/README.goal.md) | Say where a workspace's goal is (`show [REF]`): its journey stage, workflow step, agent turn and tool call, what it waits for and on whom, and the next expected event; or one line per goal (`list`). Reads only; `journey` is another name for `spine` |
 | handoff | [README](docs/README.handoff.md) | Check context usage and hand off to a fresh conversation |
-| init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
+| init | [README](docs/README.init.md) | Create the workspace config directories and offer agent hooks |
 | inbox | [README](docs/README.inbox.md) | A durable list of things that need a person, per workspace, project or globally: `add` (also `--from-json`, `--dedupe-key`, `--note REL` to point at a note in the notes dir that workspace-ui can open), `list`, `show`, `edit`, `done`, `dismiss`, `reopen`, `snooze`, `ack` (derived rows), `list --include-derived` |
 | instructions | [README](docs/README.instructions.md) | Print the instructions built from library packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`, `research`, `report`, `plan-review`, `spine`, `promote`); the `research` pack ends with an inbox item pointing at the note and a link from `ui open notes --path` |
 | kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree (default: the one you are in) |

@@ -552,7 +552,7 @@ module Workspace
           go              Start a workflow on a ticket, pull request, branch or free text; says which and why
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
-          init            Install tmuxinator templates and create config directory
+          init            Create the config directories and the global config
           inbox           Keep a durable list of things that need a person: add, list, show, edit, done, dismiss, reopen
           instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan, research, report, plan-review, spine, promote)
           kill            Kill a worktree project, remove its worktree and the branch start made (default: the current one)
@@ -2910,14 +2910,16 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace init [options]"
         opts.separator ""
-        opts.separator "Set up workspace by installing tmuxinator templates and creating"
-        opts.separator "the config directory if it doesn't exist."
+        opts.separator "Set up workspace: create the config directories and the global config, and offer"
+        opts.separator "agent session hooks. Tmuxinator templates are built in (see 'workspace template list');"
+        opts.separator "an edited copy an earlier init installed keeps being used until you run"
+        opts.separator "'workspace template import'."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--dry-run", "Show what would be done without making changes") do
           dry_run = true
         end
-        opts.on("-f", "--force", "Overwrite existing templates even if they differ") do
+        opts.on("-f", "--force", "Accepted and ignored: init no longer copies templates") do
           force = true
         end
         opts.on("--install-hooks", "Install agent session hooks without asking") do
@@ -2931,9 +2933,8 @@ module Workspace
         end
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace init    # install templates and create the config directory"
+        opts.separator "  workspace init    # create the config directories and offer the agent hooks"
         opts.separator "  workspace init --dry-run    # preview what would be done"
-        opts.separator "  workspace init --force    # overwrite modified templates"
         opts.separator "  workspace init --install-hooks    # install agent session hooks without prompting"
         opts.separator "  workspace init --no-install-hooks    # skip the hooks step entirely"
         opts.separator "  workspace init --workflow-sources acme/workflows/presets    # list a workflow source in the global config"

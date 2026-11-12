@@ -1114,5 +1114,104 @@ RSpec.describe Workspace::Commands::Template do
         expect { command.import(path: set_dir("x"), scope: "builtin") }.to raise_error(Workspace::UsageError, /Unknown scope/)
       end
     end
+
+    describe "#import with no path" do
+      let(:tmuxinator_dir) { File.join(@dir, "tmuxinator") }
+      let(:builtin) { Workspace::LibraryStore.new(dir: File.join(PROJECT_ROOT, "lib/library"), scope: "builtin") }
+      let(:selected) { Workspace::Commands::Config::Result.new(key: "tmuxinator.template", workspace: nil, layer: "global", path: "/cfg/config.yml") }
+      subject(:command) do
+        described_class.new(library: library, project_config: project_config, writer: writer, template_validator: validator, differ: differ,
+          config_command: config_command, backups: backups, template_in_use: in_use, tmuxinator_dir: tmuxinator_dir, output: out, error_output: err)
+      end
+
+      before do
+        FileUtils.mkdir_p(tmuxinator_dir)
+        allow(library).to receive(:builtin_store).and_return(builtin)
+        allow(library).to receive(:tmuxinator_set).and_return("name" => "local")
+        allow(library).to receive(:tmuxinator_template).and_return("name" => "legacy", "source" => "legacy")
+        allow(project_config).to receive(:available_projects).and_return(["app"])
+        allow(config_command).to receive(:set).and_return(selected)
+      end
+
+      def copy(kind, text)
+        File.write(Workspace::LegacyTmuxinatorTemplates.path(kind, tmuxinator_dir), text)
+      end
+
+      it "does nothing and says so when no copy is installed" do
+        row = command.import
+
+        expect(row).to include("outcome" => "unchanged", "templates" => [], "selected" => nil)
+        expect(out.string).to match(/\ANothing to import: no edited copy/)
+        expect(Dir.exist?(File.join(@dir, "global/template"))).to be(false)
+        expect(config_command).not_to have_received(:set)
+      end
+
+      it "does nothing for a copy that is stock, whichever shipped version it is" do
+        copy(:project, File.read(File.join(PROJECT_ROOT, "lib/library/template/default/project.yml")))
+        copy(:worktree, File.read(File.join(PROJECT_ROOT, "lib/library/template/default/worktree.yml")))
+
+        expect(command.import).to include("outcome" => "unchanged")
+        expect(config_command).not_to have_received(:set)
+      end
+
+      it "makes the global set local from an edited copy, takes the other kind from the built-in default, and selects it" do
+        copy(:project, "my edited project\n")
+
+        row = command.import
+
+        expect(File.read(File.join(@dir, "global/template/local/project.yml"))).to eq("my edited project\n")
+        expect(File.read(File.join(@dir, "global/template/local/worktree.yml"))).to eq(File.read(File.join(PROJECT_ROOT, "lib/library/template/default/worktree.yml")))
+        expect(row).to include("outcome" => "imported", "selected" => "local")
+        expect(row["templates"].map { |t| [t["template"], t["outcome"]] }).to eq([["local", "added"]])
+        expect(config_command).to have_received(:set).with("tmuxinator.template", "local", hash_including(scope: "global"))
+        expect(File.read(File.join(tmuxinator_dir, "workspace.project-template.yml"))).to eq("my edited project\n")
+      end
+
+      it "says it selected local and left the old files" do
+        copy(:project, "my edited project\n")
+
+        command.import
+
+        expect(out.string).to include("Selected local for new configs; the old files in #{tmuxinator_dir} are left in place.")
+      end
+
+      it "imports local but keeps the selection when a layer already selects another set, with a warning" do
+        copy(:project, "my edited project\n")
+        allow(library).to receive(:tmuxinator_template).with(:project, workspace: "app").and_return("name" => "team", "source" => "project")
+
+        row = command.import
+
+        expect(File.read(File.join(@dir, "global/template/local/project.yml"))).to eq("my edited project\n")
+        expect(config_command).not_to have_received(:set)
+        expect(row).to include("outcome" => "imported", "selected" => nil)
+        expect(row["warnings"]).to contain_exactly(include("code" => "selection_kept", "message" => /tmuxinator.template already selects team; kept it. Run `workspace template use local` to switch/))
+        expect(out.string).to include("kept it")
+      end
+
+      it "does not switch back when run again after the person chose another set" do
+        copy(:project, "my edited project\n")
+        command.import
+        allow(library).to receive(:tmuxinator_template).and_return("name" => "team", "source" => "global")
+
+        again = command.import
+
+        expect(again).to include("outcome" => "unchanged", "selected" => nil)
+        expect(config_command).to have_received(:set).once
+      end
+
+      it "validates the set and writes and selects nothing when it is invalid" do
+        copy(:worktree, "broken\n")
+        bad = Workspace::TemplateValidator::Problem.new(severity: "error", code: "x", kind: :worktree, message: "broken")
+        allow(validator).to receive(:call_set).and_return(Workspace::TemplateValidator::Result.new(errors: [bad], warnings: []))
+
+        expect { command.import }.to raise_error(Workspace::Error, /in your edited copy at .*workspace.project-worktree-template.yml/) { |e| expect(e.code).to eq("invalid_template") }
+        expect(Dir.exist?(File.join(@dir, "global/template"))).to be(false)
+        expect(config_command).not_to have_received(:set)
+      end
+
+      it "takes only the global scope" do
+        expect { command.import(scope: "project") }.to raise_error(Workspace::UsageError, /needs a PATH/)
+      end
+    end
   end
 end

@@ -29,20 +29,11 @@ RSpec.describe Workspace::Commands::Init do
 
   after { FileUtils.remove_entry(tmpdir) }
 
-  def create_source_templates
-    templates_dir = config.templates_dir
-    FileUtils.mkdir_p(templates_dir)
-    Workspace::Commands::Init::TEMPLATES.each do |template, source|
-      File.write(File.join(templates_dir, source), "#{template} content")
-    end
-  end
-
   describe "agent session hooks" do
     let(:project_root) { File.join(tmpdir, "project") }
     let(:settings_path) { File.join(project_root, ".claude", "settings.json") }
 
     before do
-      create_source_templates
       FileUtils.mkdir_p(project_root)
     end
 
@@ -254,24 +245,17 @@ RSpec.describe Workspace::Commands::Init do
     end
 
     context "fresh install" do
-      it "creates tmuxinator dir and copies templates" do
-        create_source_templates
-
+      it "creates the tmuxinator dir and copies no templates" do
         command.call
 
-        Workspace::Commands::Init::TEMPLATES.each do |template, source|
-          dest = File.join(tmuxinator_dir, template)
-          expect(File.exist?(dest)).to be true
-          expect(File.read(dest)).to eq("#{template} content")
-        end
+        expect(Dir.children(tmuxinator_dir)).to be_empty
         expect(output.string).to include("create  #{tmuxinator_dir}")
-        expect(output.string).to include("copy    workspace.project-template.yml")
+        expect(output.string).not_to include("copy ")
+        expect(output.string).not_to include("template import")
         expect(output.string).to include("Done! Workspace is ready to use.")
       end
 
       it "creates workspace config dir, projects dir, and global config" do
-        create_source_templates
-
         command.call
 
         expect(File.directory?(workspace_config_dir)).to be true
@@ -286,7 +270,6 @@ RSpec.describe Workspace::Commands::Init do
 
     context "when tmuxinator dir already exists" do
       it "reports exists instead of create" do
-        create_source_templates
         FileUtils.mkdir_p(tmuxinator_dir)
 
         command.call
@@ -298,7 +281,6 @@ RSpec.describe Workspace::Commands::Init do
 
     context "when workspace config dir and global config already exist" do
       it "reports exists and skips config.yml" do
-        create_source_templates
         FileUtils.mkdir_p(File.join(workspace_config_dir, "projects"))
         File.write(File.join(workspace_config_dir, "config.yml"), YAML.dump({"hooks" => {}}))
 
@@ -310,90 +292,80 @@ RSpec.describe Workspace::Commands::Init do
       end
     end
 
-    context "when templates already exist and are identical" do
-      it "skips them" do
-        create_source_templates
-        FileUtils.mkdir_p(tmuxinator_dir)
-        Workspace::Commands::Init::TEMPLATES.each do |template, source|
-          FileUtils.cp(File.join(config.templates_dir, source), File.join(tmuxinator_dir, template))
+    context "with a copy an earlier init installed" do
+      let(:project_copy) { File.join(tmuxinator_dir, "workspace.project-template.yml") }
+
+      before { FileUtils.mkdir_p(tmuxinator_dir) }
+
+      it "offers template import for an edited copy and leaves it alone" do
+        File.write(project_copy, "my edited template")
+
+        command.call
+
+        expect(output.string).to include("Your edited tmuxinator template at #{project_copy} is still used for new configs. Run `workspace template import` to keep it as the tmuxinator template set `local` and select it.")
+        expect(File.read(project_copy)).to eq("my edited template")
+      end
+
+      it "offers nothing when a key selects another set, so the edited copy is not what renders" do
+        File.write(project_copy, "my edited template")
+        library = instance_double(Workspace::Library, tmuxinator_template: {"name" => "team", "source" => "global"})
+        selecting = described_class.new(config: config, hook_installer: hook_installer, library: library, which: which, output: output, error_output: error_output, input: input)
+
+        selecting.call(hooks: false)
+
+        expect(output.string).not_to include("template import")
+      end
+
+      it "offers it when the library says the edited copy is what renders" do
+        File.write(project_copy, "my edited template")
+        library = instance_double(Workspace::Library, tmuxinator_template: {"name" => "legacy", "source" => "legacy"})
+        selecting = described_class.new(config: config, hook_installer: hook_installer, library: library, which: which, output: output, error_output: error_output, input: input)
+
+        selecting.call(hooks: false)
+
+        expect(output.string).to include("workspace template import")
+      end
+
+      it "offers nothing for a stock copy of every shipped version, so a bad SHIPPED_SHAS entry fails here" do
+        fixtures = File.join(PROJECT_ROOT, "spec/fixtures/legacy_templates")
+        [File.join(fixtures, "project.yml"), File.join(fixtures, "old/project-0e41749b.yml")].each do |old|
+          FileUtils.cp(old, project_copy)
+          output.truncate(0)
+          output.rewind
+
+          command.call(hooks: false)
+
+          expect(output.string).not_to include("template import")
         end
-
-        command.call
-
-        expect(output.string).to include("skip    workspace.project-template.yml (already up to date)")
-      end
-    end
-
-    context "when templates already exist and differ" do
-      it "skips without --force" do
-        create_source_templates
-        FileUtils.mkdir_p(tmuxinator_dir)
-        File.write(File.join(tmuxinator_dir, "workspace.project-template.yml"), "old content")
-
-        command.call
-
-        expect(output.string).to include("skip    workspace.project-template.yml (already exists, use --force to overwrite)")
-        expect(File.read(File.join(tmuxinator_dir, "workspace.project-template.yml"))).to eq("old content")
       end
 
-      it "overwrites with --force" do
-        create_source_templates
-        FileUtils.mkdir_p(tmuxinator_dir)
-        File.write(File.join(tmuxinator_dir, "workspace.project-template.yml"), "old content")
+      it "accepts --force and changes nothing under --dry-run" do
+        File.write(project_copy, "my edited template")
 
-        command.call(force: true)
+        command.call(force: true, dry_run: true)
 
-        expect(output.string).to include("update  workspace.project-template.yml")
-        expect(File.read(File.join(tmuxinator_dir, "workspace.project-template.yml"))).to eq("workspace.project-template.yml content")
+        expect(File.read(project_copy)).to eq("my edited template")
+        expect(output.string).to include("No changes made (dry run).")
       end
     end
 
     context "with --dry-run" do
-      it "does not create directories or copy files" do
-        create_source_templates
-
+      it "creates no directories" do
         command.call(dry_run: true)
 
         expect(File.directory?(tmuxinator_dir)).to be false
         expect(File.directory?(workspace_config_dir)).to be false
         expect(output.string).to include("workspace init (dry run)")
         expect(output.string).to include("create  #{tmuxinator_dir}")
-        expect(output.string).to include("copy    workspace.project-template.yml")
         expect(output.string).to include("create  #{workspace_config_dir}")
         expect(output.string).to include("create  config.yml")
         expect(output.string).to include("No changes made (dry run).")
-      end
-
-      it "does not overwrite with --force and --dry-run" do
-        create_source_templates
-        FileUtils.mkdir_p(tmuxinator_dir)
-        File.write(File.join(tmuxinator_dir, "workspace.project-template.yml"), "old content")
-
-        command.call(dry_run: true, force: true)
-
-        expect(File.read(File.join(tmuxinator_dir, "workspace.project-template.yml"))).to eq("old content")
-        expect(output.string).to include("update  workspace.project-template.yml")
-      end
-    end
-
-    context "when source template is missing" do
-      it "reports error and continues" do
-        templates_dir = config.templates_dir
-        FileUtils.mkdir_p(templates_dir)
-        File.write(File.join(templates_dir, "worktree.yml"), "content")
-
-        command.call
-
-        expect(error_output.string).to include("error   workspace.project-template.yml not found")
-        expect(output.string).to include("copy    workspace.project-worktree-template.yml")
       end
     end
   end
 
   describe "workflow sources" do
     let(:config_path) { File.join(workspace_config_dir, "config.yml") }
-
-    before { create_source_templates }
 
     def stored_sources
       YAML.safe_load_file(config_path).dig("workflows", "sources")

@@ -1,6 +1,6 @@
 # workspace init
 
-Install tmuxinator templates and create the workspace config directory.
+Create the workspace config directories and offer agent session hooks. Tmuxinator templates are built in; `init` no longer copies them.
 
 ## Usage
 
@@ -13,7 +13,7 @@ workspace init [options]
 | Option | Description |
 |--------|-------------|
 | `--dry-run` | Show what would be done without making changes |
-| `-f`, `--force` | Overwrite existing templates even if they differ |
+| `-f`, `--force` | Accepted and ignored (`init` no longer copies templates) |
 | `--install-hooks` | Install agent session hooks without asking |
 | `--no-install-hooks` | Skip the agent session hooks step |
 | `--workflow-sources VALUE` | Add `workflows.sources` entries to the global config (repeatable) |
@@ -22,12 +22,14 @@ workspace init [options]
 
 Sets up workspace by:
 
-1. Installing tmuxinator templates into `~/.config/tmuxinator/`
+1. Creating the tmuxinator directory `~/.config/tmuxinator/` (where the configs go)
 2. Creating `~/.config/workspace/` and `~/.config/workspace/projects/`
 3. Installing a default `~/.config/workspace/config.yml` with empty hooks and layouts
 4. Offering to install agent session hooks (see below)
 
-Safe to run multiple times — skips files that are already up to date and won't overwrite modified templates unless `--force` is used. The global `config.yml` is never overwritten.
+Safe to run multiple times. The global `config.yml` is never overwritten.
+
+Earlier versions copied the templates into `~/.config/tmuxinator/`. `init` leaves those files alone. If one was edited (it is not byte for byte any version workspace shipped), `init` prints one line offering `workspace template import`, which keeps the edit as the global template set `local` and selects it; a stock copy of any version is not offered, because new configs render from the built-in set. See [`template`](README.template.md).
 
 ### Agent session hooks
 
@@ -50,14 +52,11 @@ The workflows of the sources it just added are installed right away, the way `wo
 ## Examples
 
 ```sh
-# Install templates and create config directory
+# Create the config directories
 workspace init
 
 # Preview what would happen
 workspace init --dry-run
-
-# Overwrite modified templates
-workspace init --force
 
 # Install agent session hooks without prompting
 workspace init --install-hooks

@@ -200,6 +200,12 @@ RSpec.describe Workspace::CLI::Template do
       expect(template_command).to have_received(:export).with(dir: "~/out", scope: "project", force: true, workspace: "app", cwd: "/src/app")
     end
 
+    it "hands import no path when none is given" do
+      run("import")
+
+      expect(template_command).to have_received(:import).with(path: nil, scope: nil, force: false, workspace: "app", cwd: "/src/app")
+    end
+
     it "hands the path to import, force false by default" do
       run("import", "~/in")
 
@@ -208,7 +214,6 @@ RSpec.describe Workspace::CLI::Template do
 
     it "needs a DIR or PATH, and refuses flags they do not take" do
       expect { run("export") }.to raise_error(Workspace::UsageError, /'template export' needs a DIR/)
-      expect { run("import") }.to raise_error(Workspace::UsageError, /'template import' needs a PATH/)
       expect { run("import", "x", "--kind", "project") }.to raise_error(Workspace::UsageError, /--kind does not apply to 'template import'/)
     end
 

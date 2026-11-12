@@ -2018,7 +2018,7 @@ module Workspace
         ]
       },
       "import" => {
-        usage: ["template import PATH [--scope SCOPE] [--force] [--json]"],
+        usage: ["template import [PATH] [--scope SCOPE] [--force] [--json]"],
         summary: "Put tmuxinator templates from a folder into your library",
         about: [
           "PATH is one set (a folder holding project.yml and worktree.yml, named after the folder) or a folder of",
@@ -2028,10 +2028,16 @@ module Workspace
           "import; put back with `template restore`, which also removes the sets the import added) and replaced; the same content is unchanged. Replacing a set that",
           "tmuxinator.template or tmuxinator.worktree_template selects, or adding one called default (which hides the",
           "built-in one every unset config renders from), is refused (template_in_use) unless --force. A set that",
-          "hides one of the same name in a lower scope is warned about (shadows_template)."
+          "hides one of the same name in a lower scope is warned about (shadows_template).",
+          "",
+          "With no PATH it reads the copies `workspace init` once put in ~/.config/tmuxinator/. If either was edited (it",
+          "is not byte for byte a version workspace shipped), project.yml and worktree.yml become the global set `local`",
+          "(a kind that is missing or stock comes from the built-in default), checked as above, and tmuxinator.template is",
+          "set to local; the old files are left. With no edited copy it changes nothing and says so. Takes only the global scope."
         ],
         options: [["--scope SCOPE", TEMPLATE_PAGE_TEXT[:scope_new]], name_opt(TEMPLATE_PAGE_TEXT[:name_new]), ["--force", TEMPLATE_PAGE_TEXT[:force_import]], JSON_OPT],
         examples: [
+          ["workspace template import", "keep a template you edited before sets existed as the set local, and use it"],
           ["workspace template import ~/backup/templates", "bring back every set an export wrote"],
           ["workspace template import ~/Downloads/team", "add one set, named team after its folder"],
           ["workspace template import ~/backup/templates --force", "also replace sets that new configs render from"],

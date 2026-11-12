@@ -881,7 +881,7 @@ module Workspace
     workflow_source_installer = WorkflowSourceInstaller.new(config: config, source_dirs: workflow_source_dirs, state_dir: config.state_dir,
       fetcher: WorkflowSourceFetcher.new(runner: workflow_source_runner || WorkflowSourceFetcher.method(:run)))
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, workflow_installer: workflow_source_installer,
-      agent_commands: agent_commands, output: output, error_output: error_output, input: input)
+      agent_commands: agent_commands, library: library, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
     prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), locks: name_migration, output: output, input: input)
@@ -1301,7 +1301,7 @@ module Workspace
     template_command = Commands::Template.new(library: library, project_config: project_config, writer: tmuxinator_config_writer,
       template_validator: template_validator, differ: TextDiff.new, config_command: config_command,
       selection: template_selection,
-      status: template_status, template_in_use: template_in_use,
+      status: template_status, template_in_use: template_in_use, tmuxinator_dir: config.tmuxinator_dir,
       backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer),
       adopt: TemplateAdopt.new(library: library, project_config: project_config, writer: tmuxinator_config_writer, main_agent: main_agent, locks: name_migration),
       apply: template_apply,
