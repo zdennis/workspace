@@ -2,18 +2,7 @@ require "stringio"
 require "tmpdir"
 
 RSpec.describe Workspace::CLI do
-  # Sets the named keys on the real ENV (nil deletes) until the example ends; nothing else is touched.
-  def stub_env(vars)
-    @saved_env ||= {}
-    vars.each do |key, value|
-      @saved_env[key] = ENV[key] unless @saved_env.key?(key)
-      value.nil? ? ENV.delete(key) : ENV[key] = value
-    end
-  end
-
-  after do
-    (@saved_env || {}).each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
-  end
+  include CLITestHelpers::EnvStub
 
   def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
     config = overrides[:config] || Workspace::Config.new

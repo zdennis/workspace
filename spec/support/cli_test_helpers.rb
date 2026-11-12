@@ -1192,4 +1192,65 @@ module CLITestHelpers
       true
     end
   end
+
+  # Sets the named keys on the real ENV (nil deletes) until the example ends; nothing else is
+  # touched. Include it in a group that needs it.
+  module EnvStub
+    def self.included(group)
+      group.after do
+        (@saved_env || {}).each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      end
+    end
+
+    def stub_env(vars)
+      @saved_env ||= {}
+      vars.each do |key, value|
+        @saved_env[key] = ENV[key] unless @saved_env.key?(key)
+        value.nil? ? ENV.delete(key) : ENV[key] = value
+      end
+    end
+  end
+
+  # The workflow family's CLI over fake commands, shared by the workflow CLI specs. Include it
+  # in a group that needs it.
+  module WorkflowFamilyCli
+    # A CLI with only the workflow family's collaborators: the commands no workflow verb reaches are nil.
+    def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
+      state = CLITestHelpers::FakeState.new
+      project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
+      project_detector = overrides[:project_detector] || Workspace::ProjectDetector.new(state: state, project_config: project_config)
+      status_scope = Workspace::StatusScope.new(project_detector: project_detector, catalog: overrides[:project_catalog] || CLITestHelpers::FakeStatusCatalog.new)
+      unused = %i[launch_command kill_command finish_command start_command stop_command focus_command tile_command layout_command resize_command
+        init_command repair_command cleanup_command prune_command claude_command lookup_command update_pane_command run_command run_result_store
+        run_and_report_command capture_command wait_until_content_command lock_command dev_command parent_command agent_command sessions_command
+        session_event_command config_command statusline_command ask_command].to_h { |key| [key, nil] }
+
+      cli = CLITestHelpers.build_cli(
+        config: Workspace::Config.new,
+        state: state,
+        project_config: project_config,
+        git: Workspace::Git.new(output: output, input: input),
+        window_manager: CLITestHelpers::FakeWindowManager.new,
+        doctor: CLITestHelpers::FakeDoctor.new,
+        project_settings: CLITestHelpers::FakeProjectSettings.new,
+        hook_runner: CLITestHelpers::FakeHookRunner.new,
+        project_detector: project_detector,
+        status_scope: status_scope,
+        lineage: CLITestHelpers::FakeLineage.new,
+        workflow_command: overrides[:workflow_command],
+        workflow_start_command: overrides[:workflow_start_command],
+        logger: Workspace::Logger.new(output: error_output),
+        output: output,
+        error_output: error_output,
+        exit_handler: FakeExitHandler,
+        input: input,
+        working_dir: overrides[:working_dir] || Dir.tmpdir,
+        sleeper: ->(_) {},
+        launch_mode: CLITestHelpers.launch_mode(headless: false),
+        env: {},
+        **unused
+      )
+      [cli, output, error_output]
+    end
+  end
 end

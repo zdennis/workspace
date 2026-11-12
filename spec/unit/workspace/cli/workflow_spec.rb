@@ -265,17 +265,7 @@ RSpec.describe Workspace::CLI::Workflow do
   # The argv CLI#run hands this family, with the first word as the verb, over the same fake
   # commands and workspace as the CLI-level examples in spec/integration/workspace/cli/workflow_spec.rb.
   describe "argv as CLI#run routes it" do
-    def stub_env(vars)
-      @saved_env ||= {}
-      vars.each do |key, value|
-        @saved_env[key] = ENV[key] unless @saved_env.key?(key)
-        value.nil? ? ENV.delete(key) : ENV[key] = value
-      end
-    end
-
-    after do
-      (@saved_env || {}).each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
-    end
+    include CLITestHelpers::EnvStub
 
     let(:project_config) { CLITestHelpers::FakeProjectConfig.new("api" => "/work/api") }
     let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
