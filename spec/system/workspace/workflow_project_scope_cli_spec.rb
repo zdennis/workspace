@@ -283,7 +283,7 @@ RSpec.describe "workspace workflow project-scoped definitions through build_cli"
     before do
       register("myapp", make_repo(File.join(@home, "myapp")))
       FileUtils.mkdir_p(config.tmuxinator_dir)
-      FileUtils.cp(config.worktree_template_path.sub(config.tmuxinator_dir, File.join(config.workspace_dir, "lib", "templates")), config.worktree_template_path)
+      FileUtils.cp(File.join(config.workspace_dir, "lib", "library", "template", "default", "worktree.yml"), config.worktree_template_path)
       Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {}).run(["config", "set", "commands.test", "echo ran > #{marker_proof}", "--name", "myapp"])
       put_project("myapp", "only", "title: Only\nsteps:\n  one:\n    prompt: One.\n    status: {command: test}\n")
     end
@@ -349,7 +349,7 @@ RSpec.describe "workspace workflow project-scoped definitions through build_cli"
       repo = make_repo(File.join(@home, "px"))
       system("git", "-C", repo, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "--allow-empty", "-qm", "x", exception: true)
       FileUtils.mkdir_p(config.tmuxinator_dir)
-      FileUtils.cp(File.join(config.workspace_dir, "lib", "templates", "workspace.project-worktree-template.yml"), config.worktree_template_path)
+      FileUtils.cp(File.join(config.workspace_dir, "lib", "library", "template", "default", "worktree.yml"), config.worktree_template_path)
       Dir.chdir(repo) { Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {}).run(["start", "px1", "--no-launch", "--no-spine", "--yes"]) }
       FileUtils.mkdir_p(config.workflows_dir)
       File.write(File.join(config.workflows_dir, "team.yml"), yaml)

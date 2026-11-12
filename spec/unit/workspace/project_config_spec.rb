@@ -85,7 +85,7 @@ RSpec.describe Workspace::ProjectConfig do
     end
 
     it "spaces the banner text of the shipped project template and keeps the real name everywhere else" do
-      template = File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-template.yml")
+      template = File.join(PROJECT_ROOT, "lib", "library", "template", "default", "project.yml")
       allow(config).to receive(:project_template_path).and_return(template)
 
       pc.create("my-app.v2", "/tmp/my-app.v2")
@@ -133,7 +133,7 @@ RSpec.describe Workspace::ProjectConfig do
     end
 
     it "records the workspace name on the session in the shipped worktree template" do
-      template = File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-worktree-template.yml")
+      template = File.join(PROJECT_ROOT, "lib", "library", "template", "default", "worktree.yml")
       allow(config).to receive(:worktree_template_path).and_return(template)
 
       pc.create_worktree("myapp", "feat", "/tmp/wt/feat", "feat", quiet: true)
@@ -144,7 +144,7 @@ RSpec.describe Workspace::ProjectConfig do
 
     context "with the shipped worktree template" do
       before do
-        template = File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-worktree-template.yml")
+        template = File.join(PROJECT_ROOT, "lib", "library", "template", "default", "worktree.yml")
         allow(config).to receive(:worktree_template_path).and_return(template)
       end
 
@@ -167,7 +167,7 @@ RSpec.describe Workspace::ProjectConfig do
     end
 
     it "records it in the shipped project template too, ahead of the && chain and unable to break it" do
-      template = File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-template.yml")
+      template = File.join(PROJECT_ROOT, "lib", "library", "template", "default", "project.yml")
       allow(config).to receive(:project_template_path).and_return(template)
 
       pc.create("myapp", "/tmp/myapp")
@@ -937,8 +937,8 @@ RSpec.describe Workspace::ProjectConfig do
     subject(:pc) { described_class.new(config: config, output: output, git: git, agent_commands: agent_commands) }
 
     before do
-      allow(config).to receive(:project_template_path).and_return(File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-template.yml"))
-      allow(config).to receive(:worktree_template_path).and_return(File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-worktree-template.yml"))
+      allow(config).to receive(:project_template_path).and_return(File.join(PROJECT_ROOT, "lib", "library", "template", "default", "project.yml"))
+      allow(config).to receive(:worktree_template_path).and_return(File.join(PROJECT_ROOT, "lib", "library", "template", "default", "worktree.yml"))
     end
 
     def fixture(name) = File.read(File.join(fixtures, name)).gsub("$TMPDIR", tmpdir)
@@ -1034,12 +1034,11 @@ RSpec.describe Workspace::ProjectConfig do
 
     describe "the {{AGENT_COMMAND}} placeholder" do
       let(:legacy) { File.join(PROJECT_ROOT, "spec", "fixtures", "legacy_templates") }
-      let(:placeholder_templates) { File.join(PROJECT_ROOT, "lib", "templates") }
+      let(:placeholder_templates) { File.join(PROJECT_ROOT, "lib", "library", "template", "default") }
       let(:flagged) { "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions" }
 
       def template_file(dir, kind)
-        name = (kind == "project") ? "workspace.project-template.yml" : "workspace.project-worktree-template.yml"
-        File.join(dir, (dir == legacy) ? "#{kind}.yml" : name)
+        File.join(dir, "#{kind}.yml")
       end
 
       def use_templates(dir)
@@ -1053,7 +1052,7 @@ RSpec.describe Workspace::ProjectConfig do
       end
 
       it "ships in both templates as the agent pane line" do
-        %w[workspace.project-template.yml workspace.project-worktree-template.yml].each do |name|
+        %w[project.yml worktree.yml].each do |name|
           lines = File.readlines(File.join(placeholder_templates, name))
           expect(lines.grep(/AGENT_COMMAND/).map(&:strip)).to eq(["- {{AGENT_COMMAND}}"])
           expect(lines.grep(/claude/)).to be_empty

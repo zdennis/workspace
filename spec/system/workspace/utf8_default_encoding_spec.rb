@@ -58,9 +58,9 @@ RSpec.describe "reading files as UTF-8 whatever the locale" do
   end
 
   it "writes a worktree's tmuxinator config from the shipped template, which holds a non-ASCII character" do
-    template = File.join(root, "lib", "templates", "workspace.project-worktree-template.yml")
+    template = File.join(root, "lib", "library", "template", "default", "worktree.yml")
     FileUtils.mkdir_p(File.join(@home, ".config", "tmuxinator"))
-    FileUtils.cp(template, File.join(@home, ".config", "tmuxinator"))
+    FileUtils.cp(template, File.join(@home, ".config", "tmuxinator", "workspace.project-worktree-template.yml"))
     script = <<~RUBY
       require "workspace"
       require "stringio"

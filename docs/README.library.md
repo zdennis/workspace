@@ -1,6 +1,6 @@
 # workspace library
 
-Store named plays, prompts, recipes, agents, skills and spine templates, globally or for one project, and read them back by name. A play is a document an agent reads and follows; a prompt is short text sent as typed; a recipe is a saved set of `start` options that `start --recipe` applies; an agent is a Claude Code subagent file; a skill is a directory holding `SKILL.md`; a spine template is a folder of plan-spine stage files that [`spine init`](README.spine.md#spine-init) copies into a workspace. `start --agent` and `--skill` copy agents and skills into a new worktree. `lib` is an alias for `library`, and `workspace library` alone lists.
+Store named plays, prompts, recipes, agents, skills, spine templates and tmuxinator template sets, globally or for one project, and read them back by name. A play is a document an agent reads and follows; a prompt is short text sent as typed; a recipe is a saved set of `start` options that `start --recipe` applies; an agent is a Claude Code subagent file; a skill is a directory holding `SKILL.md`; a spine template is a folder of plan-spine stage files that [`spine init`](README.spine.md#spine-init) copies into a workspace. `start --agent` and `--skill` copy agents and skills into a new worktree. `lib` is an alias for `library`, and `workspace library` alone lists.
 
 ## Usage
 
@@ -29,7 +29,7 @@ workspace library installed [--name WS | --user] [--kind skill|agent] [--json]
 
 | Option | Description |
 |--------|-------------|
-| `--kind KIND` | `agent`, `play`, `prompt`, `recipe`, `skill` or `spine`; required for `add`, a filter for `list` |
+| `--kind KIND` | `agent`, `play`, `prompt`, `recipe`, `skill`, `spine` or `template` (a tmuxinator template set); required for `add`, a filter for `list` |
 | `--as NAME` | `add`: the entry name |
 | `--link` | `add`, `update`: store a symlink to `PATH` instead of a copy, so the store always reads the current source |
 | `--force` | `add`: replace an entry that has different content |
@@ -55,6 +55,8 @@ The description is the `description:` frontmatter key if the file has one, else 
 A skill is stored as a directory, `skill/<name>/`, holding `SKILL.md` and any other files it came with. `add --kind skill PATH` takes a directory with a `SKILL.md` in it (a file is a usage error) and copies the whole tree, or with `--link` links the directory. `add - --kind skill --as NAME` stores stdin as the `SKILL.md` of a new directory. A skill entry's `path` is the directory, `show` prints its `SKILL.md`, and `remove` deletes the directory, or only the link. Two copies of a skill hold the same content when they have the same files with the same bytes.
 
 A spine template is stored as a directory, `spine/<name>/`, like a skill, but needs no particular file: `add --kind spine FOLDER [--as NAME] [--project] [--link]` takes a folder with at least one `.md` file in it (a file is a usage error; stdin is refused) and copies the whole tree, or with `--link` links the folder, which `spine init` then reads through the link when it runs. The built-in `default` ships in `lib/library/spine/default/`. A template's optional `README.md` gives its `description` (the frontmatter key, else the first heading). `list --kind spine --json` entries carry `files`, the template's regular files by relative path (links inside it and dot files are left out). `show` prints the template's `README.md`. `start --agent`/`--skill` and the plays never see spine entries, and a project template hides a global one of the same name, which hides the built-in.
+
+A tmuxinator template set is stored as a directory, `template/<name>/` (kind name `template`): `add --kind template FOLDER [--as NAME] [--project] [--link]` takes a folder holding `project.yml` and `worktree.yml` (a missing one is `library_source_missing`; a file is a usage error; stdin is refused) and copies the tree, or with `--link` links the folder. The built-in `default` ships in `lib/library/template/default/` and holds the files `workspace init` installs. An optional `README.md` gives its `description`, and `list --kind template --json` entries carry `files` like a spine template. The set a workspace uses is chosen by the `tmuxinator.template` config key (coming in this branch). `start --agent`/`--skill` and the plays never see tmuxinator template entries.
 
 The store is a directory of files with no index: `add` copies the file in, or `add --link` makes a symlink, and `info` reports which. Link a note in Obsidian or iCloud and edits to it take effect on the next read; an evicted or deleted target is reported as unreadable, and `show` fails with `library_source_missing`.
 
@@ -267,6 +269,7 @@ workspace library add kickoff.md --kind prompt --dry-run             # report ad
 workspace library add kickoff.md --kind prompt --project             # for the project of the current directory only
 workspace library add ~/Notes/playbook.md --kind play --link         # edits to the note show up at once
 workspace library add ~/Notes/spine-template --kind spine --as team --link
+workspace library add ./my-set --kind template --as mine             # a tmuxinator template set: a folder with project.yml and worktree.yml
 workspace library add - --kind prompt --as resume-note < resume.txt  # stdin needs --as
 workspace library add ~/.claude/agents/reviewer.md --kind agent
 workspace library add ~/src/skills/write-tests --kind skill --link

@@ -120,6 +120,19 @@ RSpec.describe Workspace::Library do
       expect { library.resolve("", [global]) }.to raise_error(Workspace::UsageError, /not a valid library name/)
     end
   end
+  describe "the shipped default tmuxinator template set" do
+    let(:config) { instance_double(Workspace::Config, library_dir: File.join(@dir, "library"), builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library")) }
+
+    it "is the built-in template/default, readable, holding project.yml and worktree.yml" do
+      resolve_cwd_to("app")
+
+      entry = library.resolve("template/default", library.stores(cwd: "/work/app"))
+
+      expect(entry).to include("ref" => "template/default", "scope" => "builtin", "readable" => true)
+      expect(entry["files"]).to include("project.yml", "worktree.yml", "README.md")
+    end
+  end
+
   describe "#play and #play_prompt" do
     let(:global) { library.global_store }
     let(:project) { library.project_store("app") }

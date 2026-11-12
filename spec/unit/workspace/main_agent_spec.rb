@@ -278,7 +278,7 @@ RSpec.describe Workspace::MainAgent do
     subject(:main_agent) { described_class.new(project_config: real_project_config, agent_commands: agent_commands) }
 
     before do
-      allow(config).to receive(:worktree_template_path).and_return(File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-worktree-template.yml"))
+      allow(config).to receive(:worktree_template_path).and_return(File.join(PROJECT_ROOT, "lib", "library", "template", "default", "worktree.yml"))
       allow(config).to receive(:config_path_for) { |name| File.join(@dir, "workspace.#{name}.yml") }
     end
 

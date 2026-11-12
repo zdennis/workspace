@@ -7,14 +7,14 @@ Print the workspace installation directory.
 
 Examples:
   workspace whereis    # find out where a symlinked install really lives
-  workspace whereis | xargs -I{} ls {}/lib/templates    # look at the project templates it ships
+  workspace whereis | xargs -I{} ls {}/lib/library/template/default    # look at the tmuxinator templates it ships
   workspace whereis | xargs -I{} git -C {} log -1 --oneline    # which commit this install runs
 --- stderr
 --- end
 ### workspace whereis --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace whereis"],"description":"Print the workspace installation directory.","options":[],"examples":[{"command":"workspace whereis","scenario":"find out where a symlinked install really lives"},{"command":"workspace whereis | xargs -I{} ls {}/lib/templates","scenario":"look at the project templates it ships"},{"command":"workspace whereis | xargs -I{} git -C {} log -1 --oneline","scenario":"which commit this install runs"}]}
+{"usage":["workspace whereis"],"description":"Print the workspace installation directory.","options":[],"examples":[{"command":"workspace whereis","scenario":"find out where a symlinked install really lives"},{"command":"workspace whereis | xargs -I{} ls {}/lib/library/template/default","scenario":"look at the tmuxinator templates it ships"},{"command":"workspace whereis | xargs -I{} git -C {} log -1 --oneline","scenario":"which commit this install runs"}]}
 --- stderr
 --- end
 ### workspace whereis --bogus

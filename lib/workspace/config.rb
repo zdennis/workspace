@@ -39,9 +39,9 @@ module Workspace
       File.expand_path("~/.workspace-events.jsonl")
     end
 
-    # @return [String] path to the source templates directory
+    # @return [String] path to the shipped default tmuxinator template set (until the library resolves it)
     def templates_dir
-      File.join(workspace_dir, "lib", "templates")
+      File.join(workspace_dir, "lib", "library", "template", "default")
     end
 
     # @return [String] path to the installed project template

@@ -3164,10 +3164,11 @@ module Workspace
         HelpPages.overview_verbs(HelpPages::LIBRARY).each { |line| opts.separator line }
         opts.separator "Run `workspace library VERB --help` for a verb's options."
         opts.separator ""
-        opts.on("--kind KIND", "agent, play, prompt, recipe, skill or spine (add: required; list: a filter);",
+        opts.on("--kind KIND", "agent, play, prompt, recipe, skill, spine or tmuxinator template (kind name: template) (add: required; list: a filter);",
           "add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt, or of workflow and workflow_inputs (for 'start --recipe');",
           "add --kind skill takes a directory holding SKILL.md;",
-          "add --kind spine takes a folder of plan-spine stage files (a template for 'spine init')") { |v| options[:kind] = v }
+          "add --kind spine takes a folder of plan-spine stage files (a template for 'spine init');",
+          "add --kind template takes a folder holding project.yml and worktree.yml (a tmuxinator template set)") { |v| options[:kind] = v }
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }
         opts.on("--link", "add, update: store a symlink to PATH instead of a copy") { options[:link] = true }
         opts.on("--force", "add: replace an entry that has different content;", "install: replace a copy that has different content;", "uninstall: remove a copy that differs from the library entry") { options[:force] = true }
@@ -4960,7 +4961,7 @@ module Workspace
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace whereis    # find out where a symlinked install really lives"
-        opts.separator "  workspace whereis | xargs -I{} ls {}/lib/templates    # look at the project templates it ships"
+        opts.separator "  workspace whereis | xargs -I{} ls {}/lib/library/template/default    # look at the tmuxinator templates it ships"
         opts.separator "  workspace whereis | xargs -I{} git -C {} log -1 --oneline    # which commit this install runs"
       end
       parser.parse!(args)

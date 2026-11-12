@@ -412,9 +412,20 @@ module Workspace
       # directory, or `{body:}` to write a file (a skill's `SKILL.md`).
       def source_for(kind, source, body, link, ref)
         raise UsageError, "A spine template is a folder of stage files: give its path, not stdin (-)." if kind == "spine" && body
+        raise UsageError, "A tmuxinator template is a folder holding project.yml and worktree.yml: give its path, not stdin (-)." if kind == "template" && body
         return {body: body} if body && !link
         raise UsageError, "--link needs a file path, not stdin (-)." unless source
-        if Workspace::LibraryStore::OPTIONAL_BODY.include?(kind)
+        if kind == "template"
+          raise Errno::ENOENT, source unless File.exist?(source)
+          raise UsageError, "#{source} is a file, and a tmuxinator template is a folder holding project.yml and worktree.yml." unless File.directory?(source)
+          %w[project.yml worktree.yml].each do |file|
+            inside = File.join(source, file)
+            next if File.file?(inside) && File.readable?(inside)
+            raise Error.new("A tmuxinator template set needs project.yml and worktree.yml; #{source} has no #{file}.",
+              code: "library_source_missing", details: {"ref" => ref, "path" => inside})
+          end
+          link ? {target: source} : {tree: source}
+        elsif Workspace::LibraryStore::OPTIONAL_BODY.include?(kind)
           raise Errno::ENOENT, source unless File.exist?(source)
           raise UsageError, "#{source} is a file, and a #{kind} is a folder of stage files." unless File.directory?(source)
           raise Errno::ENOENT, "#{source}/*.md" if Dir.glob("**/*.md", base: File.realpath(source)).empty?

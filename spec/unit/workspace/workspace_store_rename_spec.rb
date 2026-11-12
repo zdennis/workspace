@@ -203,13 +203,13 @@ RSpec.describe Workspace::WorkspaceStoreRename do
   end
 
   describe "a config generated from the real templates" do
-    let(:templates) { File.join(PROJECT_ROOT, "lib", "templates") }
+    let(:templates) { File.join(PROJECT_ROOT, "lib", "library", "template", "default") }
     let(:new_root) { File.join(home, "src", "proj", ".worktrees", "other").tap { |dir| FileUtils.mkdir_p(dir) } }
 
     before do
       FileUtils.mkdir_p(config.tmuxinator_dir)
-      FileUtils.cp(File.join(templates, "workspace.project-template.yml"), config.project_template_path)
-      FileUtils.cp(File.join(templates, "workspace.project-worktree-template.yml"), config.worktree_template_path)
+      FileUtils.cp(File.join(templates, "project.yml"), config.project_template_path)
+      FileUtils.cp(File.join(templates, "worktree.yml"), config.worktree_template_path)
       FileUtils.rm_f(config.config_path_for(old))
     end
 

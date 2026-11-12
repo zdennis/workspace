@@ -32,8 +32,8 @@ RSpec.describe Workspace::Commands::Init do
   def create_source_templates
     templates_dir = config.templates_dir
     FileUtils.mkdir_p(templates_dir)
-    Workspace::Commands::Init::TEMPLATES.each do |template|
-      File.write(File.join(templates_dir, template), "#{template} content")
+    Workspace::Commands::Init::TEMPLATES.each do |template, source|
+      File.write(File.join(templates_dir, source), "#{template} content")
     end
   end
 
@@ -259,7 +259,7 @@ RSpec.describe Workspace::Commands::Init do
 
         command.call
 
-        Workspace::Commands::Init::TEMPLATES.each do |template|
+        Workspace::Commands::Init::TEMPLATES.each do |template, source|
           dest = File.join(tmuxinator_dir, template)
           expect(File.exist?(dest)).to be true
           expect(File.read(dest)).to eq("#{template} content")
@@ -314,8 +314,8 @@ RSpec.describe Workspace::Commands::Init do
       it "skips them" do
         create_source_templates
         FileUtils.mkdir_p(tmuxinator_dir)
-        Workspace::Commands::Init::TEMPLATES.each do |template|
-          FileUtils.cp(File.join(config.templates_dir, template), File.join(tmuxinator_dir, template))
+        Workspace::Commands::Init::TEMPLATES.each do |template, source|
+          FileUtils.cp(File.join(config.templates_dir, source), File.join(tmuxinator_dir, template))
         end
 
         command.call
@@ -380,7 +380,7 @@ RSpec.describe Workspace::Commands::Init do
       it "reports error and continues" do
         templates_dir = config.templates_dir
         FileUtils.mkdir_p(templates_dir)
-        File.write(File.join(templates_dir, "workspace.project-worktree-template.yml"), "content")
+        File.write(File.join(templates_dir, "worktree.yml"), "content")
 
         command.call
 

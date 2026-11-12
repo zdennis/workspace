@@ -39,7 +39,7 @@ module T5StartConcurrencyFakes
     def render_state_dir = File.join(@dir, ".render")
 
     def worktree_template_path
-      File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-worktree-template.yml")
+      File.join(PROJECT_ROOT, "lib", "library", "template", "default", "worktree.yml")
     end
 
     def window_tool = File.join(@dir, "window-tool")

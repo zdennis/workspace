@@ -1048,7 +1048,7 @@ module Workspace
           "Entries are global unless a project narrows them; a project entry hides a global one of the same",
           "name. `workspace library` alone lists."
         ],
-        options: [["--kind KIND", "Only this kind: agent, play, prompt, recipe, skill or spine"], *LIBRARY_SCOPES, JSON_OPT],
+        options: [["--kind KIND", "Only this kind: agent, play, prompt, recipe, skill, spine or tmuxinator template (kind name: template)"], *LIBRARY_SCOPES, JSON_OPT],
         examples: [
           ["workspace library list", "see everything you can use from here: your project's entries, the global ones and the built-in packs"],
           ["workspace library list --kind skill --global", "only the skills in the global store, e.g. before installing one"],
@@ -1095,12 +1095,13 @@ module Workspace
           "",
           "--kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt, or of workflow and workflow_inputs (for 'start",
           "--recipe'); --kind skill takes a directory holding SKILL.md; --kind spine takes a folder of",
-          "plan-spine stage files (a template for 'spine init').",
+          "plan-spine stage files (a template for 'spine init'); --kind template takes a folder holding project.yml and",
+          "worktree.yml (a tmuxinator template set).",
           "",
           "This writes to the library for real (the global store, or the project's with --project); --dry-run",
           "says what would happen and writes nothing."
         ],
-        options: [["--kind KIND", "agent, play, prompt, recipe, skill or spine (required)"],
+        options: [["--kind KIND", "agent, play, prompt, recipe, skill, spine or tmuxinator template (kind name: template) (required)"],
           ["--as NAME", "The entry name (lowercase letters, digits and hyphens)"],
           ["--link", "Store a symlink to PATH instead of a copy"],
           ["--force", "Replace an entry that has different content"],

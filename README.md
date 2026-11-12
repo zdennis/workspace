@@ -232,10 +232,10 @@ Workspace tracks launcher pane UUIDs and iTerm window IDs in `~/.workspace-state
 
 ## Tmuxinator Templates
 
-The repo includes two templates in `lib/templates/` that are installed to `~/.config/tmuxinator/` by `workspace init`:
+The repo ships the built-in `default` tmuxinator template set in `lib/library/template/default/`. `workspace init` installs its two files to `~/.config/tmuxinator/` under these names:
 
-- **`workspace.project-template.yml`** — standard project layout with 3 panes (banner, claude, shell)
-- **`workspace.project-worktree-template.yml`** — worktree variant, roots into the worktree directory
+- **`project.yml`**, installed as `workspace.project-template.yml`: standard project layout with 3 panes (banner, claude, shell)
+- **`worktree.yml`**, installed as `workspace.project-worktree-template.yml`: worktree variant, roots into the worktree directory
 
 Templates use placeholders like `{{PROJECT_NAME}}` and `{{PROJECT_ROOT}}` that are filled in automatically by `workspace add` and `workspace start`. The banner line uses `{{DISPLAY_NAME}}`, the name with every non-word character replaced by a space, because `ascii-banner` wraps only at whitespace. Workspace never rewrites a config that already exists, so to change one, edit the `ascii-banner` line in its file in `~/.config/tmuxinator/`. New standard project configs need the current template: `workspace init --force` installs it, replacing any edits you made to the installed templates. New worktree configs get the spaced text with any installed template.
 

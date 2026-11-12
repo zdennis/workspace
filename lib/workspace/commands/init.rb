@@ -7,10 +7,11 @@ module Workspace
     # Sets up workspace by installing tmuxinator templates and creating
     # the config directory if it doesn't exist.
     class Init
-      TEMPLATES = [
-        "workspace.project-template.yml",
-        "workspace.project-worktree-template.yml"
-      ].freeze
+      # The installed file name of each file of the built-in `default` tmuxinator template set.
+      TEMPLATES = {
+        "workspace.project-template.yml" => "project.yml",
+        "workspace.project-worktree-template.yml" => "worktree.yml"
+      }.freeze
 
       # @param config [Workspace::Config] configuration for path lookups
       # @param hook_installer [Workspace::HookInstaller] installs agent hooks
@@ -148,8 +149,8 @@ module Workspace
       end
 
       def install_templates(dry_run, force)
-        TEMPLATES.each do |template|
-          src = File.join(@config.templates_dir, template)
+        TEMPLATES.each do |template, source|
+          src = File.join(@config.templates_dir, source)
           dest = File.join(@config.tmuxinator_dir, template)
 
           unless File.exist?(src)

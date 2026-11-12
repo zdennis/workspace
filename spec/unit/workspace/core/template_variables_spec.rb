@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 RSpec.describe Workspace::TemplateVariables do
-  let(:shipped) { Dir[File.join(PROJECT_ROOT, "lib/templates/*.yml")] }
+  let(:shipped) { Dir[File.join(PROJECT_ROOT, "lib/library/template/default/*.yml")] }
   let(:placeholders) { shipped.flat_map { |f| File.read(f).scan(/\{\{([A-Z_]+)\}\}/).flatten }.uniq }
   let(:render_source) { File.read(File.join(PROJECT_ROOT, "lib/workspace/project_config.rb")) }
 

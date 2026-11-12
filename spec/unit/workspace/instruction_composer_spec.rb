@@ -638,7 +638,7 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
   it "ships exactly the thirteen packs, as plays, each readable with a description" do
     shipped = Workspace::LibraryStore.new(dir: builtin_dir, scope: "builtin")
 
-    expect(Dir.children(builtin_dir).sort).to eq(%w[play spine])
+    expect(Dir.children(builtin_dir).sort).to eq(%w[play spine template])
     plays = shipped.entries(kind: "play")
     expect(plays.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/plan-review play/promote play/report play/research play/review play/spine])
     expect(plays).to all(include("readable" => true, "link" => nil, "description" => a_string_matching(/\A\S.{10,}/)))

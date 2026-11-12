@@ -568,6 +568,52 @@ RSpec.describe Workspace::Commands::Library do
     end
   end
 
+  describe "tmuxinator templates" do
+    def template_set(name = "team-set", files: {"project.yml" => "p\n", "worktree.yml" => "w\n", "README.md" => "# Team\n"})
+      File.join(@dir, name).tap do |dir|
+        files.each do |rel, text|
+          FileUtils.mkdir_p(File.dirname(File.join(dir, rel)))
+          File.write(File.join(dir, rel), text)
+        end
+      end
+    end
+
+    it "copies a folder holding project.yml and worktree.yml and lists it with its files" do
+      result = command.add(kind: "template", path: template_set, name: "team", cwd: cwd)
+
+      expect(result.outcome).to eq("added")
+      expect(File.read(File.join(@dir, "library/global/template/team/worktree.yml"))).to eq("w\n")
+
+      output.truncate(0)
+      output.rewind
+      command.list(kind: "template", cwd: cwd, json: true)
+      expect(JSON.parse(output.string)["entries"].first).to include("ref" => "template/team", "files" => %w[README.md project.yml worktree.yml])
+    end
+
+    it "lists a built-in set as a builtin entry" do
+      FileUtils.mkdir_p(File.join(@dir, "builtin/template/default"))
+      File.write(File.join(@dir, "builtin/template/default/project.yml"), "p\n")
+      File.write(File.join(@dir, "builtin/template/default/worktree.yml"), "w\n")
+
+      command.list(kind: "template", cwd: cwd, json: true)
+
+      expect(JSON.parse(output.string)["entries"].first).to include("ref" => "template/default", "scope" => "builtin")
+    end
+
+    it "refuses a folder missing worktree.yml or project.yml, a file, a missing path and stdin" do
+      %w[worktree.yml project.yml].each do |missing|
+        files = {"project.yml" => "p\n", "worktree.yml" => "w\n"}.reject { |k, _| k == missing }
+        expect { command.add(kind: "template", path: template_set("no-#{missing}", files: files), name: "a", cwd: cwd) }
+          .to raise_error(Workspace::Error) { |e| expect([e.code, e.message, e.details["path"]]).to eq(["library_source_missing", "A tmuxinator template set needs project.yml and worktree.yml; #{File.join(@dir, "no-#{missing}")} has no #{missing}.", File.join(@dir, "no-#{missing}", missing)]) }
+      end
+      expect { command.add(kind: "template", path: source("one.yml", "x"), name: "b", cwd: cwd) }.to raise_error(Workspace::UsageError, /folder holding project.yml and worktree.yml/)
+      expect { command.add(kind: "template", path: File.join(@dir, "none"), name: "c", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+      expect { command.add(kind: "template", body: "x", name: "d", cwd: cwd) }.to raise_error(Workspace::UsageError, /not stdin/)
+      expect(Dir.exist?(File.join(@dir, "library/global/template"))).to be(false)
+    end
+  end
+
   describe "#install and #uninstall" do
     let(:installer) { instance_double(Workspace::LibraryInstaller) }
     let(:checkout) { instance_double(Workspace::WorkspaceCheckout) }

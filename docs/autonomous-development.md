@@ -62,7 +62,7 @@ A person should decide scope, outward-facing actions, and acceptance; agents sho
 | Review sign-off | Accept or send back | Reviewer verdicts (PASS / CHANGES NEEDED) | Reviews complete | Merge under the written policy if all pass; otherwise fix and re-review | None |
 | Final acceptance | Check each criterion against the running app | Dev environment, PR, criteria checklist | PR ready | PR stays open; nothing merges on its own | None |
 
-The stock worktree template starts Claude Code with permission prompts turned off (`lib/templates/workspace.project-worktree-template.yml:23`). That keeps agents moving, but it also removes the one built-in gate before destructive commands. The push/merge row above then depends entirely on the agent's written instructions.
+The stock worktree template starts Claude Code with permission prompts turned off (`lib/library/template/default/worktree.yml:23`). That keeps agents moving, but it also removes the one built-in gate before destructive commands. The push/merge row above then depends entirely on the agent's written instructions.
 
 ## Playbooks
 
@@ -138,7 +138,7 @@ The daemon types the body into stage 1's pane, followed by the line to print whe
 
 What needs babysitting:
 
-- Stage N runs in pane N of window 0 (`lib/workspace/pipeline_config.rb:27-29`). The stock worktree template puts a banner in pane 0 and Claude in pane 1 (`lib/templates/workspace.project-worktree-template.yml:17-25`), so pipelines need a custom layout.
+- Stage N runs in pane N of window 0 (`lib/workspace/pipeline_config.rb:27-29`). The stock worktree template puts a banner in pane 0 and Claude in pane 1 (`lib/library/template/default/worktree.yml:17-25`), so pipelines need a custom layout.
 - A stage without `timeout:` still waits forever for its sentinel.
 
 ### 4. Sharing one dev environment through locks
