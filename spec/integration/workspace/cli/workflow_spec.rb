@@ -565,4 +565,37 @@ RSpec.describe Workspace::CLI do
         .and match(/^\s+pipeline\s+Deprecated \(use workflow\)/)
     end
   end
+
+  describe "#run with step" do
+    let(:workflow_command) { CLITestHelpers::FakeWorkflowCommand.new }
+    let(:built) { build_test_cli(workflow_command: workflow_command) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    before { stub_env("TMUX_PANE" => "%5") }
+
+    it "passes no pane outside tmux, for the command to refuse" do
+      stub_env("TMUX_PANE" => nil)
+      workflow_command.error = Workspace::Error.new("This pane is not bound to a workflow run (not inside tmux).", code: "not_bound")
+
+      expect { cli.run(["step", "done", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(workflow_command.calls).to eq([[:step_done, {pane: nil, status: "pass", summary: nil, code: nil}]])
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_bound")
+    end
+
+    it "rejects bad usage, as an envelope under --json" do
+      {["step"] => /Missing subcommand: done or status/, ["step", "skip"] => /Unknown step subcommand: skip/,
+       ["step", "done", "extra"] => /Unexpected argument: extra/}.each do |argv, message|
+        cli, _, error_output = build_test_cli(workflow_command: workflow_command)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+
+        cli, output = build_test_cli(workflow_command: workflow_command)
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage")
+      end
+      expect(workflow_command.calls).to be_empty
+    end
+  end
 end

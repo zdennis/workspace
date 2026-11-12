@@ -608,5 +608,57 @@ RSpec.describe Workspace::CLI::Workflow do
         expect(Workspace::WorkflowDefinition.render("Café: {{inputs.task}}", "inputs.task" => given[:inputs]["task"])).to eq("Café: café")
       end
     end
+
+    describe "#run with step" do
+      before { stub_env("TMUX_PANE" => "%5") }
+
+      it "records the agent's report from the pane it runs in: pass by default, or fail with a summary" do
+        workflow_command.row = {"workspace" => "app", "outcome" => "recorded", "reason" => nil, "message" => nil, "run_id" => "wr_1", "step" => "plan",
+                                "attempt" => 1, "reported" => {"status" => "pass", "summary" => nil}}
+        cli.run(["step", "done"])
+        cli.run(["step", "done", "--status", "fail", "--summary", "Two specs still fail.", "--json"])
+
+        expect(workflow_command.calls).to eq([
+          [:step_done, {pane: "%5", status: "pass", summary: nil, code: nil}],
+          [:step_done, {pane: "%5", status: "fail", summary: "Two specs still fail.", code: nil}]
+        ])
+        expect(JSON.parse(output.string)).to include("action" => "step done", "status" => "ok", "results" => [workflow_command.row])
+      end
+
+      it "passes --code to the command" do
+        cli.run(["step", "done", "--status", "fail", "--code", "not_reproduced"])
+
+        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", status: "fail", summary: nil, code: "not_reproduced"}]])
+      end
+
+      it "refuses a summary that is not valid text, and records nothing" do
+        expect { cli.run(["step", "done", "--summary", (+"caf\xC3").force_encoding("UTF-8"), "--json"]) }.to raise_error(FakeSystemExit)
+
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage",
+          "error" => "--summary holds bytes that are not valid UTF-8 text (was it cut in the middle of a character?).")
+        expect(workflow_command.calls).to be_empty
+      end
+
+      it "reads a summary as UTF-8 with no UTF-8 locale: a cut one is refused, a whole one is passed on as text" do
+        expect { cli.run(["step", "done", "--summary", "caf\xC3".b.freeze, "--json"]) }.to raise_error(FakeSystemExit)
+        expect(workflow_command.calls).to be_empty
+
+        cli.run(["step", "done", "--summary", "fini à 100%".b.freeze])
+        expect(workflow_command.calls.first.last[:summary]).to eq("fini à 100%")
+        expect(workflow_command.calls.first.last[:summary].encoding).to eq(Encoding::UTF_8)
+      end
+
+      it "shows the step the pane is on" do
+        cli.run(["step", "status", "--json"])
+
+        expect(workflow_command.calls).to eq([[:step_status, {pane: "%5", json: true}]])
+      end
+
+      it "prints help" do
+        cli.run(["step", "--help"])
+
+        expect(output.string).to include("Usage: workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]").and include("end your turn")
+      end
+    end
   end
 end
