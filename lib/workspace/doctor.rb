@@ -70,7 +70,7 @@ module Workspace
     # @param output [IO] output stream for results
     # @param env [Hash] the environment; a non-empty NO_COLOR turns color off
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, event_log: nil, skills: nil, run_health: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, run_health: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -95,6 +95,7 @@ module Workspace
       @skills_fixed = []
       @skills_notes = []
       @file_backup = file_backup || FileBackup.new(output: output)
+      @writer = writer || TmuxinatorConfigWriter.new(config: config)
       @working_dir = working_dir
       @output = output
       @env = env
@@ -424,7 +425,11 @@ module Workspace
     def fix_agent_panes(stale)
       stale.select do |entry|
         backup = @file_backup.backup(entry[:path])
-        @project_config.write_config(entry[:path], entry[:content])
+        written = @writer.patch(entry[:workspace], inputs: ->(text) { {agent_kind: entry[:kind], agent_command: @project_config.agent_pane_text(text, entry[:workspace])} }) do |text|
+          rewritten = @project_config.rewrite_agent_pane(text, entry[:kind], entry[:workspace])
+          rewritten unless rewritten == text
+        end
+        next false unless written
         @event_log&.record(type: "agent_pane_refreshed", project: entry[:workspace],
           data: {"workspace" => entry[:workspace], "path" => entry[:path], "running" => entry[:running], "wanted" => entry[:wanted], "backup" => backup})
         message = "#{entry[:workspace]}: agent pane now runs #{entry[:wanted]}"

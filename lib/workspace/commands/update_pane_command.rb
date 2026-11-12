@@ -7,11 +7,14 @@ module Workspace
     class UpdatePaneCommand
       # @param config [Workspace::Config] configuration for path lookups
       # @param project_config [Workspace::ProjectConfig] project config management
+      # @param writer [Workspace::TmuxinatorConfigWriter, nil] rewrites the config and keeps its render record
+      #   in step; nil builds one over +config+
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(config:, project_config:, output: $stdout, input: $stdin)
+      def initialize(config:, project_config:, writer: nil, output: $stdout, input: $stdin)
         @config = config
         @project_config = project_config
+        @writer = writer || TmuxinatorConfigWriter.new(config: config)
         @output = output
         @input = input
       end
@@ -47,8 +50,12 @@ module Workspace
           adjusted_index = pane_count
         end
 
-        updated_raw = update_pane_in_raw(raw, adjusted_index, command)
-        File.write(config_path, updated_raw)
+        # The kind is not known here, so `agent_kind` stays what the record has; the pane text is recorded
+        # only when the edit left an agent pane.
+        updated_raw = @writer.patch(project, inputs: ->(text) {
+          agent_command = @project_config.agent_pane_text(text, project)
+          agent_command ? {agent_command: agent_command} : {}
+        }) { |text| update_pane_in_raw(text, adjusted_index, command) }
 
         updated_doc = YAML.safe_load(updated_raw)
         updated_panes = extract_panes(updated_doc, config_path)

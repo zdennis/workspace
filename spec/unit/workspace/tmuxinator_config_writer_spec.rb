@@ -151,6 +151,14 @@ RSpec.describe Workspace::TmuxinatorConfigWriter do
       expect(writer.current?("myapp")).to be(true)
     end
 
+    it "takes inputs from a callable given the new text" do
+      write
+
+      writer.patch("myapp", inputs: ->(text) { {agent_command: text.strip} }) { "new\n" }
+
+      expect(writer.record("myapp").inputs).to include(agent_command: "new")
+    end
+
     it "keeps the config's mode" do
       write
       File.chmod(0o640, path)

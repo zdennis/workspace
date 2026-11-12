@@ -551,16 +551,6 @@ RSpec.describe Workspace::ProjectConfig do
         end
       end
 
-      describe "#write_config" do
-        it "replaces the file and leaves no temp file" do
-          path = File.join(tmpdir, "w.yml")
-          File.write(path, "old")
-          pc.write_config(path, "new")
-          expect(File.read(path)).to eq("new")
-          expect(Dir.glob("#{path}.tmp*")).to be_empty
-        end
-      end
-
       describe "#rewrite_agent_pane" do
         let(:settings) { {"agent" => {"commands" => {"claude" => "claude-old", "codex" => "codex-dev"}}} }
 

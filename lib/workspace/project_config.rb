@@ -323,16 +323,18 @@ module Workspace
       nil
     end
 
-    # Writes a config through a temp file and rename.
+    # The agent pane's text in a config: the first pane item that runs an agent program.
     #
-    # @param path [String]
-    # @param content [String]
-    def write_config(path, content)
-      tmp = "#{path}.tmp#{Process.pid}"
-      File.write(tmp, content)
-      File.rename(tmp, path)
-    ensure
-      File.delete(tmp) if tmp && File.exist?(tmp)
+    # @param content [String] a tmuxinator config
+    # @param workspace [String, nil] the workspace whose config layers name the agent programs
+    # @return [String, nil] nil when no agent pane is found
+    def agent_pane_text(content, workspace)
+      names = agent_program_names(workspace)
+      content.lines.each do |line|
+        item = pane_item(line)
+        return item[1] if item && agent_pane_text?(item[1], names)
+      end
+      nil
     end
 
     # ascii-banner wraps only at whitespace, so an unspaced name shrinks to tiny type.
@@ -352,15 +354,6 @@ module Workspace
       content = render(kind, inputs, template_text)
       @writer.write(name, content, kind: kind, template: "default", template_sha: Digest::SHA256.hexdigest(template_text),
         inputs: inputs.merge(agent_command: agent_pane_text(content, name)))
-    end
-
-    def agent_pane_text(content, workspace)
-      names = agent_program_names(workspace)
-      content.lines.each do |line|
-        item = pane_item(line)
-        return item[1] if item && agent_pane_text?(item[1], names)
-      end
-      nil
     end
 
     # @return [Array<String, nil>] the programs of the one pane line that differs between two contents:

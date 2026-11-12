@@ -54,7 +54,8 @@ module Workspace
     # text's and +inputs+ are merged into its `inputs`. A config with no sidecar is written alone.
     #
     # @param name [String] the workspace name
-    # @param inputs [Hash] inputs to merge into the sidecar's, by Symbol
+    # @param inputs [Hash, #call] inputs to merge into the sidecar's, by Symbol; a callable is given the new
+    #   text and answers the Hash, so the record follows what was written
     # @yieldparam text [String] the config as it is now
     # @yieldreturn [String, nil] the new text; nil writes nothing
     # @return [String, nil] the text written
@@ -62,6 +63,7 @@ module Workspace
     def patch(name, inputs: {})
       text = yield File.read(@config.config_path_for(name))
       return unless text
+      inputs = inputs.call(text) if inputs.respond_to?(:call)
       write_config(name, text)
       current = record(name)
       return text unless current
