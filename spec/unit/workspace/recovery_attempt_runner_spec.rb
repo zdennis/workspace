@@ -25,11 +25,12 @@ RSpec.describe Workspace::RecoveryAttemptRunner do
   let(:claimed) { ["%5"] }
   let(:rebound) { [] }
   let(:on_rebind) { [nil] }
+  let(:delivery_lock) { Mutex.new }
 
   subject(:runner) do
     described_class.new(panes: FakePaneFactory.new(panes: [pane]), session_name: "api", store: store, facts: facts,
       session_monitor: monitor, readiness: readiness, detector: :detector, marker: marker, prompt_typer: typer,
-      delivery_lock: Mutex.new, restarting: ->(pane_id) { claimed.include?(pane_id) },
+      delivery_lock: delivery_lock, restarting: ->(pane_id) { claimed.include?(pane_id) },
       rebind_queue: ->(pane_id, pid) {
         rebound << [pane_id, pid]
         on_rebind[0]&.call
@@ -279,6 +280,109 @@ RSpec.describe Workspace::RecoveryAttemptRunner do
           expect(messages).to eq([])
           expect(typer.calls).to be_empty
         end
+      end
+    end
+
+    describe "step 4" do
+      it "waits on the pane alone, then rescans it" do
+        allow(readiness).to receive(:wait).and_call_original
+        allow(monitor).to receive(:rescan_pane).and_call_original
+        runner.restart(attempt)
+
+        expect(readiness).to have_received(:wait).with("api", deadline: 60, only_pane: "%5", detector: anything)
+        expect(monitor).to have_received(:rescan_pane).with("%5").at_least(:once)
+      end
+    end
+
+    describe "step 5" do
+      def refused(reason) = Workspace::PromptTyper::Result.new(outcome: :refused, reason: reason)
+
+      it "presses Enter once on :not_submitted and never retypes" do
+        on_sleep[0] = -> { set(prompt_seen: true) if store.get("%5")["draft_text"] }
+        allow(typer).to receive(:type).and_return(Workspace::PromptTyper::Result.new(outcome: :not_submitted))
+        outcomes = runner.restart(attempt).first(1)
+
+        expect(typer).to have_received(:type).once
+        expect(texts.count("")).to eq(1)
+        expect(outcomes).to eq(["resumed"])
+      end
+
+      it "reads the groups on every try" do
+        resumed = new_agent.merge(pid: 21)
+        agents.replace([old_agent, nil, nil, nil, resumed])
+        facts_options[:live] = resumed
+        allow(typer).to receive(:type).and_return(refused("unknown"))
+        runner.restart(attempt)
+        reads = calls.select { |call| call.first == :foreground? }.map { |call| call[1] }
+
+        expect(typer).to have_received(:type).exactly(Workspace::RecoveryAttemptRunner::TYPE_TRIES).times
+        expect(reads.count(21)).to eq(Workspace::RecoveryAttemptRunner::TYPE_TRIES)
+      end
+
+      it "stops trying when the terminal is lost between tries, typing nothing more" do
+        tries = 0
+        allow(typer).to receive(:type) do
+          tries += 1
+          allow(facts).to receive(:foreground?).and_return(false)
+          refused("unknown")
+        end
+        outcomes = runner.restart(attempt).first(1)
+
+        expect(tries).to eq(1)
+        expect(outcomes).to eq(["pane_not_clear"])
+      end
+
+      it "doesn't press Enter on :not_submitted once the shell holds the terminal" do
+        allow(typer).to receive(:type) do
+          allow(facts).to receive(:foreground?).and_return(false)
+          Workspace::PromptTyper::Result.new(outcome: :not_submitted)
+        end
+        outcomes = runner.restart(attempt).first(1)
+
+        expect(texts).not_to include("")
+        expect(outcomes).to eq(["not_submitted"])
+      end
+
+      it "doesn't press Enter when the input line lost the text" do
+        typer_options[:refusal] = {code: "input_not_empty"}
+        allow(typer).to receive(:type).and_return(Workspace::PromptTyper::Result.new(outcome: :not_submitted))
+        outcomes = runner.restart(attempt).first(1)
+
+        expect(texts).not_to include("")
+        expect(outcomes).to eq(["not_submitted"])
+      end
+
+      it "releases the delivery lock between tries, and tries 20 times on unknown" do
+        held = []
+        allow(typer).to receive(:type) do
+          on_sleep[0] = -> { held << delivery_lock.locked? }
+          refused("unknown")
+        end
+        outcomes = runner.restart(attempt).first(1)
+
+        expect(typer).to have_received(:type).exactly(20).times
+        expect(held.size).to be >= 19
+        expect(held).to all(be(false))
+        expect(outcomes).to eq(["not_typed"])
+      end
+
+      it "doesn't try again on any other refusal" do
+        allow(typer).to receive(:type) { refused("waiting") }
+        outcomes = runner.restart(attempt).first(1)
+
+        expect(typer).to have_received(:type).once
+        expect(outcomes).to eq(["not_typed"])
+      end
+
+      it "takes the delivery lock for each try" do
+        locked = []
+        allow(typer).to receive(:type) do
+          locked << delivery_lock.owned?
+          Workspace::PromptTyper::Result.new(outcome: :failed)
+        end
+        runner.restart(attempt)
+
+        expect(locked).to eq([true])
       end
     end
   end

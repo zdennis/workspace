@@ -201,6 +201,47 @@ RSpec.describe Workspace::RecoveryAttempts do
         attempts.start("%5", :restart, check: check)
       end
     end
+
+    describe "the claim" do
+      def signals = calls.select { |call| call.first == :stop }
+
+      def claiming(restarting, spawn: ->(&block) { block.call })
+        described_class.new(store: store, facts: facts, outcomes: outcomes, attempt_runner: attempt_runner, stopper: stopper,
+          marker: marker, resume_command: ->(**) {}, delivery_lock: Mutex.new, spawn: spawn,
+          claim_restart: ->(pane_id) {
+            restarting << pane_id
+            :token
+          },
+          release_restart: ->(pane_id, _token) { restarting.delete(pane_id) })
+      end
+
+      it "skips the attempt when a restart holds the pane" do
+        store.put("%5", waiting)
+        claim[0] = nil
+        attempts.start("%5", :restart, check: check)
+
+        expect(signals).to eq([])
+        expect(entry).to include("phase" => "waiting", "attempts" => 1)
+      end
+
+      it "is released after an attempt, and with nothing to do" do
+        restarting = []
+        store.put("%5", waiting)
+        claiming(restarting).start("%5", :restart, check: check)
+        expect(restarting).to eq([])
+      end
+
+      it "runs on the spawned thread" do
+        store.put("%5", waiting)
+        spawned = 0
+        claiming([], spawn: ->(&block) {
+          spawned += 1
+          block.call
+        }).start("%5", :restart, check: check)
+
+        expect(spawned).to eq(1)
+      end
+    end
   end
 
   describe "#resume_line" do

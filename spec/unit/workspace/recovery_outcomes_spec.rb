@@ -368,5 +368,106 @@ RSpec.describe Workspace::RecoveryOutcomes do
 
       expect_gave_up("fresh_conversation")
     end
+
+    describe "step 6" do
+      failing = %w[not_stopped claim_lost pane_not_clear not_delivered not_ready not_typed not_submitted no_response agent_left]
+      person = {pid: 21, started: "Mon Oct 26 11:00:00 2026"}
+
+      let(:message) { /\AAn API error stopped your last turn \(server_error\), so workspace restarted Claude Code/ }
+
+      # The entry step 1 left, signal sent, with what the hooks during the attempt wrote on it.
+      def opened(**fields) = store.put("%5", attempting(stopped: true, last_signal_at: stamp(now[0]), **fields))
+
+      def run_to(outcome, agent: nil, number: 2) = part.finish(restart_attempt(number: number), outcome, agent: agent)
+
+      (failing + %w[resumed typed resumed_elsewhere person_resumed fresh_agent]).each do |outcome|
+        found = (outcome == "person_resumed") ? person : nil
+
+        it "honours a stop during #{outcome}" do
+          opened(turn_completed: true)
+          run_to(outcome, agent: found)
+
+          expect(entry).to be_nil
+          expect(outcomes).to eq([outcome])
+        end
+
+        it "honours a retryable failure during #{outcome}" do
+          opened(failed_during_attempt: true, error: "overloaded")
+          run_to(outcome, agent: found)
+
+          expect(entry).to include("phase" => "waiting", "attempts" => 2, "error" => "overloaded")
+          expect(entry).not_to include("failed_during_attempt")
+          expect(entry["agent_pid"]).not_to be_nil
+        end
+
+        it "gives up on a non-retryable error during #{outcome}" do
+          opened(failed_during_attempt: true, error: "billing_error")
+          run_to(outcome, agent: found)
+
+          expect_gave_up("not_retryable")
+          expect(entry["attempts"]).to eq(2)
+        end
+      end
+
+      failing.each do |outcome|
+        it "schedules #{outcome} with the count raised" do
+          opened
+          run_to(outcome)
+
+          expect_rescheduled(2)
+          expect(entry["stopped"]).to be(false)
+        end
+
+        it "gives up at 12 with one item on #{outcome}" do
+          opened(attempts: 12)
+          run_to(outcome, number: 12)
+
+          expect_gave_up("attempts_exhausted")
+          expect(entry["attempts"]).to eq(12)
+          expect(events.map(&:first)).to eq(%w[agent_recovery_attempt agent_recovery_gave_up])
+        end
+
+        it "sets stopped on #{outcome} when no agent is left" do
+          agents.clear
+          opened
+          run_to(outcome)
+
+          expect(entry["stopped"]).to be(true)
+        end
+      end
+
+      it "keeps stopped when the last read fails" do
+        opened
+        described_class.new(workspace: "api", store: store, facts: RecordingConfirmerFacts.new(details: details, agents: agents,
+          tree: nil, calls: calls), inbox: -> { inbox }, runner: runner, event_log: event_log, clock: BlockClock.new { now[0] })
+          .finish(restart_attempt, "not_stopped")
+
+        expect(entry["stopped"]).to be(true)
+      end
+
+      it "sets draft_text on not_submitted and no_response, nowhere else" do
+        opened
+        run_to("no_response")
+        expect(entry["draft_text"]).to match(message)
+
+        opened(draft_text: "ours")
+        run_to("resumed")
+        expect(entry["draft_text"]).to be_nil
+      end
+
+      it "moves a typed attempt to watching, for T13" do
+        opened(draft_text: "ours")
+        run_to("typed")
+
+        expect(entry).to include("phase" => "watching", "draft_text" => nil)
+      end
+
+      it "writes no line for an entry reconcile already took" do
+        opened(phase: "waiting")
+        run_to("not_ready")
+
+        expect(lines).to eq([])
+      end
+    end
   end
 end

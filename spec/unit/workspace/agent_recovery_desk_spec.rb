@@ -3292,15 +3292,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     describe "step 4" do
       before { hooks[:signal] = -> { agent_exits } }
 
-      it "waits on the pane alone, then rescans it" do
-        due_entry
-        hooks[:deliver] = -> { agent_resumes }
-        desk.scan
-
-        expect(readiness).to have_received(:wait).with("api", deadline: 60, only_pane: "%5", detector: anything)
-        expect(monitor).to have_received(:rescan_pane).with("%5").at_least(:once)
-      end
-
       it "stores the agent on not_ready, keeps the queue, and the next attempt goes ahead" do
         due_entry
         hooks[:deliver] = -> { agent_appears }
@@ -3349,18 +3340,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect_gave_up("unconfirmed")
       end
 
-      it "presses Enter once on :not_submitted and never retypes" do
-        allow(typer).to receive(:type) do |text:, **|
-          tmux.screens = ["#{rule_prompt}#{text}\n────────\n"]
-          Workspace::PromptTyper::Result.new(outcome: :not_submitted)
-        end
-        desk.scan
-
-        expect(typer).to have_received(:type).once
-        expect(texts.count("")).to eq(1)
-        expect(outcomes).to eq(["resumed"])
-      end
-
       it "never presses Enter when the shell takes the terminal after the paste" do
         tmux.on(:deliver) do |original, session, pane, text, enter: true|
           original.call(session, pane, text, enter: enter).tap { group_ids.replace([21, 10]) unless enter }
@@ -3370,44 +3349,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(texts).not_to include("")
         expect(outcomes).to eq(["not_submitted"])
         expect(entry["draft_text"]).to match(/workspace restarted Claude Code/)
-      end
-
-      it "reads the groups on every try" do
-        reads = []
-        allow(typer).to receive(:type).and_return(Workspace::PromptTyper::Result.new(outcome: :refused, reason: "unknown"))
-        stopper.on(:foreground?) do |original, **args|
-          reads << args[:pid]
-          original.call(**args)
-        end
-        desk.scan
-
-        expect(typer).to have_received(:type).exactly(Workspace::RecoveryAttemptRunner::TYPE_TRIES).times
-        expect(reads.count(21)).to eq(Workspace::RecoveryAttemptRunner::TYPE_TRIES)
-      end
-
-      it "stops trying when the terminal is lost between tries, typing nothing more" do
-        tries = 0
-        allow(typer).to receive(:type) do
-          tries += 1
-          allow(stopper).to receive(:foreground?).and_return(false)
-          Workspace::PromptTyper::Result.new(outcome: :refused, reason: "unknown")
-        end
-        desk.scan
-
-        expect(tries).to eq(1)
-        expect(outcomes).to eq(["pane_not_clear"])
-      end
-
-      it "doesn't press Enter on :not_submitted once the shell holds the terminal" do
-        allow(typer).to receive(:type) do |text:, **|
-          tmux.screens = ["#{rule_prompt}#{text}\n────────\n"]
-          allow(stopper).to receive(:foreground?).and_return(false)
-          Workspace::PromptTyper::Result.new(outcome: :not_submitted)
-        end
-        desk.scan
-
-        expect(texts).not_to include("")
-        expect(outcomes).to eq(["not_submitted"])
       end
 
       it "leaves draft_text after a failed Enter, and the next check answers :go" do
@@ -3426,36 +3367,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(answer).to eq(:go)
       end
 
-      it "doesn't press Enter when the input line lost the text" do
-        allow(typer).to receive(:type).and_return(Workspace::PromptTyper::Result.new(outcome: :not_submitted))
-        desk.scan
-
-        expect(texts).not_to include("")
-        expect(outcomes).to eq(["not_submitted"])
-      end
-
-      it "releases the delivery lock between tries, and tries 20 times on unknown" do
-        held = []
-        allow(typer).to receive(:type) do
-          hooks[:sleep] = -> { held << delivery_lock.locked? }
-          Workspace::PromptTyper::Result.new(outcome: :refused, reason: "unknown")
-        end
-        desk.scan
-
-        expect(typer).to have_received(:type).exactly(20).times
-        expect(held.size).to be >= 19
-        expect(held).to all(be(false))
-        expect(outcomes).to eq(["not_typed"])
-      end
-
-      it "doesn't try again on any other refusal" do
-        allow(typer).to receive(:type) { Workspace::PromptTyper::Result.new(outcome: :refused, reason: "waiting") }
-        desk.scan
-
-        expect(typer).to have_received(:type).once
-        expect(outcomes).to eq(["not_typed"])
-      end
-
       it "stops the paste on a person's prompt to the resumed agent, as not_typed" do
         hooks[:wait] = -> { facts[:last_user_prompt_at] = now[0] + 1 }
         desk.scan
@@ -3463,21 +3374,9 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(messages).to eq([])
         expect(outcomes).to eq(["not_typed"])
       end
-
-      it "takes the delivery lock for each try" do
-        locked = []
-        allow(typer).to receive(:type) do
-          locked << delivery_lock.owned?
-          Workspace::PromptTyper::Result.new(outcome: :failed)
-        end
-        desk.scan
-
-        expect(locked).to eq([true])
-      end
     end
 
     describe "step 6" do
-      failing = %w[not_stopped claim_lost pane_not_clear not_delivered not_ready not_typed not_submitted no_response agent_left]
       agent = {pid: 21, started: "Mon Oct 26 11:00:00 2026"}
 
       def run_to(outcome, agent: nil, &hook)
@@ -3485,61 +3384,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
           hook&.call
           [outcome, agent]
         })).scan
-      end
-
-      (failing + %w[resumed typed resumed_elsewhere person_resumed fresh_agent]).each do |outcome|
-        found = (outcome == "person_resumed") ? agent : nil
-
-        it "honours a stop during #{outcome}" do
-          due_entry
-          run_to(outcome, agent: found) { event("stop") }
-
-          expect(entry).to be_nil
-          expect(outcomes).to eq([outcome])
-        end
-
-        it "honours a retryable failure during #{outcome}" do
-          due_entry
-          run_to(outcome, agent: found) { failed("overloaded") }
-
-          expect(entry).to include("phase" => "waiting", "attempts" => 2, "error" => "overloaded")
-          expect(entry).not_to include("failed_during_attempt")
-          expect(entry["agent_pid"]).not_to be_nil
-        end
-
-        it "gives up on a non-retryable error during #{outcome}" do
-          due_entry
-          run_to(outcome, agent: found) { failed("billing_error") }
-
-          expect_gave_up("not_retryable")
-          expect(entry["attempts"]).to eq(2)
-        end
-      end
-
-      failing.each do |outcome|
-        it "schedules #{outcome} with the count raised" do
-          due_entry(stopped: false)
-          run_to(outcome)
-
-          expect_rescheduled(2)
-          expect(entry["stopped"]).to be(false)
-        end
-
-        it "gives up at 12 with one item on #{outcome}" do
-          due_entry(attempts: 11)
-          run_to(outcome)
-
-          expect_gave_up("attempts_exhausted")
-          expect(entry["attempts"]).to eq(12)
-          expect(events.map(&:first)).to eq(%w[agent_recovery_attempt agent_recovery_gave_up])
-        end
-
-        it "sets stopped on #{outcome} when no agent is left" do
-          due_entry
-          run_to(outcome) { gone! }
-
-          expect(entry["stopped"]).to be(true)
-        end
       end
 
       it "leaves the stopped our signal set when the pane reads as gone" do
@@ -3550,34 +3394,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(entry).to include("stopped" => true, "phase" => "waiting")
       end
 
-      it "keeps stopped when the last read fails" do
-        due_entry
-        run_to("not_stopped") do
-          store.update("%5") { |current| current["stopped"] = true }
-          tree_broken[0] = true
-        end
-
-        expect(entry["stopped"]).to be(true)
-      end
-
-      it "sets draft_text on not_submitted and no_response, nowhere else" do
-        due_entry
-        run_to("no_response")
-        expect(entry["draft_text"]).to match(message)
-
-        store.delete("%5")
-        due_entry(draft_text: "ours")
-        run_to("resumed")
-        expect(entry["draft_text"]).to be_nil
-      end
-
-      it "moves a typed attempt to watching, for T13" do
-        due_entry(draft_text: "ours")
-        run_to("typed")
-
-        expect(entry).to include("phase" => "watching", "draft_text" => nil)
-      end
-
       it "moves the queue before the hold ends on person_resumed" do
         due_entry
         held = []
@@ -3586,45 +3402,9 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
         expect(held).to eq([true])
       end
-
-      it "writes no line for an entry reconcile already took" do
-        due_entry
-        run_to("not_ready") { store.update("%5") { |current| current["phase"] = "waiting" } }
-
-        expect(lines).to eq([])
-      end
     end
 
     describe "the claim" do
-      it "skips the attempt when a restart holds the pane" do
-        due_entry
-        refuse_claim[0] = true
-        desk.scan
-
-        expect(signals).to eq([])
-        expect(entry).to include("phase" => "waiting", "attempts" => 1)
-      end
-
-      it "is released after an attempt, and with nothing to do" do
-        due_entry
-        healthy_run
-        desk.scan
-        expect(restarting).to eq([])
-      end
-
-      it "runs on the spawned thread" do
-        due_entry
-        spawned = 0
-        spawn_desk = build_desk(stub_attempts: false, spawn: ->(&block) {
-          spawned += 1
-          block.call
-        })
-        hooks[:signal] = -> { agent_exits }
-        spawn_desk.scan
-
-        expect(spawned).to eq(1)
-      end
-
       it "leaves an attempt that raises to the next scan, marker kept until then" do
         due_entry
         hooks[:sleep] = lambda {
