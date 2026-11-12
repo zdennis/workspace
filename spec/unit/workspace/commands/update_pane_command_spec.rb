@@ -63,7 +63,7 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
   describe "the render record" do
     before do
       writer.write("myproject", base_config, kind: :worktree, template: "default", template_sha: "t",
-        inputs: {agent_kind: "claude", agent_command: "claude --continue || claude"})
+        inputs: {workspace_name: "myproject", agent_kind: "claude", agent_command: "claude --continue || claude"})
     end
 
     it "stays current and takes the new agent pane text" do

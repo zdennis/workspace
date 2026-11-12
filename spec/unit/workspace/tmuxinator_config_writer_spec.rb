@@ -83,7 +83,7 @@ RSpec.describe Workspace::TmuxinatorConfigWriter do
 
       it "leaves the new config with the old record, which no longer matches it" do
         FileUtils.mkdir_p(render_dir)
-        old = {"schema" => 1, "kind" => "project", "template" => "default", "template_sha" => "abc", "inputs" => {}, "rendered_sha" => "old"}
+        old = {"schema" => 1, "kind" => "project", "template" => "default", "template_sha" => "abc", "inputs" => {"workspace_name" => "myapp"}, "rendered_sha" => "old"}
         File.write(File.join(render_dir, "myapp.json"), JSON.generate(old))
 
         expect { write }.to raise_error(Errno::ENOSPC)
@@ -115,7 +115,7 @@ RSpec.describe Workspace::TmuxinatorConfigWriter do
       FileUtils.mkdir_p(render_dir)
       sidecar_path = File.join(render_dir, "myapp.json")
 
-      good = {"schema" => 1, "kind" => "project", "template" => "default", "template_sha" => "abc", "inputs" => {}, "rendered_sha" => "def"}
+      good = {"schema" => 1, "kind" => "project", "template" => "default", "template_sha" => "abc", "inputs" => {"workspace_name" => "myapp"}, "rendered_sha" => "def"}
       File.write(sidecar_path, JSON.generate(good))
       expect(writer.record("myapp")).not_to be_nil
 
@@ -133,6 +133,74 @@ RSpec.describe Workspace::TmuxinatorConfigWriter do
       FileUtils.mkdir_p(File.join(render_dir, "myapp.json"))
 
       expect(writer.record("myapp")).to be_nil
+    end
+
+    it "is nil for a sidecar whose inputs name another workspace, as a rename stopped part way leaves one" do
+      write
+      FileUtils.mv(File.join(render_dir, "myapp.json"), File.join(render_dir, "other.json"))
+
+      expect(writer.record("other")).to be_nil
+    end
+  end
+
+  describe "#carry_record" do
+    def moved
+      FileUtils.mv(File.join(render_dir, "myapp.json"), File.join(render_dir, "other.json"))
+    end
+
+    def carry(before: "name: myapp\n", after: "name: other\n")
+      writer.carry_record("other", from: "myapp", before: before, after: after) { |given| given.merge(workspace_name: "other") }
+    end
+
+    it "rewrites the inputs of a moved sidecar and follows a config that was current" do
+      write
+      moved
+
+      expect(carry).to be(true)
+      record = writer.record("other")
+      expect(record.inputs).to eq(inputs.merge(workspace_name: "other"))
+      expect(record.rendered_sha).to eq(Digest::SHA256.hexdigest("name: other\n"))
+      expect(record.template_sha).to eq("abc")
+    end
+
+    it "keeps the old rendered_sha of a config edited by hand" do
+      write
+      moved
+
+      carry(before: "name: myapp\n# mine\n")
+
+      expect(writer.record("other").rendered_sha).to eq(Digest::SHA256.hexdigest("name: myapp\n"))
+    end
+
+    it "leaves a sidecar already carried, or none, alone" do
+      expect(carry).to be(false)
+
+      write
+      moved
+      carry
+      written = File.read(File.join(render_dir, "other.json"))
+
+      expect(carry(before: "name: other\n", after: "name: other\n")).to be(false)
+      expect(File.read(File.join(render_dir, "other.json"))).to eq(written)
+    end
+  end
+
+  describe "#remove_record" do
+    it "deletes the sidecar and is quiet with none" do
+      write
+
+      writer.remove_record("myapp")
+      writer.remove_record("myapp")
+
+      expect(File.exist?(File.join(render_dir, "myapp.json"))).to be(false)
+    end
+
+    it "leaves a sidecar listed under another case of the name" do
+      writer.write("MyApp", "name: MyApp\n", kind: :project, template: "default", template_sha: "abc", inputs: inputs.merge(workspace_name: "MyApp"))
+
+      writer.remove_record("myapp")
+
+      expect(Dir.children(render_dir)).to eq(["MyApp.json"])
     end
   end
 

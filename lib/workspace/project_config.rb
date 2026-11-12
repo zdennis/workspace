@@ -130,6 +130,9 @@ module Workspace
       config_name
     end
 
+    # Deletes the config and its render record (with no config, a record left behind goes too). A record
+    # that can't be deleted is left behind rather than failing a remove whose config is already gone.
+    #
     # @param name [String] project or config name
     # @param quiet [Boolean] print nothing to the output stream
     # @return [void]
@@ -138,6 +141,11 @@ module Workspace
       if File.exist?(path)
         File.delete(path)
         @output.puts "Removed config: #{path}" unless quiet
+      end
+      begin
+        @writer.remove_record(name)
+      rescue SystemCallError
+        nil
       end
     end
 

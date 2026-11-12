@@ -1259,7 +1259,7 @@ RSpec.describe Workspace::Doctor do
         writer = Workspace::TmuxinatorConfigWriter.new(config: config)
         allow(config).to receive(:render_state_dir).and_return(File.join(tmpdir, "render"))
         writer.write("myapp", File.read(path), kind: :worktree, template: "default", template_sha: "t",
-          inputs: {agent_kind: "claude", agent_command: pane})
+          inputs: {workspace_name: "myapp", agent_kind: "claude", agent_command: pane})
 
         doctor_with(writer: writer).report(headless: true, fix: true)
 

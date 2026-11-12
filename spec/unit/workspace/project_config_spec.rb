@@ -743,6 +743,48 @@ RSpec.describe Workspace::ProjectConfig do
       expect(output.string).to eq("")
       expect(File.exist?(path)).to be(false)
     end
+
+    it "deletes the config's render record with it" do
+      writer = Workspace::TmuxinatorConfigWriter.new(config: config)
+      writer.write("myapp", "x", kind: :project, template: "default", template_sha: "abc", inputs: {workspace_name: "myapp"})
+
+      pc.remove("myapp", quiet: true)
+
+      expect(File.exist?(File.join(tmpdir, "workspace.myapp.yml"))).to be(false)
+      expect(File.exist?(writer.record_path("myapp"))).to be(false)
+    end
+
+    it "deletes a render record left behind with no config" do
+      writer = Workspace::TmuxinatorConfigWriter.new(config: config)
+      writer.write("myapp", "x", kind: :project, template: "default", template_sha: "abc", inputs: {workspace_name: "myapp"})
+      File.delete(File.join(tmpdir, "workspace.myapp.yml"))
+
+      pc.remove("myapp", quiet: true)
+
+      expect(File.exist?(writer.record_path("myapp"))).to be(false)
+    end
+
+    it "leaves another workspace's render record alone" do
+      writer = Workspace::TmuxinatorConfigWriter.new(config: config)
+      writer.write("myapp", "x", kind: :project, template: "default", template_sha: "abc", inputs: {workspace_name: "myapp"})
+      writer.write("other", "y", kind: :project, template: "default", template_sha: "abc", inputs: {workspace_name: "other"})
+
+      pc.remove("myapp", quiet: true)
+
+      expect(writer.record("other")).not_to be_nil
+    end
+
+    it "still removes the config when the render record can't be deleted" do
+      writer = instance_double(Workspace::TmuxinatorConfigWriter)
+      allow(writer).to receive(:remove_record).and_raise(Errno::EACCES)
+      path = File.join(tmpdir, "workspace.myapp.yml")
+      File.write(path, "x")
+
+      expect { described_class.new(config: config, output: output, git: git, writer: writer).remove("myapp") }.not_to raise_error
+
+      expect(File.exist?(path)).to be(false)
+      expect(output.string).to include("Removed config: #{path}")
+    end
   end
 
   describe "#exists?" do

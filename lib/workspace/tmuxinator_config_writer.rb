@@ -39,15 +39,48 @@ module Workspace
     end
 
     # @param name [String] the workspace name
-    # @return [Record, nil] the sidecar; nil when it is missing, unreadable, not JSON, not schema 1, or any
-    #   field is not of its kind
+    # @return [Record, nil] the sidecar; nil when it is missing, unreadable, not JSON, not schema 1, any
+    #   field is not of its kind, or its `inputs.workspace_name` is not +name+ (a rename stopped part way
+    #   leaves no record rather than a wrong one)
     def record(name)
-      data = JSON.parse(File.read(record_path(name)))
-      return unless well_formed?(data)
+      data = read_record(name)
+      return unless data && data["inputs"]["workspace_name"] == name
       Record.new(kind: data["kind"].to_sym, template: data["template"], template_sha: data["template_sha"],
         inputs: data["inputs"].transform_keys(&:to_sym), rendered_sha: data["rendered_sha"])
-    rescue SystemCallError, IOError, JSON::ParserError
-      nil
+    end
+
+    # Rewrites a sidecar a rename has moved to +name+ while its inputs still name +from+: the block gives
+    # the new inputs, and `rendered_sha` becomes +after+'s when it was +before+'s, so a config edited by
+    # hand still reads as edited. A sidecar already carried, or none, is left alone, so a retry can call
+    # this again.
+    #
+    # @param name [String] the workspace's new name, where the sidecar now is
+    # @param from [String] the name it had
+    # @param before [String] the config text under the old name
+    # @param after [String] the config text the rename writes under the new name
+    # @yieldparam inputs [Hash] the recorded inputs by Symbol
+    # @yieldreturn [Hash] the inputs to record
+    # @return [Boolean] whether the sidecar was rewritten
+    # @raise [SystemCallError] when the write fails; the sidecar is left as it was
+    def carry_record(name, from:, before:, after:)
+      data = read_record(name)
+      return false unless data && data["inputs"]["workspace_name"] == from
+      data["inputs"] = yield(data["inputs"].transform_keys(&:to_sym)).transform_keys(&:to_s)
+      data["rendered_sha"] = sha(after) if data["rendered_sha"] == sha(before)
+      write_record(name, data)
+      true
+    end
+
+    # Deletes a workspace's sidecar; one listed under another case of the name is not this workspace's
+    # and stays.
+    #
+    # @param name [String] the workspace name
+    # @return [void]
+    # @raise [SystemCallError] when the delete fails
+    def remove_record(name)
+      path = record_path(name)
+      dir = File.dirname(path)
+      File.delete(path) if Dir.exist?(dir) && Dir.children(dir).include?(File.basename(path))
     end
 
     # Rewrites a config from its own text, keeping the sidecar in step: its `rendered_sha` becomes the new
@@ -94,6 +127,13 @@ module Workspace
 
     KINDS = %w[project worktree].freeze
     private_constant :KINDS
+
+    def read_record(name)
+      data = JSON.parse(File.read(record_path(name)))
+      data if well_formed?(data)
+    rescue SystemCallError, IOError, JSON::ParserError
+      nil
+    end
 
     def well_formed?(data)
       data.is_a?(Hash) && data["schema"] == SCHEMA && KINDS.include?(data["kind"]) && data["inputs"].is_a?(Hash) &&

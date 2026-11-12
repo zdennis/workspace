@@ -933,7 +933,7 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
       allow(config).to receive(:config_path_for) { |name| File.join(tmpdir, "workspace.#{name}.yml") }
       text = "name: proj1\nwindows:\n  - w:\n      panes:\n        - claude --continue || claude\n"
       File.write(path, text)
-      writer.write("proj1", text, kind: :project, template: "default", template_sha: "t", inputs: {agent_kind: "claude", agent_command: "claude --continue || claude"})
+      writer.write("proj1", text, kind: :project, template: "default", template_sha: "t", inputs: {workspace_name: "proj1", agent_kind: "claude", agent_command: "claude --continue || claude"})
     end
 
     it "keeps the config current and records the new kind and pane text" do

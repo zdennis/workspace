@@ -812,7 +812,7 @@ module Workspace
     agent_labels = AgentLabels.new(process_tree: ProcessTree.new(logger: logger))
     agent_readiness = AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new(logger: logger), logger: logger)
     name_migration = NameMigration.new(config: config, project_config: project_config, tmux: tmux, state: state, event_log: event_log,
-      project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) })
+      project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) }, writer: tmuxinator_config_writer)
     ensure_agent_command = Commands::EnsureAgent.new(config: config, pipeline_config: pipeline_config, error_output: error_output,
       name_migration: name_migration)
     pane_locator = PaneLocator.new(tmux: tmux)
@@ -1249,7 +1249,8 @@ module Workspace
     rename_command = Commands::Rename.new(plan: rename_plan, journal: rename_journal, git: git, config: config, project_config: project_config,
       project_settings: project_settings, tmux: tmux, state: state, notes: notes_command, name_migration: name_migration, task_store: task_store,
       inbox_store_factory: inbox_store_factory, session_ledger: session_ledger, pane_bindings: pane_bindings, event_log: event_log,
-      project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) }, error_output: error_output)
+      project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) }, error_output: error_output,
+      writer: tmuxinator_config_writer)
 
     common = CLI::Common.new
     working_dir = Dir.pwd

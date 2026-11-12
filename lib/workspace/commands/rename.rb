@@ -44,8 +44,10 @@ module Workspace
       # @param event_log [Workspace::EventLog]
       # @param project_catalog_factory [#call] builds a fresh {ProjectCatalog}
       # @param error_output [IO]
+      # @param writer [Workspace::TmuxinatorConfigWriter, nil] carries the config's render record; nil builds one over +config+
       def initialize(plan:, journal:, git:, config:, project_config:, project_settings:, tmux:, state:, notes:, name_migration:,
-        task_store:, inbox_store_factory:, session_ledger:, pane_bindings:, event_log:, project_catalog_factory:, error_output: $stderr)
+        task_store:, inbox_store_factory:, session_ledger:, pane_bindings:, event_log:, project_catalog_factory:, error_output: $stderr,
+        writer: nil)
         @plan = plan
         @journal = journal
         @git = git
@@ -63,6 +65,7 @@ module Workspace
         @event_log = event_log
         @project_catalog_factory = project_catalog_factory
         @error_output = error_output
+        @writer = writer || TmuxinatorConfigWriter.new(config: config)
       end
 
       # @param workspace [String] the workspace's full name, settled by the caller; once the config has
@@ -246,7 +249,7 @@ module Workspace
           project_catalog_factory: @project_catalog_factory, old: plan.workspace, new: plan.new_workspace,
           session: plan.session, new_session: plan.new_session, root: plan.new_path, branch: plan.branch, new_branch: plan.new_branch,
           display: banner(plan.project, plan.path), new_display: banner(plan.project, plan.new_path),
-          retry_hint: "run `#{rerun(plan)}` again").call
+          retry_hint: "run `#{rerun(plan)}` again", writer: @writer).call
         progress[:renamed].concat(outcome.renamed.map { |entry| entry["what"] })
         raise StepFailed.new(outcome.warnings.join("; "), steps: outcome.failed) unless outcome.failed.empty?
         progress[:warnings].concat(outcome.warnings.map { |line| {"code" => "store_warning", "message" => line} })
