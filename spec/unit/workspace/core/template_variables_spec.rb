@@ -25,7 +25,7 @@ RSpec.describe Workspace::TemplateVariables do
   end
 
   it "renders every value row from its input, and leaves a placeholder with no row unfilled" do
-    pc = Workspace::ProjectConfig.allocate.tap { |c| c.instance_variable_set(:@output, StringIO.new) }
+    pc = Workspace::ProjectConfig.new(config: instance_double(Workspace::Config), git: instance_double(Workspace::Git), output: StringIO.new)
     value_rows = described_class::ROWS.select { |r| r.fill == :value }
     inputs = value_rows.to_h { |r| [r.input, "<#{r.name}>"] }
     template = value_rows.map { |r| "{{#{r.name}}}" }.join("\n") + "\n{{NO_SUCH_ROW}}\n"

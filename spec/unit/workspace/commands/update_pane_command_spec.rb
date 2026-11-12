@@ -18,7 +18,17 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
     allow(pc).to receive(:agent_pane_text) { |content, _name| content[/- (claude.*)$/, 1] }
     pc
   end
-  let(:writer) { Workspace::TmuxinatorConfigWriter.new(config: config) }
+  let(:before_patch) { [] }
+  let(:writer_class) do
+    hooks = before_patch
+    Class.new(Workspace::TmuxinatorConfigWriter) do
+      define_method(:patch) do |*args, **kwargs, &block|
+        hooks.each(&:call)
+        super(*args, **kwargs, &block)
+      end
+    end
+  end
+  let(:writer) { writer_class.new(config: config) }
   let(:output) { StringIO.new }
   let(:input) { StringIO.new }
 
@@ -74,10 +84,7 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
     end
 
     it "edits the text the writer reads when the file changed after the caller's read" do
-      allow(writer).to receive(:patch).and_wrap_original do |original, *args, **kwargs, &block|
-        File.write(config_path, base_config.sub("echo 'Ready'", "echo 'Changed'"))
-        original.call(*args, **kwargs, &block)
-      end
+      before_patch << -> { File.write(config_path, base_config.sub("echo 'Ready'", "echo 'Changed'")) }
 
       command.call(project: "myproject", command: "claude --model opus", pane_index: 2)
 

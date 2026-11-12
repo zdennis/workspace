@@ -69,8 +69,8 @@ RSpec.describe Workspace::TmuxinatorConfigWriter do
 
     context "when the sidecar write fails after the config is written" do
       before do
-        allow(Workspace::AtomicFile).to receive(:write).and_call_original
-        allow(Workspace::AtomicFile).to receive(:write).with(File.join(render_dir, "myapp.json"), anything).and_raise(Errno::ENOSPC)
+        allow(File).to receive(:rename).and_call_original
+        allow(File).to receive(:rename).with(a_string_starting_with("#{File.join(render_dir, "myapp.json")}."), File.join(render_dir, "myapp.json")).and_raise(Errno::ENOSPC)
       end
 
       it "leaves the new config with no record" do

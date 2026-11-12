@@ -303,7 +303,18 @@ RSpec.describe Workspace::WorkspaceStoreRename do
     end
 
     describe "the render record" do
-      let(:writer) { Workspace::TmuxinatorConfigWriter.new(config: config) }
+      let(:carry_failures) { [] }
+      let(:writer_class) do
+        failures = carry_failures
+        Class.new(Workspace::TmuxinatorConfigWriter) do
+          define_method(:carry_record) do |*args, **options, &block|
+            error = failures.shift
+            raise error if error
+            super(*args, **options, &block)
+          end
+        end
+      end
+      let(:writer) { writer_class.new(config: config) }
       let(:renamed) { "proj.worktree-other" }
 
       def store_worktree
@@ -339,12 +350,7 @@ RSpec.describe Workspace::WorkspaceStoreRename do
       end
 
       it "finishes on retry a record moved but not rewritten, the config still under the old name" do
-        calls = 0
-        allow(writer).to receive(:carry_record).and_wrap_original do |original, *args, **options, &block|
-          calls += 1
-          raise Errno::ENOSPC if calls == 1
-          original.call(*args, **options, &block)
-        end
+        carry_failures << Errno::ENOSPC
 
         outcome = store_worktree.call
 
