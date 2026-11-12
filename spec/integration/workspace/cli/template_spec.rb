@@ -184,6 +184,71 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "template apply" do
+    let(:status_scope) { instance_double(Workspace::StatusScope) }
+    let(:catalog) { instance_double(Workspace::ProjectCatalog) }
+    let(:applier) { instance_double(Workspace::TemplateApply) }
+    let(:built) do
+      selection = Workspace::TemplateSelection.new(status_scope: status_scope, catalog: catalog, project_config: project_config)
+      build_test_cli(template_command: Workspace::Commands::Template.new(library: library, project_config: project_config, writer: writer,
+        template_validator: validator, differ: ->(*, **) { "" }, selection: selection, apply: applier, output: output, error_output: error_output),
+        project_detector: detector, output: output, error_output: error_output, working_dir: File.join(@dir, "src"))
+    end
+
+    def answer(*outcomes, rolled_back: false)
+      rows = outcomes.each_with_index.map { |outcome, i| {"workspace" => "w#{i}", "outcome" => outcome, "reason" => nil, "message" => nil} }
+      Workspace::TemplateApply::Result.new(rows: rows, backup: "20261112T100000000000Z-aaaaaa", rolled_back: rolled_back, warnings: [])
+    end
+
+    before { allow(project_config).to receive(:exists?) { |name| %w[app api].include?(name) } }
+
+    it "prints the action document with the batch id, exit 0 when every row is fine" do
+      allow(applier).to receive(:call).and_return(answer("applied", "skipped"))
+
+      cli.run(["template", "apply", "app", "api", "--json"])
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("action" => "template apply", "status" => "ok", "backup" => "20261112T100000000000Z-aaaaaa", "rolled_back" => false,
+        "summary" => {"applied" => 1, "skipped" => 1})
+      expect(applier).to have_received(:call).with(%w[app api], dry_run: false, diff: false, force: false, rollback: false)
+    end
+
+    it "exits 3 with status partial when some rows failed, and 1 when all did or the batch was rolled back" do
+      allow(applier).to receive(:call).and_return(answer("failed", "applied"))
+      expect(exit_status { cli.run(["template", "apply", "app", "api", "--json"]) }).to eq(3)
+      expect(JSON.parse(output.string)).to include("status" => "partial")
+
+      output.truncate(0)
+      output.rewind
+      allow(applier).to receive(:call).and_return(answer("rolled_back", "failed", rolled_back: true))
+      expect(exit_status { cli.run(["template", "apply", "app", "api", "--rollback-all-on-error", "--json"]) }).to eq(1)
+      expect(JSON.parse(output.string)).to include("status" => "failed", "rolled_back" => true)
+
+      allow(applier).to receive(:call).and_return(answer("failed"))
+      expect(exit_status { cli.run(["template", "apply", "app"]) }).to eq(1)
+    end
+
+    it "is a dry_run document under --dry-run" do
+      allow(applier).to receive(:call).and_return(answer("applied"))
+
+      cli.run(["template", "apply", "app", "--dry-run", "--json"])
+
+      expect(JSON.parse(output.string)).to include("status" => "dry_run")
+    end
+
+    it "answers an unknown name with unknown_workspace before anything is applied" do
+      expect(exit_status { cli.run(["template", "apply", "nope", "--json"]) }).to eq(1)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_workspace")
+    end
+
+    it "shows its help page" do
+      cli.run(["template", "apply", "--help"])
+
+      expect(output.string).to include("Usage: workspace template apply [WORKSPACE...]", "--rollback-all-on-error")
+    end
+  end
+
   describe "template validate and diff" do
     before { allow(project_config).to receive(:agent_pane_in_template?).and_return(false) }
 

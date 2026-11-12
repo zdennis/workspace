@@ -16,11 +16,14 @@ module Workspace
       # @param event_log [Workspace::EventLog, nil] records `worktree_finished` (outcome `pruned`) for each removed project
       # @param tmux [Workspace::Tmux, nil] reads a project's session name before its config is removed; nil uses the config name
       # @param pull_requests [#usable?, #status_for] answers whether `gh` is authenticated and the `{number:, url:, state:}` (or nil) of a branch's pull request
+      # @param locks [Workspace::NameMigration, nil] the config is deleted inside the workspace's startup lock
+      #   ({NameMigration#hold_if_possible}), so `template apply` never writes it back; nil deletes without it
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, pull_requests: GhPullRequests.new(git: git), output: $stdout, input: $stdin)
+      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, pull_requests: GhPullRequests.new(git: git), locks: nil, output: $stdout, input: $stdin)
         @pull_requests = pull_requests
         @tmux = tmux
+        @locks = locks
         @state = state
         @project_config = project_config
         @project_settings = project_settings
@@ -132,6 +135,12 @@ module Workspace
       end
 
       private
+
+      # Deletes the config and render record inside the workspace's startup lock when one was given.
+      def remove_config(name, **options)
+        return @project_config.remove(name, **options) unless @locks
+        @locks.hold_if_possible(name) { @project_config.remove(name, **options) }
+      end
 
       # @param candidates [Array<Hash>]
       # @param names [Array<String>]
@@ -310,7 +319,7 @@ module Workspace
 
         session_name = @tmux&.session_name_for(project)
         socket = @tmux&.socket_arguments(project)
-        @project_config.remove(project)
+        remove_config(project)
         @project_settings.remove(project)
         # EventLog#record never raises.
         @event_log&.record(type: "worktree_finished", project: project, data: {"workspace" => project, "outcome" => "pruned"})

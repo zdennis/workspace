@@ -36,6 +36,17 @@ module Workspace
       end
     end
 
+    # A {Row} with what it was worked out from.
+    #
+    # @!attribute row [Row]
+    # @!attribute record [TmuxinatorConfigWriter::Record, nil] the render record read
+    # @!attribute text [String, nil] the config as read
+    # @!attribute rendered [String, nil] what a render writes today; nil when it can't be made
+    # @!attribute inputs [Hash, nil] the inputs it was rendered with ({.record_inputs})
+    # @!attribute template_sha [String, nil] sha256 of the selected set's text
+    # @!attribute error [Workspace::Error, nil] what stopped the render
+    Assessment = Data.define(:row, :record, :text, :rendered, :inputs, :template_sha, :error)
+
     # The inputs a record is rendered with today: its own, with the agent command worked out from the
     # current agent settings (the recorded one is the pane text written then). Left out when the renderer
     # would refuse it, so rendering reports why.
@@ -69,14 +80,24 @@ module Workspace
     # @param name [String] a workspace
     # @return [Row]
     def row(name)
+      assess(name).row
+    end
+
+    # {#row} with what it was worked out from, for a caller that writes the render: `template apply`.
+    #
+    # @param name [String] a workspace
+    # @return [Assessment]
+    def assess(name)
       record = @writer.record(name)
       text = read_config(name)
       if record.nil? || text.nil?
-        return Row.new(workspace: name, state: "untracked", kind: record&.kind&.to_s, template: record&.template, selected: nil, stale: false, reasons: [])
+        row = Row.new(workspace: name, state: "untracked", kind: record&.kind&.to_s, template: record&.template, selected: nil, stale: false, reasons: [])
+        return Assessment.new(row: row, record: record, text: text, rendered: nil, inputs: nil, template_sha: nil, error: nil)
       end
 
-      selected, rendered, reasons = render_today(name, record)
-      state = if rendered && text == rendered && !reasons.include?("template_switched")
+      today = render_today(name, record)
+      reasons = today[:reasons]
+      state = if today[:rendered] && text == today[:rendered] && !reasons.include?("template_switched")
         "current"
       elsif sha(text) != record.rendered_sha
         "modified"
@@ -84,7 +105,8 @@ module Workspace
         "stale"
       end
       reasons = [] if state == "current"
-      Row.new(workspace: name, state: state, kind: record.kind.to_s, template: record.template, selected: selected, stale: !reasons.empty?, reasons: reasons)
+      row = Row.new(workspace: name, state: state, kind: record.kind.to_s, template: record.template, selected: today[:selected], stale: !reasons.empty?, reasons: reasons)
+      Assessment.new(row: row, record: record, text: text, rendered: today[:rendered], inputs: today[:inputs], template_sha: today[:template_sha], error: today[:error])
     end
 
     # Whether a render today, with the workspace's record, writes exactly +text+: what a patch must satisfy
@@ -97,7 +119,7 @@ module Workspace
       record = @writer.record(name)
       return false unless record
 
-      _selected, rendered, = render_today(name, record)
+      rendered = render_today(name, record)[:rendered]
       !rendered.nil? && rendered == text
     end
 
@@ -113,23 +135,26 @@ module Workspace
       Digest::SHA256.hexdigest(text)
     end
 
-    # The selected set's name, what a render writes today (nil when it can't be made) and the labels for why
-    # a render differs from the last one.
+    # The selected set's name and text sha, the inputs and what a render writes today with them (nil when it
+    # can't be made, with the error that stopped it) and the labels for why a render differs from the last one.
     def render_today(name, record)
       chosen, template_text = selected_template(name, record)
-      return [nil, nil, ["template_unavailable"]] unless chosen
+      return {selected: nil, rendered: nil, reasons: ["template_unavailable"]} unless chosen
 
       reasons = []
       reasons << "template_switched" if chosen["name"] != record.template
       reasons << "template_changed" if sha(template_text) != record.template_sha
+      inputs = self.class.record_inputs(record, @project_config)
+      error = nil
       rendered = begin
-        @project_config.render(record.kind, self.class.record_inputs(record, @project_config), template_text)
-      rescue Error
+        @project_config.render(record.kind, inputs, template_text)
+      rescue Error => e
+        error = e
         reasons << "render_failed"
         nil
       end
       reasons << "agent_changed" if rendered && !reasons.include?("template_changed") && sha(rendered) != record.rendered_sha
-      [chosen["name"], rendered, reasons]
+      {selected: chosen["name"], template_sha: sha(template_text), inputs: inputs, rendered: rendered, reasons: reasons, error: error}
     end
 
     # The set a render would use and its text; nil when it can't be resolved or read.

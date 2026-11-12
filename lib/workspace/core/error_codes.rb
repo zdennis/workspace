@@ -52,6 +52,13 @@ module Workspace
       "unknown_template" => "spine init was given a template name no spine library entry has, or tmuxinator.template/tmuxinator.worktree_template names no template library set. details.template, details.kind (spine or tmuxinator), details.scopes, details.source.",
       "backup_not_found" => "No tmuxinator backup batch has that id (template backups list shows them). details.id.",
       "backup_symlink" => "A tmuxinator config or its render record is a symbolic link, which a backup batch cannot restore as a link, so it was not copied. details.path.",
+      "workspace_locked" => "template apply could not open or take a workspace's startup lock (or build its path), so that workspace was not re-rendered (the reason of its failed row); the others went on.",
+      "template_modified" => "template apply skipped a tmuxinator config edited since it was rendered (the code of its skipped row); --force overwrites it after a backup.",
+      # `template apply` warnings (`warnings[].code`); never an error envelope's code.
+      "rollback_left_file" => "template apply warning: --rollback-all-on-error left a config or render record that changed after apply wrote it. workspace, kind (config or record), path.",
+      "rollback_failed" => "template apply warning: --rollback-all-on-error could not put a workspace's files back (its lock or a copy could not be read or written). workspace.",
+      "rollback_unreadable" => "template apply warning: --rollback-all-on-error could not read the batch's manifest, so nothing was put back.",
+      "prune_failed" => "template apply warning: old tmuxinator backup batches could not be pruned; the new batch is kept.",
       "no_plan" => "The workspace has no IMPLEMENTATION_PLAN.md in its notes directory. `go --here TEXT` found a run going whose plan step has not written it (details.run_id, details.step).",
       "plan_exists" => "plan init would replace a plan that is already there; pass --force.",
       "plan_done" => "plan start or pause was run on a plan that is done (status: done, or nothing left to do), or `go --here TEXT` found a plan marked done under a run still going (details.run_id, details.step).",

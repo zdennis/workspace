@@ -30,6 +30,17 @@ RSpec.describe Workspace::Commands::Remove do
 
   after { FileUtils.remove_entry(tmpdir) }
 
+  it "deletes the config inside the workspace's startup lock, so template apply never writes it back" do
+    locks = RecordingStartupLocks.new
+    held_at_remove = nil
+    allow(project_config).to receive(:remove) { |_name, **| held_at_remove = locks.held }
+
+    described_class.new(project_config: project_config, project_settings: project_settings, state: state,
+      tmux: tmux, git: git, file_backup: file_backup, locks: locks, output: output, input: input).call("app", yes: true)
+
+    expect(held_at_remove).to eq("app")
+  end
+
   it "removes the config, settings and state entry after backing the files up" do
     row = command.call("app", yes: true)
 

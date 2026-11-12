@@ -195,6 +195,12 @@ RSpec.describe "fake contracts" do
     end
   end
 
+  describe RecordingStartupLocks do
+    it "accepts every call Workspace::NameMigration accepts" do
+      expect(FakeContract.problems(described_class, Workspace::NameMigration, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
   describe RecordingRestartRegistry do
     it "accepts every call Workspace::RestartRegistry accepts" do
       expect(FakeContract.problems(described_class, Workspace::RestartRegistry, control: described_class::CONTROL_METHODS)).to be_empty

@@ -11,15 +11,18 @@ module Workspace
       # @param tmux [Workspace::Tmux] says whether the project's session is up
       # @param git [Workspace::Git] says whether the project's root is a linked worktree
       # @param file_backup [Workspace::FileBackup] copies each file aside before it is deleted
+      # @param locks [Workspace::NameMigration, nil] the config is deleted inside the workspace's startup lock
+      #   ({NameMigration#hold_if_possible}), so `template apply` never writes it back; nil deletes without it
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for the confirmation prompt
-      def initialize(project_config:, project_settings:, state:, tmux:, git:, file_backup:, output: $stdout, input: $stdin)
+      def initialize(project_config:, project_settings:, state:, tmux:, git:, file_backup:, locks: nil, output: $stdout, input: $stdin)
         @project_config = project_config
         @project_settings = project_settings
         @state = state
         @tmux = tmux
         @git = git
         @file_backup = file_backup
+        @locks = locks
         @output = output
         @input = input
       end
@@ -68,7 +71,7 @@ module Workspace
             raise Workspace::Error, "Could not back up #{path}; nothing was removed." unless backup
             backups << backup
           end
-          @project_config.remove(name, quiet: true)
+          remove_config(name, quiet: true)
           @project_settings.remove(name)
           if in_state
             @state.delete(name)
@@ -83,6 +86,12 @@ module Workspace
       end
 
       private
+
+      # Deletes the config and render record inside the workspace's startup lock when one was given.
+      def remove_config(name, **options)
+        return @project_config.remove(name, **options) unless @locks
+        @locks.hold_if_possible(name) { @project_config.remove(name, **options) }
+      end
 
       # Checks the name as given and in lowercase, as a mixed-case workspace is
       # renamed to lowercase by NameMigration and its session may carry either.

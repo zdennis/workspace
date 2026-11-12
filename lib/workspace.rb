@@ -197,6 +197,7 @@ require_relative "workspace/main_agent"
 require_relative "workspace/instruction_composer"
 require_relative "workspace/tmuxinator_config_writer"
 require_relative "workspace/tmuxinator_backup_store"
+require_relative "workspace/tmuxinator_backup_config"
 require_relative "workspace/project_config"
 require_relative "workspace/protected_branch"
 require_relative "workspace/osascript_runner"
@@ -229,6 +230,7 @@ require_relative "workspace/project_catalog"
 require_relative "workspace/status_scope"
 require_relative "workspace/template_selection"
 require_relative "workspace/template_status"
+require_relative "workspace/template_apply"
 require_relative "workspace/project_groups"
 require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/agent_message_client"
@@ -877,8 +879,8 @@ module Workspace
       agent_commands: agent_commands, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
-    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), output: output, input: input)
-    remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, output: output, input: input)
+    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), locks: name_migration, output: output, input: input)
+    remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, locks: name_migration, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
     template_status = TemplateStatus.new(library: library, project_config: project_config, writer: tmuxinator_config_writer)
@@ -1067,7 +1069,7 @@ module Workspace
     )
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
       log_path: ->(workspace) { config.agent_log_path(workspace) }, logger: logger, error_output: error_output)
-    kill_command = Commands::Kill.new(git: git, pr_status: PullRequestStatus.new, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, tmux: tmux, output: output, input: input)
+    kill_command = Commands::Kill.new(git: git, pr_status: PullRequestStatus.new, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, tmux: tmux, locks: name_migration, output: output, input: input)
     pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
     rebase_command = Commands::Rebase.new(git: git, checkout: workspace_checkout, output: output)
     push_command = Commands::Push.new(git: git, checkout: workspace_checkout, pr_status: PullRequestStatus.new, output: output)
@@ -1290,6 +1292,10 @@ module Workspace
       template_validator: template_validator, differ: TextDiff.new, config_command: config_command,
       selection: TemplateSelection.new(status_scope: status_scope, catalog: project_catalog, project_config: project_config),
       status: template_status,
+      apply: TemplateApply.new(status: template_status, writer: tmuxinator_config_writer,
+        backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer), locks: name_migration,
+        project_config: project_config, tmux: tmux, differ: TextDiff.new,
+        retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output)),
       output: output, error_output: error_output)
     template_family = CLI::Template.new(template_command: template_command, common: common, names: names, working_dir: working_dir)
     plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,

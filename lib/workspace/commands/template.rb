@@ -7,8 +7,8 @@ module Workspace
     # rendered from, which of them each kind selects, and where their files are. A set is a
     # `template` library entry (a directory holding `project.yml` and `worktree.yml`); the choice
     # is the `tmuxinator.template` and `tmuxinator.worktree_template` keys, resolved by
-    # {Workspace::Library#tmuxinator_template}. `list`, `show`, `path`, `variables`, `render`, `validate` and `diff`
-    # read; `new`, `edit` and `use` change a set or the key that selects one.
+    # {Workspace::Library#tmuxinator_template}. `list`, `show`, `path`, `variables`, `render`, `validate`, `diff` and `status`
+    # read; `new`, `edit` and `use` change a set or the key that selects one, and `apply` re-renders configs.
     class Template
       # Bumped whenever a `--json` payload's shape changes in a backward-incompatible way.
       JSON_SCHEMA_VERSION = 1
@@ -27,12 +27,14 @@ module Workspace
       # @param config_command [Workspace::Commands::Config, nil] `use` sets the key through it; nil refuses `use`
       # @param selection [Workspace::TemplateSelection, nil] settles which workspaces `status` reports on; nil refuses `status`
       # @param status [Workspace::TemplateStatus, nil] classifies each one; nil refuses `status`
+      # @param apply [Workspace::TemplateApply, nil] re-renders the selected configs; nil refuses `apply`
       # @param output [IO] output stream
       # @param error_output [IO] where `render`'s problems go in text mode
-      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, selection: nil, status: nil, output: $stdout, error_output: $stderr)
+      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, selection: nil, status: nil, apply: nil, output: $stdout, error_output: $stderr)
         @config_command = config_command
         @selection = selection
         @status = status
+        @apply = apply
         @library = library
         @project_config = project_config
         @writer = writer
@@ -229,6 +231,38 @@ module Workspace
         end
       end
 
+      # Re-renders each selected workspace's tmuxinator config from its render record (see {TemplateApply}) and
+      # answers what `CLI::Common#run_action` reports; in text mode each row is also printed.
+      #
+      # @param names [Array<String>] see {#status}
+      # @param all [Boolean] see {#status}
+      # @param project [nil, true, String] see {#status}
+      # @param cwd [String] see {#status}
+      # @param dry_run [Boolean] decide every row and write nothing
+      # @param diff [Boolean] show what each config would change by
+      # @param force [Boolean] overwrite configs edited since they were rendered
+      # @param rollback [Boolean] put back the whole batch on the first failed row
+      # @param json [Boolean] print nothing; the caller prints the action document
+      # @return [Hash] `results`, `status`, `exit_code`, `warnings` and `extra` (`backup`, `rolled_back`, and `skipped`: the skipped rows counted by reason)
+      # @raise [Workspace::UsageError] for names mixed with `--all` or `--project`
+      # @raise [Workspace::Error] `unknown_workspace`, `not_in_workspace`, or a backup batch that can't be made
+      def apply(names: [], all: false, project: nil, cwd: Dir.pwd, dry_run: false, diff: false, force: false, rollback: false, json: false)
+        raise Error, "template apply is not available: no selection was wired" unless @selection && @apply
+
+        selected = @selection.call(names: names, all: all, project: project, working_dir: cwd)
+        result = @apply.call(selected, dry_run: dry_run, diff: diff, force: force, rollback: rollback)
+        status = if result.rolled_back then "failed"
+        elsif result.rows.any? { |row| row["outcome"] == "failed" } then JsonEnvelope.action_status(result.rows)
+        elsif dry_run then "dry_run"
+        else
+          "ok"
+        end
+        print_apply(result, dry_run) unless json
+        {results: result.rows, status: status, exit_code: JsonEnvelope::ACTION_EXIT_CODES.fetch(status), warnings: result.warnings,
+         extra: {"backup" => result.backup, "rolled_back" => result.rolled_back,
+                 "skipped" => result.rows.select { |row| row["outcome"] == "skipped" }.map { |row| row["reason"] }.tally}}
+      end
+
       # Prints a unified diff of each file of a tmuxinator template set against the same file of another set.
       #
       # @param set [String, nil] the set to compare; nil is the set each kind selects
@@ -383,6 +417,20 @@ module Workspace
         table.unshift(%w[WORKSPACE STATE TEMPLATE NOTE])
         widths = (0..2).map { |i| table.map { |r| r[i].length }.max }
         table.each { |r| @output.puts(r.each_with_index.map { |c, i| (i < 3) ? c.ljust(widths[i]) : c }.join("  ").rstrip) }
+      end
+
+      def print_apply(result, dry_run)
+        @output.puts "No workspaces to apply to." if result.rows.empty?
+        result.rows.each do |row|
+          line = "#{TerminalText.escape(row["workspace"])}: #{row["outcome"].tr("_", " ")}"
+          line += ": #{row["reason"]}" if row["reason"]
+          line += " (#{TerminalText.escape(row["message"])})" if row["message"]
+          @output.puts line
+          write_text(row["diff"]) if row["diff"] && !row["diff"].empty?
+        end
+        result.warnings.each { |warning| @error_output.puts "Warning: #{TerminalText.escape(warning["message"])}" }
+        @output.puts "Backup: #{result.backup}" if result.backup
+        @output.puts "Dry run: nothing was written." if dry_run
       end
 
       def variable_row(row, inputs, workspace)

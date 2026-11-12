@@ -26,10 +26,12 @@ RSpec.describe Workspace::Commands::Kill do
       notes: notes,
       dev: dev,
       pr_status: pr_status,
+      locks: locks,
       output: output,
       input: input
     )
   end
+  let(:locks) { nil }
 
   after { FileUtils.remove_entry(tmpdir) }
 
@@ -763,6 +765,22 @@ RSpec.describe Workspace::Commands::Kill do
 
           expect(window_positions.read("myproject.worktree-PROJ-123")).to be_nil
           expect(stop_command).to have_received(:call).with(anything, hash_including(save_position: false))
+        end
+
+        context "with the startup locks" do
+          let(:locks) { RecordingStartupLocks.new }
+
+          it "deletes the config inside the workspace's startup lock, so template apply never writes it back" do
+            held_at_remove = nil
+            allow(git).to receive(:remove_worktree)
+            allow(stop_command).to receive(:call).and_return([])
+            allow(project_config).to receive(:remove) { |_name, **| held_at_remove = locks.held }
+            allow(project_settings).to receive(:remove)
+
+            command.call("myproject.worktree-PROJ-123", force: true)
+
+            expect(held_at_remove).to eq("myproject.worktree-PROJ-123")
+          end
         end
 
         it "removes worktree before killing session" do

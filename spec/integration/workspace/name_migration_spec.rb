@@ -344,4 +344,34 @@ RSpec.describe Workspace::NameMigration, "#with_locks" do
   it "passes on an error from the block as it is" do
     expect { migration.with_locks("a") { raise Errno::EACCES, "step" } }.to raise_error(Errno::EACCES)
   end
+  describe "#hold_if_possible" do
+    it "holds the lock around the block" do
+      expect(migration.hold_if_possible("a") { free?(paths["a"]) }).to be(false)
+      expect(free?(paths["a"])).to be(true)
+    end
+
+    it "runs the block without the lock when the lock path is a directory" do
+      FileUtils.mkdir_p(paths["a"])
+
+      expect(migration.hold_if_possible("a") { :ran }).to eq(:ran)
+    end
+
+    it "runs the block without the lock when the lock path can't be built" do
+      allow(config).to receive(:agent_lock_path).and_raise(Workspace::Error, "socket directory too deep")
+
+      expect(migration.hold_if_possible("a") { :ran }).to eq(:ran)
+    end
+
+    it "passes on an error from the block and never runs it twice" do
+      runs = 0
+
+      expect {
+        migration.hold_if_possible("a") {
+          runs += 1
+          raise Workspace::Error, "step"
+        }
+      }.to raise_error(Workspace::Error, "step")
+      expect(runs).to eq(1)
+    end
+  end
 end

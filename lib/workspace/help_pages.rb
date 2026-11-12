@@ -1641,9 +1641,12 @@ module Workspace
     TEMPLATE_AGAINST_TEXT = "diff: the tmuxinator template to compare with (default: default)"
     TEMPLATE_FILE_TEXT = "validate and render: use this tmuxinator template file, saved or not, instead of a set"
     TEMPLATE_SAMPLE_TEXT = "render: fill with each placeholder's sample value instead of a workspace's"
-    TEMPLATE_ALL_TEXT = "status: every workspace that has a tmuxinator config"
-    TEMPLATE_PROJECT_TEXT = "status: every workspace of a project (NAME, or the project of the current workspace)"
-    TEMPLATE_DIFF_TEXT = "render: print a unified diff against the workspace's current config instead of the text"
+    TEMPLATE_ALL_TEXT = "status and apply: every workspace that has a tmuxinator config"
+    TEMPLATE_PROJECT_TEXT = "status and apply: every workspace of a project (NAME, or the project of the current workspace)"
+    TEMPLATE_DIFF_TEXT = "render: print a unified diff against the workspace's current config instead of the text; apply: also show what each config would change by"
+    TEMPLATE_DRY_RUN_TEXT = "apply: say what would happen to each config, writing nothing and taking no backup"
+    TEMPLATE_FORCE_TEXT = "apply: also overwrite configs edited since they were rendered (after a backup)"
+    TEMPLATE_ROLLBACK_TEXT = "apply: on the first workspace that fails, put back every config the batch wrote and stop"
 
     # What each flag means on one verb's page, so a page lists only what its verb does with it.
     TEMPLATE_PAGE_TEXT = {
@@ -1664,7 +1667,11 @@ module Workspace
       all: "Every workspace that has a tmuxinator config",
       project: "Every workspace of a project (NAME, or the project of the current workspace)",
       sample: "Fill with each placeholder's sample value instead of a workspace's",
-      diff: "Print a unified diff against the workspace's current config instead of the text"
+      diff: "Print a unified diff against the workspace's current config instead of the text",
+      apply_diff: "Also print a unified diff of what each config would change by",
+      dry_run: "Say what would happen to each config (would apply, unchanged, skipped), writing nothing and taking no backup",
+      force: "Also overwrite configs edited since they were rendered (a backup is taken first); a config with no render record is still skipped",
+      rollback: "On the first workspace that fails, put back every config and render record the batch wrote, and stop"
     }.freeze
 
     TEMPLATE = {
@@ -1706,6 +1713,30 @@ module Workspace
           ["workspace template status --project api", "every workspace of the project api"],
           ["workspace template status api api.worktree-login", "just those two"],
           ["workspace template status --all --json", "for a script: each workspace's state, its template and why it is stale"]
+        ]
+      },
+      "apply" => {
+        usage: ["template apply [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--json]"],
+        summary: "Re-render tmuxinator configs from the tmuxinator template each one selects today",
+        about: [
+          "Renders each workspace's tmuxinator config again from its render record, with the tmuxinator template it",
+          "selects now and the current agent settings, and writes it when that changes it. Every config and render",
+          "record is copied into one backup batch before it is written (`Backup:` names it). A config edited since it",
+          "was rendered is skipped (skipped: modified) unless --force; one with no render record is skipped",
+          "(skipped: untracked) even with --force. A running session keeps its old layout until it is relaunched.",
+          "Each workspace waits for its startup lock; one renamed or removed meanwhile is skipped: gone. A workspace",
+          "that fails does not stop the others: exit 3 when some failed, 1 when all did. Name the workspaces, or give",
+          "--all or --project; with none of them, the workspace of the current directory."
+        ],
+        options: [["--all", TEMPLATE_PAGE_TEXT[:all]], ["--project [NAME]", TEMPLATE_PAGE_TEXT[:project]],
+          ["--dry-run", TEMPLATE_PAGE_TEXT[:dry_run]], ["--diff", TEMPLATE_PAGE_TEXT[:apply_diff]],
+          ["--force", TEMPLATE_PAGE_TEXT[:force]], ["--rollback-all-on-error", TEMPLATE_PAGE_TEXT[:rollback]], JSON_OPT],
+        examples: [
+          ["workspace template apply --all --dry-run --diff", "what re-rendering every tmuxinator config would change, writing nothing"],
+          ["workspace template apply --all", "re-render every tmuxinator config that is stale, keeping hand-edited ones"],
+          ["workspace template apply api --force", "re-render api's config even though it was edited by hand"],
+          ["workspace template apply --project api --rollback-all-on-error", "all of the project api, or none if one fails"],
+          ["workspace template apply --all --json", "for a script: one row per workspace with its outcome"]
         ]
       },
       "show" => {

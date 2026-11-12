@@ -4,6 +4,8 @@ Tmuxinator templates and the placeholders they may hold. The full guide comes la
 
 `workspace template variables [--kind K] [--name WS]` prints it (with each placeholder's value in a workspace's config under `--name`). `workspace template render [NAME | --file F] [--kind K] [--name WS | --sample] [--diff]` fills a tmuxinator template without writing anything: from a workspace's render record and current agent settings, or from the sample values below; `--file` tries one you have not saved, `--diff` shows what would change in the workspace's config. Problems with the file go to stderr, and the exit status is 1 when one is an error.
 
+`workspace template apply [WS...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error]` renders existing configs again from their render records with the tmuxinator template each selects today and the current agent settings. Every config it writes is copied first into one backup batch under `~/.local/state/workspace/backups/tmuxinator/` (the `Backup:` line names it). `--dry-run` writes nothing and says `would apply` for each config it would rewrite. A config edited since it was rendered is skipped unless `--force`; one with no render record is always skipped. Skipping is not a failure: the exit status stays 0. When another tmuxinator template renders exactly the same text, only the render record is rewritten (`render record only`). Each workspace waits for its startup lock, and one renamed or removed meanwhile is skipped. `--rollback-all-on-error` puts back everything the batch wrote at the first workspace that fails. A running session keeps its old layout until you relaunch it. Exit 3 when some workspaces failed, 1 when all did.
+
 ## Placeholders
 
 <!-- BEGIN GENERATED: placeholders -->

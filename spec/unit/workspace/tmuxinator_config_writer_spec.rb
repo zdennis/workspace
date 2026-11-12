@@ -105,6 +105,19 @@ RSpec.describe Workspace::TmuxinatorConfigWriter do
     end
   end
 
+  describe "#write_record_for" do
+    it "rewrites only the sidecar, leaving the config's bytes and mtime alone" do
+      write
+      File.utime(Time.at(1_000_000), Time.at(1_000_000), path)
+
+      writer.write_record_for("myapp", "name: myapp\n", kind: :project, template: "team", template_sha: "def", inputs: inputs)
+
+      expect(File.read(path)).to eq("name: myapp\n")
+      expect(File.mtime(path)).to eq(Time.at(1_000_000))
+      expect(sidecar).to include("template" => "team", "template_sha" => "def", "rendered_sha" => Digest::SHA256.hexdigest("name: myapp\n"))
+    end
+  end
+
   describe "#record" do
     it "reads the sidecar back with a Symbol kind and Symbol-keyed inputs, nil values kept" do
       write

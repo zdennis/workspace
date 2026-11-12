@@ -655,6 +655,87 @@ RSpec.describe Workspace::Commands::Template do
     end
   end
 
+  describe "#apply" do
+    let(:selection) { instance_double(Workspace::TemplateSelection, call: %w[app api]) }
+    let(:applier) { instance_double(Workspace::TemplateApply) }
+    let(:applying) do
+      described_class.new(library: library, project_config: project_config, writer: writer, template_validator: validator, differ: differ,
+        selection: selection, apply: applier, output: out, error_output: err)
+    end
+
+    def result(*rows, backup: nil, rolled_back: false, warnings: [])
+      Workspace::TemplateApply::Result.new(rows: rows, backup: backup, rolled_back: rolled_back, warnings: warnings)
+    end
+
+    def row(name, outcome, reason = nil, message = nil, diff: nil)
+      {"workspace" => name, "outcome" => outcome, "reason" => reason, "message" => message}.tap { |r| r["diff"] = diff if diff }
+    end
+
+    it "hands the selection and the flags to TemplateApply" do
+      allow(applier).to receive(:call).and_return(result)
+
+      applying.apply(names: ["app"], all: false, project: nil, cwd: "/src", dry_run: true, diff: true, force: true, rollback: true, json: true)
+
+      expect(selection).to have_received(:call).with(names: ["app"], all: false, project: nil, working_dir: "/src")
+      expect(applier).to have_received(:call).with(%w[app api], dry_run: true, diff: true, force: true, rollback: true)
+    end
+
+    it "is ok, partial or failed by the failed rows, dry_run under --dry-run, and failed after a roll back" do
+      cases = {
+        [result(row("app", "applied"), row("api", "skipped", "modified")), false] => ["ok", 0],
+        [result(row("app", "failed", "workspace_locked"), row("api", "applied")), false] => ["partial", 3],
+        [result(row("app", "failed", "error"), row("api", "failed", "error")), false] => ["failed", 1],
+        [result(row("app", "applied")), true] => ["dry_run", 0],
+        [result(row("app", "rolled_back"), row("api", "failed", "error"), rolled_back: true), false] => ["failed", 1]
+      }
+      cases.each do |(answer, dry_run), (status, code)|
+        allow(applier).to receive(:call).and_return(answer)
+        outcome = applying.apply(dry_run: dry_run, json: true)
+        expect([outcome[:status], outcome[:exit_code]]).to eq([status, code])
+      end
+    end
+
+    it "puts the batch id and the roll back in the document's extra keys, with the warnings" do
+      allow(applier).to receive(:call).and_return(result(row("app", "applied"), backup: "id-1", warnings: [{"code" => "prune_failed", "message" => "w"}]))
+
+      expect(applying.apply(json: true)).to include(results: [row("app", "applied")], warnings: [{"code" => "prune_failed", "message" => "w"}],
+        extra: {"backup" => "id-1", "rolled_back" => false, "skipped" => {}})
+      expect(out.string).to be_empty
+    end
+
+    it "prints a line per row, its diff, the warnings and the batch in text mode" do
+      allow(applier).to receive(:call).and_return(result(row("app", "applied", nil, "running: relaunch to take effect", diff: "-a\n+b\n"),
+        row("api", "skipped", "modified", "edited"), row("new", "unchanged"), backup: "id-1", warnings: [{"code" => "rollback_failed", "message" => "x: could not be put back"}]))
+
+      applying.apply
+
+      expect(out.string).to eq("app: applied (running: relaunch to take effect)\n-a\n+b\napi: skipped: modified (edited)\nnew: unchanged\nBackup: id-1\n")
+      expect(err.string).to eq("Warning: x: could not be put back\n")
+    end
+
+    it "prints would apply for a dry run's row, and counts the skipped rows by reason" do
+      allow(applier).to receive(:call).and_return(result(row("app", "would_apply"), row("api", "skipped", "modified"), row("x", "skipped", "untracked"), row("y", "skipped", "modified")))
+
+      outcome = applying.apply(dry_run: true)
+
+      expect(out.string.lines.first).to eq("app: would apply\n")
+      expect(outcome).to include(status: "dry_run", exit_code: 0)
+      expect(outcome[:extra]["skipped"]).to eq("modified" => 2, "untracked" => 1)
+    end
+
+    it "says a dry run wrote nothing, and when there was nothing to apply to" do
+      allow(applier).to receive(:call).and_return(result)
+
+      applying.apply(dry_run: true)
+
+      expect(out.string).to eq("No workspaces to apply to.\nDry run: nothing was written.\n")
+    end
+
+    it "is refused when no TemplateApply was wired" do
+      expect { command.apply }.to raise_error(Workspace::Error, /template apply is not available/)
+    end
+  end
+
   describe "#use" do
     let(:result) { Workspace::Commands::Config::Result.new(key: "tmuxinator.template", workspace: "app", layer: "project", path: "/cfg/app.yml") }
 

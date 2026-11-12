@@ -32,6 +32,21 @@ module Workspace
     # @raise [SystemCallError] when a write fails; the old file is left as it was
     def write(name, text, kind:, template:, template_sha:, inputs:)
       write_config(name, text)
+      write_record_for(name, text, kind: kind, template: template, template_sha: template_sha, inputs: inputs)
+    end
+
+    # Writes only the sidecar of a config that already holds +text+, leaving the config's bytes and mtime
+    # alone: `template apply` when another set renders the same text.
+    #
+    # @param name [String] the workspace name
+    # @param text [String] the config text the record describes
+    # @param kind [Symbol] see {#write}
+    # @param template [String] see {#write}
+    # @param template_sha [String] see {#write}
+    # @param inputs [Hash] see {#write}
+    # @return [void]
+    # @raise [SystemCallError] when the write fails; the sidecar is left as it was
+    def write_record_for(name, text, kind:, template:, template_sha:, inputs:)
       write_record(name, {
         "schema" => SCHEMA, "kind" => kind.to_s, "template" => template, "template_sha" => template_sha,
         "inputs" => inputs.transform_keys(&:to_s), "rendered_sha" => sha(text)

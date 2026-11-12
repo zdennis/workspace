@@ -6,7 +6,7 @@ RSpec.describe Workspace::CLI::Template do
   let(:out) { StringIO.new }
   let(:err) { StringIO.new }
   let(:detector) { RecordingProjectDetector.new("/src/app" => "app") }
-  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true, validate: true, diff: nil, status: nil, new: {}, edit: {"outcome" => "edited"}, use: {}) }
+  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true, validate: true, diff: nil, status: nil, apply: {results: [], exit_code: 0}, new: {}, edit: {"outcome" => "edited"}, use: {}) }
 
   def family(command = template_command)
     names = Workspace::CLI::Names.new(project_config: CLITestHelpers::FakeProjectConfig.new, project_detector: detector,
@@ -159,6 +159,37 @@ RSpec.describe Workspace::CLI::Template do
 
     it "still takes no names for list" do
       expect { run("list", "app") }.to raise_error(Workspace::UsageError, /Unexpected argument: app/)
+    end
+  end
+
+  describe "apply" do
+    it "hands the names and every flag to the command" do
+      run("apply", "app", "api", "--dry-run", "--diff", "--force", "--rollback-all-on-error")
+      run("apply", "--all")
+
+      expect(template_command).to have_received(:apply).with(names: %w[app api], all: false, project: nil, cwd: "/src/app",
+        dry_run: true, diff: true, force: true, rollback: true, json: false)
+      expect(template_command).to have_received(:apply).with(names: [], all: true, project: nil, cwd: "/src/app",
+        dry_run: false, diff: false, force: false, rollback: false, json: false)
+    end
+
+    it "prints the command's outcome as an action document under --json, exiting through its status" do
+      allow(template_command).to receive(:apply).and_return(results: [{"workspace" => "app", "outcome" => "failed"}, {"workspace" => "api", "outcome" => "applied"}],
+        status: "partial", exit_code: 3, warnings: [], extra: {"backup" => "id-1", "rolled_back" => false})
+
+      expect { run("apply", "--all", "--json") }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+      expect(JSON.parse(out.string)).to include("action" => "template apply", "status" => "partial", "backup" => "id-1", "rolled_back" => false)
+    end
+
+    it "exits with the command's code in text mode" do
+      allow(template_command).to receive(:apply).and_return(results: [], status: "failed", exit_code: 1)
+
+      expect { run("apply", "app") }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "refuses the flags only apply takes on other verbs, and apply's unused ones" do
+      expect { run("status", "--force") }.to raise_error(Workspace::UsageError, /--force does not apply to 'template status'/)
+      expect { run("apply", "--name", "app") }.to raise_error(Workspace::UsageError, /--name does not apply to 'template apply'/)
     end
   end
 

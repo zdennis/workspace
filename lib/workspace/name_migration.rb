@@ -112,6 +112,26 @@ module Workspace
       files.each(&:close)
     end
 
+    # {#with_locks} for one name, for a step that must not wait on a broken lock file: when the lock
+    # can't be opened or taken, or its path can't be built (a `Workspace::Error`), the block runs without it.
+    # An error from the block itself passes as it is, and the block never runs twice. `remove`, `kill` and
+    # `prune` delete a config this way, so `template apply`, which reads and writes a config inside the lock,
+    # never writes one back.
+    #
+    # @param name [String] a workspace name, in any case
+    # @yield with the lock held when it could be taken
+    # @return [Object] the block's value
+    def hold_if_possible(name)
+      ran = false
+      with_locks(name) do
+        ran = true
+        yield
+      end
+    rescue LockUnavailable, Workspace::Error
+      raise if ran
+      yield
+    end
+
     private
 
     # @return [Object, nil] the block's value; nil when the lock is taken elsewhere or the daemon answers

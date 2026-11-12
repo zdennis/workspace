@@ -77,6 +77,32 @@ RSpec.describe Workspace::TemplateStatus do
       "selected" => "team", "stale" => false, "reasons" => [])
   end
 
+  describe "#assess" do
+    it "gives the row with the record, the file, today's render, its inputs and the set's sha" do
+      allow(project_config).to receive(:render).and_return("new\n")
+
+      found = status.assess("app")
+
+      expect(found.row).to have_attributes(state: "stale", reasons: ["agent_changed"])
+      expect(found).to have_attributes(record: record, text: config_text, rendered: "new\n", template_sha: sha("tpl\n"), error: nil)
+      expect(found.inputs).to include(workspace_name: "app", agent_command: "claude")
+    end
+
+    it "keeps the error that stopped the render" do
+      allow(project_config).to receive(:render).and_raise(Workspace::Error.new("no value", code: "error"))
+
+      found = status.assess("app")
+
+      expect(found).to have_attributes(rendered: nil, error: have_attributes(message: "no value"))
+    end
+
+    it "has no render or inputs for an untracked config" do
+      allow(writer).to receive(:record).and_return(nil)
+
+      expect(status.assess("app")).to have_attributes(record: nil, text: config_text, rendered: nil, inputs: nil, template_sha: nil)
+    end
+  end
+
   describe "#reproduces?" do
     it "is true when a render today writes exactly the text" do
       expect(status.reproduces?("app", "rendered\n")).to be(true)
