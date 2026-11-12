@@ -24,7 +24,7 @@ module Workspace
 
     # The verbs a family parser takes, each to the key of its object in +families:+. {#run} hands
     # such a verb, its arguments and the run's {Invocation} to that family before its own case.
-    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent, "agent-run" => :agent_run, "handoff" => :agent_run}.freeze
+    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent, "agent-run" => :agent_run, "handoff" => :agent_run, "pipeline" => :pipeline}.freeze
 
     # @param workspace_name [Workspace::WorkspaceName, nil] settles a given workspace name to its on-disk spelling (nil leaves names as given)
     # @param config [Workspace::Config] configuration for path lookups
@@ -98,7 +98,6 @@ module Workspace
     # @param tmuxinator_report [Workspace::TmuxinatorReport, nil] builds the `tmux show --json` document
     # @param groups_command [Workspace::Commands::Groups, nil] pre-built `projects group` command
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
-    # @param clock [#call] returns the current Time, for relative deadline display
     # @param liveness [#call, nil] maps project names to true, false, or nil
     # @param env [#[]] the environment `config edit` reads $VISUAL and $EDITOR from
     # @param editor_launcher [#call, nil] runs an editor given its argv array (no shell) and returns
@@ -117,10 +116,8 @@ module Workspace
     # @param names [CLI::Names] the workspace-name and working-directory helpers, shared with the families
     # @param launcher [CLI::Launcher] what every launching verb shares
     # @param families [Hash{Symbol=>#call}] the family parser of each {ROUTES} key, called with the verb, its arguments and the {Invocation}
-    # @param agent_client [Workspace::AgentMessageClient] sends the `pipeline` messages to a workspace's agent daemon
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, agent_client:, hooks_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, hooks_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
-      @agent_client = agent_client
       @state = state
       @project_config = project_config
       @git = git
@@ -203,7 +200,6 @@ module Workspace
       @error_output = error_output
       @input = input
       @working_dir = working_dir
-      @clock = clock
       @sleeper = sleeper
       @launch_mode = launch_mode || LaunchMode.new(project_settings: project_settings)
       @window_liveness = window_liveness || ->(entries) { entries.to_h { |name, _| [name, nil] } }
@@ -324,8 +320,6 @@ module Workspace
         cmd_hooks(args)
       when "session-event"
         cmd_session_event(args)
-      when "pipeline"
-        cmd_pipeline(args)
       when "run"
         cmd_run(args)
       when "run-and-report"
@@ -2765,195 +2759,6 @@ module Workspace
 
       result = @dev_command.release_for_session(session_id: session, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    end
-
-    # Drives and inspects a running agent's pipeline. These are operator tools:
-    # everything that touches a pane goes through the agent that owns it, so a
-    # manual nudge cannot get the agent's own view of the pipeline out of step.
-    def cmd_pipeline(args)
-      # The subcommand is the first non-option argument, so a leading flag
-      # (e.g. `pipeline --json status`) is dispatched correctly regardless of
-      # where it appears.
-      index = args.index { |a| !a.start_with?("-") }
-      subcommand = index && args[index]
-      rest = index ? args[0...index] + args[(index + 1)..] : args
-
-      # With --json the notice is in an action document's `warnings` instead, and stderr stays empty.
-      @error_output.puts "Warning: #{PIPELINE_DEPRECATION}" if %w[start advance status reset].include?(subcommand) && !rest.include?("--json")
-      return if subcommand && verb_help_shown?(HelpPages::PIPELINE, [subcommand, *rest])
-
-      case subcommand
-      when "start" then cmd_pipeline_start(rest)
-      when "advance" then cmd_pipeline_advance(rest)
-      when "status" then cmd_pipeline_status(rest)
-      when "reset" then cmd_pipeline_reset(rest)
-      when "help", nil then @output.puts pipeline_help
-      else
-        raise UsageError, pipeline_help
-      end
-    end
-
-    # Printed by every `pipeline` subcommand and in its help.
-    PIPELINE_DEPRECATION = "`workspace pipeline` is deprecated and will be removed in a later release. " \
-      "Use `workspace workflow` (see `workspace workflow --help`)."
-
-    def pipeline_help
-      <<~HELP
-        #{HelpPages.overview_usage(HelpPages::PIPELINE)}
-
-        Deprecated: use `workspace workflow`, which runs ordered steps in a workspace's agent pane
-        and shows where a run is stuck. `pipeline` will be removed in a later release.
-
-        #{HelpPages.overview_verbs(HelpPages::PIPELINE).join("\n")}
-
-        Examples:
-        #{HelpPages.overview_examples(HelpPages::PIPELINE).join("\n")}
-          workspace pipeline start --help    # read the page of one subcommand
-      HELP
-    end
-
-    def cmd_pipeline_start(args)
-      project, work_item, body, json = parse_pipeline_args(args, "start")
-      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_page("start")}" if project.nil? || work_item.nil?
-
-      run_action("pipeline start", json: json) do
-        reply = send_to_agent(project,
-          AgentProtocol.command(workspace: project, work_item_ref: work_item,
-            dispatch_id: "manual-#{SecureRandom.hex(4)}", body: body || "Begin work on #{work_item}."))
-        raise Error, "The agent for #{project} refused the work item: #{reply["error"]}" unless reply["ok"]
-        @output.puts "Sent #{work_item} into #{project}'s pipeline"
-        {results: json ? [action_row(project, "started", work_item_ref: work_item)] : [], warnings: [PIPELINE_DEPRECATION]}
-      end
-    end
-
-    # Types the completion sentinel into the running stage's pane, which is
-    # exactly what a finished stage would print, so the agent advances normally.
-    #
-    # The stage's token comes from the persisted state. If the stage moves on
-    # between that read and the inject, the sentinel carries the old stage's
-    # token and the new stage ignores it, rather than being ended unasked.
-    def cmd_pipeline_advance(args)
-      project, work_item, body, json = parse_pipeline_args(args, "advance")
-      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_page("advance")}" if project.nil? || work_item.nil?
-
-      run_action("pipeline advance", json: json) do
-        token = read_pipeline_state(project).dig(work_item, "sentinel_token")
-        # The body reaches a live shell, so it is escaped rather than interpolated.
-        sentinel = "#{SentinelPoller.marker(token)} #{body || "manual advance"}"
-        reply = send_to_agent(project,
-          AgentProtocol.inject(workspace: project, work_item_ref: work_item, interrupt: true, expected_token: token,
-            body: "echo #{Shellwords.escape(sentinel)}"))
-        unless reply["ok"]
-          raise Error.new("The stage moved on before the advance landed; run 'workspace pipeline advance' again", code: "stale_token") if reply["error"] == "stale_token"
-          raise Error, "The agent for #{project} refused the advance: #{reply["error"]}"
-        end
-        @output.puts "Nudged #{project}/#{work_item} to advance"
-        {results: json ? [action_row(project, "advanced", work_item_ref: work_item)] : [], warnings: [PIPELINE_DEPRECATION]}
-      end
-    end
-
-    # `workspace pipeline status --json`'s schema version.
-    PIPELINE_JSON_SCHEMA_VERSION = 1
-
-    def cmd_pipeline_status(args)
-      as_json = false
-      parser = OptionParser.new do |opts|
-        opts.on("--json") { as_json = true }
-      end
-      parser.parse!(args)
-      project = settle_name(args.shift)
-      raise UsageError, pipeline_page("status") if project.nil?
-
-      entries = read_pipeline_state(project)
-      return @output.puts JSON.generate({"schema_version" => PIPELINE_JSON_SCHEMA_VERSION, "ok" => true, "entries" => entries.values}) if as_json
-
-      if entries.empty?
-        @output.puts "No pipeline work in flight for #{project}"
-        return
-      end
-
-      @output.puts "WORK ITEM  PANE  STAGE  DEADLINE"
-      entries.each_value do |entry|
-        deadline = format_deadline(entry["deadline_at"])
-        @output.puts "#{entry["work_item_ref"]}  pane #{entry["pane_index"]}  #{entry["phase"] || "(no pipeline)"}  #{deadline}"
-      end
-    rescue OptionParser::ParseError, UsageError => e
-      raise unless json_requested?(as_json, args)
-      emit_json_error(PIPELINE_JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    # Renders a stage's deadline in local time plus how far off it is, so an
-    # operator scanning the table doesn't have to convert UTC in their head.
-    # `--json` keeps the raw ISO 8601 UTC string this formats.
-    def format_deadline(deadline_at)
-      return "-" if deadline_at.nil?
-
-      deadline = Time.parse(deadline_at)
-      remaining = deadline - @clock.call
-      relative = (remaining >= 0) ? "in #{Duration.humanize(remaining)}" : "overdue #{Duration.humanize(-remaining)}"
-      "#{deadline.localtime.strftime("%H:%M")} (#{relative})"
-    end
-
-    # Tolerates an unreadable state file the way the agent does, so the command
-    # an operator reaches for when things look wrong is not the one that dies.
-    def read_pipeline_state(project)
-      state_path = @config.pipeline_state_path(project)
-      entries = PipelineState.read(state_path)
-      return entries if entries
-
-      @error_output.puts "Could not read #{project}'s pipeline state at #{state_path}; treating it as empty"
-      {}
-    end
-
-    # The agent holds this state in memory while it runs, so clearing the file
-    # under a live agent would only put the two out of step.
-    def cmd_pipeline_reset(args)
-      json = false
-      parser = OptionParser.new do |opts|
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      project = settle_name(args.shift)
-      raise UsageError, pipeline_page("reset") if project.nil? || args.any?
-
-      run_action("pipeline reset", json: json) do
-        if agent_running?(project)
-          raise Error, "The agent for #{project} is running; stop it (Ctrl-C in its pane, " \
-            "or kill the 'workspace agentd' process) before resetting its pipeline state"
-        end
-
-        state_path = @config.pipeline_state_path(project)
-        PipelineState.reset(state_path)
-        @output.puts "Cleared pipeline state for #{project}"
-        {results: json ? [action_row(project, "reset")] : [], warnings: [PIPELINE_DEPRECATION]}
-      end
-    end
-
-    def parse_pipeline_args(args, verb)
-      work_item = nil
-      body = nil
-      json = false
-      parser = OptionParser.new do |opts|
-        opts.on("--work-item REF") { |v| work_item = v }
-        opts.on("--body TEXT") { |v| body = v }
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      project = settle_name(args.shift)
-      raise UsageError, "Unexpected arguments: #{args.join(" ")}\n\n#{pipeline_page(verb)}" if args.any?
-      [project, work_item, body, json]
-    end
-
-    # The page of one pipeline verb, as text.
-    def pipeline_page(verb)
-      HelpPages.render(HelpPages::PIPELINE.fetch(verb)).join("\n")
-    end
-
-    # Sends one `pipeline` message through the {AgentMessageClient}.
-    def send_to_agent(project, message) = @agent_client.call(project, message)
-
-    def agent_running?(project)
-      @config.agent_running?(project)
     end
 
     def cmd_run_and_report(args)

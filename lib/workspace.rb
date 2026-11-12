@@ -492,6 +492,7 @@ require_relative "workspace/cli/launcher"
 require_relative "workspace/cli/workflow"
 require_relative "workspace/cli/agent"
 require_relative "workspace/cli/agent_run"
+require_relative "workspace/cli/pipeline"
 require_relative "workspace/cli"
 
 module Workspace
@@ -1262,13 +1263,13 @@ module Workspace
       sessions_command: sessions_command, review_command: review_command, agent_status_command: agent_status_command,
       agent_executables_command: agent_executables_command, agent_run: ->(args, invocation) { agent_run_family.prompt(args, invocation) },
       project_detector: project_detector, common: common, names: names, working_dir: working_dir)
+    pipeline_family = CLI::Pipeline.new(config: config, agent_client: agent_client, common: common, names: names)
 
     CLI.new(
       common: common,
       names: names,
       launcher: launcher,
-      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family},
-      agent_client: agent_client,
+      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family},
       working_dir: working_dir,
       config: config,
       state: state,
