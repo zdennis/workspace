@@ -2542,47 +2542,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(entry["defer_since"]).not_to be_nil
       end
 
-      it "keeps the flags when a read of the same process gives none" do
-        due_entry(phase: "watching", agent_flags: [skip])
-        unreadable_args
-        failed
-
-        expect(entry).to include("agent_pid" => 20, "agent_flags" => [skip])
-      end
-
-      it "fills absent flags from a read of the same process that has them" do
-        due_entry(phase: "watching", agent_flags: nil)
-        processes.find { |process| process[:pid] == 20 }[:args] = "claude #{skip}"
-        failed
-
-        expect(entry["agent_flags"]).to eq([skip])
-      end
-
-      it "never leaves the old agent's flags beside a different agent read with none" do
-        due_entry(phase: "watching", agent_pid: 19, agent_flags: [skip])
-        unreadable_args
-        event("session_start", source: "resume")
-
-        expect(entry).to include("agent_pid" => 20, "agent_flags" => nil)
-      end
-
-      describe "a pid left blank, filled by the settle read" do
-        before { due_entry(agent_pid: nil, agent_started: nil, agent_flags: [skip]) }
-
-        it "drops the flags when the read gives none: it may not be the same process" do
-          unreadable_args
-          desk.scan
-
-          expect(entry).to include("agent_pid" => 20, "agent_flags" => nil)
-        end
-
-        it "takes the flags the read gives" do
-          desk.scan
-
-          expect(entry).to include("agent_pid" => 20, "agent_flags" => [])
-        end
-      end
-
       it "drops the flags at check's blank-pid fill too" do
         due_entry(agent_pid: nil, agent_started: nil, agent_flags: [skip])
         unreadable_args
@@ -2651,14 +2610,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(resumes).to eq(["cd -- /work && claude #{skip} --resume #{sid}"])
       end
 
-      it "keeps them through a failure read with no agent in the pane" do
-        due_entry(phase: "watching", agent_flags: [skip])
-        gone!
-        failed
-
-        expect(entry).to include("phase" => "waiting", "agent_pid" => nil, "agent_flags" => [skip])
-      end
-
       it "keeps them through an attempt's failure when the last read fails" do
         due_entry(attempts: 0, agent_flags: [skip])
         hooks[:enter] = lambda {
@@ -2668,26 +2619,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         desk.scan
 
         expect(entry).to include("phase" => "waiting", "agent_flags" => [skip])
-      end
-
-      it "stores the flags of an agent we resumed, so the next attempt carries them" do
-        due_entry(agent_flags: [skip])
-        hooks[:signal] = -> { agent_exits }
-        hooks[:deliver] = lambda {
-          agent_resumes
-          processes.last[:args] = "claude #{skip} --resume #{sid}"
-        }
-        desk.scan
-
-        expect(resumes.size).to eq(1)
-        expect(entry).to include("agent_pid" => 21, "agent_flags" => [skip])
-      end
-
-      it "replaces the flags with a person's agent's" do
-        due_entry(stopped: true, phase: "watching", agent_pid: 19, agent_flags: [skip])
-        event("session_start", source: "resume")
-
-        expect(entry).to include("agent_pid" => 20, "agent_flags" => [])
       end
 
       it "defers a restart with nothing typed or signalled when no flags were stored" do
@@ -2733,12 +2664,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(entry).to include("phase" => "watching", "attempts" => 3)
         expect(resumes.size).to eq(1)
         expect(outcomes).to eq(["resumed"])
-      end
-
-      it "writes no marker" do
-        shell_left
-        expect(marker).not_to receive(:mark)
-        desk.scan
       end
 
       it "resumes after an interrupted attempt" do
@@ -2856,17 +2781,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(outcomes).to eq(["not_stopped"])
       end
 
-      it "types nothing on a single pane_clear? read" do
-        due_entry
-        hooks[:signal] = -> { agent_exits }
-        reads = 0
-        allow(stopper).to receive(:pane_clear?) { (reads += 1).odd? }
-        desk.scan
-
-        expect(texts).to eq([])
-        expect(outcomes).to eq(["not_stopped"])
-      end
-
       it "sends one signal at the deadline, and leaves the marker" do
         due_entry
         desk.scan
@@ -2880,29 +2794,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     end
 
     describe "the safety review's guards" do
-      it "empties the shell's line, in its own call, right before the resume command" do
-        due_entry
-        hooks[:signal] = -> { agent_exits }
-        keys = []
-        hooks[:deliver] = lambda {
-          keys.concat(tmux.sent_key_names)
-          agent_resumes
-        }
-        desk.scan
-
-        expect(keys).to eq([{session: "api", pane: "%5", key: "C-u"}])
-      end
-
-      it "types nothing when the C-u call fails" do
-        due_entry
-        hooks[:signal] = -> { agent_exits }
-        allow(tmux).to receive(:send_key).and_return(false)
-        desk.scan
-
-        expect(texts).to eq([])
-        expect(outcomes).to eq(["not_delivered"])
-      end
-
       it "targets the pane by id, for every delivery" do
         due_entry
         healthy_run
@@ -3027,14 +2918,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(rebound).to eq([])
       end
 
-      it "gives up when a session other than the entry's opened during the attempt" do
-        due_entry
-        hooks[:signal] = -> { event("session_start", session: other_sid, source: "startup") }
-        desk.scan
-
-        expect_gave_up("fresh_conversation")
-      end
-
       it "sends no signal without the marker, and takes the attempt back" do
         due_entry
         allow(marker).to receive(:mark).and_return(false)
@@ -3093,15 +2976,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       describe "step 5's identity check" do
         before { healthy_run }
 
-        it "types no message once the claim is gone" do
-          due_entry
-          hooks[:rebind] = -> { restarting.clear }
-          desk.scan
-
-          expect(messages).to eq([])
-          expect(outcomes).to eq(["claim_lost"])
-        end
-
         {"a shell that took the terminal back" => [21, 10], "a group that can't be read" => []}.each do |name, ids|
           it "types no message to the resumed agent with #{name}" do
             due_entry
@@ -3122,15 +2996,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
           expect(messages).to eq([])
           expect(outcomes).to eq(["pane_not_clear"])
           expect(entry["stopped"]).to be(false)
-        end
-
-        it "types no message to an agent that isn't the attempt's" do
-          due_entry
-          hooks[:rebind] = -> { processes.find { |process| process[:pid] == 21 }[:lstart] = "Mon Oct 26 12:00:00 2026" }
-          desk.scan
-
-          expect(messages).to eq([])
-          expect(typer.calls).to be_empty
         end
       end
     end

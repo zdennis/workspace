@@ -191,6 +191,28 @@ RSpec.describe Workspace::RecoveryConfirmer do
 
       expect(entry).to include("agent_pid" => 7, "agent_started" => "Sun", "last_turn_uuid" => "u-err")
     end
+
+    describe "a pid left blank, filled by the settle read" do
+      let(:skip) { "--dangerously-skip-permissions" }
+
+      before do
+        store.put("%5", waiting(agent_pid: nil, agent_started: nil, agent_flags: [skip], cwd: "/work", last_turn_uuid: "u-err"))
+      end
+
+      it "drops the flags when the read gives none: it may not be the same process" do
+        agent[:flags] = nil
+        confirmer.settle("%5", entry)
+
+        expect(entry).to include("agent_pid" => 20, "agent_flags" => nil)
+      end
+
+      it "takes the flags the read gives" do
+        agent[:flags] = []
+        confirmer.settle("%5", entry)
+
+        expect(entry).to include("agent_pid" => 20, "agent_flags" => [])
+      end
+    end
   end
 
   describe "#reconcile" do

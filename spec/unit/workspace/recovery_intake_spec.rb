@@ -276,4 +276,50 @@ RSpec.describe Workspace::RecoveryIntake do
       expect(gave_up.size).to eq(1)
     end
   end
+
+  describe "the flags a resume carries" do
+    let(:skip) { "--dangerously-skip-permissions" }
+    let(:agent) { {pid: 20, started: "Mon", flags: nil} }
+
+    it "keeps the flags when a read of the same process gives none" do
+      store.put("%5", waiting(phase: "watching", agent_flags: [skip]))
+      failed
+
+      expect(entry).to include("agent_pid" => 20, "agent_flags" => [skip])
+    end
+
+    it "fills absent flags from a read of the same process that has them" do
+      agent[:flags] = [skip]
+      store.put("%5", waiting(phase: "watching", agent_flags: nil))
+      failed
+
+      expect(entry["agent_flags"]).to eq([skip])
+    end
+
+    it "never leaves the old agent's flags beside a different agent read with none" do
+      store.put("%5", waiting(phase: "watching", agent_pid: 19, agent_flags: [skip]))
+      event("session_start", source: "resume")
+
+      expect(entry).to include("agent_pid" => 20, "agent_flags" => nil)
+    end
+
+    it "replaces the flags with a person's agent's" do
+      agent[:flags] = []
+      store.put("%5", waiting(stopped: true, phase: "watching", agent_pid: 19, agent_flags: [skip]))
+      event("session_start", source: "resume")
+
+      expect(entry).to include("agent_pid" => 20, "agent_flags" => [])
+    end
+
+    context "with no agent in the pane" do
+      let(:agent) { nil }
+
+      it "keeps them through a failure read with no agent in the pane" do
+        store.put("%5", waiting(phase: "watching", agent_flags: [skip]))
+        failed
+
+        expect(entry).to include("phase" => "waiting", "agent_pid" => nil, "agent_flags" => [skip])
+      end
+    end
+  end
 end

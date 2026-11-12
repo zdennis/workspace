@@ -361,5 +361,12 @@ RSpec.describe Workspace::RecoveryOutcomes do
       expect_rescheduled(2)
       expect(entry["failed_at"]).not_to eq(stamp(t0))
     end
+
+    it "gives up when a session other than the entry's opened during the attempt" do
+      store.put("%5", attempting(attempt_session_id: other_sid))
+      part.finish(restart_attempt, "not_stopped")
+
+      expect_gave_up("fresh_conversation")
+    end
   end
 end

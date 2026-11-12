@@ -191,6 +191,16 @@ RSpec.describe Workspace::RecoveryAttempts do
       seen[:resume_only] = entry["prompt_seen"]
       expect(seen[:resume_only]).to be(false)
     end
+
+    describe "resume_only" do
+      let(:verdict) { Workspace::AgentRecoveryDesk::Verdict.new(answer: :go, mode: :resume_only, command: "claude --resume #{sid}") }
+
+      it "writes no marker" do
+        store.put("%5", waiting(attempts: 2, stopped: true, agent_pid: nil, agent_started: nil))
+        expect(marker).not_to receive(:mark)
+        attempts.start("%5", :restart, check: check)
+      end
+    end
   end
 
   describe "#resume_line" do

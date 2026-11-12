@@ -24,12 +24,17 @@ RSpec.describe Workspace::RecoveryAttemptRunner do
   let(:pane) { FakePane.new(id: "%5", session_name: "api") }
   let(:claimed) { ["%5"] }
   let(:rebound) { [] }
+  let(:on_rebind) { [nil] }
 
   subject(:runner) do
     described_class.new(panes: FakePaneFactory.new(panes: [pane]), session_name: "api", store: store, facts: facts,
       session_monitor: monitor, readiness: readiness, detector: :detector, marker: marker, prompt_typer: typer,
       delivery_lock: Mutex.new, restarting: ->(pane_id) { claimed.include?(pane_id) },
-      rebind_queue: ->(pane_id, pid) { rebound << [pane_id, pid] }, clock: BlockClock.new { now[0] },
+      rebind_queue: ->(pane_id, pid) {
+        rebound << [pane_id, pid]
+        on_rebind[0]&.call
+      },
+      clock: BlockClock.new { now[0] },
       sleeper: ->(seconds) {
         sleeps << seconds
         now[0] += seconds
@@ -46,6 +51,13 @@ RSpec.describe Workspace::RecoveryAttemptRunner do
   def set(**fields) = store.put("%5", store.get("%5").merge(fields.transform_keys(&:to_s)))
 
   def typed_texts = calls.select { |call| call.first == :type }.map(&:last)
+
+  # What the agent was typed through the typer, and what reached the pane through tmux.
+  def messages = typer.calls.select { |call| call.first == :type }.map(&:last)
+
+  def texts = pane.deliveries.map { |sent| sent[:text] }
+
+  def resumes = texts.grep(/--resume/)
 
   describe "#typed" do
     it "types the message under the claim, then answers typed once a user_prompt hook says it arrived" do
@@ -198,6 +210,76 @@ RSpec.describe Workspace::RecoveryAttemptRunner do
       outcomes = runner.restart(attempt).first(1)
 
       expect(outcomes).to eq(["no_response"])
+    end
+
+    describe "the flags a resume carries" do
+      let(:skip) { "--dangerously-skip-permissions" }
+      let(:resumed) { {pid: 21, started: "Tue", flags: [skip]} }
+      let(:agents) { [old_agent, nil, nil, nil, resumed] }
+      let(:facts_options) { {live: resumed} }
+      let(:opening) { {"phase" => "attempting", "session_id" => sid, "attempts" => 2, "stopped" => true, "agent_flags" => [skip]} }
+      let(:store) { RecordingRecoveryStore.new(entries: {"%5" => opening}) }
+
+      def entry = store.get("%5")
+
+      it "stores the flags of an agent we resumed, so the next attempt carries them" do
+        runner.restart(attempt)
+
+        expect(resumes.size).to eq(1)
+        expect(entry).to include("agent_pid" => 21, "agent_flags" => [skip])
+      end
+    end
+
+    describe "step 2" do
+      it "types nothing on a single pane_clear? read" do
+        agents.replace([nil])
+        reads = 0
+        allow(facts).to receive(:pane_clear?) { (reads += 1).odd? }
+        outcomes = runner.restart(attempt).first(1)
+
+        expect(texts).to eq([])
+        expect(outcomes).to eq(["not_stopped"])
+      end
+    end
+
+    describe "the safety review's guards" do
+      it "empties the shell's line, in its own call, right before the resume command" do
+        keys = []
+        pane.tmux.on_deliver = ->(text) { keys.concat(pane.tmux.sent_key_names) if text.include?("--resume") }
+        runner.restart(attempt)
+
+        expect(keys).to eq([{session: "api", pane: "%5", key: "C-u"}])
+      end
+
+      it "types nothing when the C-u call fails" do
+        allow(pane).to receive(:send_key).and_return(false)
+        outcomes = runner.restart(attempt).first(1)
+
+        expect(texts).to eq([])
+        expect(outcomes).to eq(["not_delivered"])
+      end
+    end
+
+    describe "step 5's identity check" do
+      it "types no message once the claim is gone" do
+        on_rebind[0] = -> { claimed.clear }
+        outcomes = runner.restart(attempt).first(1)
+
+        expect(messages).to eq([])
+        expect(outcomes).to eq(["claim_lost"])
+      end
+
+      context "with a typer of its own calls" do
+        let(:typer) { RecordingAttemptTyper.new(**typer_options) }
+
+        it "types no message to an agent that isn't the attempt's" do
+          agents.replace([old_agent, nil, nil, nil, new_agent.merge(started: "Mon Oct 26 12:00:00 2026")])
+          runner.restart(attempt)
+
+          expect(messages).to eq([])
+          expect(typer.calls).to be_empty
+        end
+      end
     end
   end
 
