@@ -56,7 +56,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
     parent_command = CLITestHelpers::FakeParentCommand.new
     agent_command = CLITestHelpers::FakeAgentCommand.new
 
-    cli = Workspace::CLI.new(lineage: LineageSupport.lineage,
+    cli = CLITestHelpers.build_cli(lineage: LineageSupport.lineage,
       config: config,
       state: state,
       project_config: project_config,
@@ -189,7 +189,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
     error_output = StringIO.new
     now = Time.utc(2026, 9, 27, 12, 0, 0)
 
-    agent = Workspace::Commands::Agent.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+    agent = build_agentd(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
 
       config: config_double,
       tmux: tmux,

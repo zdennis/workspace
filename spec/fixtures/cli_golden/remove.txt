@@ -1,0 +1,56 @@
+### workspace remove --help
+--- exit 0
+--- stdout
+Usage: workspace remove [options] [NAME]
+
+Delete a workspace's generated files: its tmuxinator config, its project
+settings file and its state entry. Each file is copied aside first
+(<file>.workspace-backup-<time>). The project's directory, git worktrees and
+notes are never touched.
+
+With no NAME, removes the workspace the current directory is in (a worktree's
+marker, else an active workspace whose root holds it); not_in_workspace outside any.
+
+Refuses while the workspace's tmux session is up (session_running; run
+'workspace stop NAME' first) and for a worktree project (not_removable; use
+'workspace kill', 'finish' or 'prune'). Asks before deleting unless --yes;
+under --no-input it refuses without --yes.
+
+Options:
+        --name NAME                  The workspace to remove (default: the one detected from the current directory)
+        --yes                        Skip the confirmation prompt
+        --dry-run                    List what would be removed; no prompt, nothing changes
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes
+                                     to stderr; a refusal is the error envelope. --json does not imply --yes: pass --yes in scripts
+
+Examples:
+  workspace remove myproject    # ask, then delete its tmuxinator config, settings file and state entry (backups kept; the checkout is untouched)
+  workspace remove    # the same for the workspace you are in
+  workspace remove myproject --dry-run    # see which files would go
+  workspace remove myproject --yes --json    # no prompt, one action document
+--- stderr
+--- end
+### workspace remove --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace remove [options] [NAME]"],"description":"Delete a workspace's generated files: its tmuxinator config, its project\nsettings file and its state entry. Each file is copied aside first\n(<file>.workspace-backup-<time>). The project's directory, git worktrees and\nnotes are never touched.\n\nWith no NAME, removes the workspace the current directory is in (a worktree's\nmarker, else an active workspace whose root holds it); not_in_workspace outside any.\n\nRefuses while the workspace's tmux session is up (session_running; run\n'workspace stop NAME' first) and for a worktree project (not_removable; use\n'workspace kill', 'finish' or 'prune'). Asks before deleting unless --yes;\nunder --no-input it refuses without --yes.","options":[{"flags":"--name NAME","description":"The workspace to remove (default: the one detected from the current directory)"},{"flags":"--yes","description":"Skip the confirmation prompt"},{"flags":"--dry-run","description":"List what would be removed; no prompt, nothing changes"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr; a refusal is the error envelope. --json does not imply --yes: pass --yes in scripts"}],"examples":[{"command":"workspace remove myproject","scenario":"ask, then delete its tmuxinator config, settings file and state entry (backups kept; the checkout is untouched)"},{"command":"workspace remove","scenario":"the same for the workspace you are in"},{"command":"workspace remove myproject --dry-run","scenario":"see which files would go"},{"command":"workspace remove myproject --yes --json","scenario":"no prompt, one action document"}]}
+--- stderr
+--- end
+### workspace remove --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace remove --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace remove
+--- exit 1
+--- stdout
+--- stderr
+Error: No workspace found for $CWD. Run from inside a workspace or pass --name.
+--- end

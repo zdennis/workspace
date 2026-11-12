@@ -1,0 +1,40 @@
+### workspace version --help
+--- exit 0
+--- stdout
+Usage: workspace version
+
+Print the workspace version.
+
+Prints "workspace" and the version number, for example "workspace X.Y.Z".
+--version and -v print the same.
+
+Examples:
+  workspace version    # which release is installed
+  workspace version | cut -d' ' -f2    # only the number, to compare in a script
+  workspace version >> bug-report.txt    # add the version to a bug report
+--- stderr
+--- end
+### workspace version --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace version"],"description":"Print the workspace version.\n\nPrints \"workspace\" and the version number, for example \"workspace X.Y.Z\".\n--version and -v print the same.","options":[],"examples":[{"command":"workspace version","scenario":"which release is installed"},{"command":"workspace version | cut -d' ' -f2","scenario":"only the number, to compare in a script"},{"command":"workspace version >> bug-report.txt","scenario":"add the version to a bug report"}]}
+--- stderr
+--- end
+### workspace version --bogus
+--- exit 0
+--- stdout
+workspace $VERSION
+--- stderr
+--- end
+### workspace version --bogus --json
+--- exit 0
+--- stdout
+workspace $VERSION
+--- stderr
+--- end
+### workspace version
+--- exit 0
+--- stdout
+workspace $VERSION
+--- stderr
+--- end

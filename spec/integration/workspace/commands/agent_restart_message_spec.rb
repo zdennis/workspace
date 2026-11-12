@@ -114,7 +114,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
   end
 
   subject(:agent) do
-    described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+    build_agentd(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
       session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
       agent_restart_factory: ->(**kwargs) { restart.build(**kwargs) }, output: output, error_output: error_output)
@@ -165,7 +165,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     end
 
     subject(:agent) do
-      described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+      build_agentd(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
         session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
         output: output, error_output: error_output)
@@ -194,7 +194,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     end
 
     subject(:agent) do
-      described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+      build_agentd(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
         session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
         restart_registry: registry, restart_runner_factory: runner_factory,
@@ -263,7 +263,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
 
   it "prints a failed restart on stderr, since a caller that didn't wait can't hear it" do
     failing = GatedRestart.new({"ok" => false, "error" => "clear_not_confirmed", "message" => "usage did not drop"})
-    agent_with_failure = described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+    agent_with_failure = build_agentd(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, pipeline_state: pipeline_state, signal_trapper: signal_trapper,
       session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
       agent_restart_factory: ->(**kwargs) { failing.build(**kwargs) }, output: output, error_output: error_output)

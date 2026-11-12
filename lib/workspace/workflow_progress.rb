@@ -108,9 +108,12 @@ module Workspace
 
     private
 
+    # Puts the phase answer +changed+ (a WorkflowRun) into the run Hash being changed in place.
+    def adopt(run, changed) = run.replace(changed.thawed)
+
     # A working copy of the run for the block to change, returned as a new run.
     def over(run)
-      work = WorkflowRun.from_h(run).to_mutable_h
+      work = WorkflowRun.from_h(run).thawed
       yield work
       WorkflowRun.from_h(work)
     end
@@ -145,7 +148,7 @@ module Workspace
     end
 
     def end_run(run, state)
-      run.replace(@dispatch.drop_park(run, "ended").to_mutable_h) if run.key?("parked")
+      adopt(run, @dispatch.drop_park(run, "ended")) if run.key?("parked")
       run.delete("backoff")
       run.delete("budget_hold")
       @dispatch.release(run)
@@ -233,11 +236,11 @@ module Workspace
       step = step_def(run)
       step_state(run)["attempts"][-1] = ended
       finished = @attempt_record.finish(run: run, step: step, attempt: ended)
-      run.replace(WorkflowRun.from_h(run).with_attempt(step["id"], finished).to_mutable_h)
+      adopt(run, WorkflowRun.from_h(run).with_attempt(step["id"], finished))
     end
 
     def dispatch(run, ctx, options)
-      run.replace(@dispatch.dispatch(run, ctx: ctx, **options).to_mutable_h)
+      adopt(run, @dispatch.dispatch(run, ctx: ctx, **options))
     end
 
     def event(run, type, data = {}) = @change.event(run, type, data)

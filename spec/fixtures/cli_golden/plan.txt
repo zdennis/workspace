@@ -1,0 +1,494 @@
+### workspace plan --help
+--- exit 0
+--- stdout
+Usage: workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]
+       workspace plan path [--name WORKSPACE] [--json]
+       workspace plan show [--name WORKSPACE]
+       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]
+       workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]
+       workspace plan pause [--name WORKSPACE] [--interrupt] [--json]
+       workspace plan delete [--name WORKSPACE] --yes [--json]
+       workspace plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]
+       workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]
+       workspace plan task set-title --task ID --title TEXT [--if-revision REV] [--name WORKSPACE] [--json]
+       workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]
+
+A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist
+line per task under '## Tasks'. workspace counts it, and works out one state from the
+plan, the session and the pane that owns the plan.
+
+Subcommands:
+  status          Count the plan and report its state
+  path            Print where the plan is (or would be)
+  show            Print the plan file
+  init            Write a new plan, or import an existing document with --from
+  start           Set status: active, then launch the workspace or send its agent the plan
+  pause           Set status: paused; the agent stops before its next task
+  delete          Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>
+  task add        Add one task line to the plan
+  task set-state  Set one task's state
+  task set-title  Change one task's title
+  task move       Move one task line
+Run `workspace plan VERB --help` for a verb's options. Task states: done, in_progress, skipped, blocked, todo.
+
+A verb that writes (init, start, pause, delete, task) changes the plan or the workspace for real.
+
+        --name NAME                  Workspace to act on instead of the one detected from the current directory
+        --project [NAME]             status: every workspace of a project (NAME, or the project of the current workspace)
+        --all                        status: every workspace
+        --group GROUP                status: every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)
+        --file PATH                  status: read any file, with no workspace and a state from the file alone
+        --title TITLE                init: the plan's title (default: the workspace task's title); task add: the task's title; task set-title: the new title
+        --from FILE                  init: import this document as the plan
+        --force                      init: replace a plan that is already there
+        --yes                        delete: confirm the delete
+        --task ID                    start: send only this task; task set-state, set-title and move: the task (its id, such as T3)
+        --id ID                      task add: the new task's id (default: the next number after the plan's last id)
+        --state STATE                task add and set-state: done, in_progress, skipped, blocked, todo
+        --reason TEXT                task add and set-state: why a task is blocked or skipped
+        --phase NAME                 task add: the ### heading to add under; task move: move to the end of this phase
+        --after ID                   task add and move: place the task after this task
+        --before ID                  task move: place the task before this task
+        --if-revision REV            task: refuse with stale_revision unless the plan's revision is REV
+        --pane PANE                  start --task: the pane to send it to, a pane id (%19) or window.pane (0.1)
+        --spawn KIND                 start --task: start a new agent pane for it (claude, codex, opencode, pi)
+        --interrupt                  pause: interrupt the owner panes that are working
+        --json                       Print one JSON document (see docs/README.plan.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace plan status    # the plan of the workspace you are in, e.g. api.worktree-x  working  7/20 (40%)  T9 Add the token store
+  workspace plan status --all --json    # every workspace, as one JSON document
+  workspace plan path    # where the plan file is, e.g. /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md
+  workspace plan init --title "Auth rewrite"    # write a new plan
+  workspace plan start    # set it active, then launch the workspace or type the play into its agent pane
+  workspace plan start --task T4 --pane %23    # type one task into pane %23
+  workspace plan pause --interrupt    # stop after the current task and interrupt the working owner panes
+  workspace plan task add --title "Write the docs" --phase Docs    # add a task under the ### Docs heading
+  workspace plan task set-state --task T3 --state blocked --reason "needs the dev database"    # block a task
+  workspace plan delete --yes    # rename the plan file to IMPLEMENTATION_PLAN.md.deleted-<time>
+--- stderr
+--- end
+### workspace plan --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]","workspace plan path [--name WORKSPACE] [--json]","workspace plan show [--name WORKSPACE]","workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]","workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]","workspace plan pause [--name WORKSPACE] [--interrupt] [--json]","workspace plan delete [--name WORKSPACE] --yes [--json]","workspace plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]","workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]","workspace plan task set-title --task ID --title TEXT [--if-revision REV] [--name WORKSPACE] [--json]","workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]"],"description":"A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist\nline per task under '## Tasks'. workspace counts it, and works out one state from the\nplan, the session and the pane that owns the plan.","options":[],"examples":[{"command":"workspace plan status","scenario":"the plan of the workspace you are in, e.g. api.worktree-x  working  7/20 (40%)  T9 Add the token store"},{"command":"workspace plan status --all --json","scenario":"every workspace, as one JSON document"},{"command":"workspace plan path","scenario":"where the plan file is, e.g. /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md"},{"command":"workspace plan init --title \"Auth rewrite\"","scenario":"write a new plan"},{"command":"workspace plan start","scenario":"set it active, then launch the workspace or type the play into its agent pane"},{"command":"workspace plan start --task T4 --pane %23","scenario":"type one task into pane %23"},{"command":"workspace plan pause --interrupt","scenario":"stop after the current task and interrupt the working owner panes"},{"command":"workspace plan task add --title \"Write the docs\" --phase Docs","scenario":"add a task under the ### Docs heading"},{"command":"workspace plan task set-state --task T3 --state blocked --reason \"needs the dev database\"","scenario":"block a task"},{"command":"workspace plan delete --yes","scenario":"rename the plan file to IMPLEMENTATION_PLAN.md.deleted-<time>"}],"sections":[{"heading":"Subcommands","text":"status          Count the plan and report its state\n  path            Print where the plan is (or would be)\n  show            Print the plan file\n  init            Write a new plan, or import an existing document with --from\n  start           Set status: active, then launch the workspace or send its agent the plan\n  pause           Set status: paused; the agent stops before its next task\n  delete          Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>\n  task add        Add one task line to the plan\n  task set-state  Set one task's state\n  task set-title  Change one task's title\n  task move       Move one task line\nRun `workspace plan VERB --help` for a verb's options. Task states: done, in_progress, skipped, blocked, todo.\n\nA verb that writes (init, start, pause, delete, task) changes the plan or the workspace for real.\n\n        --name NAME                  Workspace to act on instead of the one detected from the current directory\n        --project [NAME]             status: every workspace of a project (NAME, or the project of the current workspace)\n        --all                        status: every workspace\n        --group GROUP                status: every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)\n        --file PATH                  status: read any file, with no workspace and a state from the file alone\n        --title TITLE                init: the plan's title (default: the workspace task's title); task add: the task's title; task set-title: the new title\n        --from FILE                  init: import this document as the plan\n        --force                      init: replace a plan that is already there\n        --yes                        delete: confirm the delete\n        --task ID                    start: send only this task; task set-state, set-title and move: the task (its id, such as T3)\n        --id ID                      task add: the new task's id (default: the next number after the plan's last id)\n        --state STATE                task add and set-state: done, in_progress, skipped, blocked, todo\n        --reason TEXT                task add and set-state: why a task is blocked or skipped\n        --phase NAME                 task add: the ### heading to add under; task move: move to the end of this phase\n        --after ID                   task add and move: place the task after this task\n        --before ID                  task move: place the task before this task\n        --if-revision REV            task: refuse with stale_revision unless the plan's revision is REV\n        --pane PANE                  start --task: the pane to send it to, a pane id (%19) or window.pane (0.1)\n        --spawn KIND                 start --task: start a new agent pane for it (claude, codex, opencode, pi)\n        --interrupt                  pause: interrupt the owner panes that are working\n        --json                       Print one JSON document (see docs/README.plan.md)\n    -h, --help                       Show this help"}]}
+--- stderr
+--- end
+### workspace plan status --help
+--- exit 0
+--- stdout
+Usage: workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]
+
+Count the plan and report its state.
+
+A workspace with no plan is a row, not an error. With no scope flag it is the current workspace's row
+(outside any workspace: not_in_workspace). Give at most one of --name, --project, --all, --file and
+--group.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --project [NAME]             Every workspace of a project (NAME, or the project of the current workspace)
+    --all                        Every workspace
+    --group GROUP                Every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)
+    --file PATH                  Read any file, with no workspace and a state from the file alone
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan status    # the plan of the workspace you are in: state, counts and the current task
+  workspace plan status --name api.worktree-x    # one workspace by name
+  workspace plan status --project    # the plans of the main checkout and its worktrees, such as to see which one is stalled
+  workspace plan status --all    # every workspace, one line each (no plan reads "no plan")
+  workspace plan status --group billing    # every workspace of every repository in the billing group
+  workspace plan status --file IMPLEMENTATION_PLAN.md    # a plan file in the current directory, with no workspace
+  workspace plan status --json    # one JSON document, with the revision that --if-revision takes
+--- stderr
+--- end
+### workspace plan status --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]"],"description":"Count the plan and report its state.\n\nA workspace with no plan is a row, not an error. With no scope flag it is the current workspace's row\n(outside any workspace: not_in_workspace). Give at most one of --name, --project, --all, --file and\n--group.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--project [NAME]","description":"Every workspace of a project (NAME, or the project of the current workspace)"},{"flags":"--all","description":"Every workspace"},{"flags":"--group GROUP","description":"Every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)"},{"flags":"--file PATH","description":"Read any file, with no workspace and a state from the file alone"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan status","scenario":"the plan of the workspace you are in: state, counts and the current task"},{"command":"workspace plan status --name api.worktree-x","scenario":"one workspace by name"},{"command":"workspace plan status --project","scenario":"the plans of the main checkout and its worktrees, such as to see which one is stalled"},{"command":"workspace plan status --all","scenario":"every workspace, one line each (no plan reads \"no plan\")"},{"command":"workspace plan status --group billing","scenario":"every workspace of every repository in the billing group"},{"command":"workspace plan status --file IMPLEMENTATION_PLAN.md","scenario":"a plan file in the current directory, with no workspace"},{"command":"workspace plan status --json","scenario":"one JSON document, with the revision that --if-revision takes"}]}
+--- stderr
+--- end
+### workspace plan path --help
+--- exit 0
+--- stdout
+Usage: workspace plan path [--name WORKSPACE] [--json]
+
+Print where the plan is (or would be).
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan path    # where the plan of the workspace you are in is, whether or not the file exists
+  workspace plan path --name api.worktree-x    # the same for one workspace by name
+  workspace plan path --json    # adds exists (is the file there?) and notes_dir
+--- stderr
+--- end
+### workspace plan path --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan path [--name WORKSPACE] [--json]"],"description":"Print where the plan is (or would be).","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan path","scenario":"where the plan of the workspace you are in is, whether or not the file exists"},{"command":"workspace plan path --name api.worktree-x","scenario":"the same for one workspace by name"},{"command":"workspace plan path --json","scenario":"adds exists (is the file there?) and notes_dir"}]}
+--- stderr
+--- end
+### workspace plan show --help
+--- exit 0
+--- stdout
+Usage: workspace plan show [--name WORKSPACE]
+
+Print the plan file.
+
+Exits 1 with an error when there is no plan.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan show    # print the plan of the workspace you are in
+  workspace plan show --name api.worktree-x    # print the plan of one workspace by name
+  workspace plan show --name api.worktree-x | grep '\[!\]'    # list the blocked tasks of that plan
+--- stderr
+--- end
+### workspace plan show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan show [--name WORKSPACE]"],"description":"Print the plan file.\n\nExits 1 with an error when there is no plan.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan show","scenario":"print the plan of the workspace you are in"},{"command":"workspace plan show --name api.worktree-x","scenario":"print the plan of one workspace by name"},{"command":"workspace plan show --name api.worktree-x | grep '\\[!\\]'","scenario":"list the blocked tasks of that plan"}]}
+--- stderr
+--- end
+### workspace plan init --help
+--- exit 0
+--- stdout
+Usage: workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]
+
+Write a new plan, or import an existing document with --from.
+
+Writes the plan file for real. A plan that is already there is an error (exit 1, plan_exists) unless --force replaces it.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --title TITLE                The plan's title (default: the workspace task's title)
+    --from FILE                  Import this document as the plan
+    --force                      Replace a plan that is already there
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan init    # write a new plan, titled after the workspace's task if it has one, in the notes directory (it makes the directory)
+  workspace plan init --title "Auth rewrite"    # write a new plan with your own title
+  workspace plan init --from design.md    # import design.md (read from the current directory) as the plan
+  workspace plan init --from design.md --force    # replace the plan that is already there with design.md (the old plan is overwritten)
+  workspace plan init --name api.worktree-x --json    # write the plan of another workspace; with a plan there and no --force it exits 1 with plan_exists
+--- stderr
+--- end
+### workspace plan init --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]"],"description":"Write a new plan, or import an existing document with --from.\n\nWrites the plan file for real. A plan that is already there is an error (exit 1, plan_exists) unless --force replaces it.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--title TITLE","description":"The plan's title (default: the workspace task's title)"},{"flags":"--from FILE","description":"Import this document as the plan"},{"flags":"--force","description":"Replace a plan that is already there"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan init","scenario":"write a new plan, titled after the workspace's task if it has one, in the notes directory (it makes the directory)"},{"command":"workspace plan init --title \"Auth rewrite\"","scenario":"write a new plan with your own title"},{"command":"workspace plan init --from design.md","scenario":"import design.md (read from the current directory) as the plan"},{"command":"workspace plan init --from design.md --force","scenario":"replace the plan that is already there with design.md (the old plan is overwritten)"},{"command":"workspace plan init --name api.worktree-x --json","scenario":"write the plan of another workspace; with a plan there and no --force it exits 1 with plan_exists"}]}
+--- stderr
+--- end
+### workspace plan start --help
+--- exit 0
+--- stdout
+Usage: workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]
+
+Set status: active, then launch the workspace or send its agent the plan.
+
+Launches the workspace with the implementation-plan play, or sends the main agent pane the play
+and "Continue the plan." (a working pane is left alone).
+
+With --task, sends that one task to --pane, a new agent pane (--spawn), the task's owner, or the
+main agent pane; the pane is written onto the task line as its owner.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --task ID                    Send only this task (its id, such as T3)
+    --pane PANE                  With --task: the pane to send it to, a pane id (%19) or window.pane (0.1)
+    --spawn KIND                 With --task: start a new agent pane for it (claude, codex, opencode, pi)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan start    # set the plan active, then launch the workspace or type the play into its main agent pane
+  workspace plan start --name api.worktree-x --json    # the same for one workspace by name, with a JSON action document
+  workspace plan start --task T4    # type task T4 into the task's owner pane, else the main agent pane, and write the pane onto the task
+  workspace plan start --task T4 --pane %23    # type task T4 into pane %23 of the workspace's session
+  workspace plan start --task T5 --spawn claude    # split a new pane, start Claude Code in it and type task T5 there
+--- stderr
+--- end
+### workspace plan start --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]"],"description":"Set status: active, then launch the workspace or send its agent the plan.\n\nLaunches the workspace with the implementation-plan play, or sends the main agent pane the play\nand \"Continue the plan.\" (a working pane is left alone).\n\nWith --task, sends that one task to --pane, a new agent pane (--spawn), the task's owner, or the\nmain agent pane; the pane is written onto the task line as its owner.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--task ID","description":"Send only this task (its id, such as T3)"},{"flags":"--pane PANE","description":"With --task: the pane to send it to, a pane id (%19) or window.pane (0.1)"},{"flags":"--spawn KIND","description":"With --task: start a new agent pane for it (claude, codex, opencode, pi)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan start","scenario":"set the plan active, then launch the workspace or type the play into its main agent pane"},{"command":"workspace plan start --name api.worktree-x --json","scenario":"the same for one workspace by name, with a JSON action document"},{"command":"workspace plan start --task T4","scenario":"type task T4 into the task's owner pane, else the main agent pane, and write the pane onto the task"},{"command":"workspace plan start --task T4 --pane %23","scenario":"type task T4 into pane %23 of the workspace's session"},{"command":"workspace plan start --task T5 --spawn claude","scenario":"split a new pane, start Claude Code in it and type task T5 there"}]}
+--- stderr
+--- end
+### workspace plan pause --help
+--- exit 0
+--- stdout
+Usage: workspace plan pause [--name WORKSPACE] [--interrupt] [--json]
+
+Set status: paused; the agent stops before its next task.
+
+Writes status: paused into the plan file for real. --interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --interrupt                  Interrupt the owner panes that are working
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan pause    # set status: paused; the agent stops before its next task and nothing is interrupted
+  workspace plan pause --interrupt    # also press the interrupt key in each owner pane that is working
+  workspace plan pause --name api.worktree-x --json    # pause one workspace by name, with a JSON action document
+--- stderr
+--- end
+### workspace plan pause --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan pause [--name WORKSPACE] [--interrupt] [--json]"],"description":"Set status: paused; the agent stops before its next task.\n\nWrites status: paused into the plan file for real. --interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--interrupt","description":"Interrupt the owner panes that are working"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan pause","scenario":"set status: paused; the agent stops before its next task and nothing is interrupted"},{"command":"workspace plan pause --interrupt","scenario":"also press the interrupt key in each owner pane that is working"},{"command":"workspace plan pause --name api.worktree-x --json","scenario":"pause one workspace by name, with a JSON action document"}]}
+--- stderr
+--- end
+### workspace plan delete --help
+--- exit 0
+--- stdout
+Usage: workspace plan delete [--name WORKSPACE] --yes [--json]
+
+Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>.
+
+Needs --yes, and then renames the plan file for real; the session and worktree stay.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --yes                        Confirm the delete
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan delete --yes    # rename the plan of the workspace you are in to IMPLEMENTATION_PLAN.md.deleted-<time> for real
+  workspace plan delete --name api.worktree-x --yes    # the same for one workspace by name
+  workspace plan delete --yes --json    # the same, with a JSON action document; with a plan there and no --yes it exits 1 with confirmation_required (no plan: no_plan)
+--- stderr
+--- end
+### workspace plan delete --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan delete [--name WORKSPACE] --yes [--json]"],"description":"Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>.\n\nNeeds --yes, and then renames the plan file for real; the session and worktree stay.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--yes","description":"Confirm the delete"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan delete --yes","scenario":"rename the plan of the workspace you are in to IMPLEMENTATION_PLAN.md.deleted-<time> for real"},{"command":"workspace plan delete --name api.worktree-x --yes","scenario":"the same for one workspace by name"},{"command":"workspace plan delete --yes --json","scenario":"the same, with a JSON action document; with a plan there and no --yes it exits 1 with confirmation_required (no plan: no_plan)"}]}
+--- stderr
+--- end
+### workspace plan task add --help
+--- exit 0
+--- stdout
+Usage: workspace plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]
+
+Add one task line to the plan.
+
+Writes one task line into the plan file for real. Blocked and skipped tasks need --reason.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --title TITLE                The new task's title
+    --id ID                      The new task's id (default: the next number after the plan's last id)
+    --state STATE                The task's state: done, in_progress, skipped, blocked or todo (default: todo)
+    --reason TEXT                Why a task is blocked or skipped
+    --phase NAME                 The ### heading to add under
+    --after ID                   Place the task after this task
+    --if-revision REV            Refuse with stale_revision unless the plan's revision is REV
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan task add --title "Write the docs"    # add a to-do task with the next free id to the plan of this workspace
+  workspace plan task add --title "Write the docs" --phase Docs    # add it under the ### Docs heading
+  workspace plan task add --title "Add the index" --id T7 --after T3    # give it the id T7 and put it after task T3
+  workspace plan task add --title "Wait for CI" --state blocked --reason "CI is down"    # add a blocked task; blocked and skipped need --reason
+  workspace plan task add --title "Write the docs" --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json    # refuse with stale_revision unless the plan is still at that revision (from plan status --json)
+--- stderr
+--- end
+### workspace plan task add --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]"],"description":"Add one task line to the plan.\n\nWrites one task line into the plan file for real. Blocked and skipped tasks need --reason.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--title TITLE","description":"The new task's title"},{"flags":"--id ID","description":"The new task's id (default: the next number after the plan's last id)"},{"flags":"--state STATE","description":"The task's state: done, in_progress, skipped, blocked or todo (default: todo)"},{"flags":"--reason TEXT","description":"Why a task is blocked or skipped"},{"flags":"--phase NAME","description":"The ### heading to add under"},{"flags":"--after ID","description":"Place the task after this task"},{"flags":"--if-revision REV","description":"Refuse with stale_revision unless the plan's revision is REV"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan task add --title \"Write the docs\"","scenario":"add a to-do task with the next free id to the plan of this workspace"},{"command":"workspace plan task add --title \"Write the docs\" --phase Docs","scenario":"add it under the ### Docs heading"},{"command":"workspace plan task add --title \"Add the index\" --id T7 --after T3","scenario":"give it the id T7 and put it after task T3"},{"command":"workspace plan task add --title \"Wait for CI\" --state blocked --reason \"CI is down\"","scenario":"add a blocked task; blocked and skipped need --reason"},{"command":"workspace plan task add --title \"Write the docs\" --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json","scenario":"refuse with stale_revision unless the plan is still at that revision (from plan status --json)"}]}
+--- stderr
+--- end
+### workspace plan task set-state --help
+--- exit 0
+--- stdout
+Usage: workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]
+
+Set one task's state.
+
+Rewrites one task line of the plan file for real. Blocked and skipped tasks need --reason.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --task ID                    The task (its id, such as T3)
+    --state STATE                The new state: done, in_progress, skipped, blocked or todo
+    --reason TEXT                Why a task is blocked or skipped
+    --if-revision REV            Refuse with stale_revision unless the plan's revision is REV
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan task set-state --task T3 --state done    # mark task T3 done in the plan of this workspace
+  workspace plan task set-state --task T3 --state in_progress    # mark it in progress
+  workspace plan task set-state --task T3 --state blocked --reason "needs the dev database"    # block it; blocked and skipped need --reason
+  workspace plan task set-state --task T3 --state done --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json    # refuse with stale_revision unless the plan is still at that revision (from plan status --json)
+--- stderr
+--- end
+### workspace plan task set-state --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]"],"description":"Set one task's state.\n\nRewrites one task line of the plan file for real. Blocked and skipped tasks need --reason.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--task ID","description":"The task (its id, such as T3)"},{"flags":"--state STATE","description":"The new state: done, in_progress, skipped, blocked or todo"},{"flags":"--reason TEXT","description":"Why a task is blocked or skipped"},{"flags":"--if-revision REV","description":"Refuse with stale_revision unless the plan's revision is REV"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan task set-state --task T3 --state done","scenario":"mark task T3 done in the plan of this workspace"},{"command":"workspace plan task set-state --task T3 --state in_progress","scenario":"mark it in progress"},{"command":"workspace plan task set-state --task T3 --state blocked --reason \"needs the dev database\"","scenario":"block it; blocked and skipped need --reason"},{"command":"workspace plan task set-state --task T3 --state done --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json","scenario":"refuse with stale_revision unless the plan is still at that revision (from plan status --json)"}]}
+--- stderr
+--- end
+### workspace plan task set-title --help
+--- exit 0
+--- stdout
+Usage: workspace plan task set-title --task ID --title TEXT [--if-revision REV] [--name WORKSPACE] [--json]
+
+Change one task's title.
+
+Rewrites one task line of the plan file for real.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --task ID                    The task (its id, such as T3)
+    --title TITLE                The new title
+    --if-revision REV            Refuse with stale_revision unless the plan's revision is REV
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan task set-title --task T3 --title "Write the token store docs"    # change the title of task T3; its id, state and place stay
+  workspace plan task set-title --name api.worktree-x --task T3 --title "Write the docs"    # the same in the plan of one workspace by name
+  workspace plan task set-title --task T3 --title "Write the docs" --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json    # refuse with stale_revision unless the plan is still at that revision (from plan status --json)
+--- stderr
+--- end
+### workspace plan task set-title --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan task set-title --task ID --title TEXT [--if-revision REV] [--name WORKSPACE] [--json]"],"description":"Change one task's title.\n\nRewrites one task line of the plan file for real.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--task ID","description":"The task (its id, such as T3)"},{"flags":"--title TITLE","description":"The new title"},{"flags":"--if-revision REV","description":"Refuse with stale_revision unless the plan's revision is REV"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan task set-title --task T3 --title \"Write the token store docs\"","scenario":"change the title of task T3; its id, state and place stay"},{"command":"workspace plan task set-title --name api.worktree-x --task T3 --title \"Write the docs\"","scenario":"the same in the plan of one workspace by name"},{"command":"workspace plan task set-title --task T3 --title \"Write the docs\" --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json","scenario":"refuse with stale_revision unless the plan is still at that revision (from plan status --json)"}]}
+--- stderr
+--- end
+### workspace plan task move --help
+--- exit 0
+--- stdout
+Usage: workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]
+
+Move one task line.
+
+Moves it after or before another task, or to the end of a phase, in the plan file for real.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --task ID                    The task (its id, such as T3)
+    --after ID                   Place the task after this task
+    --before ID                  Place the task before this task
+    --phase NAME                 Move to the end of this phase
+    --if-revision REV            Refuse with stale_revision unless the plan's revision is REV
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace plan task move --task T5 --after T1    # move task T5 to just after task T1
+  workspace plan task move --task T5 --before T2    # move task T5 to just before task T2
+  workspace plan task move --task T5 --phase Docs    # move task T5 to the end of the ### Docs phase
+  workspace plan task move --task T5 --after T1 --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json    # refuse with stale_revision unless the plan is still at that revision (from plan status --json)
+--- stderr
+--- end
+### workspace plan task move --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]"],"description":"Move one task line.\n\nMoves it after or before another task, or to the end of a phase, in the plan file for real.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--task ID","description":"The task (its id, such as T3)"},{"flags":"--after ID","description":"Place the task after this task"},{"flags":"--before ID","description":"Place the task before this task"},{"flags":"--phase NAME","description":"Move to the end of this phase"},{"flags":"--if-revision REV","description":"Refuse with stale_revision unless the plan's revision is REV"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan task move --task T5 --after T1","scenario":"move task T5 to just after task T1"},{"command":"workspace plan task move --task T5 --before T2","scenario":"move task T5 to just before task T2"},{"command":"workspace plan task move --task T5 --phase Docs","scenario":"move task T5 to the end of the ### Docs phase"},{"command":"workspace plan task move --task T5 --after T1 --if-revision 41ec0bd7d8c4ac1b1fb22f22d36eba02a1c9aa56022052bfd20e2b3bf8c030a9 --json","scenario":"refuse with stale_revision unless the plan is still at that revision (from plan status --json)"}]}
+--- stderr
+--- end
+### workspace plan --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace plan --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace plan
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: one of status, path, show, init, start, pause, delete, task.
+
+Usage: workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]
+       workspace plan path [--name WORKSPACE] [--json]
+       workspace plan show [--name WORKSPACE]
+       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]
+       workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]
+       workspace plan pause [--name WORKSPACE] [--interrupt] [--json]
+       workspace plan delete [--name WORKSPACE] --yes [--json]
+       workspace plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]
+       workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]
+       workspace plan task set-title --task ID --title TEXT [--if-revision REV] [--name WORKSPACE] [--json]
+       workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]
+
+A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist
+line per task under '## Tasks'. workspace counts it, and works out one state from the
+plan, the session and the pane that owns the plan.
+
+Subcommands:
+  status          Count the plan and report its state
+  path            Print where the plan is (or would be)
+  show            Print the plan file
+  init            Write a new plan, or import an existing document with --from
+  start           Set status: active, then launch the workspace or send its agent the plan
+  pause           Set status: paused; the agent stops before its next task
+  delete          Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>
+  task add        Add one task line to the plan
+  task set-state  Set one task's state
+  task set-title  Change one task's title
+  task move       Move one task line
+Run `workspace plan VERB --help` for a verb's options. Task states: done, in_progress, skipped, blocked, todo.
+
+A verb that writes (init, start, pause, delete, task) changes the plan or the workspace for real.
+
+        --name NAME                  Workspace to act on instead of the one detected from the current directory
+        --project [NAME]             status: every workspace of a project (NAME, or the project of the current workspace)
+        --all                        status: every workspace
+        --group GROUP                status: every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)
+        --file PATH                  status: read any file, with no workspace and a state from the file alone
+        --title TITLE                init: the plan's title (default: the workspace task's title); task add: the task's title; task set-title: the new title
+        --from FILE                  init: import this document as the plan
+        --force                      init: replace a plan that is already there
+        --yes                        delete: confirm the delete
+        --task ID                    start: send only this task; task set-state, set-title and move: the task (its id, such as T3)
+        --id ID                      task add: the new task's id (default: the next number after the plan's last id)
+        --state STATE                task add and set-state: done, in_progress, skipped, blocked, todo
+        --reason TEXT                task add and set-state: why a task is blocked or skipped
+        --phase NAME                 task add: the ### heading to add under; task move: move to the end of this phase
+        --after ID                   task add and move: place the task after this task
+        --before ID                  task move: place the task before this task
+        --if-revision REV            task: refuse with stale_revision unless the plan's revision is REV
+        --pane PANE                  start --task: the pane to send it to, a pane id (%19) or window.pane (0.1)
+        --spawn KIND                 start --task: start a new agent pane for it (claude, codex, opencode, pi)
+        --interrupt                  pause: interrupt the owner panes that are working
+        --json                       Print one JSON document (see docs/README.plan.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace plan status    # the plan of the workspace you are in, e.g. api.worktree-x  working  7/20 (40%)  T9 Add the token store
+  workspace plan status --all --json    # every workspace, as one JSON document
+  workspace plan path    # where the plan file is, e.g. /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md
+  workspace plan init --title "Auth rewrite"    # write a new plan
+  workspace plan start    # set it active, then launch the workspace or type the play into its agent pane
+  workspace plan start --task T4 --pane %23    # type one task into pane %23
+  workspace plan pause --interrupt    # stop after the current task and interrupt the working owner panes
+  workspace plan task add --title "Write the docs" --phase Docs    # add a task under the ### Docs heading
+  workspace plan task set-state --task T3 --state blocked --reason "needs the dev database"    # block a task
+  workspace plan delete --yes    # rename the plan file to IMPLEMENTATION_PLAN.md.deleted-<time>
+--- end

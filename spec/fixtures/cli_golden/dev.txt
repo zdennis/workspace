@@ -1,0 +1,502 @@
+### workspace dev --help
+--- exit 0
+--- stdout
+Usage: workspace dev <subcommand> [options]
+
+Runs one dev environment per repository, guarded by the repo-wide
+devenv lock. The command comes from the parent project's config:
+  workspace config set dev.up "./start-dev"
+  workspace config set dev.ready "port:3000"    (or a shell command)
+  workspace config set dev.stop_timeout 20s
+  workspace config set dev.startup_timeout 30s  (default: 30s)
+  workspace config set dev.ready_timeout 2m      (default: 120s)
+
+Subcommands:
+  up      Start this worktree's dev environment in a devenv tmux window
+  down    Stop this worktree's dev environment
+  status  Show the dev environment's holder, uptime, pane, readiness and queue
+  wait    Block until this worktree holds the dev environment and it is ready
+  leave   Take this worktree out of the line for the dev environment
+
+Run `workspace dev VERB --help` for a verb's options and examples.
+`up` starts the dev command for real; `down` and `up --force` stop a running dev
+env for real (SIGTERM to its process group, SIGKILL after dev.stop_timeout).
+
+Options (every subcommand):
+  --name WS         Act on workspace WS instead of the one detected from the
+                    current directory (the same as the WS argument); outside any
+                    workspace and with neither, it fails with not_in_workspace
+
+Options (up):
+  --wait            Queue behind another worktree's dev env
+  --queue           Queue like --wait but return at once (exit 0), without
+                    waiting for the lock or the ready check; follow with
+                    `dev wait`. Not with --force or --max-wait.
+  --force           Stop another worktree's dev env, then start this one
+                    (--takeover, the old flag, still works; unrelated to
+                    `down --force`)
+  --no-ready        Don't wait for the dev.ready check
+  --max-wait DUR    Give up after DUR, e.g. "9m" (a plain number is seconds;
+                    exit 75; implies --wait). With --force, it limits
+                    the whole switch.
+
+Options (wait):
+  --no-ready        Don't wait for the dev.ready check
+  --max-wait DUR    Give up after DUR (exit 75); the worktree stays queued
+                    until `dev leave`
+
+Options (down):
+  --force           Also kill a process group left behind by a dead wrapper
+
+Note: `up` from the worktree that already holds the devenv lock is
+a no-op (exit 0); it doesn't restart the dev command.
+
+Workflow runs: while a run holds the devenv lock, `up` from the pane
+bound to that run starts the dev env at once, under the run's lock;
+`down` stops it and the lock stays with the run. From anywhere else
+`up` is refused (exit 1): --wait queues behind the run, and --force
+does not take the lock from a run.
+
+Exit codes (up):
+  0   running (or already running for this worktree)
+  1   running for another worktree (without --wait/--force), or failed to start;
+      also a --force whose target is already being stopped by another
+      `lock clear`/`dev down`/`dev up --force`
+  4   devenv lock cleared while waiting
+  6   ready check failed (the env is stopped and the lock released)
+  75  still queued after --max-wait
+
+Exit codes (wait):
+  0   this worktree holds the dev env and it is ready
+  1   the queued wrapper exited
+  4   the lock was cleared while waiting, or this worktree is not queued
+  6   ready check failed
+  75  still queued after --max-wait
+
+Exit codes (leave):
+  0   left the line, or this worktree was not in it
+
+Exit codes (down):
+  0   stopped (or nothing was running)
+  1   could not stop the process group, or it's already being stopped by
+      another `lock clear`/`dev down`/`dev up --force`
+
+Examples:
+  workspace dev up    # start this worktree's dev env and wait until it is ready
+  workspace dev up --wait --max-wait 10m    # wait in line for another worktree's env, up to 10 minutes (exit 75)
+  workspace dev up --queue && workspace dev wait --max-wait 10m    # get in line at once, then block until ready (blocks: run it in the background)
+  workspace dev leave    # give up this worktree's place in the line
+  workspace dev up --force    # stop another worktree's env and start this one
+  workspace dev status    # who holds the dev env, for how long, and who is queued
+  workspace dev status api-fix    # the same, asked for a named workspace
+  workspace dev down    # stop this worktree's dev env
+--- stderr
+--- end
+### workspace dev --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace dev <subcommand> [options]"],"description":"Runs one dev environment per repository, guarded by the repo-wide","options":[],"examples":[{"command":"workspace dev up","scenario":"start this worktree's dev env and wait until it is ready"},{"command":"workspace dev up --wait --max-wait 10m","scenario":"wait in line for another worktree's env, up to 10 minutes (exit 75)"},{"command":"workspace dev up --queue && workspace dev wait --max-wait 10m","scenario":"get in line at once, then block until ready (blocks: run it in the background)"},{"command":"workspace dev leave","scenario":"give up this worktree's place in the line"},{"command":"workspace dev up --force","scenario":"stop another worktree's env and start this one"},{"command":"workspace dev status","scenario":"who holds the dev env, for how long, and who is queued"},{"command":"workspace dev status api-fix","scenario":"the same, asked for a named workspace"},{"command":"workspace dev down","scenario":"stop this worktree's dev env"}],"sections":[{"heading":"devenv lock. The command comes from the parent project's config","text":"workspace config set dev.up \"./start-dev\"\n  workspace config set dev.ready \"port:3000\"    (or a shell command)\n  workspace config set dev.stop_timeout 20s\n  workspace config set dev.startup_timeout 30s  (default: 30s)\n  workspace config set dev.ready_timeout 2m      (default: 120s)"},{"heading":"Subcommands","text":"up      Start this worktree's dev environment in a devenv tmux window\n  down    Stop this worktree's dev environment\n  status  Show the dev environment's holder, uptime, pane, readiness and queue\n  wait    Block until this worktree holds the dev environment and it is ready\n  leave   Take this worktree out of the line for the dev environment\n\nRun `workspace dev VERB --help` for a verb's options and examples.\n`up` starts the dev command for real; `down` and `up --force` stop a running dev\nenv for real (SIGTERM to its process group, SIGKILL after dev.stop_timeout)."},{"heading":"Options (every subcommand)","text":"--name WS         Act on workspace WS instead of the one detected from the\n                    current directory (the same as the WS argument); outside any\n                    workspace and with neither, it fails with not_in_workspace"},{"heading":"Options (up)","text":"--wait            Queue behind another worktree's dev env\n  --queue           Queue like --wait but return at once (exit 0), without\n                    waiting for the lock or the ready check; follow with\n                    `dev wait`. Not with --force or --max-wait.\n  --force           Stop another worktree's dev env, then start this one\n                    (--takeover, the old flag, still works; unrelated to\n                    `down --force`)\n  --no-ready        Don't wait for the dev.ready check\n  --max-wait DUR    Give up after DUR, e.g. \"9m\" (a plain number is seconds;\n                    exit 75; implies --wait). With --force, it limits\n                    the whole switch."},{"heading":"Options (wait)","text":"--no-ready        Don't wait for the dev.ready check\n  --max-wait DUR    Give up after DUR (exit 75); the worktree stays queued\n                    until `dev leave`"},{"heading":"Options (down)","text":"--force           Also kill a process group left behind by a dead wrapper\n\nNote: `up` from the worktree that already holds the devenv lock is\na no-op (exit 0); it doesn't restart the dev command.\n\nWorkflow runs: while a run holds the devenv lock, `up` from the pane\nbound to that run starts the dev env at once, under the run's lock;\n`down` stops it and the lock stays with the run. From anywhere else\n`up` is refused (exit 1): --wait queues behind the run, and --force\ndoes not take the lock from a run."},{"heading":"Exit codes (up)","text":"0   running (or already running for this worktree)\n  1   running for another worktree (without --wait/--force), or failed to start;\n      also a --force whose target is already being stopped by another\n      `lock clear`/`dev down`/`dev up --force`\n  4   devenv lock cleared while waiting\n  6   ready check failed (the env is stopped and the lock released)\n  75  still queued after --max-wait"},{"heading":"Exit codes (wait)","text":"0   this worktree holds the dev env and it is ready\n  1   the queued wrapper exited\n  4   the lock was cleared while waiting, or this worktree is not queued\n  6   ready check failed\n  75  still queued after --max-wait"},{"heading":"Exit codes (leave)","text":"0   left the line, or this worktree was not in it"},{"heading":"Exit codes (down)","text":"0   stopped (or nothing was running)\n  1   could not stop the process group, or it's already being stopped by\n      another `lock clear`/`dev down`/`dev up --force`"}]}
+--- stderr
+--- end
+### workspace dev up --help
+--- exit 0
+--- stdout
+Usage: workspace dev up [WS] [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]
+
+Start this worktree's dev environment in a devenv tmux window.
+
+Starts the project's dev.up command for real, in a `devenv` window of the workspace's tmux session, then
+waits until it runs and dev.ready passes. It needs dev.up set (`workspace config set dev.up "..."`) and
+a tmux session. One dev environment runs per repository, held by the devenv lock; `up` from the worktree
+that already holds it does nothing (exit 0). WS defaults to the current directory's workspace (not_in_workspace outside one).
+
+When another worktree holds it, plain `up` exits 1. --wait queues behind it and blocks until its turn:
+run it in the background, or use --queue and then `dev wait`. --force stops the other worktree's dev
+environment for real (SIGTERM, then SIGKILL after dev.stop_timeout) and starts this one.
+While a workflow run holds the lock, only the pane bound to that run can start it; --force never takes
+the lock from a run.
+
+Exit codes:
+  0   running (or already running for this worktree), or in line with --queue
+  1   running for another worktree (without --wait/--force), failed to start, or a --force whose target
+      is already being stopped by another `lock clear`, `dev down` or `dev up --force`
+  4   the devenv lock was cleared while waiting
+  6   the ready check failed (the environment is stopped; the lock is released, or stays with its run)
+  75  gave up after --max-wait; the queued wrapper was stopped, so this worktree is no longer in line
+
+Options:
+    --name NAME                  Same as the WS argument (default: the workspace of the current directory)
+    --wait                       Queue behind another worktree's dev environment
+    --queue                      Like --wait but return at once (exit 0) once running or in line; follow with `dev wait`. Not with --force or --max-wait
+    --force, --takeover          Stop another worktree's dev environment, then start this one (unrelated to `down --force`)
+    --no-ready                   Do not wait for the dev.ready check
+    --max-wait DURATION          Give up after DURATION, e.g. "9m" (a plain number is seconds); exits 75; implies --wait. With --force it limits the wait to get ahead in line
+    --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace dev up    # start this worktree's dev environment and wait until it is ready
+  workspace dev up --queue    # start it, or get in line behind another worktree's, and return at once
+  workspace dev up --max-wait 10m    # wait in line for another worktree's environment, giving up after 10 minutes with exit 75 (the queued wrapper is stopped, so you are no longer in line)
+  workspace dev up --force    # stop another worktree's environment and start this one
+  workspace dev up --no-ready    # return once the process runs, without waiting for dev.ready
+  workspace dev up api-fix --json    # start the environment of workspace api-fix and print one action document
+--- stderr
+--- end
+### workspace dev up --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace dev up [WS] [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]"],"description":"Start this worktree's dev environment in a devenv tmux window.\n\nStarts the project's dev.up command for real, in a `devenv` window of the workspace's tmux session, then\nwaits until it runs and dev.ready passes. It needs dev.up set (`workspace config set dev.up \"...\"`) and\na tmux session. One dev environment runs per repository, held by the devenv lock; `up` from the worktree\nthat already holds it does nothing (exit 0). WS defaults to the current directory's workspace (not_in_workspace outside one).","options":[{"flags":"--name NAME","description":"Same as the WS argument (default: the workspace of the current directory)"},{"flags":"--wait","description":"Queue behind another worktree's dev environment"},{"flags":"--queue","description":"Like --wait but return at once (exit 0) once running or in line; follow with `dev wait`. Not with --force or --max-wait"},{"flags":"--force, --takeover","description":"Stop another worktree's dev environment, then start this one (unrelated to `down --force`)"},{"flags":"--no-ready","description":"Do not wait for the dev.ready check"},{"flags":"--max-wait DURATION","description":"Give up after DURATION, e.g. \"9m\" (a plain number is seconds); exits 75; implies --wait. With --force it limits the wait to get ahead in line"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace dev up","scenario":"start this worktree's dev environment and wait until it is ready"},{"command":"workspace dev up --queue","scenario":"start it, or get in line behind another worktree's, and return at once"},{"command":"workspace dev up --max-wait 10m","scenario":"wait in line for another worktree's environment, giving up after 10 minutes with exit 75 (the queued wrapper is stopped, so you are no longer in line)"},{"command":"workspace dev up --force","scenario":"stop another worktree's environment and start this one"},{"command":"workspace dev up --no-ready","scenario":"return once the process runs, without waiting for dev.ready"},{"command":"workspace dev up api-fix --json","scenario":"start the environment of workspace api-fix and print one action document"}],"sections":[{"heading":"When another worktree holds it, plain `up` exits 1. --wait queues behind it and blocks until its turn","text":"run it in the background, or use --queue and then `dev wait`. --force stops the other worktree's dev\nenvironment for real (SIGTERM, then SIGKILL after dev.stop_timeout) and starts this one.\nWhile a workflow run holds the lock, only the pane bound to that run can start it; --force never takes\nthe lock from a run."},{"heading":"Exit codes","text":"0   running (or already running for this worktree), or in line with --queue\n  1   running for another worktree (without --wait/--force), failed to start, or a --force whose target\n      is already being stopped by another `lock clear`, `dev down` or `dev up --force`\n  4   the devenv lock was cleared while waiting\n  6   the ready check failed (the environment is stopped; the lock is released, or stays with its run)\n  75  gave up after --max-wait; the queued wrapper was stopped, so this worktree is no longer in line"}]}
+--- stderr
+--- end
+### workspace dev down --help
+--- exit 0
+--- stdout
+Usage: workspace dev down [WS] [--force] [--json]
+
+Stop this worktree's dev environment.
+
+Stops the running dev environment for real: SIGTERM to its process group, SIGKILL after
+dev.stop_timeout, and the lock is released. With nothing running it says so and exits 0. WS defaults to the current directory's workspace (not_in_workspace outside one).
+
+When another worktree holds the lock, `down` refuses with the error code dev_held_by (exit 1) unless
+--force is given. A dev environment a workflow run started is stopped too, and the lock stays with the run.
+Exits 1 when the process group could not be stopped or another `lock clear`, `dev down` or
+`dev up --force` is already stopping it.
+
+Options:
+    --name NAME                  Same as the WS argument (default: the workspace of the current directory)
+    --force                      Stop a dev environment another worktree holds, and kill a process group left behind by a dead wrapper
+    --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace dev down    # stop this worktree's dev environment
+  workspace dev down api-fix    # stop the dev environment of workspace api-fix
+  workspace dev down --force    # stop another worktree's environment, or the processes a dead wrapper left behind
+  workspace dev down --json    # stop it and print one action document, for a script
+--- stderr
+--- end
+### workspace dev down --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace dev down [WS] [--force] [--json]"],"description":"Stop this worktree's dev environment.\n\nStops the running dev environment for real: SIGTERM to its process group, SIGKILL after\ndev.stop_timeout, and the lock is released. With nothing running it says so and exits 0. WS defaults to the current directory's workspace (not_in_workspace outside one).\n\nWhen another worktree holds the lock, `down` refuses with the error code dev_held_by (exit 1) unless\n--force is given. A dev environment a workflow run started is stopped too, and the lock stays with the run.\nExits 1 when the process group could not be stopped or another `lock clear`, `dev down` or\n`dev up --force` is already stopping it.","options":[{"flags":"--name NAME","description":"Same as the WS argument (default: the workspace of the current directory)"},{"flags":"--force","description":"Stop a dev environment another worktree holds, and kill a process group left behind by a dead wrapper"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace dev down","scenario":"stop this worktree's dev environment"},{"command":"workspace dev down api-fix","scenario":"stop the dev environment of workspace api-fix"},{"command":"workspace dev down --force","scenario":"stop another worktree's environment, or the processes a dead wrapper left behind"},{"command":"workspace dev down --json","scenario":"stop it and print one action document, for a script"}]}
+--- stderr
+--- end
+### workspace dev status --help
+--- exit 0
+--- stdout
+Usage: workspace dev status [WS] [--json]
+
+Show the dev environment's holder, uptime, pane, readiness and queue.
+
+Changes nothing, but while the environment runs it runs the dev.ready check to report readiness. WS defaults to the current directory's workspace (not_in_workspace outside one).
+It describes the repository's one dev environment, so any workspace of the repository shows the same
+holder and queue. The --json document is described in docs/README.dev.md.
+
+Options:
+    --name NAME                  Same as the WS argument (default: the workspace of the current directory)
+    --json                       Print the documented JSON (see docs/README.dev.md) instead of text
+    -h, --help                   Show this help
+
+Examples:
+  workspace dev status    # who holds the dev environment, for how long, and who is queued
+  workspace dev status api-fix    # the same, asked for workspace api-fix
+  workspace dev status --json    # holder, readiness and queue as JSON, for a script
+--- stderr
+--- end
+### workspace dev status --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace dev status [WS] [--json]"],"description":"Show the dev environment's holder, uptime, pane, readiness and queue.\n\nChanges nothing, but while the environment runs it runs the dev.ready check to report readiness. WS defaults to the current directory's workspace (not_in_workspace outside one).\nIt describes the repository's one dev environment, so any workspace of the repository shows the same\nholder and queue. The --json document is described in docs/README.dev.md.","options":[{"flags":"--name NAME","description":"Same as the WS argument (default: the workspace of the current directory)"},{"flags":"--json","description":"Print the documented JSON (see docs/README.dev.md) instead of text"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace dev status","scenario":"who holds the dev environment, for how long, and who is queued"},{"command":"workspace dev status api-fix","scenario":"the same, asked for workspace api-fix"},{"command":"workspace dev status --json","scenario":"holder, readiness and queue as JSON, for a script"}]}
+--- stderr
+--- end
+### workspace dev wait --help
+--- exit 0
+--- stdout
+Usage: workspace dev wait [WS] [--no-ready] [--max-wait DURATION] [--json]
+
+Block until this worktree holds the dev environment and it is ready.
+
+Follows up `dev up --queue`: this worktree must already hold the devenv lock or be in line for it, or
+it exits 4 with a message. Blocks until its turn comes, so run it in the background or give --max-wait.
+A --max-wait that passes leaves the worktree queued until `dev leave`. WS defaults to the current directory's workspace (not_in_workspace outside one).
+
+Exit codes:
+  0   this worktree holds the dev environment and it is ready
+  1   the queued wrapper exited
+  4   the lock was cleared while waiting, or this worktree is not queued
+  6   the ready check failed
+  75  still queued after --max-wait
+
+Options:
+    --name NAME                  Same as the WS argument (default: the workspace of the current directory)
+    --no-ready                   Do not wait for the dev.ready check
+    --max-wait DURATION          Give up after DURATION, e.g. "9m" (a plain number is seconds); exits 75 and stays queued
+    --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace dev wait    # after `dev up --queue`, block until this worktree runs the environment and it is ready; it blocks, so run it in the background
+  workspace dev wait --max-wait 10m    # give up after 10 minutes with exit 75; the worktree stays in line
+  workspace dev wait --no-ready    # return as soon as this worktree holds the lock
+  workspace dev wait api-fix --json    # wait for workspace api-fix and print one action document
+--- stderr
+--- end
+### workspace dev wait --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace dev wait [WS] [--no-ready] [--max-wait DURATION] [--json]"],"description":"Block until this worktree holds the dev environment and it is ready.\n\nFollows up `dev up --queue`: this worktree must already hold the devenv lock or be in line for it, or\nit exits 4 with a message. Blocks until its turn comes, so run it in the background or give --max-wait.\nA --max-wait that passes leaves the worktree queued until `dev leave`. WS defaults to the current directory's workspace (not_in_workspace outside one).","options":[{"flags":"--name NAME","description":"Same as the WS argument (default: the workspace of the current directory)"},{"flags":"--no-ready","description":"Do not wait for the dev.ready check"},{"flags":"--max-wait DURATION","description":"Give up after DURATION, e.g. \"9m\" (a plain number is seconds); exits 75 and stays queued"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace dev wait","scenario":"after `dev up --queue`, block until this worktree runs the environment and it is ready; it blocks, so run it in the background"},{"command":"workspace dev wait --max-wait 10m","scenario":"give up after 10 minutes with exit 75; the worktree stays in line"},{"command":"workspace dev wait --no-ready","scenario":"return as soon as this worktree holds the lock"},{"command":"workspace dev wait api-fix --json","scenario":"wait for workspace api-fix and print one action document"}],"sections":[{"heading":"Exit codes","text":"0   this worktree holds the dev environment and it is ready\n  1   the queued wrapper exited\n  4   the lock was cleared while waiting, or this worktree is not queued\n  6   the ready check failed\n  75  still queued after --max-wait"}]}
+--- stderr
+--- end
+### workspace dev leave --help
+--- exit 0
+--- stdout
+Usage: workspace dev leave [WS] [--json]
+
+Take this worktree out of the line for the dev environment.
+
+Stops this worktree's queued wrapper and closes its tmux window, for real. A worktree that is not in line
+is left as it is (exit 0): one that already runs the environment is stopped with `dev down`, not this. WS defaults to the current directory's workspace (not_in_workspace outside one).
+
+Options:
+    --name NAME                  Same as the WS argument (default: the workspace of the current directory)
+    --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace dev leave    # stop waiting after `dev up --queue` or `dev up --wait` and give up the place in line
+  workspace dev leave api-fix    # take workspace api-fix out of the line
+  workspace dev leave --json    # leave and print one action document (left or not_queued)
+--- stderr
+--- end
+### workspace dev leave --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace dev leave [WS] [--json]"],"description":"Take this worktree out of the line for the dev environment.\n\nStops this worktree's queued wrapper and closes its tmux window, for real. A worktree that is not in line\nis left as it is (exit 0): one that already runs the environment is stopped with `dev down`, not this. WS defaults to the current directory's workspace (not_in_workspace outside one).","options":[{"flags":"--name NAME","description":"Same as the WS argument (default: the workspace of the current directory)"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace dev leave","scenario":"stop waiting after `dev up --queue` or `dev up --wait` and give up the place in line"},{"command":"workspace dev leave api-fix","scenario":"take workspace api-fix out of the line"},{"command":"workspace dev leave --json","scenario":"leave and print one action document (left or not_queued)"}]}
+--- stderr
+--- end
+### workspace dev __run --help
+--- exit 0
+--- stdout
+Usage: workspace dev __run [--wait]
+
+Run the dev command under the devenv lock (internal: what `dev up` starts).
+
+Internal. `dev up` runs this in the devenv tmux window. Running it yourself starts dev.up for real in this
+terminal; without dev.up set it exits 1 with an error. It holds the devenv lock for exactly as long as
+the project's dev.up command runs in the foreground of this terminal, then releases it. It must lead its
+own process group (start it from `dev up` or an interactive shell). Without --wait, a lock held by
+someone else exits 1 with an error. The environment WORKSPACE_DEV_TAKEOVER=1 queues it ahead of everyone
+(what `dev up --force` sets). Its exit status is the dev command's.
+
+Options:
+    --wait                       Queue for the devenv lock instead of failing when it is held
+    -h, --help                   Show this help
+
+Examples:
+  workspace dev __run    # run the dev command in this terminal, failing if the lock is held
+  workspace dev __run --wait    # queue for the lock, then run (what `dev up --wait` opens)
+  WORKSPACE_DEV_TAKEOVER=1 workspace dev __run --wait    # queue ahead of everyone (what `dev up --force` opens)
+--- stderr
+--- end
+### workspace dev __run --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace dev __run [--wait]"],"description":"Run the dev command under the devenv lock (internal: what `dev up` starts).\n\nInternal. `dev up` runs this in the devenv tmux window. Running it yourself starts dev.up for real in this\nterminal; without dev.up set it exits 1 with an error. It holds the devenv lock for exactly as long as\nthe project's dev.up command runs in the foreground of this terminal, then releases it. It must lead its\nown process group (start it from `dev up` or an interactive shell). Without --wait, a lock held by\nsomeone else exits 1 with an error. The environment WORKSPACE_DEV_TAKEOVER=1 queues it ahead of everyone\n(what `dev up --force` sets). Its exit status is the dev command's.","options":[{"flags":"--wait","description":"Queue for the devenv lock instead of failing when it is held"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace dev __run","scenario":"run the dev command in this terminal, failing if the lock is held"},{"command":"workspace dev __run --wait","scenario":"queue for the lock, then run (what `dev up --wait` opens)"},{"command":"WORKSPACE_DEV_TAKEOVER=1 workspace dev __run --wait","scenario":"queue ahead of everyone (what `dev up --force` opens)"}]}
+--- stderr
+--- end
+### workspace dev --bogus
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace dev <subcommand> [options]
+
+Runs one dev environment per repository, guarded by the repo-wide
+devenv lock. The command comes from the parent project's config:
+  workspace config set dev.up "./start-dev"
+  workspace config set dev.ready "port:3000"    (or a shell command)
+  workspace config set dev.stop_timeout 20s
+  workspace config set dev.startup_timeout 30s  (default: 30s)
+  workspace config set dev.ready_timeout 2m      (default: 120s)
+
+Subcommands:
+  up      Start this worktree's dev environment in a devenv tmux window
+  down    Stop this worktree's dev environment
+  status  Show the dev environment's holder, uptime, pane, readiness and queue
+  wait    Block until this worktree holds the dev environment and it is ready
+  leave   Take this worktree out of the line for the dev environment
+
+Run `workspace dev VERB --help` for a verb's options and examples.
+`up` starts the dev command for real; `down` and `up --force` stop a running dev
+env for real (SIGTERM to its process group, SIGKILL after dev.stop_timeout).
+
+Options (every subcommand):
+  --name WS         Act on workspace WS instead of the one detected from the
+                    current directory (the same as the WS argument); outside any
+                    workspace and with neither, it fails with not_in_workspace
+
+Options (up):
+  --wait            Queue behind another worktree's dev env
+  --queue           Queue like --wait but return at once (exit 0), without
+                    waiting for the lock or the ready check; follow with
+                    `dev wait`. Not with --force or --max-wait.
+  --force           Stop another worktree's dev env, then start this one
+                    (--takeover, the old flag, still works; unrelated to
+                    `down --force`)
+  --no-ready        Don't wait for the dev.ready check
+  --max-wait DUR    Give up after DUR, e.g. "9m" (a plain number is seconds;
+                    exit 75; implies --wait). With --force, it limits
+                    the whole switch.
+
+Options (wait):
+  --no-ready        Don't wait for the dev.ready check
+  --max-wait DUR    Give up after DUR (exit 75); the worktree stays queued
+                    until `dev leave`
+
+Options (down):
+  --force           Also kill a process group left behind by a dead wrapper
+
+Note: `up` from the worktree that already holds the devenv lock is
+a no-op (exit 0); it doesn't restart the dev command.
+
+Workflow runs: while a run holds the devenv lock, `up` from the pane
+bound to that run starts the dev env at once, under the run's lock;
+`down` stops it and the lock stays with the run. From anywhere else
+`up` is refused (exit 1): --wait queues behind the run, and --force
+does not take the lock from a run.
+
+Exit codes (up):
+  0   running (or already running for this worktree)
+  1   running for another worktree (without --wait/--force), or failed to start;
+      also a --force whose target is already being stopped by another
+      `lock clear`/`dev down`/`dev up --force`
+  4   devenv lock cleared while waiting
+  6   ready check failed (the env is stopped and the lock released)
+  75  still queued after --max-wait
+
+Exit codes (wait):
+  0   this worktree holds the dev env and it is ready
+  1   the queued wrapper exited
+  4   the lock was cleared while waiting, or this worktree is not queued
+  6   ready check failed
+  75  still queued after --max-wait
+
+Exit codes (leave):
+  0   left the line, or this worktree was not in it
+
+Exit codes (down):
+  0   stopped (or nothing was running)
+  1   could not stop the process group, or it's already being stopped by
+      another `lock clear`/`dev down`/`dev up --force`
+
+Examples:
+  workspace dev up    # start this worktree's dev env and wait until it is ready
+  workspace dev up --wait --max-wait 10m    # wait in line for another worktree's env, up to 10 minutes (exit 75)
+  workspace dev up --queue && workspace dev wait --max-wait 10m    # get in line at once, then block until ready (blocks: run it in the background)
+  workspace dev leave    # give up this worktree's place in the line
+  workspace dev up --force    # stop another worktree's env and start this one
+  workspace dev status    # who holds the dev env, for how long, and who is queued
+  workspace dev status api-fix    # the same, asked for a named workspace
+  workspace dev down    # stop this worktree's dev env
+--- end
+### workspace dev --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"Usage: workspace dev <subcommand> [options]","code":"usage"}
+--- stderr
+--- end
+### workspace dev
+--- exit 0
+--- stdout
+Usage: workspace dev <subcommand> [options]
+
+Runs one dev environment per repository, guarded by the repo-wide
+devenv lock. The command comes from the parent project's config:
+  workspace config set dev.up "./start-dev"
+  workspace config set dev.ready "port:3000"    (or a shell command)
+  workspace config set dev.stop_timeout 20s
+  workspace config set dev.startup_timeout 30s  (default: 30s)
+  workspace config set dev.ready_timeout 2m      (default: 120s)
+
+Subcommands:
+  up      Start this worktree's dev environment in a devenv tmux window
+  down    Stop this worktree's dev environment
+  status  Show the dev environment's holder, uptime, pane, readiness and queue
+  wait    Block until this worktree holds the dev environment and it is ready
+  leave   Take this worktree out of the line for the dev environment
+
+Run `workspace dev VERB --help` for a verb's options and examples.
+`up` starts the dev command for real; `down` and `up --force` stop a running dev
+env for real (SIGTERM to its process group, SIGKILL after dev.stop_timeout).
+
+Options (every subcommand):
+  --name WS         Act on workspace WS instead of the one detected from the
+                    current directory (the same as the WS argument); outside any
+                    workspace and with neither, it fails with not_in_workspace
+
+Options (up):
+  --wait            Queue behind another worktree's dev env
+  --queue           Queue like --wait but return at once (exit 0), without
+                    waiting for the lock or the ready check; follow with
+                    `dev wait`. Not with --force or --max-wait.
+  --force           Stop another worktree's dev env, then start this one
+                    (--takeover, the old flag, still works; unrelated to
+                    `down --force`)
+  --no-ready        Don't wait for the dev.ready check
+  --max-wait DUR    Give up after DUR, e.g. "9m" (a plain number is seconds;
+                    exit 75; implies --wait). With --force, it limits
+                    the whole switch.
+
+Options (wait):
+  --no-ready        Don't wait for the dev.ready check
+  --max-wait DUR    Give up after DUR (exit 75); the worktree stays queued
+                    until `dev leave`
+
+Options (down):
+  --force           Also kill a process group left behind by a dead wrapper
+
+Note: `up` from the worktree that already holds the devenv lock is
+a no-op (exit 0); it doesn't restart the dev command.
+
+Workflow runs: while a run holds the devenv lock, `up` from the pane
+bound to that run starts the dev env at once, under the run's lock;
+`down` stops it and the lock stays with the run. From anywhere else
+`up` is refused (exit 1): --wait queues behind the run, and --force
+does not take the lock from a run.
+
+Exit codes (up):
+  0   running (or already running for this worktree)
+  1   running for another worktree (without --wait/--force), or failed to start;
+      also a --force whose target is already being stopped by another
+      `lock clear`/`dev down`/`dev up --force`
+  4   devenv lock cleared while waiting
+  6   ready check failed (the env is stopped and the lock released)
+  75  still queued after --max-wait
+
+Exit codes (wait):
+  0   this worktree holds the dev env and it is ready
+  1   the queued wrapper exited
+  4   the lock was cleared while waiting, or this worktree is not queued
+  6   ready check failed
+  75  still queued after --max-wait
+
+Exit codes (leave):
+  0   left the line, or this worktree was not in it
+
+Exit codes (down):
+  0   stopped (or nothing was running)
+  1   could not stop the process group, or it's already being stopped by
+      another `lock clear`/`dev down`/`dev up --force`
+
+Examples:
+  workspace dev up    # start this worktree's dev env and wait until it is ready
+  workspace dev up --wait --max-wait 10m    # wait in line for another worktree's env, up to 10 minutes (exit 75)
+  workspace dev up --queue && workspace dev wait --max-wait 10m    # get in line at once, then block until ready (blocks: run it in the background)
+  workspace dev leave    # give up this worktree's place in the line
+  workspace dev up --force    # stop another worktree's env and start this one
+  workspace dev status    # who holds the dev env, for how long, and who is queued
+  workspace dev status api-fix    # the same, asked for a named workspace
+  workspace dev down    # stop this worktree's dev env
+--- stderr
+--- end

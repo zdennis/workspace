@@ -1,0 +1,46 @@
+#!/usr/bin/env ruby
+# Records what the CLI specs alone reach in lib/workspace/commands/ (S8 T39, repeated at T48):
+# runs only spec/**/cli_spec.rb and spec/**/cli/**/*_spec.rb with SimpleCov, then writes OUT
+# with each commands/ file's line coverage from that run and the Workspace::Commands public
+# methods the run called (traced by spec/support/commands_method_trace.rb).
+#
+#   script/record-cli-coverage OUT    e.g. spec/fixtures/cli_coverage_t39.json
+#
+# Overwrites coverage/ like any spec run. Writes nothing when a spec fails.
+
+require "fileutils"
+require "json"
+require "tmpdir"
+
+root = File.expand_path("..", __dir__)
+out = ARGV.first or abort "usage: script/record-cli-coverage OUT"
+out = File.expand_path(out)
+Dir.chdir(root)
+
+specs = (Dir["spec/**/cli_spec.rb"] + Dir["spec/**/cli/**/*_spec.rb"]).sort
+abort "no CLI specs found" if specs.empty?
+
+FileUtils.rm_f(Dir["coverage/.resultset.json*"])
+methods_file = File.join(Dir.mktmpdir("workspace-cli-coverage"), "methods.json")
+env = {"WORKSPACE_TRACE_COMMANDS" => methods_file, "SKIP_SIMPLECOV" => nil}
+abort "record-cli-coverage: the CLI specs failed; nothing written" unless system(env, "bundle", "exec", "rspec", *specs)
+
+resultset = JSON.parse(File.read("coverage/.resultset.json"))
+abort "record-cli-coverage: expected one SimpleCov result, found #{resultset.size}" unless resultset.size == 1
+coverage = resultset.values.first.fetch("coverage")
+
+files = Dir["lib/workspace/commands/**/*.rb"].sort.to_h do |file|
+  lines = coverage.dig(File.join(root, file), "lines") || []
+  relevant = lines.compact
+  covered = relevant.count(&:positive?)
+  percent = relevant.empty? ? 100.0 : (100.0 * covered / relevant.size).round(2)
+  [file, {"covered" => covered, "relevant" => relevant.size, "percent" => percent}]
+end
+
+document = {
+  "specs" => specs,
+  "commands_files" => files,
+  "reached_methods" => JSON.parse(File.read(methods_file))
+}
+File.write(out, JSON.pretty_generate(document) + "\n")
+puts "Wrote #{out}: #{files.size} commands/ files, #{document["reached_methods"].size} reached methods."

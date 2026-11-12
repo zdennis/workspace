@@ -70,7 +70,7 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
 
       def stop = nil
     end
-    Workspace::Commands::Agent.new(
+    build_agentd(
       config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config,
       pipeline_state: pipeline_state,

@@ -1,0 +1,84 @@
+### workspace add --help
+--- exit 0
+--- stdout
+Usage: workspace add [--json] <path> [path2] ...
+
+Add tmuxinator configs for project directories.
+Uses the directory name as the project name.
+For paths inside .worktrees/, prefixes with the repo name
+(e.g. repo/.worktrees/MYJIRA-123 → repo-MYJIRA-123).
+Does nothing if a config already exists.
+New names are lowercase. A name that differs only in case from another
+workspace's is refused (workspace_name_case_conflict); the same directory's
+mixed-case config is reused.
+A path that is not a directory, or whose name is refused, is skipped with an
+error message; the other paths are still added. Exit status: 0 if none was
+skipped, 3 if some were, 1 if all were (the same with --json).
+A new config for a path inside .worktrees/ also gets its notes directory
+set up (see 'workspace notes dir'): stored as the config's notes.dir,
+created, and kept out of git status. A problem there is a warning.
+
+Options:
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes
+                                     to stderr; one row per path, outcome created, exists or failed (reason not_a_directory or
+                                     workspace_name_case_conflict), with root and config_path. A failed path is skipped and the
+                                     others are added. Exit 0 if no row failed, 3 if some did, 1 if all did
+
+Examples:
+  workspace add ~/Code/my-project    # add a project by path
+  workspace add .    # add the current directory
+  workspace add ~/Code/project-a ~/Code/project-b    # add multiple projects
+  workspace add --json ~/Code/my-project    # created or exists, as JSON
+--- stderr
+--- end
+### workspace add --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace add [--json] <path> [path2] ..."],"description":"Add tmuxinator configs for project directories.\nUses the directory name as the project name.\nFor paths inside .worktrees/, prefixes with the repo name\n(e.g. repo/.worktrees/MYJIRA-123 → repo-MYJIRA-123).\nDoes nothing if a config already exists.\nNew names are lowercase. A name that differs only in case from another\nworkspace's is refused (workspace_name_case_conflict); the same directory's\nmixed-case config is reused.\nA path that is not a directory, or whose name is refused, is skipped with an\nerror message; the other paths are still added. Exit status: 0 if none was\nskipped, 3 if some were, 1 if all were (the same with --json).\nA new config for a path inside .worktrees/ also gets its notes directory\nset up (see 'workspace notes dir'): stored as the config's notes.dir,\ncreated, and kept out of git status. A problem there is a warning.","options":[{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr; one row per path, outcome created, exists or failed (reason not_a_directory or workspace_name_case_conflict), with root and config_path. A failed path is skipped and the others are added. Exit 0 if no row failed, 3 if some did, 1 if all did"}],"examples":[{"command":"workspace add ~/Code/my-project","scenario":"add a project by path"},{"command":"workspace add .","scenario":"add the current directory"},{"command":"workspace add ~/Code/project-a ~/Code/project-b","scenario":"add multiple projects"},{"command":"workspace add --json ~/Code/my-project","scenario":"created or exists, as JSON"}]}
+--- stderr
+--- end
+### workspace add --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace add --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace add
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace add [--json] <path> [path2] ...
+
+Add tmuxinator configs for project directories.
+Uses the directory name as the project name.
+For paths inside .worktrees/, prefixes with the repo name
+(e.g. repo/.worktrees/MYJIRA-123 → repo-MYJIRA-123).
+Does nothing if a config already exists.
+New names are lowercase. A name that differs only in case from another
+workspace's is refused (workspace_name_case_conflict); the same directory's
+mixed-case config is reused.
+A path that is not a directory, or whose name is refused, is skipped with an
+error message; the other paths are still added. Exit status: 0 if none was
+skipped, 3 if some were, 1 if all were (the same with --json).
+A new config for a path inside .worktrees/ also gets its notes directory
+set up (see 'workspace notes dir'): stored as the config's notes.dir,
+created, and kept out of git status. A problem there is a warning.
+
+Options:
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes
+                                     to stderr; one row per path, outcome created, exists or failed (reason not_a_directory or
+                                     workspace_name_case_conflict), with root and config_path. A failed path is skipped and the
+                                     others are added. Exit 0 if no row failed, 3 if some did, 1 if all did
+
+Examples:
+  workspace add ~/Code/my-project    # add a project by path
+  workspace add .    # add the current directory
+  workspace add ~/Code/project-a ~/Code/project-b    # add multiple projects
+  workspace add --json ~/Code/my-project    # created or exists, as JSON
+--- end

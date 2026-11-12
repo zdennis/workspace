@@ -1,0 +1,85 @@
+### workspace agentd --help
+--- exit 0
+--- stdout
+Usage: workspace agentd [PROJECT] [options]
+       workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]
+
+Run the long-lived workspace agent daemon for a project.
+Registers with the work-coordinator and serves commands until terminated.
+
+The workspace must already have a config; an unknown name is refused (unknown_workspace).
+A workspace with a mixed-case name is renamed to lowercase before the agent starts
+(see docs/README.agentd.md); a step that fails is a warning in the daemon log.
+
+Subcommands:
+  restart    Stop the agent running for the workspace and start a new one in the background;
+             see `workspace agentd restart --help`. A workspace named restart needs --name,
+             except with --force or --ensure, where restart is the workspace
+
+Options:
+        --name NAME                  Workspace name (defaults to the detected project or PROJECT)
+        --wc-socket PATH             Path to the work-coordinator socket
+    -f, --force                      Kill any running agent for this workspace before starting
+        --ensure                     Start the agent in the background unless one is already running (safe to repeat)
+
+Examples:
+  workspace agentd    # run for the project detected from the current directory
+  workspace agentd scooter --wc-socket /tmp/wc-dev.sock    # named project, non-default coordinator
+  workspace agentd --force    # replace the agent already running for this workspace
+  workspace agentd --ensure   # make sure one is running; exits 0 if it already was
+  workspace agentd restart    # stop the running agent and start a new one in the background
+--- stderr
+--- end
+### workspace agentd --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agentd [PROJECT] [options]","workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]"],"description":"Run the long-lived workspace agent daemon for a project.\nRegisters with the work-coordinator and serves commands until terminated.\n\nThe workspace must already have a config; an unknown name is refused (unknown_workspace).\nA workspace with a mixed-case name is renamed to lowercase before the agent starts\n(see docs/README.agentd.md); a step that fails is a warning in the daemon log.","options":[{"flags":"--name NAME","description":"Workspace name (defaults to the detected project or PROJECT)"},{"flags":"--wc-socket PATH","description":"Path to the work-coordinator socket"},{"flags":"-f, --force","description":"Kill any running agent for this workspace before starting"},{"flags":"--ensure","description":"Start the agent in the background unless one is already running (safe to repeat)"}],"examples":[{"command":"workspace agentd","scenario":"run for the project detected from the current directory"},{"command":"workspace agentd scooter --wc-socket /tmp/wc-dev.sock","scenario":"named project, non-default coordinator"},{"command":"workspace agentd --force","scenario":"replace the agent already running for this workspace"},{"command":"workspace agentd --ensure","scenario":"make sure one is running; exits 0 if it already was"},{"command":"workspace agentd restart","scenario":"stop the running agent and start a new one in the background"}],"sections":[{"heading":"Subcommands","text":"restart    Stop the agent running for the workspace and start a new one in the background;\n             see `workspace agentd restart --help`. A workspace named restart needs --name,\n             except with --force or --ensure, where restart is the workspace"}]}
+--- stderr
+--- end
+### workspace agentd restart --help
+--- exit 0
+--- stdout
+Usage: workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]
+
+Stop the agent daemon running for the workspace (SIGTERM, even one that no longer answers) and
+start a new one in the background, the way --ensure does: the terminal is not held, and the
+new agent's output goes to the daemon log (`workspace daemon log`). An agent run in a terminal
+is replaced by a background one. With none running, just start one. The same as
+`workspace daemon restart`.
+
+The new agent keeps the work-coordinator socket the old one was started with, unless
+--wc-socket names another.
+
+        --name NAME                  Workspace name (defaults to PROJECT or the project detected from the current directory)
+        --wc-socket PATH             Work-coordinator socket for the new agent (default: the old agent's)
+        --json                       Print one JSON action document (see docs/README.daemon.md)
+    -h, --help                       Show this help
+
+restart takes neither --force nor --ensure: with either one, `agentd restart` runs the agent
+for a workspace named restart.
+
+Examples:
+  workspace agentd restart    # the project detected from the current directory
+  workspace agentd restart scooter --wc-socket /tmp/wc-dev.sock    # a named project, the new agent on another coordinator socket
+  workspace agentd restart scooter --json    # a named project, one JSON action document
+  workspace agentd restart --name restart    # a workspace that is itself named restart
+--- stderr
+--- end
+### workspace agentd restart --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]"],"description":"Stop the agent daemon running for the workspace (SIGTERM, even one that no longer answers) and\nstart a new one in the background, the way --ensure does: the terminal is not held, and the\nnew agent's output goes to the daemon log (`workspace daemon log`). An agent run in a terminal\nis replaced by a background one. With none running, just start one. The same as\n`workspace daemon restart`.\n\nThe new agent keeps the work-coordinator socket the old one was started with, unless\n--wc-socket names another.\n\n        --name NAME                  Workspace name (defaults to PROJECT or the project detected from the current directory)\n        --wc-socket PATH             Work-coordinator socket for the new agent (default: the old agent's)\n        --json                       Print one JSON action document (see docs/README.daemon.md)\n    -h, --help                       Show this help\n\nrestart takes neither --force nor --ensure: with either one, `agentd restart` runs the agent\nfor a workspace named restart.","options":[],"examples":[{"command":"workspace agentd restart","scenario":"the project detected from the current directory"},{"command":"workspace agentd restart scooter --wc-socket /tmp/wc-dev.sock","scenario":"a named project, the new agent on another coordinator socket"},{"command":"workspace agentd restart scooter --json","scenario":"a named project, one JSON action document"},{"command":"workspace agentd restart --name restart","scenario":"a workspace that is itself named restart"}]}
+--- stderr
+--- end
+### workspace agentd --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace agentd --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end

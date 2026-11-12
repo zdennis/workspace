@@ -1,0 +1,145 @@
+### workspace review --help
+--- exit 0
+--- stdout
+Usage: workspace review show [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]
+       workspace review list [PROJECT] [--json]
+
+Collect what you need to review a coding agent's finished work. A workspace is ready
+when its agent is done (the Stop hook fired and no pane is working or waiting) and its
+branch has commits its base branch (origin's default branch) lacks. A stopped workspace
+is judged by its agent's last recorded state (agent_state_source "recorded" in --json).
+
+  show  Show one workspace's review summary; the default when no verb is given
+  list  List the project's workspaces that are ready for review
+Run `workspace review VERB --help` for a verb's options.
+
+Reads only; nothing is written. A source that can't answer (no agent daemon, git or gh
+failing or too slow) is reported as unavailable, never as clean.
+
+        --name WS                    For show: the workspace, as an option (same as the positional WORKSPACE)
+        --patch                      For show: include the unified patch of the diffstat's range (git.patch in --json)
+        --max-bytes N                For show --patch: most patch bytes to return, 1 to 5242880 (default 200000)
+        --json                       Print schema-versioned JSON (see docs/README.review.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace review    # the packet for the workspace in the current directory
+  workspace review list    # what is ready in this project
+  workspace review my-app.worktree-fix-login --json    # the packet for one workspace by name, as JSON
+  workspace review --patch --max-bytes 50000 --json    # the packet with the patch cut at 50000 bytes
+--- stderr
+--- end
+### workspace review --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace review show [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]","workspace review list [PROJECT] [--json]"],"description":"Collect what you need to review a coding agent's finished work. A workspace is ready\nwhen its agent is done (the Stop hook fired and no pane is working or waiting) and its\nbranch has commits its base branch (origin's default branch) lacks. A stopped workspace\nis judged by its agent's last recorded state (agent_state_source \"recorded\" in --json).\n\n  show  Show one workspace's review summary; the default when no verb is given\n  list  List the project's workspaces that are ready for review\nRun `workspace review VERB --help` for a verb's options.\n\nReads only; nothing is written. A source that can't answer (no agent daemon, git or gh\nfailing or too slow) is reported as unavailable, never as clean.\n\n        --name WS                    For show: the workspace, as an option (same as the positional WORKSPACE)\n        --patch                      For show: include the unified patch of the diffstat's range (git.patch in --json)\n        --max-bytes N                For show --patch: most patch bytes to return, 1 to 5242880 (default 200000)\n        --json                       Print schema-versioned JSON (see docs/README.review.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace review","scenario":"the packet for the workspace in the current directory"},{"command":"workspace review list","scenario":"what is ready in this project"},{"command":"workspace review my-app.worktree-fix-login --json","scenario":"the packet for one workspace by name, as JSON"},{"command":"workspace review --patch --max-bytes 50000 --json","scenario":"the packet with the patch cut at 50000 bytes"}]}
+--- stderr
+--- end
+### workspace review show --help
+--- exit 0
+--- stdout
+Usage: workspace review show [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]
+
+Show one workspace's review summary; the default when no verb is given.
+
+The summary has the agent state, task, diffstat and commits against the base, the pull request and
+its checks (read with `gh pr view`), open questions, session count and the agent's last message.
+WORKSPACE defaults to the one for the current directory. A workspace named "list" is reviewed with
+`review show list`. A stopped workspace is judged by its agent's last recorded state. Reads only; a
+source that can't answer (no agent daemon, git or gh failing or too slow) is reported as
+unavailable, never as clean.
+
+Options:
+    --name NAME                  The workspace, as an option (same as the positional WORKSPACE)
+    --patch                      Include the unified patch of the diffstat's range (git.patch in --json)
+    --max-bytes N                With --patch: most patch bytes to return, 1 to 5242880 (default 200000)
+    --json                       Print schema-versioned JSON (see docs/README.review.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace review show    # the review packet of the workspace in the current directory
+  workspace review show my-app.worktree-fix-login    # the packet of one workspace by name
+  workspace review show --name my-app.worktree-fix-login --json    # the same, with the workspace as an option and one JSON document
+  workspace review show --patch    # include the unified patch of the branch (cut at 200000 bytes)
+  workspace review show --patch --max-bytes 50000 --json    # the patch cut at 50000 bytes, in git.patch of the JSON document
+--- stderr
+--- end
+### workspace review show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace review show [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]"],"description":"Show one workspace's review summary; the default when no verb is given.\n\nThe summary has the agent state, task, diffstat and commits against the base, the pull request and\nits checks (read with `gh pr view`), open questions, session count and the agent's last message.\nWORKSPACE defaults to the one for the current directory. A workspace named \"list\" is reviewed with\n`review show list`. A stopped workspace is judged by its agent's last recorded state. Reads only; a\nsource that can't answer (no agent daemon, git or gh failing or too slow) is reported as\nunavailable, never as clean.","options":[{"flags":"--name NAME","description":"The workspace, as an option (same as the positional WORKSPACE)"},{"flags":"--patch","description":"Include the unified patch of the diffstat's range (git.patch in --json)"},{"flags":"--max-bytes N","description":"With --patch: most patch bytes to return, 1 to 5242880 (default 200000)"},{"flags":"--json","description":"Print schema-versioned JSON (see docs/README.review.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace review show","scenario":"the review packet of the workspace in the current directory"},{"command":"workspace review show my-app.worktree-fix-login","scenario":"the packet of one workspace by name"},{"command":"workspace review show --name my-app.worktree-fix-login --json","scenario":"the same, with the workspace as an option and one JSON document"},{"command":"workspace review show --patch","scenario":"include the unified patch of the branch (cut at 200000 bytes)"},{"command":"workspace review show --patch --max-bytes 50000 --json","scenario":"the patch cut at 50000 bytes, in git.patch of the JSON document"}]}
+--- stderr
+--- end
+### workspace review list --help
+--- exit 0
+--- stdout
+Usage: workspace review list [PROJECT] [--json]
+
+List the project's workspaces that are ready for review.
+
+A workspace is ready when its agent is done (the Stop hook fired and no pane is working or waiting)
+and its branch has commits its base branch (origin's default branch) lacks. PROJECT is a project
+name, a member workspace name or a path; it defaults to the current directory's. Runs git only for
+workspaces whose agent is done, and never calls gh. Reads only.
+
+Options:
+    --json                       Print schema-versioned JSON (see docs/README.review.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace review list    # the workspaces of the current directory's project that are ready for review
+  workspace review list my-app    # the same for the project my-app
+  workspace review list my-app --json    # one JSON document, for a script that picks the next workspace to review
+--- stderr
+--- end
+### workspace review list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace review list [PROJECT] [--json]"],"description":"List the project's workspaces that are ready for review.\n\nA workspace is ready when its agent is done (the Stop hook fired and no pane is working or waiting)\nand its branch has commits its base branch (origin's default branch) lacks. PROJECT is a project\nname, a member workspace name or a path; it defaults to the current directory's. Runs git only for\nworkspaces whose agent is done, and never calls gh. Reads only.","options":[{"flags":"--json","description":"Print schema-versioned JSON (see docs/README.review.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace review list","scenario":"the workspaces of the current directory's project that are ready for review"},{"command":"workspace review list my-app","scenario":"the same for the project my-app"},{"command":"workspace review list my-app --json","scenario":"one JSON document, for a script that picks the next workspace to review"}]}
+--- stderr
+--- end
+### workspace review --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace review --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace review
+--- exit 1
+--- stdout
+--- stderr
+Missing workspace name.
+
+Usage: workspace review show [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]
+       workspace review list [PROJECT] [--json]
+
+Collect what you need to review a coding agent's finished work. A workspace is ready
+when its agent is done (the Stop hook fired and no pane is working or waiting) and its
+branch has commits its base branch (origin's default branch) lacks. A stopped workspace
+is judged by its agent's last recorded state (agent_state_source "recorded" in --json).
+
+  show  Show one workspace's review summary; the default when no verb is given
+  list  List the project's workspaces that are ready for review
+Run `workspace review VERB --help` for a verb's options.
+
+Reads only; nothing is written. A source that can't answer (no agent daemon, git or gh
+failing or too slow) is reported as unavailable, never as clean.
+
+        --name WS                    For show: the workspace, as an option (same as the positional WORKSPACE)
+        --patch                      For show: include the unified patch of the diffstat's range (git.patch in --json)
+        --max-bytes N                For show --patch: most patch bytes to return, 1 to 5242880 (default 200000)
+        --json                       Print schema-versioned JSON (see docs/README.review.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace review    # the packet for the workspace in the current directory
+  workspace review list    # what is ready in this project
+  workspace review my-app.worktree-fix-login --json    # the packet for one workspace by name, as JSON
+  workspace review --patch --max-bytes 50000 --json    # the packet with the patch cut at 50000 bytes
+--- end

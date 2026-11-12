@@ -1,0 +1,60 @@
+### workspace lookup --help
+--- exit 0
+--- stdout
+Usage: workspace lookup <path|branch|project>
+
+Find a workspace project by worktree path, branch name, or project key.
+
+Arguments:
+  /path/to/.worktrees/pr-21291   Worktree directory path
+  pr-21291                       Branch name or project key
+  AIKYA-389-skip-validation      Full branch name
+
+Returns the workspace project name if found, or exits with status 1 if not found.
+
+Examples:
+  workspace lookup ~/src/api    # which workspace has this directory as its root
+  workspace lookup ~/src/api/lib    # a directory inside a project's root resolves to that project
+  workspace lookup PROJ-1876-use-lock-version    # which workspace is on this branch
+  workspace lookup api    # does a project by this name exist (exit status 1 if not)
+--- stderr
+--- end
+### workspace lookup --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace lookup <path|branch|project>"],"description":"Find a workspace project by worktree path, branch name, or project key.","options":[],"examples":[{"command":"workspace lookup ~/src/api","scenario":"which workspace has this directory as its root"},{"command":"workspace lookup ~/src/api/lib","scenario":"a directory inside a project's root resolves to that project"},{"command":"workspace lookup PROJ-1876-use-lock-version","scenario":"which workspace is on this branch"},{"command":"workspace lookup api","scenario":"does a project by this name exist (exit status 1 if not)"}],"sections":[{"heading":"Arguments","text":"/path/to/.worktrees/pr-21291   Worktree directory path\n  pr-21291                       Branch name or project key\n  AIKYA-389-skip-validation      Full branch name\n\nReturns the workspace project name if found, or exits with status 1 if not found."}]}
+--- stderr
+--- end
+### workspace lookup --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace lookup --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace lookup
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace lookup <path|branch|project>
+
+Find a workspace project by worktree path, branch name, or project key.
+
+Arguments:
+  /path/to/.worktrees/pr-21291   Worktree directory path
+  pr-21291                       Branch name or project key
+  AIKYA-389-skip-validation      Full branch name
+
+Returns the workspace project name if found, or exits with status 1 if not found.
+
+Examples:
+  workspace lookup ~/src/api    # which workspace has this directory as its root
+  workspace lookup ~/src/api/lib    # a directory inside a project's root resolves to that project
+  workspace lookup PROJ-1876-use-lock-version    # which workspace is on this branch
+  workspace lookup api    # does a project by this name exist (exit status 1 if not)
+--- end

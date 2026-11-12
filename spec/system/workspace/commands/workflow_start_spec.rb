@@ -62,7 +62,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
   end
 
   def build_engine(store: instance_double(Workspace::WorkflowRunStore, going: []), commands_config: instance_double(Workspace::CommandsConfig, for_project: {test: "rspec", lint: "standardrb"}))
-    Workspace::WorkflowEngine.new(
+    Workspace.build_workflow_engine(
       store: store, resources: instance_double(Workspace::RunResources), composer: instance_double(Workspace::InstructionComposer, compose: {"packs" => []}),
       panes: nil, checker: instance_double(Workspace::WorkflowCheck), commands_config: commands_config, lineage: lineage, git: git,
       guard: Workspace::WorkflowGuard.new, excludes: excludes, gate_note: instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil)

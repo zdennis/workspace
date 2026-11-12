@@ -1,0 +1,54 @@
+### workspace resize --help
+--- exit 0
+--- stdout
+Usage: workspace resize [project] <pane-spec>
+
+Resize tmux panes for a running workspace project.
+
+Pane spec is a comma-separated list of sizes, one per pane:
+  Rows:       10 or 10h     (absolute row count)
+  Percentage: 50%           (percentage of window height)
+  Skip:       (empty)       (leave pane as-is)
+
+Examples:
+  workspace resize myproject 15%,,35%      # pane 0=15%, skip 1, pane 2=35%
+  workspace resize myproject 10h,80%,20%   # pane 0=10 rows, 1=80%, 2=20%
+  workspace resize myproject 33%,33%,33%   # equal thirds
+--- stderr
+--- end
+### workspace resize --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace resize [project] <pane-spec>"],"description":"Resize tmux panes for a running workspace project.","options":[],"examples":[{"command":"workspace resize myproject 15%,,35%","scenario":"pane 0=15%, skip 1, pane 2=35%"},{"command":"workspace resize myproject 10h,80%,20%","scenario":"pane 0=10 rows, 1=80%, 2=20%"},{"command":"workspace resize myproject 33%,33%,33%","scenario":"equal thirds"}],"sections":[{"heading":"Pane spec is a comma-separated list of sizes, one per pane","text":"Rows:       10 or 10h     (absolute row count)\n  Percentage: 50%           (percentage of window height)\n  Skip:       (empty)       (leave pane as-is)"}]}
+--- stderr
+--- end
+### workspace resize --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace resize --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace resize
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace resize [project] <pane-spec>
+
+Resize tmux panes for a running workspace project.
+
+Pane spec is a comma-separated list of sizes, one per pane:
+  Rows:       10 or 10h     (absolute row count)
+  Percentage: 50%           (percentage of window height)
+  Skip:       (empty)       (leave pane as-is)
+
+Examples:
+  workspace resize myproject 15%,,35%      # pane 0=15%, skip 1, pane 2=35%
+  workspace resize myproject 10h,80%,20%   # pane 0=10 rows, 1=80%, 2=20%
+  workspace resize myproject 33%,33%,33%   # equal thirds
+--- end

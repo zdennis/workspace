@@ -75,7 +75,7 @@ class RecordingRunChange
     read = Workspace::WorkflowRun.from_h(stored)
     changed = yield(read, ctx) || read
     raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(Workspace::WorkflowRun)
-    stored.replace(changed.to_mutable_h)
+    stored.replace(changed.thawed)
     @deliveries << ctx.delivery if ctx.delivery
     changed
   end
@@ -215,7 +215,7 @@ class RecordingDispatch
     @calls << [:dispatch, run.id, {context: context, budgeted: budgeted, retry_of: retry_of}]
     ctx.deliver("step" => run.current)
     return run unless @appends
-    hash = run.to_mutable_h
+    hash = run.thawed
     attempts = hash["steps"][hash["current"]]["attempts"]
     attempts << {"n" => attempts.size + 1}
     Workspace::WorkflowRun.from_h(hash.merge("reason" => nil))
@@ -340,7 +340,7 @@ class RecordingAttemptRecord
   end
 
   def abandon(run)
-    hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
+    hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:abandon, hash["id"]]
     hash["steps"][hash["current"]]["attempts"].last&.merge!("outcome" => "abandoned")
     Workspace::WorkflowRun.from_h(hash)
@@ -397,20 +397,20 @@ class RecordingProgress
 
   def finish(run, state)
     @finished << Workspace::WorkflowRun.from_h(run)
-    hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
+    hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:finish, hash["id"], state]
     Workspace::WorkflowRun.from_h(hash.merge("state" => state))
   end
 
   def start_retry(run, waiting = nil, ctx:, proven: false, budgeted: true)
-    hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
+    hash = Workspace::WorkflowRun.from_h(run).thawed
     waiting ||= hash.delete("backoff")
     @calls << [:start_retry, hash["current"], waiting, {proven: proven, budgeted: budgeted}]
     Workspace::WorkflowRun.from_h(hash.merge("current" => waiting["to"], "reason" => nil))
   end
 
   def hold_retry(run, waiting, problem, pane: nil)
-    hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
+    hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:hold_retry, hash["current"], problem, {pane: pane}]
     Workspace::WorkflowRun.from_h(hash.merge("backoff" => waiting.merge("blocked" => problem[:code]),
       "reason" => {"code" => "waiting_you", "details" => {"message" => "#{problem[:message]}."}}))
@@ -424,7 +424,7 @@ class RecordingProgress
   private
 
   def marked(run, state)
-    hash = Workspace::WorkflowRun.from_h(run).to_mutable_h
+    hash = Workspace::WorkflowRun.from_h(run).thawed
     hash["steps"][hash["current"]]["state"] = state
     Workspace::WorkflowRun.from_h(hash)
   end
@@ -558,7 +558,7 @@ class RecordingEvaluation
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:evaluate, run.current]
     ctx.check(@check) if @check
-    @reason ? Workspace::WorkflowRun.from_h(run.to_mutable_h.merge("reason" => @reason)) : run
+    @reason ? Workspace::WorkflowRun.from_h(run.thawed.merge("reason" => @reason)) : run
   end
 
   def finish_check(run_id, check)

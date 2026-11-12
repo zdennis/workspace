@@ -1,0 +1,412 @@
+{
+  "specs": [
+    "spec/system/workspace/cli_spec.rb"
+  ],
+  "commands_files": {
+    "lib/workspace/commands/agent.rb": {
+      "covered": 56,
+      "relevant": 183,
+      "percent": 30.6
+    },
+    "lib/workspace/commands/agent_executables.rb": {
+      "covered": 14,
+      "relevant": 45,
+      "percent": 31.11
+    },
+    "lib/workspace/commands/agent_status.rb": {
+      "covered": 26,
+      "relevant": 61,
+      "percent": 42.62
+    },
+    "lib/workspace/commands/ask.rb": {
+      "covered": 31,
+      "relevant": 146,
+      "percent": 21.23
+    },
+    "lib/workspace/commands/binding.rb": {
+      "covered": 35,
+      "relevant": 42,
+      "percent": 83.33
+    },
+    "lib/workspace/commands/capabilities.rb": {
+      "covered": 17,
+      "relevant": 32,
+      "percent": 53.13
+    },
+    "lib/workspace/commands/capture.rb": {
+      "covered": 10,
+      "relevant": 18,
+      "percent": 55.56
+    },
+    "lib/workspace/commands/claude.rb": {
+      "covered": 21,
+      "relevant": 54,
+      "percent": 38.89
+    },
+    "lib/workspace/commands/cleanup.rb": {
+      "covered": 15,
+      "relevant": 61,
+      "percent": 24.59
+    },
+    "lib/workspace/commands/config.rb": {
+      "covered": 189,
+      "relevant": 320,
+      "percent": 59.06
+    },
+    "lib/workspace/commands/daemon.rb": {
+      "covered": 97,
+      "relevant": 216,
+      "percent": 44.91
+    },
+    "lib/workspace/commands/dev.rb": {
+      "covered": 120,
+      "relevant": 640,
+      "percent": 18.75
+    },
+    "lib/workspace/commands/ensure_agent.rb": {
+      "covered": 23,
+      "relevant": 51,
+      "percent": 45.1
+    },
+    "lib/workspace/commands/events.rb": {
+      "covered": 29,
+      "relevant": 62,
+      "percent": 46.77
+    },
+    "lib/workspace/commands/finish.rb": {
+      "covered": 37,
+      "relevant": 83,
+      "percent": 44.58
+    },
+    "lib/workspace/commands/focus.rb": {
+      "covered": 75,
+      "relevant": 82,
+      "percent": 91.46
+    },
+    "lib/workspace/commands/go.rb": {
+      "covered": 56,
+      "relevant": 254,
+      "percent": 22.05
+    },
+    "lib/workspace/commands/go_task.rb": {
+      "covered": 16,
+      "relevant": 44,
+      "percent": 36.36
+    },
+    "lib/workspace/commands/goal.rb": {
+      "covered": 57,
+      "relevant": 210,
+      "percent": 27.14
+    },
+    "lib/workspace/commands/groups.rb": {
+      "covered": 23,
+      "relevant": 86,
+      "percent": 26.74
+    },
+    "lib/workspace/commands/handoff.rb": {
+      "covered": 58,
+      "relevant": 220,
+      "percent": 26.36
+    },
+    "lib/workspace/commands/hooks.rb": {
+      "covered": 15,
+      "relevant": 41,
+      "percent": 36.59
+    },
+    "lib/workspace/commands/inbox.rb": {
+      "covered": 121,
+      "relevant": 541,
+      "percent": 22.37
+    },
+    "lib/workspace/commands/init.rb": {
+      "covered": 30,
+      "relevant": 155,
+      "percent": 19.35
+    },
+    "lib/workspace/commands/instructions.rb": {
+      "covered": 12,
+      "relevant": 23,
+      "percent": 52.17
+    },
+    "lib/workspace/commands/kill.rb": {
+      "covered": 102,
+      "relevant": 203,
+      "percent": 50.25
+    },
+    "lib/workspace/commands/launch.rb": {
+      "covered": 202,
+      "relevant": 391,
+      "percent": 51.66
+    },
+    "lib/workspace/commands/layout.rb": {
+      "covered": 33,
+      "relevant": 71,
+      "percent": 46.48
+    },
+    "lib/workspace/commands/library.rb": {
+      "covered": 46,
+      "relevant": 240,
+      "percent": 19.17
+    },
+    "lib/workspace/commands/lock.rb": {
+      "covered": 68,
+      "relevant": 306,
+      "percent": 22.22
+    },
+    "lib/workspace/commands/lookup.rb": {
+      "covered": 12,
+      "relevant": 42,
+      "percent": 28.57
+    },
+    "lib/workspace/commands/notes.rb": {
+      "covered": 24,
+      "relevant": 80,
+      "percent": 30.0
+    },
+    "lib/workspace/commands/parent.rb": {
+      "covered": 11,
+      "relevant": 25,
+      "percent": 44.0
+    },
+    "lib/workspace/commands/plan.rb": {
+      "covered": 49,
+      "relevant": 183,
+      "percent": 26.78
+    },
+    "lib/workspace/commands/plan_dispatch.rb": {
+      "covered": 31,
+      "relevant": 140,
+      "percent": 22.14
+    },
+    "lib/workspace/commands/plan_task.rb": {
+      "covered": 13,
+      "relevant": 36,
+      "percent": 36.11
+    },
+    "lib/workspace/commands/pr_feedback.rb": {
+      "covered": 17,
+      "relevant": 49,
+      "percent": 34.69
+    },
+    "lib/workspace/commands/project_actions.rb": {
+      "covered": 174,
+      "relevant": 316,
+      "percent": 55.06
+    },
+    "lib/workspace/commands/projects.rb": {
+      "covered": 47,
+      "relevant": 226,
+      "percent": 20.8
+    },
+    "lib/workspace/commands/promote.rb": {
+      "covered": 44,
+      "relevant": 178,
+      "percent": 24.72
+    },
+    "lib/workspace/commands/prompt_queue.rb": {
+      "covered": 26,
+      "relevant": 90,
+      "percent": 28.89
+    },
+    "lib/workspace/commands/prune.rb": {
+      "covered": 26,
+      "relevant": 160,
+      "percent": 16.25
+    },
+    "lib/workspace/commands/pull_request.rb": {
+      "covered": 26,
+      "relevant": 77,
+      "percent": 33.77
+    },
+    "lib/workspace/commands/push.rb": {
+      "covered": 26,
+      "relevant": 113,
+      "percent": 23.01
+    },
+    "lib/workspace/commands/rebase.rb": {
+      "covered": 25,
+      "relevant": 123,
+      "percent": 20.33
+    },
+    "lib/workspace/commands/remove.rb": {
+      "covered": 18,
+      "relevant": 67,
+      "percent": 26.87
+    },
+    "lib/workspace/commands/rename.rb": {
+      "covered": 57,
+      "relevant": 186,
+      "percent": 30.65
+    },
+    "lib/workspace/commands/repair.rb": {
+      "covered": 13,
+      "relevant": 51,
+      "percent": 25.49
+    },
+    "lib/workspace/commands/resize.rb": {
+      "covered": 11,
+      "relevant": 37,
+      "percent": 29.73
+    },
+    "lib/workspace/commands/restart_agent.rb": {
+      "covered": 21,
+      "relevant": 64,
+      "percent": 32.81
+    },
+    "lib/workspace/commands/restore.rb": {
+      "covered": 67,
+      "relevant": 264,
+      "percent": 25.38
+    },
+    "lib/workspace/commands/review.rb": {
+      "covered": 64,
+      "relevant": 252,
+      "percent": 25.4
+    },
+    "lib/workspace/commands/run.rb": {
+      "covered": 21,
+      "relevant": 74,
+      "percent": 28.38
+    },
+    "lib/workspace/commands/run_and_report.rb": {
+      "covered": 9,
+      "relevant": 22,
+      "percent": 40.91
+    },
+    "lib/workspace/commands/send.rb": {
+      "covered": 104,
+      "relevant": 124,
+      "percent": 83.87
+    },
+    "lib/workspace/commands/session_event.rb": {
+      "covered": 79,
+      "relevant": 252,
+      "percent": 31.35
+    },
+    "lib/workspace/commands/sessions.rb": {
+      "covered": 57,
+      "relevant": 170,
+      "percent": 33.53
+    },
+    "lib/workspace/commands/skills.rb": {
+      "covered": 32,
+      "relevant": 163,
+      "percent": 19.63
+    },
+    "lib/workspace/commands/snapshot.rb": {
+      "covered": 65,
+      "relevant": 233,
+      "percent": 27.9
+    },
+    "lib/workspace/commands/spine.rb": {
+      "covered": 67,
+      "relevant": 363,
+      "percent": 18.46
+    },
+    "lib/workspace/commands/spine_init.rb": {
+      "covered": 33,
+      "relevant": 127,
+      "percent": 25.98
+    },
+    "lib/workspace/commands/spine_start.rb": {
+      "covered": 42,
+      "relevant": 177,
+      "percent": 23.73
+    },
+    "lib/workspace/commands/start.rb": {
+      "covered": 82,
+      "relevant": 456,
+      "percent": 17.98
+    },
+    "lib/workspace/commands/statusline.rb": {
+      "covered": 35,
+      "relevant": 108,
+      "percent": 32.41
+    },
+    "lib/workspace/commands/stop.rb": {
+      "covered": 68,
+      "relevant": 100,
+      "percent": 68.0
+    },
+    "lib/workspace/commands/ticket.rb": {
+      "covered": 23,
+      "relevant": 75,
+      "percent": 30.67
+    },
+    "lib/workspace/commands/tile.rb": {
+      "covered": 12,
+      "relevant": 39,
+      "percent": 30.77
+    },
+    "lib/workspace/commands/ui.rb": {
+      "covered": 31,
+      "relevant": 102,
+      "percent": 30.39
+    },
+    "lib/workspace/commands/update_pane_command.rb": {
+      "covered": 20,
+      "relevant": 103,
+      "percent": 19.42
+    },
+    "lib/workspace/commands/wait_until_content.rb": {
+      "covered": 36,
+      "relevant": 149,
+      "percent": 24.16
+    },
+    "lib/workspace/commands/workflow.rb": {
+      "covered": 289,
+      "relevant": 837,
+      "percent": 34.53
+    },
+    "lib/workspace/commands/workflow_start.rb": {
+      "covered": 65,
+      "relevant": 302,
+      "percent": 21.52
+    }
+  },
+  "reached_methods": [
+    "Workspace::Commands::AgentStatus.parse_progress",
+    "Workspace::Commands::Binding#bind",
+    "Workspace::Commands::Binding#set",
+    "Workspace::Commands::Binding#show",
+    "Workspace::Commands::Binding#stale?",
+    "Workspace::Commands::Config#keys",
+    "Workspace::Commands::Config#set",
+    "Workspace::Commands::Config#unset",
+    "Workspace::Commands::Daemon#restart",
+    "Workspace::Commands::Daemon#restart_all",
+    "Workspace::Commands::Daemon::Result#ok?",
+    "Workspace::Commands::EnsureAgent::Result#ok?",
+    "Workspace::Commands::Finish#call",
+    "Workspace::Commands::Focus#call",
+    "Workspace::Commands::Focus#cycle",
+    "Workspace::Commands::Kill#call",
+    "Workspace::Commands::Kill.notes_sentence",
+    "Workspace::Commands::Launch#call",
+    "Workspace::Commands::Layout#save",
+    "Workspace::Commands::Library::InstallResult#to_h",
+    "Workspace::Commands::PlanDispatch.task_prompt",
+    "Workspace::Commands::ProjectActions#kill",
+    "Workspace::Commands::Run::NotSubmittedError#code",
+    "Workspace::Commands::Send#call",
+    "Workspace::Commands::Send#deliver",
+    "Workspace::Commands::Send#interrupt_through_daemon",
+    "Workspace::Commands::Send#locate",
+    "Workspace::Commands::Send#through_daemon",
+    "Workspace::Commands::Send.parse_keys",
+    "Workspace::Commands::Send::ClearUnconfirmedError#code",
+    "Workspace::Commands::Sessions#call",
+    "Workspace::Commands::Sessions::NoAgentDaemonError#code",
+    "Workspace::Commands::Stop#call",
+    "Workspace::Commands::Ui::Result#ok?",
+    "Workspace::Commands::Workflow#add",
+    "Workspace::Commands::Workflow#advance",
+    "Workspace::Commands::Workflow#check_removable",
+    "Workspace::Commands::Workflow#remove",
+    "Workspace::Commands::Workflow#resume",
+    "Workspace::Commands::Workflow#run",
+    "Workspace::Commands::Workflow#show",
+    "Workspace::Commands::Workflow#status",
+    "Workspace::Commands::Workflow#update"
+  ]
+}

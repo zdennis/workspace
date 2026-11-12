@@ -168,15 +168,24 @@ RSpec.describe Workspace::WorkflowRun do
       expect(given["steps"]["a"]["attempts"].first).not_to be_frozen
     end
 
-    it "gives an unfrozen deep copy through #to_mutable_h, equal to #to_h and sharing nothing with it" do
+    it "gives an unfrozen deep copy of #to_h through #thawed, equal to it and sharing nothing with it" do
       given = run("attempt_detail")
-      copy = given.to_mutable_h
+      copy = given.thawed
 
       expect(copy).to eq(given.to_h)
       expect(copy.keys).to eq(given.to_h.keys)
       expect([copy, copy["steps"], copy["steps"]["build"]["attempts"], copy["steps"]["build"]["attempts"].last, copy["state"]]).to all(satisfy { |each| !each.frozen? })
       copy["steps"]["build"]["attempts"].last["outcome"] = "changed"
       expect(given.step("build").last_attempt.to_h["outcome"]).not_to eq("changed")
+    end
+
+    it "gives a new copy on each #thawed call, so a change to one copy never reaches the next" do
+      given = run("attempt_detail")
+      first = given.thawed
+      first["state"] << "-changed"
+      first["steps"]["build"]["attempts"].clear
+
+      expect(given.thawed).to eq(given.to_h)
     end
 
     it "reuses a Hash that is already frozen all the way down" do
@@ -244,14 +253,14 @@ RSpec.describe Workspace::WorkflowRun do
     end
   end
 
-  describe "Attempt#to_mutable_h" do
+  describe "Attempt#thawed" do
     it "gives an unfrozen deep copy that changes nothing in the attempt" do
       attempt = Workspace::WorkflowRun::Attempt.from_h("n" => 1, "head" => {"before" => "a"}, "packs" => [{"ref" => "x"}])
-      copy = attempt.to_mutable_h
+      copy = attempt.thawed
       copy["head"]["before"] << "b"
       copy["packs"] << {}
 
-      expect(copy).not_to be_frozen
+      expect([copy, copy["head"], copy["packs"], copy["packs"].first]).to all(satisfy { |each| !each.frozen? })
       expect(attempt.to_h).to eq("n" => 1, "head" => {"before" => "a"}, "packs" => [{"ref" => "x"}])
     end
   end

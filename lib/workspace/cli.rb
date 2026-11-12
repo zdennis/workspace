@@ -1,5 +1,4 @@
 require "optparse"
-require "socket"
 require "securerandom"
 require "shellwords"
 require "time"
@@ -23,8 +22,11 @@ module Workspace
       whereis lookup dir alfred shell-init version help
     ].freeze
 
+    # The verbs a family parser takes, each to the key of its object in +families:+. {#run} hands
+    # such a verb, its arguments and the run's {Invocation} to that family before its own case.
+    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent, "agent-run" => :agent_run, "handoff" => :agent_run, "pipeline" => :pipeline, "plan" => :plan_spine, "spine" => :plan_spine, "journey" => :plan_spine, "goal" => :plan_spine}.freeze
+
     # @param workspace_name [Workspace::WorkspaceName, nil] settles a given workspace name to its on-disk spelling (nil leaves names as given)
-    # @param lineage [Workspace::WorkspaceLineage] names the project of a directory no detector finds (a stopped main checkout)
     # @param config [Workspace::Config] configuration for path lookups
     # @param state [Workspace::State] state persistence
     # @param project_config [Workspace::ProjectConfig] project config management
@@ -51,25 +53,8 @@ module Workspace
     # @param update_pane_command [Workspace::Commands::UpdatePaneCommand] pre-built set-command command
     # @param capture_command [Workspace::Commands::Capture] pre-built capture command
     # @param wait_until_content_command [Workspace::Commands::WaitUntilContent] pre-built wait-until-content command
-    # @param agent_command [Workspace::Commands::Agent] pre-built agent command
-    # @param ensure_agent_command [Workspace::Commands::EnsureAgent, nil] pre-built
-    #   `agentd --ensure` command
     # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
     #   to lowercase before `launch` starts it; nil renames nothing
-    # @param status_scope [Workspace::StatusScope, nil] resolves --name, --project and --all
-    #   for the status commands; optional so test builders need not wire it
-    # @param restart_agent_command [Workspace::Commands::RestartAgent, nil] pre-built
-    #   `agent-run restart` command; optional so test builders need not wire it
-    # @param agent_status_command [Workspace::Commands::AgentStatus, nil] pre-built
-    #   `agent status` command; optional so test builders need not wire it
-    # @param agent_executables_command [Workspace::Commands::AgentExecutables, nil] pre-built
-    #   `agent executables` command; optional so test builders need not wire it
-    # @param send_command [Workspace::Commands::Send, nil] pre-built
-    #   `agent-run send` command; optional so test builders need not wire it
-    # @param prompt_queue_command [Workspace::Commands::PromptQueue, nil] pre-built
-    #   `agent-run queue` command; optional so test builders need not wire it
-    # @param handoff_command [Workspace::Commands::Handoff, nil] pre-built
-    #   `handoff check`/`handoff new` command; optional so test builders need not wire it
     # @param logger [Workspace::Logger] debug logger
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
@@ -79,14 +64,8 @@ module Workspace
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param notes_command [Workspace::Commands::Notes, nil] pre-built notes command
     # @param notes_setup [Workspace::NotesSetup, nil] fixes the notes directory of a worktree config `add` creates; nil skips it
-    # @param plan_command [Workspace::Commands::Plan, nil] pre-built plan command
-    # @param plan_dispatch_command [Workspace::Commands::PlanDispatch, nil] pre-built plan start command
-    # @param plan_task_command [Workspace::Commands::PlanTask, nil] pre-built plan task command
     # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
     # @param skills_command [Workspace::Commands::Skills, nil] pre-built `skills install`/`uninstall` command
-    # @param spine_command [Workspace::Commands::Spine, nil] pre-built spine command
-    # @param spine_init_command [Workspace::Commands::SpineInit, nil] pre-built spine init command
-    # @param spine_start_command [Workspace::Commands::SpineStart, nil] pre-built spine start command
     # @param pull_request_command [Workspace::Commands::PullRequest, nil] pre-built pr command
     # @param rebase_command [Workspace::Commands::Rebase, nil] pre-built rebase command
     # @param push_command [Workspace::Commands::Push, nil] pre-built push command
@@ -94,28 +73,22 @@ module Workspace
     # @param promote_command [Workspace::Commands::Promote, nil] pre-built promote command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
-    # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
     # @param ui_command [Workspace::Commands::Ui, nil] pre-built ui command
     # @param binding_command [Workspace::Commands::Binding, nil] pre-built binding command
     # @param library_command [Workspace::Commands::Library, nil] pre-built library command
     # @param library [Workspace::Library, nil] resolves `launch --play` per project
     # @param instructions_command [Workspace::Commands::Instructions, nil] pre-built instructions command
     # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs `launch` sends with the first prompt
-    # @param workflow_command [Workspace::Commands::Workflow, nil] pre-built `workflow` and `step` command
-    # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] pre-built `workflow start` command
+    # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] pre-built `workflow start` command, for `start --recipe` of a workflow recipe
     # @param go_command [Workspace::Commands::Go, nil] pre-built `go` command
-    # @param workflow_project [Workspace::WorkflowProject, nil] the one resolver for the project whose workflow definitions are read first
-    # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param restore_command [Workspace::Commands::Restore, nil] pre-built restore command
     # @param events_command [Workspace::Commands::Events, nil] pre-built events command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
-    # @param goal_command [Workspace::Commands::Goal, nil] pre-built `goal` command; optional so test builders need not wire it
     # @param inbox_command [Workspace::Commands::Inbox, nil] pre-built inbox command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
     # @param tmuxinator_report [Workspace::TmuxinatorReport, nil] builds the `tmux show --json` document
     # @param groups_command [Workspace::Commands::Groups, nil] pre-built `projects group` command
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
-    # @param clock [#call] returns the current Time, for relative deadline display
     # @param liveness [#call, nil] maps project names to true, false, or nil
     # @param env [#[]] the environment `config edit` reads $VISUAL and $EDITOR from
     # @param editor_launcher [#call, nil] runs an editor given its argv array (no shell) and returns
@@ -130,7 +103,11 @@ module Workspace
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
     # @param sleeper [#call] sleeps the given seconds, injected for fast tests
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, lineage:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, agent_executables_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, workflow_start_command: nil, go_command: nil, workflow_project: nil, review_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    # @param common [CLI::Common] the output, exit and help helpers, shared with the families
+    # @param names [CLI::Names] the workspace-name and working-directory helpers, shared with the families
+    # @param launcher [CLI::Launcher] what every launching verb shares
+    # @param families [Hash{Symbol=>#call}] the family parser of each {ROUTES} key, called with the verb, its arguments and the {Invocation}
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -140,10 +117,7 @@ module Workspace
       @project_settings = project_settings
       @hook_runner = hook_runner
       @project_detector = project_detector
-      @status_scope = status_scope
-      @lineage = lineage
       @workspace_name = workspace_name
-      @sessions_command = sessions_command
       @session_event_command = session_event_command
       @hooks_command = hooks_command
       @launch_command = launch_command
@@ -173,51 +147,32 @@ module Workspace
       @dev_command = dev_command
       @parent_command = parent_command
       @notes_command = notes_command
-      @plan_command = plan_command
-      @plan_dispatch_command = plan_dispatch_command
-      @plan_task_command = plan_task_command
       @ticket_command = ticket_command
       @skills_command = skills_command
-      @spine_command = spine_command
-      @spine_init_command = spine_init_command
-      @spine_start_command = spine_start_command
       @pull_request_command = pull_request_command
       @rebase_command = rebase_command
       @push_command = push_command
       @pr_feedback_command = pr_feedback_command
       @promote_command = promote_command
       @notes_setup = notes_setup
-      @agent_command = agent_command
       @config_command = config_command
       @statusline_command = statusline_command
       @ask_command = ask_command
       @inbox_command = inbox_command
-      @restart_agent_command = restart_agent_command
-      @agent_status_command = agent_status_command
-      @agent_executables_command = agent_executables_command
-      @send_command = send_command
-      @prompt_queue_command = prompt_queue_command
-      @ensure_agent_command = ensure_agent_command
       @name_migration = name_migration
-      @handoff_command = handoff_command
       @projects_command = projects_command
       @groups_command = groups_command
       @capabilities_command = capabilities_command
-      @daemon_command = daemon_command
       @ui_command = ui_command
       @binding_command = binding_command
       @library_command = library_command
-      @workflow_command = workflow_command
       @workflow_start_command = workflow_start_command
       @go_command = go_command
-      @workflow_project = workflow_project
       @library = library
       @instructions_command = instructions_command
       @instruction_composer = instruction_composer
-      @review_command = review_command
       @restore_command = restore_command
       @snapshot_command = snapshot_command
-      @goal_command = goal_command
       @events_command = events_command
       @config_report = config_report
       @tmuxinator_report = tmuxinator_report
@@ -228,7 +183,6 @@ module Workspace
       @error_output = error_output
       @input = input
       @working_dir = working_dir
-      @clock = clock
       @sleeper = sleeper
       @launch_mode = launch_mode || LaunchMode.new(project_settings: project_settings)
       @window_liveness = window_liveness || ->(entries) { entries.to_h { |name, _| [name, nil] } }
@@ -236,6 +190,10 @@ module Workspace
       @env = env
       @editor_launcher = editor_launcher || ->(argv) { system(*argv) }
       @interactive = interactive || -> { $stdin.tty? && $stdout.tty? }
+      @common = common
+      @names = names
+      @launcher = launcher
+      @families = families
     end
 
     # Parses the subcommand from argv and dispatches to the appropriate method.
@@ -246,14 +204,17 @@ module Workspace
       args = argv.dup
       @logger.enable! if args.delete("--debug")
       @input.no_input! if take_no_input_flag!(args) && @input.respond_to?(:no_input!)
-      @name_help_asked = help_before_separator?(args)
-      @name_quiet = json_flag?(args)
+      @invocation = Invocation.new(output: @output, error_output: @error_output, exit_handler: @exit_handler,
+        help_asked: help_before_separator?(args), quiet: json_flag?(args), env: @env)
       settle_name_flags!(args)
       plain = HelpJson.strip(args)
       return run_help_json(plain) if plain
 
       subcommand = args.shift
       @logger.debug { "subcommand=#{subcommand} args=#{args.inspect}" }
+
+      family = ROUTES[subcommand]
+      return @families.fetch(family).call(subcommand, args, @invocation) if family
 
       case subcommand
       when "init"
@@ -292,10 +253,6 @@ module Workspace
         cmd_capture(args)
       when "wait-until-content"
         cmd_wait_until_content(args)
-      when "agent"
-        cmd_agent(args)
-      when "agentd"
-        cmd_agentd(args)
       when "lock"
         cmd_lock(args)
       when "dev"
@@ -304,16 +261,10 @@ module Workspace
         cmd_parent(args)
       when "notes"
         cmd_notes(args)
-      when "plan"
-        cmd_plan(args)
       when "ticket"
         cmd_ticket(args)
       when "skills"
         cmd_skills(args)
-      when "spine", "journey"
-        cmd_spine(args)
-      when "goal"
-        cmd_goal(args)
       when "pr"
         cmd_pr(args)
       when "rebase"
@@ -328,10 +279,6 @@ module Workspace
         cmd_projects(args)
       when "capabilities"
         cmd_capabilities(args)
-      when "sessions"
-        cmd_sessions(args)
-      when "daemon"
-        cmd_daemon(args)
       when "ui"
         cmd_ui(args)
       when "binding"
@@ -340,12 +287,6 @@ module Workspace
         cmd_library(args)
       when "instructions"
         cmd_instructions(args)
-      when "workflow"
-        cmd_workflow(args)
-      when "step"
-        cmd_step(args)
-      when "review"
-        cmd_review(args)
       when "snapshot"
         cmd_snapshot(args)
       when "ask"
@@ -356,12 +297,6 @@ module Workspace
         cmd_hooks(args)
       when "session-event"
         cmd_session_event(args)
-      when "agent-run"
-        cmd_agent_run(args)
-      when "handoff"
-        cmd_handoff(args)
-      when "pipeline"
-        cmd_pipeline(args)
       when "run"
         cmd_run(args)
       when "run-and-report"
@@ -465,7 +400,7 @@ module Workspace
       buffer = StringIO.new
       errors = StringIO.new
       status = 0
-      saved = [$stdout, @error_output, @exit_handler]
+      saved = [$stdout, @error_output, @exit_handler, @invocation]
       begin
         $stdout = buffer
         @error_output = errors
@@ -474,7 +409,7 @@ module Workspace
       rescue HelpJson::Exit, SystemExit => e
         status = e.status
       ensure
-        $stdout, @error_output, @exit_handler = saved
+        $stdout, @error_output, @exit_handler, @invocation = saved
       end
       if status.zero?
         @output.puts JSON.generate(HelpJson.document(buffer.string))
@@ -549,25 +484,8 @@ module Workspace
       end
     end
 
-    # The one place a typed workspace name is settled. Answers the on-disk name, or nil
-    # when the name matches nothing. A short name (a worktree suffix) resolves through
-    # WorkspaceName#for_input, and one stderr line says which workspace it reached, unless
-    # `--json` is given. While help is asked for, only the exact name (ignoring case)
-    # counts, so help never fails on an ambiguous name. A CLI built with no WorkspaceName
-    # asks the project config.
-    #
-    # @param name [String, nil]
-    # @return [String, nil]
-    # @raise [Workspace::Error] `ambiguous_workspace` when several workspaces share the suffix
-    def given_name(name)
-      return @project_config.existing_name(name) unless @workspace_name
-
-      found = @name_help_asked ? @workspace_name.match(name) : @workspace_name.for_input(name)
-      if found && !WorkspaceName.same?(found, name) && !@name_quiet
-        @error_output.puts TerminalText.escape("Workspace '#{name}' is #{found}.")
-      end
-      found
-    end
+    # See {Names#given_name}.
+    def given_name(name) = @names.given_name(@invocation, name)
 
     # @param argv [Array<String>]
     # @return [Boolean] whether `--help` or `-h` appears before a bare `--`
@@ -575,76 +493,23 @@ module Workspace
       argv.take_while { |arg| arg != "--" }.any? { |arg| arg == "--help" || arg == "-h" }
     end
 
-    # @param name [String, nil] a workspace or project name as given
-    # @return [String, nil] the on-disk name of the config it matches ignoring case, else the name as given
-    def settle_name(name)
-      (@workspace_name && name) ? (given_name(name) || name) : name
-    end
+    # See {Names#settle_name}.
+    def settle_name(name) = @names.settle_name(@invocation, name)
 
-    # Takes the first positional off +args+ as the workspace when a workspace of that name has a
-    # config (ignoring case); otherwise leaves +args+ alone so the caller's own parsing and usage
-    # error apply.
-    #
-    # @param args [Array<String>] positionals, modified in place
-    # @return [String, nil] the workspace's on-disk name, or the current value (nil) when the first is not one
-    def take_known_workspace!(args)
-      known = given_name(args.first)
-      args.shift if known
-      known
-    end
+    # See {Names#take_known_workspace!}.
+    def take_known_workspace!(args) = @names.take_known_workspace!(@invocation, args)
 
-    # The one workspace a command was given, by `--name` or by position.
-    #
-    # @param name_opt [String, nil] value of `--name`
-    # @param positional [String, nil] the positional workspace argument
-    # @return [String, nil] the name, or nil when neither was given
-    # @raise [Workspace::UsageError] when both are given and differ
-    def pick_workspace_name(name_opt, positional)
-      positional = settle_name(positional)
-      if positional && name_opt && positional != name_opt
-        raise UsageError, "Give the workspace once: '#{positional}' and --name #{name_opt} differ."
-      end
+    # See {Names#pick_workspace_name}.
+    def pick_workspace_name(name_opt, positional) = @names.pick_workspace_name(@invocation, name_opt, positional)
 
-      name_opt || positional
-    end
+    # See {Names#require_known_workspace!}.
+    def require_known_workspace!(name) = @names.require_known_workspace!(name)
 
-    # @raise [Workspace::Error] code `unknown_workspace` when no config exists for +name+ (ignoring case)
-    def require_known_workspace!(name)
-      return if @project_config.existing_name(name)
+    # See {Names#working_dir_for}.
+    def working_dir_for(name) = @names.working_dir_for(name)
 
-      raise Error.new("Unknown workspace '#{name}': it has no config. See `workspace list`, or create one with `workspace add PATH` (`workspace add .` for this directory).",
-        code: "unknown_workspace", details: {"name" => name})
-    end
-
-    # The directory a per-workspace command acts from: the named workspace's
-    # root for `--name`, else the detected working directory.
-    #
-    # @param name [String, nil] value of `--name`
-    # @return [String]
-    # @raise [Workspace::Error] code `unknown_workspace` when no such workspace exists
-    def working_dir_for(name)
-      return @working_dir unless name
-
-      root = @project_config.project_root_for(name)
-      raise Error.new("Unknown workspace '#{name}'", code: "unknown_workspace", details: {"name" => name}) unless root
-
-      File.expand_path(root)
-    end
-
-    # The directory a `dev` subcommand acts from: the named workspace's root, else the working
-    # directory when it is in a workspace (one the detector finds, or the checkout of a configured
-    # workspace, so a stopped main checkout works).
-    #
-    # @param name [String, nil] the WS argument or `--name`
-    # @return [String]
-    # @raise [Workspace::Error] code `unknown_workspace` for a name with no config, `not_in_workspace` outside any workspace
-    def dev_working_dir(name)
-      return working_dir_for(name) if name
-      return @working_dir if workspace_here
-
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass the workspace name. A lock left by a checkout that is no longer a workspace can be released with `workspace lock clear`.",
-        code: "not_in_workspace", details: {"path" => @working_dir})
-    end
+    # See {Names#dev_working_dir}.
+    def dev_working_dir(name) = @names.dev_working_dir(name)
 
     # Whether `--json` or `--json-envelope` appears as its own argument before a bare `--`.
     #
@@ -863,16 +728,16 @@ module Workspace
       raise UsageError, "--no-packs cannot be combined with --handoff." if no_packs && handoff == true
 
       run_action("launch", json: json) do
-        launched = launch_projects(args.map { |arg| launch_arg(arg) }, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays.uniq,
+        launched = @launcher.launch(@invocation, args.map { |arg| launch_arg(arg) }, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays.uniq,
           packs: packs, no_packs: no_packs, handoff: handoff, with_packs: true, arrange: arrange)
-        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]) : [],
+        {exit_code: launched[:exit_code], results: json ? @launcher.rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]) : [],
          warnings: launched[:skipped_packs].values.flatten.map { |pack| pack["message"] } + (launched[:result]&.dig(:skipped_prompts) || {}).values + (launched[:result]&.dig(:warnings) || [])}
       end
     end
 
-    # A launch argument as `launch_projects` should get it: a path or an existing directory stays
+    # A launch argument as `Launcher#launch` should get it: a path or an existing directory stays
     # as typed, any other word is settled to a workspace's on-disk name (a short name resolves).
-    # `relaunch` and `restore` call `launch_projects` directly, with state keys, and skip this.
+    # `relaunch` and `restore` call `Launcher#launch` directly, with state keys, and skip this.
     #
     # @param arg [String]
     # @return [String]
@@ -880,121 +745,6 @@ module Workspace
     def launch_arg(arg)
       _name, root = @project_config.resolve_project_arg(arg)
       root ? arg : settle_name(arg)
-    end
-
-    # Launches the given project args (already parsed, no leading flags) and
-    # returns `{exit_code:, projects:, result:, plays:, packs:}` (the project names,
-    # Launch's own result, each project's resolved plays (a list), and each project's
-    # composed packs) without exiting -- so callers with multiple batches to run
-    # (e.g. cmd_relaunch) can attempt every batch before deciding whether to exit.
-    # The plays and the packs are resolved for every project before any config is
-    # created. Packs are sent only when +with_packs+ is true (`launch` itself), so
-    # `relaunch` and `restore` do not type them into an agent again.
-    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, plays: [], packs: [], no_packs: false, handoff: nil, with_packs: false, arrange: false)
-      # A mixed-case workspace is renamed to lowercase before anything is keyed on its name
-      # (see NameMigration), as its agent daemon would rename it once started.
-      resolved = args.map { |arg| @project_config.resolve_project_arg(arg) }
-        .map { |name, root| [settle_launch_name(name), root] }
-      Library.check_play_count!(plays.uniq)
-      by_project = plays.empty? ? {} : resolved.to_h { |name, root| [name, resolve_plays(plays, root || @project_config.project_root_for(name))] }
-      composed = with_packs ? compose_launch_packs(resolved, packs, no_packs, handoff) : {}
-      skipped_packs = composed.transform_values { |c| c["skipped"] || [] }.reject { |_, skipped| skipped.empty? }
-      composed = composed.reject { |_, c| c["packs"].empty? }
-      skipped_packs.each_value { |skipped| skipped.each { |pack| @error_output.puts "Warning: #{pack["message"]}" } }
-      projects = resolved.map { |name, root| root ? @project_config.create(name, root) : name }
-
-      prompts = projects.each_with_object({}) do |p, h|
-        text = (by_project[p] || composed[p]) ? @library.play_prompt(by_project[p], prompt, packs: composed[p]&.fetch("text")) : prompt
-        h[p] = text if text
-      end
-
-      call_options = {reattach: reattach, prompts: prompts}
-      pane_bindings = projects.to_h do |name|
-        names = composed[name] ? InstructionComposer.pack_names(composed[name]["packs"]) : []
-        [name, by_project[name] ? @library.play_binding(by_project[name], packs: names) : (@library.packs_binding(names) if names.any?)]
-      end.compact
-      call_options[:bindings] = pane_bindings if pane_bindings.any?
-      call_options[:report_panes] = true if composed.any? || prompts.any?
-      optional = composed.select { |name, c| InstructionComposer.optional_prompt?(c, prompt: prompt, play: by_project[name]&.first) }
-      call_options[:optional] = optional.transform_values { |c| InstructionComposer.pack_names(c["packs"]) } if optional.any?
-      call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
-      call_options[:headless] = true if @launch_mode.resolve(headless).headless?
-      call_options[:arrange] = true if arrange
-      result = @launch_command.call(projects, **call_options)
-
-      projects.each do |p|
-        @project_settings.ensure_exists(p)
-        @hook_runner.run(p, "post_launch")
-      end
-      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: by_project, packs: composed, skipped_packs: skipped_packs, prompts: prompts}
-    end
-
-    # The lowercase name once a mixed-case workspace is renamed; the name as
-    # given when nothing was renamed, or its agent daemon is running.
-    def settle_launch_name(name)
-      result = @name_migration&.call_locked(name)
-      return name unless result
-
-      result.warnings.each { |warning| @error_output.puts "Warning: #{warning}" }
-      result.from ? result.name : name
-    end
-
-    # The packs `launch` sends each project, from its root's library and config; a
-    # project with none has no entry. An unknown pack fails before any config is created.
-    def compose_launch_packs(resolved, packs, no_packs, handoff = nil)
-      resolved.each_with_object({}) do |(name, root), composed|
-        cwd = root || @project_config.project_root_for(name)
-        next if cwd.nil? && packs.empty? && handoff != true
-        if @instruction_composer.nil?
-          raise Error, "--pack is not available: no library was wired." if packs.any?
-          raise Error, "--handoff is not available: no library was wired." if handoff == true
-          next
-        end
-        result = @instruction_composer.compose_start(cwd: cwd || @working_dir, packs: packs, none: no_packs, handoff: handoff)
-        composed[name] = result unless result["packs"].empty? && result["skipped"].to_a.empty?
-      end
-    end
-
-    # The plays `launch --play` sends one project, from its root's library, then global.
-    def resolve_plays(plays, root)
-      raise Error, "--play is not available: no library was wired." unless @library
-      plays.map { |play| @library.play(play, cwd: root) }.uniq { |play| play["ref"] }
-    end
-
-    # One `results` row per launched project, from the state Launch wrote.
-    def launch_rows(projects, result, ok_outcome: "launched", plays: {}, packs: nil, skipped_packs: {}, prompts: {})
-      @state.load
-      reused = result&.dig(:reused) || []
-      prompt_failures = result&.dig(:prompt_failures) || {}
-      start_failures = result&.dig(:start_failures) || {}
-      projects.map do |project|
-        entry = @state[project]
-        sent = !result.nil? && !entry.nil? && !prompt_failures.key?(project) && !start_failures.key?(project)
-        skipped = result&.dig(:skipped_prompts)&.key?(project)
-        details = {iterm_window_id: entry.is_a?(Hash) ? entry["iterm_window_id"] : nil, headless: entry.is_a?(Hash) && entry["headless"] == true}
-        prompt_sent = prompts[project] ? (sent && !skipped) : nil
-        details[:position] = result&.dig(:positions, project)
-        details[:prompt_sent] = prompt_sent
-        details[:pane] = prompt_sent ? result&.dig(:delivered_panes, project) : nil
-        if plays[project]&.any?
-          rows = Array(plays[project]).map { |play| play.merge("delivered" => sent, "pane" => result&.dig(:bound_panes, project)) }
-          details[:play] = rows.first
-          details[:plays] = rows
-        end
-        if packs
-          details[:packs] = InstructionComposer.delivery_rows(packs[project] ? packs[project]["packs"] : [], delivered: sent && !skipped,
-            pane: result&.dig(:delivered_panes, project), skipped: skipped_packs[project] || [])
-        end
-        if start_failures[project]
-          action_row(project, "failed", reason: "session_not_started", message: start_failures[project].to_s, **details)
-        elsif entry.nil?
-          action_row(project, "failed", reason: "not_launched", message: "No state was recorded for '#{project}'.", **details)
-        elsif prompt_failures[project]
-          action_row(project, "failed", reason: "prompt_not_sent", message: prompt_failures[project].to_s, **details)
-        else
-          action_row(project, reused.include?(project) ? "reused" : ok_outcome, **details)
-        end
-      end
     end
 
     def cmd_start(args)
@@ -1258,45 +1008,14 @@ module Workspace
       end
     end
 
-    # The one workspace a lifecycle command (`kill`, `finish`, `remove`, `dir`) was given: the
-    # positional or `--name` (they must agree), settled to its on-disk spelling, else nil.
-    #
-    # @param args [Array<String>] the positionals left after parsing
-    # @param name [String, nil] value of `--name`
-    # @param command [String] the subcommand, for the usage message
-    # @return [String, nil]
-    # @raise [Workspace::UsageError] for more than one positional, or a positional and `--name` that differ
-    def single_workspace_arg(args, name, command)
-      raise UsageError, "workspace #{command} takes one workspace; got: #{args.join(" ")}. Run 'workspace #{command} --help'." if args.size > 1
-      pick_workspace_name(name, args.first)
-    end
+    # See {Names#single_workspace_arg}.
+    def single_workspace_arg(args, name, command) = @names.single_workspace_arg(@invocation, args, name, command)
 
-    # @param name [String, nil] the workspace given, if any
-    # @return [String] +name+, else the workspace the working directory is in
-    # @raise [Workspace::Error] code `not_in_workspace` when neither gives one
-    def current_workspace!(name)
-      name ||= workspace_here
-      return name if name
+    # See {Names#current_workspace!}.
+    def current_workspace!(name) = @names.current_workspace!(name)
 
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir})
-    end
-
-    # The workspace the working directory is in: the detector's answer (a marker or a running
-    # workspace), else the directory's lineage name when a workspace of that name is configured,
-    # so a stopped main checkout counts too.
-    #
-    # @return [String, nil]
-    def workspace_here
-      @project_detector.detect(@working_dir) || main_checkout_workspace
-    end
-
-    # The configured workspace named like the main checkout the working directory is in; a linked
-    # worktree or a directory outside git never resolves to one.
-    def main_checkout_workspace
-      lineage = @lineage.resolve(cwd: @working_dir)
-      return nil unless lineage.git_common_dir && !lineage.is_worktree
-      @project_config.existing_name(lineage.name)
-    end
+    # See {Names#workspace_here}.
+    def workspace_here = @names.workspace_here
 
     def cmd_kill(args)
       force = false
@@ -2043,359 +1762,6 @@ module Workspace
       @exit_handler.exit(status) unless status == 0
     end
 
-    # Umbrella for driving a workspace's agent. `agent run PROMPT` sends a
-    # command message to the agent's pipeline; anything the daemon used to
-    # accept falls back to it with a deprecation warning pointing at
-    # `workspace agentd`.
-    def cmd_agent(args)
-      # Help only counts in subcommand position, so a prompt containing the
-      # word "help" still sends; `agent --help` (no subcommand) still helps.
-      index = agent_subcommand_index(args)
-      subcommand = index && args[index]
-      rest = index ? args[0...index] + args[(index + 1)..] : args
-      # A `--` in subcommand position can only be a terminator, never a
-      # value; drop it or run's parser treats every flag after it as
-      # prompt text (swallowing safety flags like --dry-run).
-      rest.shift if rest.first == "--"
-
-      case subcommand
-      when "run" then cmd_agent_run_prompt(rest)
-      when "status" then cmd_agent_status(rest)
-      when "executables" then cmd_agent_executables(rest)
-      when "help" then @output.puts agent_help
-      when nil
-        if args.include?("--help") || args.include?("-h")
-          @output.puts agent_help
-        else
-          # Daemon-era usage was all-flag (`agent --name myapp`), so a bare
-          # all-flag invocation still starts the daemon, with a warning.
-          @error_output.puts "`workspace agent` for the daemon is deprecated; use `workspace agentd`"
-          cmd_agentd(args)
-        end
-      else
-        raise UsageError, "Unknown agent subcommand: #{subcommand}.\n" \
-          "For the daemon, use `workspace agentd`.\n\n#{agent_help}"
-      end
-    end
-
-    # Finds the index of the `agent` subcommand: the first argument that is
-    # neither a flag nor a value-taking flag's value (`--name` and
-    # `--wc-socket` take a value; `-f`/`--force` do not).
-    def agent_subcommand_index(args)
-      i = 0
-      while i < args.length
-        arg = args[i]
-        return i unless arg.start_with?("-")
-        i += %w[--name --wc-socket --kind].include?(arg) ? 2 : 1
-      end
-      nil
-    end
-
-    def agent_help
-      <<~HELP
-        Usage: workspace agent <subcommand> [options]
-
-        Subcommands:
-          run PROMPT    Send a prompt to the workspace's pipeline (a "command" message)
-          status        Ask an agent pane for a status line, or post one (see `agent status --help`)
-          executables   List the agent programs on PATH by family and which one each runs (see `agent executables --help`)
-
-        The long-lived agent daemon now runs as `workspace agentd`
-        (see docs/README.agentd.md). During the deprecation window, daemon-era
-        invocations like `workspace agent --name myproject --force` still start
-        the daemon, with a warning.
-
-        Options (run):
-          --name NAME         Workspace name (default: detected from cwd)
-          --work-item REF     Work item reference (default: random UUID)
-          --dry-run           Print the message without sending it
-          --json              Print one JSON document with the agent's reply; text goes to stderr
-
-        Examples:
-          workspace agent run "Add OAuth support"    # send a prompt to the pipeline of the project in this directory
-          workspace agent run --name myapp --dry-run "Add OAuth support"    # show the message for a named workspace, send nothing
-          workspace agent status request --pane %19    # ask the agent in one pane for a status line
-          workspace agent executables --kind claude    # which claude program is on PATH and which one runs
-      HELP
-    end
-
-    def cmd_agent_executables(args)
-      name = nil
-      kind = nil
-      json = false
-      help = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent executables [--kind KIND] [--name WORKSPACE] [--json]"
-        opts.separator ""
-        opts.separator "List the coding-agent programs on PATH by family (claude, codex, opencode, pi): a file named"
-        opts.separator "the family program or starting with it and a dash (claude-dev). Marks the one each family runs,"
-        opts.separator "and lists a configured program that is not found. Reads directory listings only; runs nothing."
-        opts.separator "Pick one with `workspace config set agent.commands.<kind> NAME-OR-PATH`."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--kind KIND", "Only this family: #{AgentProvider.all.map(&:key).join(", ")}") { |v| kind = v }
-        opts.on("--name NAME", "Workspace whose settings decide the marked program (default: detected from cwd, else global settings)") { |v| name = v }
-        opts.on("--json", "Print one JSON document: workspace, path_dirs, executables, effective, kind[, truncated]") { json = true }
-        opts.on("-h", "--help", "Show this help") { help = true }
-        opts.separator ""
-        opts.separator "Errors: unknown_agent_kind (details.kind, details.known), unknown_workspace."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agent executables    # every family's programs on PATH, the one each runs marked"
-        opts.separator "  workspace agent executables --kind claude    # only the claude family"
-        opts.separator "  workspace agent executables --name api --kind codex    # the program workspace api's settings pick for codex"
-        opts.separator "  workspace agent executables --json    # one JSON document, for a script"
-      end
-      parser.parse!(args)
-      return @output.puts(parser.help) if help
-
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
-      raise Error, "workspace agent executables is not available in this build" unless @agent_executables_command
-
-      @agent_executables_command.call(name: name, detected: name ? nil : @project_detector.detect(@working_dir), kind: kind, json: json)
-    end
-
-    def agent_status_help
-      <<~HELP
-        Usage: workspace agent status request --pane PANE [--name NAME] [--json]
-               workspace agent status post --summary TEXT [--task ID] [--progress N/M] [--reply-to ID] [--json]
-
-        Ask an agent pane for a status line, and answer one (see docs/README.agent.md).
-
-        request  Types a fixed line carrying a request id into the pane, asking its agent to run
-                 `agent status post --reply-to ID`. Refused (pane_not_ready, nothing typed) unless
-                 Claude Code runs there, no permission prompt or question is open, no AskUserQuestion
-                 or ExitPlanMode is running, and its input prompt is on screen with no draft in it.
-                 Enter is pressed only if the prompt is still there once the line is pasted.
-                 One request is open per pane at a time (status_request_open); it expires after
-                 #{AgentStatusRequests::DEFAULT_TTL / 60} minutes.
-        post     Run by an agent in its own pane ($TMUX_PANE). Logs an agent_status line, shown by
-                 `workspace events --follow --types agent_status`. With --reply-to, accepted only from
-                 the pane that was asked, while the request is open. The summary is cut to
-                 #{AgentStatusDesk::MAX_SUMMARY} characters and never typed anywhere.
-
-        Exit codes: 0 done; 1 refused or failed; 2 (request) the line landed but wasn't confirmed
-          submitted: the request stays open, so check the pane before asking again.
-
-        Examples:
-          workspace agent status request --pane %19    # ask the agent in pane %19 for a status line
-          workspace agent status request --name api --pane 0.1 --json    # a named workspace, the pane as window.pane, JSON out
-          workspace agent status post --summary "Writing specs for the parser"    # an agent reports its own status
-          workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary "Waiting on CI" --progress 3/7    # answer a request
-      HELP
-    end
-
-    def cmd_agent_status(args)
-      verb = args.first&.start_with?("-") ? nil : args.shift
-      case verb
-      when "request" then cmd_agent_status_request(args)
-      when "post" then cmd_agent_status_post(args)
-      when "help", nil
-        unless verb == "help" || help_requested?(args)
-          raise UsageError, "Missing agent status verb (request or post).\n\n#{agent_status_help}"
-        end
-        @output.puts agent_status_help
-      else
-        raise UsageError, "Unknown agent status verb: #{verb}.\n\n#{agent_status_help}"
-      end
-    end
-
-    def cmd_agent_status_request(args)
-      name = nil
-      pane = nil
-      json = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent status request --pane PANE [--name NAME] [--json]"
-        opts.separator ""
-        opts.separator "Ask the agent in one pane for a status line. The agent daemon types a fixed line"
-        opts.separator "carrying a request id; the agent answers with `workspace agent status post --reply-to ID`."
-        opts.separator "Nothing is typed unless the pane can take text safely (see `agent status --help`); when it can,"
-        opts.separator "the line is typed into that pane for real."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
-        opts.on("--pane PANE", "Pane id (%19) or window.pane (0.1)  (required)") { |v| pane = v }
-        opts.on("--json", "Print one JSON document: request_id, pane, pane_id, expires_at, delivery") { json = true }
-        opts.separator ""
-        opts.separator "Exit codes: 0 typed and submitted; 1 refused or failed; 2 landed but not confirmed submitted."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agent status request --pane %19    # ask the agent in pane %19 of the project in this directory"
-        opts.separator "  workspace agent status request --name api --pane 0.1    # a named workspace, the pane as window.pane"
-        opts.separator "  workspace agent status request --pane %19 --json    # one JSON document with the request id"
-      end
-      parser.parse!(args)
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
-      raise UsageError, "Missing --pane.\n\n#{parser.help}" if pane.nil? || pane.strip.empty?
-      raise Error, "workspace agent status is not available in this build" unless @agent_status_command
-
-      @agent_status_command.request(name: name, pane: pane, json: json)
-    end
-
-    def cmd_agent_status_post(args)
-      summary = nil
-      task = nil
-      progress = nil
-      reply_to = nil
-      json = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent status post --summary TEXT [--task ID] [--progress N/M] [--reply-to ID] [--json]"
-        opts.separator ""
-        opts.separator "Post this pane's status as an agent_status event line. Run by an agent in its own"
-        opts.separator "tmux pane: the pane is $TMUX_PANE and the workspace is the one whose tmux session it is in."
-        opts.separator "Every post writes a line to the workspace's event log; outside a tmux pane it is refused (no_pane)."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--summary TEXT", "One line on what the agent is doing (required; cut to #{AgentStatusDesk::MAX_SUMMARY} characters)") { |v| summary = v }
-        opts.on("--task ID", "The task being worked on") { |v| task = v }
-        opts.on("--progress N/M", "Steps done out of the total, e.g. 3/7") { |v| progress = v }
-        opts.on("--reply-to ID", "The status request this answers (from the typed line)") { |v| reply_to = v }
-        opts.on("--json", "Print one JSON document: the line as logged, plus truncated") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agent status post --summary \"Writing specs for the parser\"    # report what this pane is doing"
-        opts.separator "  workspace agent status post --summary \"Writing specs for the parser\" --task T3 --progress 3/7    # with the task and steps done"
-        opts.separator "  workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary \"Waiting on CI\"    # answer a status request"
-        opts.separator "  workspace agent status post --summary \"Waiting on CI\" --json    # one JSON document, the line as logged"
-      end
-      parser.parse!(args)
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
-      raise UsageError, "Missing --summary.\n\n#{parser.help}" if summary.nil? || summary.strip.empty?
-      raise UsageError, "--reply-to can't be empty.\n\n#{parser.help}" if reply_to && reply_to.strip.empty?
-      raise Error, "workspace agent status is not available in this build" unless @agent_status_command
-
-      @agent_status_command.post(summary: summary, task: task, progress: progress && Commands::AgentStatus.parse_progress(progress),
-        reply_to: reply_to&.strip, json: json)
-    end
-
-    AGENTD_RUN_FLAGS = %w[-f --force --ensure].freeze
-
-    # `restart` is a subcommand only as the first word that isn't a flag or a
-    # flag's value, so `--name restart` still names a workspace. With --force
-    # or --ensure, which restart doesn't take, it is the workspace's name, as
-    # it was before the subcommand existed (`agentd --ensure restart`).
-    def cmd_agentd(args)
-      index = agent_subcommand_index(args)
-      if index && args[index] == "restart" && (args & AGENTD_RUN_FLAGS).empty?
-        return cmd_agentd_restart(args[0...index] + args[(index + 1)..])
-      end
-
-      name = nil
-      wc_socket = nil
-      force = false
-      ensure_running = false
-
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agentd [PROJECT] [options]\n" \
-          "       workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]"
-        opts.separator ""
-        opts.separator "Run the long-lived workspace agent daemon for a project."
-        opts.separator "Registers with the work-coordinator and serves commands until terminated."
-        opts.separator ""
-        opts.separator "The workspace must already have a config; an unknown name is refused (unknown_workspace)."
-        opts.separator "A workspace with a mixed-case name is renamed to lowercase before the agent starts"
-        opts.separator "(see docs/README.agentd.md); a step that fails is a warning in the daemon log."
-        opts.separator ""
-        opts.separator "Subcommands:"
-        opts.separator "  restart    Stop the agent running for the workspace and start a new one in the background;"
-        opts.separator "             see `workspace agentd restart --help`. A workspace named restart needs --name,"
-        opts.separator "             except with --force or --ensure, where restart is the workspace"
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--name NAME", "Workspace name (defaults to the detected project or PROJECT)") { |v| name = v }
-        opts.on("--wc-socket PATH", "Path to the work-coordinator socket") { |v| wc_socket = v }
-        opts.on("-f", "--force", "Kill any running agent for this workspace before starting") { force = true }
-        opts.on("--ensure", "Start the agent in the background unless one is already running (safe to repeat)") { ensure_running = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agentd    # run for the project detected from the current directory"
-        opts.separator "  workspace agentd scooter --wc-socket /tmp/wc-dev.sock    # named project, non-default coordinator"
-        opts.separator "  workspace agentd --force    # replace the agent already running for this workspace"
-        opts.separator "  workspace agentd --ensure   # make sure one is running; exits 0 if it already was"
-        opts.separator "  workspace agentd restart    # stop the running agent and start a new one in the background"
-      end
-      parser.parse!(args)
-
-      name = settle_name(name || args.shift)
-      raise UsageError, "Unexpected argument: #{args.first}.\n\n#{parser.help}" if args.any?
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, parser.help if name.nil?
-      require_known_workspace!(name)
-
-      if ensure_running
-        raise UsageError, "--ensure and --force can't be combined: --ensure never replaces a running agent.\n\n#{parser.help}" if force
-        return ensure_agent(name, wc_socket)
-      end
-
-      @exit_handler.exit(1) unless @agent_command.call(name: name, wc_socket: wc_socket, force: force)
-    end
-
-    def agentd_restart_parser(options)
-      OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]"
-        opts.separator ""
-        opts.separator "Stop the agent daemon running for the workspace (SIGTERM, even one that no longer answers) and"
-        opts.separator "start a new one in the background, the way --ensure does: the terminal is not held, and the"
-        opts.separator "new agent's output goes to the daemon log (`workspace daemon log`). An agent run in a terminal"
-        opts.separator "is replaced by a background one. With none running, just start one. The same as"
-        opts.separator "`workspace daemon restart`."
-        opts.separator ""
-        opts.separator "The new agent keeps the work-coordinator socket the old one was started with, unless"
-        opts.separator "--wc-socket names another."
-        opts.separator ""
-        opts.on("--name NAME", "Workspace name (defaults to PROJECT or the project detected from the current directory)") { |v| options[:name] = v }
-        opts.on("--wc-socket PATH", "Work-coordinator socket for the new agent (default: the old agent's)") { |v| options[:wc_socket] = v }
-        opts.on("--json", "Print one JSON action document (see docs/README.daemon.md)") { options[:json] = true }
-        opts.on("-h", "--help", "Show this help") { options[:help] = true }
-        opts.separator ""
-        opts.separator "restart takes neither --force nor --ensure: with either one, `agentd restart` runs the agent"
-        opts.separator "for a workspace named restart."
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agentd restart    # the project detected from the current directory"
-        opts.separator "  workspace agentd restart scooter --wc-socket /tmp/wc-dev.sock    # a named project, the new agent on another coordinator socket"
-        opts.separator "  workspace agentd restart scooter --json    # a named project, one JSON action document"
-        opts.separator "  workspace agentd restart --name restart    # a workspace that is itself named restart"
-      end
-    end
-
-    def cmd_agentd_restart(args)
-      options = {json: false}
-      given = args.dup
-      parser = agentd_restart_parser(options)
-      parser.parse!(args)
-      return @output.puts(parser.help) if options[:help]
-
-      raise Error, "agentd restart is not available: no daemon command was wired" unless @daemon_command
-
-      name = settle_name(options[:name] || args.shift)
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace agentd restart --help'." if args.any?
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
-      require_known_workspace!(name)
-
-      daemon_restart(name, options)
-    rescue OptionParser::ParseError, UsageError => e
-      raise unless json_requested?(options[:json], given)
-      emit_json_error(Commands::Daemon::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    def ensure_agent(name, wc_socket)
-      raise Error, "workspace agentd --ensure is not available in this build" unless @ensure_agent_command
-
-      result = @ensure_agent_command.call(name: name, wc_socket: wc_socket)
-      case result.status
-      when :running then @output.puts "agentd for #{name} is already running"
-      when :started then @output.puts "Started agentd for #{name}"
-      when :invalid_config then @exit_handler.exit(1)
-      else
-        @error_output.puts "Error: Could not start the agent daemon for #{name}: #{result.detail}"
-        @exit_handler.exit(1)
-      end
-    end
-
     def cmd_ask(args)
       # Recording always takes --default, so with it a first word like
       # "list" or "help" is the question text, not a subcommand.
@@ -3029,138 +2395,35 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
-    # Parses a duration option such as `--poll` or `--max-wait` (e.g. "9m", "5s", or
-    # a plain number of seconds), raising a usage error instead of a
-    # backtrace on unparsable input.
-    #
-    # @param flag [String] option name, for the error message
-    # @param value [String] raw option value
-    # @param positive [Boolean] require the duration be greater than 0
-    # @return [Numeric] seconds
-    def parse_duration_option(flag, value, positive: false)
-      positive ? Workspace::Duration.parse_positive(value) : Workspace::Duration.parse(value)
-    rescue ArgumentError => e
-      raise UsageError, "#{flag}: #{e.message}"
-    end
+    # See {Common#parse_duration_option}.
+    def parse_duration_option(flag, value, positive: false) = @common.parse_duration_option(flag, value, positive: positive)
 
     # Schema version of the action documents the mutating commands print with `--json`.
-    ACTION_JSON_SCHEMA_VERSION = 1
+    ACTION_JSON_SCHEMA_VERSION = Common::ACTION_JSON_SCHEMA_VERSION
 
-    # Runs a mutating command's work and reports it. Without `--json` the
-    # command's text is untouched and a non-zero `exit_code` from the block
-    # exits. With it, the text goes to stderr, stdout gets one action document
-    # ({JsonEnvelope.action}), and the exit code follows its `status`: 0, 3 for
-    # partial, and for failed the block's own non-zero code (else 1). A raised
-    # {Workspace::Error} still becomes the error envelope in the rescue funnel.
-    #
-    # @param action [String] the verb in the document, e.g. "stop"
-    # @param json [Boolean] whether `--json` was given
-    # @yieldreturn [Hash, nil] `:exit_code`; with `json` also `:results` (rows
-    #   with an `"outcome"`), and optionally `:warnings`, `:extra` and `:status`
-    #   (else derived from the rows); build rows only when `json`, as text mode ignores them
-    # @return [void]
-    def run_action(action, json:)
-      unless json
-        outcome = yield
-        code = outcome && outcome[:exit_code]
-        @exit_handler.exit(code) if code && !code.zero?
-        return
-      end
+    # See {Common#run_action}.
+    def run_action(action, json:, &block) = @common.run_action(@invocation, action, json: json, &block)
 
-      outcome = divert_output { yield }
-      results = outcome.fetch(:results)
-      code = outcome[:exit_code]
-      status = outcome[:status] || JsonEnvelope.action_status(results)
-      status = "failed" if status == "ok" && code && !code.zero?
-      @output.puts JSON.generate(JsonEnvelope.action(ACTION_JSON_SCHEMA_VERSION, action,
-        results: results, status: status, warnings: outcome[:warnings] || [], extra: outcome[:extra] || {}))
-      exit_code = JsonEnvelope::ACTION_EXIT_CODES.fetch(status)
-      exit_code = code if exit_code == 1 && code && !code.zero?
-      @exit_handler.exit(exit_code) unless exit_code.zero?
-    end
+    # See {Common#divert_output}.
+    def divert_output(&block) = @common.divert_output(@invocation, &block)
 
-    # Sends what collaborators print to stderr while the block runs, so stdout
-    # stays free for one JSON document. A plain stream (a test double) is left alone.
-    def divert_output(&block)
-      return yield unless @output.respond_to?(:divert_to)
-      @output.divert_to(@error_output, &block)
-    end
+    # See {Common#action_row}.
+    def action_row(workspace, outcome, reason: nil, message: nil, **extra) = @common.action_row(workspace, outcome, reason: reason, message: message, **extra)
 
-    # One row of an action document's `results`.
-    #
-    # @param workspace [String, nil]
-    # @param outcome [String] e.g. "stopped", "failed"
-    # @param reason [String, nil] a short machine-readable cause
-    # @param message [String, nil] what a person would read
-    # @param extra [Hash] more keys for the row
-    # @return [Hash]
-    def action_row(workspace, outcome, reason: nil, message: nil, **extra)
-      {"workspace" => workspace, "outcome" => outcome, "reason" => reason, "message" => message}.merge(extra.transform_keys(&:to_s))
-    end
+    # See {Common#emit_json_error}.
+    def emit_json_error(schema_version, error, message: nil) = @common.emit_json_error(@invocation, schema_version, error, message: message)
 
-    # Emits a caught failure as the `--json` error envelope (code, details and
-    # retry from the exception) to stdout and exits 1.
-    #
-    # @param schema_version [Integer] the command's JSON schema version
-    # @param error [Exception] the failure
-    # @param message [String, nil] replaces the exception's message (e.g. its first line)
-    def emit_json_error(schema_version, error, message: nil)
-      @output.puts JSON.generate(JsonEnvelope.from_exception(schema_version, error, message: message))
-      @exit_handler.exit(1)
-    end
+    # See {Common#emit_json_usage_error}.
+    def emit_json_usage_error(schema_version, message) = @common.emit_json_usage_error(@invocation, schema_version, message)
 
-    # Emits the documented `--json` error contract (see docs/README.lock.md,
-    # docs/README.dev.md) to stdout and exits, for usage/validation errors
-    # raised before a command's own `status_json` branch is reached (e.g. bad
-    # option, extra argument, invalid lock name).
-    #
-    # @param schema_version [Integer] the command's JSON schema version
-    # @param message [String] error message (single line; not the full help text)
-    def emit_json_usage_error(schema_version, message)
-      @output.puts JSON.generate(JsonEnvelope.error(schema_version, message, code: "usage"))
-      @exit_handler.exit(1)
-    end
+    # See {Common#help_requested?}.
+    def help_requested?(args, page = nil) = @common.help_requested?(args, page)
 
-    # Whether +args+ ask for help, so a verb shows its page before it parses or acts.
-    # Only the words before a `--` count, and with a +page+ the word after a flag
-    # that takes a value is that value, so `--note --help` stays literal.
-    def help_requested?(args, page = nil)
-      value_flags = page ? HelpPages.value_flags(page) : []
-      skip = false
-      args.each do |arg|
-        break if arg == "--"
-        if skip
-          skip = false
-        elsif ["--help", "-h"].include?(arg)
-          return true
-        else
-          skip = value_flags.include?(arg)
-        end
-      end
-      false
-    end
+    # See {Common#verb_help_shown?}.
+    def verb_help_shown?(table, args) = @common.verb_help_shown?(@invocation, table, args)
 
-    # Prints the page of the verb that leads +args+ when help is asked for, before
-    # anything is parsed or acted on. False when there is no verb or no request,
-    # so the bare command keeps its overview.
-    def verb_help_shown?(table, args)
-      _key, page = HelpPages.lookup(table, args)
-      return false unless page && help_requested?(args, page)
-
-      @output.puts HelpPages.render(page)
-      true
-    end
-
-    # Whether --json was requested, even when the parse error happened before
-    # OptionParser reached the --json flag (e.g. an unknown option listed
-    # first). The JSON error contract must not depend on flag order.
-    #
-    # @param json [Boolean] the flag as set by OptionParser so far
-    # @param args [Array<String>] the raw, unparsed argv for this subcommand
-    # @return [Boolean]
-    def json_requested?(json, args)
-      json || args.include?("--json")
-    end
+    # See {Common#json_requested?}.
+    def json_requested?(json, args) = @common.json_requested?(json, args)
 
     def cmd_lock_release(args)
       workspace = nil
@@ -3183,12 +2446,8 @@ module Workspace
       end
     end
 
-    # One `results` row for a command that reports only an exit code: `ok_outcome`
-    # on 0, else `failed` with the code (the details went to stderr).
-    def exit_code_row(workspace, ok_outcome, code, **extra)
-      return action_row(workspace, ok_outcome, **extra) if code.zero?
-      action_row(workspace, "failed", reason: "exit_code", message: "Exited #{code}; the details are on stderr.", exit_code: code, **extra)
-    end
+    # See {Common#exit_code_row}.
+    def exit_code_row(workspace, ok_outcome, code, **extra) = @common.exit_code_row(workspace, ok_outcome, code, **extra)
 
     def cmd_lock_status(args)
       workspace = nil
@@ -3479,761 +2738,6 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
-    # Sends a raw JSONL message to a running agent socket for manual testing and
-    # exploration. Always pretty-prints what is being sent before sending it.
-    #
-    # Usage with a subcommand (--work-item defaults to a random UUID):
-    #   workspace agent-run command --work-item WC-42
-    #
-    # Usage with raw JSON body (workspace is read from the message):
-    #   workspace agent-run --body '{"type":"command","workspace":"myproject",...}'
-    def cmd_agent_run(args)
-      body = nil
-      dry_run = false
-      help = false
-
-      # Peek for --body / --dry-run before deciding whether to dispatch to a
-      # subcommand. OptionParser would consume them anyway; doing it here lets
-      # us keep a clean subcommand path for the common case.
-      parser = OptionParser.new do |opts|
-        opts.on("--body JSON", "Full message JSON to send directly (workspace read from message)") { |v| body = v }
-        opts.on("--dry-run", "Print without sending") { dry_run = true }
-        opts.on("-h", "--help", "Show this help") { help = true }
-      end
-      parser.order!(args)  # stops at the first non-option so subcommand words survive
-
-      return @output.puts(agent_run_help) if help
-      return if verb_help_shown?(HelpPages::AGENT_RUN, args)
-
-      if body
-        return cmd_agent_run_raw(body, dry_run: dry_run)
-      end
-
-      subcommand = args.shift
-      case subcommand
-      when "command" then cmd_agent_run_command(args)
-      when "inject" then cmd_agent_run_inject(args)
-      when "restart" then cmd_agent_run_restart(args)
-      when "send" then cmd_agent_run_send(args)
-      when "queue" then cmd_agent_run_queue(args)
-      when "examples" then cmd_agent_run_examples
-      when "help" then @output.puts agent_run_help
-      else
-        raise UsageError, agent_run_help
-      end
-    end
-
-    # Parses +body+ as the full message JSON, compacts it to one line, and
-    # sends it directly to the agent socket named in the message's "workspace"
-    # field. Useful for copy-pasting an example and firing it immediately.
-    def cmd_agent_run_raw(body, dry_run: false)
-      message = begin
-        JSON.parse(jsonl_body(body))
-      rescue JSON::ParserError => e
-        raise UsageError, "Invalid JSON in --body: #{e.message}"
-      end
-
-      name = message["workspace"]
-      raise UsageError, "Message JSON must include a \"workspace\" key" if name.nil? || name.empty?
-
-      agent_run_send(name, message, dry_run: dry_run)
-    end
-
-    def agent_run_help
-      <<~HELP
-        Usage: workspace agent-run <subcommand> [options]
-               workspace agent-run --body '<full message JSON>' [--dry-run]
-
-        Send a raw JSONL message to a running agent socket.
-        Always prints the message being sent before sending it.
-
-        Subcommands:
-        #{HelpPages.overview_verbs(HelpPages::AGENT_RUN).join("\n")}
-
-        Raw mode (paste a full message directly):
-          --body JSON         Complete message JSON; workspace is read from the message
-          --dry-run           Print without sending
-
-        Run `workspace agent-run VERB --help` for a verb's options.
-
-        Examples:
-          workspace agent-run command --body "Add OAuth support"    # send a task to the current directory's workspace
-          workspace agent-run command --name myapp --dry-run    # see the message for a named workspace, send nothing
-          workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"    # steer a running work item
-          workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md"    # clear a pane's agent and give it a prompt
-          workspace agent-run send --pane %19 --body "yes"    # type into a pane and press Enter
-          workspace agent-run queue list    # what `send --when-idle` has queued
-          workspace agent-run queue cancel --id 3f9a2c41d07b5e88    # take a queued prompt back
-          workspace agent-run --body '{"type":"command","workspace":"myapp","work_item_ref":"WC-42","dispatch_id":"debug-1","body":"go"}' --dry-run    # a full message you wrote
-          workspace agent-run examples    # stock messages to copy, nothing sent
-      HELP
-    end
-
-    def cmd_agent_run_command(args)
-      name = nil
-      work_item = nil
-      body = nil
-      dry_run = false
-
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run command [options]"
-        opts.on("--name NAME", "Workspace name") { |v| name = v }
-        opts.on("--work-item REF", "Work item reference") { |v| work_item = v }
-        opts.on("--body TEXT", "Text to deliver to the pipeline") { |v| body = v }
-        opts.on("--dry-run", "Print without sending") { dry_run = true }
-      end
-      parser.parse!(args)
-
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{agent_run_help}" if name.nil?
-      work_item ||= SecureRandom.uuid
-
-      message = build_command_message(name: name, work_item: work_item, body: body)
-      agent_run_send(name, message, dry_run: dry_run)
-    end
-
-    # `workspace agent run PROMPT`: the prompt is the positional arguments
-    # joined with a space, so a multi-word prompt needs no quoting. Everything
-    # else matches `agent-run command` minus the default body — the prompt
-    # positional is required.
-    def cmd_agent_run_prompt(args)
-      name = nil
-      work_item = nil
-      dry_run = false
-      json = false
-
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent run PROMPT [options]"
-        opts.separator ""
-        opts.separator "Send a prompt to the workspace's pipeline as a \"command\" message."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
-        opts.on("--work-item REF", "Work item reference (default: random UUID)") { |v| work_item = v }
-        opts.on("--dry-run", "Print the message without sending it") { dry_run = true }
-        opts.on("--json", "Print one JSON document with the agent's reply (see docs/README.json.md) instead of",
-          "text; the text goes to stderr. Exit 0 whatever the reply says: read reply.ok") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agent run Add OAuth support    # send the prompt to the project in this directory; no quotes needed"
-        opts.separator "  workspace agent run --name myapp \"Run the linter and report any issues\"    # a named workspace"
-        opts.separator "  workspace agent run --dry-run \"Add OAuth support\"    # print the message, send nothing"
-        opts.separator "  workspace agent run --work-item WC-42 \"Fix the flaky spec\"    # tie the prompt to a work item"
-        opts.separator "  workspace agent run --json \"Add OAuth support\"    # one JSON document with the reply; exits 0 whatever it says"
-      end
-      parser.parse!(args)
-
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
-
-      prompt = args.join(" ")
-      raise UsageError, "Missing prompt.\n\n#{parser.help}" if prompt.empty?
-      work_item ||= SecureRandom.uuid
-
-      unless json
-        message = build_command_message(name: name, work_item: work_item, body: prompt, dispatch_prefix: "agent-run-")
-        agent_run_send(name, message, dry_run: dry_run)
-        return
-      end
-
-      # Not an action document (the agent's reply is the result), so it diverts and prints by hand.
-      message = reply = nil
-      divert_output do
-        message = build_command_message(name: name, work_item: work_item, body: prompt, dispatch_prefix: "agent-run-")
-        reply = agent_run_send(name, message, dry_run: dry_run)
-      end
-      doc = {"schema_version" => ACTION_JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name,
-             "work_item_ref" => work_item, "dispatch_id" => message["dispatch_id"], "dry_run" => dry_run}
-      doc[dry_run ? "message" : "reply"] = dry_run ? message : reply
-      @output.puts JSON.generate(doc)
-    rescue OptionParser::ParseError => e
-      raise UsageError, "#{e.message}\nIf the prompt starts with a dash or looks like a flag, pass it after --.\n\n#{parser.help}"
-    end
-
-    # Builds the "command" message shared by `agent run` and
-    # `agent-run command`.
-    def build_command_message(name:, work_item:, body:, dispatch_prefix: "debug-")
-      AgentProtocol.command(workspace: name, work_item_ref: work_item,
-        dispatch_id: "#{dispatch_prefix}#{SecureRandom.hex(4)}", body: jsonl_body(body || "Begin work."))
-    end
-
-    def cmd_agent_run_inject(args)
-      name = nil
-      work_item = nil
-      body = nil
-      interrupt = false
-      dry_run = false
-
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run inject [options]"
-        opts.on("--name NAME", "Workspace name") { |v| name = v }
-        opts.on("--work-item REF", "Work item reference") { |v| work_item = v }
-        opts.on("--body TEXT", "Text to inject into the pane") { |v| body = v }
-        opts.on("--interrupt", "Interrupt the running stage first (sends Ctrl-C)") { interrupt = true }
-        opts.on("--dry-run", "Print without sending") { dry_run = true }
-      end
-      parser.parse!(args)
-
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{agent_run_help}" if name.nil?
-      raise UsageError, "Missing --work-item.\n\n#{agent_run_help}" if work_item.nil?
-      raise UsageError, "Missing --body.\n\n#{agent_run_help}" if body.nil?
-
-      message = AgentProtocol.inject(workspace: name, work_item_ref: work_item, interrupt: interrupt, body: jsonl_body(body))
-      agent_run_send(name, message, dry_run: dry_run)
-    end
-
-    # Asks the agent daemon to /clear the coding agent in one named pane and,
-    # once its context usage has dropped, type a prompt into it.
-    def cmd_agent_run_restart(args)
-      name = nil
-      pane = nil
-      prompt = nil
-      force = false
-      wait = false
-      timeout = nil
-      json = false
-
-      parser = OptionParser.new do |opts|
-        opts.on("--name NAME") { |v| name = v }
-        opts.on("--pane PANE") { |v| pane = v }
-        opts.on("--prompt TEXT") { |v| prompt = v }
-        opts.on("--force") { force = true }
-        opts.on("--wait") { wait = true }
-        opts.on("--timeout DURATION") { |v| timeout = parse_duration_option("--timeout", v, positive: true) }
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      page = HelpPages.render(HelpPages::AGENT_RUN.fetch("restart")).join("\n")
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
-
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{page}" if name.nil?
-      raise UsageError, "Missing --pane.\n\n#{page}" if pane.nil? || pane.strip.empty?
-      raise UsageError, "Missing --prompt.\n\n#{page}" if prompt.nil? || prompt.strip.empty?
-      if timeout && timeout > Commands::Agent::MAX_RESTART_TIMEOUT
-        raise UsageError, "--timeout: at most #{Commands::Agent::MAX_RESTART_TIMEOUT}s"
-      end
-      raise Error, "workspace agent-run restart is not available in this build" unless @restart_agent_command
-
-      result = @restart_agent_command.call(name: name, pane: pane, prompt: prompt, force: force, wait: wait,
-        timeout: timeout, json: json)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    rescue OptionParser::ParseError, UsageError => e
-      raise unless json_requested?(json, args)
-      emit_json_error(Commands::RestartAgent::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    # Types text or tmux key names into one named pane. The pane must be a
-    # pane id or window.pane of the workspace's own tmux session; there is
-    # no default pane. See {Workspace::Commands::Send}.
-    def cmd_agent_run_send(args)
-      name = nil
-      pane = nil
-      body = nil
-      keys = nil
-      no_enter = false
-      when_idle = false
-      clear_first = false
-      interrupt = false
-      json = false
-
-      parser = OptionParser.new do |opts|
-        opts.on("--name NAME") { |v| name = v }
-        opts.on("--pane PANE") { |v| pane = v }
-        opts.on("--body TEXT") { |v| body = v }
-        opts.on("--keys KEYS") { |v| keys = v }
-        opts.on("--no-enter") { no_enter = true }
-        opts.on("--when-idle") { when_idle = true }
-        opts.on("--clear-first") { clear_first = true }
-        opts.on("--interrupt") { interrupt = true }
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      page = HelpPages.render(HelpPages::AGENT_RUN.fetch("send")).join("\n")
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
-
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{page}" if name.nil?
-      raise UsageError, "Missing --pane.\n\n#{page}" if pane.nil? || pane.strip.empty?
-      raise UsageError, "Pass --body or --keys, not both.\n\n#{page}" if body && keys
-      raise UsageError, "Missing --body or --keys.\n\n#{page}" if body.nil? && keys.nil?
-      raise UsageError, "--body can't be empty.\n\n#{page}" if body && body.empty?
-      raise UsageError, "--no-enter applies to --body; --keys never presses Enter on its own.\n\n#{page}" if no_enter && keys
-      [["--when-idle", when_idle], ["--clear-first", clear_first]].each do |flag, given|
-        raise UsageError, "#{flag} takes --body, not --keys.\n\n#{page}" if given && keys
-        raise UsageError, "#{flag} always presses Enter; drop --no-enter.\n\n#{page}" if given && no_enter
-      end
-      if interrupt
-        raise UsageError, "--interrupt takes --body, not --keys.\n\n#{page}" if keys
-        raise UsageError, "--interrupt always presses Enter; drop --no-enter.\n\n#{page}" if no_enter
-        if when_idle || clear_first
-          raise UsageError, "--interrupt types now or not at all; it does not combine with --when-idle or --clear-first.\n\n#{page}"
-        end
-      end
-      raise Error, "workspace agent-run send is not available in this build" unless @send_command
-      return @send_command.interrupt_through_daemon(name: name, pane: pane, body: body, json: json) if interrupt
-      if when_idle || clear_first
-        return @send_command.through_daemon(name: name, pane: pane, body: body, when_idle: when_idle,
-          clear_first: clear_first, json: json)
-      end
-
-      key_names = keys && Commands::Send.parse_keys(keys)
-      @send_command.call(name: name, pane: pane, body: body, keys: key_names, enter: !no_enter, json: json)
-    end
-
-    def agent_run_queue_help
-      HelpPages.render(HelpPages::AGENT_RUN.fetch("queue")).join("\n") + "\n"
-    end
-
-    def cmd_agent_run_queue(args)
-      verb = args.shift
-      case verb
-      when "list" then cmd_agent_run_queue_list(args)
-      when "cancel" then cmd_agent_run_queue_cancel(args)
-      when "-h", "--help", "help" then @output.puts agent_run_queue_help
-      when nil then raise UsageError, "Missing queue verb (list or cancel).\n\n#{agent_run_queue_help}"
-      else raise UsageError, "Unknown queue verb: #{verb}.\n\n#{agent_run_queue_help}"
-      end
-    end
-
-    def cmd_agent_run_queue_list(args)
-      name = nil
-      pane = nil
-      json = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run queue list [--name NAME] [--pane PANE] [--json]"
-        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
-        opts.on("--pane PANE", "Only this pane: a pane id (%19) or window.pane (0.1)") { |v| pane = v }
-        opts.on("--json", "Print {\"entries\":[...]} as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
-      end
-      parser.parse!(args)
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
-      raise UsageError, "--pane can't be empty.\n\n#{parser.help}" if pane && pane.strip.empty?
-      raise Error, "workspace agent-run queue is not available in this build" unless @prompt_queue_command
-
-      @prompt_queue_command.list(name: name, pane: pane, json: json)
-    end
-
-    def cmd_agent_run_queue_cancel(args)
-      name = nil
-      id = nil
-      json = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run queue cancel --id ID [--name NAME] [--json]"
-        opts.on("--id ID", "The id `send --when-idle` answered  (required)") { |v| id = v }
-        opts.on("--name NAME", "Workspace name (default: look through every workspace's queue)") { |v| name = v }
-        opts.on("--json", "Print {\"cancelled\":true,\"id\",\"pane_id\",\"text\"} as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
-      end
-      parser.parse!(args)
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
-      raise UsageError, "Missing --id.\n\n#{parser.help}" if id.nil? || id.strip.empty?
-      raise Error, "workspace agent-run queue is not available in this build" unless @prompt_queue_command
-
-      @prompt_queue_command.cancel(id: id.strip, name: name, json: json)
-    end
-
-    def handoff_help
-      <<~HELP
-        #{HelpPages.overview_usage(HelpPages::HANDOFF)}
-
-        Watches a coding agent's context-window usage and hands off to a fresh
-        conversation before it fills up: `check` tells the agent to save its state
-        once usage crosses a threshold, `new` clears the conversation and resumes it
-        (the same flow as `workspace agent-run restart`).
-
-        #{HelpPages.overview_verbs(HelpPages::HANDOFF).join("\n")}
-        Run `workspace handoff VERB --help` for a verb's options.
-
-        Examples:
-          workspace handoff check    # this project's agent: a save-state prompt only if it is over the threshold
-          workspace handoff check myapp --threshold 20 --json    # a named workspace, for a script
-          workspace handoff new    # restart the first Claude Code pane (else Codex) of this project, which may not be yours
-          workspace handoff new myapp --pane "$TMUX_PANE"    # an agent restarting its own pane
-      HELP
-    end
-
-    # Dispatches `workspace handoff check|new`. Never guesses a pane or a
-    # context percentage; see {Workspace::Commands::Handoff}.
-    def cmd_handoff(args)
-      original_args = args.dup
-      subcommand = args.shift
-      case subcommand
-      when "check", "new"
-        send(:"cmd_handoff_#{subcommand}", args) unless verb_help_shown?(HelpPages::HANDOFF, [subcommand, *args])
-      when "help", "--help", "-h" then @output.puts handoff_help
-      else
-        raise UsageError, handoff_help
-      end
-    rescue UsageError => e
-      raise unless json_requested?(false, original_args)
-      emit_json_error(Commands::Handoff::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    def cmd_handoff_check(args)
-      pane = nil
-      threshold = nil
-      context_pct = nil
-      handoff_doc = nil
-      handoff_prompt = nil
-      json = false
-      name_opt = nil
-
-      page = HelpPages.render(HelpPages::HANDOFF.fetch("check")).join("\n")
-      parser = OptionParser.new do |opts|
-        opts.on("--name WS") { |v| name_opt = v }
-        opts.on("--pane PANE") { |v| pane = v }
-        opts.on("--threshold PCT") { |v| threshold = v }
-        opts.on("--context-pct N", Integer) { |v| context_pct = v }
-        opts.on("--handoff-doc PATH") { |v| handoff_doc = v }
-        opts.on("--handoff-prompt TEXT") { |v| handoff_prompt = v }
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{page}" if handoff_doc && handoff_prompt
-      if threshold
-        begin
-          threshold = HandoffConfig.parse_threshold(threshold)
-        rescue ArgumentError => e
-          raise UsageError, "--threshold #{e.message}\n\n#{page}"
-        end
-      end
-
-      name = pick_workspace_name(name_opt, args.shift)
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{page}" if name.nil?
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
-      raise Error, "workspace handoff is not available in this build" unless @handoff_command
-
-      result = @handoff_command.check(name: name, pane: pane, threshold: threshold, context_pct: context_pct,
-        handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, json: json)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    rescue OptionParser::ParseError, UsageError, Error => e
-      raise unless json_requested?(json, args)
-      emit_json_error(Commands::Handoff::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    def cmd_handoff_new(args)
-      pane = nil
-      handoff_doc = nil
-      handoff_prompt = nil
-      wait = false
-      json = false
-      name_opt = nil
-
-      page = HelpPages.render(HelpPages::HANDOFF.fetch("new")).join("\n")
-      parser = OptionParser.new do |opts|
-        opts.on("--name WS") { |v| name_opt = v }
-        opts.on("--pane PANE") { |v| pane = v }
-        opts.on("--handoff-doc PATH") { |v| handoff_doc = v }
-        opts.on("--handoff-prompt TEXT") { |v| handoff_prompt = v }
-        opts.on("--wait") { wait = true }
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{page}" if handoff_doc && handoff_prompt
-
-      name = pick_workspace_name(name_opt, args.shift)
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{page}" if name.nil?
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
-      raise Error, "workspace handoff is not available in this build" unless @handoff_command
-
-      result = @handoff_command.new(name: name, pane: pane, handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, wait: wait, json: json)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    rescue OptionParser::ParseError, Error => e
-      raise unless json_requested?(json, args)
-      emit_json_error(Commands::Handoff::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    def cmd_agent_run_examples
-      name = @project_detector.detect(@working_dir) || "workspace"
-
-      examples = [
-        {
-          label: "command — check GitHub CI status (safe, read-only)",
-          cli: "workspace agent-run command --work-item WC-42 --body \"What is the current status of GitHub CI for this branch?\"",
-          message: AgentProtocol.command(workspace: name, work_item_ref: "WC-42", dispatch_id: "debug-abcd1234",
-            body: "What is the current status of GitHub CI for this branch?")
-        },
-        {
-          label: "command — run the linter (safe, re-runnable)",
-          cli: "workspace agent-run command --work-item WC-42 --body \"Run the linter and report any issues.\"",
-          message: AgentProtocol.command(workspace: name, work_item_ref: "WC-42", dispatch_id: "debug-abcd1234",
-            body: "Run the linter and report any issues.")
-        },
-        {
-          label: "inject — queue a steer for the next pipeline stage",
-          cli: "workspace agent-run inject --work-item WC-42 --body \"Focus on the failing tests, not the linter warnings.\"",
-          message: AgentProtocol.inject(workspace: name, work_item_ref: "WC-42", interrupt: false,
-            body: "Focus on the failing tests, not the linter warnings.")
-        },
-        {
-          label: "inject --interrupt — urgent steer: stop current stage and redirect",
-          cli: "workspace agent-run inject --interrupt --work-item WC-42 --body \"Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first.\"",
-          message: AgentProtocol.inject(workspace: name, work_item_ref: "WC-42", interrupt: true,
-            body: "Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first.")
-        },
-        {
-          label: "restart — clear the coding agent in one pane and hand it a fresh prompt",
-          cli: "workspace agent-run restart --pane 0.1 --prompt \"Read HANDOFF.md and follow it.\" --wait",
-          message: AgentProtocol.restart_agent(workspace: name, pane: "0.1", prompt: "Read HANDOFF.md and follow it.",
-            force: false, wait: true)
-        }
-      ]
-
-      examples.each_with_index do |example, i|
-        @output.puts "#{i + 1}. #{example[:label]}"
-        @output.puts "   Run it: #{example[:cli]}"
-        @output.puts "   JSONL (sent as a single line):"
-        JSON.pretty_generate(example[:message]).each_line do |line|
-          @output.puts "   #{line}"
-        end
-        @output.puts unless i == examples.size - 1
-      end
-    end
-
-    # If +body+ looks like JSON (parses successfully), compact it to a single
-    # line so it travels safely as JSONL. Plain strings pass through unchanged.
-    def jsonl_body(body)
-      parsed = JSON.parse(body)
-      compacted = parsed.to_json
-      if compacted != body.strip
-        @output.puts "(body compacted to JSONL)"
-      end
-      compacted
-    rescue JSON::ParserError
-      body
-    end
-
-    # Pretty-prints +message+ as the JSONL that will be sent, then sends it
-    # (unless +dry_run+ is true) and pretty-prints the reply.
-    def agent_run_send(name, message, dry_run: false)
-      socket_path = @config.agent_socket_path(name)
-      @output.puts "Sending JSONL to #{socket_path}:"
-      JSON.pretty_generate(message).each_line { |line| @output.puts "  #{line}" }
-
-      if dry_run
-        @output.puts "(dry-run: not sent)"
-        return
-      end
-
-      @output.puts
-      reply = send_to_agent(name, message)
-      @output.puts "Reply:"
-      JSON.pretty_generate(reply).each_line { |line| @output.puts "  #{line}" }
-      reply
-    end
-
-    # Drives and inspects a running agent's pipeline. These are operator tools:
-    # everything that touches a pane goes through the agent that owns it, so a
-    # manual nudge cannot get the agent's own view of the pipeline out of step.
-    def cmd_pipeline(args)
-      # The subcommand is the first non-option argument, so a leading flag
-      # (e.g. `pipeline --json status`) is dispatched correctly regardless of
-      # where it appears.
-      index = args.index { |a| !a.start_with?("-") }
-      subcommand = index && args[index]
-      rest = index ? args[0...index] + args[(index + 1)..] : args
-
-      # With --json the notice is in an action document's `warnings` instead, and stderr stays empty.
-      @error_output.puts "Warning: #{PIPELINE_DEPRECATION}" if %w[start advance status reset].include?(subcommand) && !rest.include?("--json")
-      return if subcommand && verb_help_shown?(HelpPages::PIPELINE, [subcommand, *rest])
-
-      case subcommand
-      when "start" then cmd_pipeline_start(rest)
-      when "advance" then cmd_pipeline_advance(rest)
-      when "status" then cmd_pipeline_status(rest)
-      when "reset" then cmd_pipeline_reset(rest)
-      when "help", nil then @output.puts pipeline_help
-      else
-        raise UsageError, pipeline_help
-      end
-    end
-
-    # Printed by every `pipeline` subcommand and in its help.
-    PIPELINE_DEPRECATION = "`workspace pipeline` is deprecated and will be removed in a later release. " \
-      "Use `workspace workflow` (see `workspace workflow --help`)."
-
-    def pipeline_help
-      <<~HELP
-        #{HelpPages.overview_usage(HelpPages::PIPELINE)}
-
-        Deprecated: use `workspace workflow`, which runs ordered steps in a workspace's agent pane
-        and shows where a run is stuck. `pipeline` will be removed in a later release.
-
-        #{HelpPages.overview_verbs(HelpPages::PIPELINE).join("\n")}
-
-        Examples:
-        #{HelpPages.overview_examples(HelpPages::PIPELINE).join("\n")}
-          workspace pipeline start --help    # read the page of one subcommand
-      HELP
-    end
-
-    def cmd_pipeline_start(args)
-      project, work_item, body, json = parse_pipeline_args(args, "start")
-      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_page("start")}" if project.nil? || work_item.nil?
-
-      run_action("pipeline start", json: json) do
-        reply = send_to_agent(project,
-          AgentProtocol.command(workspace: project, work_item_ref: work_item,
-            dispatch_id: "manual-#{SecureRandom.hex(4)}", body: body || "Begin work on #{work_item}."))
-        raise Error, "The agent for #{project} refused the work item: #{reply["error"]}" unless reply["ok"]
-        @output.puts "Sent #{work_item} into #{project}'s pipeline"
-        {results: json ? [action_row(project, "started", work_item_ref: work_item)] : [], warnings: [PIPELINE_DEPRECATION]}
-      end
-    end
-
-    # Types the completion sentinel into the running stage's pane, which is
-    # exactly what a finished stage would print, so the agent advances normally.
-    #
-    # The stage's token comes from the persisted state. If the stage moves on
-    # between that read and the inject, the sentinel carries the old stage's
-    # token and the new stage ignores it, rather than being ended unasked.
-    def cmd_pipeline_advance(args)
-      project, work_item, body, json = parse_pipeline_args(args, "advance")
-      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_page("advance")}" if project.nil? || work_item.nil?
-
-      run_action("pipeline advance", json: json) do
-        token = read_pipeline_state(project).dig(work_item, "sentinel_token")
-        # The body reaches a live shell, so it is escaped rather than interpolated.
-        sentinel = "#{SentinelPoller.marker(token)} #{body || "manual advance"}"
-        reply = send_to_agent(project,
-          AgentProtocol.inject(workspace: project, work_item_ref: work_item, interrupt: true, expected_token: token,
-            body: "echo #{Shellwords.escape(sentinel)}"))
-        unless reply["ok"]
-          raise Error.new("The stage moved on before the advance landed; run 'workspace pipeline advance' again", code: "stale_token") if reply["error"] == "stale_token"
-          raise Error, "The agent for #{project} refused the advance: #{reply["error"]}"
-        end
-        @output.puts "Nudged #{project}/#{work_item} to advance"
-        {results: json ? [action_row(project, "advanced", work_item_ref: work_item)] : [], warnings: [PIPELINE_DEPRECATION]}
-      end
-    end
-
-    # `workspace pipeline status --json`'s schema version.
-    PIPELINE_JSON_SCHEMA_VERSION = 1
-
-    def cmd_pipeline_status(args)
-      as_json = false
-      parser = OptionParser.new do |opts|
-        opts.on("--json") { as_json = true }
-      end
-      parser.parse!(args)
-      project = settle_name(args.shift)
-      raise UsageError, pipeline_page("status") if project.nil?
-
-      entries = read_pipeline_state(project)
-      return @output.puts JSON.generate({"schema_version" => PIPELINE_JSON_SCHEMA_VERSION, "ok" => true, "entries" => entries.values}) if as_json
-
-      if entries.empty?
-        @output.puts "No pipeline work in flight for #{project}"
-        return
-      end
-
-      @output.puts "WORK ITEM  PANE  STAGE  DEADLINE"
-      entries.each_value do |entry|
-        deadline = format_deadline(entry["deadline_at"])
-        @output.puts "#{entry["work_item_ref"]}  pane #{entry["pane_index"]}  #{entry["phase"] || "(no pipeline)"}  #{deadline}"
-      end
-    rescue OptionParser::ParseError, UsageError => e
-      raise unless json_requested?(as_json, args)
-      emit_json_error(PIPELINE_JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    # Renders a stage's deadline in local time plus how far off it is, so an
-    # operator scanning the table doesn't have to convert UTC in their head.
-    # `--json` keeps the raw ISO 8601 UTC string this formats.
-    def format_deadline(deadline_at)
-      return "-" if deadline_at.nil?
-
-      deadline = Time.parse(deadline_at)
-      remaining = deadline - @clock.call
-      relative = (remaining >= 0) ? "in #{Duration.humanize(remaining)}" : "overdue #{Duration.humanize(-remaining)}"
-      "#{deadline.localtime.strftime("%H:%M")} (#{relative})"
-    end
-
-    # Tolerates an unreadable state file the way the agent does, so the command
-    # an operator reaches for when things look wrong is not the one that dies.
-    def read_pipeline_state(project)
-      state_path = @config.pipeline_state_path(project)
-      return {} unless File.exist?(state_path)
-      entries = JSON.parse(File.read(state_path))
-      entries.is_a?(Hash) ? entries : {}
-    rescue JSON::ParserError, SystemCallError
-      @error_output.puts "Could not read #{project}'s pipeline state at #{state_path}; treating it as empty"
-      {}
-    end
-
-    # The agent holds this state in memory while it runs, so clearing the file
-    # under a live agent would only put the two out of step.
-    def cmd_pipeline_reset(args)
-      json = false
-      parser = OptionParser.new do |opts|
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      project = settle_name(args.shift)
-      raise UsageError, pipeline_page("reset") if project.nil? || args.any?
-
-      run_action("pipeline reset", json: json) do
-        if agent_running?(project)
-          raise Error, "The agent for #{project} is running; stop it (Ctrl-C in its pane, " \
-            "or kill the 'workspace agentd' process) before resetting its pipeline state"
-        end
-
-        state_path = @config.pipeline_state_path(project)
-        File.unlink(state_path) if File.exist?(state_path)
-        @output.puts "Cleared pipeline state for #{project}"
-        {results: json ? [action_row(project, "reset")] : [], warnings: [PIPELINE_DEPRECATION]}
-      end
-    end
-
-    def parse_pipeline_args(args, verb)
-      work_item = nil
-      body = nil
-      json = false
-      parser = OptionParser.new do |opts|
-        opts.on("--work-item REF") { |v| work_item = v }
-        opts.on("--body TEXT") { |v| body = v }
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      project = settle_name(args.shift)
-      raise UsageError, "Unexpected arguments: #{args.join(" ")}\n\n#{pipeline_page(verb)}" if args.any?
-      [project, work_item, body, json]
-    end
-
-    # The page of one pipeline verb, as text.
-    def pipeline_page(verb)
-      HelpPages.render(HelpPages::PIPELINE.fetch(verb)).join("\n")
-    end
-
-    def send_to_agent(project, message)
-      socket = begin
-        UNIXSocket.open(@config.agent_socket_path(project))
-      rescue SystemCallError, IOError
-        raise Error.new("No agent is running for #{project}. Start one with: workspace agentd --name #{project}", code: "no_daemon")
-      end
-      reply = begin
-        socket.puts(message.to_json)
-        socket.gets
-      rescue SystemCallError, IOError
-        raise Error.new("The agent for #{project} closed the connection without replying", code: "connection_failed")
-      ensure
-        socket.close
-      end
-      raise Error.new("The agent for #{project} closed the connection without replying", code: "connection_failed") if reply.nil?
-      JSON.parse(reply)
-    rescue JSON::ParserError
-      raise Error.new("Unreadable reply from the agent for #{project}", code: "unreadable_reply")
-    end
-
-    def agent_running?(project)
-      @config.agent_running?(project)
-    end
-
     def cmd_run_and_report(args)
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace run-and-report '<command>'"
@@ -4442,240 +2946,6 @@ module Workspace
       parser.parse!(args)
 
       @init_command.call(dry_run: dry_run, force: force, hooks: hooks, workflow_sources: workflow_sources)
-    end
-
-    def cmd_sessions(args)
-      json = false
-      watch = false
-      interval = 2
-      worktrees = false
-      name_opt = nil
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace sessions [options] [project]"
-        opts.separator ""
-        opts.separator "Show the coding-agent sessions running in a workspace's panes,"
-        opts.separator "whether each is working, idle, waiting on a person, or done, and any"
-        opts.separator "sub-agents they started."
-        opts.separator ""
-        opts.separator "STATE column: working (output changing), idle (output unchanged 30s+),"
-        opts.separator "waiting (the agent asked for permission or input; needs the"
-        opts.separator "Notification hook from workspace init), or done (the agent's turn"
-        opts.separator "ended; needs the Stop hook). A waiting pane shows the"
-        opts.separator "agent's message on the line below it. waiting is Claude Code only;"
-        opts.separator "other agents (Codex, OpenCode, Pi) only ever show working or idle."
-        opts.separator ""
-        opts.separator "Requires a running agent daemon (workspace agentd <project>; re-run"
-        opts.separator "`workspace init` if `workspace doctor` reports it missing)."
-        opts.separator ""
-        opts.separator "LOCK column: shows every lock a pane holds or waits on (e.g. \"edit ✓ devenv #2\","
-        opts.separator "space-joined, edit first and others alphabetical). JSON output includes a locks array."
-        opts.separator ""
-        opts.separator "--worktrees also shows sessions for the project's child worktree workspaces"
-        opts.separator "(config names \"<project>.worktree-*\"), one table per workspace that has an"
-        opts.separator "agent daemon running; workspaces without one are omitted silently. With no"
-        opts.separator "[project], the parent of the current worktree is used, so the whole family"
-        opts.separator "shows even when run from inside a worktree. --json nests them under a"
-        opts.separator "\"workspaces\" array."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--name WS", "The project, as an option (same as the positional [project])") { |v| name_opt = v }
-        opts.on("--json", "Emit the raw payload instead of a table") { json = true }
-        opts.on("--watch", "Redraw until interrupted") { watch = true }
-        opts.on("--interval SECONDS", Float, "Seconds between redraws (default 2)") do |value|
-          interval = value
-        end
-        opts.on("--worktrees", "Also show sessions for child worktree workspaces") { worktrees = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace sessions    # sessions for the current directory's project"
-        opts.separator "  workspace sessions my-project    # sessions for a named project"
-        opts.separator "  workspace sessions --watch    # watch and redraw every 2 seconds"
-        opts.separator "  workspace sessions --json    # emit raw JSON for scripting"
-        opts.separator "  workspace sessions my-project --worktrees    # include the project's worktree workspaces"
-      end
-
-      parser.parse!(args)
-
-      project = pick_workspace_name(name_opt, args.first) || @project_detector.detect(@working_dir)
-      raise UsageError, parser.help unless project
-
-      result = @sessions_command.call(name: project, json: json, watch: watch, interval: interval, worktrees: worktrees)
-      @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
-    end
-
-    def review_parser(options)
-      OptionParser.new do |opts|
-        opts.banner = HelpPages.overview_usage(HelpPages::REVIEW)
-        opts.separator ""
-        opts.separator "Collect what you need to review a coding agent's finished work. A workspace is ready"
-        opts.separator "when its agent is done (the Stop hook fired and no pane is working or waiting) and its"
-        opts.separator "branch has commits its base branch (origin's default branch) lacks. A stopped workspace"
-        opts.separator "is judged by its agent's last recorded state (agent_state_source \"recorded\" in --json)."
-        opts.separator ""
-        HelpPages.overview_verbs(HelpPages::REVIEW).each { |line| opts.separator line }
-        opts.separator "Run `workspace review VERB --help` for a verb's options."
-        opts.separator ""
-        opts.separator "Reads only; nothing is written. A source that can't answer (no agent daemon, git or gh"
-        opts.separator "failing or too slow) is reported as unavailable, never as clean."
-        opts.separator ""
-        opts.on("--name WS", "For show: the workspace, as an option (same as the positional WORKSPACE)") { |v| options[:name] = v }
-        opts.on("--patch", "For show: include the unified patch of the diffstat's range (git.patch in --json)") { options[:patch] = true }
-        opts.on("--max-bytes N", Integer, "For show --patch: most patch bytes to return, 1 to 5242880 (default 200000)") { |v| options[:max_bytes] = v }
-        opts.on("--json", "Print schema-versioned JSON (see docs/README.review.md)") { options[:json] = true }
-        opts.on("-h", "--help", "Show this help") { options[:help] = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace review    # the packet for the workspace in the current directory"
-        opts.separator "  workspace review list    # what is ready in this project"
-        opts.separator "  workspace review my-app.worktree-fix-login --json    # the packet for one workspace by name, as JSON"
-        opts.separator "  workspace review --patch --max-bytes 50000 --json    # the packet with the patch cut at 50000 bytes"
-      end
-    end
-
-    def cmd_review(args)
-      return if verb_help_shown?(HelpPages::REVIEW, args)
-
-      options = {json: false}
-      given = args.dup
-      parser = review_parser(options)
-      parser.parse!(args)
-      return @output.puts(parser.help) if options[:help]
-
-      raise Error, "review is not available: no review command was wired" unless @review_command
-
-      subcommand = args.first if %w[show list].include?(args.first)
-      args.shift if subcommand
-      raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace review --help'." if args.size > 1
-
-      raise UsageError, "--name is for 'review show'; 'review list' takes a PROJECT argument instead: run 'workspace review list PROJECT' (or 'workspace review list' inside the project)." if options[:name] && subcommand == "list"
-
-      raise UsageError, "--patch and --max-bytes are for 'review show'." if subcommand == "list" && (options[:patch] || options[:max_bytes])
-      raise UsageError, "--max-bytes needs --patch." if options[:max_bytes] && !options[:patch]
-
-      result = if subcommand == "list"
-        @review_command.list(project: args.first, json: options[:json])
-      else
-        name = pick_workspace_name(options[:name], args.first) || @project_detector.detect(@working_dir)
-        raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
-
-        patch = options[:patch] ? {patch: options[:max_bytes] || Commands::Review::DEFAULT_PATCH_BYTES} : {}
-        @review_command.show(name: name, json: options[:json], **patch)
-      end
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    rescue OptionParser::ParseError, UsageError => e
-      raise unless json_requested?(options[:json], given)
-      emit_json_error(Commands::Review::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    DAEMON_SUBCOMMANDS = %w[status restart log list].freeze
-
-    def daemon_parser(options)
-      OptionParser.new do |opts|
-        opts.banner = HelpPages.overview_usage(HelpPages::DAEMON)
-        opts.separator ""
-        opts.separator "Inspect or control a workspace's agent daemon (see `workspace agentd`)."
-        HelpPages.overview_verbs(HelpPages::DAEMON).each { |line| opts.separator line }
-        opts.separator "Run `workspace daemon VERB --help` for a verb's options."
-        opts.separator ""
-        opts.on("--name NAME", "Workspace name (defaults to WORKSPACE or the project detected from the current directory)") { |v| options[:name] = v }
-        opts.on("--lines N", Integer, "log: how many trailing lines (default #{Commands::Daemon::DEFAULT_LINES})") { |v| options[:lines] = v }
-        opts.on("--wc-socket PATH", "restart: work-coordinator socket for the new daemon (default: the old daemon's)") { |v| options[:wc_socket] = v }
-        opts.on("--all", "restart: restart every running daemon instead of one workspace") { options[:all] = true }
-        opts.on("--json", "Print one JSON document (see docs/README.daemon.md)") { options[:json] = true }
-        opts.on("-h", "--help", "Show this help") { options[:help] = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace daemon list    # every running daemon"
-        opts.separator "  workspace daemon status my-app    # is its daemon answering"
-        opts.separator "  workspace daemon log my-app --lines 100    # the last 100 lines of its log"
-        opts.separator "  workspace daemon restart my-app --json    # one JSON action document"
-        opts.separator "  workspace daemon restart --all    # SIGTERM each running daemon and start it again"
-      end
-    end
-
-    def cmd_daemon(args)
-      return if verb_help_shown?(HelpPages::DAEMON, args)
-
-      options = {json: false}
-      given = args.dup
-      parser = daemon_parser(options)
-      subcommand = args.shift if DAEMON_SUBCOMMANDS.include?(args.first)
-      parser.parse!(args)
-      subcommand ||= args.shift if DAEMON_SUBCOMMANDS.include?(args.first)
-      return @output.puts(parser.help) if options[:help]
-
-      raise UsageError, "Missing subcommand: one of #{DAEMON_SUBCOMMANDS.join(", ")}.\n\n#{parser.help}" unless subcommand
-      raise Error, "daemon is not available: no daemon command was wired" unless @daemon_command
-
-      raise UsageError, "--all only applies to `daemon restart`." if options[:all] && subcommand != "restart"
-      raise UsageError, "--lines only applies to `daemon log`." if options[:lines] && subcommand != "log"
-      if subcommand == "list" || options[:all]
-        what = (subcommand == "list") ? "daemon list" : "daemon restart --all"
-        raise UsageError, "#{what} takes no workspace: it covers every running daemon." if options[:name] || args.any?
-        raise UsageError, "--wc-socket can't be combined with --all: each daemon keeps its own." if options[:all] && options[:wc_socket]
-        raise UsageError, "--wc-socket only applies to `daemon restart`." if options[:wc_socket]
-
-        return (subcommand == "list") ? @daemon_command.list(json: options[:json]) : daemon_restart_all(options)
-      end
-
-      name = settle_name(options[:name] || args.shift)
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace daemon --help'." if args.any?
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
-      raise UsageError, "--wc-socket only applies to `daemon restart`." if options[:wc_socket] && subcommand != "restart"
-
-      result = case subcommand
-      when "status" then @daemon_command.status(name: name, json: options[:json])
-      when "log" then @daemon_command.log(name: name, lines: options[:lines], json: options[:json])
-      else daemon_restart(name, options)
-      end
-      @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].to_i.zero?
-    rescue OptionParser::ParseError, UsageError => e
-      raise unless json_requested?(options[:json], given)
-      emit_json_error(Commands::Daemon::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    # Shared by `daemon restart` and `agentd restart`. The caller's socket
-    # path is made absolute so a later restart can read it back from the
-    # daemon's command line.
-    def daemon_restart(name, options)
-      wc_socket = options[:wc_socket] && File.expand_path(options[:wc_socket], @working_dir)
-      run_action("restart", json: options[:json]) do
-        restarted = @daemon_command.restart(name: name, wc_socket: wc_socket)
-        if restarted.ok?
-          verb = (restarted.outcome == "restarted") ? "Restarted" : "Started"
-          pids = [restarted.old_pid, restarted.pid].compact.join(" -> ")
-          @output.puts "#{verb} agentd for #{name}#{" (pid #{pids})" unless pids.empty?}"
-          @output.puts "Kept its work-coordinator socket: #{restarted.wc_socket}" if restarted.wc_socket && !options[:wc_socket]
-        else
-          @error_output.puts "Error: #{restarted.message}"
-        end
-        row = action_row(name, restarted.outcome, reason: restarted.reason, message: restarted.message,
-          old_pid: restarted.old_pid, pid: restarted.pid, wc_socket: restarted.wc_socket)
-        {exit_code: restarted.ok? ? 0 : 1, results: [row]}
-      end
-    end
-
-    # `daemon restart --all`: restarts every running daemon and reports a row
-    # for each. Any failed row makes the exit status non-zero.
-    def daemon_restart_all(options)
-      run_action("restart", json: options[:json]) do
-        restarted = @daemon_command.restart_all
-        @output.puts "No agentd processes are running." if restarted.empty?
-        restarted.each do |name, r|
-          if r.ok?
-            verb = (r.outcome == "restarted") ? "Restarted" : "Started"
-            pids = [r.old_pid, r.pid].compact.join(" -> ")
-            @output.puts "#{verb} agentd for #{name}#{" (pid #{pids})" unless pids.empty?}"
-          else
-            @error_output.puts "Error: #{name}: #{r.message}"
-          end
-        end
-        rows = restarted.map do |name, r|
-          action_row(name, r.outcome, reason: r.reason, message: r.message, old_pid: r.old_pid, pid: r.pid, wc_socket: r.wc_socket)
-        end
-        {exit_code: (restarted.all? { |_, r| r.ok? }) ? 0 : 1, results: rows}
-      end
     end
 
     def ui_parser(options)
@@ -5087,461 +3357,14 @@ module Workspace
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    WORKFLOW_SUBCOMMANDS = %w[list show validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
+    # See {Common#refuse_bad_bytes!}.
+    def refuse_bad_bytes!(args) = @common.refuse_bad_bytes!(args)
 
-    def workflow_parser(options)
-      OptionParser.new do |opts|
-        opts.banner = HelpPages.overview_usage(HelpPages::WORKFLOW)
-        opts.separator ""
-        opts.separator "Run a workflow in a workspace: an ordered list of steps, each done by the agent in the"
-        opts.separator "workspace's Claude pane. A step gets its instructions in a file under .workflow/ in the"
-        opts.separator "checkout and one typed line pointing at it, in a fresh conversation unless the step says"
-        opts.separator "context: continue. A step is done when the agent's turn ends, every file it produces:"
-        opts.separator "is there (a non-empty regular file, not a link), and its status: check passes; the agent daemon (agentd) sees the turn end and"
-        opts.separator "moves the run on. A failed step goes back along its on_fail: {goto, max}; a step with"
-        opts.separator "gate: approve waits for `workflow approve`. Resources a step uses: are locks the run"
-        opts.separator "holds, in the same queue as `lock acquire` and `dev up`."
-        opts.separator ""
-        opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml (a project's own, in #{File.join(@config.workspace_projects_dir, "NAME", "workflows")}/ID.yml, are found first; never read from a repository), then the directories of the workflows.sources config key in list order (source:1, source:2, ...), then the presets that"
-        opts.separator "ship with workspace (rpiv: research, plan, implement, verify; rpiv-auto-approve: rpiv with reviewer agents in place of the plan gate; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix; explore: read-only research, a gate, then a report note). See docs/README.workflow.md."
-        opts.separator ""
-        HelpPages.overview_verbs(HelpPages::WORKFLOW).each { |line| opts.separator line }
-        opts.separator "Run `workspace workflow VERB --help` for a verb's options."
-        opts.separator ""
-        opts.separator "approve and reject with --step (and --attempt) are refused with gate_not_waiting unless the run"
-        opts.separator "waits at that step's gate (on that attempt), so a stale button can't pass a later gate. These"
-        opts.separator "checks guard against mistakes; they are not a security boundary (docs/README.workflow.md)."
-        opts.separator ""
-        opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--stopped-at AT] [--background-task TYPE:ID]...]` is what the agent daemon runs to move a run"
-        opts.separator "on when a turn ends; it is not meant to be typed."
-        opts.separator ""
-        opts.separator "`run` and `start` really start a run (start also makes a worktree); --dry-run checks and starts nothing."
-        opts.separator "`start` may leave out the ID: config names it (workflows.by_ref.<kind>, else workflows.default)."
-        opts.separator "RUN is a workflow run id (see `workspace workflow status`)."
-        opts.separator ""
-        opts.on("--name WORKSPACE", "run: the workspace to run in; render, check: the workspace whose packs and commands are read; show, validate, render, check, simulate, add, update, remove: the workspace whose project's definitions are read first (default: the current workspace); status: that workspace's runs still going (default: the current workspace); sweep: only that workspace's runs (default: every run going)") { |v| options[:name] = v }
-        opts.on("--input KEY=VALUE", "run, start, render, simulate: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
-        opts.on("--artifacts DIR", "check: an existing directory standing for the run's artifacts (WORKSPACE_RUN_ARTIFACTS); default an empty temporary one") { |v| options[:artifacts] = v }
-        opts.on("--note TEXT", "run, start: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
-        opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
-        opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
-        opts.on("--extra-attempts N", "resume, reject: add N to the run's attempt allowance when it has spent max_attempts (ignored by a resume that starts no attempt)") { |v| options[:extra_attempts] = v }
-        opts.on("--extra-tokens N", "resume, reject: add N to the run's token budget when it has used budget.tokens (ignored by a resume that starts no attempt)") { |v| options[:extra_tokens] = v }
-        opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
-        opts.on("--step STEP", "approve, reject: the gated step you saw (current.step in status --json); refused unless the run waits there") { |v| options[:step] = v }
-        opts.on("--attempt N", "approve, reject: that step's attempt you saw (current.attempt); needs --step") { |v| options[:attempt] = v }
-        opts.on("--note-sha256 HEX", "approve: the sha256 of the gate's note you read (gate_file.sha256); refused with stale_revision when it changed") { |v| options[:note_sha256] = v }
-        opts.on("--script FILE", "simulate: the YAML script of what the fake agent does on each attempt and how each check comes out") { |v| options[:script] = v }
-        opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not; install: only the source at position N of workflows.sources (a whole number from 1, written after the flag)") { options[:source] = true }
-        opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
-        opts.on("--by GROUP", "compare: group the runs by definition (default) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
-        opts.on("--last DURATION", "stats, compare: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
-        opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
-        opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
-        opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
-        opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
-        opts.on("--needs-me", "status: the runs still going, in every workspace, that wait for you (a gate, question, prompt, failed check, gone pane, stall), each with the next command; --name or --project narrows it") { options[:needs_me] = true }
-        opts.on("--table", "status: one row per run with its workspace's status and whether its config, tmux session, worktree and state directory exist; finished runs show at every scope") { options[:table] = true }
-        opts.on("--ref REF", "start: run the workflow that fits REF's kind (workflows.by_ref.<kind>, then workflows.default, else the one that fits) instead of naming an ID") { |v| options[:ref] = v }
-        opts.on("--force", "start: start although the workflow's applies_to: does not list the REF's kind") { options[:force] = true }
-        opts.on("--dry-run", "run, start: report what would start and start nothing; sweep: report what would be done and do nothing (also --install and --uninstall); add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
-        opts.on("--install", "sweep: install the launchd entry that runs the sweep every 5 minutes (a per-user LaunchAgent; opt-in)") { options[:schedule_flags] << :install }
-        opts.on("--uninstall", "sweep: unload and remove that launchd entry") { options[:schedule_flags] << :uninstall }
-        opts.on("--installed", "sweep: say whether that launchd entry is installed and loaded") { options[:schedule_flags] << :status }
-        opts.on("--yes", "remove, uninstall: do not ask before deleting") { options[:yes] = true }
-        opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
-        opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
-        opts.on("--branch BRANCH", "start: the branch for a --prompt (default: the prompt's words); refused with a REF") { |v| options[:branch] = v }
-        opts.on("--slug", "start: add the ticket title's words to a JIRA or issue branch, as `workspace start --slug`") { options[:slug] = true }
-        opts.on("--base REF", "start: the branch or ref a new branch starts from") { |v| options[:base] = v }
-        opts.on("--[no-]headless", "start: start the session in plain tmux, as `workspace start --headless`") { |v| options[:headless] = v }
-        opts.on("--agent-kind KIND", "start: the coding agent the main agent pane runs: #{AgentProvider.all.map(&:key).join(", ")}") { |v| options[:agent_kind] = v }
-        opts.on("--prompt-timeout DURATION", "start: how long to wait for the coding agent to be ready (default #{AgentReadiness::DEFAULT_TIMEOUT}s)") do |v|
-          options[:prompt_timeout] = parse_duration_option("--prompt-timeout", v, positive: true)
-        end
-        opts.on("--turn-ended", "advance: a turn ended in the run's pane") { options[:turn_ended] = true }
-        opts.on("--turn-started AT", "advance: when that turn began (ISO 8601)") { |v| options[:turn_started] = v }
-        opts.on("--stopped-at AT", "advance: when the daemon saw that turn end (ISO 8601)") { |v| options[:stopped_at] = v }
-        opts.on("--background-task TYPE:ID", "advance: a background task still going when the turn ended (repeatable)") { |v| options[:background] << workflow_background_task(v) }
-        opts.on("--json", "Print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
-        opts.on("-h", "--help", "Show this help") { options[:help] = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace workflow show    # list the workflows you can run"
-        opts.separator "  workspace workflow show rpiv    # see the inputs and steps of one before running it"
-        opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --dry-run    # check a run in this workspace and start nothing"
-        opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\"    # start it for real: step one is typed into the Claude pane"
-        opts.separator "  workspace workflow start rpiv --prompt \"add a hello script\"    # make a worktree workspace from a sentence and run rpiv in it"
-        opts.separator "  workspace workflow status    # which runs are going, and why one is stuck"
-        opts.separator "  workspace workflow approve RUN --note \"Skip the migration.\"    # pass the gate a run waits at"
-        opts.separator "  workspace workflow reject RUN --note \"Too big; split it.\"    # send the gated step back with a reason"
-        opts.separator "  workspace workflow resume RUN --from implement    # start a stuck run again at one step"
-        opts.separator "  workspace workflow cancel RUN    # end a run and release its locks"
-      end
-    end
+    # See {Workflow.inputs}.
+    def workflow_inputs(pairs) = Workflow.inputs(pairs)
 
-    def cmd_workflow(args)
-      return if verb_help_shown?(HelpPages::WORKFLOW, args)
-
-      options = {json: false, inputs: [], background: [], all: false, dry_run: false, turn_ended: false, source: false, schedule_flags: []}
-      given = args.dup
-      parser = workflow_parser(options)
-      refuse_bad_bytes!(args)
-      subcommand = args.shift if WORKFLOW_SUBCOMMANDS.include?(args.first)
-      parser.parse!(args)
-      subcommand ||= args.shift if WORKFLOW_SUBCOMMANDS.include?(args.first)
-      return @output.puts(parser.help) if options[:help]
-
-      unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
-      end
-      raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
-      subject = args.shift
-      source_path = args.shift if %w[add update].include?(subcommand)
-      start_ref = args.shift if subcommand == "start"
-      render_step = args.shift if %w[render check].include?(subcommand)
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-      needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
-               "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
-      raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
-
-      raise UsageError, "--script is for `workflow simulate ID`." if options[:script] && subcommand != "simulate"
-      raise UsageError, "workflow simulate needs --script FILE (what the fake agent does; see `workspace workflow simulate --help`)." if subcommand == "simulate" && options[:script].nil?
-      raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
-      raise UsageError, "--attempt-of is for `workflow attempts RUN` and `workflow audit RUN`." if options[:attempt_of] && !%w[attempts audit].include?(subcommand)
-      raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
-      raise UsageError, "--last is for `workflow stats ID` and `workflow compare ID`." if options[:last] && !%w[stats compare].include?(subcommand)
-      raise UsageError, "--by is for `workflow compare ID`." if options[:compare_by] && subcommand != "compare"
-      raise UsageError, "--project is for `workflow status`, `workflow stats` and `workflow compare`." if options[:project] && !%w[status stats compare].include?(subcommand)
-      raise UsageError, "workflow #{subcommand} covers every workspace unless --name or --project narrows it; --all is not needed." if %w[stats compare].include?(subcommand) && options[:all]
-      raise UsageError, "workflow sweep takes a RUN or --name WORKSPACE, not both." if subcommand == "sweep" && subject && options[:name]
-      schedule = options[:schedule_flags].first
-      raise UsageError, "--install, --uninstall and --installed are for `workflow sweep`." if schedule && subcommand != "sweep"
-      raise UsageError, "workflow sweep takes one of --install, --uninstall and --installed, and no RUN or --name with it." if schedule && (options[:schedule_flags].size > 1 || subject || options[:name])
-      raise UsageError, "--dry-run does not apply to `workflow sweep --installed`: it changes nothing." if schedule == :status && options[:dry_run]
-      raise UsageError, "--table is for `workflow status`." if options[:table] && subcommand != "status"
-      raise UsageError, "--needs-me is for `workflow status`." if options[:needs_me] && subcommand != "status"
-      raise UsageError, "--needs-me lists runs still going and takes no RUN or --table." if options[:needs_me] && (subject || options[:table])
-      raise UsageError, "workflow check runs a status: command, which takes no inputs: --input is for run, start and render." if subcommand == "check" && options[:inputs].any?
-      raise UsageError, "--artifacts is for `workflow check ID STEP`." if options[:artifacts] && subcommand != "check"
-      raise UsageError, "--source is for `workflow show ID` and `workflow install`." if options[:source] && !%w[show install].include?(subcommand)
-      raise UsageError, "workflow show --source needs an ID (see `workspace workflow show`)." if options[:source] && subcommand == "show" && subject.nil?
-      raise UsageError, "workflow install --source needs N, the position in workflows.sources (1 is the first)." if subcommand == "install" && options[:source] && subject.nil?
-      raise UsageError, "workflow install takes no argument; --source N installs only the Nth source." if subcommand == "install" && subject && !options[:source]
-      raise UsageError, "--source N is not a position: use a whole number from 1." if subcommand == "install" && subject && !subject.match?(/\A[1-9][0-9]{0,5}\z/)
-      raise UsageError, "--dry-run does not apply to `workflow install`." if subcommand == "install" && options[:dry_run]
-      raise UsageError, "workflow uninstall takes no argument." if subcommand == "uninstall" && subject
-      gate_options = workflow_gate_options(subcommand, options)
-      extra_attempts = workflow_extra_attempts(subcommand, options[:extra_attempts])
-      extra_tokens = workflow_extra_tokens(subcommand, options[:extra_tokens])
-
-      start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout, "--force" => :force, "--ref" => :ref}
-      if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
-        raise UsageError, "#{flag.first} is for `workflow start [ID] [REF]`."
-      end
-      if subcommand == "start"
-        raise UsageError, "workflow start makes its own workspace: --name is for `workflow run`." if options[:name]
-        raise UsageError, "workflow start runs in the new workspace's pane: --pane is for `workflow run`." if options[:pane]
-        if options[:ref]
-          raise UsageError, "--ref takes the place of the workflow ID and the REF: use `workflow start --ref REF`, or `workflow start ID REF`." if subject || start_ref
-          raise UsageError, "--ref is a REF to route; --prompt has no kind to route by. Name a workflow: `workflow start ID --prompt TEXT`." unless options[:prompt].nil?
-          raise UsageError, "--ref needs a REF." if options[:ref].strip.empty?
-        end
-        raise UsageError, "workflow start needs a REF (a ticket, pull request, issue or branch) or --prompt TEXT." if subject.nil? && options[:ref].nil? && options[:prompt].to_s.strip.empty?
-        raise Error, "workflow start is not available: no workflow start command was wired" unless @workflow_start_command
-      end
-
-      case subcommand
-      when "list" then @workflow_command.list(json: options[:json], project: workflow_project(options))
-      when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source], project: workflow_project(options))
-      when "uninstall" then workflow_action("workflow uninstall", options) { @workflow_command.uninstall(yes: options[:yes], dry_run: options[:dry_run], json: options[:json]) }
-      when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json], project: workflow_project(options))
-      when "render"
-        name = workflow_workspace(options)
-        project = workflow_project(options)
-        root = name && (options[:name] ? working_dir_for(name) : @project_config.project_root_for(name))
-        @workflow_command.render(id: subject, step: render_step, workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: workflow_inputs(options[:inputs]), json: options[:json], project: project)
-      when "check"
-        name = workflow_workspace(options)
-        project = workflow_project(options)
-        root = if name
-          options[:name] ? working_dir_for(name) : @project_config.project_root_for(name)
-        else
-          @git.root
-        end
-        artifacts = options[:artifacts]
-        artifacts = File.expand_path(artifacts, @working_dir) unless artifacts.to_s.empty?
-        result = @workflow_command.check(id: subject, step: render_step, worktree: root ? File.expand_path(root) : @working_dir,
-          artifacts: artifacts, json: options[:json], project: project)
-        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-      when "simulate" then @workflow_command.simulate(id: subject, script: options[:script], inputs: workflow_inputs(options[:inputs]), json: options[:json], project: workflow_project(options))
-      when "add" then workflow_action("workflow add", options) { @workflow_command.add(id: subject, path: source_path, dry_run: options[:dry_run], project: workflow_project(options)) }
-      when "update"
-        raise UsageError, "workflow update needs --if-sha256 SHA (the sha256 from `workflow show ID --source`)." if options[:if_sha256].to_s.empty?
-        workflow_action("workflow update", options) { @workflow_command.update(id: subject, path: source_path, if_sha256: options[:if_sha256], dry_run: options[:dry_run], project: workflow_project(options)) }
-      when "install" then workflow_action("workflow install", options) { @workflow_command.install(source: subject && Integer(subject, 10)) }
-      when "remove"
-        project = workflow_project(options)
-        @workflow_command.check_removable(id: subject, project: project)
-        unless options[:yes] || options[:dry_run]
-          Prompt.refuse_if_no_input!(@input, "Remove workflow #{subject}?", retry_flags: ["--yes"], destructive: true)
-          raise UsageError, "workflow remove --json never prompts: pass --yes to remove, or --dry-run to preview." if options[:json]
-        end
-        workflow_action("workflow remove", options) { @workflow_command.remove(id: subject, yes: options[:yes], dry_run: options[:dry_run], project: project) }
-      when "files"
-        @workflow_command.files(run: subject, json: options[:json])
-      when "attempts"
-        @workflow_command.attempts(run: subject, step: options[:attempt_of], json: options[:json])
-      when "stats"
-        last = workflow_last(options[:last])
-        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: nil, working_dir: @working_dir) if options[:name] || options[:project]
-        result = @workflow_command.stats(workflow: subject, last: last, last_text: options[:last], scope: scope, json: options[:json])
-        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-      when "compare"
-        last = workflow_last(options[:last])
-        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: nil, working_dir: @working_dir) if options[:name] || options[:project]
-        result = @workflow_command.compare(workflow: subject, by: options[:compare_by] || "definition", last: last, last_text: options[:last], scope: scope, json: options[:json])
-        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-      when "audit"
-        result = @workflow_command.audit(run: subject, step: options[:attempt_of], json: options[:json])
-        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-      when "sweep"
-        if schedule
-          action = "workflow sweep --#{(schedule == :status) ? "installed" : schedule}"
-          workflow_action_rows(action, options) { @workflow_command.schedule(schedule, dry_run: options[:dry_run]) }
-          return
-        end
-        workflow_action_rows("workflow sweep", options) { @workflow_command.sweep(run: subject, name: options[:name], dry_run: options[:dry_run], json: options[:json], caller_pane: ENV["TMUX_PANE"]) }
-      when "events"
-        @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json])
-      when "status"
-        if subject && (options[:name] || options[:project] || options[:all])
-          raise UsageError, "workflow status RUN takes no --name, --project or --all: the run names its own workspace."
-        end
-        scope = if options[:needs_me]
-          @status_scope.resolve_needs_me(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir)
-        elsif !subject
-          @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir)
-        end
-        outcome = @workflow_command.status(run: subject, scope: scope, json: options[:json], hint: !options[:name], table: options[:table] || false)
-        code = outcome[:exit_code] if outcome.is_a?(Hash)
-        @exit_handler.exit(code) if code && !code.zero?
-      when "advance"
-        @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started], "--turn-started"),
-          stopped_at: workflow_time(options[:stopped_at], "--stopped-at"), background: options[:background], caller_pane: ENV["TMUX_PANE"])
-      when "run"
-        name = workflow_workspace(options)
-        raise UsageError, "workflow run needs a workspace: pass --name, or run from inside a project." unless name
-        inputs = workflow_inputs(options[:inputs])
-        workflow_action("workflow run", options) do
-          project = workflow_project(options)
-          # The checkout's root, where the run's files go: the named workspace's, or the detected one's.
-          root = options[:name] ? working_dir_for(name) : @project_config.project_root_for(name)
-          @workflow_command.run(id: subject, workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: inputs,
-            pane: options[:pane], note: options[:note], dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"], project: project,
-            fill_from_branch: !root.nil?)
-        end
-      when "start"
-        inputs = workflow_inputs(options[:inputs])
-        workflow_action("workflow start", options) do
-          begin
-            row = @workflow_start_command.call(id: start_ref && subject, ref: options[:ref] || start_ref, positional: (start_ref || options[:ref]) ? nil : subject, route: !options[:ref].nil?, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
-              note: options[:note], base: options[:base], headless: @launch_mode.resolve(options[:headless]).headless?, agent_kind: options[:agent_kind],
-              prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run], force: options[:force] == true)
-          rescue Workspace::Error => e
-            print_start_warnings(e.details["warnings"], options)
-            raise
-          end
-          print_start_warnings(row && row["warnings"], options)
-          row
-        end
-      when "resume"
-        workflow_action("workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, caller_pane: ENV["TMUX_PANE"]) }
-      when "cancel" then workflow_action("workflow cancel", options) { @workflow_command.cancel(run: subject) }
-      when "approve"
-        workflow_action("workflow approve", options) do
-          @workflow_command.approve(run: subject, note: options[:note], **gate_options, note_sha256: options[:note_sha256], caller_pane: ENV["TMUX_PANE"])
-        end
-      when "reject"
-        raise UsageError, "workflow reject needs --note TEXT: the step runs again with it." if options[:note].to_s.strip.empty?
-        workflow_action("workflow reject", options) do
-          @workflow_command.reject(run: subject, note: options[:note], to: options[:to], **gate_options, extra_attempts: extra_attempts, extra_tokens: extra_tokens, caller_pane: ENV["TMUX_PANE"])
-        end
-      end
-    rescue OptionParser::ParseError, UsageError => e
-      raise unless json_requested?(options[:json], given)
-      emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    # The project whose workflow definitions every `workflow` reader looks in first, from {WorkflowProject}: the parent
-    # project of `--name`'s workspace (an unknown one is refused), else of the current directory; nil outside any
-    # project, or when a repository's marker is not tied to this checkout (the user directory and presets alone).
-    def workflow_workspace(options)
-      return options[:name] if options[:name]
-      @workflow_project ? @workflow_project.workspace(@working_dir) : @project_detector.detect(@working_dir)
-    end
-
-    def workflow_project(options)
-      return nil unless @workflow_project
-      resolved = options[:name] ? @workflow_project.for_workspace(options[:name]) : @workflow_project.for_directory(@working_dir)
-      resolved&.project
-    end
-
-    # `--extra-attempts` of resume and reject, checked: a whole number from 1 up.
-    def workflow_extra_attempts(subcommand, text)
-      return nil if text.nil?
-      raise UsageError, "--extra-attempts is for `workflow resume` and `workflow reject`." unless %w[resume reject].include?(subcommand)
-      raise UsageError, "--extra-attempts must be a whole number from 1 up, got #{text.to_s[0, 20].inspect}." unless text.match?(/\A[1-9]\d{0,5}\z/)
-      text.to_i
-    end
-
-    # `--extra-tokens` of resume and reject, checked: a whole number from 1 up.
-    def workflow_extra_tokens(subcommand, text)
-      return nil if text.nil?
-      raise UsageError, "--extra-tokens is for `workflow resume` and `workflow reject`." unless %w[resume reject].include?(subcommand)
-      raise UsageError, "--extra-tokens must be a whole number from 1 up, got #{text.to_s[0, 20].inspect}." unless text.match?(/\A[1-9]\d{0,11}\z/)
-      text.to_i
-    end
-
-    # The `--step`/`--attempt` pair of approve and reject, checked; `--note-sha256` is approve's.
-    def workflow_gate_options(subcommand, options)
-      gated = %w[approve reject].include?(subcommand)
-      raise UsageError, "--step and --attempt are for `workflow approve` and `workflow reject`." if !gated && (options[:step] || options[:attempt])
-      raise UsageError, "--note-sha256 is for `workflow approve`." if options[:note_sha256] && subcommand != "approve"
-      raise UsageError, "--attempt needs --step: the attempt is of the gated step." if options[:attempt] && !options[:step]
-      if options[:note_sha256] && !options[:note_sha256].match?(/\A[0-9a-f]{64}\z/)
-        raise UsageError, "--note-sha256 must be 64 lowercase hex digits (gate_file.sha256 in `workflow status --json`)."
-      end
-      attempt = options[:attempt]
-      raise UsageError, "--attempt must be a whole number from 1 up, got #{attempt.to_s[0, 20].inspect}." if attempt && !attempt.match?(/\A[1-9]\d{0,8}\z/)
-      gated ? {step: options[:step], attempt: attempt&.to_i} : {}
-    end
-
-    # Text that is not valid in its encoding can't be parsed as an option or stored in a
-    # run's file; it is refused here, before a pane is typed into or a lock taken.
-    # Arguments are read as UTF-8 whatever the locale: with none (cron, an app started by
-    # launchd) Ruby tags them binary, which calls any bytes valid and can't be joined
-    # with a definition's text.
-    def refuse_bad_bytes!(args)
-      args.map! { |arg| arg.dup.force_encoding(Encoding::UTF_8) }
-      index = args.index { |arg| !arg.valid_encoding? }
-      return unless index
-      flag = (index.positive? && args[index - 1].start_with?("--")) ? args[index - 1] : "An argument"
-      raise UsageError, "#{flag} holds bytes that are not valid UTF-8 text (was it cut in the middle of a character?)."
-    end
-
-    # `--last` of stats, in seconds: a Duration (`90m`, `12h`) or whole days or weeks (`30d`, `2w`).
-    def workflow_last(text)
-      return nil if text.nil?
-      Workspace::Duration.parse_window(text)
-    rescue ArgumentError => e
-      detail = e.message.start_with?("must be") ? e.message.sub(/, got .*/, "") : "needs a duration like 30d, 2w, 12h or 90m"
-      raise UsageError, "--last #{detail}, got #{text.to_s[0, 40].inspect}."
-    end
-
-    def workflow_since(text)
-      return 0 if text.nil?
-      raise UsageError, "--since needs a whole number of 0 or more, got #{text.to_s[0, 40].inspect}." unless text.match?(/\A\d+\z/)
-      text.to_i
-    end
-
-    def workflow_time(text, flag)
-      text && Time.iso8601(text)
-    rescue ArgumentError
-      raise UsageError, "#{flag} takes an ISO 8601 time, got #{text[0, 40].inspect}."
-    end
-
-    def workflow_background_task(text)
-      type, id = text.split(":", 2)
-      unless IdPatterns::BACKGROUND_TASK_TYPES.include?(type) && id.to_s.match?(IdPatterns::BACKGROUND_TASK_ID)
-        raise UsageError, "--background-task takes TYPE:ID with a type of #{IdPatterns::BACKGROUND_TASK_TYPES.join(", ")}, got #{text[0, 60].inspect}."
-      end
-      {"id" => id, "type" => type}
-    end
-
-    def workflow_inputs(pairs)
-      pairs.to_h do |pair|
-        key, value = pair.split("=", 2)
-        raise UsageError, "--input takes KEY=VALUE, got #{pair[0, 60].inspect}." if value.nil? || key.empty?
-        [key, value]
-      end
-    end
-
-    # Runs a workflow or step mutation under {#run_action}, with the command's row as the one result.
-    # `workflow start`'s warnings, on success or above its refusal; `--json` carries them in the document.
-    def print_start_warnings(warnings, options)
-      return if options[:json]
-      Array(warnings).each { |warning| @error_output.puts "Warning: #{TerminalText.escape(warning.to_s)}" }
-    end
-
-    def workflow_action(action, options)
-      run_action(action, json: options[:json]) do
-        row = yield
-        next {exit_code: 0, results: [], status: "cancelled"} unless row
-        {exit_code: (row["outcome"] == "failed") ? 1 : 0, results: [row], status: (row["outcome"] == "dry_run") ? "dry_run" : nil}
-      end
-    end
-
-    # Like {#workflow_action}, for a command that answers many rows and its own exit code.
-    def workflow_action_rows(action, options)
-      run_action(action, json: options[:json]) do
-        outcome = yield
-        {exit_code: outcome[:exit_code], results: outcome[:results], status: outcome[:status]}
-      end
-    end
-
-    def step_parser(options)
-      OptionParser.new do |opts|
-        opts.banner = HelpPages.overview_usage(HelpPages::STEP)
-        opts.separator ""
-        opts.separator "For the agent working on a workflow step, run from the pane the run is bound to."
-        opts.separator "Neither is required: a step is decided when the agent's turn ends, from the files it"
-        opts.separator "was told to leave and the step's check (see `workspace workflow --help`)."
-        opts.separator ""
-        HelpPages.overview_verbs(HelpPages::STEP).each { |line| opts.separator line }
-        opts.separator "Run `workspace step VERB --help` for a verb's options."
-        opts.separator ""
-        opts.on("--status STATUS", "done: pass (default) or fail") { |v| options[:status] = v }
-        opts.on("--summary TEXT", "done: one line about what was done, or what is left") { |v| options[:summary] = v }
-        opts.on("--code WORD", "done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)") { |v| options[:code] = v }
-        opts.on("--json", "Print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
-        opts.on("-h", "--help", "Show this help") { options[:help] = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace step status    # which run, step and attempt this pane is on"
-        opts.separator "  workspace step done --summary \"Plan written; three commits.\"    # record a pass, then end your turn"
-        opts.separator "  workspace step done --status fail --summary \"Two specs still fail in billing.\"    # fail the step at the turn's end"
-        opts.separator "  workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\"    # fail it with a word for why"
-      end
-    end
-
-    def cmd_step(args)
-      return if verb_help_shown?(HelpPages::STEP, args)
-
-      options = {json: false, status: "pass"}
-      given = args.dup
-      parser = step_parser(options)
-      refuse_bad_bytes!(args)
-      subcommand = args.shift if %w[done status].include?(args.first)
-      parser.parse!(args)
-      subcommand ||= args.shift if %w[done status].include?(args.first)
-      return @output.puts(parser.help) if options[:help]
-
-      unless subcommand
-        raise UsageError, args.empty? ? "Missing subcommand: done or status.\n\n#{parser.help}" : "Unknown step subcommand: #{args.first}. Run 'workspace step --help'."
-      end
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace step --help'." if args.any?
-      raise Error, "step is not available: no workflow command was wired" unless @workflow_command
-
-      if subcommand == "status"
-        @workflow_command.step_status(pane: ENV["TMUX_PANE"], json: options[:json])
-      else
-        workflow_action("step done", options) { @workflow_command.step_done(pane: ENV["TMUX_PANE"], status: options[:status], summary: options[:summary], code: options[:code]) }
-      end
-    rescue OptionParser::ParseError, UsageError => e
-      raise unless json_requested?(options[:json], given)
-      emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
+    # See {Common#run_row_action}.
+    def workflow_action(action, options, &block) = @common.run_row_action(@invocation, action, json: options[:json], &block)
 
     def snapshot_parser(options)
       OptionParser.new do |opts|
@@ -5808,10 +3631,10 @@ module Workspace
       # fails, so a windowed failure never silently drops the headless
       # relaunch; the combined exit code reflects either failure.
       launches = []
-      launches << launch_projects(windowed.dup) if windowed.any?
-      launches << launch_projects(headless.dup, headless: true) if headless.any?
+      launches << @launcher.launch(@invocation, windowed.dup) if windowed.any?
+      launches << @launcher.launch(@invocation, headless.dup, headless: true) if headless.any?
       failed = launches.any? { |l| l[:exit_code] && !l[:exit_code].zero? }
-      rows = json ? launches.flat_map { |l| launch_rows(l[:projects], l[:result], ok_outcome: "relaunched") } : []
+      rows = json ? launches.flat_map { |l| @launcher.rows(l[:projects], l[:result], ok_outcome: "relaunched") } : []
       {exit_code: failed ? 1 : 0, results: rows}
     end
 
@@ -5885,8 +3708,8 @@ module Workspace
       [[windowed, nil], [headless, true]].each_with_object({}) do |(batch, mode), failures|
         next if batch.empty?
 
-        launch = launch_projects(batch.dup, headless: mode)
-        launch_rows(launch[:projects], launch[:result]).each do |row|
+        launch = @launcher.launch(@invocation, batch.dup, headless: mode)
+        @launcher.rows(launch[:projects], launch[:result]).each do |row|
           failures[row["workspace"]] = row["message"] || row["reason"] if row["outcome"] == "failed"
         end
       rescue Workspace::Error => e
@@ -7626,330 +5449,6 @@ module Workspace
       name if name && @project_config.project_root_for(name)
     end
 
-    def cmd_goal(args)
-      return if verb_help_shown?(HelpPages::GOAL, args)
-
-      options = {json: false, all: false}
-      parser = goal_parser(options)
-      parser.parse!(args)
-      return @output.puts(parser.help) if options[:help]
-
-      subcommand = args.shift
-      raise UsageError, "Missing subcommand: show or list.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown goal subcommand: #{subcommand}. Run 'workspace goal --help'." unless %w[show list].include?(subcommand)
-      raise Error, "goal is not available: no goal command was wired" unless @goal_command
-
-      if subcommand == "list"
-        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace goal --help'." if args.any?
-
-        return @goal_command.list(all: options[:all], json: options[:json])
-      end
-      raise UsageError, "--all applies to 'goal list' only." if options[:all]
-      raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace goal --help'." if args.size > 1
-
-      @goal_command.show(args.first || current_workspace!(nil), json: options[:json])
-    end
-
-    def goal_parser(options)
-      OptionParser.new do |opts|
-        opts.banner = HelpPages.overview_usage(HelpPages::GOAL)
-        opts.separator ""
-        opts.separator "show: where a goal is at each level (the goal, its journey stage, its workflow step, the agent's"
-        opts.separator "turn, the tool call), what it waits for and on whom, and the next expected event. A goal is a"
-        opts.separator "workspace. REF is a workspace name, a workflow run id, a task id, a ticket key or URL, or a branch;"
-        opts.separator "with none, the workspace of the current directory. Reads only: nothing is written and 'gh' is not run."
-        opts.separator ""
-        opts.separator "list: one line per goal: workspace, state, stage, step, agent state."
-        opts.separator ""
-        opts.on("--all", "list: include workspaces with no plan, run or spine (state none)") { options[:all] = true }
-        opts.on("--json", "Print one JSON document (see docs/README.goal.md)") { options[:json] = true }
-        opts.on("-h", "--help", "Show this help") { options[:help] = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace goal show    # the goal of the workspace you are in"
-        opts.separator "  workspace goal show LAB-1 --json    # the goal for a ticket key, as JSON"
-        opts.separator "  workspace goal list    # one line per goal"
-      end
-    end
-
-    def spine_parser(options)
-      OptionParser.new do |opts|
-        opts.banner = HelpPages.overview_usage(HelpPages::SPINE)
-        opts.separator ""
-        opts.separator "A spine is the stage files in spine/ of a workspace's notes directory, one Markdown file"
-        opts.separator "per stage. Writers of a workspace take turns."
-        opts.separator ""
-        opts.separator "Verbs:"
-        HelpPages.overview_verbs(HelpPages::SPINE).each { |line| opts.separator line }
-        opts.separator "Run `workspace spine VERB --help` for a verb's options."
-        opts.separator ""
-        opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
-        opts.on("--stage STAGE-PATH", "show: only that stage (with its sub-stages); unknown_stage when there is none") { |v| options[:stage] = v }
-        opts.on("--body", "show: add the text after the frontmatter (16 KB at most) to the stage, or to the goal without --stage") { options[:body] = true }
-        opts.on("--evaluate", "show: judge each stage against the plan, git, the pull request, the review agent and the panes (reads gh and the agent daemon, up to about 5s; an unreadable source leaves its gates unchecked; a completed stage with a check: line reads checking or check_failed until the check passes)") { options[:evaluate] = true }
-        opts.on("--status VALUE", "set: not_started, in_progress, blocked, completed or skipped (or an alias such as done)") { |v| options[:status] = v }
-        opts.on("--note TEXT", "set: one line of at most 300 characters; alone it changes only the note (empty clears it). With a new status and no --note the note is cleared. verify: the verdict's note, required, 300 characters at most") { |v| options[:note] = v }
-        opts.on("--pass", "verify: the stage passed its check") { options[:pass] = true }
-        opts.on("--fail", "verify: the stage failed its check") { options[:fail] = true }
-        opts.on("--owner VALUE", "set: who works the stage: a pane id such as %6, you, or an agent label; one line of at most 64 characters (empty clears it). Not with --recursive") { |v| options[:owner] = v }
-        opts.on("--if-revision REV", "set, verify, goal set, start: refuse with stale_revision unless the stage file's (goal.md's for goal set) revision (from show) is REV") { |v| options[:if_revision] = v }
-        opts.on("--item N", Integer, "check: the checklist item, 1-based; repeat for several") { |v| (options[:items] ||= []) << v }
-        opts.on("--done", "check: tick the items") { options[:check_done] = true }
-        opts.on("--undone", "check: untick the items") { options[:check_undone] = true }
-        opts.on("--pane PANE", "start: the pane to send the stage to, a pane id (%21) or window.pane (0.1) of the workspace's session") { |v| options[:pane] = v }
-        opts.on("--spawn KIND", "start: split a new pane and start that agent in it (#{Commands::SpineStart::AGENT_KINDS.join(", ")})") { |v| options[:spawn] = v }
-        opts.on("--fan-out", "start: start every startable sub-stage of STAGE-PATH, each in a new pane") { options[:fan_out] = true }
-        opts.on("--max N", Integer, "start --fan-out: spawn at most N panes (default #{Commands::SpineStart::DEFAULT_FAN_OUT})") { |v| options[:max] = v }
-        opts.on("--play REF", "start: the play to send (default: the stage's play:, else research, implementation-plan or review by its kind)") { |v| options[:play] = v }
-        opts.on("--recursive", "set: also set every sub-stage that is not completed or skipped") { options[:recursive] = true }
-        opts.on("--by LABEL", "set: the updated_by label; verify: the checked_by label (default: the agent and pane id of $TMUX_PANE, else person)") { |v| options[:by] = v }
-        opts.on("--json", "Print one JSON document (see docs/README.spine.md)") { options[:json] = true }
-        opts.on("-h", "--help", "Show this help") { options[:help] = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace spine show    # the stages of the workspace you are in"
-        opts.separator "  workspace spine show --evaluate --json    # judge every stage against the plan, git, the pull request and the panes (up to about 5s)"
-        opts.separator "  workspace spine init --dry-run    # preview the spine/ files; nothing is written"
-        opts.separator "  workspace spine set verify --status in_progress    # mark a stage started"
-        opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\"    # record who works it and a note"
-        opts.separator "  workspace spine check verify --item 2 --done    # tick item 2 of the stage's Done when list"
-        opts.separator "  workspace spine verify implement --pass --note \"CI green, all 4 items met\"    # a checker records a pass (not the agent that did the stage)"
-        opts.separator "  workspace spine goal set \"Fix the OAuth refresh race\"    # write the goal's title"
-        opts.separator "  workspace spine start verify    # type the stage's brief into its owner pane, else the main agent pane"
-        opts.separator "  workspace spine start implement --fan-out --max 2    # one new agent pane per ready sub-stage, at most two"
-      end
-    end
-
-    def spine_init_parser(options)
-      OptionParser.new do |opts|
-        opts.banner = "Usage: workspace spine init [WORKSPACE] [--name WORKSPACE] [--template NAME] [--dry-run] [--json]"
-        opts.separator ""
-        opts.separator "Create the spine/ folder in a workspace's notes directory from a spine template (a library"
-        opts.separator "entry of kind spine; the built-in 'default' has the stages research to ship, and a main"
-        opts.separator "checkout gets no ship stage). {{WORKSPACE}}, {{BRANCH}} and {{TITLE}} in the template are"
-        opts.separator "filled in. Nothing is overwritten: when spine/ exists the answer is 'exists' and nothing is"
-        opts.separator "written. The notes directory is made if needed, as 'notes dir --create' does."
-        opts.separator ""
-        opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
-        opts.on("--template NAME", "The spine template (default: the spine.template config, else default). See: workspace library list --kind spine") { |v| options[:template] = v }
-        opts.on("--dry-run", "Say what would be written and write nothing") { options[:dry_run] = true }
-        opts.on("--json", "Print one JSON document (see docs/README.spine.md)") { options[:json] = true }
-        opts.on("-h", "--help", "Show this help") { options[:help] = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace spine init --dry-run    # preview the files for the workspace you are in"
-        opts.separator "  workspace spine init api.worktree-login --template=team --json"
-      end
-    end
-
-    # `spine init`: kept apart from the other spine verbs; `args` no longer holds the verb.
-    def cmd_spine_init(args)
-      options = {json: false, name: nil, template: nil, dry_run: false}
-      parser = spine_init_parser(options)
-      parser.parse!(args)
-      return @output.puts(parser.help) if options[:help]
-
-      positional = settle_name(args.shift)
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine init --help'." if args.any?
-      if positional && options[:name] && positional != options[:name]
-        raise UsageError, "Give the workspace once: '#{positional}' and --name #{options[:name]} differ."
-      end
-      raise Error, "spine init is not available: no spine init command was wired" unless @spine_init_command
-
-      name = options[:name] || positional || @project_detector.detect(@working_dir)
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
-
-      @spine_init_command.call(name: name, template: options[:template], dry_run: options[:dry_run], json: options[:json])
-    end
-
-    # The verb of a spine command line: the first word that is not an option or the value of --name,
-    # so options may come before it (`spine --name X init`).
-    def spine_verb_index(args)
-      skip = false
-      args.each_with_index do |arg, i|
-        if skip
-          skip = false
-        elsif %w[--name --template --stage --status --note --owner --if-revision --by --pane --spawn --play].include?(arg)
-          skip = true
-        elsif arg == "--"
-          return nil
-        elsif !arg.start_with?("-")
-          return i
-        end
-      end
-      nil
-    end
-
-    def cmd_spine(args)
-      return if verb_help_shown?(HelpPages::SPINE, args)
-
-      index = spine_verb_index(args)
-      if index && args[index] == "init"
-        args.delete_at(index)
-        return cmd_spine_init(args)
-      end
-
-      options = {json: false, name: nil}
-      parser = spine_parser(options)
-      parser.parse!(args)
-      return @output.puts(parser.help) if options[:help]
-
-      subcommand = args.shift
-      raise UsageError, "Missing subcommand: show, set, check, verify, goal, start or init.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless %w[show set check start goal verify].include?(subcommand)
-      if options[:pass] || options[:fail]
-        raise UsageError, "--pass and --fail are for 'spine verify'. Run 'workspace spine --help'." unless subcommand == "verify"
-      end
-      return cmd_spine_verify(args, options, parser) if subcommand == "verify"
-      return cmd_spine_goal(args, options, parser) if subcommand == "goal"
-      return cmd_spine_check(args, options, parser) if subcommand == "check"
-      if options[:items] || options[:check_done] || options[:check_undone]
-        raise UsageError, "--item, --done and --undone are for 'spine check'. Run 'workspace spine --help'."
-      end
-      return cmd_spine_start(args, options, parser) if subcommand == "start"
-      if options[:pane] || options[:spawn] || options[:play] || options[:fan_out] || options[:max]
-        raise UsageError, "--pane, --spawn, --play, --fan-out and --max are for 'spine start'. Run 'workspace spine --help'."
-      end
-      return cmd_spine_set(args, options, parser) if subcommand == "set"
-
-      positional = settle_name(args.shift)
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
-      if positional && options[:name] && positional != options[:name]
-        raise UsageError, "Give the workspace once: '#{positional}' and --name #{options[:name]} differ."
-      end
-      raise Error, "spine is not available: no spine command was wired" unless @spine_command
-
-      name = options[:name] || positional || @project_detector.detect(@working_dir)
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
-
-      @spine_command.show(name: name, json: options[:json], stage: options[:stage], body: options[:body] || false, evaluate: options[:evaluate] || false)
-    end
-
-    def cmd_spine_set(args, options, parser)
-      raise UsageError, "--stage, --body and --evaluate are for 'spine show'; 'spine set' takes the stage path as an argument." if options[:stage] || options[:body] || options[:evaluate]
-      raise UsageError, "Give at least one of --status, --note and --owner.\n\n#{parser.help}" unless options[:status] || options[:note] || options[:owner]
-      positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
-      path = args.shift
-      raise UsageError, "Missing STAGE-PATH, the stage's ids joined with / (as 'spine show' reports path).\n\n#{parser.help}" unless path
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
-      raise Error, "spine is not available: no spine command was wired" unless @spine_command
-
-      name = options[:name] || positional || @project_detector.detect(@working_dir)
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
-
-      @spine_command.set(name: name, path: path, status: options[:status], note: options[:note], owner: options[:owner], if_revision: options[:if_revision],
-        recursive: options[:recursive] || false, by: options[:by], json: options[:json])
-    end
-
-    def cmd_spine_verify(args, options, parser)
-      if options[:stage] || options[:body] || options[:evaluate] || options[:status] || options[:owner] || options[:recursive] || options[:pane] || options[:spawn] || options[:play] || options[:items] || options[:check_done] || options[:check_undone]
-        raise UsageError, "spine verify takes --pass, --fail, --note, --by, --if-revision, --name and --json; the other options are for show, set, check and start."
-      end
-      raise UsageError, "Give only one of --pass and --fail." if options[:pass] && options[:fail]
-      raise UsageError, "Give --pass or --fail." unless options[:pass] || options[:fail]
-      raise UsageError, "Give --note TEXT: what was checked and what was found." if options[:note].to_s.strip.empty?
-      positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
-      path = args.shift
-      raise UsageError, "Missing STAGE-PATH, the stage's ids joined with / (as 'spine show' reports path).\n\n#{parser.help}" unless path
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
-      raise Error, "spine is not available: no spine command was wired" unless @spine_command
-
-      name = options[:name] || positional || @project_detector.detect(@working_dir)
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
-
-      @spine_command.verify(name: name, path: path, verdict: options[:pass] ? "passed" : "failed", note: options[:note],
-        by: options[:by], if_revision: options[:if_revision], json: options[:json])
-    end
-
-    def cmd_spine_goal(args, options, parser)
-      if options[:stage] || options[:body] || options[:evaluate] || options[:status] || options[:note] || options[:owner] || options[:recursive] || options[:pane] || options[:spawn] || options[:play] || options[:items] || options[:check_done] || options[:check_undone]
-        raise UsageError, "spine goal set takes --if-revision, --by, --name and --json; the other options are for show, set, check and start."
-      end
-      verb = args.shift
-      raise UsageError, "Missing goal subcommand. Use 'workspace spine goal set TEXT'." unless verb
-      raise UsageError, "Unknown spine goal subcommand: #{verb}. Use 'workspace spine goal set TEXT'." unless verb == "set"
-      positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
-      text = args.shift
-      raise UsageError, "Missing TEXT, the goal as one line.\n\n#{parser.help}" unless text
-      raise UsageError, "Unexpected argument: #{args.first}. Quote TEXT if it has spaces, and put -- before text that starts with a dash. Run 'workspace spine --help'." if args.any?
-      raise Error, "spine is not available: no spine command was wired" unless @spine_command
-
-      name = options[:name] || positional || @project_detector.detect(@working_dir)
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
-
-      @spine_command.goal_set(name: name, text: text, if_revision: options[:if_revision], by: options[:by], json: options[:json])
-    end
-
-    def cmd_spine_check(args, options, parser)
-      if options[:stage] || options[:body] || options[:evaluate] || options[:status] || options[:note] || options[:owner] || options[:recursive] || options[:pane] || options[:spawn] || options[:play]
-        raise UsageError, "spine check takes --item, --done, --undone, --if-revision, --by and --json; the other options are for show, set and start."
-      end
-      raise UsageError, "Give at least one --item N." if options[:items].to_a.empty?
-      raise UsageError, "--item takes a positive number." unless options[:items].all?(&:positive?)
-      raise UsageError, "Give only one of --done and --undone." if options[:check_done] && options[:check_undone]
-      raise UsageError, "Give --done or --undone." unless options[:check_done] || options[:check_undone]
-      positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
-      path = args.shift
-      raise UsageError, "Missing STAGE-PATH, the stage's ids joined with / (as 'spine show' reports path).\n\n#{parser.help}" unless path
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
-      raise Error, "spine is not available: no spine command was wired" unless @spine_command
-
-      name = options[:name] || positional || @project_detector.detect(@working_dir)
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
-
-      @spine_command.check(name: name, path: path, items: options[:items], done: options[:check_done] ? true : false,
-        if_revision: options[:if_revision], by: options[:by], json: options[:json])
-    end
-
-    def cmd_spine_start(args, options, parser)
-      if options[:stage] || options[:body] || options[:evaluate] || options[:status] || options[:note] || options[:owner] || options[:recursive] || options[:by]
-        raise UsageError, "spine start takes --pane, --spawn, --play, --if-revision and --json; the other options are for show and set."
-      end
-      raise UsageError, "Give only one of --pane and --spawn." if options[:pane] && options[:spawn]
-      raise UsageError, "--max is for 'spine start --fan-out'." if options[:max] && !options[:fan_out]
-      if options[:fan_out]
-        raise UsageError, "--fan-out starts new panes (--spawn); it cannot be combined with --pane." if options[:pane]
-        raise UsageError, "--fan-out cannot be combined with --if-revision: it starts several stage files." if options[:if_revision]
-        raise UsageError, "--play is not used by --fan-out: each sub-stage gets its own play." if options[:play]
-        raise UsageError, "--max must be at least 1." if options[:max] && options[:max] < 1
-      end
-      if options[:spawn] && !Commands::SpineStart::AGENT_KINDS.include?(options[:spawn])
-        raise UsageError, "Unknown agent kind for --spawn: #{options[:spawn]}. One of #{Commands::SpineStart::AGENT_KINDS.join(", ")}."
-      end
-      positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
-      path = args.shift
-      raise UsageError, "Missing STAGE-PATH, the stage's ids joined with / (as 'spine show' reports path).\n\n#{parser.help}" unless path
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
-      raise Error, "spine start is not available: no spine start command was wired" unless @spine_start_command
-
-      name = options[:name] || positional || @project_detector.detect(@working_dir)
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
-
-      start = -> {
-        next @spine_start_command.fan_out(name: name, path: path, spawn: options[:spawn], max: options[:max] || Commands::SpineStart::DEFAULT_FAN_OUT) if options[:fan_out]
-        @spine_start_command.start(name: name, path: path, pane: options[:pane], spawn: options[:spawn], play: options[:play],
-          if_revision: options[:if_revision], launch: spine_launcher)
-      }
-      doc = options[:json] ? divert_output(&start) : start.call
-      if options[:json]
-        @output.puts JSON.generate(doc)
-      elsif !doc["ok"] && doc["results"]
-        @error_output.puts "Error: nothing was spawned for the sub-stages of #{doc["path"]} of #{name}; every startable sub-stage was refused (#{doc["results"].filter_map { |entry| entry["code"] if entry["result"] == "refused" }.uniq.join(", ")})."
-      elsif !doc["ok"]
-        @error_output.puts "Error: could not start stage #{doc["path"]} of #{name}: #{doc["message"]}"
-      end
-      @exit_handler.exit(1) unless doc["ok"]
-    end
-
-    # What `spine start` uses to launch a workspace that has no session: `launch --play REF --prompt BRIEF`, with the
-    # packs a launch sends (the spine pack among them). Returns `{ok:, reason:, message:, pane:}`.
-    def spine_launcher
-      lambda do |workspace, play, prompt|
-        launched = launch_projects([workspace], plays: Array(play), prompt: prompt, with_packs: true)
-        launched_pane(launched)
-      end
-    end
-
     def pr_parser(options)
       OptionParser.new do |opts|
         opts.banner = HelpPages.overview_usage(HelpPages::PR)
@@ -8214,230 +5713,16 @@ module Workspace
       report_failure(e, json ? ["--json"] : [], e.message, exit_code: 2)
     end
 
-    # What `promote --launch` launches the new workspace with: {#launch_projects} with the packs composed from
+    # What `promote --launch` launches the new workspace with: {Launcher#launch} with the packs composed from
     # its own checkout (after the carry), a play and a prompt. Returns `{ok:, started:, reason:, message:, pane:, packs:}`.
     def promote_launcher(headless:, prompt_timeout:)
       lambda do |workspace, prompt:, play:|
-        launched = launch_projects([workspace], plays: Array(play), prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, with_packs: true)
-        row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs],
+        launched = @launcher.launch(@invocation, [workspace], plays: Array(play), prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, with_packs: true)
+        row = @launcher.rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs],
           skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
         {ok: row["outcome"] != "failed", started: !%w[session_not_started not_launched].include?(row["reason"]),
          reason: row["reason"], message: row["message"], pane: row.dig("play", "pane") || row["pane"], packs: row["packs"]}
       end
-    end
-
-    PLAN_FLAGS = {
-      "status" => %i[name project all file group json],
-      "path" => %i[name json],
-      "show" => %i[name],
-      "init" => %i[name title from force json],
-      "start" => %i[name task pane spawn json],
-      "pause" => %i[name interrupt json],
-      "delete" => %i[name yes json],
-      "task" => %i[name task id title state reason phase after before if_revision json]
-    }.freeze
-
-    # The flags each `plan task` verb takes (on top of --name and --json).
-    PLAN_TASK_FLAGS = {
-      "add" => %i[id title state reason phase after if_revision],
-      "set-state" => %i[task state reason if_revision],
-      "set-title" => %i[task title if_revision],
-      "move" => %i[task after before phase if_revision]
-    }.freeze
-
-    def plan_parser(options)
-      OptionParser.new do |opts|
-        opts.banner = HelpPages.overview_usage(HelpPages::PLAN)
-        opts.separator ""
-        opts.separator "A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist"
-        opts.separator "line per task under '## Tasks'. workspace counts it, and works out one state from the"
-        opts.separator "plan, the session and the pane that owns the plan."
-        opts.separator ""
-        opts.separator "Subcommands:"
-        HelpPages.overview_verbs(HelpPages::PLAN).each { |line| opts.separator line }
-        opts.separator "Run `workspace plan VERB --help` for a verb's options. Task states: #{IdPatterns::TASK_STATES.join(", ")}."
-        opts.separator ""
-        opts.separator "A verb that writes (init, start, pause, delete, task) changes the plan or the workspace for real."
-        opts.separator ""
-        opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
-        opts.on("--project [NAME]", "status: every workspace of a project (NAME, or the project of the current workspace)") { |v| take_plan_flag(options, :project, v || true) }
-        opts.on("--all", "status: every workspace") { take_plan_flag(options, :all, true) }
-        opts.on("--group GROUP", "status: every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)") { |v| take_plan_flag(options, :group, v) }
-        opts.on("--file PATH", "status: read any file, with no workspace and a state from the file alone") { |v| take_plan_flag(options, :file, v) }
-        opts.on("--title TITLE", "init: the plan's title (default: the workspace task's title); task add: the task's title; task set-title: the new title") { |v| take_plan_flag(options, :title, v) }
-        opts.on("--from FILE", "init: import this document as the plan") { |v| take_plan_flag(options, :from, v) }
-        opts.on("--force", "init: replace a plan that is already there") { take_plan_flag(options, :force, true) }
-        opts.on("--yes", "delete: confirm the delete") { take_plan_flag(options, :yes, true) }
-        opts.on("--task ID", "start: send only this task; task set-state, set-title and move: the task (its id, such as T3)") { |v| take_plan_flag(options, :task, v) }
-        opts.on("--id ID", "task add: the new task's id (default: the next number after the plan's last id)") { |v| take_plan_flag(options, :id, v) }
-        opts.on("--state STATE", "task add and set-state: #{IdPatterns::TASK_STATES.join(", ")}") { |v| take_plan_flag(options, :state, v) }
-        opts.on("--reason TEXT", "task add and set-state: why a task is blocked or skipped") { |v| take_plan_flag(options, :reason, v) }
-        opts.on("--phase NAME", "task add: the ### heading to add under; task move: move to the end of this phase") { |v| take_plan_flag(options, :phase, v) }
-        opts.on("--after ID", "task add and move: place the task after this task") { |v| take_plan_flag(options, :after, v) }
-        opts.on("--before ID", "task move: place the task before this task") { |v| take_plan_flag(options, :before, v) }
-        opts.on("--if-revision REV", "task: refuse with stale_revision unless the plan's revision is REV") { |v| take_plan_flag(options, :if_revision, v) }
-        opts.on("--pane PANE", "start --task: the pane to send it to, a pane id (%19) or window.pane (0.1)") { |v| take_plan_flag(options, :pane, v) }
-        opts.on("--spawn KIND", "start --task: start a new agent pane for it (#{Commands::PlanDispatch::AGENT_KINDS.join(", ")})") { |v| take_plan_flag(options, :spawn, v) }
-        opts.on("--interrupt", "pause: interrupt the owner panes that are working") { take_plan_flag(options, :interrupt, true) }
-        opts.on("--json", "Print one JSON document (see docs/README.plan.md)") { take_plan_flag(options, :json, true) }
-        opts.on("-h", "--help", "Show this help") { options[:help] = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace plan status    # the plan of the workspace you are in, e.g. api.worktree-x  working  7/20 (40%)  T9 Add the token store"
-        opts.separator "  workspace plan status --all --json    # every workspace, as one JSON document"
-        opts.separator "  workspace plan path    # where the plan file is, e.g. /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md"
-        opts.separator "  workspace plan init --title \"Auth rewrite\"    # write a new plan"
-        opts.separator "  workspace plan start    # set it active, then launch the workspace or type the play into its agent pane"
-        opts.separator "  workspace plan start --task T4 --pane %23    # type one task into pane %23"
-        opts.separator "  workspace plan pause --interrupt    # stop after the current task and interrupt the working owner panes"
-        opts.separator "  workspace plan task add --title \"Write the docs\" --phase Docs    # add a task under the ### Docs heading"
-        opts.separator "  workspace plan task set-state --task T3 --state blocked --reason \"needs the dev database\"    # block a task"
-        opts.separator "  workspace plan delete --yes    # rename the plan file to IMPLEMENTATION_PLAN.md.deleted-<time>"
-      end
-    end
-
-    def take_plan_flag(options, key, value)
-      options[key] = value
-      options[:given] << key
-    end
-
-    def cmd_plan(args)
-      return if verb_help_shown?(HelpPages::PLAN, args)
-
-      options = {given: [], json: false, force: false, yes: false}
-      parser = plan_parser(options)
-      parser.parse!(args)
-      return @output.puts(parser.help) if options[:help]
-
-      subcommand = args.shift
-      raise UsageError, "Missing subcommand: one of #{PLAN_FLAGS.keys.join(", ")}.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown plan subcommand: #{subcommand}. Run 'workspace plan --help'." unless PLAN_FLAGS.key?(subcommand)
-      verb = args.shift if subcommand == "task"
-      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace plan --help'." if args.any?
-      options[:given].uniq.each do |key|
-        raise UsageError, "--#{key} does not apply to 'plan #{subcommand}'. Run 'workspace plan --help'." unless PLAN_FLAGS[subcommand].include?(key)
-      end
-      if subcommand == "task"
-        raise UsageError, "Missing task verb: one of #{PLAN_TASK_FLAGS.keys.join(", ")}. Run 'workspace plan --help'." unless verb
-        raise UsageError, "Unknown plan task verb: #{verb}. One of #{PLAN_TASK_FLAGS.keys.join(", ")}." unless PLAN_TASK_FLAGS.key?(verb)
-        options[:given].uniq.each do |key|
-          next if %i[name json].include?(key) || PLAN_TASK_FLAGS[verb].include?(key)
-          raise UsageError, "--#{key.to_s.tr("_", "-")} does not apply to 'plan task #{verb}'. Run 'workspace plan --help'."
-        end
-        plan_task_usage(verb, options)
-      end
-      if subcommand == "status" && options[:given].count { |key| %i[name project all file group].include?(key) } > 1
-        raise UsageError, "Give only one of --name, --project, --all, --file and --group."
-      end
-      raise UsageError, "Give only one of --pane and --spawn." if options[:pane] && options[:spawn]
-      raise UsageError, "--pane and --spawn need --task. Run 'workspace plan --help'." if (options[:pane] || options[:spawn]) && !options[:task]
-      if options[:spawn] && !Commands::PlanDispatch::AGENT_KINDS.include?(options[:spawn])
-        raise UsageError, "Unknown agent kind for --spawn: #{options[:spawn]}. One of #{Commands::PlanDispatch::AGENT_KINDS.join(", ")}."
-      end
-      raise Error, "plan is not available: no plan command was wired" unless @plan_command && @plan_dispatch_command && @plan_task_command
-
-      return @plan_command.status_group(group: options[:group], json: options[:json]) if options[:group]
-      return @plan_command.status(file: options[:file], json: options[:json]) if options[:file]
-
-      if subcommand == "status"
-        scope = @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir)
-        case scope.kind
-        when :all then return @plan_command.status(all: true, json: options[:json])
-        when :project then return @plan_command.status(project: scope.project, json: options[:json])
-        else return @plan_command.status(names: [scope.workspace], json: options[:json])
-        end
-      end
-
-      name = options[:name] || @project_detector.detect(@working_dir)
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
-
-      case subcommand
-      when "path" then @plan_command.path(name: name, json: options[:json])
-      when "show" then @plan_command.show(name: name)
-      when "init"
-        run_action("plan init", json: options[:json]) do
-          created = @plan_command.init(name: name, title: options[:title], from: options[:from], force: options[:force])
-          {exit_code: 0, results: [action_row(name, "created", message: created["message"], path: created["path"])]}
-        end
-      when "start"
-        run_action("plan start", json: options[:json]) do
-          row = if options[:task]
-            @plan_dispatch_command.start_task(name: name, task_id: options[:task], pane: options[:pane], spawn: options[:spawn], launch: plan_launcher)
-          else
-            @plan_dispatch_command.start(name: name, launch: plan_launcher)
-          end
-          plan_verb_outcome(name, row, options[:json])
-        end
-      when "pause"
-        run_action("plan pause", json: options[:json]) do
-          plan_verb_outcome(name, @plan_command.pause(name: name, interrupt: options.fetch(:interrupt, false)), options[:json])
-        end
-      when "delete"
-        run_action("plan delete", json: options[:json]) { plan_verb_outcome(name, @plan_command.delete(name: name, yes: options[:yes]), options[:json]) }
-      when "task"
-        run_action("plan task #{verb}", json: options[:json]) { plan_verb_outcome(name, plan_task_row(verb, name, options), options[:json]) }
-      end
-    end
-
-    # Checks what a `plan task` verb needs before anything is read, so a missing flag is a usage error.
-    def plan_task_usage(verb, options)
-      case verb
-      when "add"
-        raise UsageError, "plan task add needs --title." if options[:title].to_s.strip.empty?
-        raise UsageError, "Give only one of --phase and --after." if options[:phase] && options[:after]
-      when "set-state"
-        raise UsageError, "plan task set-state needs --task." unless options[:task]
-        raise UsageError, "plan task set-state needs --state." unless options[:state]
-      when "set-title"
-        raise UsageError, "plan task set-title needs --task." unless options[:task]
-        raise UsageError, "plan task set-title needs --title." if options[:title].nil?
-      when "move"
-        raise UsageError, "plan task move needs --task." unless options[:task]
-        raise UsageError, "Give exactly one of --after, --before and --phase." unless [options[:after], options[:before], options[:phase]].compact.size == 1
-      end
-      if options[:state] && !IdPatterns::TASK_STATES.include?(options[:state])
-        raise UsageError, "Unknown task state: #{options[:state]}. One of #{IdPatterns::TASK_STATES.join(", ")}."
-      end
-    end
-
-    def plan_task_row(verb, name, options)
-      case verb
-      when "add"
-        @plan_task_command.add(name: name, title: options[:title], id: options[:id], state: options.fetch(:state, "todo"), reason: options[:reason],
-          phase: options[:phase], after: options[:after], if_revision: options[:if_revision])
-      when "set-state"
-        @plan_task_command.set_state(name: name, id: options[:task], state: options[:state], reason: options[:reason], if_revision: options[:if_revision])
-      when "set-title"
-        @plan_task_command.set_title(name: name, id: options[:task], title: options[:title], if_revision: options[:if_revision])
-      when "move"
-        @plan_task_command.move(name: name, id: options[:task], after: options[:after], before: options[:before], phase: options[:phase],
-          if_revision: options[:if_revision])
-      end
-    end
-
-    # The action result for a plan verb's row; a failed one also says why on stderr when there is no document.
-    # A row's `task` and `interrupts` ride along in the result, and its `warnings` go to the document's.
-    def plan_verb_outcome(name, row, json)
-      failed = row["outcome"] == "failed"
-      @error_output.puts "Error: could not start the plan for #{name}: #{row["message"]}" if failed && !json
-      extra = row.slice("task", "interrupts", "state", "title", "previous_state", "line", "phase", "revision", "counts", "percent").transform_keys(&:to_sym)
-      {exit_code: failed ? 1 : 0, warnings: row["warnings"] || [],
-       results: [action_row(name, row["outcome"], reason: row["reason"], message: row["message"], path: row["path"], pane: row["pane"], **extra)]}
-    end
-
-    # What `plan start` uses to launch a workspace that has no session: `launch --play implementation-plan
-    # --prompt "Continue the plan."` (or a task's prompt), with the packs a launch sends. Returns `{ok:, reason:, message:, pane:}`.
-    def plan_launcher
-      lambda do |workspace, prompt = Commands::PlanDispatch::CONTINUE_PROMPT|
-        launched_pane(launch_projects([workspace], plays: [Commands::PlanDispatch::PLAY], prompt: prompt, with_packs: true))
-      end
-    end
-
-    # The one launched workspace's row from {#launch_projects}, as `{ok:, reason:, message:, pane:}`.
-    def launched_pane(launched)
-      row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
-      pane = row.dig("play", "pane") || row["pane"]
-      {ok: row["outcome"] != "failed", reason: row["reason"], message: row["message"], pane: pane}
     end
 
     def cmd_dir(args)

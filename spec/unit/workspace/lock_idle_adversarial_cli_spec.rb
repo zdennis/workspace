@@ -8,7 +8,7 @@ RSpec.describe "PR3 adversarial findings" do
   def build_cli(output:, error_output:, lock_command: nil, statusline_command: nil)
     placeholder = Object.new
 
-    Workspace::CLI.new(lineage: LineageSupport.lineage,
+    CLITestHelpers.build_cli(lineage: LineageSupport.lineage,
       config: placeholder, state: placeholder, project_config: placeholder, git: placeholder,
       window_manager: placeholder, doctor: placeholder, project_settings: placeholder,
       hook_runner: placeholder, project_detector: placeholder, launch_command: placeholder,

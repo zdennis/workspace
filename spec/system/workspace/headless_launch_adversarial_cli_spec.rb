@@ -179,7 +179,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
     stop_command_for_prune = instance_double(Workspace::Commands::Stop)
     prune_command = Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command_for_prune, output: output, input: input)
 
-    cli = Workspace::CLI.new(lineage: LineageSupport.lineage,
+    cli = CLITestHelpers.build_cli(lineage: LineageSupport.lineage,
       config: config,
       state: state,
       project_config: project_config,

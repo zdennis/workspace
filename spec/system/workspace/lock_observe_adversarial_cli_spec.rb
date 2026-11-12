@@ -52,7 +52,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
         output: output,
         error_output: error_output)
 
-      Workspace::CLI.new(lineage: LineageSupport.lineage,
+      CLITestHelpers.build_cli(lineage: LineageSupport.lineage,
         config: config, state: state, project_config: project_config, git: git,
         window_manager: window_manager, doctor: doctor, project_settings: project_settings,
         hook_runner: hook_runner, project_detector: project_detector,

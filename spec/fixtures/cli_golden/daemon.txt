@@ -1,0 +1,197 @@
+### workspace daemon --help
+--- exit 0
+--- stdout
+Usage: workspace daemon status [WORKSPACE] [--name NAME] [--json]
+       workspace daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]
+       workspace daemon restart --all [--json]
+       workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]
+       workspace daemon list [--json]
+
+Inspect or control a workspace's agent daemon (see `workspace agentd`).
+  status   Say whether a workspace's agent daemon answers
+  restart  Stop a workspace's agent daemon and start a new one in the background
+  log      Show the last lines of a workspace's agent daemon log
+  list     List every running agent daemon
+Run `workspace daemon VERB --help` for a verb's options.
+
+        --name NAME                  Workspace name (defaults to WORKSPACE or the project detected from the current directory)
+        --lines N                    log: how many trailing lines (default 40)
+        --wc-socket PATH             restart: work-coordinator socket for the new daemon (default: the old daemon's)
+        --all                        restart: restart every running daemon instead of one workspace
+        --json                       Print one JSON document (see docs/README.daemon.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace daemon list    # every running daemon
+  workspace daemon status my-app    # is its daemon answering
+  workspace daemon log my-app --lines 100    # the last 100 lines of its log
+  workspace daemon restart my-app --json    # one JSON action document
+  workspace daemon restart --all    # SIGTERM each running daemon and start it again
+--- stderr
+--- end
+### workspace daemon --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace daemon status [WORKSPACE] [--name NAME] [--json]","workspace daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]","workspace daemon restart --all [--json]","workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]","workspace daemon list [--json]"],"description":"Inspect or control a workspace's agent daemon (see `workspace agentd`).\n  status   Say whether a workspace's agent daemon answers\n  restart  Stop a workspace's agent daemon and start a new one in the background\n  log      Show the last lines of a workspace's agent daemon log\n  list     List every running agent daemon\nRun `workspace daemon VERB --help` for a verb's options.\n\n        --name NAME                  Workspace name (defaults to WORKSPACE or the project detected from the current directory)\n        --lines N                    log: how many trailing lines (default 40)\n        --wc-socket PATH             restart: work-coordinator socket for the new daemon (default: the old daemon's)\n        --all                        restart: restart every running daemon instead of one workspace\n        --json                       Print one JSON document (see docs/README.daemon.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace daemon list","scenario":"every running daemon"},{"command":"workspace daemon status my-app","scenario":"is its daemon answering"},{"command":"workspace daemon log my-app --lines 100","scenario":"the last 100 lines of its log"},{"command":"workspace daemon restart my-app --json","scenario":"one JSON action document"},{"command":"workspace daemon restart --all","scenario":"SIGTERM each running daemon and start it again"}]}
+--- stderr
+--- end
+### workspace daemon status --help
+--- exit 0
+--- stdout
+Usage: workspace daemon status [WORKSPACE] [--name NAME] [--json]
+
+Say whether a workspace's agent daemon answers.
+
+The agent daemon (`workspace agentd`) watches a workspace's panes. This shows whether it answers on
+its socket, its pid, and its socket and log paths.
+
+Options:
+    --name NAME                  Same as the WORKSPACE argument (default: the project detected from the current directory)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace daemon status    # is the daemon of the project in the current directory answering
+  workspace daemon status my-app    # the same for a named workspace; not running is an answer (exit 0)
+  workspace daemon status --name my-app --json    # one JSON document with running, pid, socket and log
+--- stderr
+--- end
+### workspace daemon status --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace daemon status [WORKSPACE] [--name NAME] [--json]"],"description":"Say whether a workspace's agent daemon answers.\n\nThe agent daemon (`workspace agentd`) watches a workspace's panes. This shows whether it answers on\nits socket, its pid, and its socket and log paths.","options":[{"flags":"--name NAME","description":"Same as the WORKSPACE argument (default: the project detected from the current directory)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace daemon status","scenario":"is the daemon of the project in the current directory answering"},{"command":"workspace daemon status my-app","scenario":"the same for a named workspace; not running is an answer (exit 0)"},{"command":"workspace daemon status --name my-app --json","scenario":"one JSON document with running, pid, socket and log"}]}
+--- stderr
+--- end
+### workspace daemon restart --help
+--- exit 0
+--- stdout
+Usage: workspace daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]
+       workspace daemon restart --all [--json]
+
+Stop a workspace's agent daemon and start a new one in the background.
+
+The agent daemon (`workspace agentd`) watches a workspace's panes. Restart stops the daemon holding
+the socket (SIGTERM, even a hung one) and starts a new one in the background; a daemon run in a
+terminal is replaced by a detached one. With none running, it just starts one.
+
+--all restarts every running daemon, one after another, so each runs the code that is installed
+now; one that fails does not stop the rest, and the exit status is non-zero if any failed. It takes
+no workspace, --name or --wc-socket.
+
+Options:
+    --name NAME                  Same as the WORKSPACE argument (default: the project detected from the current directory)
+    --wc-socket PATH             Work-coordinator socket for the new daemon (default: the old daemon's)
+    --all                        Restart every running daemon instead of one workspace
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace daemon restart    # SIGTERM this project's daemon, then start a new one in the background (just start one if none runs)
+  workspace daemon restart my-app --wc-socket /tmp/wc-dev.sock    # the new daemon uses another coordinator socket
+  workspace daemon restart --all    # SIGTERM each running daemon and start it again, so each runs the installed version
+  workspace daemon restart my-app --json    # one JSON action document; exits 1 if the restart failed
+--- stderr
+--- end
+### workspace daemon restart --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]","workspace daemon restart --all [--json]"],"description":"Stop a workspace's agent daemon and start a new one in the background.\n\nThe agent daemon (`workspace agentd`) watches a workspace's panes. Restart stops the daemon holding\nthe socket (SIGTERM, even a hung one) and starts a new one in the background; a daemon run in a\nterminal is replaced by a detached one. With none running, it just starts one.\n\n--all restarts every running daemon, one after another, so each runs the code that is installed\nnow; one that fails does not stop the rest, and the exit status is non-zero if any failed. It takes\nno workspace, --name or --wc-socket.","options":[{"flags":"--name NAME","description":"Same as the WORKSPACE argument (default: the project detected from the current directory)"},{"flags":"--wc-socket PATH","description":"Work-coordinator socket for the new daemon (default: the old daemon's)"},{"flags":"--all","description":"Restart every running daemon instead of one workspace"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace daemon restart","scenario":"SIGTERM this project's daemon, then start a new one in the background (just start one if none runs)"},{"command":"workspace daemon restart my-app --wc-socket /tmp/wc-dev.sock","scenario":"the new daemon uses another coordinator socket"},{"command":"workspace daemon restart --all","scenario":"SIGTERM each running daemon and start it again, so each runs the installed version"},{"command":"workspace daemon restart my-app --json","scenario":"one JSON action document; exits 1 if the restart failed"}]}
+--- stderr
+--- end
+### workspace daemon log --help
+--- exit 0
+--- stdout
+Usage: workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]
+
+Show the last lines of a workspace's agent daemon log.
+
+Only a background daemon writes this log; a daemon run in a terminal logs to that terminal instead.
+
+Options:
+    --name NAME                  Same as the WORKSPACE argument (default: the project detected from the current directory)
+    --lines N                    How many trailing lines, 1 to 10000 (default: 40)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace daemon log    # the last 40 lines for the project in the current directory
+  workspace daemon log my-app --lines 100    # more of a named workspace's log
+  workspace daemon log --name my-app --json    # the lines, the log's path and whether the file exists, as JSON
+--- stderr
+--- end
+### workspace daemon log --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]"],"description":"Show the last lines of a workspace's agent daemon log.\n\nOnly a background daemon writes this log; a daemon run in a terminal logs to that terminal instead.","options":[{"flags":"--name NAME","description":"Same as the WORKSPACE argument (default: the project detected from the current directory)"},{"flags":"--lines N","description":"How many trailing lines, 1 to 10000 (default: 40)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace daemon log","scenario":"the last 40 lines for the project in the current directory"},{"command":"workspace daemon log my-app --lines 100","scenario":"more of a named workspace's log"},{"command":"workspace daemon log --name my-app --json","scenario":"the lines, the log's path and whether the file exists, as JSON"}]}
+--- stderr
+--- end
+### workspace daemon list --help
+--- exit 0
+--- stdout
+Usage: workspace daemon list [--json]
+
+List every running agent daemon.
+
+Shows each daemon's workspace, pid, start time and socket. It takes no workspace.
+
+Options:
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace daemon list    # every running daemon; prints a message and exits 0 when none run
+  workspace daemon list --json    # one JSON document with a row per daemon
+  workspace daemon list --json | jq -r '.daemons[].workspace'    # the workspaces that have a daemon running
+--- stderr
+--- end
+### workspace daemon list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace daemon list [--json]"],"description":"List every running agent daemon.\n\nShows each daemon's workspace, pid, start time and socket. It takes no workspace.","options":[{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace daemon list","scenario":"every running daemon; prints a message and exits 0 when none run"},{"command":"workspace daemon list --json","scenario":"one JSON document with a row per daemon"},{"command":"workspace daemon list --json | jq -r '.daemons[].workspace'","scenario":"the workspaces that have a daemon running"}]}
+--- stderr
+--- end
+### workspace daemon --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace daemon --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace daemon
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: one of status, restart, log, list.
+
+Usage: workspace daemon status [WORKSPACE] [--name NAME] [--json]
+       workspace daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]
+       workspace daemon restart --all [--json]
+       workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]
+       workspace daemon list [--json]
+
+Inspect or control a workspace's agent daemon (see `workspace agentd`).
+  status   Say whether a workspace's agent daemon answers
+  restart  Stop a workspace's agent daemon and start a new one in the background
+  log      Show the last lines of a workspace's agent daemon log
+  list     List every running agent daemon
+Run `workspace daemon VERB --help` for a verb's options.
+
+        --name NAME                  Workspace name (defaults to WORKSPACE or the project detected from the current directory)
+        --lines N                    log: how many trailing lines (default 40)
+        --wc-socket PATH             restart: work-coordinator socket for the new daemon (default: the old daemon's)
+        --all                        restart: restart every running daemon instead of one workspace
+        --json                       Print one JSON document (see docs/README.daemon.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace daemon list    # every running daemon
+  workspace daemon status my-app    # is its daemon answering
+  workspace daemon log my-app --lines 100    # the last 100 lines of its log
+  workspace daemon restart my-app --json    # one JSON action document
+  workspace daemon restart --all    # SIGTERM each running daemon and start it again
+--- end

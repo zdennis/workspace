@@ -60,7 +60,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
   # The one place an engine is built; an example that needs another collaborator passes it here.
   def build_engine(**overrides)
-    Workspace::WorkflowEngine.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
+    Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
       commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
       env_stopper: ->(**args) { stopped << args }, workspace_known: workspace_known, event_log: event_log, task_store: task_store, clock: -> { now.first }, **overrides)
   end
@@ -1071,21 +1071,21 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(start(pane: "%6", checkout: worktree)["id"]).to eq("wr_3")
       end
 
-      describe "#run_on_checkout" do
+      describe "the store's #on_checkout, over the runs the engine starts" do
         it "returns the active run on the checkout, through a symlinked path" do
           start
           link = File.join(@dir, "link-to-app")
           File.symlink(worktree, link)
 
-          expect(engine.run_on_checkout(link)["id"]).to eq("wr_1")
-          expect(engine.run_on_checkout(worktree)["id"]).to eq("wr_1")
+          expect(store.on_checkout(link).to_h["id"]).to eq("wr_1")
+          expect(store.on_checkout(worktree).to_h["id"]).to eq("wr_1")
         end
 
         it "skips a finished run" do
           start
           engine.cancel("wr_1")
 
-          expect(engine.run_on_checkout(worktree)).to be_nil
+          expect(store.on_checkout(worktree)).to be_nil
         end
 
         it "skips a run whose path is gone, a run with no worktree, and a path that does not exist" do
@@ -1094,8 +1094,8 @@ RSpec.describe Workspace::WorkflowEngine do
           store.create({"state" => "running", "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
                         "definition" => {"steps" => [{"id" => "a"}]}, "created_at" => "t"})
 
-          expect(engine.run_on_checkout(worktree)).to be_nil
-          expect(engine.run_on_checkout(File.join(@dir, "nowhere"))).to be_nil
+          expect(store.on_checkout(worktree)).to be_nil
+          expect(store.on_checkout(File.join(@dir, "nowhere"))).to be_nil
         end
       end
 

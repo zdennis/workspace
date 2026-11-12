@@ -1,0 +1,70 @@
+### workspace set-command --help
+--- exit 0
+--- stdout
+Usage: workspace set-command [project] <command> --pane <N> [--name WS]
+
+Set the shell command for a specific pane in a project's tmuxinator config.
+
+Pane index N is 1-based. If N exceeds the number of existing panes,
+you will be asked whether to append a new pane.
+
+Options:
+        --name WS                    The project, as an option; then give only <command>
+                    With no project, give the command as one quoted argument: two
+                    arguments always mean PROJECT COMMAND. The project then defaults to
+                    the current directory's.
+        --pane N                     Pane index (1-based)
+
+Examples:
+  workspace set-command 'vim .' --pane 2    # the current directory's project
+  workspace set-command --name myproject 'vim .' --pane 2    # a named project
+  workspace set-command myproject 'vim .' --pane 2    # replace the second pane's command
+  workspace set-command scooter 'ascii-banner "scooter" --rainbow' --pane 1    # replace the banner pane
+  workspace set-command myproject 'htop' --pane 4    # add a fourth pane (prompts if only 3 exist)
+--- stderr
+--- end
+### workspace set-command --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace set-command [project] <command> --pane <N> [--name WS]"],"description":"Set the shell command for a specific pane in a project's tmuxinator config.\n\nPane index N is 1-based. If N exceeds the number of existing panes,\nyou will be asked whether to append a new pane.","options":[{"flags":"--name WS","description":"The project, as an option; then give only <command> With no project, give the command as one quoted argument: two arguments always mean PROJECT COMMAND. The project then defaults to the current directory's."},{"flags":"--pane N","description":"Pane index (1-based)"}],"examples":[{"command":"workspace set-command 'vim .' --pane 2","scenario":"the current directory's project"},{"command":"workspace set-command --name myproject 'vim .' --pane 2","scenario":"a named project"},{"command":"workspace set-command myproject 'vim .' --pane 2","scenario":"replace the second pane's command"},{"command":"workspace set-command scooter 'ascii-banner \"scooter\" --rainbow' --pane 1","scenario":"replace the banner pane"},{"command":"workspace set-command myproject 'htop' --pane 4","scenario":"add a fourth pane (prompts if only 3 exist)"}]}
+--- stderr
+--- end
+### workspace set-command --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace set-command --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace set-command
+--- exit 1
+--- stdout
+--- stderr
+No command provided.
+
+Usage: workspace set-command [project] <command> --pane <N> [--name WS]
+
+Set the shell command for a specific pane in a project's tmuxinator config.
+
+Pane index N is 1-based. If N exceeds the number of existing panes,
+you will be asked whether to append a new pane.
+
+Options:
+        --name WS                    The project, as an option; then give only <command>
+                    With no project, give the command as one quoted argument: two
+                    arguments always mean PROJECT COMMAND. The project then defaults to
+                    the current directory's.
+        --pane N                     Pane index (1-based)
+
+Examples:
+  workspace set-command 'vim .' --pane 2    # the current directory's project
+  workspace set-command --name myproject 'vim .' --pane 2    # a named project
+  workspace set-command myproject 'vim .' --pane 2    # replace the second pane's command
+  workspace set-command scooter 'ascii-banner "scooter" --rainbow' --pane 1    # replace the banner pane
+  workspace set-command myproject 'htop' --pane 4    # add a fourth pane (prompts if only 3 exist)
+--- end

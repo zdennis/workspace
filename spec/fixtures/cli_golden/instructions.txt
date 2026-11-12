@@ -1,0 +1,166 @@
+### workspace instructions --help
+--- exit 0
+--- stdout
+Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]
+       workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]
+
+A pack is a library play. The built-in ones are binding (how to work in a bound pane), orchestrator
+(delegate to sub-agents), commits (how to commit), review (review a diff with reviewer sub-agents),
+notes (where working notes go), handoff (run 'workspace handoff check' after every task), dev (queue
+for the shared dev environment before testing, release it when done), implementation-plan (keep
+the counted task list in IMPLEMENTATION_PLAN.md), plan-review (review the plan with reviewer
+sub-agents and post a verdict) and report (post a finished note to the inbox);
+`workspace library list --builtin` lists them all.
+With no --pack, binding, orchestrator and commits are composed, in that order, unless the config key
+workflows.defaults.include lists others. Each pack is printed under a heading that names where it
+came from.
+
+Any other library play can be named as a pack too: the project's library is searched, then global.
+A play named like a built-in pack never takes its place here; give your own another name.
+`workspace library show NAME --builtin` prints a built-in one.
+
+Two packs get lines for the caller. binding is followed by the binding of --pane when that pane is
+bound, and commits by the project's commands.test and commands.lint when they are set (workspace
+config set commands.test ...). --pane defaults to $TMUX_PANE, the pane the command runs in, unless
+--name is given. Text composed for another pane, as in start --prompt "$(...)", would carry this
+pane's binding: name the packs and leave binding out, or bind that pane first. Nothing is written or
+sent: the text is printed.
+
+        --pack NAME                  A pack to compose (repeatable, composed in the order given)
+        --pane PANE                  Pane id (%19) whose binding follows the binding pack (default $TMUX_PANE without --name)
+        --name WORKSPACE             Compose for this workspace instead of the current directory
+        --start                      Print what start and launch send with the first prompt, and send nothing: the automatic
+                                     packs (notes, unless notes.instructions is false) then each --pack. Each pack in --json has a source
+        --no-packs                   With --start: leave out the automatic packs (cannot be combined with --pack)
+        --json                       Print one JSON document (see docs/README.instructions.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace instructions compose    # print the default packs for the project of this directory, to read or to paste
+  workspace instructions compose --pack commits --pack review    # only these two packs, in this order
+  workspace instructions compose --pane %5    # the default packs with the binding of pane %5 after the binding pack
+  workspace instructions compose --start --name my-app    # see what start or launch would send my-app with its first prompt; nothing is sent
+  workspace instructions compose --pack orchestrator --name my-app --json    # for a script: the packs and the text as one JSON document, composed for my-app
+  workspace instructions compose --pack nonesuch --json    # a pack that is not in any library exits 1 with unknown_library_entry
+--- stderr
+--- end
+### workspace instructions --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]","workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]"],"description":"A pack is a library play. The built-in ones are binding (how to work in a bound pane), orchestrator\n(delegate to sub-agents), commits (how to commit), review (review a diff with reviewer sub-agents),\nnotes (where working notes go), handoff (run 'workspace handoff check' after every task), dev (queue\nfor the shared dev environment before testing, release it when done), implementation-plan (keep\nthe counted task list in IMPLEMENTATION_PLAN.md), plan-review (review the plan with reviewer\nsub-agents and post a verdict) and report (post a finished note to the inbox);\n`workspace library list --builtin` lists them all.\nWith no --pack, binding, orchestrator and commits are composed, in that order, unless the config key\nworkflows.defaults.include lists others. Each pack is printed under a heading that names where it\ncame from.\n\nAny other library play can be named as a pack too: the project's library is searched, then global.\nA play named like a built-in pack never takes its place here; give your own another name.\n`workspace library show NAME --builtin` prints a built-in one.\n\nTwo packs get lines for the caller. binding is followed by the binding of --pane when that pane is\nbound, and commits by the project's commands.test and commands.lint when they are set (workspace\nconfig set commands.test ...). --pane defaults to $TMUX_PANE, the pane the command runs in, unless\n--name is given. Text composed for another pane, as in start --prompt \"$(...)\", would carry this\npane's binding: name the packs and leave binding out, or bind that pane first. Nothing is written or\nsent: the text is printed.\n\n        --pack NAME                  A pack to compose (repeatable, composed in the order given)\n        --pane PANE                  Pane id (%19) whose binding follows the binding pack (default $TMUX_PANE without --name)\n        --name WORKSPACE             Compose for this workspace instead of the current directory\n        --start                      Print what start and launch send with the first prompt, and send nothing: the automatic\n                                     packs (notes, unless notes.instructions is false) then each --pack. Each pack in --json has a source\n        --no-packs                   With --start: leave out the automatic packs (cannot be combined with --pack)\n        --json                       Print one JSON document (see docs/README.instructions.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace instructions compose","scenario":"print the default packs for the project of this directory, to read or to paste"},{"command":"workspace instructions compose --pack commits --pack review","scenario":"only these two packs, in this order"},{"command":"workspace instructions compose --pane %5","scenario":"the default packs with the binding of pane %5 after the binding pack"},{"command":"workspace instructions compose --start --name my-app","scenario":"see what start or launch would send my-app with its first prompt; nothing is sent"},{"command":"workspace instructions compose --pack orchestrator --name my-app --json","scenario":"for a script: the packs and the text as one JSON document, composed for my-app"},{"command":"workspace instructions compose --pack nonesuch --json","scenario":"a pack that is not in any library exits 1 with unknown_library_entry"}]}
+--- stderr
+--- end
+### workspace instructions compose --help
+--- exit 0
+--- stdout
+Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]
+       workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]
+
+Print the instructions an agent is given, built from library packs.
+
+A pack is a library play. The built-in ones are binding (how to work in a bound pane), orchestrator
+(delegate to sub-agents), commits (how to commit), review (review a diff with reviewer sub-agents),
+notes (where working notes go), handoff (run 'workspace handoff check' after every task), dev (queue
+for the shared dev environment before testing, release it when done), implementation-plan (keep
+the counted task list in IMPLEMENTATION_PLAN.md), plan-review (review the plan with reviewer
+sub-agents and post a verdict) and report (post a finished note to the inbox);
+`workspace library list --builtin` lists them all.
+With no --pack, binding, orchestrator and commits are composed, in that order, unless the config key
+workflows.defaults.include lists others. Each pack is printed under a heading that names where it
+came from.
+
+Any other library play can be named as a pack too: the project's library is searched, then global.
+A play named like a built-in pack never takes its place here; give your own another name.
+`workspace library show NAME --builtin` prints a built-in one.
+
+Two packs get lines for the caller. binding is followed by the binding of --pane when that pane is
+bound, and commits by the project's commands.test and commands.lint when they are set (workspace
+config set commands.test ...). --pane defaults to $TMUX_PANE, the pane the command runs in, unless
+--name is given. Text composed for another pane, as in start --prompt "$(...)", would carry this
+pane's binding: name the packs and leave binding out, or bind that pane first. Nothing is written or
+sent: the text is printed.
+
+Options:
+    --pack NAME                  A pack to compose (repeatable, composed in the order given)
+    --pane PANE                  Pane id (%19) whose binding follows the binding pack (default $TMUX_PANE without --name)
+    --name WORKSPACE             Compose for this workspace instead of the current directory
+    --start                      Print what start and launch send with the first prompt, and send nothing: the automatic packs (notes, unless notes.instructions is false) then each --pack
+    --no-packs                   With --start: leave out the automatic packs (cannot be combined with --pack)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace instructions compose    # print the default packs for the project of this directory, to read or to paste
+  workspace instructions compose --pack commits --pack review    # only these two packs, in this order
+  workspace instructions compose --pane %5    # the default packs with the binding of pane %5 after the binding pack
+  workspace instructions compose --start --name my-app    # see what start or launch would send my-app with its first prompt; nothing is sent
+  workspace instructions compose --pack orchestrator --name my-app --json    # for a script: the packs and the text as one JSON document, composed for my-app
+  workspace instructions compose --pack nonesuch --json    # a pack that is not in any library exits 1 with unknown_library_entry
+--- stderr
+--- end
+### workspace instructions compose --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]","workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]"],"description":"Print the instructions an agent is given, built from library packs.\n\nA pack is a library play. The built-in ones are binding (how to work in a bound pane), orchestrator\n(delegate to sub-agents), commits (how to commit), review (review a diff with reviewer sub-agents),\nnotes (where working notes go), handoff (run 'workspace handoff check' after every task), dev (queue\nfor the shared dev environment before testing, release it when done), implementation-plan (keep\nthe counted task list in IMPLEMENTATION_PLAN.md), plan-review (review the plan with reviewer\nsub-agents and post a verdict) and report (post a finished note to the inbox);\n`workspace library list --builtin` lists them all.\nWith no --pack, binding, orchestrator and commits are composed, in that order, unless the config key\nworkflows.defaults.include lists others. Each pack is printed under a heading that names where it\ncame from.\n\nAny other library play can be named as a pack too: the project's library is searched, then global.\nA play named like a built-in pack never takes its place here; give your own another name.\n`workspace library show NAME --builtin` prints a built-in one.\n\nTwo packs get lines for the caller. binding is followed by the binding of --pane when that pane is\nbound, and commits by the project's commands.test and commands.lint when they are set (workspace\nconfig set commands.test ...). --pane defaults to $TMUX_PANE, the pane the command runs in, unless\n--name is given. Text composed for another pane, as in start --prompt \"$(...)\", would carry this\npane's binding: name the packs and leave binding out, or bind that pane first. Nothing is written or\nsent: the text is printed.","options":[{"flags":"--pack NAME","description":"A pack to compose (repeatable, composed in the order given)"},{"flags":"--pane PANE","description":"Pane id (%19) whose binding follows the binding pack (default $TMUX_PANE without --name)"},{"flags":"--name WORKSPACE","description":"Compose for this workspace instead of the current directory"},{"flags":"--start","description":"Print what start and launch send with the first prompt, and send nothing: the automatic packs (notes, unless notes.instructions is false) then each --pack"},{"flags":"--no-packs","description":"With --start: leave out the automatic packs (cannot be combined with --pack)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace instructions compose","scenario":"print the default packs for the project of this directory, to read or to paste"},{"command":"workspace instructions compose --pack commits --pack review","scenario":"only these two packs, in this order"},{"command":"workspace instructions compose --pane %5","scenario":"the default packs with the binding of pane %5 after the binding pack"},{"command":"workspace instructions compose --start --name my-app","scenario":"see what start or launch would send my-app with its first prompt; nothing is sent"},{"command":"workspace instructions compose --pack orchestrator --name my-app --json","scenario":"for a script: the packs and the text as one JSON document, composed for my-app"},{"command":"workspace instructions compose --pack nonesuch --json","scenario":"a pack that is not in any library exits 1 with unknown_library_entry"}]}
+--- stderr
+--- end
+### workspace instructions --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace instructions --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace instructions
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: compose.
+
+Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]
+       workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]
+
+A pack is a library play. The built-in ones are binding (how to work in a bound pane), orchestrator
+(delegate to sub-agents), commits (how to commit), review (review a diff with reviewer sub-agents),
+notes (where working notes go), handoff (run 'workspace handoff check' after every task), dev (queue
+for the shared dev environment before testing, release it when done), implementation-plan (keep
+the counted task list in IMPLEMENTATION_PLAN.md), plan-review (review the plan with reviewer
+sub-agents and post a verdict) and report (post a finished note to the inbox);
+`workspace library list --builtin` lists them all.
+With no --pack, binding, orchestrator and commits are composed, in that order, unless the config key
+workflows.defaults.include lists others. Each pack is printed under a heading that names where it
+came from.
+
+Any other library play can be named as a pack too: the project's library is searched, then global.
+A play named like a built-in pack never takes its place here; give your own another name.
+`workspace library show NAME --builtin` prints a built-in one.
+
+Two packs get lines for the caller. binding is followed by the binding of --pane when that pane is
+bound, and commits by the project's commands.test and commands.lint when they are set (workspace
+config set commands.test ...). --pane defaults to $TMUX_PANE, the pane the command runs in, unless
+--name is given. Text composed for another pane, as in start --prompt "$(...)", would carry this
+pane's binding: name the packs and leave binding out, or bind that pane first. Nothing is written or
+sent: the text is printed.
+
+        --pack NAME                  A pack to compose (repeatable, composed in the order given)
+        --pane PANE                  Pane id (%19) whose binding follows the binding pack (default $TMUX_PANE without --name)
+        --name WORKSPACE             Compose for this workspace instead of the current directory
+        --start                      Print what start and launch send with the first prompt, and send nothing: the automatic
+                                     packs (notes, unless notes.instructions is false) then each --pack. Each pack in --json has a source
+        --no-packs                   With --start: leave out the automatic packs (cannot be combined with --pack)
+        --json                       Print one JSON document (see docs/README.instructions.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace instructions compose    # print the default packs for the project of this directory, to read or to paste
+  workspace instructions compose --pack commits --pack review    # only these two packs, in this order
+  workspace instructions compose --pane %5    # the default packs with the binding of pane %5 after the binding pack
+  workspace instructions compose --start --name my-app    # see what start or launch would send my-app with its first prompt; nothing is sent
+  workspace instructions compose --pack orchestrator --name my-app --json    # for a script: the packs and the text as one JSON document, composed for my-app
+  workspace instructions compose --pack nonesuch --json    # a pack that is not in any library exits 1 with unknown_library_entry
+--- end

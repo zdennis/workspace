@@ -1,0 +1,46 @@
+### workspace stop --help
+--- exit 0
+--- stdout
+Usage: workspace stop [--name WS | --all] [--json] [project1] [project2] ...
+
+Stop workspace projects and their tmux sessions.
+With no project, stops the workspace the current directory is in; --all stops
+every active workspace project. Outside any workspace, name one or pass --all.
+Projects can be restarted with 'workspace launch'.
+
+        --name NAME                  A workspace to stop, added to any named positionally (default: the one detected from the current directory)
+        --all                        Stop every active workspace project
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes
+                                     to stderr; a named project that isn't active gets a not_running row, not a warning
+
+Examples:
+  workspace stop    # stop the workspace you are in
+  workspace stop --all    # stop every active project
+  workspace stop my-notes    # stop one project
+  workspace stop my-notes billing    # stop several projects
+--- stderr
+--- end
+### workspace stop --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace stop [--name WS | --all] [--json] [project1] [project2] ..."],"description":"Stop workspace projects and their tmux sessions.\nWith no project, stops the workspace the current directory is in; --all stops\nevery active workspace project. Outside any workspace, name one or pass --all.\nProjects can be restarted with 'workspace launch'.\n\n        --name NAME                  A workspace to stop, added to any named positionally (default: the one detected from the current directory)\n        --all                        Stop every active workspace project\n        --json                       Print one action document (see docs/README.json.md) instead of text, which goes\n                                     to stderr; a named project that isn't active gets a not_running row, not a warning","options":[],"examples":[{"command":"workspace stop","scenario":"stop the workspace you are in"},{"command":"workspace stop --all","scenario":"stop every active project"},{"command":"workspace stop my-notes","scenario":"stop one project"},{"command":"workspace stop my-notes billing","scenario":"stop several projects"}]}
+--- stderr
+--- end
+### workspace stop --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace stop --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace stop
+--- exit 1
+--- stdout
+--- stderr
+Error: No workspace found for $CWD. Run from inside a workspace, name one (--name WS), or pass --all.
+--- end

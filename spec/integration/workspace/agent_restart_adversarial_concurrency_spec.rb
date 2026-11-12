@@ -141,7 +141,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent adversarial concurrenc
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
 
   def build_agent(factory)
-    described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+    build_agentd(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, signal_trapper: signal_trapper, context_reader: context_reader,
       session_monitor_factory: ->(_name) { ConcurrencyIdleMonitor.new }, restart_registry: registry,
       agent_restart_factory: factory, output: output, error_output: error_output)
@@ -189,7 +189,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent adversarial concurrenc
       raise ThreadError, "can't create Thread: Resource temporarily unavailable" if attempts == 1
       Thread.new(&work)
     })
-    agent = described_class.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+    agent = build_agentd(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, signal_trapper: signal_trapper, context_reader: context_reader,
       session_monitor_factory: ->(_name) { ConcurrencyIdleMonitor.new }, restart_registry: flaky,
       agent_restart_factory: ->(**kwargs) { restart.build(**kwargs) }, output: output, error_output: error_output)

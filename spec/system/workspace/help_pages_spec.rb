@@ -46,7 +46,7 @@ RSpec.describe Workspace::HelpPages do
       names = parameters.select { |kind, name| kind == :keyreq || name.match?(/_command\z|\Alibrary\z/) }.map(&:last)
       # Config only computes paths under the throwaway HOME; help text names them.
       collaborators = names.to_h { |name| [name, untouchable.new] }.merge(config: Workspace::Config.new).merge(overrides)
-      cli = Workspace::CLI.new(lineage: LineageSupport.lineage, output: out, error_output: err, input: StringIO.new, env: {}, **collaborators)
+      cli = CLITestHelpers.build_cli(lineage: LineageSupport.lineage, output: out, error_output: err, input: StringIO.new, env: {}, **collaborators)
       yield cli, out, err, home
     end
   end
@@ -54,11 +54,11 @@ RSpec.describe Workspace::HelpPages do
   describe "the tables" do
     it "name the same verbs as the tables the commands dispatch on" do
       expect(pages["plan"].keys).to eq(
-        (Workspace::CLI::PLAN_FLAGS.keys - ["task"]) + Workspace::CLI::PLAN_TASK_FLAGS.keys.map { |verb| "task #{verb}" }
+        (Workspace::CLI::PlanSpine::PLAN_FLAGS.keys - ["task"]) + Workspace::CLI::PlanSpine::PLAN_TASK_FLAGS.keys.map { |verb| "task #{verb}" }
       )
-      expect(pages["daemon"].keys).to match_array(Workspace::CLI::DAEMON_SUBCOMMANDS)
+      expect(pages["daemon"].keys).to match_array(Workspace::CLI::Agent::DAEMON_SUBCOMMANDS)
       expect(pages["library"].keys).to match_array(Workspace::CLI::LIBRARY_SUBCOMMANDS)
-      expect(pages["workflow"].keys).to match_array(Workspace::CLI::WORKFLOW_SUBCOMMANDS)
+      expect(pages["workflow"].keys).to match_array(Workspace::CLI::Workflow::SUBCOMMANDS)
     end
 
     it "name the verbs of the commands whose verbs are not in a constant" do
@@ -109,7 +109,7 @@ RSpec.describe Workspace::HelpPages do
       end
       pages["plan"].each do |key, page|
         verb = key.delete_prefix("task ")
-        allowed = (verb == key) ? Workspace::CLI::PLAN_FLAGS.fetch(verb) : Workspace::CLI::PLAN_TASK_FLAGS.fetch(verb) + %i[name json]
+        allowed = (verb == key) ? Workspace::CLI::PlanSpine::PLAN_FLAGS.fetch(verb) : Workspace::CLI::PlanSpine::PLAN_TASK_FLAGS.fetch(verb) + %i[name json]
         expect(flags.call(page)).to match_array(allowed), "plan #{key}"
       end
     end

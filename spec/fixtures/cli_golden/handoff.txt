@@ -1,0 +1,180 @@
+### workspace handoff --help
+--- exit 0
+--- stdout
+Usage: workspace handoff check [NAME] [--name WS] [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]
+       workspace handoff new [NAME] [--name WS] [--pane PANE] [--handoff-doc PATH | --handoff-prompt TEXT] [--wait] [--json]
+
+Watches a coding agent's context-window usage and hands off to a fresh
+conversation before it fills up: `check` tells the agent to save its state
+once usage crosses a threshold, `new` clears the conversation and resumes it
+(the same flow as `workspace agent-run restart`).
+
+  check  Tell a coding agent to save its state once its context usage crosses a threshold
+  new    Clear a coding agent's conversation and resume it from a doc
+Run `workspace handoff VERB --help` for a verb's options.
+
+Examples:
+  workspace handoff check    # this project's agent: a save-state prompt only if it is over the threshold
+  workspace handoff check myapp --threshold 20 --json    # a named workspace, for a script
+  workspace handoff new    # restart the first Claude Code pane (else Codex) of this project, which may not be yours
+  workspace handoff new myapp --pane "$TMUX_PANE"    # an agent restarting its own pane
+--- stderr
+--- end
+### workspace handoff --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace handoff check [NAME] [--name WS] [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]","workspace handoff new [NAME] [--name WS] [--pane PANE] [--handoff-doc PATH | --handoff-prompt TEXT] [--wait] [--json]"],"description":"Watches a coding agent's context-window usage and hands off to a fresh\nconversation before it fills up: `check` tells the agent to save its state\nonce usage crosses a threshold, `new` clears the conversation and resumes it\n(the same flow as `workspace agent-run restart`).\n\n  check  Tell a coding agent to save its state once its context usage crosses a threshold\n  new    Clear a coding agent's conversation and resume it from a doc\nRun `workspace handoff VERB --help` for a verb's options.","options":[],"examples":[{"command":"workspace handoff check","scenario":"this project's agent: a save-state prompt only if it is over the threshold"},{"command":"workspace handoff check myapp --threshold 20 --json","scenario":"a named workspace, for a script"},{"command":"workspace handoff new","scenario":"restart the first Claude Code pane (else Codex) of this project, which may not be yours"},{"command":"workspace handoff new myapp --pane \"$TMUX_PANE\"","scenario":"an agent restarting its own pane"}]}
+--- stderr
+--- end
+### workspace handoff check --help
+--- exit 0
+--- stdout
+Usage: workspace handoff check [NAME] [--name WS] [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]
+
+Tell a coding agent to save its state once its context usage crosses a threshold.
+
+Reads one Claude Code or Codex pane's context usage from the agent daemon. Under the threshold it prints the usage and
+does nothing. At or over it, it types a save-state prompt into that pane for real: the agent writes the doc, then runs
+`workspace handoff new` on itself, which clears its conversation and resumes from the doc.
+
+NAME defaults to the workspace detected from the current directory.
+With neither --handoff-doc nor --handoff-prompt, the doc is the workspace's plan (IMPLEMENTATION_PLAN.md) when its notes
+directory has one, else HANDOFF.md there. Needs the workspace's agent daemon (`workspace agentd --ensure`).
+When the notes directory can't be worked out, the agent picks a path; when it is over the threshold, check makes the
+notes directory first.
+
+A Claude Code pane in hook mode is then watched by its agent daemon: if the agent goes quiet without running
+`handoff new`, a follow-up prompt is typed (handoff.followup_interval, handoff.followup_max and
+handoff.followup_prompt tune or turn that off). A prompt of your own, a /clear or a paused plan ends the
+watch. No watch starts (the result says `watching: false` and why) when the follow-ups are turned off, for a
+pane bound to a run or review, when the prompt text is too long, or when the daemon is old or does not
+answer; the save-state prompt is sent anyway. See docs/README.handoff.md.
+
+Exit codes: 0 under the threshold, 1 at or over it (a save-state prompt was sent) or when the run was refused or failed,
+2 when context usage can't be determined (nothing was sent).
+
+Options:
+    --name NAME                  The workspace, as an option (same as the positional NAME; default: the current directory's)
+    --pane PANE                  tmux pane id ('%19'; "$TMUX_PANE" inside the pane), window.pane (1.0), or a pane index in window 0; must be a pane of NAME's own tmux session (default: the calling pane when it is a Claude Code or Codex pane of the workspace, else the first Claude Code pane, else the first Codex pane; `workspace sessions NAME` lists panes)
+    --threshold PCT              Context usage percent that triggers a handoff, 1-100 (default: handoff.threshold, or 11)
+    --context-pct N              Skip detection and use this value (0-100); the pane list is still read from the daemon, and the prompt is sent for real when N is at or over the threshold
+    --handoff-doc PATH           Doc the agent updates and resumes from (default: the plan, else HANDOFF.md, in the notes directory); a relative PATH is relative to the current directory, not the notes directory
+    --handoff-prompt TEXT        Prompt sent verbatim instead of a doc (not with --handoff-doc)
+    --json                       Print the result as JSON, with "next" (continue, handoff or unknown) and "doc"
+    -h, --help                   Show this help
+
+Examples:
+  workspace handoff check    # this project's agent: a save-state prompt only if it is over the threshold
+  workspace handoff check myapp --threshold 20    # a named workspace, handing off at 20% instead of the configured threshold
+  workspace handoff check myapp --pane "$TMUX_PANE"    # the calling pane -- what an agent checking itself gets by default
+  workspace handoff check myapp --handoff-doc "$(workspace notes dir --name myapp)/HANDOFF.md"    # name the doc the agent saves its state in
+  workspace handoff check myapp --handoff-prompt "Continue with the failing specs"    # resume with this text instead of a doc
+  workspace handoff check myapp --context-pct 5    # use a reading of 5%: under the default threshold, so nothing is sent and it exits 0
+  workspace handoff check myapp --json    # for a script: read "next", or the exit code (0, 1 or 2)
+--- stderr
+--- end
+### workspace handoff check --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace handoff check [NAME] [--name WS] [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]"],"description":"Tell a coding agent to save its state once its context usage crosses a threshold.\n\nReads one Claude Code or Codex pane's context usage from the agent daemon. Under the threshold it prints the usage and\ndoes nothing. At or over it, it types a save-state prompt into that pane for real: the agent writes the doc, then runs\n`workspace handoff new` on itself, which clears its conversation and resumes from the doc.\n\nNAME defaults to the workspace detected from the current directory.\nWith neither --handoff-doc nor --handoff-prompt, the doc is the workspace's plan (IMPLEMENTATION_PLAN.md) when its notes\ndirectory has one, else HANDOFF.md there. Needs the workspace's agent daemon (`workspace agentd --ensure`).\nWhen the notes directory can't be worked out, the agent picks a path; when it is over the threshold, check makes the\nnotes directory first.\n\nA Claude Code pane in hook mode is then watched by its agent daemon: if the agent goes quiet without running\n`handoff new`, a follow-up prompt is typed (handoff.followup_interval, handoff.followup_max and\nhandoff.followup_prompt tune or turn that off). A prompt of your own, a /clear or a paused plan ends the\nwatch. No watch starts (the result says `watching: false` and why) when the follow-ups are turned off, for a\npane bound to a run or review, when the prompt text is too long, or when the daemon is old or does not\nanswer; the save-state prompt is sent anyway. See docs/README.handoff.md.\n\nExit codes: 0 under the threshold, 1 at or over it (a save-state prompt was sent) or when the run was refused or failed,\n2 when context usage can't be determined (nothing was sent).","options":[{"flags":"--name NAME","description":"The workspace, as an option (same as the positional NAME; default: the current directory's)"},{"flags":"--pane PANE","description":"tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0; must be a pane of NAME's own tmux session (default: the calling pane when it is a Claude Code or Codex pane of the workspace, else the first Claude Code pane, else the first Codex pane; `workspace sessions NAME` lists panes)"},{"flags":"--threshold PCT","description":"Context usage percent that triggers a handoff, 1-100 (default: handoff.threshold, or 11)"},{"flags":"--context-pct N","description":"Skip detection and use this value (0-100); the pane list is still read from the daemon, and the prompt is sent for real when N is at or over the threshold"},{"flags":"--handoff-doc PATH","description":"Doc the agent updates and resumes from (default: the plan, else HANDOFF.md, in the notes directory); a relative PATH is relative to the current directory, not the notes directory"},{"flags":"--handoff-prompt TEXT","description":"Prompt sent verbatim instead of a doc (not with --handoff-doc)"},{"flags":"--json","description":"Print the result as JSON, with \"next\" (continue, handoff or unknown) and \"doc\""},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace handoff check","scenario":"this project's agent: a save-state prompt only if it is over the threshold"},{"command":"workspace handoff check myapp --threshold 20","scenario":"a named workspace, handing off at 20% instead of the configured threshold"},{"command":"workspace handoff check myapp --pane \"$TMUX_PANE\"","scenario":"the calling pane -- what an agent checking itself gets by default"},{"command":"workspace handoff check myapp --handoff-doc \"$(workspace notes dir --name myapp)/HANDOFF.md\"","scenario":"name the doc the agent saves its state in"},{"command":"workspace handoff check myapp --handoff-prompt \"Continue with the failing specs\"","scenario":"resume with this text instead of a doc"},{"command":"workspace handoff check myapp --context-pct 5","scenario":"use a reading of 5%: under the default threshold, so nothing is sent and it exits 0"},{"command":"workspace handoff check myapp --json","scenario":"for a script: read \"next\", or the exit code (0, 1 or 2)"}]}
+--- stderr
+--- end
+### workspace handoff new --help
+--- exit 0
+--- stdout
+Usage: workspace handoff new [NAME] [--name WS] [--pane PANE] [--handoff-doc PATH | --handoff-prompt TEXT] [--wait] [--json]
+
+Clear a coding agent's conversation and resume it from a doc.
+
+Clears one Claude Code or Codex pane's conversation and types the resume prompt, the same flow as
+`workspace agent-run restart`. It returns once the restart has started; --wait waits for it to finish.
+Any conversation not saved in the doc is lost. If /clear is typed but no new conversation shows within 30s,
+it stops with clear_not_confirmed and types no resume prompt.
+
+Without --pane it prefers the calling pane when it is a Claude Code or Codex pane of the workspace, else the first
+Claude Code pane the daemon lists, else the first Codex pane, which may not be yours: to restart a different pane,
+pass --pane.
+
+Exit codes: 0 the restart started (with --wait, finished), 1 refused or failed. Without --wait, 0 does not mean the
+restart worked: a later failure shows only in the agent daemon's log (`workspace daemon log`).
+
+NAME defaults to the workspace detected from the current directory.
+With neither --handoff-doc nor --handoff-prompt, the doc is the workspace's plan (IMPLEMENTATION_PLAN.md) when its notes
+directory has one, else HANDOFF.md there. Needs the workspace's agent daemon (`workspace agentd --ensure`).
+The pane is also bound to the implementation-plan play when the plan is the doc. When the notes directory can't be
+worked out, it fails with notes_dir_unresolved: pass --handoff-doc then.
+
+Options:
+    --name NAME                  The workspace, as an option (same as the positional NAME; default: the current directory's)
+    --pane PANE                  tmux pane id ('%19'; "$TMUX_PANE" inside the pane), window.pane (1.0), or a pane index in window 0; must be a pane of NAME's own tmux session (default: the calling pane when it is a Claude Code or Codex pane of the workspace, else the first Claude Code pane, else the first Codex pane; `workspace sessions NAME` lists panes)
+    --handoff-doc PATH           Doc the agent reads and resumes from (default: the plan, else HANDOFF.md, in the notes directory); a relative PATH is relative to the current directory, not the notes directory, and is passed to the agent as written
+    --handoff-prompt TEXT        Prompt sent verbatim instead of a doc (not with --handoff-doc)
+    --wait                       Wait for the restart to finish and report how it went (don't use this from the agent being restarted); without it a refusal (a draft in the input box: pane_busy, input_not_empty) shows only in the daemon's log
+    --json                       Print the result as JSON
+    -h, --help                   Show this help
+
+Examples:
+  workspace handoff new    # restart this project's coding agent in a fresh conversation (it loses the current one, so save its state first); it picks your pane when you run it from a Claude Code or Codex pane, else the first Claude Code pane, else Codex
+  workspace handoff new myapp --pane "$TMUX_PANE"    # an agent restarting its own pane
+  workspace handoff new myapp --pane 0.1 --handoff-doc /tmp/myapp-handoff.md    # one pane as window.pane, resuming from this doc
+  workspace handoff new myapp --handoff-prompt "Continue with the failing specs"    # resume with this text instead of a doc
+  workspace handoff new myapp --wait    # from outside the pane: wait until the restart has finished
+  workspace handoff new myapp --json    # for a script: the result as JSON
+--- stderr
+--- end
+### workspace handoff new --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace handoff new [NAME] [--name WS] [--pane PANE] [--handoff-doc PATH | --handoff-prompt TEXT] [--wait] [--json]"],"description":"Clear a coding agent's conversation and resume it from a doc.\n\nClears one Claude Code or Codex pane's conversation and types the resume prompt, the same flow as\n`workspace agent-run restart`. It returns once the restart has started; --wait waits for it to finish.\nAny conversation not saved in the doc is lost. If /clear is typed but no new conversation shows within 30s,\nit stops with clear_not_confirmed and types no resume prompt.\n\nWithout --pane it prefers the calling pane when it is a Claude Code or Codex pane of the workspace, else the first\nClaude Code pane the daemon lists, else the first Codex pane, which may not be yours: to restart a different pane,\npass --pane.\n\nExit codes: 0 the restart started (with --wait, finished), 1 refused or failed. Without --wait, 0 does not mean the\nrestart worked: a later failure shows only in the agent daemon's log (`workspace daemon log`).\n\nNAME defaults to the workspace detected from the current directory.\nWith neither --handoff-doc nor --handoff-prompt, the doc is the workspace's plan (IMPLEMENTATION_PLAN.md) when its notes\ndirectory has one, else HANDOFF.md there. Needs the workspace's agent daemon (`workspace agentd --ensure`).\nThe pane is also bound to the implementation-plan play when the plan is the doc. When the notes directory can't be\nworked out, it fails with notes_dir_unresolved: pass --handoff-doc then.","options":[{"flags":"--name NAME","description":"The workspace, as an option (same as the positional NAME; default: the current directory's)"},{"flags":"--pane PANE","description":"tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0; must be a pane of NAME's own tmux session (default: the calling pane when it is a Claude Code or Codex pane of the workspace, else the first Claude Code pane, else the first Codex pane; `workspace sessions NAME` lists panes)"},{"flags":"--handoff-doc PATH","description":"Doc the agent reads and resumes from (default: the plan, else HANDOFF.md, in the notes directory); a relative PATH is relative to the current directory, not the notes directory, and is passed to the agent as written"},{"flags":"--handoff-prompt TEXT","description":"Prompt sent verbatim instead of a doc (not with --handoff-doc)"},{"flags":"--wait","description":"Wait for the restart to finish and report how it went (don't use this from the agent being restarted); without it a refusal (a draft in the input box: pane_busy, input_not_empty) shows only in the daemon's log"},{"flags":"--json","description":"Print the result as JSON"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace handoff new","scenario":"restart this project's coding agent in a fresh conversation (it loses the current one, so save its state first); it picks your pane when you run it from a Claude Code or Codex pane, else the first Claude Code pane, else Codex"},{"command":"workspace handoff new myapp --pane \"$TMUX_PANE\"","scenario":"an agent restarting its own pane"},{"command":"workspace handoff new myapp --pane 0.1 --handoff-doc /tmp/myapp-handoff.md","scenario":"one pane as window.pane, resuming from this doc"},{"command":"workspace handoff new myapp --handoff-prompt \"Continue with the failing specs\"","scenario":"resume with this text instead of a doc"},{"command":"workspace handoff new myapp --wait","scenario":"from outside the pane: wait until the restart has finished"},{"command":"workspace handoff new myapp --json","scenario":"for a script: the result as JSON"}]}
+--- stderr
+--- end
+### workspace handoff --bogus
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace handoff check [NAME] [--name WS] [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]
+       workspace handoff new [NAME] [--name WS] [--pane PANE] [--handoff-doc PATH | --handoff-prompt TEXT] [--wait] [--json]
+
+Watches a coding agent's context-window usage and hands off to a fresh
+conversation before it fills up: `check` tells the agent to save its state
+once usage crosses a threshold, `new` clears the conversation and resumes it
+(the same flow as `workspace agent-run restart`).
+
+  check  Tell a coding agent to save its state once its context usage crosses a threshold
+  new    Clear a coding agent's conversation and resume it from a doc
+Run `workspace handoff VERB --help` for a verb's options.
+
+Examples:
+  workspace handoff check    # this project's agent: a save-state prompt only if it is over the threshold
+  workspace handoff check myapp --threshold 20 --json    # a named workspace, for a script
+  workspace handoff new    # restart the first Claude Code pane (else Codex) of this project, which may not be yours
+  workspace handoff new myapp --pane "$TMUX_PANE"    # an agent restarting its own pane
+--- end
+### workspace handoff --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"Usage: workspace handoff check [NAME] [--name WS] [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]","code":"usage"}
+--- stderr
+--- end
+### workspace handoff
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace handoff check [NAME] [--name WS] [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]
+       workspace handoff new [NAME] [--name WS] [--pane PANE] [--handoff-doc PATH | --handoff-prompt TEXT] [--wait] [--json]
+
+Watches a coding agent's context-window usage and hands off to a fresh
+conversation before it fills up: `check` tells the agent to save its state
+once usage crosses a threshold, `new` clears the conversation and resumes it
+(the same flow as `workspace agent-run restart`).
+
+  check  Tell a coding agent to save its state once its context usage crosses a threshold
+  new    Clear a coding agent's conversation and resume it from a doc
+Run `workspace handoff VERB --help` for a verb's options.
+
+Examples:
+  workspace handoff check    # this project's agent: a save-state prompt only if it is over the threshold
+  workspace handoff check myapp --threshold 20 --json    # a named workspace, for a script
+  workspace handoff new    # restart the first Claude Code pane (else Codex) of this project, which may not be yours
+  workspace handoff new myapp --pane "$TMUX_PANE"    # an agent restarting its own pane
+--- end

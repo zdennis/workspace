@@ -31,225 +31,6 @@ RSpec.describe Workspace::SessionMonitor do
     monitor.snapshot["panes"].find { |p| p["pane_id"] == id }
   end
 
-  describe "closing a question from the screen" do
-    let(:times) { [Time.utc(2026, 10, 31, 12, 0, 0)] }
-    let(:clock) { Struct.new(:source) { def now = source[0] }.new(times) }
-    let(:ask) { {"pane_id" => "%2", "session_id" => "s1"} }
-    let(:err) { StringIO.new }
-
-    subject(:monitor) do
-      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
-        idle_after: 30, clock: clock, error_output: err)
-    end
-
-    def fixture(name)
-      File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "#{name}.txt"))
-    end
-
-    def show(name)
-      allow(tmux).to receive(:capture_screen_styled).with("%2").and_return(fixture(name))
-    end
-
-    def open_question(tool = "AskUserQuestion", id = "t1")
-      monitor.record(ask.merge("event" => "tool_start", "tool" => tool, "tool_use_id" => id))
-    end
-
-    def scans(count, seconds: 10)
-      count.times do
-        times[0] += seconds
-        monitor.scan
-      end
-    end
-
-    def open_tools = monitor.typing_facts("%2")[:open_tools]
-
-    # What `WorkflowPanes#screen_refusal` builds in the `advance` process.
-    def advance_facts
-      row = pane("%2")
-      {kind: row["kind"], state: row["activity_state"], open_tools: row["open_tools"]}
-    end
-
-    before do
-      show("question_open_single")
-      monitor.scan
-      open_question
-    end
-
-    it "keeps the tool open for as long as a dialog shows, and types nothing into it" do
-      scans(30)
-
-      expect(open_tools).to eq(["AskUserQuestion"])
-      expect(Workspace::TypingSafety.new.check(monitor.typing_facts("%2"), Workspace::StyledScreen.parse(fixture("question_open_single"))))
-        .to include(reason: "question_open")
-    end
-
-    it "keeps the tool open through a slow PreToolUse hook, the box empty with a spinner over it" do
-      show("question_about_to_draw")
-      scans(30)
-
-      expect(open_tools).to eq(["AskUserQuestion"])
-    end
-
-    it "closes the tool only after one reading held, for the daemon's facts and for the snapshot" do
-      show("question_closed_single")
-      scans(1)
-      expect(open_tools).to eq(["AskUserQuestion"])
-
-      scans(1)
-      expect(open_tools).to eq([])
-      expect(advance_facts[:open_tools]).to eq([])
-      screen = Workspace::StyledScreen.parse(fixture("question_closed_single"))
-      expect(Workspace::TypingSafety.new.check(monitor.typing_facts("%2"), screen)).to be_nil
-      expect(Workspace::TypingSafety.new.check(advance_facts, screen)).to be_nil
-    end
-
-    it "keeps the question open when the capture raises or comes back empty" do
-      allow(tmux).to receive(:capture_screen_styled).with("%2").and_raise(Workspace::Error, "no server")
-      scans(3)
-      expect(open_tools).to eq(["AskUserQuestion"])
-
-      allow(tmux).to receive(:capture_screen_styled).with("%2").and_return(nil)
-      scans(3)
-      expect(open_tools).to eq(["AskUserQuestion"])
-    end
-
-    it "keeps the question open when the capture is not valid UTF-8" do
-      allow(tmux).to receive(:capture_screen_styled).with("%2")
-        .and_return((+"────\n❯ \n────\ncaf\xE9\n").force_encoding("UTF-8"))
-      scans(3)
-      expect(open_tools).to eq(["AskUserQuestion"])
-    end
-
-    it "reports the close on the daemon's error stream" do
-      show("question_closed_single")
-      scans(1)
-      expect(err.string).to be_empty
-      scans(1)
-      expect(open_tools).to eq([])
-      expect(err.string).to match(/question closed in %2/)
-    end
-
-    it "waits out the hold when scans come faster" do
-      show("question_closed_single")
-      scans(8, seconds: 1)
-      expect(open_tools).to eq(["AskUserQuestion"])
-
-      scans(1, seconds: 1)
-      expect(open_tools).to eq([])
-    end
-
-    it "does not close on an empty box that a dialog then replaces" do
-      show("question_closed_single")
-      scans(1)
-      show("question_open_single")
-      scans(1)
-      show("question_closed_single")
-      scans(1)
-
-      expect(open_tools).to eq(["AskUserQuestion"])
-    end
-
-    it "starts over when the rows above the box change" do
-      show("question_closed_single")
-      scans(1)
-      show("question_closed_tabs")
-      scans(1)
-
-      expect(open_tools).to eq(["AskUserQuestion"])
-      scans(1)
-      expect(open_tools).to eq([])
-    end
-
-    it "starts over on a hook event" do
-      show("question_closed_single")
-      scans(1)
-      times[0] += 1
-      monitor.record(ask.merge("event" => "notification", "message" => "Claude needs your input"))
-      scans(1)
-
-      expect(open_tools).to eq(["AskUserQuestion"])
-      scans(1)
-      expect(open_tools).to eq([])
-    end
-
-    it "starts over for a question opened since" do
-      show("question_closed_single")
-      scans(1)
-      times[0] += 1
-      open_question("ExitPlanMode", "t2")
-      scans(1)
-
-      expect(open_tools).to eq(%w[AskUserQuestion ExitPlanMode])
-      scans(1)
-      expect(open_tools).to eq([])
-    end
-
-    it "leaves a draft alone: the tool stays open and the pane refused" do
-      allow(tmux).to receive(:capture_screen_styled).with("%2").and_return("────────\n❯ half a thought\n────────\n")
-      scans(5)
-
-      expect(open_tools).to eq(["AskUserQuestion"])
-      expect(Workspace::TypingSafety.new.check(monitor.typing_facts("%2"), "────────\n❯ half a thought\n────────\n"))
-        .to include(reason: "question_open")
-    end
-
-    it "keeps other tools open, closes ExitPlanMode too" do
-      monitor.record(ask.merge("event" => "tool_start", "tool" => "Bash", "tool_use_id" => "t2"))
-      open_question("ExitPlanMode", "t3")
-      show("question_closed_exit_plan")
-      scans(2)
-
-      expect(open_tools).to eq(["Bash"])
-    end
-
-    it "ends the wait the question's Notification opened, once the screen proves it" do
-      monitor.record(ask.merge("event" => "notification", "message" => "Claude needs your input"))
-      expect(monitor.restart_state("%2")).to eq("waiting")
-      show("question_closed_single")
-      scans(1)
-      expect(monitor.restart_state("%2")).to eq("waiting")
-
-      scans(1)
-      expect(monitor.restart_state("%2")).to eq("idle")
-      expect(pane("%2")["activity_state"]).not_to eq("waiting")
-    end
-
-    it "drops the main agent's unanswered permission request, as a Stop does" do
-      monitor.record(ask.merge("event" => "permission_request", "tool" => "Bash", "input" => {"command" => "ls"}))
-      show("question_closed_single")
-      scans(2)
-
-      expect(open_tools).to eq([])
-      monitor.record(ask.merge("event" => "notification", "message" => "Claude needs your permission"))
-      expect(pane("%2")).to include("waiting_tool" => nil, "waiting_input" => nil)
-    end
-
-    it "leaves a sub-agent's wait alone" do
-      monitor.record(ask.merge("event" => "notification", "agent_id" => "sub1", "message" => "permission"))
-      show("question_closed_single")
-      scans(2)
-
-      expect(open_tools).to eq([])
-      expect(monitor.restart_state("%2")).to eq("waiting")
-    end
-
-    it "opens no wait for the idle notification that comes after" do
-      show("question_closed_single")
-      scans(2)
-      monitor.record(ask.merge("event" => "notification", "notification_type" => "idle_prompt", "message" => "Claude is waiting for your input"))
-
-      expect(monitor.restart_state("%2")).to eq("idle")
-    end
-
-    it "reads the styled screen only while a question tool is open" do
-      show("question_closed_single")
-      scans(2)
-      expect(tmux).not_to receive(:capture_screen_styled)
-
-      scans(3)
-    end
-  end
-
   describe "#main_turn_evidence" do
     let(:times) { [Time.utc(2026, 10, 31, 12, 0, 0)] }
     let(:clock) { Struct.new(:source) { def now = source[0] }.new(times) }
@@ -453,18 +234,6 @@ RSpec.describe Workspace::SessionMonitor do
       expect(err.string.lines.size).to eq(1)
       warned.scan
       expect(err.string.lines.size).to eq(2)
-    end
-
-    it "skips the tick instead of stalling when ps hangs" do
-      monitor.scan
-      hung_tree = Workspace::ProcessTree.new(timeout: 0.1, command: ["/bin/sleep", "30"])
-      allow(process_tree).to receive(:snapshot) { hung_tree.snapshot }
-
-      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      monitor.scan
-
-      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 5
-      expect(pane("%2")["kind"]).to eq("claude")
     end
 
     it "drops panes that have closed, along with their history" do
@@ -1385,146 +1154,6 @@ RSpec.describe Workspace::SessionMonitor do
         expect(pane("%2")).to include("waiting_tool" => "Bash", "waiting_input" => "rm -rf build")
       end
     end
-
-    describe "a ready prompt back on the screen" do
-      let(:rule) { "─" * 40 }
-      let(:footer) { "#{rule}\n❯ \n#{rule}\n  Opus test status line one\n  line two 50% left\n  ⏸ manual mode on\n" }
-      let(:ready) { "⏺ Bash(touch a.txt)\n  ⎿  Interrupted · What should Claude do instead?\n\n#{footer}" }
-      let(:dialog) do
-        "⏺ Bash(touch a.txt)\n  ⎿  Waiting…\n\n#{rule}\n Bash command\n Create empty file a.txt\n" \
-          "#{"╌" * 40}\n touch a.txt\n#{"╌" * 40}\n Do you want to proceed?\n ❯ 1. Yes\n" \
-          "   2. Yes, and don’t ask again for: touch *\n   3. No\n\n Esc to cancel · Tab to amend\n"
-      end
-
-      let(:tmpdir) { Dir.mktmpdir }
-      let(:event_log) do
-        log_config = Workspace::Config.new(workspace_dir: tmpdir)
-        allow(log_config).to receive(:event_log_file).and_return(File.join(tmpdir, "events.jsonl"))
-        Workspace::EventLog.new(config: log_config, error_output: StringIO.new, clock: clock)
-      end
-
-      after { FileUtils.remove_entry(tmpdir) }
-
-      def daemon
-        described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
-          idle_after: 30, clock: clock, notifier: notifier, event_log: event_log, project: "proj")
-      end
-
-      # A daemon that alerted for the main agent's wait, then a new one that takes the wait up.
-      subject(:monitor) do
-        predecessor = daemon
-        predecessor.scan
-        predecessor.record("event" => "notification", "pane_id" => "%2", "message" => "Claude needs your permission")
-        predecessor.scan
-        predecessor.send_alerts
-        daemon
-      end
-
-      def wait_on_bound_tool
-        request
-        prompt
-      end
-
-      def expect_request_kept(tool)
-        prompt
-        expect(pane("%2")["waiting_tool"]).to eq(tool)
-      end
-
-      def scan_showing(screen)
-        allow(tmux).to receive(:capture_pane).and_return(screen)
-        monitor.scan
-      end
-
-      it "keeps a newer request from the same agent, whose dialog is yet to be drawn" do
-        wait_on_bound_tool
-        request(tool: "Write", input: "notes.txt")
-
-        scan_showing(ready)
-
-        expect(waits).to be_empty
-        expect_request_kept("Write")
-      end
-
-      it "reads a capture with invalid UTF-8 bytes" do
-        wait_on_bound_tool
-
-        scan_showing("\xFF\n#{ready}")
-
-        expect(waits).to be_empty
-      end
-
-      it "ends a bound wait, its alert entry and its request" do
-        wait_on_bound_tool
-
-        scan_showing(ready)
-
-        expect(waits).to be_empty
-        expect(pane("%2")["state"]).not_to eq("waiting")
-        expect_null_fields
-        prompt
-        expect_null_fields
-        expect(monitor.send_alerts.size).to eq(1)
-      end
-
-      it "ends the wait when blank rows sit below the footer" do
-        wait_on_bound_tool
-
-        scan_showing(ready + ("\n" * 30))
-
-        expect(waits).to be_empty
-      end
-
-      it "keeps the wait while the dialog is shown" do
-        wait_on_bound_tool
-
-        scan_showing(dialog)
-
-        expect(waits.keys).to eq([nil])
-        expect(monitor.send_alerts).to be_empty
-        expect_request_kept("Bash")
-      end
-
-      it "keeps the wait while the cursor sits on an AskUserQuestion menu's last row" do
-        wait_on_bound_tool
-
-        scan_showing("  3. Blue\n     Blue\n  4. Type something.\n#{rule}\n❯ 5. Chat about this\n\nEnter to select · Esc to cancel\n")
-
-        expect(waits.keys).to eq([nil])
-        expect_request_kept("Bash")
-      end
-
-      it "keeps the wait for a dialog below an old ready prompt in scrollback" do
-        wait_on_bound_tool
-
-        scan_showing(ready + ("older output\n" * 3) + dialog + ("\n" * 20))
-
-        expect(waits.keys).to eq([nil])
-        expect_request_kept("Bash")
-      end
-
-      it "keeps the wait when the capture is empty or blank" do
-        wait_on_bound_tool
-
-        scan_showing("")
-        scan_showing("\n\n  \n")
-
-        expect(waits.keys).to eq([nil])
-        expect_request_kept("Bash")
-      end
-
-      it "keeps a wait with no bound tool" do
-        request(agent_id: "sub-1")
-        request(tool: "Write", input: "a.rb", agent_id: "sub-2")
-        prompt
-        expect(waits.values.map { |wait| wait["tool"] }).to eq([nil])
-
-        scan_showing(ready)
-
-        expect(waits.size).to eq(1)
-        tool_done(agent_id: "sub-1")
-        expect_request_kept("Write")
-      end
-    end
   end
 
   describe "#send_alerts" do
@@ -2296,18 +1925,6 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
-  describe "#snapshot" do
-    it "orders panes by index" do
-      monitor.scan
-
-      expect(monitor.snapshot["panes"].map { |p| p["index"] }).to eq([0, 1])
-    end
-
-    it "names the workspace and when it was taken" do
-      expect(monitor.snapshot).to include("workspace" => "proj", "updated_at" => now.iso8601)
-    end
-  end
-
   describe "state history in the event log" do
     let(:tmpdir) { Dir.mktmpdir }
     let(:log_config) do
@@ -2722,14 +2339,6 @@ RSpec.describe Workspace::SessionMonitor do
       expect(pane("%2")["context_updated_at"]).to eq("2026-09-27T00:00:00Z")
     end
 
-    it "never stamps context fields onto a shell pane" do
-      allow(context_reader).to receive(:read).and_return(pct: 1, error: nil, updated_at: nil)
-      monitor.scan
-
-      expect(pane("%1")).not_to have_key("context_pct")
-      expect(pane("%1")).not_to have_key("context_error")
-    end
-
     it "reports the reason when context can't be determined" do
       allow(context_reader).to receive(:read).and_return(pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil)
 
@@ -2737,15 +2346,6 @@ RSpec.describe Workspace::SessionMonitor do
 
       expect(pane("%2")["context_pct"]).to be_nil
       expect(pane("%2")["context_error"]).to eq(Workspace::ContextReasons::NO_READING)
-    end
-
-    it "omits context fields entirely when no context_reader is injected" do
-      no_reader_monitor = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
-        idle_after: 30, clock: clock)
-      no_reader_monitor.scan
-
-      pane = no_reader_monitor.snapshot["panes"].find { |p| p["pane_id"] == "%2" }
-      expect(pane).not_to have_key("context_pct")
     end
 
     it "never lets a context_reader failure raise out of a scan" do
@@ -2779,7 +2379,7 @@ RSpec.describe Workspace::SessionMonitor do
 
       it "reads again once the scan is overdue past its freshness grace" do
         monitor.scan
-        overdue = now + (Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL * Workspace::SessionMonitor::CACHE_GRACE_INTERVALS) + 1
+        overdue = now + (Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL * Workspace::PaneView::CACHE_GRACE_INTERVALS) + 1
         allow(clock).to receive(:now).and_return(overdue)
 
         expect(pane("%2")["context_pct"]).to eq(55)
@@ -2841,24 +2441,6 @@ RSpec.describe Workspace::SessionMonitor do
 
       expect(pane("%2")).to include("kind" => "codex", "hook_mode" => "scrape")
     end
-
-    it "lists no events for an agent with no hooks" do
-      allow(snapshot).to receive(:find_descendant).with(200, ["claude"], hash_including(include_root: true)).and_return(nil)
-      allow(snapshot).to receive(:find_descendant).with(200, ["opencode"], hash_including(include_root: true))
-        .and_return({pid: 270, command: "opencode", args: "opencode"})
-      monitor.scan
-
-      expect(pane("%2")).to include("kind" => "opencode", "hook_mode" => "scrape", "hook_events" => [])
-    end
-
-    it "is none for a pane not identified yet, and absent on a shell pane" do
-      monitor.record("event" => "stop", "pane_id" => "%9")
-
-      expect(pane("%9")).to include("kind" => "unknown", "hook_mode" => "none", "hook_events" => [])
-      monitor.scan
-      expect(pane("%1")).not_to have_key("hook_mode")
-      expect(pane("%1")).not_to have_key("hook_events")
-    end
   end
 
   describe "per-pane tool status" do
@@ -2870,15 +2452,6 @@ RSpec.describe Workspace::SessionMonitor do
 
     def tool_end(id, extra = {})
       monitor.record({"event" => "tool_use", "pane_id" => "%2", "tool" => "Bash", "tool_use_id" => id}.merge(extra))
-    end
-
-    it "reports nulls and no sub-agents for an agent pane no hook has reached" do
-      expect(pane("%2")).to include("last_event_at" => nil, "current_tool" => nil,
-        "current_tool_since" => nil, "subagents" => [])
-    end
-
-    it "leaves the fields off a shell pane" do
-      expect(pane("%1").keys).not_to include("last_event_at", "current_tool", "current_tool_since", "subagents")
     end
 
     it "reports the running tool by name with when it started" do
@@ -3229,36 +2802,6 @@ RSpec.describe Workspace::SessionMonitor, "task" do
 
     it "reads as no task instead of failing the snapshot" do
       expect(monitor.snapshot["task"]).to be_nil
-    end
-  end
-
-  describe "derived status" do
-    def status = monitor.snapshot["task"]["status"]
-
-    it "is idle when no agent has reported and the pane is quiet" do
-      allow(clock).to receive(:now).and_return(Time.utc(2026, 9, 26, 12, 5, 0))
-      monitor.scan
-
-      expect(status).to eq("idle")
-    end
-
-    it "is working while an agent works" do
-      record("user_prompt", prompt: "go")
-
-      expect(status).to eq("working")
-    end
-
-    it "is done once the Stop hook fires" do
-      record("stop")
-
-      expect(status).to eq("done")
-    end
-
-    it "is blocked while an agent waits for permission" do
-      record("user_prompt", prompt: "go")
-      record("notification", message: "needs permission")
-
-      expect(status).to eq("blocked")
     end
   end
 

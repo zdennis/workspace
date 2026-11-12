@@ -29,7 +29,7 @@ RSpec.describe Workspace::WorkflowSweep do
   let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => File.join(@dir, "notes")}) }
   let(:gate_note) { Workspace::WorkflowGateNote.new(notes: notes) }
   let(:engine) do
-    Workspace::WorkflowEngine.new(store: store, resources: resources, composer: composer, panes: panes,
+    Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes,
       checker: ->(**) { {exit_code: 0, timed_out: false} }, commands_config: commands_config, lineage: lineage, git: git, guard: guard,
       excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
   end
@@ -266,7 +266,7 @@ RSpec.describe Workspace::WorkflowSweep do
       engine.cancel("wr_1")
       FileUtils.mkdir_p(File.join(runs_dir, ".."))
       ids.replace(%w[wr_2])
-      checking = Workspace::WorkflowEngine.new(store: store, resources: resources, composer: composer, panes: panes, checker: ->(**) { {exit_code: 0, timed_out: false} },
+      checking = Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes, checker: ->(**) { {exit_code: 0, timed_out: false} },
         commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
       checking.start(definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
       edit_run(store, "wr_2") { |run| run["steps"]["build"]["state"] = "checking" }

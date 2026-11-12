@@ -221,6 +221,7 @@ require_relative "workspace/project_catalog"
 require_relative "workspace/status_scope"
 require_relative "workspace/project_groups"
 require_relative "workspace/agent_snapshot_client"
+require_relative "workspace/agent_message_client"
 require_relative "workspace/project_agents"
 require_relative "workspace/project_facts"
 require_relative "workspace/core/duration"
@@ -266,6 +267,14 @@ require_relative "workspace/restart_registry"
 require_relative "workspace/restart_runner"
 require_relative "workspace/session_monitor_builder"
 require_relative "workspace/agent_recovery_steps"
+require_relative "workspace/recovery_verdicts"
+require_relative "workspace/recovery_facts"
+require_relative "workspace/recovery_entry"
+require_relative "workspace/recovery_intake"
+require_relative "workspace/recovery_confirmer"
+require_relative "workspace/recovery_attempt_runner"
+require_relative "workspace/recovery_outcomes"
+require_relative "workspace/recovery_attempts"
 require_relative "workspace/agent_recovery_desk"
 require_relative "workspace/agent_recovery_desk_factory"
 require_relative "workspace/inbox_store"
@@ -277,6 +286,12 @@ require_relative "workspace/pull_request_feedback"
 require_relative "workspace/transcript_summary"
 require_relative "workspace/session_ledger"
 require_relative "workspace/transcript_label"
+require_relative "workspace/pane_events"
+require_relative "workspace/pane_states"
+require_relative "workspace/pane_alerts"
+require_relative "workspace/pane_screen_rules"
+require_relative "workspace/pane_scanner"
+require_relative "workspace/pane_view"
 require_relative "workspace/session_monitor"
 require_relative "workspace/clear_confirmation"
 require_relative "workspace/scan_slot_limiter"
@@ -459,14 +474,289 @@ require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
 require_relative "workspace/pipeline_state"
 require_relative "workspace/sentinel_poller"
+require_relative "workspace/agentd_parts"
+require_relative "workspace/agentd_restart_desk"
+require_relative "workspace/pipeline_desk"
+require_relative "workspace/hook_fanout"
+require_relative "workspace/agentd_router"
+require_relative "workspace/agentd_socket_server"
 require_relative "workspace/commands/agent"
 require_relative "workspace/run_result"
 require_relative "workspace/run_result_cleaner"
 require_relative "workspace/run_result_store"
 require_relative "workspace/commands/run_and_report"
+require_relative "workspace/cli/invocation"
+require_relative "workspace/cli/common"
+require_relative "workspace/cli/names"
+require_relative "workspace/cli/launcher"
+require_relative "workspace/cli/workflow"
+require_relative "workspace/cli/agent"
+require_relative "workspace/cli/agent_run"
+require_relative "workspace/cli/pipeline"
+require_relative "workspace/cli/plan_spine"
 require_relative "workspace/cli"
 
 module Workspace
+  # Builds the workflow engine and its phases over one shared {WorkflowRunChange}. `build_cli` and
+  # the simulator's `engine_factory` call it, and so do the specs that drive a whole engine.
+  #
+  # @param store [Workspace::WorkflowRunStore]
+  # @param resources [Workspace::RunResources] holds each step's `uses:` for the run
+  # @param composer [Workspace::InstructionComposer] builds a step's instructions
+  # @param panes [Workspace::WorkflowPanes] binds, finds and types into the run's pane
+  # @param checker [Workspace::WorkflowCheck] runs a step's `status:` command
+  # @param commands_config [Workspace::CommandsConfig] the project's `commands.test`/`commands.lint`
+  # @param lineage [Workspace::WorkspaceLineage] names a checkout's parent project
+  # @param git [Workspace::Git] reads the checkout's branch
+  # @param guard [Workspace::WorkflowGuard] records a run's base commit and checks a guarded step against it
+  # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
+  # @param env_stopper [#call, nil] stops the dev environment a run left running under a lock it
+  #   gave up (`run_id:`, `worktree:`), so nobody queues behind an environment no step uses
+  # @param event_log [Workspace::EventLog, nil] gets `workflow_changed` and the run's lock events
+  # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
+  # @param task_store [Workspace::TaskStore, nil] names the workspace's task in the run
+  # @param attempt_record [Workspace::WorkflowAttemptRecord, nil] records what each attempt started from and ended with
+  #   (default: one reading HEAD through `guard`)
+  # @param require_check [Workspace::WorkflowRequire, nil] checks a step's `require:` proofs
+  #   (default: one over `guard` and `gate_note`)
+  # @param log_tail [Workspace::WorkflowLogTail, nil] reads the end of a failed check's log for `on_fail`'s `log_tail`
+  #   (default: a new one)
+  # @param alerts [Workspace::WorkflowAlerts, nil] tells a person of a gate, a failure, a stall or a finish through `alerts.notify`
+  #   (default: none)
+  # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
+  # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
+  # @param clock [#call] returns the current Time
+  # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
+  # @return [Workspace::WorkflowEngine]
+  def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
+    env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
+    attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
+    require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
+      commands_config: commands_config, checker: checker)
+    prompt = WorkflowPrompt.new(composer: composer, git: git, excludes: excludes, prompt_writer: prompt_writer)
+    # The change types a step's line through Dispatch, which is built after it.
+    dispatch = nil
+    change = WorkflowRunChange.new(store: store, attempt_record: attempt_record, deliver: ->(run_id, delivery) { dispatch.deliver(run_id, delivery) },
+      alerts: alerts, event_log: event_log)
+    dispatch = WorkflowDispatch.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
+      guard: guard, env_stopper: env_stopper, event_log: event_log, clock: clock)
+    progress = WorkflowProgress.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes,
+      log_tail: log_tail || WorkflowLogTail.new, clock: clock)
+    evaluation = WorkflowEvaluation.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
+      guard: guard, commands_config: commands_config, inbox_for: inbox_for, clock: clock)
+    starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
+      lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
+    decisions = WorkflowDecisions.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: clock)
+    recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, clock: clock)
+    WorkflowEngine.new(starter: starter, evaluation: evaluation, decisions: decisions, recovery: recovery)
+  end
+
+  # Builds the agent daemon's per-workspace builder. `build_cli` gives it to {Commands::Agent}, and the
+  # daemon specs build theirs through it. The builder only constructs; {Commands::Agent#call} starts the parts.
+  #
+  # @param tmux [Workspace::Tmux] the tmux adapter the desks' panes read and type through
+  # @param config [Workspace::Config] path configuration (the prompt queue, pipeline state and hand-off files)
+  # @param work_coordinator_client [Workspace::WorkCoordinatorClient] the coordinator the pipeline desk registers and reports with
+  # @param pipeline_config [Workspace::PipelineConfig] per-project pipeline configuration
+  # @param session_monitor_factory [#call] given the workspace name, builds its {Workspace::SessionMonitor}
+  # @param event_log [Workspace::EventLog, nil] gets the desks' and the handoff watcher's events
+  # @param context_reader [Workspace::ContextReader, nil] reads a pane's context use for the default {Workspace::AgentRestart}
+  #   and the restart desk; nil refuses every `restart_agent` as `context_unavailable`
+  # @param agent_restart_factory [#call, nil] builds the {Workspace::AgentRestart} that runs one `restart_agent`
+  #   message; nil builds the real one
+  # @param handoff_typer [Workspace::PromptTyper, Symbol, nil] what the default handoff watcher types through:
+  #   +:prompt_typer+ (the default) a {Workspace::PromptTyper} over the workspace's panes and monitor, nil none
+  # @param transcript_summary [Workspace::TranscriptSummary] says whether the main agent wrote anything after its Stop
+  # @param idle_prompt_check [Workspace::IdlePromptCheck] reads a pane's input box
+  # @param pane_bindings [Workspace::PaneBindings, nil] says which run a pane is bound to; a restart for a run
+  #   stops typing once that changes
+  # @param plan_paused_for [#call, nil] given the workspace name, whether its plan is paused, as the default
+  #   handoff watcher's +plan_paused+; nil: never paused
+  # @param hook_event_log_factory [#call, nil] given the workspace name, builds the {Workspace::HookEventLog}
+  #   each forwarded hook event is written to; nil writes none
+  # @param plan_progress_watcher_factory [#call, nil] given the workspace name, builds the
+  #   {Workspace::PlanProgressWatcher} that records `plan_progress`; nil watches nothing
+  # @param spine_watcher_factory [#call, nil] given the workspace name, builds the
+  #   {Workspace::SpineWatcher} that records `spine_changed` for edits made by hand; nil watches nothing
+  # @param spine_owner_report_factory [#call, nil] given the workspace name, builds the
+  #   {Workspace::SpineOwnerReport} that records `spine_changed` with `change: "owner_finished"` when
+  #   a stage owner's turn ends (Stop hook) or its stage is set completed; nil reports nothing
+  # @param agent_recovery_desk_factory [#call, nil] given the workspace, its tmux session, the session
+  #   monitor, the delivery lock, the event log, a pane-restarting check, the calls that claim and
+  #   release a pane (the claim registers the calling thread) and +rebind_queue+ (pane id, agent pid),
+  #   builds the {Workspace::AgentRecoveryDesk}, or answers nil when recovery is off or the workspace's
+  #   agent isn't Claude Code; nil (the default) never builds one
+  # @param agent_status_desk_factory [#call, nil] given the workspace, its tmux session, the session
+  #   monitor, the hook event log, the delivery lock and a pane-restarting check, builds the
+  #   {Workspace::AgentStatusDesk} that answers `status_request` and `status_post`; nil builds the real one
+  # @param prompt_queue_desk_factory [#call, nil] given the workspace, its tmux session, the session
+  #   monitor, the delivery lock, a pane-restarting check, the calls that claim and release a
+  #   pane for a restart and a pane-recovering check, builds the {Workspace::PromptQueueDesk} that
+  #   answers `prompt_send` and delivers queued prompts; nil builds the real one
+  # @param handoff_watcher_factory [#call, nil] given the keywords workspace, session_name, session_monitor,
+  #   delivery_lock, restarting and event_log, builds the {Workspace::HandoffWatcher} that follows up on a
+  #   stalled handoff and takes `handoff_watch`; nil builds the real one
+  # @param restart_runner_factory [#call, nil] given the session monitor, builds the {Workspace::RestartRunner};
+  #   nil builds the real one
+  # @param pipeline_state [Workspace::PipelineState, nil] the pipeline desk's in-flight work items; nil builds one over
+  #   the workspace's persisted state file
+  # @param sentinel_poller_factory [#call, nil] given +session_name:+, +pane:+, +token:+ and +deadline:+, builds the
+  #   {Workspace::SentinelPoller} that watches a pipeline stage; nil builds the real one
+  # @param workflow_nudger [Workspace::WorkflowNudger, nil] the {Workspace::HookFanout} wakes a workflow run with it when a
+  #   turn ends in the run's pane; nil wakes none
+  # @param token_generator [#call] returns a fresh completion token for one stage dispatch
+  # @param epoch_generator [#call] returns a fresh epoch for the pipeline desk's registration and each re-registration
+  # @param clock [#call] returns the current Time, for stage deadlines and when a turn began
+  # @param retry_backoff [Numeric] seconds to wait between status report retries
+  # @param logger [Workspace::Logger] debug logger
+  # @param error_output [IO] where a restart worker's failure is written
+  # @return [Proc] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+ (the
+  #   {Workspace::RestartRegistry}) and +recovering:+ (pane id to whether a recovery holds it), the frozen {Workspace::AgentdParts}; +pipeline_desk:+ is one an earlier call built (nil builds one), and
+  #   +pipeline_only: true+ builds the pipeline desk alone (every other member nil), so the daemon can
+  #   recover and register its pipeline before the rest are built
+  def self.build_agentd_parts(tmux:, config:, work_coordinator_client:, pipeline_config:, session_monitor_factory:, event_log: nil, context_reader: nil, agent_restart_factory: nil,
+    handoff_typer: :prompt_typer, transcript_summary: TranscriptSummary.new, idle_prompt_check: IdlePromptCheck.new, pane_bindings: nil,
+    plan_paused_for: nil, hook_event_log_factory: nil, plan_progress_watcher_factory: nil, spine_watcher_factory: nil,
+    spine_owner_report_factory: nil, agent_recovery_desk_factory: nil, agent_status_desk_factory: nil, prompt_queue_desk_factory: nil,
+    handoff_watcher_factory: nil, restart_runner_factory: nil, pipeline_state: nil, sentinel_poller_factory: nil, workflow_nudger: nil,
+    token_generator: -> { SecureRandom.hex(4) }, epoch_generator: -> { "wa-#{Commands::Agent.ulid}" }, clock: -> { Time.now }, retry_backoff: 0.5,
+    logger: Workspace::Logger.new, error_output: $stderr)
+    sentinel_poller_factory ||= ->(session_name:, pane:, token:, deadline:) do
+      SentinelPoller.new(tmux: tmux, session_name: session_name, pane: pane, token: token, deadline: deadline,
+        clock: clock, logger: logger, error_output: error_output)
+    end
+    stage_marks = ->(timeout) { [token_generator.call, timeout && clock.call + timeout] }
+    pipeline_desk_for = lambda do |workspace, session_name, delivery_lock|
+      PipelineDesk.new(workspace: workspace, session_name: session_name, tmux: tmux, config: config, pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state || PipelineState.new(pipeline_config: pipeline_config, state_path: config.pipeline_state_path(workspace)),
+        client: work_coordinator_client, delivery_lock: delivery_lock, sentinel_poller_factory: sentinel_poller_factory,
+        stage_marks: stage_marks, epoch_generator: epoch_generator, retry_backoff: retry_backoff, event_log: event_log, logger: logger, error_output: error_output)
+    end
+    agent_restart_factory ||= ->(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:,
+      delivery_facts: ->(_pane_id) {}, **proof) do
+      AgentRestart.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), context_reader: context_reader, session_name: session_name,
+        delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, agent_pid: agent_pid, pane_kind: pane_kind,
+        delivery_facts: delivery_facts, logger: logger, **proof)
+    end
+    agent_status_desk_factory ||= lambda do |workspace:, session_name:, session_monitor:, hook_event_log:, delivery_lock:, restarting:|
+      AgentStatusDesk.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), workspace: workspace, session_name: session_name, session_monitor: session_monitor,
+        hook_event_log: hook_event_log, delivery_lock: delivery_lock, restarting: restarting, logger: logger)
+    end
+    prompt_queue_desk_factory ||= ->(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:,
+      claim_restart:, release_restart:, recovering: ->(_pane_id) { false }) do
+      PromptQueueDesk.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), workspace: workspace, session_name: session_name, session_monitor: session_monitor,
+        store: PromptQueueStore.new(path: config.prompt_queue_path(workspace)), delivery_lock: delivery_lock,
+        restarting: restarting, claim_restart: claim_restart, release_restart: release_restart,
+        recovering: recovering, event_log: event_log, logger: logger)
+    end
+    handoff_watcher_factory ||= lambda do |workspace:, session_name:, session_monitor:, delivery_lock:, restarting:, event_log:|
+      typer = if handoff_typer == :prompt_typer
+        PromptTyper.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_monitor: session_monitor, logger: logger)
+      else
+        handoff_typer
+      end
+      paused = plan_paused_for ? {plan_paused: plan_paused_for.call(workspace)} : {}
+      HandoffWatcher.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor,
+        typer: typer, delivery_lock: delivery_lock, restarting: restarting, event_log: event_log, logger: logger, **paused)
+    end
+
+    lambda do |workspace:, session_name:, delivery_lock:, registry:, recovering:, pipeline_desk: nil, pipeline_only: false|
+      pipeline_desk ||= pipeline_desk_for.call(workspace, session_name, delivery_lock)
+      next AgentdParts.new(pipeline_desk: pipeline_desk).freeze if pipeline_only
+
+      pipeline_ref = pipeline_desk.method(:pipeline_ref_on)
+      hook_event_log = hook_event_log_factory&.call(workspace)
+      monitor = session_monitor_factory.call(workspace)
+      restart_runner = if restart_runner_factory
+        restart_runner_factory.call(monitor)
+      else
+        RestartRunner.new(restart_factory: agent_restart_factory, registry: registry, panes: PaneFactory.new(tmux: tmux, session_name: session_name),
+          session_name: session_name, delivery_lock: delivery_lock, pipeline_ref: pipeline_ref,
+          monitor: monitor, idle_prompt_check: idle_prompt_check,
+          transcript_summary: transcript_summary, pane_bindings: pane_bindings,
+          error_output: error_output, logger: logger)
+      end
+      plan_progress_watcher = plan_progress_watcher_factory&.call(workspace)
+      spine_owner_report = spine_owner_report_factory&.call(workspace)
+      spine_watcher = spine_watcher_factory&.call(workspace)
+      restart_desk = AgentdRestartDesk.new(workspace: workspace, session_name: session_name,
+        pane_details: -> { tmux.pane_details(session_name, window: nil) }, monitor: monitor, context_reader: context_reader,
+        registry: registry, runner: restart_runner, pipeline_ref: pipeline_ref, logger: logger)
+      restarting = ->(pane_id) { registry.held?(pane_id) }
+      status_desk = agent_status_desk_factory.call(workspace: workspace, session_name: session_name,
+        session_monitor: monitor, hook_event_log: hook_event_log, delivery_lock: delivery_lock, restarting: restarting)
+      # A --clear-first delivery holds the pane in the registry from its clear
+      # until its text is typed, so restart_agent and status requests keep out.
+      queue_desk = prompt_queue_desk_factory.call(workspace: workspace, session_name: session_name,
+        session_monitor: monitor, delivery_lock: delivery_lock, restarting: restarting,
+        claim_restart: ->(pane_id) { registry.claim_for_queue(pane_id) },
+        release_restart: ->(pane_id, token) { registry.release(pane_id, token) },
+        recovering: recovering)
+      # The recovery desk claims a pane through RestartRegistry#claim_for_recovery on the attempt's own
+      # thread, so RestartRegistry#stop_all can kill an attempt; the claim is refused while any claim holds
+      # the pane or the daemon is shutting down, and a release matches by the token the claim returned.
+      queue_path = config.prompt_queue_path(workspace) if agent_recovery_desk_factory
+      recovery_desk = agent_recovery_desk_factory&.call(workspace: workspace, session_name: session_name,
+        session_monitor: monitor, delivery_lock: delivery_lock, event_log: event_log,
+        restarting: restarting,
+        claim_restart: ->(pane_id) { registry.claim_for_recovery(pane_id) },
+        release_restart: ->(pane_id, token) { registry.release(pane_id, token) },
+        rebind_queue: ->(pane_id, agent_pid) { PromptQueueStore.new(path: queue_path).rebind_agent(pane_id, agent_pid: agent_pid) })
+      # A recovery can hold a quiet pane whose agent is stopped, so a follow-up waits for it as for a restart.
+      handoff_watcher = handoff_watcher_factory.call(workspace: workspace, session_name: session_name,
+        session_monitor: monitor, delivery_lock: delivery_lock, event_log: event_log,
+        restarting: ->(pane_id) { restarting.call(pane_id) || recovering.call(pane_id) })
+      hook_fanout = HookFanout.new(workspace: workspace, monitor: monitor, hook_log: hook_event_log, handoff_watcher: handoff_watcher,
+        nudger: workflow_nudger, owner_report: spine_owner_report, desks: [queue_desk, recovery_desk], clock: clock, logger: logger)
+      AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner, restart_desk: restart_desk,
+        plan_progress_watcher: plan_progress_watcher, spine_owner_report: spine_owner_report, spine_watcher: spine_watcher,
+        status_desk: status_desk, queue_desk: queue_desk, recovery_desk: recovery_desk, handoff_watcher: handoff_watcher,
+        pipeline_desk: pipeline_desk, hook_fanout: hook_fanout).freeze
+    end
+  end
+
+  # Builds the agent daemon over its parts builder: its socket server, the router of each workspace it serves
+  # and the Claude pane lookup a coordinator command with no pipeline goes to. `build_cli` calls it, and the
+  # daemon specs build theirs through it.
+  #
+  # @param config [Workspace::Config] path configuration
+  # @param tmux [Workspace::Tmux] tmux session operations
+  # @param pipeline_config [Workspace::PipelineConfig] per-project pipeline configuration, checked at startup
+  # @param parts [#call] the per-workspace builder {.build_agentd_parts} returns
+  # @param agent_labels [Workspace::AgentLabels, nil] lets the Claude pane search match the agent label
+  # @param agent_commands [Workspace::AgentCommands, nil] the program names that count as an agent in the Claude
+  #   pane search; nil knows only the providers' executables
+  # @param restart_registry [Workspace::RestartRegistry] the panes being restarted
+  # @param signal_trapper [#trap] receives the SIGTERM/SIGINT handler registration
+  # @param socket_poll_interval [Numeric] seconds between the socket watcher's passes
+  # @param workflow_tick_passes [Integer] the watcher ticks the workflow nudger every this many passes
+  # @param current_name [String, nil] the workspace served before {Commands::Agent#call} starts ({Commands::Agent#prepare})
+  # @param event_log [Workspace::EventLog, nil] records the daemon's start and stop
+  # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes the workspace's workflow runs on a timer
+  # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace before the socket is claimed
+  # @param logger [Workspace::Logger] debug logger
+  # @param output [IO] output stream for user-facing messages
+  # @param error_output [IO] error output stream for errors
+  # @return [Workspace::Commands::Agent]
+  def self.build_agent_daemon(config:, tmux:, pipeline_config:, parts:, agent_labels: nil, agent_commands: nil,
+    restart_registry: RestartRegistry.new, signal_trapper: Signal, socket_poll_interval: AgentdSocketServer::POLL_INTERVAL,
+    workflow_tick_passes: AgentdSocketServer::TICK_PASSES, current_name: nil, event_log: nil, workflow_nudger: nil,
+    name_migration: nil, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
+    socket_server = AgentdSocketServer.new(poll_interval: socket_poll_interval, tick_passes: workflow_tick_passes,
+      signal_trapper: signal_trapper, logger: logger, output: output, error_output: error_output)
+    router_for = ->(workspace, handlers) { AgentdRouter.new(workspace: workspace, handlers: handlers, logger: logger) }
+    claude_pane = lambda do |workspace, session_name|
+      TmuxPane.new("Claude Code", tmux: tmux, agent_labels: agent_labels, detector: agent_commands&.detector(workspace)).target(session_name)
+    end
+    agent = Commands::Agent.new(config: config, tmux: tmux, pipeline_config: pipeline_config, parts: parts,
+      socket_server: socket_server, router_for: router_for, claude_pane: claude_pane, restart_registry: restart_registry,
+      event_log: event_log, workflow_nudger: workflow_nudger, name_migration: name_migration, logger: logger,
+      output: output, error_output: error_output)
+    agent.prepare(current_name) if current_name
+    agent
+  end
+
   # Assembles the full dependency graph and returns a ready-to-run CLI instance.
   #
   # @param output [IO] output stream for user-facing messages
@@ -480,8 +770,10 @@ module Workspace
   # @param task_store [Workspace::TaskStore, nil] the task store `start`, `finish`, `kill` and `rename` share; nil builds the one over the state directory
   # @param skill_source [Workspace::SkillSource, nil] where skill links and the sweep schedule's program come from; nil builds one over the installation directory
   # @param workflow_source_runner [#call, nil] runs the `gh` calls of `workflow install`: `(argv, chdir:, timeout:)` answering `[stdout, stderr, success]`; nil runs the real one
+  # @param osascript [#call, nil] runs the AppleScript `ITerm` and `WindowManager` send: `(script)` answering an `OsascriptRunner::Result`; nil runs the real `osascript`
+  # @param ui_osascript [#call, nil] runs the JXA script of `ui status`, the same way; nil runs the real `osascript -l JavaScript`
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil, osascript: nil, ui_osascript: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -495,7 +787,7 @@ module Workspace
     config_resolver = ConfigResolver.new(project_settings: project_settings)
     event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
     state = State.new(config: config, event_log: event_log, logger: logger)
-    osascript = OsascriptRunner.new
+    osascript ||= OsascriptRunner.new
     iterm = ITerm.new(config: config, output: output, logger: logger, osascript: osascript)
     window_manager = WindowManager.new(config: config, logger: logger, osascript: osascript)
     git = Git.new(output: output, input: input, logger: logger)
@@ -655,7 +947,7 @@ module Workspace
     capabilities_command = Commands::Capabilities.new(config: config, output: output)
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
       process_tree: ProcessTree.new(logger: logger), output: output)
-    ui_app_probe = UiAppProbe.new(osascript: OsascriptRunner.new(command: ["osascript", "-l", "JavaScript"]))
+    ui_app_probe = UiAppProbe.new(osascript: ui_osascript || OsascriptRunner.new(command: ["osascript", "-l", "JavaScript"]))
     ui_command = Commands::Ui.new(output: output, notes: notes_command, app_probe: ui_app_probe)
     workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
     library_command = Commands::Library.new(library: library, output: output, input: input, event_log: event_log,
@@ -674,7 +966,7 @@ module Workspace
       lineage: lineage, error_output: error_output)
     # Taken under a run's lock, so the inbox's flock is inside it. Nothing takes them the other way round.
     workflow_inbox_for = ->(workspace) { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) }
-    workflow_engine = WorkflowEngine.new(
+    workflow_engine = build_workflow_engine(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
       composer: instruction_composer,
@@ -740,7 +1032,7 @@ module Workspace
       stats: WorkflowStats.new(store: workflow_store, loader: workflow_run_loader),
       compare: WorkflowCompare.new(loader: workflow_run_loader),
       step_check: WorkflowStepCheck.new(engine: workflow_engine, checker: workflow_checker),
-      simulator: WorkflowSimulator.new(engine_factory: ->(**parts) { WorkflowEngine.new(**parts) }),
+      simulator: WorkflowSimulator.new(engine_factory: ->(**parts) { build_workflow_engine(**parts) }),
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,
@@ -897,32 +1189,39 @@ module Workspace
       agent_commands: agent_commands, alert_config: alert_config, agentd_config: agentd_config,
       lock_reaper: lock_reaper, ps_timeout: ps_timeout, event_log: event_log, context_reader: context_reader,
       label_reader: TranscriptLabel.new, task_store: task_store, scan_slots: scan_slots)
-    agent_command = Commands::Agent.new(
-      config: config,
+    notes_dir_of = ->(ws) { notes_command.info(name: ws)["dir"] }
+    agentd_parts = build_agentd_parts(
       tmux: tmux,
-      agent_labels: agent_labels,
-      agent_commands: agent_commands,
+      config: config,
       work_coordinator_client: work_coordinator_client,
       pipeline_config: pipeline_config,
       session_monitor_factory: session_monitor_builder,
       event_log: event_log,
       context_reader: context_reader,
-      workflow_nudger: workflow_nudger,
-      name_migration: name_migration,
       agent_recovery_desk_factory: agent_recovery_desk_factory,
-      restart_registry: RestartRegistry.new,
       transcript_summary: TranscriptSummary.new,
       idle_prompt_check: IdlePromptCheck.new,
       pane_bindings: pane_bindings,
+      plan_paused_for: ->(workspace) { PlanPaused.new(workspace: workspace, dir_resolver: notes_dir_of) },
       plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
-      spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
-      handoff_watcher_factory: ->(workspace:, session_monitor:, session_name:, **rest) {
-        HandoffWatcher.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor, logger: logger,
-          plan_paused: PlanPaused.new(workspace: workspace, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }),
-          typer: PromptTyper.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_monitor: session_monitor, logger: logger), **rest)
-      },
-      spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
+      spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: notes_dir_of, event_log: event_log, logger: logger) },
+      spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: notes_dir_of, event_log: event_log, logger: logger) },
       hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
+      workflow_nudger: workflow_nudger,
+      logger: logger,
+      error_output: error_output
+    )
+    agent_command = build_agent_daemon(
+      config: config,
+      tmux: tmux,
+      agent_labels: agent_labels,
+      agent_commands: agent_commands,
+      pipeline_config: pipeline_config,
+      parts: agentd_parts,
+      event_log: event_log,
+      workflow_nudger: workflow_nudger,
+      name_migration: name_migration,
+      restart_registry: RestartRegistry.new,
       logger: logger,
       output: output,
       error_output: error_output
@@ -949,7 +1248,33 @@ module Workspace
       inbox_store_factory: inbox_store_factory, session_ledger: session_ledger, pane_bindings: pane_bindings, event_log: event_log,
       project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) }, error_output: error_output)
 
+    common = CLI::Common.new
+    working_dir = Dir.pwd
+    names = CLI::Names.new(project_config: project_config, project_detector: project_detector, lineage: lineage, working_dir: working_dir, workspace_name: workspace_name)
+    launcher = CLI::Launcher.new(project_config: project_config, launch_command: launch_command, launch_mode: launch_mode, state: state, project_settings: project_settings,
+      hook_runner: hook_runner, common: common, working_dir: working_dir, library: library, instruction_composer: instruction_composer, name_migration: name_migration)
+    workflow_family = CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: workflow_start_command, workflow_project: workflow_project,
+      status_scope: status_scope, config: config, project_config: project_config, project_detector: project_detector, git: git, launch_mode: launch_mode,
+      common: common, names: names, input: input, working_dir: working_dir)
+    agent_client = AgentMessageClient.new(config: config)
+    agent_run_family = CLI::AgentRun.new(config: config, agent_client: agent_client, restart_agent_command: restart_agent_command,
+      send_command: send_command, prompt_queue_command: prompt_queue_command, handoff_command: handoff_command,
+      project_detector: project_detector, common: common, names: names, working_dir: working_dir)
+    agent_family = CLI::Agent.new(agent_command: agent_command, ensure_agent_command: ensure_agent_command, daemon_command: daemon_command,
+      sessions_command: sessions_command, review_command: review_command, agent_status_command: agent_status_command,
+      agent_executables_command: agent_executables_command, agent_run: ->(args, invocation) { agent_run_family.prompt(args, invocation) },
+      project_detector: project_detector, common: common, names: names, working_dir: working_dir)
+    pipeline_family = CLI::Pipeline.new(config: config, agent_client: agent_client, common: common, names: names)
+    plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,
+      spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,
+      status_scope: status_scope, project_detector: project_detector, launcher: launcher, common: common, names: names, working_dir: working_dir)
+
     CLI.new(
+      common: common,
+      names: names,
+      launcher: launcher,
+      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family},
+      working_dir: working_dir,
       config: config,
       state: state,
       project_config: project_config,
@@ -959,8 +1284,6 @@ module Workspace
       project_settings: project_settings,
       hook_runner: hook_runner,
       project_detector: project_detector,
-      status_scope: status_scope,
-      lineage: lineage,
       workspace_name: workspace_name,
       launch_command: launch_command,
       kill_command: kill_command,
@@ -990,14 +1313,8 @@ module Workspace
       parent_command: parent_command,
       notes_command: notes_command,
       notes_setup: notes_setup,
-      plan_command: plan_command,
-      plan_dispatch_command: plan_dispatch_command,
-      plan_task_command: plan_task_command,
       ticket_command: ticket_command,
       skills_command: skills_command,
-      spine_command: spine_command,
-      spine_init_command: spine_init_command,
-      spine_start_command: spine_start_command,
       pull_request_command: pull_request_command,
       rebase_command: rebase_command,
       push_command: push_command,
@@ -1005,26 +1322,19 @@ module Workspace
       promote_command: promote_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,
-      daemon_command: daemon_command,
       ui_command: ui_command,
       binding_command: binding_command,
       library_command: library_command,
       library: library,
       instructions_command: instructions_command,
       instruction_composer: instruction_composer,
-      workflow_command: workflow_command,
       workflow_start_command: workflow_start_command,
       go_command: go_command,
-      workflow_project: workflow_project,
-      review_command: review_command,
       restore_command: restore_command,
       snapshot_command: snapshot_command,
-      goal_command: goal_command,
       events_command: events_command,
       project_actions_command: project_actions_command,
       groups_command: groups_command,
-      agent_command: agent_command,
-      sessions_command: sessions_command,
       session_event_command: session_event_command,
       hooks_command: hooks_command,
       config_command: config_command,
@@ -1036,14 +1346,7 @@ module Workspace
       launch_mode: launch_mode,
       liveness: Liveness.new(tmux: tmux),
       window_liveness: WindowLiveness.new(window_manager: window_manager),
-      restart_agent_command: restart_agent_command,
-      agent_status_command: agent_status_command,
-      agent_executables_command: agent_executables_command,
-      send_command: send_command,
-      prompt_queue_command: prompt_queue_command,
-      ensure_agent_command: ensure_agent_command,
       name_migration: name_migration,
-      handoff_command: handoff_command,
       exit_handler: exit_handler,
       logger: logger,
       output: output,

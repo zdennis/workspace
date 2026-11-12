@@ -44,13 +44,6 @@ module Workspace
     # @return [Hash{String=>Object}] the frozen Hash this run holds, as the run file has it
     attr_reader :to_h
 
-    # A deep, unfrozen copy of {#to_h}, for code that still changes a run Hash in place.
-    #
-    # @return [Hash{String=>Object}]
-    def to_mutable_h
-      self.class.deep_thaw(to_h)
-    end
-
     # An unfrozen deep copy of a parsed value, the counterpart of {.deep_freeze}.
     #
     # @param value [Object] a parsed JSON value
@@ -63,6 +56,9 @@ module Workspace
       else value
       end
     end
+
+    # @return [Hash{String=>Object}] an unfrozen deep copy of {#to_h}, for code that still changes a run Hash in place
+    def thawed = self.class.deep_thaw(to_h)
 
     # @return [Hash{String=>Step}] each step by id, in the run's order; empty when the run has no steps
     attr_reader :steps
@@ -90,12 +86,13 @@ module Workspace
     # @return [WorkflowRun] this run with +attempt+ in place of the step's attempt with the same n, or appended
     #   when the step has none with that n (a retry's new attempt)
     def with_attempt(step_id, attempt)
-      hash = to_mutable_h
+      hash = thawed
       steps = hash["steps"].is_a?(Hash) ? hash["steps"] : (hash["steps"] = {})
       state = steps[step_id].is_a?(Hash) ? steps[step_id] : (steps[step_id] = {})
       list = state["attempts"].is_a?(Array) ? state["attempts"] : (state["attempts"] = [])
       index = list.index { |each| each.is_a?(Hash) && each["n"] == attempt.n }
-      index ? list[index] = attempt.to_mutable_h : list << attempt.to_mutable_h
+      copy = attempt.thawed
+      index ? list[index] = copy : list << copy
       self.class.new(hash)
     end
 
@@ -106,7 +103,7 @@ module Workspace
 
     # @return [WorkflowRun] this run with no park; a parked note moves to the pending context ({.resume_note})
     def drop_park
-      hash = to_mutable_h
+      hash = thawed
       note = (parked = hash.delete("parked")).is_a?(Hash) ? parked["note"] : nil
       hash["pending_context"] << self.class.resume_note(note) if note
       self.class.new(hash)
@@ -217,6 +214,9 @@ module Workspace
       # @return [Hash{String=>Object}] the frozen Hash this attempt holds
       attr_reader :to_h
 
+      # @return [Hash{String=>Object}] an unfrozen deep copy of {#to_h}
+      def thawed = WorkflowRun.deep_thaw(to_h)
+
       # @param hash [Hash{String=>Object}, nil]
       def initialize(hash)
         @to_h = WorkflowRun.deep_freeze(hash.is_a?(Hash) ? hash : {})
@@ -225,11 +225,6 @@ module Workspace
 
       KEYS.each do |key|
         define_method(key) { to_h[key] }
-      end
-
-      # @return [Hash{String=>Object}] a deep, unfrozen copy of {#to_h}
-      def to_mutable_h
-        WorkflowRun.deep_thaw(to_h)
       end
 
       # @return [Boolean]

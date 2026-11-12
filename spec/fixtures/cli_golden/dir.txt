@@ -1,0 +1,41 @@
+### workspace dir --help
+--- exit 0
+--- stdout
+Usage: workspace dir [--name WS] [project]
+
+Print the root directory of a workspace project. With no project, the
+workspace the current directory is in (not_in_workspace outside any).
+
+        --name NAME                  The workspace (default: the one detected from the current directory)
+
+Examples:
+  workspace dir    # the root of the workspace you are in
+  workspace dir api    # where the api project lives, from anywhere
+  workspace dir api | pbcopy    # put its path on the clipboard
+  workspace dir --name api.worktree-login    # the checkout of one worktree workspace
+--- stderr
+--- end
+### workspace dir --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace dir [--name WS] [project]"],"description":"Print the root directory of a workspace project. With no project, the\nworkspace the current directory is in (not_in_workspace outside any).\n\n        --name NAME                  The workspace (default: the one detected from the current directory)","options":[],"examples":[{"command":"workspace dir","scenario":"the root of the workspace you are in"},{"command":"workspace dir api","scenario":"where the api project lives, from anywhere"},{"command":"workspace dir api | pbcopy","scenario":"put its path on the clipboard"},{"command":"workspace dir --name api.worktree-login","scenario":"the checkout of one worktree workspace"}]}
+--- stderr
+--- end
+### workspace dir --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace dir --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace dir
+--- exit 1
+--- stdout
+--- stderr
+Error: No workspace found for $CWD. Run from inside a workspace or pass --name.
+--- end

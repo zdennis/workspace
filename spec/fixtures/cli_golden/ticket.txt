@@ -1,0 +1,144 @@
+### workspace ticket --help
+--- exit 0
+--- stdout
+Usage: workspace ticket show REF [--name WORKSPACE] [--json]
+       workspace ticket list [--assigned|--recent] [--source gh|jira] [--limit N] [--name WORKSPACE] [--json]
+
+show: read a ticket the way 'workspace start' reads its argument, and say whether a worktree for
+it already exists. REF is a JIRA key or URL, a pull request URL or #n, a GitHub issue URL,
+or a branch name. Title and body come from gh (pull requests and issues) or jira (JIRA keys);
+a plain branch has none. Writes nothing, creates nothing, fetches nothing from git.
+
+list: tickets to pick from, newest change first: open GitHub issues and pull requests (gh) and
+JIRA issues (jira), assigned to you (the default) or changed lately. A tool that is missing, slow
+or signed out is a warning, and the other still answers. Each row says whether a workspace exists.
+
+        --name NAME                  Look in this workspace's project instead of the one detected from the current directory (outside any workspace, the git repository of the current directory)
+        --assigned                   list: open tickets assigned to you (the default)
+        --recent                     list: open tickets changed lately, whoever they are assigned to
+        --source SOURCE              list: ask only gh or jira (repeatable; default both)
+        --limit N                    list: at most N tickets, 1 to 100 (default 20)
+        --json                       Print one JSON document (see docs/README.ticket.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace ticket show PROJ-123    # read a JIRA ticket's title and body before starting work, and see whether a worktree for it exists
+  workspace ticket show https://github.com/acme/api/pull/41 --json    # a pull request's title, body and branch as one JSON document, for a script
+  workspace ticket list    # pick what to work on next: your open tickets and pull requests, marked when a workspace exists
+  workspace ticket list --recent    # see what changed lately, whoever it is assigned to
+--- stderr
+--- end
+### workspace ticket --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ticket show REF [--name WORKSPACE] [--json]","workspace ticket list [--assigned|--recent] [--source gh|jira] [--limit N] [--name WORKSPACE] [--json]"],"description":"show: read a ticket the way 'workspace start' reads its argument, and say whether a worktree for\nit already exists. REF is a JIRA key or URL, a pull request URL or #n, a GitHub issue URL,\nor a branch name. Title and body come from gh (pull requests and issues) or jira (JIRA keys);\na plain branch has none. Writes nothing, creates nothing, fetches nothing from git.\n\nlist: tickets to pick from, newest change first: open GitHub issues and pull requests (gh) and\nJIRA issues (jira), assigned to you (the default) or changed lately. A tool that is missing, slow\nor signed out is a warning, and the other still answers. Each row says whether a workspace exists.\n\n        --name NAME                  Look in this workspace's project instead of the one detected from the current directory (outside any workspace, the git repository of the current directory)\n        --assigned                   list: open tickets assigned to you (the default)\n        --recent                     list: open tickets changed lately, whoever they are assigned to\n        --source SOURCE              list: ask only gh or jira (repeatable; default both)\n        --limit N                    list: at most N tickets, 1 to 100 (default 20)\n        --json                       Print one JSON document (see docs/README.ticket.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace ticket show PROJ-123","scenario":"read a JIRA ticket's title and body before starting work, and see whether a worktree for it exists"},{"command":"workspace ticket show https://github.com/acme/api/pull/41 --json","scenario":"a pull request's title, body and branch as one JSON document, for a script"},{"command":"workspace ticket list","scenario":"pick what to work on next: your open tickets and pull requests, marked when a workspace exists"},{"command":"workspace ticket list --recent","scenario":"see what changed lately, whoever it is assigned to"}]}
+--- stderr
+--- end
+### workspace ticket show --help
+--- exit 0
+--- stdout
+Usage: workspace ticket show REF [--name WORKSPACE] [--json]
+
+Read a ticket and say whether a worktree for it exists.
+
+Reads the ticket the way 'workspace start' reads its argument. REF is a JIRA key or URL, a pull
+request URL or #n, a GitHub issue URL, or a branch name. Title and body come from gh (pull requests
+and issues) or jira (JIRA keys); a plain branch has none. Writes nothing, creates nothing, fetches
+nothing from git. A ticket that does not exist, or a gh or jira that is missing, slow or signed out,
+exits 1 with an error; --json prints the code (ticket_not_found, ticket_source_unavailable).
+
+Options:
+    --name NAME                  Look in this workspace's project instead of the one detected from the current directory
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace ticket show PROJ-123    # read a JIRA ticket's title and body before starting work, and see whether a worktree for it exists
+  workspace ticket show https://github.com/acme/api/pull/41 --json    # a pull request's title, body and branch as one JSON document, for a script
+  workspace ticket show '#41'    # a pull request or issue number in this repository (quote it: zsh starts a comment at an unquoted #)
+  workspace ticket show feature/login --name api    # a branch has no title or body; the answer is whether a workspace exists, looked up in the project of workspace api
+--- stderr
+--- end
+### workspace ticket show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ticket show REF [--name WORKSPACE] [--json]"],"description":"Read a ticket and say whether a worktree for it exists.\n\nReads the ticket the way 'workspace start' reads its argument. REF is a JIRA key or URL, a pull\nrequest URL or #n, a GitHub issue URL, or a branch name. Title and body come from gh (pull requests\nand issues) or jira (JIRA keys); a plain branch has none. Writes nothing, creates nothing, fetches\nnothing from git. A ticket that does not exist, or a gh or jira that is missing, slow or signed out,\nexits 1 with an error; --json prints the code (ticket_not_found, ticket_source_unavailable).","options":[{"flags":"--name NAME","description":"Look in this workspace's project instead of the one detected from the current directory"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ticket show PROJ-123","scenario":"read a JIRA ticket's title and body before starting work, and see whether a worktree for it exists"},{"command":"workspace ticket show https://github.com/acme/api/pull/41 --json","scenario":"a pull request's title, body and branch as one JSON document, for a script"},{"command":"workspace ticket show '#41'","scenario":"a pull request or issue number in this repository (quote it: zsh starts a comment at an unquoted #)"},{"command":"workspace ticket show feature/login --name api","scenario":"a branch has no title or body; the answer is whether a workspace exists, looked up in the project of workspace api"}]}
+--- stderr
+--- end
+### workspace ticket list --help
+--- exit 0
+--- stdout
+Usage: workspace ticket list [--assigned|--recent] [--source gh|jira] [--limit N] [--name WORKSPACE] [--json]
+
+List tickets to pick from, newest change first.
+
+Open GitHub issues and pull requests (gh) and JIRA issues (jira), assigned to you (the default) or
+changed lately. A tool that is missing, slow or signed out is a warning, and the other still answers.
+Each row says whether a workspace exists.
+
+Options:
+    --name NAME                  Look in this workspace's project instead of the one detected from the current directory
+    --assigned                   Open tickets assigned to you (the default)
+    --recent                     Open tickets changed lately, whoever they are assigned to
+    --source SOURCE              Ask only gh or jira (repeatable; default both)
+    --limit N                    At most N tickets, 1 to 100 (default 20)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace ticket list    # pick what to work on next: your open tickets and pull requests, marked when a workspace exists
+  workspace ticket list --recent    # see what changed lately, whoever it is assigned to
+  workspace ticket list --source gh --limit 10    # the list is long or JIRA is slow: look only at GitHub and keep the 10 with the newest change
+  workspace ticket list --json    # for a script: each ticket's ref (give it to `workspace start`) and a warning for each source that failed
+--- stderr
+--- end
+### workspace ticket list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ticket list [--assigned|--recent] [--source gh|jira] [--limit N] [--name WORKSPACE] [--json]"],"description":"List tickets to pick from, newest change first.\n\nOpen GitHub issues and pull requests (gh) and JIRA issues (jira), assigned to you (the default) or\nchanged lately. A tool that is missing, slow or signed out is a warning, and the other still answers.\nEach row says whether a workspace exists.","options":[{"flags":"--name NAME","description":"Look in this workspace's project instead of the one detected from the current directory"},{"flags":"--assigned","description":"Open tickets assigned to you (the default)"},{"flags":"--recent","description":"Open tickets changed lately, whoever they are assigned to"},{"flags":"--source SOURCE","description":"Ask only gh or jira (repeatable; default both)"},{"flags":"--limit N","description":"At most N tickets, 1 to 100 (default 20)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ticket list","scenario":"pick what to work on next: your open tickets and pull requests, marked when a workspace exists"},{"command":"workspace ticket list --recent","scenario":"see what changed lately, whoever it is assigned to"},{"command":"workspace ticket list --source gh --limit 10","scenario":"the list is long or JIRA is slow: look only at GitHub and keep the 10 with the newest change"},{"command":"workspace ticket list --json","scenario":"for a script: each ticket's ref (give it to `workspace start`) and a warning for each source that failed"}]}
+--- stderr
+--- end
+### workspace ticket --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace ticket --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace ticket
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: show or list.
+
+Usage: workspace ticket show REF [--name WORKSPACE] [--json]
+       workspace ticket list [--assigned|--recent] [--source gh|jira] [--limit N] [--name WORKSPACE] [--json]
+
+show: read a ticket the way 'workspace start' reads its argument, and say whether a worktree for
+it already exists. REF is a JIRA key or URL, a pull request URL or #n, a GitHub issue URL,
+or a branch name. Title and body come from gh (pull requests and issues) or jira (JIRA keys);
+a plain branch has none. Writes nothing, creates nothing, fetches nothing from git.
+
+list: tickets to pick from, newest change first: open GitHub issues and pull requests (gh) and
+JIRA issues (jira), assigned to you (the default) or changed lately. A tool that is missing, slow
+or signed out is a warning, and the other still answers. Each row says whether a workspace exists.
+
+        --name NAME                  Look in this workspace's project instead of the one detected from the current directory (outside any workspace, the git repository of the current directory)
+        --assigned                   list: open tickets assigned to you (the default)
+        --recent                     list: open tickets changed lately, whoever they are assigned to
+        --source SOURCE              list: ask only gh or jira (repeatable; default both)
+        --limit N                    list: at most N tickets, 1 to 100 (default 20)
+        --json                       Print one JSON document (see docs/README.ticket.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace ticket show PROJ-123    # read a JIRA ticket's title and body before starting work, and see whether a worktree for it exists
+  workspace ticket show https://github.com/acme/api/pull/41 --json    # a pull request's title, body and branch as one JSON document, for a script
+  workspace ticket list    # pick what to work on next: your open tickets and pull requests, marked when a workspace exists
+  workspace ticket list --recent    # see what changed lately, whoever it is assigned to
+--- end

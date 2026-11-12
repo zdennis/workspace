@@ -1,0 +1,145 @@
+### workspace skills --help
+--- exit 0
+--- stdout
+Usage: workspace skills install [--install-all] [--dry-run] [--json] [--no-input]
+       workspace skills uninstall [--dry-run] [--json]
+
+Link the five workspace skills that ship with this tool into the skills directory of each
+coding agent on your machine, or remove those links. The skills teach an agent to use the
+`workspace` CLI.
+
+Subcommands:
+  install    Link the five workspace skills into your coding agents' skill directories
+  uninstall  Remove the links skills install made
+Run `workspace skills VERB --help` for a verb's options.
+
+        --install-all                install: every harness found, no question; clears recorded declines
+        --dry-run                    Print what would happen; write nothing
+        --json                       Print one JSON document (see docs/README.skills.md); questions go to stderr
+    -h, --help                       Show this help
+
+Examples:
+  workspace skills install    # first time on this machine: link the skills for the coding agents found, after asking which to include
+  workspace skills install --install-all --dry-run    # see which links would be made and which paths would be refused for every coding agent found, asking nothing and writing nothing
+  workspace skills uninstall --dry-run    # see which links would go, and which paths are not ours and stay, before removing any
+  workspace skills uninstall    # stop offering the skills to your coding agents, such as before removing this tool
+--- stderr
+--- end
+### workspace skills --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace skills install [--install-all] [--dry-run] [--json] [--no-input]","workspace skills uninstall [--dry-run] [--json]"],"description":"Link the five workspace skills that ship with this tool into the skills directory of each\ncoding agent on your machine, or remove those links. The skills teach an agent to use the\n`workspace` CLI.","options":[],"examples":[{"command":"workspace skills install","scenario":"first time on this machine: link the skills for the coding agents found, after asking which to include"},{"command":"workspace skills install --install-all --dry-run","scenario":"see which links would be made and which paths would be refused for every coding agent found, asking nothing and writing nothing"},{"command":"workspace skills uninstall --dry-run","scenario":"see which links would go, and which paths are not ours and stay, before removing any"},{"command":"workspace skills uninstall","scenario":"stop offering the skills to your coding agents, such as before removing this tool"}],"sections":[{"heading":"Subcommands","text":"install    Link the five workspace skills into your coding agents' skill directories\n  uninstall  Remove the links skills install made\nRun `workspace skills VERB --help` for a verb's options.\n\n        --install-all                install: every harness found, no question; clears recorded declines\n        --dry-run                    Print what would happen; write nothing\n        --json                       Print one JSON document (see docs/README.skills.md); questions go to stderr\n    -h, --help                       Show this help"}]}
+--- stderr
+--- end
+### workspace skills install --help
+--- exit 0
+--- stdout
+Usage: workspace skills install [--install-all] [--dry-run] [--json] [--no-input]
+
+Link the five workspace skills into your coding agents' skill directories.
+
+Links the five workspace skills (workspace, workspace-agent-run, workspace-inbox, workspace-lifecycle,
+workspace-workflow), each as a link to its whole directory, into the skills directory of the coding
+agents found on this machine (Claude Code ~/.claude/skills, Codex ~/.codex/skills, Pi ~/.pi/agent/skills, OpenCode
+~/.config/opencode/skills) and into ~/.agents/skills when it exists.
+
+It asks once which of the harnesses found to install for; the ones left out are remembered and not
+asked again (end of input installs nothing and records nothing). All five skills are linked in a directory, or none: a path
+already there that is not our link (a real directory with other content, a file, someone else's link)
+is never replaced, it is refused and the mv to clear it is printed. A real directory identical to ours
+is moved to the state directory's skill-backups and linked. A re-run refreshes links and says what
+changed.
+
+From a linked git worktree it refuses (skill_source_worktree): run it from the main checkout or a
+Homebrew install. Exit status: 0 done or already current; 1 something was refused or failed, no harness
+found, or the install has no skills; a usage error exits 1 too. Without --install-all it fails with confirmation_required
+under --no-input (or WORKSPACE_NO_INPUT) when it would have to ask.
+
+Options:
+    --install-all                Every harness found, no question; clears recorded declines
+    --dry-run                    Print what would happen; write nothing
+    --json                       Print one JSON document (see docs/README.skills.md); questions go to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace skills install    # first time on this machine: link the skills for the coding agents found, after asking which to include
+  workspace skills install --install-all --dry-run    # see which links would be made and which paths would be refused for every coding agent found, asking nothing and writing nothing
+  workspace skills install --install-all    # after an update, or to take back an agent you left out before: all of them, no question
+  workspace skills install --install-all --no-input --json    # from a script that cannot answer: no question, one JSON document, exit 1 when a path was refused
+--- stderr
+--- end
+### workspace skills install --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace skills install [--install-all] [--dry-run] [--json] [--no-input]"],"description":"Link the five workspace skills into your coding agents' skill directories.\n\nLinks the five workspace skills (workspace, workspace-agent-run, workspace-inbox, workspace-lifecycle,\nworkspace-workflow), each as a link to its whole directory, into the skills directory of the coding\nagents found on this machine (Claude Code ~/.claude/skills, Codex ~/.codex/skills, Pi ~/.pi/agent/skills, OpenCode\n~/.config/opencode/skills) and into ~/.agents/skills when it exists.\n\nIt asks once which of the harnesses found to install for; the ones left out are remembered and not\nasked again (end of input installs nothing and records nothing). All five skills are linked in a directory, or none: a path\nalready there that is not our link (a real directory with other content, a file, someone else's link)\nis never replaced, it is refused and the mv to clear it is printed. A real directory identical to ours\nis moved to the state directory's skill-backups and linked. A re-run refreshes links and says what\nchanged.\n\nFrom a linked git worktree it refuses (skill_source_worktree): run it from the main checkout or a\nHomebrew install. Exit status: 0 done or already current; 1 something was refused or failed, no harness\nfound, or the install has no skills; a usage error exits 1 too. Without --install-all it fails with confirmation_required\nunder --no-input (or WORKSPACE_NO_INPUT) when it would have to ask.","options":[{"flags":"--install-all","description":"Every harness found, no question; clears recorded declines"},{"flags":"--dry-run","description":"Print what would happen; write nothing"},{"flags":"--json","description":"Print one JSON document (see docs/README.skills.md); questions go to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace skills install","scenario":"first time on this machine: link the skills for the coding agents found, after asking which to include"},{"command":"workspace skills install --install-all --dry-run","scenario":"see which links would be made and which paths would be refused for every coding agent found, asking nothing and writing nothing"},{"command":"workspace skills install --install-all","scenario":"after an update, or to take back an agent you left out before: all of them, no question"},{"command":"workspace skills install --install-all --no-input --json","scenario":"from a script that cannot answer: no question, one JSON document, exit 1 when a path was refused"}]}
+--- stderr
+--- end
+### workspace skills uninstall --help
+--- exit 0
+--- stdout
+Usage: workspace skills uninstall [--dry-run] [--json]
+
+Remove the links skills install made.
+
+Removes our links (one of the five names, pointing at a lib/skills/<name> of this tool, dangling ones
+too) from every known skills directory. Real directories and other links stay and are reported. It
+records no decline, works from a linked worktree and never asks.
+
+Options:
+    --dry-run                    Print what would happen; write nothing
+    --json                       Print one JSON document (see docs/README.skills.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace skills uninstall --dry-run    # see which links would go, and which paths are not ours and stay, before removing any
+  workspace skills uninstall    # stop offering the skills to your coding agents, such as before removing this tool
+  workspace skills uninstall --json    # for a script: each directory's links and what was left, as one JSON document
+--- stderr
+--- end
+### workspace skills uninstall --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace skills uninstall [--dry-run] [--json]"],"description":"Remove the links skills install made.\n\nRemoves our links (one of the five names, pointing at a lib/skills/<name> of this tool, dangling ones\ntoo) from every known skills directory. Real directories and other links stay and are reported. It\nrecords no decline, works from a linked worktree and never asks.","options":[{"flags":"--dry-run","description":"Print what would happen; write nothing"},{"flags":"--json","description":"Print one JSON document (see docs/README.skills.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace skills uninstall --dry-run","scenario":"see which links would go, and which paths are not ours and stay, before removing any"},{"command":"workspace skills uninstall","scenario":"stop offering the skills to your coding agents, such as before removing this tool"},{"command":"workspace skills uninstall --json","scenario":"for a script: each directory's links and what was left, as one JSON document"}]}
+--- stderr
+--- end
+### workspace skills --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace skills --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace skills
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: install or uninstall.
+
+Usage: workspace skills install [--install-all] [--dry-run] [--json] [--no-input]
+       workspace skills uninstall [--dry-run] [--json]
+
+Link the five workspace skills that ship with this tool into the skills directory of each
+coding agent on your machine, or remove those links. The skills teach an agent to use the
+`workspace` CLI.
+
+Subcommands:
+  install    Link the five workspace skills into your coding agents' skill directories
+  uninstall  Remove the links skills install made
+Run `workspace skills VERB --help` for a verb's options.
+
+        --install-all                install: every harness found, no question; clears recorded declines
+        --dry-run                    Print what would happen; write nothing
+        --json                       Print one JSON document (see docs/README.skills.md); questions go to stderr
+    -h, --help                       Show this help
+
+Examples:
+  workspace skills install    # first time on this machine: link the skills for the coding agents found, after asking which to include
+  workspace skills install --install-all --dry-run    # see which links would be made and which paths would be refused for every coding agent found, asking nothing and writing nothing
+  workspace skills uninstall --dry-run    # see which links would go, and which paths are not ours and stay, before removing any
+  workspace skills uninstall    # stop offering the skills to your coding agents, such as before removing this tool
+--- end

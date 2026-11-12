@@ -1,0 +1,17 @@
+### workspace list-projects --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace list-projects --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace list-projects
+--- exit 0
+--- stdout
+--- stderr
+--- end

@@ -1,0 +1,45 @@
+### workspace parent --help
+--- exit 0
+--- stdout
+Usage: workspace parent [NAME] [--name NAME] [--path] [--json | --json-envelope]
+
+Print the parent workspace of the current (or given) workspace.
+In a non-worktree workspace, prints its own name.
+
+        --name NAME                  Workspace to answer for instead of the current directory's (the same as NAME)
+        --path                       Print the parent's root directory instead of its name
+        --json                       Print name, path, git_common_dir, is_worktree, worktree as JSON
+        --json-envelope              Print the same under a "parent" key in the standard envelope (implies --json)
+
+Examples:
+  workspace parent    # the parent of the current directory's workspace
+  workspace parent app.worktree-login    # the parent of a named workspace
+  workspace parent --name app.worktree-login    # in a script, where the flag reads clearer than a bare name
+  workspace parent --path    # the parent's root directory
+  workspace parent --json    # name, path, git_common_dir, is_worktree, worktree
+--- stderr
+--- end
+### workspace parent --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace parent [NAME] [--name NAME] [--path] [--json | --json-envelope]"],"description":"Print the parent workspace of the current (or given) workspace.\nIn a non-worktree workspace, prints its own name.\n\n        --name NAME                  Workspace to answer for instead of the current directory's (the same as NAME)\n        --path                       Print the parent's root directory instead of its name\n        --json                       Print name, path, git_common_dir, is_worktree, worktree as JSON\n        --json-envelope              Print the same under a \"parent\" key in the standard envelope (implies --json)","options":[],"examples":[{"command":"workspace parent","scenario":"the parent of the current directory's workspace"},{"command":"workspace parent app.worktree-login","scenario":"the parent of a named workspace"},{"command":"workspace parent --name app.worktree-login","scenario":"in a script, where the flag reads clearer than a bare name"},{"command":"workspace parent --path","scenario":"the parent's root directory"},{"command":"workspace parent --json","scenario":"name, path, git_common_dir, is_worktree, worktree"}]}
+--- stderr
+--- end
+### workspace parent --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace parent --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace parent
+--- exit 0
+--- stdout
+cwd
+--- stderr
+--- end

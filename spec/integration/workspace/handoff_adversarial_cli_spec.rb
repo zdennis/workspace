@@ -54,7 +54,7 @@ RSpec.describe "workspace handoff adversarial CLI probes" do
     agent_command = overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new
     ask_command = overrides[:ask_command] || CLITestHelpers::FakeAskCommand.new
 
-    cli = Workspace::CLI.new(lineage: LineageSupport.lineage,
+    cli = CLITestHelpers.build_cli(lineage: LineageSupport.lineage,
       config: config,
       state: state,
       project_config: project_config,

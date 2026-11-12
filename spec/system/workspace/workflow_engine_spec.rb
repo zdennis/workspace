@@ -54,7 +54,7 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:gate_note) { Workspace::WorkflowGateNote.new(notes: notes) }
   let(:workspace_known) { ->(_name) { false } }
   subject(:engine) do
-    described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
+    Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
       commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
       env_stopper: ->(**args) { stopped << args }, workspace_known: workspace_known, event_log: event_log, task_store: task_store, clock: -> { now.first })
   end
@@ -112,7 +112,7 @@ RSpec.describe Workspace::WorkflowEngine do
   end
 
   def engine_with(**overrides)
-    described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
+    Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes, checker: checker,
       commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
       clock: -> { now.first }, **overrides)
   end
@@ -435,7 +435,7 @@ RSpec.describe Workspace::WorkflowEngine do
         engine.cancel("wr_1")
         {exit_code: 0, timed_out: false}
       end
-      slow = described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: cancelling,
+      slow = Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes, checker: cancelling,
         commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
 
       expect(slow.turn_ended("wr_1", pane: "%5")).to include("state" => "cancelled")
@@ -458,7 +458,7 @@ RSpec.describe Workspace::WorkflowEngine do
         engine.resume("wr_1", from: "build")
         {exit_code: 0, timed_out: false}
       end
-      moved = described_class.new(store: store, resources: resources, composer: composer, panes: panes, checker: slow,
+      moved = Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes, checker: slow,
         commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
 
       run = moved.turn_ended("wr_1", pane: "%5")

@@ -1,0 +1,122 @@
+### workspace goal --help
+--- exit 0
+--- stdout
+Usage: workspace goal show [REF] [--json]
+       workspace goal list [--all] [--json]
+
+show: where a goal is at each level (the goal, its journey stage, its workflow step, the agent's
+turn, the tool call), what it waits for and on whom, and the next expected event. A goal is a
+workspace. REF is a workspace name, a workflow run id, a task id, a ticket key or URL, or a branch;
+with none, the workspace of the current directory. Reads only: nothing is written and 'gh' is not run.
+
+list: one line per goal: workspace, state, stage, step, agent state.
+
+        --all                        list: include workspaces with no plan, run or spine (state none)
+        --json                       Print one JSON document (see docs/README.goal.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace goal show    # the goal of the workspace you are in
+  workspace goal show LAB-1 --json    # the goal for a ticket key, as JSON
+  workspace goal list    # one line per goal
+--- stderr
+--- end
+### workspace goal --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace goal show [REF] [--json]","workspace goal list [--all] [--json]"],"description":"show: where a goal is at each level (the goal, its journey stage, its workflow step, the agent's\nturn, the tool call), what it waits for and on whom, and the next expected event. A goal is a\nworkspace. REF is a workspace name, a workflow run id, a task id, a ticket key or URL, or a branch;\nwith none, the workspace of the current directory. Reads only: nothing is written and 'gh' is not run.\n\nlist: one line per goal: workspace, state, stage, step, agent state.\n\n        --all                        list: include workspaces with no plan, run or spine (state none)\n        --json                       Print one JSON document (see docs/README.goal.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace goal show","scenario":"the goal of the workspace you are in"},{"command":"workspace goal show LAB-1 --json","scenario":"the goal for a ticket key, as JSON"},{"command":"workspace goal list","scenario":"one line per goal"}]}
+--- stderr
+--- end
+### workspace goal show --help
+--- exit 0
+--- stdout
+Usage: workspace goal show [REF] [--json]
+
+Show where a goal is at each level and what it waits for.
+
+The levels are the goal, its journey stage, its workflow step, the agent's turn and the tool call;
+it also says on whom the goal waits and the next expected event. A goal is a workspace. REF is a
+workspace name, a workflow run id, a task id, a ticket key or URL, or a branch; with none, the
+workspace of the current directory. Reads only: nothing is written and 'gh' is not run.
+
+Options:
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace goal show    # where the goal of the workspace you are in is, level by level
+  workspace goal show my-app.worktree-fix-login    # the same for one workspace by name
+  workspace goal show LAB-1    # the goal for a ticket key (a branch, task id or run id works too)
+  workspace goal show --json    # one JSON document, for a script
+--- stderr
+--- end
+### workspace goal show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace goal show [REF] [--json]"],"description":"Show where a goal is at each level and what it waits for.\n\nThe levels are the goal, its journey stage, its workflow step, the agent's turn and the tool call;\nit also says on whom the goal waits and the next expected event. A goal is a workspace. REF is a\nworkspace name, a workflow run id, a task id, a ticket key or URL, or a branch; with none, the\nworkspace of the current directory. Reads only: nothing is written and 'gh' is not run.","options":[{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace goal show","scenario":"where the goal of the workspace you are in is, level by level"},{"command":"workspace goal show my-app.worktree-fix-login","scenario":"the same for one workspace by name"},{"command":"workspace goal show LAB-1","scenario":"the goal for a ticket key (a branch, task id or run id works too)"},{"command":"workspace goal show --json","scenario":"one JSON document, for a script"}]}
+--- stderr
+--- end
+### workspace goal list --help
+--- exit 0
+--- stdout
+Usage: workspace goal list [--all] [--json]
+
+List goals, one line each.
+
+Each line has the workspace, state, stage, step and agent state. It reads every workspace at once, so a state of
+stuck (an idle or timed-out run, a gone pane, a stalled plan) shows which goals need you.
+
+Options:
+    --all                        Include workspaces with no plan, run or spine (state none)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace goal list    # one line per goal
+  workspace goal list --all    # also the workspaces with no plan, run or spine (state none)
+  workspace goal list --json    # one JSON document, for a script
+--- stderr
+--- end
+### workspace goal list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace goal list [--all] [--json]"],"description":"List goals, one line each.\n\nEach line has the workspace, state, stage, step and agent state. It reads every workspace at once, so a state of\nstuck (an idle or timed-out run, a gone pane, a stalled plan) shows which goals need you.","options":[{"flags":"--all","description":"Include workspaces with no plan, run or spine (state none)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace goal list","scenario":"one line per goal"},{"command":"workspace goal list --all","scenario":"also the workspaces with no plan, run or spine (state none)"},{"command":"workspace goal list --json","scenario":"one JSON document, for a script"}]}
+--- stderr
+--- end
+### workspace goal --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace goal --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace goal
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: show or list.
+
+Usage: workspace goal show [REF] [--json]
+       workspace goal list [--all] [--json]
+
+show: where a goal is at each level (the goal, its journey stage, its workflow step, the agent's
+turn, the tool call), what it waits for and on whom, and the next expected event. A goal is a
+workspace. REF is a workspace name, a workflow run id, a task id, a ticket key or URL, or a branch;
+with none, the workspace of the current directory. Reads only: nothing is written and 'gh' is not run.
+
+list: one line per goal: workspace, state, stage, step, agent state.
+
+        --all                        list: include workspaces with no plan, run or spine (state none)
+        --json                       Print one JSON document (see docs/README.goal.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace goal show    # the goal of the workspace you are in
+  workspace goal show LAB-1 --json    # the goal for a ticket key, as JSON
+  workspace goal list    # one line per goal
+--- end

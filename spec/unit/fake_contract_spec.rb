@@ -176,4 +176,276 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::WorkflowGateNote, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe FakeSentinelPoller do
+    it "accepts every call Workspace::SentinelPoller accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SentinelPoller, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRestartMonitor do
+    it "accepts every call Workspace::SessionMonitor accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SessionMonitor, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingContextReader do
+    it "accepts every call Workspace::ContextReader accepts" do
+      expect(FakeContract.problems(described_class, Workspace::ContextReader, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRestartRegistry do
+    it "accepts every call Workspace::RestartRegistry accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RestartRegistry, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRestartRunner do
+    it "accepts every call Workspace::RestartRunner accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RestartRunner, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingPipelineConfig do
+    it "accepts every call Workspace::PipelineConfig accepts" do
+      expect(FakeContract.problems(described_class, Workspace::PipelineConfig, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingPipelineState do
+    it "accepts every call Workspace::PipelineState accepts" do
+      expect(FakeContract.problems(described_class, Workspace::PipelineState, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingCoordinatorClient do
+    it "accepts every call Workspace::WorkCoordinatorClient accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkCoordinatorClient, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingSentinelPoller do
+    it "accepts every call Workspace::SentinelPoller accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SentinelPoller, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingHookMonitor do
+    it "accepts every call SessionMonitor accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SessionMonitor, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingHookLog do
+    it "accepts every call HookEventLog accepts" do
+      expect(FakeContract.problems(described_class, Workspace::HookEventLog, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingHandoffWatcher do
+    it "accepts every call HandoffWatcher accepts" do
+      expect(FakeContract.problems(described_class, Workspace::HandoffWatcher, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingNudger do
+    it "accepts every call WorkflowNudger accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowNudger, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingOwnerReport do
+    it "accepts every call SpineOwnerReport accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SpineOwnerReport, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingHookDesk do
+    it "accepts every call PromptQueueDesk and AgentRecoveryDesk accept" do
+      expect(FakeContract.problems(described_class, Workspace::PromptQueueDesk, control: described_class::CONTROL_METHODS)).to be_empty
+      expect(FakeContract.problems(described_class, Workspace::AgentRecoveryDesk, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRouter do
+    it "accepts every call AgentdRouter accepts" do
+      expect(FakeContract.problems(described_class, Workspace::AgentdRouter, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+  describe RecordingProcessTree do
+    it "accepts every call ProcessTree accepts" do
+      expect(FakeContract.problems(described_class, Workspace::ProcessTree, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryStopper do
+    it "accepts every call AgentStopper accepts" do
+      expect(FakeContract.problems(described_class, Workspace::AgentStopper, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryLedger do
+    it "accepts every call SessionLedger accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SessionLedger, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingTurnTranscript do
+    it "accepts every call TranscriptSummary accepts" do
+      expect(FakeContract.problems(described_class, Workspace::TranscriptSummary, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryMonitor do
+    it "accepts every call SessionMonitor accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SessionMonitor, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingInputCheck do
+    it "accepts every call PromptTyper accepts" do
+      expect(FakeContract.problems(described_class, Workspace::PromptTyper, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryStore do
+    it "accepts every call AgentRecoveryStore accepts" do
+      expect(FakeContract.problems(described_class, Workspace::AgentRecoveryStore, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingAgentFacts do
+    it "accepts every call RecoveryFacts accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryFacts, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingConfirmerFacts do
+    it "accepts every call RecoveryFacts accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryFacts, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingStopMarker do
+    it "accepts every call RecoveryStopMarker accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryStopMarker, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryEventLog do
+    it "accepts every call EventLog accepts" do
+      expect(FakeContract.problems(described_class, Workspace::EventLog, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingAttemptFacts do
+    it "accepts every call RecoveryFacts accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryFacts, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingReadiness do
+    it "accepts every call AgentReadiness accepts" do
+      expect(FakeContract.problems(described_class, Workspace::AgentReadiness, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingAttemptTyper do
+    it "accepts every call PromptTyper accepts" do
+      expect(FakeContract.problems(described_class, Workspace::PromptTyper, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryInbox do
+    it "accepts every call InboxStore accepts" do
+      expect(FakeContract.problems(described_class, Workspace::InboxStore, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingStepRunner do
+    it "accepts every call RecoveryAttemptRunner accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryAttemptRunner, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryOutcomes do
+    it "accepts every call RecoveryOutcomes accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryOutcomes, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingOpeningFacts do
+    it "accepts every call RecoveryFacts accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryFacts, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+  describe "the CLI launcher's fakes" do
+    {
+      RecordingLaunchCommand => Workspace::Commands::Launch,
+      RecordingLaunchLibrary => Workspace::Library,
+      RecordingStartComposer => Workspace::InstructionComposer,
+      RecordingNameMigration => Workspace::NameMigration,
+      RecordingLaunchSettings => Workspace::ProjectSettings
+    }.each do |fake, real|
+      it "holds #{fake} to every call #{real.name.delete_prefix("Workspace::")} accepts" do
+        expect(FakeContract.problems(fake, real, control: fake::CONTROL_METHODS)).to be_empty
+      end
+    end
+  end
+
+  describe "the CLI workflow family's fakes" do
+    {
+      RecordingWorkflowProject => Workspace::WorkflowProject,
+      RecordingStatusScope => Workspace::StatusScope,
+      RecordingProjectDetector => Workspace::ProjectDetector
+    }.each do |fake, real|
+      it "holds #{fake} to every call #{real.name.delete_prefix("Workspace::")} accepts" do
+        expect(FakeContract.problems(fake, real, control: fake::CONTROL_METHODS)).to be_empty
+      end
+    end
+  end
+
+  describe "the CLI's fake commands" do
+    {
+      CLITestHelpers::FakeAgentCommand => Workspace::Commands::Agent,
+      CLITestHelpers::FakeAskCommand => Workspace::Commands::Ask,
+      CLITestHelpers::FakeBindingCommand => Workspace::Commands::Binding,
+      CLITestHelpers::FakeCapabilitiesCommand => Workspace::Commands::Capabilities,
+      CLITestHelpers::FakeCaptureCommand => Workspace::Commands::Capture,
+      CLITestHelpers::FakeClaudeCommand => Workspace::Commands::Claude,
+      CLITestHelpers::FakeConfigCommand => Workspace::Commands::Config,
+      CLITestHelpers::FakeDaemonCommand => Workspace::Commands::Daemon,
+      CLITestHelpers::FakeDevCommand => Workspace::Commands::Dev,
+      CLITestHelpers::FakeGoCommand => Workspace::Commands::Go,
+      CLITestHelpers::FakeGroupsCommand => Workspace::Commands::Groups,
+      CLITestHelpers::FakeInstructionsCommand => Workspace::Commands::Instructions,
+      CLITestHelpers::FakeLibraryCommand => Workspace::Commands::Library,
+      CLITestHelpers::FakeLockCommand => Workspace::Commands::Lock,
+      CLITestHelpers::FakeParentCommand => Workspace::Commands::Parent,
+      CLITestHelpers::FakeProjectActionsCommand => Workspace::Commands::ProjectActions,
+      CLITestHelpers::FakeProjectsCommand => Workspace::Commands::Projects,
+      CLITestHelpers::FakeRepairCommand => Workspace::Commands::Repair,
+      CLITestHelpers::FakeReviewCommand => Workspace::Commands::Review,
+      CLITestHelpers::FakeRunAndReportCommand => Workspace::Commands::RunAndReport,
+      CLITestHelpers::FakeRunCommand => Workspace::Commands::Run,
+      CLITestHelpers::FakeSnapshotCommand => Workspace::Commands::Snapshot,
+      CLITestHelpers::FakeStatuslineCommand => Workspace::Commands::Statusline,
+      CLITestHelpers::FakeUiCommand => Workspace::Commands::Ui,
+      CLITestHelpers::FakeUpdatePaneCommand => Workspace::Commands::UpdatePaneCommand,
+      CLITestHelpers::FakeWaitUntilContentCommand => Workspace::Commands::WaitUntilContent,
+      CLITestHelpers::FakeWorkflowCommand => Workspace::Commands::Workflow,
+      CLITestHelpers::FakeWorkflowStartCommand => Workspace::Commands::WorkflowStart
+    }.each do |fake, real|
+      it "holds #{fake.name.delete_prefix("CLITestHelpers::")} to every call #{real.name.delete_prefix("Workspace::")} accepts" do
+        expect(FakeContract.problems(fake, real, control: fake::CONTROL_METHODS)).to be_empty
+      end
+    end
+
+    it "gives the workflow fake list, install and uninstall by their own keywords" do
+      keywords = ->(name) { CLITestHelpers::FakeWorkflowCommand.instance_method(name).parameters.map(&:last) }
+      expect([keywords.call(:list), keywords.call(:install), keywords.call(:uninstall)])
+        .to eq([%i[json project], %i[source], %i[yes dry_run json]])
+    end
+  end
 end

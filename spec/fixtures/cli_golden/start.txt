@@ -1,0 +1,202 @@
+### workspace start --help
+--- exit 0
+--- stdout
+Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
+
+Create a git worktree and launch it as a workspace project.
+
+Accepts:
+  PROJ-123                                  JIRA issue key (used as branch name)
+  https://mycompany.atlassian.net/.../123   JIRA URL (extracts issue key)
+  https://github.com/.../pull/471           GitHub PR URL (works for PRs from forks)
+  '#471', owner/repo#471                    GitHub PR ref ('#n' is a PR of the current repo; quote it,
+                                            or your shell treats # as a comment)
+  https://github.com/.../issues/123         GitHub issue URL (branch: issue-123)
+  user/PROJ-123                             Branch name (used as-is)
+
+Options:
+        --prompt PROMPT              Send an initial prompt to the coding agent once it is ready
+                                     (up to 60s); exits 1 if it can't be sent
+        --prompt-timeout DURATION    How long to wait for the coding agent to be ready for --prompt
+                                     (e.g. "90s", or a plain number of seconds); default 60s
+        --play NAME[,NAME...]        Send the agent 'Read "<path>" and follow it.' for a library play,
+                                     then any --prompt text. Repeatable, and each value may list plays separated by
+                                     commas; the agent gets one line per play, in order. Looked up in the project's
+                                     library, then global; an unknown or unreadable play fails before the worktree is created
+        --pack NAME                  Also send the agent a library pack's text with the first prompt (repeatable; see
+                                     'workspace instructions compose --help'). An unknown pack fails before the worktree is created
+        --no-packs                   Send no automatic packs (the notes pack, unless notes.instructions is false;
+                                     the spine pack, when spine/ exists; the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true);
+                                     cannot be combined with --pack
+        --[no-]handoff               Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude
+                                     Code or Codex agent run 'workspace handoff check' after every task. --handoff for a project
+                                     whose main agent is neither fails before the worktree is created (handoff_unsupported_agent)
+        --agent NAME                 Copy a library agent into the worktree's .claude/agents/ (repeatable).
+                                     Listed in the repo's info/exclude; a file the repo tracks there is kept
+        --skill NAME                 Copy a library skill directory into the worktree's .claude/skills/
+                                     (repeatable), the same way. Unknown names fail before the worktree is created
+        --agent-kind KIND            The coding agent the main agent pane runs: claude, codex, opencode, pi.
+                                     Named -kind because --agent copies a library agent. Applies to a config this run
+                                     writes (default claude); an unknown kind fails before anything is created
+        --recipe NAME                Apply a library recipe: its plays, packs, agents, skills, agent kind and prompt fill in
+                                     whatever --play, --pack, --agent, --skill, --agent-kind and --prompt don't give (a flag you pass
+                                     replaces that recipe field). Make one with 'workspace library add - --kind recipe --as NAME'.
+                                     An unknown or invalid recipe fails before the worktree is created. A recipe with a 'workflow'
+                                     runs `workspace workflow start` instead and refuses the flags that run can't use (docs/README.library.md)
+        --no-launch                  Create the worktree, config and task and start nothing; run
+                                     `workspace launch` later. Cannot be combined with --prompt, --prompt-timeout, --play,
+                                     or --pack or --handoff; the automatic packs are not sent
+        --spine=[NAME]               Run 'workspace spine init' once the worktree exists, before the first prompt, so the agent
+                                     gets the spine pack. NAME is the template (default: the spine.template config, else default).
+                                     Overrides spine.auto; a failed init is a warning, not an error. Give the name with an '=':
+                                     write --spine=team ('--spine team' would take 'team' as the ref)
+        --no-spine                   Do not run 'workspace spine init', even when spine.auto is true
+        --plan=[TITLE]               Run 'workspace plan init' in the new worktree (TITLE, else the task title) and send the
+                                     implementation-plan play with the first prompt, so the agent drafts the plan's tasks. --prompt becomes
+                                     the goal (without it, the plan's title). A plan already there is kept. With --no-launch the plan is made and nothing is sent.
+                                     Cannot be combined with --play. Give the title with an '=': write --plan="Add SSO"
+        --base REF                   Branch/ref to create a new branch from, instead of prompting
+        --title TITLE                A human title for the workspace's task; it labels the agent panes in
+                                     `workspace sessions --json`. The panes also get WORKSPACE_TASK=<task id>
+        --title-from-ticket          Use the ticket's title (gh or jira) as the task title when --title is not given.
+                                     A ticket that cannot be read is a warning, not an error
+        --slug                       Add the title's words to the branch of a JIRA or issue ref (PROJ-123-fix-login,
+                                     issue-42-fix-login). Takes the words from --title, else from the ticket (implies --title-from-ticket).
+                                     A worktree already made for the plain branch is reused
+        --yes                        Accept every default instead of prompting (e.g. the default base branch)
+        --[no-]headless              Start the session in the background with plain tmux: no iTerm2,
+                                     AppleScript or window-tool (see 'workspace launch --help' for the default)
+        --json                       Emit the documented JSON schema instead of plain text (see docs/README.start.md);
+                                     never prompts (see --base/--yes). Only the JSON goes to stdout; progress/warnings
+                                     go to stderr or the warnings field (docs/README.start.md)
+
+The worktree is created in .worktrees/ under the project root (when run from
+inside a linked worktree, the parent repo's root is used).
+A pull request is checked out with `gh pr checkout --worktree` as branch pr-<n>
+in .worktrees/pr-<n>, so PRs from forks work (needs a recent `gh`).
+Never blocks on stdin when stdin isn't a TTY: pass --base/--yes, or it exits with
+a usage error naming the flag it needed.
+
+Examples:
+  workspace start PROJ-123    # from a JIRA issue key (used as the branch name)
+  workspace start feature/my-feature    # from an existing branch name
+  workspace start '#471'    # check out PR 471 of the current repo, fork or not
+  workspace start PROJ-123 --prompt "Fix the login bug"    # with an initial agent prompt
+  workspace start PROJ-123 --play kickoff --prompt "Start at step 2."    # point the agent at a library play
+  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree
+  workspace start PROJ-123 --slug    # give the branch a readable name from the ticket title
+  workspace start PROJ-123 --recipe rpiv-task    # apply a saved recipe, or run the workflow it names
+  workspace start PROJ-123 --plan --prompt "Add SSO login"    # the agent drafts a plan for that goal first
+  workspace start PROJ-123 --base main --headless --yes --json    # non-interactive, e.g. from CI, branching from main
+--- stderr
+--- end
+### workspace start --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>"],"description":"Create a git worktree and launch it as a workspace project.","options":[{"flags":"--prompt PROMPT","description":"Send an initial prompt to the coding agent once it is ready (up to 60s); exits 1 if it can't be sent"},{"flags":"--prompt-timeout DURATION","description":"How long to wait for the coding agent to be ready for --prompt (e.g. \"90s\", or a plain number of seconds); default 60s"},{"flags":"--play NAME[,NAME...]","description":"Send the agent 'Read \"<path>\" and follow it.' for a library play, then any --prompt text. Repeatable, and each value may list plays separated by commas; the agent gets one line per play, in order. Looked up in the project's library, then global; an unknown or unreadable play fails before the worktree is created"},{"flags":"--pack NAME","description":"Also send the agent a library pack's text with the first prompt (repeatable; see 'workspace instructions compose --help'). An unknown pack fails before the worktree is created"},{"flags":"--no-packs","description":"Send no automatic packs (the notes pack, unless notes.instructions is false; the spine pack, when spine/ exists; the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true); cannot be combined with --pack"},{"flags":"--[no-]handoff","description":"Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude Code or Codex agent run 'workspace handoff check' after every task. --handoff for a project whose main agent is neither fails before the worktree is created (handoff_unsupported_agent)"},{"flags":"--agent NAME","description":"Copy a library agent into the worktree's .claude/agents/ (repeatable). Listed in the repo's info/exclude; a file the repo tracks there is kept"},{"flags":"--skill NAME","description":"Copy a library skill directory into the worktree's .claude/skills/ (repeatable), the same way. Unknown names fail before the worktree is created"},{"flags":"--agent-kind KIND","description":"The coding agent the main agent pane runs: claude, codex, opencode, pi. Named -kind because --agent copies a library agent. Applies to a config this run writes (default claude); an unknown kind fails before anything is created"},{"flags":"--recipe NAME","description":"Apply a library recipe: its plays, packs, agents, skills, agent kind and prompt fill in whatever --play, --pack, --agent, --skill, --agent-kind and --prompt don't give (a flag you pass replaces that recipe field). Make one with 'workspace library add - --kind recipe --as NAME'. An unknown or invalid recipe fails before the worktree is created. A recipe with a 'workflow' runs `workspace workflow start` instead and refuses the flags that run can't use (docs/README.library.md)"},{"flags":"--no-launch","description":"Create the worktree, config and task and start nothing; run `workspace launch` later. Cannot be combined with --prompt, --prompt-timeout, --play, or --pack or --handoff; the automatic packs are not sent"},{"flags":"--spine=[NAME]","description":"Run 'workspace spine init' once the worktree exists, before the first prompt, so the agent gets the spine pack. NAME is the template (default: the spine.template config, else default). Overrides spine.auto; a failed init is a warning, not an error. Give the name with an '=': write --spine=team ('--spine team' would take 'team' as the ref)"},{"flags":"--no-spine","description":"Do not run 'workspace spine init', even when spine.auto is true"},{"flags":"--plan=[TITLE]","description":"Run 'workspace plan init' in the new worktree (TITLE, else the task title) and send the implementation-plan play with the first prompt, so the agent drafts the plan's tasks. --prompt becomes the goal (without it, the plan's title). A plan already there is kept. With --no-launch the plan is made and nothing is sent. Cannot be combined with --play. Give the title with an '=': write --plan=\"Add SSO\""},{"flags":"--base REF","description":"Branch/ref to create a new branch from, instead of prompting"},{"flags":"--title TITLE","description":"A human title for the workspace's task; it labels the agent panes in `workspace sessions --json`. The panes also get WORKSPACE_TASK=<task id>"},{"flags":"--title-from-ticket","description":"Use the ticket's title (gh or jira) as the task title when --title is not given. A ticket that cannot be read is a warning, not an error"},{"flags":"--slug","description":"Add the title's words to the branch of a JIRA or issue ref (PROJ-123-fix-login, issue-42-fix-login). Takes the words from --title, else from the ticket (implies --title-from-ticket). A worktree already made for the plain branch is reused"},{"flags":"--yes","description":"Accept every default instead of prompting (e.g. the default base branch)"},{"flags":"--[no-]headless","description":"Start the session in the background with plain tmux: no iTerm2, AppleScript or window-tool (see 'workspace launch --help' for the default)"},{"flags":"--json","description":"Emit the documented JSON schema instead of plain text (see docs/README.start.md); never prompts (see --base/--yes). Only the JSON goes to stdout; progress/warnings go to stderr or the warnings field (docs/README.start.md) The worktree is created in .worktrees/ under the project root (when run from inside a linked worktree, the parent repo's root is used). A pull request is checked out with `gh pr checkout --worktree` as branch pr-<n> in .worktrees/pr-<n>, so PRs from forks work (needs a recent `gh`). Never blocks on stdin when stdin isn't a TTY: pass --base/--yes, or it exits with a usage error naming the flag it needed."}],"examples":[{"command":"workspace start PROJ-123","scenario":"from a JIRA issue key (used as the branch name)"},{"command":"workspace start feature/my-feature","scenario":"from an existing branch name"},{"command":"workspace start '#471'","scenario":"check out PR 471 of the current repo, fork or not"},{"command":"workspace start PROJ-123 --prompt \"Fix the login bug\"","scenario":"with an initial agent prompt"},{"command":"workspace start PROJ-123 --play kickoff --prompt \"Start at step 2.\"","scenario":"point the agent at a library play"},{"command":"workspace start PROJ-123 --agent reviewer --skill write-tests","scenario":"copy library entries into the worktree"},{"command":"workspace start PROJ-123 --slug","scenario":"give the branch a readable name from the ticket title"},{"command":"workspace start PROJ-123 --recipe rpiv-task","scenario":"apply a saved recipe, or run the workflow it names"},{"command":"workspace start PROJ-123 --plan --prompt \"Add SSO login\"","scenario":"the agent drafts a plan for that goal first"},{"command":"workspace start PROJ-123 --base main --headless --yes --json","scenario":"non-interactive, e.g. from CI, branching from main"}],"sections":[{"heading":"Accepts","text":"PROJ-123                                  JIRA issue key (used as branch name)\n  https://mycompany.atlassian.net/.../123   JIRA URL (extracts issue key)\n  https://github.com/.../pull/471           GitHub PR URL (works for PRs from forks)\n  '#471', owner/repo#471                    GitHub PR ref ('#n' is a PR of the current repo; quote it,\n                                            or your shell treats # as a comment)\n  https://github.com/.../issues/123         GitHub issue URL (branch: issue-123)\n  user/PROJ-123                             Branch name (used as-is)"}]}
+--- stderr
+--- end
+### workspace start --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace start --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace start
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
+
+Create a git worktree and launch it as a workspace project.
+
+Accepts:
+  PROJ-123                                  JIRA issue key (used as branch name)
+  https://mycompany.atlassian.net/.../123   JIRA URL (extracts issue key)
+  https://github.com/.../pull/471           GitHub PR URL (works for PRs from forks)
+  '#471', owner/repo#471                    GitHub PR ref ('#n' is a PR of the current repo; quote it,
+                                            or your shell treats # as a comment)
+  https://github.com/.../issues/123         GitHub issue URL (branch: issue-123)
+  user/PROJ-123                             Branch name (used as-is)
+
+Options:
+        --prompt PROMPT              Send an initial prompt to the coding agent once it is ready
+                                     (up to 60s); exits 1 if it can't be sent
+        --prompt-timeout DURATION    How long to wait for the coding agent to be ready for --prompt
+                                     (e.g. "90s", or a plain number of seconds); default 60s
+        --play NAME[,NAME...]        Send the agent 'Read "<path>" and follow it.' for a library play,
+                                     then any --prompt text. Repeatable, and each value may list plays separated by
+                                     commas; the agent gets one line per play, in order. Looked up in the project's
+                                     library, then global; an unknown or unreadable play fails before the worktree is created
+        --pack NAME                  Also send the agent a library pack's text with the first prompt (repeatable; see
+                                     'workspace instructions compose --help'). An unknown pack fails before the worktree is created
+        --no-packs                   Send no automatic packs (the notes pack, unless notes.instructions is false;
+                                     the spine pack, when spine/ exists; the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true);
+                                     cannot be combined with --pack
+        --[no-]handoff               Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude
+                                     Code or Codex agent run 'workspace handoff check' after every task. --handoff for a project
+                                     whose main agent is neither fails before the worktree is created (handoff_unsupported_agent)
+        --agent NAME                 Copy a library agent into the worktree's .claude/agents/ (repeatable).
+                                     Listed in the repo's info/exclude; a file the repo tracks there is kept
+        --skill NAME                 Copy a library skill directory into the worktree's .claude/skills/
+                                     (repeatable), the same way. Unknown names fail before the worktree is created
+        --agent-kind KIND            The coding agent the main agent pane runs: claude, codex, opencode, pi.
+                                     Named -kind because --agent copies a library agent. Applies to a config this run
+                                     writes (default claude); an unknown kind fails before anything is created
+        --recipe NAME                Apply a library recipe: its plays, packs, agents, skills, agent kind and prompt fill in
+                                     whatever --play, --pack, --agent, --skill, --agent-kind and --prompt don't give (a flag you pass
+                                     replaces that recipe field). Make one with 'workspace library add - --kind recipe --as NAME'.
+                                     An unknown or invalid recipe fails before the worktree is created. A recipe with a 'workflow'
+                                     runs `workspace workflow start` instead and refuses the flags that run can't use (docs/README.library.md)
+        --no-launch                  Create the worktree, config and task and start nothing; run
+                                     `workspace launch` later. Cannot be combined with --prompt, --prompt-timeout, --play,
+                                     or --pack or --handoff; the automatic packs are not sent
+        --spine=[NAME]               Run 'workspace spine init' once the worktree exists, before the first prompt, so the agent
+                                     gets the spine pack. NAME is the template (default: the spine.template config, else default).
+                                     Overrides spine.auto; a failed init is a warning, not an error. Give the name with an '=':
+                                     write --spine=team ('--spine team' would take 'team' as the ref)
+        --no-spine                   Do not run 'workspace spine init', even when spine.auto is true
+        --plan=[TITLE]               Run 'workspace plan init' in the new worktree (TITLE, else the task title) and send the
+                                     implementation-plan play with the first prompt, so the agent drafts the plan's tasks. --prompt becomes
+                                     the goal (without it, the plan's title). A plan already there is kept. With --no-launch the plan is made and nothing is sent.
+                                     Cannot be combined with --play. Give the title with an '=': write --plan="Add SSO"
+        --base REF                   Branch/ref to create a new branch from, instead of prompting
+        --title TITLE                A human title for the workspace's task; it labels the agent panes in
+                                     `workspace sessions --json`. The panes also get WORKSPACE_TASK=<task id>
+        --title-from-ticket          Use the ticket's title (gh or jira) as the task title when --title is not given.
+                                     A ticket that cannot be read is a warning, not an error
+        --slug                       Add the title's words to the branch of a JIRA or issue ref (PROJ-123-fix-login,
+                                     issue-42-fix-login). Takes the words from --title, else from the ticket (implies --title-from-ticket).
+                                     A worktree already made for the plain branch is reused
+        --yes                        Accept every default instead of prompting (e.g. the default base branch)
+        --[no-]headless              Start the session in the background with plain tmux: no iTerm2,
+                                     AppleScript or window-tool (see 'workspace launch --help' for the default)
+        --json                       Emit the documented JSON schema instead of plain text (see docs/README.start.md);
+                                     never prompts (see --base/--yes). Only the JSON goes to stdout; progress/warnings
+                                     go to stderr or the warnings field (docs/README.start.md)
+
+The worktree is created in .worktrees/ under the project root (when run from
+inside a linked worktree, the parent repo's root is used).
+A pull request is checked out with `gh pr checkout --worktree` as branch pr-<n>
+in .worktrees/pr-<n>, so PRs from forks work (needs a recent `gh`).
+Never blocks on stdin when stdin isn't a TTY: pass --base/--yes, or it exits with
+a usage error naming the flag it needed.
+
+Examples:
+  workspace start PROJ-123    # from a JIRA issue key (used as the branch name)
+  workspace start feature/my-feature    # from an existing branch name
+  workspace start '#471'    # check out PR 471 of the current repo, fork or not
+  workspace start PROJ-123 --prompt "Fix the login bug"    # with an initial agent prompt
+  workspace start PROJ-123 --play kickoff --prompt "Start at step 2."    # point the agent at a library play
+  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree
+  workspace start PROJ-123 --slug    # give the branch a readable name from the ticket title
+  workspace start PROJ-123 --recipe rpiv-task    # apply a saved recipe, or run the workflow it names
+  workspace start PROJ-123 --plan --prompt "Add SSO login"    # the agent drafts a plan for that goal first
+  workspace start PROJ-123 --base main --headless --yes --json    # non-interactive, e.g. from CI, branching from main
+--- end

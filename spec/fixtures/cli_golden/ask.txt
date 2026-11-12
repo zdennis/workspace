@@ -1,0 +1,397 @@
+### workspace ask --help
+--- exit 0
+--- stdout
+Usage: workspace ask [WS] "<question>" --default "<default taken>" [options]
+       workspace ask list [WS] [--all] [--json]
+       workspace ask answer [WS] <id> "<answer>" [--deliver] [--json]
+       workspace ask deliver [WS] <id> [--pane P] [--json]
+       workspace ask withdraw [WS] <id> [--json]
+
+Records a question an unattended agent hit, with the default it took,
+so the agent can keep going instead of blocking on a person. Never
+reads stdin; returns once the question is recorded and any notify
+command has finished (it is stopped after 10 seconds).
+
+Subcommands:
+  list                    Show open questions for this workspace (--all: also answered
+                          and withdrawn ones, with their status)
+  answer <id> <answer>    Resolve an open question (alias: resolve); with --deliver,
+                          also type the answer and Enter into the pane that asked
+  deliver <id>            Type an answered question's answer and Enter into its pane again
+                          (the retry when `answer --deliver` saved the answer but could not type it;
+                          check the pane first, this types the answer again);
+                          --pane P types into another pane of the workspace instead
+  withdraw <id>           Close an open question nobody needs answered any more; it
+                          leaves `ask list` and the inbox, and can't be answered
+
+A first word of list, answer, resolve, deliver, withdraw or help is a subcommand only
+without --default; `workspace ask list --default x` records "list".
+
+Options (every subcommand):
+  --name WS         Act on workspace WS instead of the one detected from the
+                    current directory (the same as the WS argument); outside any
+                    workspace and with neither, the command fails with not_in_workspace
+
+Options (deliver):
+  --pane P          Type into pane P (a pane id or window.pane of the workspace's
+                    own tmux session) instead of the pane that asked
+
+Options (answer):
+  --deliver         Type the answer, then Enter, into the pane that asked, which must
+                    belong to the workspace's tmux session. The pane is checked before the
+                    question is answered; if typing then fails, the question stays
+                    answered and the error says so. Needs a question asked from tmux.
+  --                Ends options, so an answer starting with "-" works
+
+Options (recording a question):
+  --default TEXT    The default the agent took (required)
+  --context TEXT    Free-text pointer to the code in question, e.g. "file.rb:42"
+  --json             Emit the documented JSON schema instead of a message
+
+When the project has `alerts.notify` configured (see
+`workspace config set alerts.notify <command>`), it runs with
+WORKSPACE_ALERT=question and the question/default in
+WORKSPACE_ALERT_* env vars. Without it, the question is just recorded.
+
+Run `workspace ask VERB --help` for the page of one subcommand.
+
+Examples:
+  workspace ask "Use pg or sqlite for the cache?" --default "sqlite"    # record a question and keep going with the default
+  workspace ask "Use pg or sqlite?" --default "sqlite" --context "lib/cache.rb:12"    # point at the code in question
+  workspace ask list    # open questions of this workspace
+  workspace ask list myapp --all    # another workspace's, answered and withdrawn ones too
+  workspace ask answer a1b2c3 "Use postgres instead"    # answer an open question
+  workspace ask answer --deliver a1b2c3 "yes"    # also type the answer into the pane that asked
+  workspace ask deliver a1b2c3    # type the saved answer again after a failed delivery
+  workspace ask withdraw a1b2c3    # the asker no longer needs an answer
+--- stderr
+--- end
+### workspace ask --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ask [WS] \"<question>\" --default \"<default taken>\" [options]","workspace ask list [WS] [--all] [--json]","workspace ask answer [WS] <id> \"<answer>\" [--deliver] [--json]","workspace ask deliver [WS] <id> [--pane P] [--json]","workspace ask withdraw [WS] <id> [--json]"],"description":"Records a question an unattended agent hit, with the default it took,\nso the agent can keep going instead of blocking on a person. Never\nreads stdin; returns once the question is recorded and any notify\ncommand has finished (it is stopped after 10 seconds).","options":[],"examples":[{"command":"workspace ask \"Use pg or sqlite for the cache?\" --default \"sqlite\"","scenario":"record a question and keep going with the default"},{"command":"workspace ask \"Use pg or sqlite?\" --default \"sqlite\" --context \"lib/cache.rb:12\"","scenario":"point at the code in question"},{"command":"workspace ask list","scenario":"open questions of this workspace"},{"command":"workspace ask list myapp --all","scenario":"another workspace's, answered and withdrawn ones too"},{"command":"workspace ask answer a1b2c3 \"Use postgres instead\"","scenario":"answer an open question"},{"command":"workspace ask answer --deliver a1b2c3 \"yes\"","scenario":"also type the answer into the pane that asked"},{"command":"workspace ask deliver a1b2c3","scenario":"type the saved answer again after a failed delivery"},{"command":"workspace ask withdraw a1b2c3","scenario":"the asker no longer needs an answer"}],"sections":[{"heading":"Subcommands","text":"list                    Show open questions for this workspace (--all: also answered\n                          and withdrawn ones, with their status)\n  answer <id> <answer>    Resolve an open question (alias: resolve); with --deliver,\n                          also type the answer and Enter into the pane that asked\n  deliver <id>            Type an answered question's answer and Enter into its pane again\n                          (the retry when `answer --deliver` saved the answer but could not type it;\n                          check the pane first, this types the answer again);\n                          --pane P types into another pane of the workspace instead\n  withdraw <id>           Close an open question nobody needs answered any more; it\n                          leaves `ask list` and the inbox, and can't be answered\n\nA first word of list, answer, resolve, deliver, withdraw or help is a subcommand only\nwithout --default; `workspace ask list --default x` records \"list\"."},{"heading":"Options (every subcommand)","text":"--name WS         Act on workspace WS instead of the one detected from the\n                    current directory (the same as the WS argument); outside any\n                    workspace and with neither, the command fails with not_in_workspace"},{"heading":"Options (deliver)","text":"--pane P          Type into pane P (a pane id or window.pane of the workspace's\n                    own tmux session) instead of the pane that asked"},{"heading":"Options (answer)","text":"--deliver         Type the answer, then Enter, into the pane that asked, which must\n                    belong to the workspace's tmux session. The pane is checked before the\n                    question is answered; if typing then fails, the question stays\n                    answered and the error says so. Needs a question asked from tmux.\n  --                Ends options, so an answer starting with \"-\" works"},{"heading":"Options (recording a question)","text":"--default TEXT    The default the agent took (required)\n  --context TEXT    Free-text pointer to the code in question, e.g. \"file.rb:42\"\n  --json             Emit the documented JSON schema instead of a message\n\nWhen the project has `alerts.notify` configured (see\n`workspace config set alerts.notify <command>`), it runs with\nWORKSPACE_ALERT=question and the question/default in\nWORKSPACE_ALERT_* env vars. Without it, the question is just recorded.\n\nRun `workspace ask VERB --help` for the page of one subcommand."}]}
+--- stderr
+--- end
+### workspace ask list --help
+--- exit 0
+--- stdout
+Usage: workspace ask list [WS] [--all] [--json]
+
+Show the open questions of a workspace.
+
+WS is a workspace name; without it (or --name) the workspace of the current directory is used.
+Without --all only open questions are shown; a workspace with none prints a line saying so.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --all                        Also list answered and withdrawn questions, with their status
+    --json                       Print the documented JSON document instead of a message
+    -h, --help                   Show this help
+
+Examples:
+  workspace ask list    # open questions of the workspace of the current directory
+  workspace ask list myapp    # another workspace's open questions
+  workspace ask list --all    # answered and withdrawn questions too, with a STATUS column
+  workspace ask list --json    # one JSON document, for a script
+--- stderr
+--- end
+### workspace ask list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ask list [WS] [--all] [--json]"],"description":"Show the open questions of a workspace.\n\nWS is a workspace name; without it (or --name) the workspace of the current directory is used.\nWithout --all only open questions are shown; a workspace with none prints a line saying so.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--all","description":"Also list answered and withdrawn questions, with their status"},{"flags":"--json","description":"Print the documented JSON document instead of a message"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ask list","scenario":"open questions of the workspace of the current directory"},{"command":"workspace ask list myapp","scenario":"another workspace's open questions"},{"command":"workspace ask list --all","scenario":"answered and withdrawn questions too, with a STATUS column"},{"command":"workspace ask list --json","scenario":"one JSON document, for a script"}]}
+--- stderr
+--- end
+### workspace ask answer --help
+--- exit 0
+--- stdout
+Usage: workspace ask answer [WS] ID "ANSWER" [--deliver] [--json]
+
+Answer an open question (alias: resolve).
+
+WS is a workspace name; without it (or --name) the workspace of the current directory is used.
+The answer is saved on the question, which then leaves the open list; a question already answered
+or withdrawn is refused (exit 1). End options with -- to give an answer that starts with a dash.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --deliver                    Also type the answer and Enter into the pane that asked (it must be a pane of this workspace's tmux session; the question must have been asked from tmux)
+    --json                       Print the documented JSON document instead of a message
+    -h, --help                   Show this help
+
+Examples:
+  workspace ask answer a1b2c3 "Use postgres instead"    # answer a question of this workspace
+  workspace ask answer myapp a1b2c3 "Use postgres instead"    # answer a question of another workspace
+  workspace ask answer --deliver a1b2c3 "yes"    # also type the answer into the pane that asked
+  workspace ask answer a1b2c3 -- "-1"    # an answer that starts with a dash
+  workspace ask answer a1b2c3 "yes" --json    # print the answered question as JSON
+--- stderr
+--- end
+### workspace ask answer --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ask answer [WS] ID \"ANSWER\" [--deliver] [--json]"],"description":"Answer an open question (alias: resolve).\n\nWS is a workspace name; without it (or --name) the workspace of the current directory is used.\nThe answer is saved on the question, which then leaves the open list; a question already answered\nor withdrawn is refused (exit 1). End options with -- to give an answer that starts with a dash.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--deliver","description":"Also type the answer and Enter into the pane that asked (it must be a pane of this workspace's tmux session; the question must have been asked from tmux)"},{"flags":"--json","description":"Print the documented JSON document instead of a message"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ask answer a1b2c3 \"Use postgres instead\"","scenario":"answer a question of this workspace"},{"command":"workspace ask answer myapp a1b2c3 \"Use postgres instead\"","scenario":"answer a question of another workspace"},{"command":"workspace ask answer --deliver a1b2c3 \"yes\"","scenario":"also type the answer into the pane that asked"},{"command":"workspace ask answer a1b2c3 -- \"-1\"","scenario":"an answer that starts with a dash"},{"command":"workspace ask answer a1b2c3 \"yes\" --json","scenario":"print the answered question as JSON"}]}
+--- stderr
+--- end
+### workspace ask deliver --help
+--- exit 0
+--- stdout
+Usage: workspace ask deliver [WS] ID [--pane PANE] [--json]
+
+Type an answered question's answer, then Enter, into its pane again.
+
+WS is a workspace name; without it (or --name) the workspace of the current directory is used.
+The retry for when `ask answer --deliver` saved the answer but could not type it. Nothing is saved;
+the pane is typed into for real, so check it first: the answer goes in again even if the first try landed.
+A question that is still open or withdrawn has no answer to deliver (exit 1).
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --pane PANE                  Type into this pane (an id such as %19, or window.pane) of the workspace's own session instead of the pane that asked
+    --json                       Print the documented JSON document instead of a message
+    -h, --help                   Show this help
+
+Examples:
+  workspace ask deliver a1b2c3    # retype the answer into the pane that asked
+  workspace ask deliver myapp a1b2c3    # the same for another workspace's question
+  workspace ask deliver a1b2c3 --pane %19    # type it into another pane of the workspace's session
+  workspace ask deliver a1b2c3 --json    # print the question and the pane typed into as JSON
+--- stderr
+--- end
+### workspace ask deliver --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ask deliver [WS] ID [--pane PANE] [--json]"],"description":"Type an answered question's answer, then Enter, into its pane again.\n\nWS is a workspace name; without it (or --name) the workspace of the current directory is used.\nThe retry for when `ask answer --deliver` saved the answer but could not type it. Nothing is saved;\nthe pane is typed into for real, so check it first: the answer goes in again even if the first try landed.\nA question that is still open or withdrawn has no answer to deliver (exit 1).","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--pane PANE","description":"Type into this pane (an id such as %19, or window.pane) of the workspace's own session instead of the pane that asked"},{"flags":"--json","description":"Print the documented JSON document instead of a message"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ask deliver a1b2c3","scenario":"retype the answer into the pane that asked"},{"command":"workspace ask deliver myapp a1b2c3","scenario":"the same for another workspace's question"},{"command":"workspace ask deliver a1b2c3 --pane %19","scenario":"type it into another pane of the workspace's session"},{"command":"workspace ask deliver a1b2c3 --json","scenario":"print the question and the pane typed into as JSON"}]}
+--- stderr
+--- end
+### workspace ask withdraw --help
+--- exit 0
+--- stdout
+Usage: workspace ask withdraw [WS] ID [--json]
+
+Close an open question nobody needs answered any more.
+
+WS is a workspace name; without it (or --name) the workspace of the current directory is used.
+The question is marked withdrawn: it leaves `ask list` and the inbox and can't be answered. Only an
+open question can be withdrawn (exit 1 otherwise).
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --json                       Print the documented JSON document instead of a message
+    -h, --help                   Show this help
+
+Examples:
+  workspace ask withdraw a1b2c3    # the asker no longer needs an answer
+  workspace ask withdraw myapp a1b2c3    # withdraw a question of another workspace
+  workspace ask withdraw a1b2c3 --json    # print the withdrawn question as JSON
+--- stderr
+--- end
+### workspace ask withdraw --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ask withdraw [WS] ID [--json]"],"description":"Close an open question nobody needs answered any more.\n\nWS is a workspace name; without it (or --name) the workspace of the current directory is used.\nThe question is marked withdrawn: it leaves `ask list` and the inbox and can't be answered. Only an\nopen question can be withdrawn (exit 1 otherwise).","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--json","description":"Print the documented JSON document instead of a message"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ask withdraw a1b2c3","scenario":"the asker no longer needs an answer"},{"command":"workspace ask withdraw myapp a1b2c3","scenario":"withdraw a question of another workspace"},{"command":"workspace ask withdraw a1b2c3 --json","scenario":"print the withdrawn question as JSON"}]}
+--- stderr
+--- end
+### workspace ask --bogus
+--- exit 0
+--- stdout
+Usage: workspace ask [WS] "<question>" --default "<default taken>" [options]
+       workspace ask list [WS] [--all] [--json]
+       workspace ask answer [WS] <id> "<answer>" [--deliver] [--json]
+       workspace ask deliver [WS] <id> [--pane P] [--json]
+       workspace ask withdraw [WS] <id> [--json]
+
+Records a question an unattended agent hit, with the default it took,
+so the agent can keep going instead of blocking on a person. Never
+reads stdin; returns once the question is recorded and any notify
+command has finished (it is stopped after 10 seconds).
+
+Subcommands:
+  list                    Show open questions for this workspace (--all: also answered
+                          and withdrawn ones, with their status)
+  answer <id> <answer>    Resolve an open question (alias: resolve); with --deliver,
+                          also type the answer and Enter into the pane that asked
+  deliver <id>            Type an answered question's answer and Enter into its pane again
+                          (the retry when `answer --deliver` saved the answer but could not type it;
+                          check the pane first, this types the answer again);
+                          --pane P types into another pane of the workspace instead
+  withdraw <id>           Close an open question nobody needs answered any more; it
+                          leaves `ask list` and the inbox, and can't be answered
+
+A first word of list, answer, resolve, deliver, withdraw or help is a subcommand only
+without --default; `workspace ask list --default x` records "list".
+
+Options (every subcommand):
+  --name WS         Act on workspace WS instead of the one detected from the
+                    current directory (the same as the WS argument); outside any
+                    workspace and with neither, the command fails with not_in_workspace
+
+Options (deliver):
+  --pane P          Type into pane P (a pane id or window.pane of the workspace's
+                    own tmux session) instead of the pane that asked
+
+Options (answer):
+  --deliver         Type the answer, then Enter, into the pane that asked, which must
+                    belong to the workspace's tmux session. The pane is checked before the
+                    question is answered; if typing then fails, the question stays
+                    answered and the error says so. Needs a question asked from tmux.
+  --                Ends options, so an answer starting with "-" works
+
+Options (recording a question):
+  --default TEXT    The default the agent took (required)
+  --context TEXT    Free-text pointer to the code in question, e.g. "file.rb:42"
+  --json             Emit the documented JSON schema instead of a message
+
+When the project has `alerts.notify` configured (see
+`workspace config set alerts.notify <command>`), it runs with
+WORKSPACE_ALERT=question and the question/default in
+WORKSPACE_ALERT_* env vars. Without it, the question is just recorded.
+
+Run `workspace ask VERB --help` for the page of one subcommand.
+
+Examples:
+  workspace ask "Use pg or sqlite for the cache?" --default "sqlite"    # record a question and keep going with the default
+  workspace ask "Use pg or sqlite?" --default "sqlite" --context "lib/cache.rb:12"    # point at the code in question
+  workspace ask list    # open questions of this workspace
+  workspace ask list myapp --all    # another workspace's, answered and withdrawn ones too
+  workspace ask answer a1b2c3 "Use postgres instead"    # answer an open question
+  workspace ask answer --deliver a1b2c3 "yes"    # also type the answer into the pane that asked
+  workspace ask deliver a1b2c3    # type the saved answer again after a failed delivery
+  workspace ask withdraw a1b2c3    # the asker no longer needs an answer
+--- stderr
+--- end
+### workspace ask --bogus --json
+--- exit 0
+--- stdout
+Usage: workspace ask [WS] "<question>" --default "<default taken>" [options]
+       workspace ask list [WS] [--all] [--json]
+       workspace ask answer [WS] <id> "<answer>" [--deliver] [--json]
+       workspace ask deliver [WS] <id> [--pane P] [--json]
+       workspace ask withdraw [WS] <id> [--json]
+
+Records a question an unattended agent hit, with the default it took,
+so the agent can keep going instead of blocking on a person. Never
+reads stdin; returns once the question is recorded and any notify
+command has finished (it is stopped after 10 seconds).
+
+Subcommands:
+  list                    Show open questions for this workspace (--all: also answered
+                          and withdrawn ones, with their status)
+  answer <id> <answer>    Resolve an open question (alias: resolve); with --deliver,
+                          also type the answer and Enter into the pane that asked
+  deliver <id>            Type an answered question's answer and Enter into its pane again
+                          (the retry when `answer --deliver` saved the answer but could not type it;
+                          check the pane first, this types the answer again);
+                          --pane P types into another pane of the workspace instead
+  withdraw <id>           Close an open question nobody needs answered any more; it
+                          leaves `ask list` and the inbox, and can't be answered
+
+A first word of list, answer, resolve, deliver, withdraw or help is a subcommand only
+without --default; `workspace ask list --default x` records "list".
+
+Options (every subcommand):
+  --name WS         Act on workspace WS instead of the one detected from the
+                    current directory (the same as the WS argument); outside any
+                    workspace and with neither, the command fails with not_in_workspace
+
+Options (deliver):
+  --pane P          Type into pane P (a pane id or window.pane of the workspace's
+                    own tmux session) instead of the pane that asked
+
+Options (answer):
+  --deliver         Type the answer, then Enter, into the pane that asked, which must
+                    belong to the workspace's tmux session. The pane is checked before the
+                    question is answered; if typing then fails, the question stays
+                    answered and the error says so. Needs a question asked from tmux.
+  --                Ends options, so an answer starting with "-" works
+
+Options (recording a question):
+  --default TEXT    The default the agent took (required)
+  --context TEXT    Free-text pointer to the code in question, e.g. "file.rb:42"
+  --json             Emit the documented JSON schema instead of a message
+
+When the project has `alerts.notify` configured (see
+`workspace config set alerts.notify <command>`), it runs with
+WORKSPACE_ALERT=question and the question/default in
+WORKSPACE_ALERT_* env vars. Without it, the question is just recorded.
+
+Run `workspace ask VERB --help` for the page of one subcommand.
+
+Examples:
+  workspace ask "Use pg or sqlite for the cache?" --default "sqlite"    # record a question and keep going with the default
+  workspace ask "Use pg or sqlite?" --default "sqlite" --context "lib/cache.rb:12"    # point at the code in question
+  workspace ask list    # open questions of this workspace
+  workspace ask list myapp --all    # another workspace's, answered and withdrawn ones too
+  workspace ask answer a1b2c3 "Use postgres instead"    # answer an open question
+  workspace ask answer --deliver a1b2c3 "yes"    # also type the answer into the pane that asked
+  workspace ask deliver a1b2c3    # type the saved answer again after a failed delivery
+  workspace ask withdraw a1b2c3    # the asker no longer needs an answer
+--- stderr
+--- end
+### workspace ask
+--- exit 0
+--- stdout
+Usage: workspace ask [WS] "<question>" --default "<default taken>" [options]
+       workspace ask list [WS] [--all] [--json]
+       workspace ask answer [WS] <id> "<answer>" [--deliver] [--json]
+       workspace ask deliver [WS] <id> [--pane P] [--json]
+       workspace ask withdraw [WS] <id> [--json]
+
+Records a question an unattended agent hit, with the default it took,
+so the agent can keep going instead of blocking on a person. Never
+reads stdin; returns once the question is recorded and any notify
+command has finished (it is stopped after 10 seconds).
+
+Subcommands:
+  list                    Show open questions for this workspace (--all: also answered
+                          and withdrawn ones, with their status)
+  answer <id> <answer>    Resolve an open question (alias: resolve); with --deliver,
+                          also type the answer and Enter into the pane that asked
+  deliver <id>            Type an answered question's answer and Enter into its pane again
+                          (the retry when `answer --deliver` saved the answer but could not type it;
+                          check the pane first, this types the answer again);
+                          --pane P types into another pane of the workspace instead
+  withdraw <id>           Close an open question nobody needs answered any more; it
+                          leaves `ask list` and the inbox, and can't be answered
+
+A first word of list, answer, resolve, deliver, withdraw or help is a subcommand only
+without --default; `workspace ask list --default x` records "list".
+
+Options (every subcommand):
+  --name WS         Act on workspace WS instead of the one detected from the
+                    current directory (the same as the WS argument); outside any
+                    workspace and with neither, the command fails with not_in_workspace
+
+Options (deliver):
+  --pane P          Type into pane P (a pane id or window.pane of the workspace's
+                    own tmux session) instead of the pane that asked
+
+Options (answer):
+  --deliver         Type the answer, then Enter, into the pane that asked, which must
+                    belong to the workspace's tmux session. The pane is checked before the
+                    question is answered; if typing then fails, the question stays
+                    answered and the error says so. Needs a question asked from tmux.
+  --                Ends options, so an answer starting with "-" works
+
+Options (recording a question):
+  --default TEXT    The default the agent took (required)
+  --context TEXT    Free-text pointer to the code in question, e.g. "file.rb:42"
+  --json             Emit the documented JSON schema instead of a message
+
+When the project has `alerts.notify` configured (see
+`workspace config set alerts.notify <command>`), it runs with
+WORKSPACE_ALERT=question and the question/default in
+WORKSPACE_ALERT_* env vars. Without it, the question is just recorded.
+
+Run `workspace ask VERB --help` for the page of one subcommand.
+
+Examples:
+  workspace ask "Use pg or sqlite for the cache?" --default "sqlite"    # record a question and keep going with the default
+  workspace ask "Use pg or sqlite?" --default "sqlite" --context "lib/cache.rb:12"    # point at the code in question
+  workspace ask list    # open questions of this workspace
+  workspace ask list myapp --all    # another workspace's, answered and withdrawn ones too
+  workspace ask answer a1b2c3 "Use postgres instead"    # answer an open question
+  workspace ask answer --deliver a1b2c3 "yes"    # also type the answer into the pane that asked
+  workspace ask deliver a1b2c3    # type the saved answer again after a failed delivery
+  workspace ask withdraw a1b2c3    # the asker no longer needs an answer
+--- stderr
+--- end

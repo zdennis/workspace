@@ -1,0 +1,43 @@
+### workspace repair --help
+--- exit 0
+--- stdout
+Usage: workspace repair [project] [options]
+
+Rebuild state from live iTerm windows.
+Scans for windows with 'workspace-{name}' titles and
+reconstructs the state file from what's actually running.
+
+Options:
+        --window-id WID              Manually set the window ID for a project
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+
+Examples:
+  workspace repair    # state is wrong or lost: rewrite each workspace's window id from the live workspace-NAME windows
+  workspace repair --json    # the same, one action document with a row per window
+  workspace repair homebrew-bin --window-id 1196    # a window has another title: set that project's window id by hand
+--- stderr
+--- end
+### workspace repair --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace repair [project] [options]"],"description":"Rebuild state from live iTerm windows.\nScans for windows with 'workspace-{name}' titles and\nreconstructs the state file from what's actually running.","options":[{"flags":"--window-id WID","description":"Manually set the window ID for a project"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr"}],"examples":[{"command":"workspace repair","scenario":"state is wrong or lost: rewrite each workspace's window id from the live workspace-NAME windows"},{"command":"workspace repair --json","scenario":"the same, one action document with a row per window"},{"command":"workspace repair homebrew-bin --window-id 1196","scenario":"a window has another title: set that project's window id by hand"}]}
+--- stderr
+--- end
+### workspace repair --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace repair --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace repair
+--- exit 0
+--- stdout
+No workspace windows found.
+--- stderr
+--- end

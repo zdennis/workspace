@@ -2,6 +2,72 @@ require "stringio"
 require "tmpdir"
 
 module CLITestHelpers
+  # The named overrides only Workspace.build_cli takes.
+  BUILD_CLI_OVERRIDES = %i[launchctl tmux task_store skill_source workflow_source_runner osascript ui_osascript].freeze
+  # The keywords Workspace.build_cli and Workspace::CLI.new both take.
+  STREAM_KEYWORDS = %i[output error_output input env logger exit_handler].freeze
+  # The commands .cli_parts gives the CLI::Agent family instead of Workspace::CLI.new.
+  AGENT_FAMILY_KEYWORDS = %i[agent_command ensure_agent_command daemon_command sessions_command review_command agent_status_command agent_executables_command].freeze
+  # The commands .cli_parts gives the CLI::AgentRun family instead of Workspace::CLI.new.
+  AGENT_RUN_FAMILY_KEYWORDS = %i[restart_agent_command send_command prompt_queue_command handoff_command].freeze
+  # The keywords .cli_parts gives the CLI::Pipeline family instead of Workspace::CLI.new.
+  PIPELINE_FAMILY_KEYWORDS = %i[clock].freeze
+  # The commands .cli_parts gives the CLI::PlanSpine family instead of Workspace::CLI.new.
+  PLAN_SPINE_FAMILY_KEYWORDS = %i[plan_command plan_dispatch_command plan_task_command spine_command spine_init_command spine_start_command goal_command].freeze
+
+  # The one way a spec builds a CLI, so a change to the CLI's keywords touches this builder and
+  # not every spec. Given only the streams and Workspace.build_cli's named overrides
+  # (osascript:, ui_osascript:, workflow_source_runner:, tmux:, ...), it builds the production
+  # graph through Workspace.build_cli, forwarding each. Given any other keyword (+lineage:+, a
+  # command, ...), it builds Workspace::CLI.new from the keywords given, with the parts
+  # build_cli would make from them (see .cli_parts). A Workspace.build_cli override beside a
+  # Workspace::CLI.new keyword is an ArgumentError, since one of them would be dropped.
+  def self.build_cli(**keywords)
+    return Workspace.build_cli(**keywords) if (keywords.keys - STREAM_KEYWORDS - BUILD_CLI_OVERRIDES).empty?
+
+    overrides = keywords.keys & BUILD_CLI_OVERRIDES
+    raise ArgumentError, "Workspace::CLI.new does not take #{overrides.join(", ")}" if overrides.any?
+
+    Workspace::CLI.new(**cli_parts(**keywords))
+  end
+
+  # The keywords given, as Workspace::CLI.new takes them: +lineage:+ goes to the CLI::Names it
+  # builds, +workflow_command:+ and +workflow_project:+ to the CLI::Workflow family, and the agent
+  # family's commands (AGENT_FAMILY_KEYWORDS) to CLI::Agent and the agent-run family's
+  # (AGENT_RUN_FAMILY_KEYWORDS) to CLI::AgentRun, whose #prompt CLI::Agent hands `agent run`, and
+  # the pipeline family's (PIPELINE_FAMILY_KEYWORDS) to CLI::Pipeline, and the plan and spine
+  # family's (PLAN_SPINE_FAMILY_KEYWORDS) to CLI::PlanSpine, which shares +status_scope:+ with
+  # CLI::Workflow, as build_cli wires them;
+  # CLI::Common, CLI::Launcher and the AgentMessageClient the agent-run and pipeline families
+  # share (unless given as +agent_client:+) are built over the same keywords.
+  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_client: nil, status_scope: nil, **keywords)
+    agent_commands = AGENT_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
+    agent_run_commands = AGENT_RUN_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
+    pipeline_keywords = PIPELINE_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }.compact
+    plan_spine_commands = PLAN_SPINE_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
+    agent_client ||= Workspace::AgentMessageClient.new(config: keywords[:config])
+    keywords[:working_dir] ||= Dir.pwd
+    keywords[:launch_mode] ||= Workspace::LaunchMode.new(project_settings: keywords[:project_settings])
+    keywords[:input] ||= $stdin
+    common = Workspace::CLI::Common.new
+    names = Workspace::CLI::Names.new(project_config: keywords[:project_config], project_detector: keywords[:project_detector], lineage: lineage,
+      working_dir: keywords[:working_dir], workspace_name: keywords[:workspace_name])
+    launcher = Workspace::CLI::Launcher.new(project_config: keywords[:project_config], launch_command: keywords[:launch_command], launch_mode: keywords[:launch_mode],
+      state: keywords[:state], project_settings: keywords[:project_settings], hook_runner: keywords[:hook_runner], common: common, working_dir: keywords[:working_dir],
+      library: keywords[:library], instruction_composer: keywords[:instruction_composer], name_migration: keywords[:name_migration])
+    workflow = Workspace::CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: keywords[:workflow_start_command], workflow_project: workflow_project,
+      status_scope: status_scope, config: keywords[:config], project_config: keywords[:project_config], project_detector: keywords[:project_detector],
+      git: keywords[:git], launch_mode: keywords[:launch_mode], common: common, names: names, input: keywords[:input], working_dir: keywords[:working_dir])
+    agent_run = Workspace::CLI::AgentRun.new(**agent_run_commands, config: keywords[:config], agent_client: agent_client,
+      project_detector: keywords[:project_detector], common: common, names: names, working_dir: keywords[:working_dir])
+    agent = Workspace::CLI::Agent.new(**agent_commands, agent_run: ->(args, invocation) { agent_run.prompt(args, invocation) }, project_detector: keywords[:project_detector], common: common, names: names,
+      working_dir: keywords[:working_dir])
+    pipeline = Workspace::CLI::Pipeline.new(**pipeline_keywords, config: keywords[:config], agent_client: agent_client, common: common, names: names)
+    plan_spine = Workspace::CLI::PlanSpine.new(**plan_spine_commands, status_scope: status_scope, project_detector: keywords[:project_detector], launcher: launcher,
+      common: common, names: names, working_dir: keywords[:working_dir])
+    keywords.merge(common: common, names: names, launcher: launcher, families: {workflow: workflow, agent: agent, agent_run: agent_run, pipeline: pipeline, plan_spine: plan_spine})
+  end
+
   # A LaunchMode whose automatic choice is fixed, so specs never depend on the
   # machine (platform, osascript, CI) or on a real ~/.config.
   def self.launch_mode(headless:, global: {})
@@ -357,20 +423,28 @@ module CLITestHelpers
   end
 
   class FakeClaudeCommand
+    CONTROL_METHODS = [].freeze
+
     def deactivate(_projects) = {}
     def reactivate(_projects) = {}
   end
 
   class FakeRepairCommand
+    CONTROL_METHODS = [].freeze
+
     def call = []
     def set_window_id(_project, _wid) = nil
   end
 
   class FakeUpdatePaneCommand
+    CONTROL_METHODS = [].freeze
+
     def call(project:, command:, pane_index:) = nil
   end
 
   class FakeRunCommand
+    CONTROL_METHODS = %i[calls raise_on_call returning].freeze
+
     attr_reader :calls
 
     def initialize
@@ -394,6 +468,8 @@ module CLITestHelpers
   end
 
   class FakeRunAndReportCommand
+    CONTROL_METHODS = %i[calls stub_result].freeze
+
     attr_reader :calls
 
     def initialize
@@ -416,6 +492,8 @@ module CLITestHelpers
   end
 
   class FakeCaptureCommand
+    CONTROL_METHODS = %i[calls].freeze
+
     attr_reader :calls
 
     def initialize
@@ -428,6 +506,8 @@ module CLITestHelpers
   end
 
   class FakeWaitUntilContentCommand
+    CONTROL_METHODS = %i[calls next_status next_status=].freeze
+
     attr_reader :calls
     attr_accessor :next_status
 
@@ -475,6 +555,8 @@ module CLITestHelpers
   end
 
   class FakeAgentCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -507,6 +589,8 @@ module CLITestHelpers
   end
 
   class FakeLockCommand
+    CONTROL_METHODS = %i[calls result result= working_dirs].freeze
+
     attr_reader :calls, :working_dirs
     attr_accessor :result
 
@@ -547,6 +631,8 @@ module CLITestHelpers
   end
 
   class FakeDevCommand
+    CONTROL_METHODS = %i[calls result result= up_error up_error= working_dirs].freeze
+
     attr_reader :calls, :working_dirs
     attr_accessor :result, :up_error
 
@@ -601,6 +687,8 @@ module CLITestHelpers
   end
 
   class FakeGroupsCommand
+    CONTROL_METHODS = %i[calls].freeze
+
     attr_reader :calls
 
     def initialize
@@ -629,6 +717,8 @@ module CLITestHelpers
   end
 
   class FakeProjectsCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -642,18 +732,20 @@ module CLITestHelpers
       @result
     end
 
-    def show(name: nil, json: false, agents: true, git: true, timeout: nil)
+    def show(name: nil, json: false, agents: true, git: true, timeout: nil, cwd: nil)
       @calls << {show: name, json: json, agents: agents, git: git, timeout: timeout}
       @result
     end
 
-    def members(name: nil, path: false, all: false, json: false, timeout: nil)
+    def members(name: nil, path: false, all: false, json: false, timeout: nil, cwd: nil)
       @calls << {members: name, path: path, all: all, json: json, timeout: timeout}
       @result
     end
   end
 
   class FakeSnapshotCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -669,6 +761,8 @@ module CLITestHelpers
   end
 
   class FakeDaemonCommand
+    CONTROL_METHODS = %i[calls error error= restart_all_results restart_all_results= restart_result restart_result= result result=].freeze
+
     attr_reader :calls
     attr_accessor :result, :restart_result, :restart_all_results, :error
 
@@ -711,6 +805,8 @@ module CLITestHelpers
   end
 
   class FakeUiCommand
+    CONTROL_METHODS = %i[calls error error= result result= status_doc status_doc=].freeze
+
     attr_reader :calls
     attr_accessor :result, :error
 
@@ -743,6 +839,8 @@ module CLITestHelpers
   end
 
   class FakeBindingCommand
+    CONTROL_METHODS = %i[calls error error=].freeze
+
     attr_reader :calls
     attr_accessor :error
 
@@ -774,6 +872,8 @@ module CLITestHelpers
   # Records each library verb with its keyword arguments; writes return a
   # Commands::Library::Result like the real command, reads print a line.
   class FakeLibraryCommand
+    CONTROL_METHODS = %i[calls error error= result result=].freeze
+
     attr_reader :calls
     attr_accessor :error, :result
 
@@ -811,6 +911,8 @@ module CLITestHelpers
   end
 
   class FakeInstructionsCommand
+    CONTROL_METHODS = %i[calls error error=].freeze
+
     attr_reader :calls
     attr_accessor :error
 
@@ -826,6 +928,8 @@ module CLITestHelpers
 
   # Records each `workflow`/`step` call; mutations return the row the real command returns.
   class FakeWorkflowCommand
+    CONTROL_METHODS = %i[calls error error= row row= status_result status_result=].freeze
+
     attr_reader :calls
     attr_accessor :error, :row, :status_result
 
@@ -834,7 +938,7 @@ module CLITestHelpers
       @row = {"workspace" => "app", "outcome" => "started", "reason" => nil, "message" => nil, "run" => {"id" => "wr_1", "state" => "running"}}
     end
 
-    %i[show list validate install status events files attempts advance step_status].each do |name|
+    %i[show validate render simulate status events files attempts advance step_status].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error
@@ -842,16 +946,33 @@ module CLITestHelpers
       end
     end
 
-    # Answers nil when the prompt was declined, like the real uninstall does.
-    def uninstall(**kw)
-      @calls << [:uninstall, kw]
+    def list(json: false, project: nil)
+      @calls << [:list, {json: json, project: project}]
       raise @error if @error
-      (kw[:yes] || kw[:dry_run]) ? @row : nil
+    end
+
+    def install(source: nil)
+      @calls << [:install, {source: source}]
+      raise @error if @error
+    end
+
+    # Answers nil when the prompt was declined, like the real uninstall does.
+    def uninstall(yes: false, dry_run: false, json: false)
+      @calls << [:uninstall, {yes: yes, dry_run: dry_run, json: json}]
+      raise @error if @error
+      (yes || dry_run) ? @row : nil
     end
 
     def check(**kw)
       @calls << [:check, kw]
       {exit_code: 0}
+    end
+
+    %i[stats compare audit].each do |name|
+      define_method(name) do |**kw|
+        @calls << [name, kw]
+        {exit_code: 0}
+      end
     end
 
     def check_removable(**kw)
@@ -870,6 +991,8 @@ module CLITestHelpers
 
   # Records each `workflow start` call and answers with a canned row.
   class FakeWorkflowStartCommand
+    CONTROL_METHODS = %i[calls error error= row row=].freeze
+
     attr_reader :calls
     attr_accessor :error, :row
 
@@ -887,6 +1010,8 @@ module CLITestHelpers
 
   # Records each `go` call and answers with a canned row.
   class FakeGoCommand
+    CONTROL_METHODS = %i[calls error error= row row=].freeze
+
     attr_reader :calls
     attr_accessor :error, :row
 
@@ -903,6 +1028,8 @@ module CLITestHelpers
   end
 
   class FakeReviewCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -916,13 +1043,15 @@ module CLITestHelpers
       @result
     end
 
-    def list(project: nil, json: false)
+    def list(project: nil, json: false, cwd: nil)
       @calls << {list: project, json: json}
       @result
     end
   end
 
   class FakeProjectActionsCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -931,7 +1060,7 @@ module CLITestHelpers
       @result = {exit_code: 0}
     end
 
-    def stop(name: nil, dry_run: false, json: false)
+    def stop(name: nil, dry_run: false, json: false, cwd: nil)
       @calls << {stop: name, dry_run: dry_run, json: json}
       @result
     end
@@ -943,6 +1072,8 @@ module CLITestHelpers
   end
 
   class FakeParentCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -958,6 +1089,8 @@ module CLITestHelpers
   end
 
   class FakeCapabilitiesCommand
+    CONTROL_METHODS = %i[calls].freeze
+
     attr_reader :calls
 
     def initialize
@@ -970,6 +1103,8 @@ module CLITestHelpers
   end
 
   class FakeAskCommand
+    CONTROL_METHODS = %i[calls].freeze
+
     attr_reader :calls
 
     def initialize(result: {exit_code: 0})
@@ -1004,6 +1139,8 @@ module CLITestHelpers
   end
 
   class FakeConfigCommand
+    CONTROL_METHODS = %i[calls handlers].freeze
+
     # +handlers+ maps an action (:set, :unset, :edit) to a callable that answers it instead
     # of the canned result; it gets the same arguments as the action.
     attr_reader :calls, :handlers
@@ -1054,6 +1191,8 @@ module CLITestHelpers
   end
 
   class FakeStatuslineCommand
+    CONTROL_METHODS = %i[calls].freeze
+
     attr_reader :calls
 
     def initialize(result: {exit_code: 0})
@@ -1077,6 +1216,161 @@ module CLITestHelpers
     def run(project, event, env: {})
       @runs << {project: project, event: event, env: env}
       true
+    end
+  end
+
+  # Sets the named keys on the real ENV (nil deletes) until the example ends; nothing else is
+  # touched. Include it in a group that needs it.
+  module EnvStub
+    def self.included(group)
+      group.after do
+        (@saved_env || {}).each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+      end
+    end
+
+    def stub_env(vars)
+      @saved_env ||= {}
+      vars.each do |key, value|
+        @saved_env[key] = ENV[key] unless @saved_env.key?(key)
+        value.nil? ? ENV.delete(key) : ENV[key] = value
+      end
+    end
+  end
+
+  # The workflow family's CLI over fake commands, shared by the workflow CLI specs. Include it
+  # in a group that needs it.
+  module WorkflowFamilyCli
+    # A CLI with only the workflow family's collaborators: the commands no workflow verb reaches are nil.
+    def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
+      state = CLITestHelpers::FakeState.new
+      project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
+      project_detector = overrides[:project_detector] || Workspace::ProjectDetector.new(state: state, project_config: project_config)
+      status_scope = Workspace::StatusScope.new(project_detector: project_detector, catalog: overrides[:project_catalog] || CLITestHelpers::FakeStatusCatalog.new)
+      unused = %i[launch_command kill_command finish_command start_command stop_command focus_command tile_command layout_command resize_command
+        init_command repair_command cleanup_command prune_command claude_command lookup_command update_pane_command run_command run_result_store
+        run_and_report_command capture_command wait_until_content_command lock_command dev_command parent_command agent_command sessions_command
+        session_event_command config_command statusline_command ask_command].to_h { |key| [key, nil] }
+
+      cli = CLITestHelpers.build_cli(
+        config: Workspace::Config.new,
+        state: state,
+        project_config: project_config,
+        git: Workspace::Git.new(output: output, input: input),
+        window_manager: CLITestHelpers::FakeWindowManager.new,
+        doctor: CLITestHelpers::FakeDoctor.new,
+        project_settings: CLITestHelpers::FakeProjectSettings.new,
+        hook_runner: CLITestHelpers::FakeHookRunner.new,
+        project_detector: project_detector,
+        status_scope: status_scope,
+        lineage: CLITestHelpers::FakeLineage.new,
+        workflow_command: overrides[:workflow_command],
+        workflow_start_command: overrides[:workflow_start_command],
+        logger: Workspace::Logger.new(output: error_output),
+        output: output,
+        error_output: error_output,
+        exit_handler: FakeExitHandler,
+        input: input,
+        working_dir: overrides[:working_dir] || Dir.tmpdir,
+        sleeper: ->(_) {},
+        launch_mode: CLITestHelpers.launch_mode(headless: false),
+        env: {},
+        **unused
+      )
+      [cli, output, error_output]
+    end
+  end
+
+  # The agent family's CLI over fake commands, shared by the agent, agent-run and pipeline CLI
+  # specs. Include it in a group that needs it.
+  module AgentFamilyCli
+    # A CLI with only the agent, agent-run and pipeline families' collaborators: the commands no
+    # agent, agent-run or pipeline verb reaches are nil.
+    def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
+      config = overrides[:config] || Workspace::Config.new
+      state = CLITestHelpers::FakeState.new
+      project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
+      project_detector = overrides[:project_detector] || Workspace::ProjectDetector.new(state: state, project_config: project_config)
+      unused = %i[launch_command kill_command finish_command start_command stop_command focus_command tile_command layout_command resize_command
+        init_command repair_command cleanup_command prune_command claude_command lookup_command update_pane_command run_command run_result_store
+        run_and_report_command capture_command wait_until_content_command lock_command dev_command parent_command session_event_command
+        config_command statusline_command ask_command].to_h { |key| [key, nil] }
+
+      cli = CLITestHelpers.build_cli(
+        config: config,
+        state: state,
+        project_config: project_config,
+        git: FakeGit.new,
+        window_manager: CLITestHelpers::FakeWindowManager.new,
+        doctor: CLITestHelpers::FakeDoctor.new,
+        project_settings: CLITestHelpers::FakeProjectSettings.new,
+        hook_runner: CLITestHelpers::FakeHookRunner.new,
+        project_detector: project_detector,
+        workspace_name: overrides[:workspace_name],
+        lineage: CLITestHelpers::FakeLineage.new,
+        agent_command: overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new,
+        ensure_agent_command: overrides[:ensure_agent_command],
+        daemon_command: overrides[:daemon_command],
+        sessions_command: overrides[:sessions_command] || Workspace::Commands::Sessions.new(config: config, output: output, error_output: error_output),
+        review_command: overrides[:review_command],
+        agent_status_command: overrides[:agent_status_command],
+        agent_executables_command: overrides[:agent_executables_command],
+        **AGENT_RUN_FAMILY_KEYWORDS.to_h { |key| [key, overrides[key]] },
+        **PIPELINE_FAMILY_KEYWORDS.to_h { |key| [key, overrides[key]] }.compact,
+        logger: Workspace::Logger.new(output: error_output),
+        output: output,
+        error_output: error_output,
+        exit_handler: FakeExitHandler,
+        input: input,
+        working_dir: overrides[:working_dir] || Dir.tmpdir,
+        sleeper: ->(_) {},
+        launch_mode: CLITestHelpers.launch_mode(headless: false),
+        env: {},
+        **unused
+      )
+      [cli, output, error_output]
+    end
+  end
+
+  # The plan and spine family's CLI over fake commands, for the plan, spine and goal CLI specs.
+  # Include it in a group that needs it.
+  module PlanSpineFamilyCli
+    # A CLI with only the plan and spine family's collaborators: the commands no plan, spine or
+    # goal verb reaches are nil.
+    def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
+      state = CLITestHelpers::FakeState.new
+      project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
+      project_detector = overrides[:project_detector] || Workspace::ProjectDetector.new(state: state, project_config: project_config)
+      status_scope = Workspace::StatusScope.new(project_detector: project_detector, catalog: overrides[:project_catalog] || CLITestHelpers::FakeStatusCatalog.new)
+      unused = %i[launch_command kill_command finish_command start_command stop_command focus_command tile_command layout_command resize_command
+        init_command repair_command cleanup_command prune_command claude_command lookup_command update_pane_command run_command run_result_store
+        run_and_report_command capture_command wait_until_content_command lock_command dev_command parent_command agent_command sessions_command
+        session_event_command config_command statusline_command ask_command].to_h { |key| [key, nil] }
+
+      cli = CLITestHelpers.build_cli(
+        config: Workspace::Config.new,
+        state: state,
+        project_config: project_config,
+        git: FakeGit.new,
+        window_manager: CLITestHelpers::FakeWindowManager.new,
+        doctor: CLITestHelpers::FakeDoctor.new,
+        project_settings: CLITestHelpers::FakeProjectSettings.new,
+        hook_runner: CLITestHelpers::FakeHookRunner.new,
+        project_detector: project_detector,
+        status_scope: status_scope,
+        lineage: CLITestHelpers::FakeLineage.new,
+        **PLAN_SPINE_FAMILY_KEYWORDS.to_h { |key| [key, overrides[key]] },
+        logger: Workspace::Logger.new(output: error_output),
+        output: output,
+        error_output: error_output,
+        exit_handler: FakeExitHandler,
+        input: input,
+        working_dir: overrides[:working_dir] || Dir.tmpdir,
+        sleeper: ->(_) {},
+        launch_mode: CLITestHelpers.launch_mode(headless: false),
+        env: {},
+        **unused
+      )
+      [cli, output, error_output]
     end
   end
 end

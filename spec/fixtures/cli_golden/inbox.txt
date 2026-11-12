@@ -1,0 +1,547 @@
+### workspace inbox --help
+--- exit 0
+--- stdout
+Usage: workspace inbox add TITLE [options] [scope]
+       workspace inbox add --from-json PATH|- [--json]
+       workspace inbox done|dismiss --dedupe-key KEY [scope] [--json]
+       workspace inbox list [--state S[,S]] [--type T] [--all] [--include-derived] [scope] [--json]
+       workspace inbox show ID [scope] [--json]
+       workspace inbox edit ID [options] [scope] [--json]
+       workspace inbox done|dismiss|reopen ID... [scope] [--json]
+       workspace inbox snooze ID... (--until ISO | --for DURATION) [scope] [--json]
+       workspace inbox ack DERIVED_ID... [scope] [--json]
+
+A durable list of things that need a person, kept per workspace, per
+project (all worktrees of one repository) or globally. Agents, scripts
+and outside tools post to it; titles and bodies are data, never run.
+
+Subcommands:
+  add TITLE     Add an item (type todo unless --type says otherwise)
+  list          Open items of this workspace, its project and the global list
+  show ID       One item, in any state
+  edit ID       Change an item's title, body, expiry or links (any state; it stays as it is)
+  done ID...    Mark items done; one already done is reported unchanged
+  dismiss ID... Mark items dismissed (nobody will act on them)
+  reopen ID...  Move done, dismissed or snoozed items back to open
+  snooze ID...  Hide open items until a time; they read open again after it. A derived id
+                (from list --include-derived) is hidden until then, or until it changes
+  ack ID...     Hide derived rows (list --include-derived) until they change (a new wait,
+                plan state or lock holder shows again) or 30 days pass. A question is answered, not acked
+
+Scope (every subcommand; at most one):
+  --name WS         The workspace WS instead of the one detected from the current directory
+  --project NAME    The project NAME (or a path in it)
+  --global          The global list
+Without one, add uses the workspace of the current directory, and fails with
+not_in_workspace outside any; list reads the workspace, its project and global.
+
+Options (add):
+  --type TYPE            todo, alert, note or review_request
+  --body TEXT            Longer text, up to 8192 characters
+  --body-file PATH|-     Read the body from a file or stdin (64 KB at most)
+  --source-kind KIND     jira, github_pr, github_check, session, agent, cli or user
+  --source-ref REF       Free text up to 200 characters
+  --source-url URL       An https:// URL
+  --dedupe-key KEY       Add once: an open or snoozed item with this key in the scope is
+                         updated, a resolved one is left alone (A-Z a-z 0-9 . _ : / # @ -, 200 at most)
+  --reopen               With --dedupe-key, reopen a resolved item instead of leaving it
+  --note REL             A Markdown note that exists in the workspace's notes directory
+                         (letters, digits . _ -, at most 4 levels); needs a workspace scope.
+                         A notes directory inside the checkout is deleted by finish and kill
+  --expires DURATION|ISO After this time the item counts as dismissed and leaves the
+                         default list (2h, 2026-10-20T09:00:00Z)
+  --link-pane PANE       A tmux pane the item is about
+  --link-plan-task ID    A plan task id
+  --link-pr N            A pull request number
+  --link-run ID          A workflow run id
+  --as-user              Record the item as made by a person
+  --from-json PATH|-     Take the whole item from one JSON object (64 KB at most) with the keys
+                         type, title, body, source, dedupe_key, expires_at, links and scope; use it
+                         alone (only --json goes with it)
+Options (edit; at least one):
+  --title TEXT           A new title
+  --body TEXT            A new body ("" clears it); or --body-file PATH|-
+  --expires DURATION|ISO A new expiry; --no-expires drops it
+  --link-pane PANE, --link-plan-task ID, --link-pr N, --link-run ID
+                         Change a link ("" clears it)
+Options (done, dismiss):
+  --dedupe-key KEY       Resolve the item holding KEY in the scope (no ids); none is unchanged
+Options (ack, snooze of derived ids): without a scope flag every workspace and project is read
+to find the row.
+Options (snooze; one of):
+  --until ISO            Wake at this time (2026-10-20T09:00:00Z); it must be in the future
+  --for DURATION         Wake after this long from now (30m, 2h)
+Options (list):
+  --state S[,S]          open (default), snoozed, done, dismissed
+  --type TYPE            Only this type
+  --all                  Every scope that has items
+  --include-derived      Add what needs you now, worked out from workspace state: open
+                         questions, waiting agent panes, blocked or stalled plans, workflow
+                         gates and stuck locks (open alerts, never stored)
+Options (every subcommand):
+  --json                 Print the documented JSON (see docs/README.inbox.md)
+
+A title or body with a control character (an escape sequence, NUL) is refused.
+Run `workspace inbox VERB --help` for the page of one subcommand.
+
+Examples:
+  workspace inbox add "Check the deploy"    # a to-do on this workspace's list
+  workspace inbox add "CI failed" --type alert --global    # an alert on the global list
+  workspace inbox add --from-json item.json    # take the whole item from a JSON file (- reads stdin)
+  workspace inbox list    # open items of this workspace, its project and the global list
+  workspace inbox list --all --include-derived --json    # every scope, plus what needs you now, as JSON
+  workspace inbox show a1b2c3d4e5    # one item, in any state
+  workspace inbox edit a1b2c3d4e5 --title "Check the deploy again"    # change an item
+  workspace inbox done a1b2c3d4e5 f6a7b8c9d0    # mark several items done
+  workspace inbox snooze a1b2c3d4e5 --for 2h    # hide an item for two hours
+  workspace inbox ack plan:blocked:api.fix    # hide a derived row until it changes
+--- stderr
+--- end
+### workspace inbox --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace inbox add TITLE [options] [scope]","workspace inbox add --from-json PATH|- [--json]","workspace inbox done|dismiss --dedupe-key KEY [scope] [--json]","workspace inbox list [--state S[,S]] [--type T] [--all] [--include-derived] [scope] [--json]","workspace inbox show ID [scope] [--json]","workspace inbox edit ID [options] [scope] [--json]","workspace inbox done|dismiss|reopen ID... [scope] [--json]","workspace inbox snooze ID... (--until ISO | --for DURATION) [scope] [--json]","workspace inbox ack DERIVED_ID... [scope] [--json]"],"description":"A durable list of things that need a person, kept per workspace, per\nproject (all worktrees of one repository) or globally. Agents, scripts\nand outside tools post to it; titles and bodies are data, never run.","options":[],"examples":[{"command":"workspace inbox add \"Check the deploy\"","scenario":"a to-do on this workspace's list"},{"command":"workspace inbox add \"CI failed\" --type alert --global","scenario":"an alert on the global list"},{"command":"workspace inbox add --from-json item.json","scenario":"take the whole item from a JSON file (- reads stdin)"},{"command":"workspace inbox list","scenario":"open items of this workspace, its project and the global list"},{"command":"workspace inbox list --all --include-derived --json","scenario":"every scope, plus what needs you now, as JSON"},{"command":"workspace inbox show a1b2c3d4e5","scenario":"one item, in any state"},{"command":"workspace inbox edit a1b2c3d4e5 --title \"Check the deploy again\"","scenario":"change an item"},{"command":"workspace inbox done a1b2c3d4e5 f6a7b8c9d0","scenario":"mark several items done"},{"command":"workspace inbox snooze a1b2c3d4e5 --for 2h","scenario":"hide an item for two hours"},{"command":"workspace inbox ack plan:blocked:api.fix","scenario":"hide a derived row until it changes"}],"sections":[{"heading":"Subcommands","text":"add TITLE     Add an item (type todo unless --type says otherwise)\n  list          Open items of this workspace, its project and the global list\n  show ID       One item, in any state\n  edit ID       Change an item's title, body, expiry or links (any state; it stays as it is)\n  done ID...    Mark items done; one already done is reported unchanged\n  dismiss ID... Mark items dismissed (nobody will act on them)\n  reopen ID...  Move done, dismissed or snoozed items back to open\n  snooze ID...  Hide open items until a time; they read open again after it. A derived id\n                (from list --include-derived) is hidden until then, or until it changes\n  ack ID...     Hide derived rows (list --include-derived) until they change (a new wait,\n                plan state or lock holder shows again) or 30 days pass. A question is answered, not acked"},{"heading":"Scope (every subcommand; at most one)","text":"--name WS         The workspace WS instead of the one detected from the current directory\n  --project NAME    The project NAME (or a path in it)\n  --global          The global list\nWithout one, add uses the workspace of the current directory, and fails with\nnot_in_workspace outside any; list reads the workspace, its project and global."},{"heading":"Options (add)","text":"--type TYPE            todo, alert, note or review_request\n  --body TEXT            Longer text, up to 8192 characters\n  --body-file PATH|-     Read the body from a file or stdin (64 KB at most)\n  --source-kind KIND     jira, github_pr, github_check, session, agent, cli or user\n  --source-ref REF       Free text up to 200 characters\n  --source-url URL       An https:// URL\n  --dedupe-key KEY       Add once: an open or snoozed item with this key in the scope is\n                         updated, a resolved one is left alone (A-Z a-z 0-9 . _ : / # @ -, 200 at most)\n  --reopen               With --dedupe-key, reopen a resolved item instead of leaving it\n  --note REL             A Markdown note that exists in the workspace's notes directory\n                         (letters, digits . _ -, at most 4 levels); needs a workspace scope.\n                         A notes directory inside the checkout is deleted by finish and kill\n  --expires DURATION|ISO After this time the item counts as dismissed and leaves the\n                         default list (2h, 2026-10-20T09:00:00Z)\n  --link-pane PANE       A tmux pane the item is about\n  --link-plan-task ID    A plan task id\n  --link-pr N            A pull request number\n  --link-run ID          A workflow run id\n  --as-user              Record the item as made by a person\n  --from-json PATH|-     Take the whole item from one JSON object (64 KB at most) with the keys\n                         type, title, body, source, dedupe_key, expires_at, links and scope; use it\n                         alone (only --json goes with it)"},{"heading":"Options (edit; at least one)","text":"--title TEXT           A new title\n  --body TEXT            A new body (\"\" clears it); or --body-file PATH|-\n  --expires DURATION|ISO A new expiry; --no-expires drops it\n  --link-pane PANE, --link-plan-task ID, --link-pr N, --link-run ID\n                         Change a link (\"\" clears it)"},{"heading":"Options (done, dismiss)","text":"--dedupe-key KEY       Resolve the item holding KEY in the scope (no ids); none is unchanged\nOptions (ack, snooze of derived ids): without a scope flag every workspace and project is read\nto find the row."},{"heading":"Options (snooze; one of)","text":"--until ISO            Wake at this time (2026-10-20T09:00:00Z); it must be in the future\n  --for DURATION         Wake after this long from now (30m, 2h)"},{"heading":"Options (list)","text":"--state S[,S]          open (default), snoozed, done, dismissed\n  --type TYPE            Only this type\n  --all                  Every scope that has items\n  --include-derived      Add what needs you now, worked out from workspace state: open\n                         questions, waiting agent panes, blocked or stalled plans, workflow\n                         gates and stuck locks (open alerts, never stored)"},{"heading":"Options (every subcommand)","text":"--json                 Print the documented JSON (see docs/README.inbox.md)\n\nA title or body with a control character (an escape sequence, NUL) is refused.\nRun `workspace inbox VERB --help` for the page of one subcommand."}]}
+--- stderr
+--- end
+### workspace inbox add --help
+--- exit 0
+--- stdout
+Usage: workspace inbox add TITLE [--type TYPE] [--body TEXT | --body-file PATH|-] [options] [--name WS | --project NAME | --global] [--json]
+       workspace inbox add --from-json PATH|- [--json]
+
+Add an item to the inbox.
+
+Adds a todo unless --type says otherwise, to the workspace of the current directory unless a scope
+flag picks another list; outside any workspace that fails with not_in_workspace. It changes the inbox for real.
+Titles and bodies are data, never run; one with a control character is refused.
+
+--from-json takes the whole item from one JSON object (64 KB at most) and nothing else but --json.
+
+Options:
+    --name NAME                  The workspace NAME instead of the one detected from the current directory
+    --project NAME               The project NAME (or a path in it): the list its worktrees share
+    --global                     The global list
+    --type TYPE                  todo (default), alert, note or review_request
+    --body TEXT                  Longer text, up to 8192 characters
+    --body-file PATH             Read the body from PATH, or - for stdin (64 KB at most)
+    --source-kind KIND           jira, github_pr, github_check, session, agent, cli or user
+    --source-ref REF             A reference in that source (200 characters at most)
+    --source-url URL             An https:// URL
+    --dedupe-key KEY             Add once per key and scope: an open or snoozed item with it is updated, a resolved one is left alone
+    --reopen                     With --dedupe-key, reopen a resolved item instead of leaving it
+    --note REL                   A Markdown note that exists in the workspace's notes directory (needs a workspace scope)
+    --expires WHEN               A duration (2h) or an ISO 8601 time; after it the item counts as dismissed
+    --link-pane PANE             A tmux pane the item is about
+    --link-plan-task ID          A plan task id
+    --link-pr N                  A pull request number
+    --link-run ID                A workflow run id
+    --as-user                    Record the item as made by a person
+    --from-json PATH             Read the whole item from a JSON object in PATH, or - for stdin
+    --json                       Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace inbox add "Check the deploy"    # a to-do on this workspace's list
+  workspace inbox add "CI failed" --type alert --global    # an alert on the global list
+  workspace inbox add "Upgrade Rails" --project api    # on a project's list, shared by its worktrees
+  workspace inbox add "Check the deploy" --body "Roll back if p95 stays above 2s" --expires 2h    # with longer text, gone after two hours
+  workspace inbox add "CI failed" --type alert --source-kind github_check --source-url https://github.com/org/api/actions/runs/1 --global    # record where it came from
+  workspace inbox add "Deploy notes ready" --type note --note deploy.md    # point at a note that exists in the notes directory
+  workspace inbox add "Review the fix" --link-pr 412 --link-pane %5    # tie it to a pull request and a pane
+  workspace inbox add "CI failed" --dedupe-key github_check:org/api:rspec:9f3c2e1 --global    # add once; a repeat updates the open item
+  workspace inbox add --from-json item.json    # take the whole item from a JSON file (- reads stdin)
+  workspace inbox add "Check the deploy" --json    # read the new item's id in a script
+--- stderr
+--- end
+### workspace inbox add --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace inbox add TITLE [--type TYPE] [--body TEXT | --body-file PATH|-] [options] [--name WS | --project NAME | --global] [--json]","workspace inbox add --from-json PATH|- [--json]"],"description":"Add an item to the inbox.\n\nAdds a todo unless --type says otherwise, to the workspace of the current directory unless a scope\nflag picks another list; outside any workspace that fails with not_in_workspace. It changes the inbox for real.\nTitles and bodies are data, never run; one with a control character is refused.\n\n--from-json takes the whole item from one JSON object (64 KB at most) and nothing else but --json.","options":[{"flags":"--name NAME","description":"The workspace NAME instead of the one detected from the current directory"},{"flags":"--project NAME","description":"The project NAME (or a path in it): the list its worktrees share"},{"flags":"--global","description":"The global list"},{"flags":"--type TYPE","description":"todo (default), alert, note or review_request"},{"flags":"--body TEXT","description":"Longer text, up to 8192 characters"},{"flags":"--body-file PATH","description":"Read the body from PATH, or - for stdin (64 KB at most)"},{"flags":"--source-kind KIND","description":"jira, github_pr, github_check, session, agent, cli or user"},{"flags":"--source-ref REF","description":"A reference in that source (200 characters at most)"},{"flags":"--source-url URL","description":"An https:// URL"},{"flags":"--dedupe-key KEY","description":"Add once per key and scope: an open or snoozed item with it is updated, a resolved one is left alone"},{"flags":"--reopen","description":"With --dedupe-key, reopen a resolved item instead of leaving it"},{"flags":"--note REL","description":"A Markdown note that exists in the workspace's notes directory (needs a workspace scope)"},{"flags":"--expires WHEN","description":"A duration (2h) or an ISO 8601 time; after it the item counts as dismissed"},{"flags":"--link-pane PANE","description":"A tmux pane the item is about"},{"flags":"--link-plan-task ID","description":"A plan task id"},{"flags":"--link-pr N","description":"A pull request number"},{"flags":"--link-run ID","description":"A workflow run id"},{"flags":"--as-user","description":"Record the item as made by a person"},{"flags":"--from-json PATH","description":"Read the whole item from a JSON object in PATH, or - for stdin"},{"flags":"--json","description":"Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace inbox add \"Check the deploy\"","scenario":"a to-do on this workspace's list"},{"command":"workspace inbox add \"CI failed\" --type alert --global","scenario":"an alert on the global list"},{"command":"workspace inbox add \"Upgrade Rails\" --project api","scenario":"on a project's list, shared by its worktrees"},{"command":"workspace inbox add \"Check the deploy\" --body \"Roll back if p95 stays above 2s\" --expires 2h","scenario":"with longer text, gone after two hours"},{"command":"workspace inbox add \"CI failed\" --type alert --source-kind github_check --source-url https://github.com/org/api/actions/runs/1 --global","scenario":"record where it came from"},{"command":"workspace inbox add \"Deploy notes ready\" --type note --note deploy.md","scenario":"point at a note that exists in the notes directory"},{"command":"workspace inbox add \"Review the fix\" --link-pr 412 --link-pane %5","scenario":"tie it to a pull request and a pane"},{"command":"workspace inbox add \"CI failed\" --dedupe-key github_check:org/api:rspec:9f3c2e1 --global","scenario":"add once; a repeat updates the open item"},{"command":"workspace inbox add --from-json item.json","scenario":"take the whole item from a JSON file (- reads stdin)"},{"command":"workspace inbox add \"Check the deploy\" --json","scenario":"read the new item's id in a script"}]}
+--- stderr
+--- end
+### workspace inbox list --help
+--- exit 0
+--- stdout
+Usage: workspace inbox list [--state S[,S]] [--type TYPE] [--all] [--include-derived] [--name WS | --project NAME | --global] [--json]
+
+List the items of the inbox.
+
+Without a scope flag: the open items of this workspace, its project and the global list (outside a
+workspace, the global list). --all reads every scope that has items, or with --name that workspace, its
+project and the global list; --all with --project or --global is refused.
+
+Options:
+    --name NAME                  The workspace NAME instead of the one detected from the current directory
+    --project NAME               The project NAME (or a path in it): the list its worktrees share
+    --global                     The global list
+    --state S[,S]                open (default), snoozed, done or dismissed; comma-separated
+    --type TYPE                  Only items of this type
+    --all                        Every scope that has items
+    --include-derived            Add what needs you now, worked out from workspace state and never stored: open questions, waiting agent panes, blocked or stalled plans, workflow gates, stuck locks
+    --json                       Print one JSON document (see docs/README.inbox.md) instead of a table
+    -h, --help                   Show this help
+
+Examples:
+  workspace inbox list    # open items of this workspace, its project and the global list
+  workspace inbox list --state open,snoozed    # snoozed items too
+  workspace inbox list --state done    # items already done
+  workspace inbox list --type alert    # only alerts
+  workspace inbox list --all    # every scope that has items
+  workspace inbox list --all --name api    # workspace api, its project and the global list
+  workspace inbox list --project api    # one project's list alone
+  workspace inbox list --include-derived    # plus what needs you now
+  workspace inbox list --all --include-derived --json    # everything, as one JSON document
+--- stderr
+--- end
+### workspace inbox list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace inbox list [--state S[,S]] [--type TYPE] [--all] [--include-derived] [--name WS | --project NAME | --global] [--json]"],"description":"List the items of the inbox.\n\nWithout a scope flag: the open items of this workspace, its project and the global list (outside a\nworkspace, the global list). --all reads every scope that has items, or with --name that workspace, its\nproject and the global list; --all with --project or --global is refused.","options":[{"flags":"--name NAME","description":"The workspace NAME instead of the one detected from the current directory"},{"flags":"--project NAME","description":"The project NAME (or a path in it): the list its worktrees share"},{"flags":"--global","description":"The global list"},{"flags":"--state S[,S]","description":"open (default), snoozed, done or dismissed; comma-separated"},{"flags":"--type TYPE","description":"Only items of this type"},{"flags":"--all","description":"Every scope that has items"},{"flags":"--include-derived","description":"Add what needs you now, worked out from workspace state and never stored: open questions, waiting agent panes, blocked or stalled plans, workflow gates, stuck locks"},{"flags":"--json","description":"Print one JSON document (see docs/README.inbox.md) instead of a table"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace inbox list","scenario":"open items of this workspace, its project and the global list"},{"command":"workspace inbox list --state open,snoozed","scenario":"snoozed items too"},{"command":"workspace inbox list --state done","scenario":"items already done"},{"command":"workspace inbox list --type alert","scenario":"only alerts"},{"command":"workspace inbox list --all","scenario":"every scope that has items"},{"command":"workspace inbox list --all --name api","scenario":"workspace api, its project and the global list"},{"command":"workspace inbox list --project api","scenario":"one project's list alone"},{"command":"workspace inbox list --include-derived","scenario":"plus what needs you now"},{"command":"workspace inbox list --all --include-derived --json","scenario":"everything, as one JSON document"}]}
+--- stderr
+--- end
+### workspace inbox show --help
+--- exit 0
+--- stdout
+Usage: workspace inbox show ID [--name WS | --project NAME | --global] [--json]
+
+Show one item, in any state.
+
+Without a scope flag every scope is searched; an id found in more than one is refused as ambiguous, so pass a scope flag.
+
+Options:
+    --name NAME                  The workspace NAME instead of the one detected from the current directory
+    --project NAME               The project NAME (or a path in it): the list its worktrees share
+    --global                     The global list
+    --json                       Print one JSON document (see docs/README.inbox.md) instead of text
+    -h, --help                   Show this help
+
+Examples:
+  workspace inbox show a1b2c3d4e5    # search every scope for the id
+  workspace inbox show a1b2c3d4e5 --global    # look only in the global list
+  workspace inbox show a1b2c3d4e5 --name api    # look only in workspace api
+  workspace inbox show a1b2c3d4e5 --json    # one JSON document
+--- stderr
+--- end
+### workspace inbox show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace inbox show ID [--name WS | --project NAME | --global] [--json]"],"description":"Show one item, in any state.\n\nWithout a scope flag every scope is searched; an id found in more than one is refused as ambiguous, so pass a scope flag.","options":[{"flags":"--name NAME","description":"The workspace NAME instead of the one detected from the current directory"},{"flags":"--project NAME","description":"The project NAME (or a path in it): the list its worktrees share"},{"flags":"--global","description":"The global list"},{"flags":"--json","description":"Print one JSON document (see docs/README.inbox.md) instead of text"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace inbox show a1b2c3d4e5","scenario":"search every scope for the id"},{"command":"workspace inbox show a1b2c3d4e5 --global","scenario":"look only in the global list"},{"command":"workspace inbox show a1b2c3d4e5 --name api","scenario":"look only in workspace api"},{"command":"workspace inbox show a1b2c3d4e5 --json","scenario":"one JSON document"}]}
+--- stderr
+--- end
+### workspace inbox edit --help
+--- exit 0
+--- stdout
+Usage: workspace inbox edit ID [--title TEXT] [--body TEXT | --body-file PATH|-] [--expires WHEN | --no-expires] [--link-* VALUE] [--json]
+
+Change an item's title, body, expiry or links.
+
+Works on an item in any state and leaves its state as it is. Pass at least one change; values the item
+already holds are reported unchanged. An empty value clears a body or a link. It changes the inbox for real.
+
+Options:
+    --name NAME                  The workspace NAME instead of the one detected from the current directory
+    --project NAME               The project NAME (or a path in it): the list its worktrees share
+    --global                     The global list
+    --title TEXT                 A new title
+    --body TEXT                  A new body; an empty one clears it
+    --body-file PATH             Read the body from PATH, or - for stdin (64 KB at most)
+    --expires WHEN               A new expiry: a duration (2h) or an ISO 8601 time
+    --no-expires                 Drop the expiry
+    --link-pane PANE             A tmux pane the item is about; an empty one clears it
+    --link-plan-task ID          A plan task id; an empty one clears it
+    --link-pr N                  A pull request number; an empty one clears it
+    --link-run ID                A workflow run id; an empty one clears it
+    --json                       Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace inbox edit a1b2c3d4e5 --title "Check the deploy again"    # rename an item
+  workspace inbox edit a1b2c3d4e5 --body "Roll back if p95 stays above 2s"    # replace its body
+  workspace inbox edit a1b2c3d4e5 --body ""    # clear the body
+  workspace inbox edit a1b2c3d4e5 --body-file notes.txt --global    # take the body from a file, in the global list
+  workspace inbox edit a1b2c3d4e5 --expires 2h    # expire it in two hours
+  workspace inbox edit a1b2c3d4e5 --no-expires    # keep it until someone resolves it
+  workspace inbox edit a1b2c3d4e5 --link-pr 412    # tie it to a pull request
+  workspace inbox edit a1b2c3d4e5 --link-pr ""    # clear that link
+  workspace inbox edit a1b2c3d4e5 --title "Done soon" --json    # read the result in a script
+--- stderr
+--- end
+### workspace inbox edit --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace inbox edit ID [--title TEXT] [--body TEXT | --body-file PATH|-] [--expires WHEN | --no-expires] [--link-* VALUE] [--json]"],"description":"Change an item's title, body, expiry or links.\n\nWorks on an item in any state and leaves its state as it is. Pass at least one change; values the item\nalready holds are reported unchanged. An empty value clears a body or a link. It changes the inbox for real.","options":[{"flags":"--name NAME","description":"The workspace NAME instead of the one detected from the current directory"},{"flags":"--project NAME","description":"The project NAME (or a path in it): the list its worktrees share"},{"flags":"--global","description":"The global list"},{"flags":"--title TEXT","description":"A new title"},{"flags":"--body TEXT","description":"A new body; an empty one clears it"},{"flags":"--body-file PATH","description":"Read the body from PATH, or - for stdin (64 KB at most)"},{"flags":"--expires WHEN","description":"A new expiry: a duration (2h) or an ISO 8601 time"},{"flags":"--no-expires","description":"Drop the expiry"},{"flags":"--link-pane PANE","description":"A tmux pane the item is about; an empty one clears it"},{"flags":"--link-plan-task ID","description":"A plan task id; an empty one clears it"},{"flags":"--link-pr N","description":"A pull request number; an empty one clears it"},{"flags":"--link-run ID","description":"A workflow run id; an empty one clears it"},{"flags":"--json","description":"Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace inbox edit a1b2c3d4e5 --title \"Check the deploy again\"","scenario":"rename an item"},{"command":"workspace inbox edit a1b2c3d4e5 --body \"Roll back if p95 stays above 2s\"","scenario":"replace its body"},{"command":"workspace inbox edit a1b2c3d4e5 --body \"\"","scenario":"clear the body"},{"command":"workspace inbox edit a1b2c3d4e5 --body-file notes.txt --global","scenario":"take the body from a file, in the global list"},{"command":"workspace inbox edit a1b2c3d4e5 --expires 2h","scenario":"expire it in two hours"},{"command":"workspace inbox edit a1b2c3d4e5 --no-expires","scenario":"keep it until someone resolves it"},{"command":"workspace inbox edit a1b2c3d4e5 --link-pr 412","scenario":"tie it to a pull request"},{"command":"workspace inbox edit a1b2c3d4e5 --link-pr \"\"","scenario":"clear that link"},{"command":"workspace inbox edit a1b2c3d4e5 --title \"Done soon\" --json","scenario":"read the result in a script"}]}
+--- stderr
+--- end
+### workspace inbox done --help
+--- exit 0
+--- stdout
+Usage: workspace inbox done ID... [--name WS | --project NAME | --global] [--json]
+       workspace inbox done --dedupe-key KEY [--name WS | --project NAME | --global] [--json]
+
+Mark items done.
+
+One already done is reported unchanged. Each id is searched in every scope unless a scope flag is given;
+exits 0 when every id worked, 3 when some failed, 1 when all did. It changes the inbox for real.
+
+Options:
+    --name NAME                  The workspace NAME instead of the one detected from the current directory
+    --project NAME               The project NAME (or a path in it): the list its worktrees share
+    --global                     The global list
+    --dedupe-key KEY             Resolve the item holding KEY in the scope (the one `add` uses) instead of ids; none is unchanged
+    --json                       Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace inbox done a1b2c3d4e5    # mark one item done
+  workspace inbox done a1b2c3d4e5 f6a7b8c9d0    # mark several done
+  workspace inbox done a1b2c3d4e5 --name api    # look for the id only in workspace api
+  workspace inbox done --dedupe-key github_check:org/api:rspec:9f3c2e1 --global    # clear the alert a poster added with that key
+  workspace inbox done a1b2c3d4e5 --json    # check in a script which ids worked
+--- stderr
+--- end
+### workspace inbox done --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace inbox done ID... [--name WS | --project NAME | --global] [--json]","workspace inbox done --dedupe-key KEY [--name WS | --project NAME | --global] [--json]"],"description":"Mark items done.\n\nOne already done is reported unchanged. Each id is searched in every scope unless a scope flag is given;\nexits 0 when every id worked, 3 when some failed, 1 when all did. It changes the inbox for real.","options":[{"flags":"--name NAME","description":"The workspace NAME instead of the one detected from the current directory"},{"flags":"--project NAME","description":"The project NAME (or a path in it): the list its worktrees share"},{"flags":"--global","description":"The global list"},{"flags":"--dedupe-key KEY","description":"Resolve the item holding KEY in the scope (the one `add` uses) instead of ids; none is unchanged"},{"flags":"--json","description":"Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace inbox done a1b2c3d4e5","scenario":"mark one item done"},{"command":"workspace inbox done a1b2c3d4e5 f6a7b8c9d0","scenario":"mark several done"},{"command":"workspace inbox done a1b2c3d4e5 --name api","scenario":"look for the id only in workspace api"},{"command":"workspace inbox done --dedupe-key github_check:org/api:rspec:9f3c2e1 --global","scenario":"clear the alert a poster added with that key"},{"command":"workspace inbox done a1b2c3d4e5 --json","scenario":"check in a script which ids worked"}]}
+--- stderr
+--- end
+### workspace inbox dismiss --help
+--- exit 0
+--- stdout
+Usage: workspace inbox dismiss ID... [--name WS | --project NAME | --global] [--json]
+       workspace inbox dismiss --dedupe-key KEY [--name WS | --project NAME | --global] [--json]
+
+Mark items dismissed (nobody will act on them).
+
+One already dismissed is reported unchanged. Each id is searched in every scope unless a scope flag is
+given; exits 0 when every id worked, 3 when some failed, 1 when all did. It changes the inbox for real.
+
+Options:
+    --name NAME                  The workspace NAME instead of the one detected from the current directory
+    --project NAME               The project NAME (or a path in it): the list its worktrees share
+    --global                     The global list
+    --dedupe-key KEY             Resolve the item holding KEY in the scope (the one `add` uses) instead of ids; none is unchanged
+    --json                       Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace inbox dismiss a1b2c3d4e5    # dismiss one item
+  workspace inbox dismiss a1b2c3d4e5 f6a7b8c9d0    # dismiss several
+  workspace inbox dismiss a1b2c3d4e5 --global    # look for the id only in the global list
+  workspace inbox dismiss --dedupe-key github_check:org/api:rspec:9f3c2e1 --global    # dismiss the alert added with that key
+  workspace inbox dismiss a1b2c3d4e5 --json    # check in a script which ids worked
+--- stderr
+--- end
+### workspace inbox dismiss --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace inbox dismiss ID... [--name WS | --project NAME | --global] [--json]","workspace inbox dismiss --dedupe-key KEY [--name WS | --project NAME | --global] [--json]"],"description":"Mark items dismissed (nobody will act on them).\n\nOne already dismissed is reported unchanged. Each id is searched in every scope unless a scope flag is\ngiven; exits 0 when every id worked, 3 when some failed, 1 when all did. It changes the inbox for real.","options":[{"flags":"--name NAME","description":"The workspace NAME instead of the one detected from the current directory"},{"flags":"--project NAME","description":"The project NAME (or a path in it): the list its worktrees share"},{"flags":"--global","description":"The global list"},{"flags":"--dedupe-key KEY","description":"Resolve the item holding KEY in the scope (the one `add` uses) instead of ids; none is unchanged"},{"flags":"--json","description":"Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace inbox dismiss a1b2c3d4e5","scenario":"dismiss one item"},{"command":"workspace inbox dismiss a1b2c3d4e5 f6a7b8c9d0","scenario":"dismiss several"},{"command":"workspace inbox dismiss a1b2c3d4e5 --global","scenario":"look for the id only in the global list"},{"command":"workspace inbox dismiss --dedupe-key github_check:org/api:rspec:9f3c2e1 --global","scenario":"dismiss the alert added with that key"},{"command":"workspace inbox dismiss a1b2c3d4e5 --json","scenario":"check in a script which ids worked"}]}
+--- stderr
+--- end
+### workspace inbox reopen --help
+--- exit 0
+--- stdout
+Usage: workspace inbox reopen ID... [--name WS | --project NAME | --global] [--json]
+
+Move done, dismissed or snoozed items back to open.
+
+An item already open is reported unchanged. Each id is searched in every scope unless a scope flag is
+given; exits 0 when every id worked, 3 when some failed, 1 when all did. It changes the inbox for real.
+
+Options:
+    --name NAME                  The workspace NAME instead of the one detected from the current directory
+    --project NAME               The project NAME (or a path in it): the list its worktrees share
+    --global                     The global list
+    --json                       Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace inbox reopen a1b2c3d4e5    # reopen one item
+  workspace inbox reopen a1b2c3d4e5 f6a7b8c9d0    # reopen several
+  workspace inbox reopen a1b2c3d4e5 --name api    # look for the id only in workspace api
+  workspace inbox reopen a1b2c3d4e5 --json    # check in a script which ids worked
+--- stderr
+--- end
+### workspace inbox reopen --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace inbox reopen ID... [--name WS | --project NAME | --global] [--json]"],"description":"Move done, dismissed or snoozed items back to open.\n\nAn item already open is reported unchanged. Each id is searched in every scope unless a scope flag is\ngiven; exits 0 when every id worked, 3 when some failed, 1 when all did. It changes the inbox for real.","options":[{"flags":"--name NAME","description":"The workspace NAME instead of the one detected from the current directory"},{"flags":"--project NAME","description":"The project NAME (or a path in it): the list its worktrees share"},{"flags":"--global","description":"The global list"},{"flags":"--json","description":"Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace inbox reopen a1b2c3d4e5","scenario":"reopen one item"},{"command":"workspace inbox reopen a1b2c3d4e5 f6a7b8c9d0","scenario":"reopen several"},{"command":"workspace inbox reopen a1b2c3d4e5 --name api","scenario":"look for the id only in workspace api"},{"command":"workspace inbox reopen a1b2c3d4e5 --json","scenario":"check in a script which ids worked"}]}
+--- stderr
+--- end
+### workspace inbox snooze --help
+--- exit 0
+--- stdout
+Usage: workspace inbox snooze ID... (--until ISO | --for DURATION) [--name WS | --project NAME | --global] [--json]
+
+Hide open items until a time.
+
+They read open again after it. A done or dismissed item is refused (reopen it first). A derived id (from
+`inbox list --include-derived`) is hidden until then, or until it changes; without a scope flag every
+workspace and project is read to find it. It changes the inbox for real.
+
+Options:
+    --name NAME                  The workspace NAME instead of the one detected from the current directory
+    --project NAME               The project NAME (or a path in it): the list its worktrees share
+    --global                     The global list
+    --until ISO                  Wake at this ISO 8601 time; it must be in the future
+    --for DURATION               Wake after this long from now (30m, 2h)
+    --json                       Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace inbox snooze a1b2c3d4e5 --for 2h    # hide an item for two hours
+  workspace inbox snooze a1b2c3d4e5 f6a7b8c9d0 --for 30m    # hide several
+  workspace inbox snooze a1b2c3d4e5 --until 2099-01-01T09:00:00Z    # wake at a set time (it must be in the future)
+  workspace inbox snooze 'pane:waiting:api.fix:%5' --for 1h    # hide a derived row until then or until it changes
+  workspace inbox snooze a1b2c3d4e5 --for 2h --json    # check in a script which ids worked
+--- stderr
+--- end
+### workspace inbox snooze --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace inbox snooze ID... (--until ISO | --for DURATION) [--name WS | --project NAME | --global] [--json]"],"description":"Hide open items until a time.\n\nThey read open again after it. A done or dismissed item is refused (reopen it first). A derived id (from\n`inbox list --include-derived`) is hidden until then, or until it changes; without a scope flag every\nworkspace and project is read to find it. It changes the inbox for real.","options":[{"flags":"--name NAME","description":"The workspace NAME instead of the one detected from the current directory"},{"flags":"--project NAME","description":"The project NAME (or a path in it): the list its worktrees share"},{"flags":"--global","description":"The global list"},{"flags":"--until ISO","description":"Wake at this ISO 8601 time; it must be in the future"},{"flags":"--for DURATION","description":"Wake after this long from now (30m, 2h)"},{"flags":"--json","description":"Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace inbox snooze a1b2c3d4e5 --for 2h","scenario":"hide an item for two hours"},{"command":"workspace inbox snooze a1b2c3d4e5 f6a7b8c9d0 --for 30m","scenario":"hide several"},{"command":"workspace inbox snooze a1b2c3d4e5 --until 2099-01-01T09:00:00Z","scenario":"wake at a set time (it must be in the future)"},{"command":"workspace inbox snooze 'pane:waiting:api.fix:%5' --for 1h","scenario":"hide a derived row until then or until it changes"},{"command":"workspace inbox snooze a1b2c3d4e5 --for 2h --json","scenario":"check in a script which ids worked"}]}
+--- stderr
+--- end
+### workspace inbox ack --help
+--- exit 0
+--- stdout
+Usage: workspace inbox ack DERIVED_ID... [--name WS | --project NAME | --global] [--json]
+
+Hide derived rows until they change.
+
+Derived rows are the ones `inbox list --include-derived` adds; take their ids from there. An acked row
+shows again when it changes (a new wait, plan state or lock holder) or after 30 days. A question is
+answered, not acked. Without a scope flag every workspace and project is read to find the row.
+It changes the inbox for real.
+
+Options:
+    --name NAME                  The workspace NAME instead of the one detected from the current directory
+    --project NAME               The project NAME (or a path in it): the list its worktrees share
+    --global                     The global list
+    --json                       Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr
+    -h, --help                   Show this help
+
+Examples:
+  workspace inbox ack plan:blocked:api.fix    # hide one derived row
+  workspace inbox ack plan:blocked:api.fix 'pane:waiting:api.fix:%5'    # hide several
+  workspace inbox ack plan:blocked:api.fix --name api    # read only workspace api to find the row
+  workspace inbox ack plan:blocked:api.fix --json    # check in a script which rows were hidden
+--- stderr
+--- end
+### workspace inbox ack --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace inbox ack DERIVED_ID... [--name WS | --project NAME | --global] [--json]"],"description":"Hide derived rows until they change.\n\nDerived rows are the ones `inbox list --include-derived` adds; take their ids from there. An acked row\nshows again when it changes (a new wait, plan state or lock holder) or after 30 days. A question is\nanswered, not acked. Without a scope flag every workspace and project is read to find the row.\nIt changes the inbox for real.","options":[{"flags":"--name NAME","description":"The workspace NAME instead of the one detected from the current directory"},{"flags":"--project NAME","description":"The project NAME (or a path in it): the list its worktrees share"},{"flags":"--global","description":"The global list"},{"flags":"--json","description":"Print one JSON document (see docs/README.inbox.md) instead of text, which goes to stderr"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace inbox ack plan:blocked:api.fix","scenario":"hide one derived row"},{"command":"workspace inbox ack plan:blocked:api.fix 'pane:waiting:api.fix:%5'","scenario":"hide several"},{"command":"workspace inbox ack plan:blocked:api.fix --name api","scenario":"read only workspace api to find the row"},{"command":"workspace inbox ack plan:blocked:api.fix --json","scenario":"check in a script which rows were hidden"}]}
+--- stderr
+--- end
+### workspace inbox --bogus
+--- exit 1
+--- stdout
+--- stderr
+Unknown inbox subcommand: --bogus. Run 'workspace inbox help'.
+--- end
+### workspace inbox --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"Unknown inbox subcommand: --bogus. Run 'workspace inbox help'.","code":"usage"}
+--- stderr
+--- end
+### workspace inbox
+--- exit 0
+--- stdout
+Usage: workspace inbox add TITLE [options] [scope]
+       workspace inbox add --from-json PATH|- [--json]
+       workspace inbox done|dismiss --dedupe-key KEY [scope] [--json]
+       workspace inbox list [--state S[,S]] [--type T] [--all] [--include-derived] [scope] [--json]
+       workspace inbox show ID [scope] [--json]
+       workspace inbox edit ID [options] [scope] [--json]
+       workspace inbox done|dismiss|reopen ID... [scope] [--json]
+       workspace inbox snooze ID... (--until ISO | --for DURATION) [scope] [--json]
+       workspace inbox ack DERIVED_ID... [scope] [--json]
+
+A durable list of things that need a person, kept per workspace, per
+project (all worktrees of one repository) or globally. Agents, scripts
+and outside tools post to it; titles and bodies are data, never run.
+
+Subcommands:
+  add TITLE     Add an item (type todo unless --type says otherwise)
+  list          Open items of this workspace, its project and the global list
+  show ID       One item, in any state
+  edit ID       Change an item's title, body, expiry or links (any state; it stays as it is)
+  done ID...    Mark items done; one already done is reported unchanged
+  dismiss ID... Mark items dismissed (nobody will act on them)
+  reopen ID...  Move done, dismissed or snoozed items back to open
+  snooze ID...  Hide open items until a time; they read open again after it. A derived id
+                (from list --include-derived) is hidden until then, or until it changes
+  ack ID...     Hide derived rows (list --include-derived) until they change (a new wait,
+                plan state or lock holder shows again) or 30 days pass. A question is answered, not acked
+
+Scope (every subcommand; at most one):
+  --name WS         The workspace WS instead of the one detected from the current directory
+  --project NAME    The project NAME (or a path in it)
+  --global          The global list
+Without one, add uses the workspace of the current directory, and fails with
+not_in_workspace outside any; list reads the workspace, its project and global.
+
+Options (add):
+  --type TYPE            todo, alert, note or review_request
+  --body TEXT            Longer text, up to 8192 characters
+  --body-file PATH|-     Read the body from a file or stdin (64 KB at most)
+  --source-kind KIND     jira, github_pr, github_check, session, agent, cli or user
+  --source-ref REF       Free text up to 200 characters
+  --source-url URL       An https:// URL
+  --dedupe-key KEY       Add once: an open or snoozed item with this key in the scope is
+                         updated, a resolved one is left alone (A-Z a-z 0-9 . _ : / # @ -, 200 at most)
+  --reopen               With --dedupe-key, reopen a resolved item instead of leaving it
+  --note REL             A Markdown note that exists in the workspace's notes directory
+                         (letters, digits . _ -, at most 4 levels); needs a workspace scope.
+                         A notes directory inside the checkout is deleted by finish and kill
+  --expires DURATION|ISO After this time the item counts as dismissed and leaves the
+                         default list (2h, 2026-10-20T09:00:00Z)
+  --link-pane PANE       A tmux pane the item is about
+  --link-plan-task ID    A plan task id
+  --link-pr N            A pull request number
+  --link-run ID          A workflow run id
+  --as-user              Record the item as made by a person
+  --from-json PATH|-     Take the whole item from one JSON object (64 KB at most) with the keys
+                         type, title, body, source, dedupe_key, expires_at, links and scope; use it
+                         alone (only --json goes with it)
+Options (edit; at least one):
+  --title TEXT           A new title
+  --body TEXT            A new body ("" clears it); or --body-file PATH|-
+  --expires DURATION|ISO A new expiry; --no-expires drops it
+  --link-pane PANE, --link-plan-task ID, --link-pr N, --link-run ID
+                         Change a link ("" clears it)
+Options (done, dismiss):
+  --dedupe-key KEY       Resolve the item holding KEY in the scope (no ids); none is unchanged
+Options (ack, snooze of derived ids): without a scope flag every workspace and project is read
+to find the row.
+Options (snooze; one of):
+  --until ISO            Wake at this time (2026-10-20T09:00:00Z); it must be in the future
+  --for DURATION         Wake after this long from now (30m, 2h)
+Options (list):
+  --state S[,S]          open (default), snoozed, done, dismissed
+  --type TYPE            Only this type
+  --all                  Every scope that has items
+  --include-derived      Add what needs you now, worked out from workspace state: open
+                         questions, waiting agent panes, blocked or stalled plans, workflow
+                         gates and stuck locks (open alerts, never stored)
+Options (every subcommand):
+  --json                 Print the documented JSON (see docs/README.inbox.md)
+
+A title or body with a control character (an escape sequence, NUL) is refused.
+Run `workspace inbox VERB --help` for the page of one subcommand.
+
+Examples:
+  workspace inbox add "Check the deploy"    # a to-do on this workspace's list
+  workspace inbox add "CI failed" --type alert --global    # an alert on the global list
+  workspace inbox add --from-json item.json    # take the whole item from a JSON file (- reads stdin)
+  workspace inbox list    # open items of this workspace, its project and the global list
+  workspace inbox list --all --include-derived --json    # every scope, plus what needs you now, as JSON
+  workspace inbox show a1b2c3d4e5    # one item, in any state
+  workspace inbox edit a1b2c3d4e5 --title "Check the deploy again"    # change an item
+  workspace inbox done a1b2c3d4e5 f6a7b8c9d0    # mark several items done
+  workspace inbox snooze a1b2c3d4e5 --for 2h    # hide an item for two hours
+  workspace inbox ack plan:blocked:api.fix    # hide a derived row until it changes
+--- stderr
+--- end

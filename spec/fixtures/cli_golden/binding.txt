@@ -1,0 +1,201 @@
+### workspace binding --help
+--- exit 0
+--- stdout
+Usage: workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--name NAME] [--json]
+       workspace binding show [--pane %ID] [--json]
+       workspace binding clear [--pane %ID] [--json]
+
+Bind a tmux pane to a workflow run, a PR review or a library play. When the agent
+in a bound pane starts a session (startup, /clear, resume or compact), session-event
+reminds it of its subject, so it survives a lost context. Nothing is typed into the pane.
+
+A pane is stored by its tmux pane id (%19) and only counts in the tmux session it
+was bound in. set takes a pane id or window.pane of the workspace's own session;
+show and clear take a pane id. All three default to $TMUX_PANE, the pane the
+command runs in. WORKSPACE (or --name) defaults to the project detected from the
+current directory. start --play and launch --play bind the pane they sent a play
+to (kind play). show marks a binding stale when the pane is no longer in the tmux
+session and slot it was bound in; a stale binding is not announced.
+
+--pack lists library packs (see `workspace instructions --help`) the hook also prints, so
+they survive /clear and compaction. start and launch set it for the packs they send;
+a pane sent packs but no play is bound with kind play and id play/<first pack>. Setting
+a binding replaces the whole earlier one, its packs included.
+
+        --name NAME                  Workspace name (set)
+        --pane PANE                  Pane id (%19) or, for set, window.pane (0.1)
+        --kind KIND                  run, review or play (set)
+        --id ID                      Run id, review id such as acme/api#835, or play/NAME (set)
+        --step STEP                  Step name (set)
+        --attempt N                  Step attempt, 1 or more (set)
+        --focus TEXT                 Review focus, e.g. security (set)
+        --instructions PATH          File holding the pane's instructions (set); stored as an absolute path
+        --artifacts PATH             Directory holding the subject's artifacts (set); stored as an absolute path
+        --pack NAME                  Library pack the agent is also reminded of (set; repeatable; replaces the stored list)
+        --json                       Print one JSON action document
+    -h, --help                       Show this help
+
+Examples:
+  workspace binding set --kind play --id play/orchestrator    # from inside the agent's own pane: remind it of a play after a /clear
+  workspace binding show    # from inside an agent's pane: what it is reminded of after a /clear
+  workspace binding clear    # from inside the agent's pane: stop reminding it once its work is done
+--- stderr
+--- end
+### workspace binding --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--name NAME] [--json]","workspace binding show [--pane %ID] [--json]","workspace binding clear [--pane %ID] [--json]"],"description":"Bind a tmux pane to a workflow run, a PR review or a library play. When the agent\nin a bound pane starts a session (startup, /clear, resume or compact), session-event\nreminds it of its subject, so it survives a lost context. Nothing is typed into the pane.\n\nA pane is stored by its tmux pane id (%19) and only counts in the tmux session it\nwas bound in. set takes a pane id or window.pane of the workspace's own session;\nshow and clear take a pane id. All three default to $TMUX_PANE, the pane the\ncommand runs in. WORKSPACE (or --name) defaults to the project detected from the\ncurrent directory. start --play and launch --play bind the pane they sent a play\nto (kind play). show marks a binding stale when the pane is no longer in the tmux\nsession and slot it was bound in; a stale binding is not announced.\n\n--pack lists library packs (see `workspace instructions --help`) the hook also prints, so\nthey survive /clear and compaction. start and launch set it for the packs they send;\na pane sent packs but no play is bound with kind play and id play/<first pack>. Setting\na binding replaces the whole earlier one, its packs included.\n\n        --name NAME                  Workspace name (set)\n        --pane PANE                  Pane id (%19) or, for set, window.pane (0.1)\n        --kind KIND                  run, review or play (set)\n        --id ID                      Run id, review id such as acme/api#835, or play/NAME (set)\n        --step STEP                  Step name (set)\n        --attempt N                  Step attempt, 1 or more (set)\n        --focus TEXT                 Review focus, e.g. security (set)\n        --instructions PATH          File holding the pane's instructions (set); stored as an absolute path\n        --artifacts PATH             Directory holding the subject's artifacts (set); stored as an absolute path\n        --pack NAME                  Library pack the agent is also reminded of (set; repeatable; replaces the stored list)\n        --json                       Print one JSON action document\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace binding set --kind play --id play/orchestrator","scenario":"from inside the agent's own pane: remind it of a play after a /clear"},{"command":"workspace binding show","scenario":"from inside an agent's pane: what it is reminded of after a /clear"},{"command":"workspace binding clear","scenario":"from inside the agent's pane: stop reminding it once its work is done"}]}
+--- stderr
+--- end
+### workspace binding set --help
+--- exit 0
+--- stdout
+Usage: workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--name NAME] [--json]
+
+Bind a pane to a workflow run, a PR review or a library play.
+
+When the agent in a bound pane starts a session (startup, /clear, resume or compact), session-event
+reminds it of its subject, so it survives a lost context. Nothing is typed into the pane. A pane is
+stored by its tmux pane id (%19) and only counts in the tmux session it was bound in. Setting a
+binding replaces the whole earlier one, its packs included. This records the binding for real, in
+bindings.json; there is no dry run.
+
+Options:
+    --name NAME                  Workspace name (default: the project detected from the current directory)
+    --pane PANE                  Pane id (%19) or window.pane (0.1) of the workspace's own session; defaults to $TMUX_PANE
+    --kind KIND                  run, review or play
+    --id ID                      Run id, review id such as acme/api#835, or play/NAME
+    --step STEP                  Step name
+    --attempt N                  Step attempt, 1 or more
+    --focus TEXT                 Review focus, e.g. security
+    --instructions PATH          File holding the pane's instructions; stored as an absolute path
+    --artifacts PATH             Directory holding the subject's artifacts; stored as an absolute path
+    --pack NAME                  Library pack the agent is also reminded of (repeatable; replaces the stored list; see `workspace instructions --help`)
+    --json                       Print one JSON action document
+    -h, --help                   Show this help
+
+Examples:
+  workspace binding set --kind play --id play/orchestrator    # from inside the agent's own pane: remind it of a play after a /clear
+  workspace binding set my-app --pane %5 --kind run --id wr_01 --step implement --attempt 2    # bind the pane of a workflow run's second implement attempt
+  workspace binding set my-app --pane 0.1 --kind review --id acme/api#835 --focus security    # bind a review pane by window.pane, with the focus the reviewer was given
+  workspace binding set --pane %5 --kind play --id play/research --pack commits --pack notes    # also remind the agent of two packs, which replaces any packs stored before
+  workspace binding set --pane %5 --kind run --id wr_01 --json    # for a script: the stored binding as one JSON action document
+--- stderr
+--- end
+### workspace binding set --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--name NAME] [--json]"],"description":"Bind a pane to a workflow run, a PR review or a library play.\n\nWhen the agent in a bound pane starts a session (startup, /clear, resume or compact), session-event\nreminds it of its subject, so it survives a lost context. Nothing is typed into the pane. A pane is\nstored by its tmux pane id (%19) and only counts in the tmux session it was bound in. Setting a\nbinding replaces the whole earlier one, its packs included. This records the binding for real, in\nbindings.json; there is no dry run.","options":[{"flags":"--name NAME","description":"Workspace name (default: the project detected from the current directory)"},{"flags":"--pane PANE","description":"Pane id (%19) or window.pane (0.1) of the workspace's own session; defaults to $TMUX_PANE"},{"flags":"--kind KIND","description":"run, review or play"},{"flags":"--id ID","description":"Run id, review id such as acme/api#835, or play/NAME"},{"flags":"--step STEP","description":"Step name"},{"flags":"--attempt N","description":"Step attempt, 1 or more"},{"flags":"--focus TEXT","description":"Review focus, e.g. security"},{"flags":"--instructions PATH","description":"File holding the pane's instructions; stored as an absolute path"},{"flags":"--artifacts PATH","description":"Directory holding the subject's artifacts; stored as an absolute path"},{"flags":"--pack NAME","description":"Library pack the agent is also reminded of (repeatable; replaces the stored list; see `workspace instructions --help`)"},{"flags":"--json","description":"Print one JSON action document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace binding set --kind play --id play/orchestrator","scenario":"from inside the agent's own pane: remind it of a play after a /clear"},{"command":"workspace binding set my-app --pane %5 --kind run --id wr_01 --step implement --attempt 2","scenario":"bind the pane of a workflow run's second implement attempt"},{"command":"workspace binding set my-app --pane 0.1 --kind review --id acme/api#835 --focus security","scenario":"bind a review pane by window.pane, with the focus the reviewer was given"},{"command":"workspace binding set --pane %5 --kind play --id play/research --pack commits --pack notes","scenario":"also remind the agent of two packs, which replaces any packs stored before"},{"command":"workspace binding set --pane %5 --kind run --id wr_01 --json","scenario":"for a script: the stored binding as one JSON action document"}]}
+--- stderr
+--- end
+### workspace binding show --help
+--- exit 0
+--- stdout
+Usage: workspace binding show [--pane %ID] [--json]
+
+Print a pane's binding.
+
+A binding ties a tmux pane to a workflow run, a PR review or a library play, so session-event can remind the agent in it of its subject.
+It is marked stale when the pane is no longer in the tmux session and slot it was bound in; a stale binding is not announced.
+
+Options:
+    --pane PANE                  Pane id (%19); defaults to $TMUX_PANE, the pane the command runs in
+    --json                       Print one JSON action document
+    -h, --help                   Show this help
+
+Examples:
+  workspace binding show    # from inside an agent's pane: what it is reminded of after a /clear
+  workspace binding show --pane %5    # check a pane after a restore: is its binding stale?
+  workspace binding show --pane %5 --json    # for a script: stale, packs and plays as fields; a pane with no binding exits 1 with not_bound
+--- stderr
+--- end
+### workspace binding show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace binding show [--pane %ID] [--json]"],"description":"Print a pane's binding.\n\nA binding ties a tmux pane to a workflow run, a PR review or a library play, so session-event can remind the agent in it of its subject.\nIt is marked stale when the pane is no longer in the tmux session and slot it was bound in; a stale binding is not announced.","options":[{"flags":"--pane PANE","description":"Pane id (%19); defaults to $TMUX_PANE, the pane the command runs in"},{"flags":"--json","description":"Print one JSON action document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace binding show","scenario":"from inside an agent's pane: what it is reminded of after a /clear"},{"command":"workspace binding show --pane %5","scenario":"check a pane after a restore: is its binding stale?"},{"command":"workspace binding show --pane %5 --json","scenario":"for a script: stale, packs and plays as fields; a pane with no binding exits 1 with not_bound"}]}
+--- stderr
+--- end
+### workspace binding clear --help
+--- exit 0
+--- stdout
+Usage: workspace binding clear [--pane %ID] [--json]
+
+Remove a pane's binding.
+
+A binding ties a tmux pane to a workflow run, a PR review or a library play, so session-event can remind the agent in it of its subject.
+This removes the pane's entry from bindings.json for real; nothing is typed into the pane.
+
+Options:
+    --pane PANE                  Pane id (%19); defaults to $TMUX_PANE, the pane the command runs in
+    --json                       Print one JSON action document
+    -h, --help                   Show this help
+
+Examples:
+  workspace binding clear    # from inside the agent's pane: stop reminding it once its work is done
+  workspace binding clear --pane %5    # unbind another pane, e.g. one whose run was cancelled
+  workspace binding clear --pane %5 --json    # for a script: the removed binding as one JSON action document; a pane with no binding exits 1 with not_bound
+--- stderr
+--- end
+### workspace binding clear --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace binding clear [--pane %ID] [--json]"],"description":"Remove a pane's binding.\n\nA binding ties a tmux pane to a workflow run, a PR review or a library play, so session-event can remind the agent in it of its subject.\nThis removes the pane's entry from bindings.json for real; nothing is typed into the pane.","options":[{"flags":"--pane PANE","description":"Pane id (%19); defaults to $TMUX_PANE, the pane the command runs in"},{"flags":"--json","description":"Print one JSON action document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace binding clear","scenario":"from inside the agent's pane: stop reminding it once its work is done"},{"command":"workspace binding clear --pane %5","scenario":"unbind another pane, e.g. one whose run was cancelled"},{"command":"workspace binding clear --pane %5 --json","scenario":"for a script: the removed binding as one JSON action document; a pane with no binding exits 1 with not_bound"}]}
+--- stderr
+--- end
+### workspace binding --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace binding --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace binding
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: set, show or clear.
+
+Usage: workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--name NAME] [--json]
+       workspace binding show [--pane %ID] [--json]
+       workspace binding clear [--pane %ID] [--json]
+
+Bind a tmux pane to a workflow run, a PR review or a library play. When the agent
+in a bound pane starts a session (startup, /clear, resume or compact), session-event
+reminds it of its subject, so it survives a lost context. Nothing is typed into the pane.
+
+A pane is stored by its tmux pane id (%19) and only counts in the tmux session it
+was bound in. set takes a pane id or window.pane of the workspace's own session;
+show and clear take a pane id. All three default to $TMUX_PANE, the pane the
+command runs in. WORKSPACE (or --name) defaults to the project detected from the
+current directory. start --play and launch --play bind the pane they sent a play
+to (kind play). show marks a binding stale when the pane is no longer in the tmux
+session and slot it was bound in; a stale binding is not announced.
+
+--pack lists library packs (see `workspace instructions --help`) the hook also prints, so
+they survive /clear and compaction. start and launch set it for the packs they send;
+a pane sent packs but no play is bound with kind play and id play/<first pack>. Setting
+a binding replaces the whole earlier one, its packs included.
+
+        --name NAME                  Workspace name (set)
+        --pane PANE                  Pane id (%19) or, for set, window.pane (0.1)
+        --kind KIND                  run, review or play (set)
+        --id ID                      Run id, review id such as acme/api#835, or play/NAME (set)
+        --step STEP                  Step name (set)
+        --attempt N                  Step attempt, 1 or more (set)
+        --focus TEXT                 Review focus, e.g. security (set)
+        --instructions PATH          File holding the pane's instructions (set); stored as an absolute path
+        --artifacts PATH             Directory holding the subject's artifacts (set); stored as an absolute path
+        --pack NAME                  Library pack the agent is also reminded of (set; repeatable; replaces the stored list)
+        --json                       Print one JSON action document
+    -h, --help                       Show this help
+
+Examples:
+  workspace binding set --kind play --id play/orchestrator    # from inside the agent's own pane: remind it of a play after a /clear
+  workspace binding show    # from inside an agent's pane: what it is reminded of after a /clear
+  workspace binding clear    # from inside the agent's pane: stop reminding it once its work is done
+--- end
