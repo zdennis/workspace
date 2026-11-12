@@ -40,6 +40,7 @@ module Workspace
       @tmux = tmux
       @differ = differ
       @retention = retention
+      @files = TemplateBatchFiles.new(backups: backups, writer: writer)
     end
 
     # @param names [Array<String>] the workspaces, in order
@@ -180,11 +181,7 @@ module Workspace
                      "message" => "#{entry["name"]}: #{what} #{path} changed after apply wrote it, so it was left as it is#{" (only the render record; the config was put back)" if kind == :record && warnings.none? { |w| w["workspace"] == entry["name"] && w["kind"] == "config" }}"}
         return false
       end
-      if before.nil?
-        File.delete(path)
-      else
-        AtomicFile.write(path, File.binread(@backups.copy_path(manifest, entry["name"], kind: kind)), perm: mode_of(path))
-      end
+      @files.put(manifest, entry, kind)
       true
     end
 
@@ -198,21 +195,12 @@ module Workspace
       batch.id if kept
     end
 
-    # The file's own mode, kept as the writer keeps it; nil (the umask's) for one that is gone.
-    def mode_of(path)
-      File.stat(path).mode & 0o7777
-    rescue Errno::ENOENT
-      nil
-    end
-
     def sha(text)
       Digest::SHA256.hexdigest(text)
     end
 
     def file_sha(path)
-      Digest::SHA256.file(path).hexdigest
-    rescue Errno::ENOENT
-      nil
+      @files.sha(path)
     end
   end
 end

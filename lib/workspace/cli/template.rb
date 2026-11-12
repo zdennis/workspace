@@ -12,6 +12,10 @@ module Workspace
         "status" => %i[all project json],
         "apply" => %i[all project dry_run diff force rollback json],
         "adopt" => %i[all project dry_run json],
+        "backup" => %i[all project json],
+        "backups list" => %i[json],
+        "backups prune" => %i[json],
+        "restore" => %i[force json],
         "show" => %i[kind name json],
         "path" => %i[kind name json],
         "variables" => %i[kind name json],
@@ -24,11 +28,13 @@ module Workspace
       }.freeze
 
       # @param template_command [Workspace::Commands::Template, nil] `template` verbs; nil refuses `template`
+      # @param backups_command [Workspace::Commands::TemplateBackups, nil] `backup`, `backups` and `restore`; nil refuses them
       # @param common [CLI::Common] the output, exit and help helpers
       # @param names [CLI::Names] finds the workspace of the working directory
       # @param working_dir [String] the directory the CLI runs from
-      def initialize(template_command:, common:, names:, working_dir:)
+      def initialize(template_command:, common:, names:, working_dir:, backups_command: nil)
         @template_command = template_command
+        @backups_command = backups_command
         @common = common
         @names = names
         @working_dir = working_dir
@@ -52,15 +58,20 @@ module Workspace
         subcommand = args.shift
         return invocation.output.puts(parser.help) unless subcommand
 
+        subcommand = "backups #{args.shift}" if subcommand == "backups" && args.first && !args.first.start_with?("-")
+        raise UsageError, "'template backups' needs a subcommand: list or prune. Run 'workspace template backups --help'." if subcommand == "backups"
+
         raise UsageError, "Unknown tmuxinator template subcommand: #{subcommand}. Run 'workspace template --help'." unless SUBCOMMANDS.key?(subcommand)
 
         options[:given].uniq.each do |key|
           raise UsageError, "--#{key} does not apply to 'template #{subcommand}'. Run 'workspace template --help'." unless SUBCOMMANDS[subcommand].include?(key)
         end
         raise UsageError, "'template #{subcommand}' needs a tmuxinator template NAME. Run 'workspace template #{subcommand} --help'." if %w[new use].include?(subcommand) && args.empty?
-        limit = {"list" => 0, "variables" => 0, "status" => nil, "apply" => nil, "adopt" => nil}.fetch(subcommand, 1)
+        raise UsageError, "'template restore' needs a backup ID (see 'workspace template backups list'). Run 'workspace template restore --help'." if subcommand == "restore" && args.empty?
+        limit = {"list" => 0, "variables" => 0, "status" => nil, "apply" => nil, "adopt" => nil, "backup" => nil, "restore" => nil, "backups list" => 0, "backups prune" => 0}.fetch(subcommand, 1)
         raise UsageError, "Unexpected argument: #{args[limit]}. Run 'workspace template --help'." if limit && args.size > limit
         raise Error, "template is not available: no template command was wired" unless @template_command
+        raise Error, "template #{subcommand} is not available: no backups command was wired" if subcommand.match?(/\Abackup|\Arestore/) && !@backups_command
 
         workspace = options[:name] || @names.workspace_here
         json = options[:json] || false
@@ -69,6 +80,10 @@ module Workspace
         when "status" then @template_command.status(names: args.dup, all: options[:all] || false, project: options[:project], cwd: @working_dir, json: json)
         when "apply" then apply(args.dup, options, invocation)
         when "adopt" then adopt(args.dup, options, invocation)
+        when "backup" then backup(args.dup, options, invocation)
+        when "backups list" then @backups_command.list(json: json)
+        when "backups prune" then run(invocation, "template backups prune", json) { @backups_command.prune(json: json) }
+        when "restore" then run(invocation, "template restore", json) { @backups_command.restore(id: args.first, names: args.drop(1), force: options[:force] || false, json: json) }
         when "show" then @template_command.show(set: args.first, kind: options[:kind], workspace: workspace, json: json)
         when "path" then @template_command.path(set: args.first, kind: options[:kind], workspace: workspace, json: json)
         when "variables" then @template_command.variables(kind: options[:kind], workspace: options[:name] ? workspace : nil, json: json)
@@ -100,6 +115,18 @@ module Workspace
           @template_command.apply(names: names, all: options[:all] || false, project: options[:project], cwd: @working_dir,
             dry_run: options[:dry_run] || false, diff: options[:diff] || false, force: options[:force] || false,
             rollback: options[:rollback] || false, json: json)
+        end
+      end
+
+      def run(invocation, action, json, &block)
+        @common.run_action(invocation, action, json: json, &block)
+      end
+
+      # `backup` reports one row per workspace, as an action document under --json.
+      def backup(names, options, invocation)
+        json = options[:json] || false
+        @common.run_action(invocation, "template backup", json: json) do
+          @backups_command.backup(names: names, all: options[:all] || false, project: options[:project], cwd: @working_dir, json: json)
         end
       end
 

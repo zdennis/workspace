@@ -1645,7 +1645,7 @@ module Workspace
     TEMPLATE_PROJECT_TEXT = "status, apply and adopt: every workspace of a project (NAME, or the project of the current workspace)"
     TEMPLATE_DIFF_TEXT = "render: print a unified diff against the workspace's current config instead of the text; apply: also show what each config would change by"
     TEMPLATE_DRY_RUN_TEXT = "apply and adopt: say what would happen to each config, writing nothing (apply: and taking no backup)"
-    TEMPLATE_FORCE_TEXT = "apply: also overwrite configs edited since they were rendered (after a backup)"
+    TEMPLATE_FORCE_TEXT = "apply: also overwrite configs edited since they were rendered (after a backup); restore: also put back over files changed since the batch wrote them (after a backup)"
     TEMPLATE_ROLLBACK_TEXT = "apply: on the first workspace that fails, put back every config the batch wrote and stop"
 
     # What each flag means on one verb's page, so a page lists only what its verb does with it.
@@ -1672,6 +1672,7 @@ module Workspace
       dry_run: "Say what would happen to each config (would apply, unchanged, skipped), writing nothing and taking no backup",
       dry_run_adopt: "Say what would happen to each config (would adopt exact or approx, tracked, gone), writing nothing",
       force: "Also overwrite configs edited since they were rendered (a backup is taken first); a config with no render record is still skipped",
+      force_restore: "Also put the backup over a config or render record changed since the batch wrote it (a backup of what it replaces is taken first)",
       rollback: "On the first workspace that fails, put back every config and render record the batch wrote, and stop"
     }.freeze
 
@@ -1761,6 +1762,74 @@ module Workspace
           ["workspace template adopt --all", "build records for every config that has none"],
           ["workspace template adopt api.worktree-login", "just that workspace"],
           ["workspace template adopt --all --json", "for a script: one row per workspace with its match"]
+        ]
+      },
+      "backup" => {
+        usage: ["template backup [WORKSPACE...] [--all | --project [NAME]] [--json]"],
+        summary: "Keep a copy of tmuxinator configs before a tmuxinator template change",
+        about: [
+          "Copies each workspace's tmuxinator config and render record into one backup batch (`Backup:` names it),",
+          "so `template restore` can put them back later. `apply` and `restore` take a batch of their own first; this",
+          "is the one you ask for. Each workspace waits for its startup lock. A config that is a symbolic link is",
+          "not copied (failed: backup_symlink). Old batches are pruned afterwards by `tmuxinator.backups.keep` and",
+          "`tmuxinator.backups.max_age`. Name the workspaces, or give --all or --project; with none of them, the",
+          "workspace of the current directory."
+        ],
+        options: [["--all", TEMPLATE_PAGE_TEXT[:all]], ["--project [NAME]", TEMPLATE_PAGE_TEXT[:project]], JSON_OPT],
+        examples: [
+          ["workspace template backup --all", "copy every tmuxinator config before trying something"],
+          ["workspace template backup api", "just that workspace"],
+          ["workspace template backup --all --json", "for a script: one row per workspace and the batch id"]
+        ]
+      },
+      "backups list" => {
+        usage: ["template backups list [--json]"],
+        summary: "List the backup batches of tmuxinator template renders, newest first",
+        about: [
+          "Each batch has an id, the reason it was taken (apply, restore or manual) and the workspaces it holds.",
+          "Reads only."
+        ],
+        options: [JSON_OPT],
+        examples: [
+          ["workspace template backups list", "the batches you can restore"],
+          ["workspace template backups list | head -1", "the newest one"],
+          ["workspace template backups list --json", "for a script: each batch's id, created_at, reason and workspaces"]
+        ]
+      },
+      "backups prune" => {
+        usage: ["template backups prune [--json]"],
+        summary: "Remove tmuxinator template backup batches past the retention limits",
+        about: [
+          "Removes the batches past `tmuxinator.backups.keep` (default 20) and `tmuxinator.backups.max_age`. A",
+          "workspace's newest batch always stays, so its last backup outlives both limits. `apply`, `restore` and",
+          "`backup` already prune after taking a batch; this is for after you change a limit."
+        ],
+        options: [JSON_OPT],
+        examples: [
+          ["workspace template backups prune", "apply the retention limits now"],
+          ["workspace template backups prune --help", "this page"],
+          ["workspace template backups prune --json", "for a script: one row per batch removed"]
+        ]
+      },
+      "restore" => {
+        usage: ["template restore BACKUP_ID [WORKSPACE...] [--force] [--json]"],
+        summary: "Put a tmuxinator template backup batch back",
+        about: [
+          "Puts the batch's configs and render records back as they were when it was taken, all of them or only",
+          "the workspaces named. A config or render record the batch created is deleted. A workspace whose files",
+          "changed since the batch wrote them is refused (failed: restore_conflict) unless --force (a manual",
+          "backup is compared with the copy alone). Each workspace waits for its startup lock; one whose",
+          "files are gone and whose checkout is gone too (renamed or removed) is skipped: gone, but an accidentally",
+          "deleted config of a workspace that still has its checkout is put back. A batch of its own is taken first",
+          "(`Backup:`), so a restore can be undone by restoring that. A running session keeps its old layout until",
+          "it is relaunched. Exit 3 when some workspaces failed, 1 when all did."
+        ],
+        options: [["--force", TEMPLATE_PAGE_TEXT[:force_restore]], JSON_OPT],
+        examples: [
+          ["workspace template restore 20261112T101500123456Z-a1b2c3 api", "just api"],
+          ["workspace template restore 20261112T101500123456Z-a1b2c3", "put the whole batch back"],
+          ["workspace template restore 20261112T101500123456Z-a1b2c3 api --force", "just api, over edits made since"],
+          ["workspace template restore 20261112T101500123456Z-a1b2c3 --json", "for a script: one row per workspace"]
         ]
       },
       "show" => {

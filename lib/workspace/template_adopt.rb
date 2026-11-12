@@ -61,6 +61,18 @@ module Workspace
       nil
     end
 
+    # The checkout directory a tmuxinator config's text names (its `root:`), read as {#recover} reads it.
+    #
+    # @param text [String] a tmuxinator config
+    # @return [String, nil] nil when the text is not YAML or has no `root:`
+    def self.root_of(text)
+      data = YAML.safe_load(text)
+      root = data["root"] if data.is_a?(Hash)
+      root.to_s unless root.nil? || root.to_s.empty?
+    rescue Psych::Exception
+      nil
+    end
+
     private
 
     def locked(name, dry_run, &block)

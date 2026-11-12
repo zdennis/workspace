@@ -154,6 +154,34 @@ module Workspace
       File.join(@config.render_state_dir, "#{name}.json")
     end
 
+    # Puts a config's bytes at its path by the rule {#write} uses: an existing file keeps its own mode (set
+    # with an explicit chmod, so the umask can't narrow it), a new one gets the umask's. For a backup put back.
+    #
+    # @param name [String] the workspace
+    # @param bytes [String]
+    # @return [void]
+    def put_config(name, bytes)
+      write_config(name, bytes)
+    end
+
+    # Puts a render record's bytes at its path: an existing record keeps its mode, a new one is 0600 as
+    # {#write_record} makes it.
+    #
+    # @param name [String] the workspace
+    # @param bytes [String]
+    # @return [void]
+    def put_record(name, bytes)
+      path = record_path(name)
+      FileUtils.mkdir_p(@config.render_state_dir, mode: 0o700)
+      mode = begin
+        File.stat(path).mode & 0o7777
+      rescue Errno::ENOENT
+        nil
+      end
+      AtomicFile.write(path, bytes)
+      File.chmod(mode, path) if mode
+    end
+
     private
 
     # Whether +text+, the config as it was, is what the record says was last rendered.

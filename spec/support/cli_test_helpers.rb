@@ -13,7 +13,7 @@ module CLITestHelpers
   # The keywords .cli_parts gives the CLI::Pipeline family instead of Workspace::CLI.new.
   PIPELINE_FAMILY_KEYWORDS = %i[clock].freeze
   # The commands .cli_parts gives the CLI::Template family instead of Workspace::CLI.new.
-  TEMPLATE_FAMILY_KEYWORDS = %i[template_command].freeze
+  TEMPLATE_FAMILY_KEYWORDS = %i[template_command backups_command].freeze
   # The commands .cli_parts gives the CLI::PlanSpine family instead of Workspace::CLI.new.
   PLAN_SPINE_FAMILY_KEYWORDS = %i[plan_command plan_dispatch_command plan_task_command spine_command spine_init_command spine_start_command goal_command].freeze
 

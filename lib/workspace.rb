@@ -230,6 +230,7 @@ require_relative "workspace/project_catalog"
 require_relative "workspace/status_scope"
 require_relative "workspace/template_selection"
 require_relative "workspace/template_status"
+require_relative "workspace/template_batch_files"
 require_relative "workspace/template_apply"
 require_relative "workspace/template_adopt"
 require_relative "workspace/project_groups"
@@ -454,6 +455,7 @@ require_relative "workspace/delivery_facts"
 require_relative "workspace/goal_state"
 require_relative "workspace/commands/goal"
 require_relative "workspace/commands/template"
+require_relative "workspace/commands/template_backups"
 require_relative "workspace/commands/spine"
 require_relative "workspace/commands/spine_init"
 require_relative "workspace/commands/spine_start"
@@ -1289,9 +1291,10 @@ module Workspace
       agent_executables_command: agent_executables_command, agent_run: ->(args, invocation) { agent_run_family.prompt(args, invocation) },
       project_detector: project_detector, common: common, names: names, working_dir: working_dir)
     pipeline_family = CLI::Pipeline.new(config: config, agent_client: agent_client, common: common, names: names)
+    template_selection = TemplateSelection.new(status_scope: status_scope, catalog: project_catalog, project_config: project_config)
     template_command = Commands::Template.new(library: library, project_config: project_config, writer: tmuxinator_config_writer,
       template_validator: template_validator, differ: TextDiff.new, config_command: config_command,
-      selection: TemplateSelection.new(status_scope: status_scope, catalog: project_catalog, project_config: project_config),
+      selection: template_selection,
       status: template_status,
       adopt: TemplateAdopt.new(library: library, project_config: project_config, writer: tmuxinator_config_writer, main_agent: main_agent, locks: name_migration),
       apply: TemplateApply.new(status: template_status, writer: tmuxinator_config_writer,
@@ -1299,7 +1302,10 @@ module Workspace
         project_config: project_config, tmux: tmux, differ: TextDiff.new,
         retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output)),
       output: output, error_output: error_output)
-    template_family = CLI::Template.new(template_command: template_command, common: common, names: names, working_dir: working_dir)
+    template_backups_command = Commands::TemplateBackups.new(backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer),
+      selection: template_selection, locks: name_migration, project_config: project_config, writer: tmuxinator_config_writer,
+      retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output), output: output)
+    template_family = CLI::Template.new(template_command: template_command, backups_command: template_backups_command, common: common, names: names, working_dir: working_dir)
     plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,
       spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,
       status_scope: status_scope, project_detector: project_detector, launcher: launcher, common: common, names: names, working_dir: working_dir)
