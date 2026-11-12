@@ -63,7 +63,6 @@ module Workspace
         @agent_commands = agent_commands
         @pipeline_config = pipeline_config
         @epoch_generator = epoch_generator
-        @signal_trapper = signal_trapper
         @parts = parts
         @session_monitor = nil
         @workflow_nudger = workflow_nudger
@@ -74,9 +73,8 @@ module Workspace
         @restart_desk = nil
         @pipeline_desk = nil
         @event_log = event_log
-        # Bound through this class's UNIXServer, which the TERM handler's spec replaces.
-        @socket_server = AgentdSocketServer.new(bind: ->(path) { UNIXServer.new(path) }, poll_interval: socket_poll_interval,
-          tick_passes: workflow_tick_passes, logger: logger, output: output, error_output: error_output)
+        @socket_server = AgentdSocketServer.new(poll_interval: socket_poll_interval, tick_passes: workflow_tick_passes,
+          signal_trapper: signal_trapper, logger: logger, output: output, error_output: error_output)
         # Deliveries to panes take turns under this lock, taken before any
         # desk's own state lock and never inside it. A delivery can take
         # seconds to check, so it keeps a work item from moving between
@@ -125,7 +123,7 @@ module Workspace
         @error_output.puts "workspace agent: work-coordinator unavailable; will keep retrying in the background" unless registered
 
         @socket_server.listen(socket_path)
-        install_signal_handlers
+        @socket_server.install_signal_handlers(on_signal: -> { begin_shutdown })
 
         # Built here, before any worker thread can ask for it.
         parts = build_parts(pipeline_desk: @pipeline_desk)
@@ -393,19 +391,6 @@ module Workspace
         @error_output.puts "workspace agent: renamed workspace '#{result.from}' to '#{result.name}'" if result.from
         result.warnings.each { |warning| @error_output.puts "Warning: #{warning}" }
         result.name
-      end
-
-      def install_signal_handlers
-        %w[TERM INT].each do |signal|
-          @signal_trapper.trap(signal) do
-            begin_shutdown
-            # IO#close cannot run in trap context (Ruby raises ThreadError), so the
-            # unblocking close runs on its own thread: the accept loop then reads
-            # IOError and the server's shut_down!, and the ensure block tears the rest down.
-            # A TERM before the server exists closes nothing.
-            Thread.new { @socket_server.close }
-          end
-        end
       end
 
       def shutdown(socket_path)

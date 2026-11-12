@@ -239,6 +239,70 @@ RSpec.describe Workspace::AgentdSocketServer do
     end
   end
 
+  describe "#install_signal_handlers" do
+    # Signal traps are process-global; the spec records registrations instead.
+    let(:signal_trapper) do
+      Class.new do
+        attr_reader :handlers
+
+        def initialize
+          @handlers = {}
+        end
+
+        def trap(signal, &block)
+          @handlers[signal] = block
+        end
+      end.new
+    end
+
+    it "traps TERM and INT, each calling on_signal" do
+      signalled = []
+      server(signal_trapper: signal_trapper).install_signal_handlers(on_signal: -> { signalled << :shutdown })
+
+      signal_trapper.handlers.values.each(&:call)
+
+      expect(signal_trapper.handlers.keys).to eq(%w[TERM INT])
+      expect(signalled).to eq([:shutdown, :shutdown])
+    end
+
+    # IO#close raises ThreadError in real trap context, so the TERM handler must not
+    # close @server on the thread the handler runs on. The fake trapper runs the
+    # handler on an ordinary thread (the closest a spec gets to trap context); the
+    # server spy records which thread closed it, so a regression to a direct close
+    # in the handler fails here.
+    it "closes the server off the thread the TERM handler runs on" do
+      closes = []
+      server_spy = Class.new(UNIXServer)
+      server_spy.define_method(:close) do
+        closes << Thread.current
+        super()
+      end
+      stub_const("Workspace::AgentdSocketServer::UNIXServer", server_spy)
+
+      subject = described_class.new(signal_trapper: signal_trapper, logger: Workspace::Logger.new(output: log_output),
+        output: output, error_output: error_output)
+      subject.listen(socket_path)
+      subject.install_signal_handlers(on_signal: -> { subject.shut_down! })
+      thread = Thread.new { subject.serve(RecordingRouter.new) }
+
+      handler_thread = nil
+      trap_thread = Thread.new do
+        handler_thread = Thread.current
+        signal_trapper.handlers["TERM"].call
+      end
+      trap_thread.join(2)
+      thread.join(2)
+
+      expect(trap_thread).not_to be_alive
+      expect(thread).not_to be_alive
+      expect(closes).not_to be_empty
+      expect(closes.first).not_to eq(handler_thread)
+    ensure
+      thread&.kill
+      thread&.join(1)
+    end
+  end
+
   describe "#close and #close_and_remove" do
     it "closes nothing before it listens" do
       expect { server.close }.not_to raise_error

@@ -16,14 +16,16 @@ module Workspace
     # @param bind [#call] given a socket path, returns a listening UNIXServer on it
     # @param poll_interval [Numeric] seconds between the socket watcher's passes
     # @param tick_passes [Integer] the watcher calls its +on_tick+ every this many passes
+    # @param signal_trapper [#trap] receives the SIGTERM/SIGINT handler registration
     # @param logger [Workspace::Logger] debug logger
     # @param output [IO] where stopping a running daemon is announced
     # @param error_output [IO] where a dropped message and a failed rebind are reported
     def initialize(bind: ->(path) { UNIXServer.new(path) }, poll_interval: POLL_INTERVAL, tick_passes: TICK_PASSES,
-      logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
+      signal_trapper: Signal, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
       @bind = bind
       @poll_interval = poll_interval
       @tick_passes = tick_passes
+      @signal_trapper = signal_trapper
       @logger = logger
       @output = output
       @error_output = error_output
@@ -164,6 +166,23 @@ module Workspace
     # @return [void]
     def wake
       @shutdown_signal << :stop
+    end
+
+    # Traps TERM and INT: each calls +on_signal+, then closes the listening server.
+    #
+    # @param on_signal [#call] called first in the handler; it must take no lock, as it runs in trap context
+    # @return [void]
+    def install_signal_handlers(on_signal:)
+      %w[TERM INT].each do |signal|
+        @signal_trapper.trap(signal) do
+          on_signal.call
+          # IO#close cannot run in trap context (Ruby raises ThreadError), so the
+          # unblocking close runs on its own thread: the accept loop then reads
+          # IOError and the server's shut_down!, and the ensure block tears the rest down.
+          # A TERM before the server exists closes nothing.
+          Thread.new { close }
+        end
+      end
     end
 
     # Closes the listening server, which ends a blocked accept; nothing before {#listen}.
