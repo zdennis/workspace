@@ -407,5 +407,203 @@ RSpec.describe Workspace::CLI::Agent do
         expect(output.string).to include("workspace agent status post --summary TEXT").and include("status        Ask an agent pane")
       end
     end
+
+    describe "#run with daemon" do
+      let(:daemon_command) { CLITestHelpers::FakeDaemonCommand.new }
+      let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+      let(:built) { build_test_cli(daemon_command: daemon_command, project_detector: detector, working_dir: "/some/dir") }
+      let(:cli) { built[0] }
+      let(:output) { built[1] }
+      let(:error_output) { built[2] }
+
+      it "routes status, log and restart, taking the workspace positionally or by --name" do
+        cli.run(["daemon", "status", "app", "--json"])
+        cli.run(["daemon", "--json", "status", "--name", "other"])
+        cli.run(["daemon", "log", "app", "--lines", "5"])
+        cli.run(["daemon", "restart", "app", "--wc-socket", "/tmp/wc.sock"])
+
+        expect(daemon_command.calls).to eq([
+          {status: "app", json: true}, {status: "other", json: true},
+          {log: "app", lines: 5, json: false}, {restart: "app", wc_socket: "/tmp/wc.sock"}
+        ])
+      end
+
+      it "uses the detected workspace when none is named" do
+        cli.run(["daemon", "log"])
+
+        expect(detector).to have_received(:detect).with("/some/dir")
+        expect(daemon_command.calls).to eq([{log: "detected-ws", lines: nil, json: false}])
+      end
+
+      it "prints the restart in text" do
+        cli.run(["daemon", "restart", "app"])
+
+        expect(output.string).to eq("Restarted agentd for app (pid 11 -> 22)\n")
+      end
+
+      it "prints a restart that found nothing running as started" do
+        daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("started", nil, 22)
+
+        cli.run(["daemon", "restart", "app"])
+
+        expect(output.string).to eq("Started agentd for app (pid 22)\n")
+      end
+
+      it "prints the restart as an action document under --json, with the text on stderr" do
+        cli.run(["daemon", "restart", "app", "--json"])
+
+        doc = JSON.parse(output.string.lines.last)
+        expect(doc).to include("ok" => true, "action" => "restart", "status" => "ok")
+        expect(doc["results"]).to eq([{"workspace" => "app", "outcome" => "restarted", "reason" => nil, "message" => nil, "old_pid" => 11, "pid" => 22, "wc_socket" => nil}])
+      end
+
+      it "exits 1 with the reason on stderr when the restart fails" do
+        daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("failed", 11, nil, "not_stopped", "still answering after 5s")
+
+        expect { cli.run(["daemon", "restart", "app"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("Error: still answering after 5s")
+        expect(output.string).to eq("")
+      end
+
+      it "reports a failed restart as a failed action document under --json" do
+        daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("failed", nil, nil, "start_failed", "no")
+
+        expect { cli.run(["daemon", "restart", "app", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => true, "status" => "failed")
+      end
+
+      describe "list and restart --all" do
+        let(:result_class) { Workspace::Commands::Daemon::Result }
+
+        it "lists through the daemon command, with --json passed on and no workspace looked up" do
+          cli.run(["daemon", "list"])
+          cli.run(["daemon", "list", "--json"])
+
+          expect(daemon_command.calls).to eq([{list: true, json: false}, {list: true, json: true}])
+          expect(detector).not_to have_received(:detect)
+        end
+
+        it "restarts every daemon and prints one line per workspace" do
+          daemon_command.restart_all_results = [["api", result_class.new("restarted", 1, 2)], ["web", result_class.new("restarted", 3, 4)]]
+
+          cli.run(["daemon", "restart", "--all"])
+
+          expect(daemon_command.calls).to eq([{restart_all: true}])
+          expect(output.string).to eq("Restarted agentd for api (pid 1 -> 2)\nRestarted agentd for web (pid 3 -> 4)\n")
+        end
+
+        it "says plainly that there is nothing to restart, and exits 0" do
+          cli.run(["daemon", "restart", "--all"])
+
+          expect(output.string).to eq("No agentd processes are running.\n")
+        end
+
+        it "exits 1 when any workspace failed, after reporting every one" do
+          daemon_command.restart_all_results = [["api", result_class.new("failed", 1, nil, "not_stopped", "stuck")], ["web", result_class.new("restarted", 3, 4)]]
+
+          expect { cli.run(["daemon", "restart", "--all"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+          expect(error_output.string).to include("Error: api: stuck")
+          expect(output.string).to include("Restarted agentd for web")
+        end
+
+        it "prints a partial action document under --json when one of several failed" do
+          daemon_command.restart_all_results = [["api", result_class.new("failed", 1, nil, "not_stopped", "stuck")], ["web", result_class.new("restarted", 3, 4)]]
+
+          expect { cli.run(["daemon", "restart", "--all", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+          doc = JSON.parse(output.string.lines.last)
+          expect(doc).to include("action" => "restart", "status" => "partial", "summary" => {"failed" => 1, "restarted" => 1})
+          expect(doc["results"].map { |r| [r["workspace"], r["outcome"], r["reason"]] }).to eq([["api", "failed", "not_stopped"], ["web", "restarted", nil]])
+        end
+
+        it "gives the usage error as an envelope under --json" do
+          expect { cli.run(["daemon", "restart", "--all", "app", "--json"]) }.to raise_error(FakeSystemExit)
+          expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+        end
+      end
+
+      it "shows help without a subcommand being needed" do
+        cli.run(["daemon", "--help"])
+
+        expect(output.string).to include("workspace daemon restart")
+      end
+
+      it "gives usage errors as JSON envelopes under --json, whatever the flag order" do
+        expect { cli.run(["daemon", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      end
+    end
+
+    describe "#run with review" do
+      let(:review_command) { CLITestHelpers::FakeReviewCommand.new }
+      let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+      let(:built) { build_test_cli(review_command: review_command, project_detector: detector, working_dir: "/some/dir") }
+      let(:cli) { built[0] }
+      let(:output) { built[1] }
+      let(:error_output) { built[2] }
+
+      it "shows the named workspace" do
+        cli.run(["review", "app.worktree-fix"])
+        cli.run(["review", "show", "app", "--json"])
+        cli.run(["review", "--json", "show", "app"])
+
+        expect(review_command.calls).to eq([{show: "app.worktree-fix", json: false}, {show: "app", json: true}, {show: "app", json: true}])
+      end
+
+      it "lists, for the current project or a named one, with flags before or after" do
+        cli.run(["review", "list"])
+        cli.run(["review", "list", "app", "--json"])
+        cli.run(["review", "--json", "list"])
+
+        expect(review_command.calls).to eq([{list: nil, json: false}, {list: "app", json: true}, {list: nil, json: true}])
+      end
+
+      it "uses the detected workspace when none is named" do
+        cli.run(["review"])
+
+        expect(detector).to have_received(:detect).with("/some/dir")
+        expect(review_command.calls).to eq([{show: "detected-ws", json: false}])
+      end
+
+      it "exits with the command's non-zero code" do
+        review_command.result = {exit_code: 1}
+
+        expect { cli.run(["review", "app", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      end
+
+      it "emits the JSON envelope for a usage error raised after --json was parsed" do
+        allow(detector).to receive(:detect).and_return(nil)
+
+        expect { cli.run(["review", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      end
+
+      it "reviews a workspace named list through `show`" do
+        cli.run(["review", "show", "list"])
+
+        expect(review_command.calls).to eq([{show: "list", json: false}])
+      end
+
+      it "prints its help without running anything" do
+        cli.run(["review", "--help"])
+
+        expect(output.string).to include("Usage: workspace review show [WORKSPACE | --name WS] [--patch [--max-bytes N]] [--json]", "review list [PROJECT]", "--max-bytes N")
+        expect(review_command.calls).to eq([])
+      end
+    end
+
+    describe "sessions" do
+      it "forwards --worktrees to the sessions command" do
+        sessions_command = instance_double(Workspace::Commands::Sessions)
+        cli, = build_test_cli(sessions_command: sessions_command, project_detector: instance_double(Workspace::ProjectDetector, detect: "proj"))
+
+        expect(sessions_command).to receive(:call)
+          .with(name: "proj", json: false, watch: false, interval: 2, worktrees: true)
+          .and_return({exit_code: 0})
+
+        cli.run(["sessions", "--worktrees"])
+      end
+    end
   end
 end
