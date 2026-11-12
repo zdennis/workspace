@@ -48,7 +48,7 @@ RSpec.describe "help pages end with examples" do
     expect(unlisted).to eq([])
 
     {
-      "daemon" => Workspace::CLI::DAEMON_SUBCOMMANDS,
+      "daemon" => Workspace::CLI::Agent::DAEMON_SUBCOMMANDS,
       "library" => Workspace::CLI::LIBRARY_SUBCOMMANDS,
       "workflow" => Workspace::CLI::Workflow::SUBCOMMANDS
     }.each do |command, verbs|

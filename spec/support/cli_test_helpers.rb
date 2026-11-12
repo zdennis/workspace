@@ -6,6 +6,8 @@ module CLITestHelpers
   BUILD_CLI_OVERRIDES = %i[launchctl tmux task_store skill_source workflow_source_runner osascript ui_osascript].freeze
   # The keywords Workspace.build_cli and Workspace::CLI.new both take.
   STREAM_KEYWORDS = %i[output error_output input env logger exit_handler].freeze
+  # The commands .cli_parts gives the CLI::Agent family instead of Workspace::CLI.new.
+  AGENT_FAMILY_KEYWORDS = %i[agent_command ensure_agent_command daemon_command sessions_command review_command agent_status_command agent_executables_command].freeze
 
   # The one way a spec builds a CLI, so a change to the CLI's keywords touches this builder and
   # not every spec. Given only the streams and Workspace.build_cli's named overrides
@@ -20,13 +22,16 @@ module CLITestHelpers
     overrides = keywords.keys & BUILD_CLI_OVERRIDES
     raise ArgumentError, "Workspace::CLI.new does not take #{overrides.join(", ")}" if overrides.any?
 
-    Workspace::CLI.new(**cli_parts(**keywords))
+    cli = nil
+    cli = Workspace::CLI.new(**cli_parts(agent_run: ->(args, _invocation) { cli.agent_run_prompt(args) }, **keywords))
   end
 
   # The keywords given, as Workspace::CLI.new takes them: +lineage:+ goes to the CLI::Names it
-  # builds, and +workflow_command:+ and +workflow_project:+ to the CLI::Workflow family, as
-  # build_cli wires them; CLI::Common and CLI::Launcher are built over the same keywords.
-  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, **keywords)
+  # builds, +workflow_command:+ and +workflow_project:+ to the CLI::Workflow family, and the agent
+  # family's commands (AGENT_FAMILY_KEYWORDS) and +agent_run:+ to CLI::Agent, as build_cli wires
+  # them; CLI::Common and CLI::Launcher are built over the same keywords.
+  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_run: nil, **keywords)
+    agent_commands = AGENT_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
     keywords[:working_dir] ||= Dir.pwd
     keywords[:launch_mode] ||= Workspace::LaunchMode.new(project_settings: keywords[:project_settings])
     keywords[:input] ||= $stdin
@@ -39,7 +44,9 @@ module CLITestHelpers
     workflow = Workspace::CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: keywords[:workflow_start_command], workflow_project: workflow_project,
       status_scope: keywords[:status_scope], config: keywords[:config], project_config: keywords[:project_config], project_detector: keywords[:project_detector],
       git: keywords[:git], launch_mode: keywords[:launch_mode], common: common, names: names, input: keywords[:input], working_dir: keywords[:working_dir])
-    keywords.merge(common: common, names: names, launcher: launcher, families: {workflow: workflow})
+    agent = Workspace::CLI::Agent.new(**agent_commands, agent_run: agent_run, project_detector: keywords[:project_detector], common: common, names: names,
+      working_dir: keywords[:working_dir])
+    keywords.merge(common: common, names: names, launcher: launcher, families: {workflow: workflow, agent: agent})
   end
 
   # A LaunchMode whose automatic choice is fixed, so specs never depend on the
@@ -1239,6 +1246,54 @@ module CLITestHelpers
         lineage: CLITestHelpers::FakeLineage.new,
         workflow_command: overrides[:workflow_command],
         workflow_start_command: overrides[:workflow_start_command],
+        logger: Workspace::Logger.new(output: error_output),
+        output: output,
+        error_output: error_output,
+        exit_handler: FakeExitHandler,
+        input: input,
+        working_dir: overrides[:working_dir] || Dir.tmpdir,
+        sleeper: ->(_) {},
+        launch_mode: CLITestHelpers.launch_mode(headless: false),
+        env: {},
+        **unused
+      )
+      [cli, output, error_output]
+    end
+  end
+
+  # The agent family's CLI over fake commands, shared by the agent CLI specs. Include it in a
+  # group that needs it.
+  module AgentFamilyCli
+    # A CLI with only the agent family's collaborators: the commands no agent verb reaches are nil.
+    def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
+      config = overrides[:config] || Workspace::Config.new
+      state = CLITestHelpers::FakeState.new
+      project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
+      project_detector = overrides[:project_detector] || Workspace::ProjectDetector.new(state: state, project_config: project_config)
+      unused = %i[launch_command kill_command finish_command start_command stop_command focus_command tile_command layout_command resize_command
+        init_command repair_command cleanup_command prune_command claude_command lookup_command update_pane_command run_command run_result_store
+        run_and_report_command capture_command wait_until_content_command lock_command dev_command parent_command session_event_command
+        config_command statusline_command ask_command].to_h { |key| [key, nil] }
+
+      cli = CLITestHelpers.build_cli(
+        config: config,
+        state: state,
+        project_config: project_config,
+        git: FakeGit.new,
+        window_manager: CLITestHelpers::FakeWindowManager.new,
+        doctor: CLITestHelpers::FakeDoctor.new,
+        project_settings: CLITestHelpers::FakeProjectSettings.new,
+        hook_runner: CLITestHelpers::FakeHookRunner.new,
+        project_detector: project_detector,
+        workspace_name: overrides[:workspace_name],
+        lineage: CLITestHelpers::FakeLineage.new,
+        agent_command: overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new,
+        ensure_agent_command: overrides[:ensure_agent_command],
+        daemon_command: overrides[:daemon_command],
+        sessions_command: overrides[:sessions_command] || Workspace::Commands::Sessions.new(config: config, output: output, error_output: error_output),
+        review_command: overrides[:review_command],
+        agent_status_command: overrides[:agent_status_command],
+        agent_executables_command: overrides[:agent_executables_command],
         logger: Workspace::Logger.new(output: error_output),
         output: output,
         error_output: error_output,

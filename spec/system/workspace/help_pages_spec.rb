@@ -56,7 +56,7 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["plan"].keys).to eq(
         (Workspace::CLI::PLAN_FLAGS.keys - ["task"]) + Workspace::CLI::PLAN_TASK_FLAGS.keys.map { |verb| "task #{verb}" }
       )
-      expect(pages["daemon"].keys).to match_array(Workspace::CLI::DAEMON_SUBCOMMANDS)
+      expect(pages["daemon"].keys).to match_array(Workspace::CLI::Agent::DAEMON_SUBCOMMANDS)
       expect(pages["library"].keys).to match_array(Workspace::CLI::LIBRARY_SUBCOMMANDS)
       expect(pages["workflow"].keys).to match_array(Workspace::CLI::Workflow::SUBCOMMANDS)
     end

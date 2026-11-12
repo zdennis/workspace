@@ -489,6 +489,7 @@ require_relative "workspace/cli/common"
 require_relative "workspace/cli/names"
 require_relative "workspace/cli/launcher"
 require_relative "workspace/cli/workflow"
+require_relative "workspace/cli/agent"
 require_relative "workspace/cli"
 
 module Workspace
@@ -1251,12 +1252,17 @@ module Workspace
     workflow_family = CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: workflow_start_command, workflow_project: workflow_project,
       status_scope: status_scope, config: config, project_config: project_config, project_detector: project_detector, git: git, launch_mode: launch_mode,
       common: common, names: names, input: input, working_dir: working_dir)
+    cli = nil
+    agent_family = CLI::Agent.new(agent_command: agent_command, ensure_agent_command: ensure_agent_command, daemon_command: daemon_command,
+      sessions_command: sessions_command, review_command: review_command, agent_status_command: agent_status_command,
+      agent_executables_command: agent_executables_command, agent_run: ->(args, _invocation) { cli.agent_run_prompt(args) },
+      project_detector: project_detector, common: common, names: names, working_dir: working_dir)
 
-    CLI.new(
+    cli = CLI.new(
       common: common,
       names: names,
       launcher: launcher,
-      families: {workflow: workflow_family},
+      families: {workflow: workflow_family, agent: agent_family},
       working_dir: working_dir,
       config: config,
       state: state,
@@ -1312,7 +1318,6 @@ module Workspace
       promote_command: promote_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,
-      daemon_command: daemon_command,
       ui_command: ui_command,
       binding_command: binding_command,
       library_command: library_command,
@@ -1321,15 +1326,12 @@ module Workspace
       instruction_composer: instruction_composer,
       workflow_start_command: workflow_start_command,
       go_command: go_command,
-      review_command: review_command,
       restore_command: restore_command,
       snapshot_command: snapshot_command,
       goal_command: goal_command,
       events_command: events_command,
       project_actions_command: project_actions_command,
       groups_command: groups_command,
-      agent_command: agent_command,
-      sessions_command: sessions_command,
       session_event_command: session_event_command,
       hooks_command: hooks_command,
       config_command: config_command,
@@ -1342,11 +1344,8 @@ module Workspace
       liveness: Liveness.new(tmux: tmux),
       window_liveness: WindowLiveness.new(window_manager: window_manager),
       restart_agent_command: restart_agent_command,
-      agent_status_command: agent_status_command,
-      agent_executables_command: agent_executables_command,
       send_command: send_command,
       prompt_queue_command: prompt_queue_command,
-      ensure_agent_command: ensure_agent_command,
       name_migration: name_migration,
       handoff_command: handoff_command,
       exit_handler: exit_handler,
