@@ -226,6 +226,7 @@ require_relative "workspace/workspace_checkout"
 require_relative "workspace/ticket_source"
 require_relative "workspace/project_catalog"
 require_relative "workspace/status_scope"
+require_relative "workspace/template_selection"
 require_relative "workspace/template_status"
 require_relative "workspace/project_groups"
 require_relative "workspace/agent_snapshot_client"
@@ -1285,7 +1286,10 @@ module Workspace
       project_detector: project_detector, common: common, names: names, working_dir: working_dir)
     pipeline_family = CLI::Pipeline.new(config: config, agent_client: agent_client, common: common, names: names)
     template_command = Commands::Template.new(library: library, project_config: project_config, writer: tmuxinator_config_writer,
-      template_validator: template_validator, differ: TextDiff.new, config_command: config_command, output: output, error_output: error_output)
+      template_validator: template_validator, differ: TextDiff.new, config_command: config_command,
+      selection: TemplateSelection.new(status_scope: status_scope, catalog: project_catalog, project_config: project_config),
+      status: template_status,
+      output: output, error_output: error_output)
     template_family = CLI::Template.new(template_command: template_command, common: common, names: names, working_dir: working_dir)
     plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,
       spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,

@@ -9,6 +9,7 @@ module Workspace
       # The flags each `template` verb takes. (`--name` on `new` and `use` is the workspace whose settings or project the verb works in.)
       SUBCOMMANDS = {
         "list" => %i[scope name json],
+        "status" => %i[all project json],
         "show" => %i[kind name json],
         "path" => %i[kind name json],
         "variables" => %i[kind name json],
@@ -55,13 +56,15 @@ module Workspace
           raise UsageError, "--#{key} does not apply to 'template #{subcommand}'. Run 'workspace template --help'." unless SUBCOMMANDS[subcommand].include?(key)
         end
         raise UsageError, "'template #{subcommand}' needs a tmuxinator template NAME. Run 'workspace template #{subcommand} --help'." if %w[new use].include?(subcommand) && args.empty?
-        raise UsageError, "Unexpected argument: #{args[%w[list variables].include?(subcommand) ? 0 : 1]}. Run 'workspace template --help'." if args.size > (%w[list variables].include?(subcommand) ? 0 : 1)
+        limit = {"list" => 0, "variables" => 0, "status" => nil}.fetch(subcommand, 1)
+        raise UsageError, "Unexpected argument: #{args[limit]}. Run 'workspace template --help'." if limit && args.size > limit
         raise Error, "template is not available: no template command was wired" unless @template_command
 
         workspace = options[:name] || @names.workspace_here
         json = options[:json] || false
         case subcommand
         when "list" then @template_command.list(workspace: workspace, scope: options[:scope], cwd: @working_dir, json: json)
+        when "status" then @template_command.status(names: args.dup, all: options[:all] || false, project: options[:project], cwd: @working_dir, json: json)
         when "show" then @template_command.show(set: args.first, kind: options[:kind], workspace: workspace, json: json)
         when "path" then @template_command.path(set: args.first, kind: options[:kind], workspace: workspace, json: json)
         when "variables" then @template_command.variables(kind: options[:kind], workspace: options[:name] ? workspace : nil, json: json)
@@ -126,13 +129,15 @@ module Workspace
           opts.on("--against NAME", HelpPages::TEMPLATE_AGAINST_TEXT) { |v| take(options, :against, v) }
           opts.on("--sample", HelpPages::TEMPLATE_SAMPLE_TEXT) { take(options, :sample, true) }
           opts.on("--diff", HelpPages::TEMPLATE_DIFF_TEXT) { take(options, :diff, true) }
+          opts.on("--all", HelpPages::TEMPLATE_ALL_TEXT) { take(options, :all, true) }
+          opts.on("--project [NAME]", HelpPages::TEMPLATE_PROJECT_TEXT) { |v| take(options, :project, v || true) }
           opts.on("--json", "Print one JSON document") { take(options, :json, true) }
           opts.on("-h", "--help", "Show this help") { options[:help] = true }
           opts.separator ""
           opts.separator "Examples:"
           opts.separator "  workspace template list    # every tmuxinator template, and which one a new config of each kind uses"
+          opts.separator "  workspace template status --all    # which tmuxinator configs are current, stale, edited or have no render record"
           opts.separator "  workspace template show --kind worktree    # the worktree layout a new worktree config is rendered from"
-          opts.separator "  workspace template path team    # where the files of the tmuxinator template team are"
           opts.separator "  workspace template variables --name api.worktree-login    # the placeholders and what that config holds"
           opts.separator "  workspace template render --sample    # fill the tmuxinator template with sample values, writing nothing"
           opts.separator "  workspace template validate team    # check the tmuxinator template team before using it"

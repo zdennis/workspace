@@ -1641,6 +1641,8 @@ module Workspace
     TEMPLATE_AGAINST_TEXT = "diff: the tmuxinator template to compare with (default: default)"
     TEMPLATE_FILE_TEXT = "validate and render: use this tmuxinator template file, saved or not, instead of a set"
     TEMPLATE_SAMPLE_TEXT = "render: fill with each placeholder's sample value instead of a workspace's"
+    TEMPLATE_ALL_TEXT = "status: every workspace that has a tmuxinator config"
+    TEMPLATE_PROJECT_TEXT = "status: every workspace of a project (NAME, or the project of the current workspace)"
     TEMPLATE_DIFF_TEXT = "render: print a unified diff against the workspace's current config instead of the text"
 
     # What each flag means on one verb's page, so a page lists only what its verb does with it.
@@ -1659,6 +1661,8 @@ module Workspace
       file_render: "Fill this tmuxinator template file, saved or not, instead of a set",
       from: "The tmuxinator template to copy (default: default)",
       against: "The tmuxinator template to compare with (default: default)",
+      all: "Every workspace that has a tmuxinator config",
+      project: "Every workspace of a project (NAME, or the project of the current workspace)",
       sample: "Fill with each placeholder's sample value instead of a workspace's",
       diff: "Print a unified diff against the workspace's current config instead of the text"
     }.freeze
@@ -1681,6 +1685,27 @@ module Workspace
           ["workspace template list --scope global", "only the tmuxinator templates you added for every project"],
           ["workspace template list --name api.worktree-login", "which one a config for that workspace would use, with its own settings"],
           ["workspace template list --json", "for a script: each tmuxinator template with the kinds that select it"]
+        ]
+      },
+      "status" => {
+        usage: ["template status [WORKSPACE...] [--all | --project [NAME]] [--json]"],
+        summary: "Show whether each tmuxinator config still matches its tmuxinator template",
+        about: [
+          "Compares each workspace's tmuxinator config with what the selected tmuxinator template renders today with",
+          "the workspace's recorded inputs and current agent settings. current: the file equals what the selected set",
+          "renders today with the recorded inputs. stale: the file is what was last rendered, but a render today would write something else or",
+          "use another tmuxinator template (the reasons say which). modified: the file is not what was last rendered",
+          "(edited by hand or by another tool); a modified config that a render would also change says so.",
+          "untracked: no render record, so there is nothing to render it from. Name the workspaces, or give --all or",
+          "--project; with none of them, the workspace of the current directory. Reads only."
+        ],
+        options: [["--all", TEMPLATE_PAGE_TEXT[:all]], ["--project [NAME]", TEMPLATE_PAGE_TEXT[:project]], JSON_OPT],
+        examples: [
+          ["workspace template status", "this workspace"],
+          ["workspace template status --all", "every workspace that has a tmuxinator config"],
+          ["workspace template status --project api", "every workspace of the project api"],
+          ["workspace template status api api.worktree-login", "just those two"],
+          ["workspace template status --all --json", "for a script: each workspace's state, its template and why it is stale"]
         ]
       },
       "show" => {

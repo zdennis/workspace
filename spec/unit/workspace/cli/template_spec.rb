@@ -6,7 +6,7 @@ RSpec.describe Workspace::CLI::Template do
   let(:out) { StringIO.new }
   let(:err) { StringIO.new }
   let(:detector) { RecordingProjectDetector.new("/src/app" => "app") }
-  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true, validate: true, diff: nil, new: {}, edit: {"outcome" => "edited"}, use: {}) }
+  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true, validate: true, diff: nil, status: nil, new: {}, edit: {"outcome" => "edited"}, use: {}) }
 
   def family(command = template_command)
     names = Workspace::CLI::Names.new(project_config: CLITestHelpers::FakeProjectConfig.new, project_detector: detector,
@@ -137,6 +137,31 @@ RSpec.describe Workspace::CLI::Template do
     expect(out.string).to include("Usage: workspace template list", "Subcommands:")
     expect(template_command).not_to have_received(:show)
   end
+  describe "status" do
+    it "hands the names, the flags and the working directory to the command, not the detected workspace" do
+      run("status", "app", "api", "--json")
+      run("status", "--all")
+      run("status", "--project")
+      run("status", "--project", "api")
+      run("status")
+
+      expect(template_command).to have_received(:status).with(names: %w[app api], all: false, project: nil, cwd: "/src/app", json: true)
+      expect(template_command).to have_received(:status).with(names: [], all: true, project: nil, cwd: "/src/app", json: false)
+      expect(template_command).to have_received(:status).with(names: [], all: false, project: true, cwd: "/src/app", json: false)
+      expect(template_command).to have_received(:status).with(names: [], all: false, project: "api", cwd: "/src/app", json: false)
+      expect(template_command).to have_received(:status).with(names: [], all: false, project: nil, cwd: "/src/app", json: false).once
+    end
+
+    it "refuses a flag it has no use for" do
+      expect { run("status", "--name", "app") }.to raise_error(Workspace::UsageError, /--name does not apply to 'template status'/)
+      expect { run("list", "--all") }.to raise_error(Workspace::UsageError, /--all does not apply to 'template list'/)
+    end
+
+    it "still takes no names for list" do
+      expect { run("list", "app") }.to raise_error(Workspace::UsageError, /Unexpected argument: app/)
+    end
+  end
+
   describe "new, edit and use" do
     it "makes a copy for the detected workspace, from --from, in --scope" do
       run("new", "team", "--from", "base", "--scope", "project")

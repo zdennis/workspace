@@ -25,10 +25,14 @@ module Workspace
       # @param template_validator [Workspace::TemplateValidator] checks the file `render` fills
       # @param differ [#call] `(old, new, old_label:, new_label:)` to a unified diff, empty when the same (a {TextDiff})
       # @param config_command [Workspace::Commands::Config, nil] `use` sets the key through it; nil refuses `use`
+      # @param selection [Workspace::TemplateSelection, nil] settles which workspaces `status` reports on; nil refuses `status`
+      # @param status [Workspace::TemplateStatus, nil] classifies each one; nil refuses `status`
       # @param output [IO] output stream
       # @param error_output [IO] where `render`'s problems go in text mode
-      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, output: $stdout, error_output: $stderr)
+      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, selection: nil, status: nil, output: $stdout, error_output: $stderr)
         @config_command = config_command
+        @selection = selection
+        @status = status
         @library = library
         @project_config = project_config
         @writer = writer
@@ -202,6 +206,29 @@ module Workspace
         ok
       end
 
+      # Prints where each selected workspace stands against the tmuxinator template it would be rendered from:
+      # `current`, `stale`, `modified` or `untracked` (see {TemplateStatus}). Reads only.
+      #
+      # @param names [Array<String>] workspaces by name
+      # @param all [Boolean] every workspace that has a config
+      # @param project [nil, true, String] `--project`: true for the current workspace's project, else a name
+      # @param cwd [String] where the current workspace is looked for
+      # @param json [Boolean] print the document instead of the table
+      # @return [void]
+      # @raise [Workspace::UsageError] for names mixed with `--all` or `--project`
+      # @raise [Workspace::Error] `unknown_workspace`, `not_in_workspace`
+      def status(names: [], all: false, project: nil, cwd: Dir.pwd, json: false)
+        raise Error, "template status is not available: no selection was wired" unless @selection && @status
+
+        rows = @status.call(@selection.call(names: names, all: all, project: project, working_dir: cwd))
+        if json
+          counts = TemplateStatus::STATES.to_h { |state| [state, rows.count { |row| row.state == state }] }
+          @output.puts JSON.generate(JsonEnvelope.document("workspaces", rows.map(&:to_h), schema_version: JSON_SCHEMA_VERSION).merge("counts" => counts))
+        else
+          print_status(rows)
+        end
+      end
+
       # Prints a unified diff of each file of a tmuxinator template set against the same file of another set.
       #
       # @param set [String, nil] the set to compare; nil is the set each kind selects
@@ -334,11 +361,28 @@ module Workspace
       # worked out from the current agent settings (the recorded one is the pane text written then). Left out when
       # the renderer would refuse it, so `render` reports why.
       def record_inputs(record)
-        inputs = record.inputs.except(:agent_command)
-        value = @project_config.agent_pane_value(inputs[:agent_kind], inputs[:workspace_name])
-        value ? inputs.merge(agent_command: ProjectConfig.yaml_item(value)) : inputs
-      rescue Error
-        inputs
+        TemplateStatus.record_inputs(record, @project_config)
+      end
+
+      STATUS_REASONS = {"template_switched" => "another tmuxinator template is selected now", "template_changed" => "the tmuxinator template changed", "agent_changed" => "the agent settings changed",
+                        "template_unavailable" => "its tmuxinator template can't be read", "render_failed" => "it can't be rendered with today's agent settings"}.freeze
+      private_constant :STATUS_REASONS
+
+      def print_status(rows)
+        if rows.empty?
+          @output.puts "No workspaces to check."
+          return
+        end
+
+        table = rows.map do |row|
+          note = row.reasons.map { |reason| STATUS_REASONS.fetch(reason, reason) }.join(", ")
+          note = "edited since it was rendered#{"; also #{note}" unless note.empty?}" if row.state == "modified"
+          note = "no render record" if row.state == "untracked"
+          [TerminalText.escape(row.workspace), row.state, TerminalText.escape(row.template || "-"), note]
+        end
+        table.unshift(%w[WORKSPACE STATE TEMPLATE NOTE])
+        widths = (0..2).map { |i| table.map { |r| r[i].length }.max }
+        table.each { |r| @output.puts(r.each_with_index.map { |c, i| (i < 3) ? c.ljust(widths[i]) : c }.join("  ").rstrip) }
       end
 
       def variable_row(row, inputs, workspace)

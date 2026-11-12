@@ -128,6 +128,62 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "template status" do
+    let(:global_settings) { {} }
+    let(:status_scope) { instance_double(Workspace::StatusScope) }
+    let(:catalog) { instance_double(Workspace::ProjectCatalog) }
+    let(:built) do
+      selection = Workspace::TemplateSelection.new(status_scope: status_scope, catalog: catalog, project_config: project_config)
+      build_test_cli(template_command: Workspace::Commands::Template.new(library: library, project_config: project_config, writer: writer,
+        template_validator: validator, differ: ->(*, **) { "" }, selection: selection,
+        status: Workspace::TemplateStatus.new(library: library, project_config: project_config, writer: writer),
+        output: output, error_output: error_output),
+        project_detector: detector, output: output, error_output: error_output, working_dir: File.join(@dir, "src"))
+    end
+
+    before do
+      allow(project_config).to receive(:exists?) { |name| name == "app" }
+      allow(project_config).to receive(:config_path_for) { |name| File.join(@dir, "workspace.#{name}.yml") }
+      File.write(File.join(@dir, "workspace.app.yml"), "name: app\n")
+    end
+
+    it "reports a config with no render record as untracked, by name" do
+      cli.run(["template", "status", "app"])
+
+      expect(output.string.lines.map(&:rstrip)).to eq(["WORKSPACE  STATE      TEMPLATE  NOTE", "app        untracked  -         no render record"])
+    end
+
+    it "gives the document with counts under --json, for the current workspace when none is named" do
+      allow(status_scope).to receive(:resolve).and_return(Workspace::StatusScope::Scope.new(kind: :workspace, workspace: "app"))
+
+      cli.run(["template", "status", "--json"])
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => true, "counts" => {"current" => 0, "stale" => 0, "modified" => 0, "untracked" => 1})
+      expect(doc["workspaces"]).to eq([{"workspace" => "app", "state" => "untracked", "kind" => nil, "template" => nil, "selected" => nil, "stale" => false, "reasons" => []}])
+    end
+
+    it "answers an unknown name with unknown_workspace, exit 1, as a document under --json" do
+      expect(exit_status { cli.run(["template", "status", "nope", "--json"]) }).to eq(1)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_workspace")
+    end
+
+    it "refuses names beside --all as a usage error" do
+      expect(exit_status { cli.run(["template", "status", "app", "--all", "--json"]) }).to eq(1)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+    end
+
+    it "writes nothing" do
+      before = Dir.glob("**/*", base: @dir).sort
+
+      cli.run(["template", "status", "app"])
+
+      expect(Dir.glob("**/*", base: @dir).sort).to eq(before)
+    end
+  end
+
   describe "template validate and diff" do
     before { allow(project_config).to receive(:agent_pane_in_template?).and_return(false) }
 
