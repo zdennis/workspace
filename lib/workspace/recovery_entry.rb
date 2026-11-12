@@ -1,10 +1,11 @@
 module Workspace
   # The writes a recovery entry gets from more than one part of the recovery
   # desk: the agent it stores, a give-up, a signal forgotten, the next attempt
-  # scheduled. Each changes the entry Hash it is given, in place, inside the
-  # caller's {AgentRecoveryStore#update}, and reads nothing but the entry and,
-  # where it says so, the clock. {RecoveryIntake} and {AgentRecoveryDesk} both
-  # write through these, so an entry is written one way whichever part writes it.
+  # scheduled, and the checks those writes share. Each write changes the entry
+  # Hash it is given, in place, inside the caller's {AgentRecoveryStore#update},
+  # and reads nothing but the entry and, where it says so, the clock.
+  # {RecoveryIntake}, {RecoveryConfirmer} and {AgentRecoveryDesk} write through
+  # these, so an entry is written one way whichever part writes it.
   module RecoveryEntry
     module_function
 
@@ -24,6 +25,19 @@ module Workspace
       end
       entry["agent_pid"] = live&.fetch(:pid)
       entry["agent_started"] = live&.fetch(:started)
+    end
+
+    # From the last read: an agent is ours to stop next time. An empty pane or a
+    # failed read changes nothing, so `stopped` survives only where our signal
+    # went out and no agent has come back since.
+    #
+    # @param entry [Hash] changed in place
+    # @param live [Hash, nil, Symbol] the agent read; nil for none, +:unread+ when it couldn't be read
+    # @return [void]
+    def apply_read(entry, live)
+      return unless live.is_a?(Hash)
+      entry["stopped"] = false
+      store_agent(entry, live)
     end
 
     # @param entry [Hash] changed in place
@@ -62,6 +76,25 @@ module Workspace
     #   entry, so it can go silently
     def unreported?(entry)
       entry["attempts"].to_i.zero? && entry["item_open"] != true
+    end
+
+    # Nothing is left to recover and no signal of ours explains why.
+    #
+    # @param entry [Hash]
+    # @param live [Hash, nil, Symbol] the agent read; nil for none, +:unread+ when it couldn't be read
+    # @return [Boolean]
+    def agent_gone?(entry, live)
+      live.nil? && entry["stopped"] != true
+    end
+
+    # Whether an entry is still the one a decision was made on: a hook may have
+    # written between that read and this write.
+    #
+    # @param entry [Hash] the entry as it stands now
+    # @param seen [Hash] the entry the decision read
+    # @return [Boolean]
+    def same_wait?(entry, seen)
+      %w[phase session_id failed_at].all? { |key| entry[key] == seen[key] }
     end
 
     # The clock is read only for a signal time that parses.

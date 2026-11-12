@@ -6,9 +6,10 @@ module Workspace
   # {#session_event} hands the hook event to {RecoveryIntake}, which queues it
   # for its one worker and applies it to the pane's entry there.
   #
-  # {#scan}, on the monitor's scan thread, confirms a failure against the
-  # transcript once {SETTLE} seconds have passed, runs {#check} on the entries
-  # that are due, and picks up an attempt the daemon lost when it restarted.
+  # {#scan}, on the monitor's scan thread, has {RecoveryConfirmer} confirm a
+  # failure against the transcript once {SETTLE} seconds have passed, runs
+  # {#check} on the entries that are due, and has the confirmer pick up an
+  # attempt the daemon lost when it restarted.
   #
   # {#check} answers one of four things, and only `:go` starts an attempt:
   #
@@ -63,7 +64,7 @@ module Workspace
 
     # Seconds after the failure before the transcript is read: Claude Code may
     # still recover by itself, and the error line may follow the hook.
-    SETTLE = 30
+    SETTLE = RecoveryConfirmer::SETTLE
 
     # Seconds of unbroken deferring before giving up.
     DEFER_LIMIT = 1800
@@ -108,7 +109,7 @@ module Workspace
       "started with workspace dev up is still running and keeps its lock. Continue where you left off."
 
     # Event log line for a finished attempt.
-    ATTEMPT_EVENT = "agent_recovery_attempt"
+    ATTEMPT_EVENT = RecoveryConfirmer::ATTEMPT_EVENT
 
     # Event log line for a give-up.
     GAVE_UP_EVENT = "agent_recovery_gave_up"
@@ -199,6 +200,10 @@ module Workspace
     # @param intake [Workspace::RecoveryIntake] queues the hook events and applies them to the entries; until
     #   T37.5 the default is built here over +store+, +session_monitor+, +facts+, +rebind_queue+,
     #   +max_attempts+, +clock+, +spawn+, +logger+ and the desk's own give-up report and inbox resolve
+    # @param confirmer [Workspace::RecoveryConfirmer] marks the failed panes, settles a waiting entry and picks
+    #   up a lost attempt; until T37.5 the default is built here over +workspace+, +store+, +facts+,
+    #   +session_monitor+, +marker+, +event_log+, +max_attempts+, +clock+ and the desk's own clear, give-up
+    #   report and inbox resolve
     def initialize(panes:, workspace:, session_name:, session_monitor:, store:, transcript:, stopper:, detector:,
       process_tree:, ledger:, resume_command:, prompt_typer:, readiness:, marker:, inbox:, delivery_lock:, event_log: nil,
       restarting: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
@@ -210,7 +215,10 @@ module Workspace
         logger: logger),
       intake: RecoveryIntake.new(store: store, session_monitor: session_monitor, facts: facts, rebind_queue: rebind_queue,
         report_give_up: method(:report_give_up), resolve: method(:resolve), max_attempts: max_attempts, clock: clock,
-        spawn: spawn, logger: logger))
+        spawn: spawn, logger: logger),
+      confirmer: RecoveryConfirmer.new(workspace: workspace, store: store, facts: facts, session_monitor: session_monitor,
+        marker: marker, clear: method(:clear), report_give_up: method(:report_give_up), resolve: method(:resolve),
+        event_log: event_log, max_attempts: max_attempts, clock: clock))
       @panes = panes
       @workspace = workspace
       @session_name = session_name
@@ -237,7 +245,7 @@ module Workspace
       @logger = logger
       @facts = facts
       @intake = intake
-      @unmarked = nil
+      @confirmer = confirmer
     end
 
     # Takes in a hook event the daemon received. Only queues it; the work runs
@@ -256,7 +264,7 @@ module Workspace
     # @return [void]
     def scan
       entries = @store.entries
-      mark_failed_panes(entries)
+      @confirmer.mark_failed_panes(entries)
       entries.each_key do |pane_id|
         scan_pane(pane_id)
       rescue => e
@@ -308,74 +316,16 @@ module Workspace
       @rebind_queue.call(pane_id, agent_pid) if agent_pid
     end
 
-    # The monitor's failed-turn flag isn't persisted, so the panes failed when
-    # this desk started are marked again. Marking does nothing for a pane the
-    # monitor doesn't know yet, so those stay listed for the next scan. Only
-    # the first scan lists panes: a later failure's flag came from its hook,
-    # and a prompt may have cleared it since.
-    def mark_failed_panes(entries)
-      @unmarked ||= entries.select { |_, entry| failed_turn_stands?(entry) }.keys
-      @unmarked = @unmarked.select { |pane_id| entries[pane_id] && failed_turn_stands?(entries[pane_id]) }
-      @unmarked.reject! do |pane_id|
-        known = !@session_monitor.pane_kind(pane_id).nil?
-        @session_monitor.mark_turn_failed(pane_id) if known
-        known
-      end
-    end
-
-    # Skips a `fresh_conversation` record: that pane holds a healthy agent.
-    def failed_turn_stands?(entry)
-      %w[waiting attempting].include?(entry["phase"]) ||
-        (entry["phase"] == "gave_up" && entry["give_up_reason"] != "fresh_conversation")
-    end
-
     def scan_pane(pane_id)
       entry = @store.get(pane_id)
       return unless entry
 
       case entry["phase"]
       when "waiting"
-        entry = settle(pane_id, entry) unless entry["stopped"] == true
+        entry = @confirmer.settle(pane_id, entry) unless entry["stopped"] == true
         attempt_if_due(pane_id, entry) if entry
       when "attempting"
-        reconcile(pane_id) unless @restarting.call(pane_id)
-      end
-    end
-
-    # Reads what the settle period was waiting for. A transcript or ledger that
-    # can't be read yet is left for the next scan.
-    #
-    # @return [Hash, nil] the entry as it now stands; nil when it was cleared
-    def settle(pane_id, entry)
-      failed = RecoveryVerdicts.time_of(entry["failed_at"])
-      return entry unless failed && @clock.now - failed >= SETTLE
-
-      found = {}
-      unless entry["last_turn_uuid"]
-        record = @facts.transcript_error(entry)
-        if record && !record["api_error"]
-          clear(pane_id, entry)
-          return nil
-        end
-        found["last_turn_uuid"] = record["uuid"] if record
-      end
-      live = @facts.live_agent(pane_id) unless entry["agent_pid"]
-      unless entry["cwd"]
-        opened = @facts.ledger_session(pane_id)
-        if opened.is_a?(Hash)
-          if opened["session_id"] != entry["session_id"]
-            clear(pane_id, entry)
-            return nil
-          end
-          found["cwd"] = opened["cwd"]
-        end
-      end
-      found.compact!
-      return entry if found.empty? && !live
-      @store.update(pane_id) do |current|
-        next unless same_wait?(current, entry)
-        current.merge!(found)
-        RecoveryEntry.store_agent(current, live) if live && current["agent_pid"].nil?
+        @confirmer.reconcile(pane_id) unless @restarting.call(pane_id)
       end
     end
 
@@ -389,7 +339,7 @@ module Workspace
 
       # The screen wait gave a hook time to change the entry.
       current = @store.get(pane_id)
-      start_attempt(pane_id, answer) if current && same_wait?(current, entry)
+      start_attempt(pane_id, answer) if current && RecoveryEntry.same_wait?(current, entry)
     end
 
     # Acts on any {#check} answer but `:go`.
@@ -425,7 +375,7 @@ module Workspace
     end
 
     # Runs one attempt inside a claim on the pane. An attempt that raises or is
-    # killed stays `attempting` with no claim, for {#reconcile} to pick up, and
+    # killed stays `attempting` with no claim, for {RecoveryConfirmer#reconcile} to pick up, and
     # keeps its marker until then: the agent may be exiting right now. A typed
     # attempt has no marker of its own, so it leaves alone one an earlier
     # `not_stopped` left to expire.
@@ -514,7 +464,7 @@ module Workspace
       fields = fields.merge("draft_text" => message) if typed
       opened = false
       @store.update(pane_id) do |entry|
-        next unless same_wait?(entry, seen) && entry["attempts"] == seen["attempts"]
+        next unless RecoveryEntry.same_wait?(entry, seen) && entry["attempts"] == seen["attempts"]
         entry.merge!(fields, "attempts" => number, "phase" => "attempting", "attempt_session_id" => nil, "defer_since" => nil,
           "prompt_seen" => false)
         opened = true
@@ -567,7 +517,7 @@ module Workspace
         row = hook_row(entry, live)
       end
       close_row(attempt, row, stored)
-      verdict((agent_gone?(seen, live) && !signalled_lately?(seen)) ? :clear : answer)
+      verdict((RecoveryEntry.agent_gone?(seen, live) && !signalled_lately?(seen)) ? :clear : answer)
     end
 
     # Steps 2 to 5. Each step answers nil to go on. A message no hook answers is
@@ -789,7 +739,7 @@ module Workspace
     # Step 6: one update, so it can't overwrite a hook's write, then the line.
     # The queue moves before the update ends the hold, so no prune sees the old
     # pid. An entry that isn't this attempt's any more was picked up by
-    # {#reconcile}, which wrote the line. A kill waits for the end of the span,
+    # {RecoveryConfirmer#reconcile}, which wrote the line. A kill waits for the end of the span,
     # so a `gave_up` entry always gets its line and inbox item.
     #
     # @param attempt [Attempt]
@@ -834,9 +784,9 @@ module Workspace
         RecoveryEntry.give_up(entry, "fresh_conversation")
         return :gave_up
       else
-        apply_read(entry, live)
+        RecoveryEntry.apply_read(entry, live)
         entry["draft_text"] = attempt.message if DRAFT_OUTCOMES.include?(outcome)
-        if agent_gone?(entry, live)
+        if RecoveryEntry.agent_gone?(entry, live)
           RecoveryEntry.give_up(entry, "unconfirmed")
           return :gave_up
         end
@@ -864,30 +814,14 @@ module Workspace
       end
       return nil unless failed
 
-      apply_read(entry, live)
+      RecoveryEntry.apply_read(entry, live)
       entry["phase"] = "watching"
       known = (live == :unread) ? {pid: entry["agent_pid"], started: entry["agent_started"], flags: entry["agent_flags"]} : live
       return :gave_up if @intake.apply_failure(entry, entry["session_id"], entry["error"], entry["transcript_path"], known)
-      return :rescheduled unless agent_gone?(entry, live)
+      return :rescheduled unless RecoveryEntry.agent_gone?(entry, live)
 
       RecoveryEntry.give_up(entry, "unconfirmed")
       :gave_up
-    end
-
-    # From the last read: an agent is ours to stop next time. An empty pane or a
-    # failed read changes nothing, so `stopped` survives only where our signal
-    # went out and no agent has come back since.
-    def apply_read(entry, live)
-      return unless live.is_a?(Hash)
-      entry["stopped"] = false
-      RecoveryEntry.store_agent(entry, live)
-    end
-
-    # Nothing is left to recover and no signal of ours explains why.
-    #
-    # @param live [Hash, nil, Symbol] {#last_read}'s answer
-    def agent_gone?(entry, live)
-      live.nil? && entry["stopped"] != true
     end
 
     def close_row(attempt, row, stored)
@@ -911,7 +845,7 @@ module Workspace
     def defer(pane_id, seen)
       gave_up = false
       stored = @store.update(pane_id) do |entry|
-        next unless same_wait?(entry, seen)
+        next unless RecoveryEntry.same_wait?(entry, seen)
         since = RecoveryVerdicts.time_of(entry["defer_since"])
         if since.nil?
           entry["defer_since"] = stamp
@@ -928,7 +862,7 @@ module Workspace
     def clear(pane_id, seen)
       gave_up = false
       stored = @store.update(pane_id) do |entry|
-        next unless same_wait?(entry, seen)
+        next unless RecoveryEntry.same_wait?(entry, seen)
         if RecoveryEntry.unreported?(entry)
           entry.clear
         else
@@ -942,17 +876,11 @@ module Workspace
     def give_up(pane_id, seen, reason)
       gave_up = false
       stored = @store.update(pane_id) do |entry|
-        next unless same_wait?(entry, seen)
+        next unless RecoveryEntry.same_wait?(entry, seen)
         RecoveryEntry.give_up(entry, reason)
         gave_up = true
       end
       report_give_up(pane_id, stored) if gave_up
-    end
-
-    # Whether an entry is still the one a decision was made on: a hook may have
-    # written between that read and this write.
-    def same_wait?(entry, seen)
-      %w[phase session_id failed_at].all? { |key| entry[key] == seen[key] }
     end
 
     # An inbox that can't be written must not end the worker or the scan: the
@@ -997,78 +925,9 @@ module Workspace
       @logger.debug { "agent recovery: inbox item for #{session_id} not resolved (#{e.class}: #{e.message})" }
     end
 
-    # Picks up an attempt the daemon lost by restarting: says so, then looks at
-    # the pane. Nothing is decided on a pane or process table that can't be
-    # read; the next scan tries again. A closed pane has no ledger to read:
-    # `open_record` could only answer `:unreadable` for it, on every scan. It
-    # keeps the marker, because that read can be wrong. `stopped` true with no
-    # agent still resumes; {#check_gone} refuses if the ledger shows a new agent
-    # came and went, and defers on a closed pane until the defer limit ends it.
-    def reconcile(pane_id)
-      detail = @facts.pane_detail(pane_id)
-      return if detail == :unknown
-      if detail
-        reading = @facts.agent(detail)
-        return unless reading
-        agent = reading.found
-      else
-        return unless @facts.tree
-      end
-
-      opened = detail && @facts.ledger_session(pane_id)
-      return if opened == :unreadable
-
-      open_session = opened&.fetch("session_id")
-      seen = nil
-      gave_up = false
-      finished = false
-      stored = @store.update(pane_id) do |entry|
-        next unless entry["phase"] == "attempting"
-        seen = entry.dup
-        finished = entry["turn_completed"] == true || entry["resumed_elsewhere"] == true
-        next entry.clear if finished
-        gave_up = reconcile_entry(entry, open_session, agent)
-      end
-      return unless seen
-
-      record_interrupted(pane_id, seen)
-      # A live agent may still exit from our signal: its marker is left to expire.
-      @marker.clear(seen["session_id"]) if detail && !agent
-      resolve(seen["session_id"]) if finished
-      report_give_up(pane_id, stored) if gave_up
-    end
-
-    # @return [Boolean] whether this gave up
-    def reconcile_entry(entry, open_session, agent)
-      failed = entry.delete("failed_during_attempt") == true
-      %w[turn_completed attempt_session_id prompt_seen].each { |key| entry.delete(key) }
-      if open_session && open_session != entry["session_id"]
-        RecoveryEntry.give_up(entry, "fresh_conversation")
-        return true
-      end
-      if failed && !RETRYABLE_ERRORS.include?(entry["error"])
-        RecoveryEntry.give_up(entry, "not_retryable")
-        return true
-      end
-
-      apply_read(entry, agent)
-      entry["failed_at"] = stamp if failed
-      if agent_gone?(entry, agent)
-        RecoveryEntry.give_up(entry, "unconfirmed")
-        return true
-      end
-      schedule_next(entry)
-    end
-
     # @return [Boolean] whether this gave up, the attempts being used up
     def schedule_next(entry)
       RecoveryEntry.schedule_next(entry, max_attempts: @max_attempts, clock: @clock)
-    end
-
-    def record_interrupted(pane_id, entry)
-      attempt = entry["attempts"].to_i
-      record(ATTEMPT_EVENT, "attempt" => attempt, "session_id" => entry["session_id"], "pane_id" => pane_id,
-        "error" => entry["error"], "mode" => (attempt == 1) ? "typed" : "restart", "outcome" => "interrupted")
     end
 
     # No agent in the pane. With `stopped` the agent is already gone and
@@ -1101,7 +960,7 @@ module Workspace
       return verdict(:defer) if @facts.held_off?(pane_id, entry, screen)
 
       unless entry["agent_pid"]
-        @store.update(pane_id) { |current| RecoveryEntry.store_agent(current, agent) if same_wait?(current, entry) }
+        @store.update(pane_id) { |current| RecoveryEntry.store_agent(current, agent) if RecoveryEntry.same_wait?(current, entry) }
         return verdict(:defer)
       end
       return verdict(:clear) unless RecoveryVerdicts.same_process?(entry, agent)
@@ -1120,7 +979,7 @@ module Workspace
     def fill_flags(pane_id, entry, agent)
       return entry unless entry["agent_flags"].nil? && agent[:flags]
 
-      @store.update(pane_id) { |current| RecoveryEntry.store_agent(current, agent) if same_wait?(current, entry) && RecoveryVerdicts.same_process?(current, agent) }
+      @store.update(pane_id) { |current| RecoveryEntry.store_agent(current, agent) if RecoveryEntry.same_wait?(current, entry) && RecoveryVerdicts.same_process?(current, agent) }
       entry.merge("agent_flags" => agent[:flags])
     end
 

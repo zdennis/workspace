@@ -74,4 +74,41 @@ RSpec.describe Workspace::RecoveryEntry do
       expect(described_class.signalled_lately?({}, nil)).to be(false)
     end
   end
+
+  describe ".apply_read" do
+    it "stores an agent read and takes back stopped" do
+      entry = {"stopped" => true, "agent_pid" => 1, "agent_started" => "Sun"}
+      described_class.apply_read(entry, {pid: 20, started: "Mon", flags: ["--model", "opus"]})
+
+      expect(entry).to eq("stopped" => false, "agent_pid" => 20, "agent_started" => "Mon", "agent_flags" => ["--model", "opus"])
+    end
+
+    it "changes nothing for an empty pane or a read that failed" do
+      [nil, :unread].each do |live|
+        entry = {"stopped" => true, "agent_pid" => 1}
+        described_class.apply_read(entry, live)
+        expect(entry).to eq("stopped" => true, "agent_pid" => 1)
+      end
+    end
+  end
+
+  describe ".agent_gone?" do
+    it "is true only for an empty pane that no signal of ours explains" do
+      expect(described_class.agent_gone?({"stopped" => false}, nil)).to be(true)
+      expect(described_class.agent_gone?({"stopped" => true}, nil)).to be(false)
+      expect(described_class.agent_gone?({}, :unread)).to be(false)
+      expect(described_class.agent_gone?({}, {pid: 20})).to be(false)
+    end
+  end
+
+  describe ".same_wait?" do
+    it "compares the phase, the session and the failure time only" do
+      seen = {"phase" => "waiting", "session_id" => "s", "failed_at" => "t", "attempts" => 1}
+
+      expect(described_class.same_wait?(seen.merge("attempts" => 2), seen)).to be(true)
+      %w[phase session_id failed_at].each do |key|
+        expect(described_class.same_wait?(seen.merge(key => "other"), seen)).to be(false)
+      end
+    end
+  end
 end

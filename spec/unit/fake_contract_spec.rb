@@ -320,4 +320,22 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::RecoveryFacts, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingConfirmerFacts do
+    it "accepts every call RecoveryFacts accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryFacts, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingStopMarker do
+    it "accepts every call RecoveryStopMarker accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryStopMarker, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryEventLog do
+    it "accepts every call EventLog accepts" do
+      expect(FakeContract.problems(described_class, Workspace::EventLog, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end
