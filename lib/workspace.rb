@@ -582,13 +582,13 @@ module Workspace
   # @param workflow_nudger [Workspace::WorkflowNudger, nil] the {Workspace::HookFanout} wakes a workflow run with it when a
   #   turn ends in the run's pane; nil wakes none
   # @param token_generator [#call] returns a fresh completion token for one stage dispatch
+  # @param epoch_generator [#call] returns a fresh epoch for the pipeline desk's registration and each re-registration
   # @param clock [#call] returns the current Time, for stage deadlines and when a turn began
   # @param retry_backoff [Numeric] seconds to wait between status report retries
   # @param logger [Workspace::Logger] debug logger
   # @param error_output [IO] where a restart worker's failure is written
   # @return [Proc] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+ (the
-  #   {Workspace::RestartRegistry}), +epoch_generator:+ (the pipeline desk's fresh epoch for each re-registration)
-  #   and +recovering:+ (pane id to whether a recovery holds it), the frozen {Workspace::AgentdParts}; +pipeline_desk:+ is one an earlier call built (nil builds one), and
+  #   {Workspace::RestartRegistry}) and +recovering:+ (pane id to whether a recovery holds it), the frozen {Workspace::AgentdParts}; +pipeline_desk:+ is one an earlier call built (nil builds one), and
   #   +pipeline_only: true+ builds the pipeline desk alone (every other member nil), so the daemon can
   #   recover and register its pipeline before the rest are built
   def self.build_agentd_parts(tmux:, config:, work_coordinator_client:, pipeline_config:, session_monitor_factory:, event_log: nil, context_reader: nil, agent_restart_factory: nil,
@@ -596,13 +596,14 @@ module Workspace
     plan_paused_for: nil, hook_event_log_factory: nil, plan_progress_watcher_factory: nil, spine_watcher_factory: nil,
     spine_owner_report_factory: nil, agent_recovery_desk_factory: nil, agent_status_desk_factory: nil, prompt_queue_desk_factory: nil,
     handoff_watcher_factory: nil, restart_runner_factory: nil, pipeline_state: nil, sentinel_poller_factory: nil, workflow_nudger: nil,
-    token_generator: -> { SecureRandom.hex(4) }, clock: -> { Time.now }, retry_backoff: 0.5, logger: Workspace::Logger.new, error_output: $stderr)
+    token_generator: -> { SecureRandom.hex(4) }, epoch_generator: -> { "wa-#{Commands::Agent.ulid}" }, clock: -> { Time.now }, retry_backoff: 0.5,
+    logger: Workspace::Logger.new, error_output: $stderr)
     sentinel_poller_factory ||= ->(session_name:, pane:, token:, deadline:) do
       SentinelPoller.new(tmux: tmux, session_name: session_name, pane: pane, token: token, deadline: deadline,
         clock: clock, logger: logger, error_output: error_output)
     end
     stage_marks = ->(timeout) { [token_generator.call, timeout && clock.call + timeout] }
-    pipeline_desk_for = lambda do |workspace, session_name, delivery_lock, epoch_generator|
+    pipeline_desk_for = lambda do |workspace, session_name, delivery_lock|
       PipelineDesk.new(workspace: workspace, session_name: session_name, tmux: tmux, config: config, pipeline_config: pipeline_config,
         pipeline_state: pipeline_state || PipelineState.new(pipeline_config: pipeline_config, state_path: config.pipeline_state_path(workspace)),
         client: work_coordinator_client, delivery_lock: delivery_lock, sentinel_poller_factory: sentinel_poller_factory,
@@ -636,8 +637,8 @@ module Workspace
         typer: typer, delivery_lock: delivery_lock, restarting: restarting, event_log: event_log, logger: logger, **paused)
     end
 
-    lambda do |workspace:, session_name:, delivery_lock:, registry:, epoch_generator:, recovering:, pipeline_desk: nil, pipeline_only: false|
-      pipeline_desk ||= pipeline_desk_for.call(workspace, session_name, delivery_lock, epoch_generator)
+    lambda do |workspace:, session_name:, delivery_lock:, registry:, recovering:, pipeline_desk: nil, pipeline_only: false|
+      pipeline_desk ||= pipeline_desk_for.call(workspace, session_name, delivery_lock)
       next AgentdParts.new(pipeline_desk: pipeline_desk).freeze if pipeline_only
 
       pipeline_ref = pipeline_desk.method(:pipeline_ref_on)
@@ -689,6 +690,47 @@ module Workspace
         status_desk: status_desk, queue_desk: queue_desk, recovery_desk: recovery_desk, handoff_watcher: handoff_watcher,
         pipeline_desk: pipeline_desk, hook_fanout: hook_fanout).freeze
     end
+  end
+
+  # Builds the agent daemon over its parts builder: its socket server, the router of each workspace it serves
+  # and the Claude pane lookup a coordinator command with no pipeline goes to. `build_cli` calls it, and the
+  # daemon specs build theirs through it.
+  #
+  # @param config [Workspace::Config] path configuration
+  # @param tmux [Workspace::Tmux] tmux session operations
+  # @param pipeline_config [Workspace::PipelineConfig] per-project pipeline configuration, checked at startup
+  # @param parts [#call] the per-workspace builder {.build_agentd_parts} returns
+  # @param agent_labels [Workspace::AgentLabels, nil] lets the Claude pane search match the agent label
+  # @param agent_commands [Workspace::AgentCommands, nil] the program names that count as an agent in the Claude
+  #   pane search; nil knows only the providers' executables
+  # @param restart_registry [Workspace::RestartRegistry] the panes being restarted
+  # @param signal_trapper [#trap] receives the SIGTERM/SIGINT handler registration
+  # @param socket_poll_interval [Numeric] seconds between the socket watcher's passes
+  # @param workflow_tick_passes [Integer] the watcher ticks the workflow nudger every this many passes
+  # @param current_name [String, nil] the workspace served before {Commands::Agent#call} starts ({Commands::Agent#prepare})
+  # @param event_log [Workspace::EventLog, nil] records the daemon's start and stop
+  # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes the workspace's workflow runs on a timer
+  # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace before the socket is claimed
+  # @param logger [Workspace::Logger] debug logger
+  # @param output [IO] output stream for user-facing messages
+  # @param error_output [IO] error output stream for errors
+  # @return [Workspace::Commands::Agent]
+  def self.build_agent_daemon(config:, tmux:, pipeline_config:, parts:, agent_labels: nil, agent_commands: nil,
+    restart_registry: RestartRegistry.new, signal_trapper: Signal, socket_poll_interval: AgentdSocketServer::POLL_INTERVAL,
+    workflow_tick_passes: AgentdSocketServer::TICK_PASSES, current_name: nil, event_log: nil, workflow_nudger: nil,
+    name_migration: nil, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
+    socket_server = AgentdSocketServer.new(poll_interval: socket_poll_interval, tick_passes: workflow_tick_passes,
+      signal_trapper: signal_trapper, logger: logger, output: output, error_output: error_output)
+    router_for = ->(workspace, handlers) { AgentdRouter.new(workspace: workspace, handlers: handlers, logger: logger) }
+    claude_pane = lambda do |workspace, session_name|
+      TmuxPane.new("Claude Code", tmux: tmux, agent_labels: agent_labels, detector: agent_commands&.detector(workspace)).target(session_name)
+    end
+    agent = Commands::Agent.new(config: config, tmux: tmux, pipeline_config: pipeline_config, parts: parts,
+      socket_server: socket_server, router_for: router_for, claude_pane: claude_pane, restart_registry: restart_registry,
+      event_log: event_log, workflow_nudger: workflow_nudger, name_migration: name_migration, logger: logger,
+      output: output, error_output: error_output)
+    agent.prepare(current_name) if current_name
+    agent
   end
 
   # Assembles the full dependency graph and returns a ready-to-run CLI instance.
@@ -1143,7 +1185,7 @@ module Workspace
       logger: logger,
       error_output: error_output
     )
-    agent_command = Commands::Agent.new(
+    agent_command = build_agent_daemon(
       config: config,
       tmux: tmux,
       agent_labels: agent_labels,

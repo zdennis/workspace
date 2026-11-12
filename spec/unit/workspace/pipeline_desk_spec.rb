@@ -259,6 +259,11 @@ RSpec.describe Workspace::PipelineDesk do
                                            in_flight: [{"work_item_ref" => "WC-1", "dispatch_id" => "d-1", "phase" => "research"}]}])
     end
 
+    it "registers under a fresh epoch from its generator when given none" do
+      expect(desk.register(socket: "/tmp/ws.sock")).to be(true)
+      expect(client.registrations).to eq([{name: "myapp", socket: "/tmp/ws.sock", pipeline: true, epoch: "wa-2", in_flight: []}])
+    end
+
     it "answers false and says why when the coordinator refuses" do
       client = RecordingCoordinatorClient.new(register_reply: {"ok" => false, "error" => "name taken"})
       desk = described_class.new(workspace: "myapp", session_name: "myapp-session", tmux: tmux, config: config,

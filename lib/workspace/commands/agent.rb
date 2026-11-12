@@ -20,15 +20,17 @@ module Workspace
       MAX_RESTART_TIMEOUT = AgentdRestartDesk::MAX_TIMEOUT
 
       # @param config [Workspace::Config] path configuration
-      # @param tmux [Workspace::Tmux] tmux session operations
-      # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
+      # @param tmux [Workspace::Tmux] names the workspace's session and lists its panes for a handoff watch
       # @param pipeline_config [Workspace::PipelineConfig] per-project pipeline configuration, checked at startup
-      # @param epoch_generator [#call] returns a new epoch string, for the registration and (through the parts) each
-      #   re-registration
-      # @param signal_trapper [#trap] receives SIGTERM/SIGINT handler registration
-      # @param parts [#call] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+, +epoch_generator:+,
-      #   +recovering:+ and +pipeline_desk:+ (or +pipeline_only: true+), builds the {Workspace::AgentdParts} of the workspace served,
+      # @param parts [#call] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+, +recovering:+ and
+      #   +pipeline_desk:+ (or +pipeline_only: true+), builds the {Workspace::AgentdParts} of the workspace served,
       #   none of them started ({Workspace.build_agentd_parts} returns it)
+      # @param socket_server [Workspace::AgentdSocketServer] claims, binds, serves and watches the daemon's socket
+      # @param router_for [#call] given the workspace served (nil before one is) and the handlers by message type,
+      #   builds the {Workspace::AgentdRouter} that routes each message
+      # @param claude_pane [#call] given the workspace and its tmux session, answers the target of its Claude
+      #   pane, raising {Workspace::Error} when none is found
+      # @param restart_registry [Workspace::RestartRegistry] the panes being restarted
       # @param event_log [Workspace::EventLog, nil] records the daemon's start and stop; nil records nothing
       # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes the workspace's workflow runs on a timer
       #   (the parts' hook fan-out wakes one when a turn ends in its pane); nil leaves workflow runs alone
@@ -37,33 +39,15 @@ module Workspace
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
-      # @param agent_commands [Workspace::AgentCommands, nil] the program names that count as an agent, read
-      #   once when the session monitor starts; nil knows only the providers' executables
-      # @param restart_registry [Workspace::RestartRegistry] the panes being restarted; one is
-      #   built by default
-      # @param current_name [String, nil] the workspace served before {#call} starts, so {#handle}
-      #   works without it (its pipeline desk is built at once); +call+ sets it from its +name+
-      # @param socket_poll_interval [Numeric] seconds between the socket watcher's passes
-      # @param workflow_tick_passes [Integer] the watcher ticks the workflow nudger every this many passes
-      def initialize(config:, tmux:, pipeline_config:, parts:, agent_labels: nil, agent_commands: nil,
-        epoch_generator: -> { "wa-#{Agent.ulid}" },
-        signal_trapper: Signal,
-        event_log: nil,
-        workflow_nudger: nil,
-        restart_registry: RestartRegistry.new,
-        current_name: nil,
-        name_migration: nil,
-        socket_poll_interval: SOCKET_POLL_INTERVAL,
-        workflow_tick_passes: WORKFLOW_TICK_PASSES,
-        logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
+      def initialize(config:, tmux:, pipeline_config:, parts:, socket_server:, router_for:, claude_pane:, restart_registry:,
+        logger:, event_log: nil, workflow_nudger: nil, name_migration: nil, output: $stdout, error_output: $stderr)
         @name_migration = name_migration
         @config = config
         @tmux = tmux
-        @agent_labels = agent_labels
-        @agent_commands = agent_commands
         @pipeline_config = pipeline_config
-        @epoch_generator = epoch_generator
         @parts = parts
+        @router_for = router_for
+        @claude_pane = claude_pane
         @session_monitor = nil
         @workflow_nudger = workflow_nudger
         @agent_recovery_desk = nil
@@ -73,8 +57,7 @@ module Workspace
         @restart_desk = nil
         @pipeline_desk = nil
         @event_log = event_log
-        @socket_server = AgentdSocketServer.new(poll_interval: socket_poll_interval, tick_passes: workflow_tick_passes,
-          signal_trapper: signal_trapper, logger: logger, output: output, error_output: error_output)
+        @socket_server = socket_server
         # Deliveries to panes take turns under this lock, taken before any
         # desk's own state lock and never inside it. A delivery can take
         # seconds to check, so it keeps a work item from moving between
@@ -84,9 +67,15 @@ module Workspace
         @output = output
         @error_output = error_output
         @router = route_for(nil)
-        return unless current_name
+      end
 
-        serve_workspace(current_name)
+      # Serves +name+ before {#call} starts, so {#handle} answers for it; its pipeline desk is built at once.
+      # {#call} serves the name it is given.
+      #
+      # @param name [String] the workspace served
+      # @return [void]
+      def prepare(name)
+        serve_workspace(name)
         build_pipeline_desk
       end
 
@@ -118,8 +107,7 @@ module Workspace
         build_pipeline_desk unless @pipeline_desk
         @pipeline_desk.recover_in_flight
 
-        epoch = @epoch_generator.call
-        registered = @pipeline_desk.register(socket: socket_path, epoch: epoch, wc_socket: wc_socket)
+        registered = @pipeline_desk.register(socket: socket_path, wc_socket: wc_socket)
         @error_output.puts "workspace agent: work-coordinator unavailable; will keep retrying in the background" unless registered
 
         @socket_server.listen(socket_path)
@@ -204,7 +192,7 @@ module Workspace
       # The parts builder's call for the workspace served; +extra+ is +pipeline_desk:+ or +pipeline_only:+.
       def build_parts(**extra)
         @parts.call(workspace: @current_name, session_name: @tmux_session, delivery_lock: @delivery_lock,
-          registry: @restarts, epoch_generator: @epoch_generator, recovering: ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false }, **extra)
+          registry: @restarts, recovering: ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false }, **extra)
       end
 
       # Builds the served workspace's pipeline desk.
@@ -214,7 +202,7 @@ module Workspace
 
       # The router of +name+'s messages, over this daemon's handlers.
       def route_for(name)
-        AgentdRouter.new(workspace: name, handlers: handlers, logger: @logger)
+        @router_for.call(name, handlers)
       end
 
       # Each message type's handler: it answers on the client through the router, or hands the client off.
@@ -367,7 +355,7 @@ module Workspace
       # Detects by pane title so that layout changes don't break routing.
       # Falls back to pane 1 if detection fails.
       def claude_pane_target
-        TmuxPane.new("Claude Code", tmux: @tmux, agent_labels: @agent_labels, detector: @agent_commands&.detector(@current_name)).target(@tmux_session)
+        @claude_pane.call(@current_name, @tmux_session)
       rescue Workspace::Error => e
         @logger.debug { "agent: Claude pane not found (#{e.message}); falling back to pane 1" }
         "0.1"

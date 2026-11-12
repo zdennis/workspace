@@ -30,7 +30,7 @@ module Workspace
     #   {Workspace::SentinelPoller} that watches a stage
     # @param stage_marks [#call] given a stage's timeout in seconds (nil for none), answers a fresh sentinel token and
     #   the stage's deadline (nil with no timeout) for a stage started now
-    # @param epoch_generator [#call] returns a fresh epoch for each re-registration
+    # @param epoch_generator [#call] returns a fresh epoch for the registration and each re-registration
     # @param retry_backoff [Numeric] seconds to wait between status report retries (times the attempt number)
     # @param event_log [Workspace::EventLog, nil] records dispatches, stage completions and failures; nil records nothing
     # @param logger [Workspace::Logger] debug logger
@@ -90,10 +90,10 @@ module Workspace
 
     # Registers the workspace with the coordinator at startup, through a client rebound to any +wc_socket+.
     # @param socket [String] the daemon's own socket path
-    # @param epoch [String] this daemon's epoch
+    # @param epoch [String] this daemon's epoch (a fresh one from the epoch generator by default)
     # @param wc_socket [String, nil] a coordinator socket to use instead of the configured one
     # @return [Boolean] true when the coordinator accepted the registration
-    def register(socket:, epoch:, wc_socket: nil)
+    def register(socket:, epoch: @epoch_generator.call, wc_socket: nil)
       @client = wc_socket ? rebind_client(wc_socket) : @work_coordinator_client
       reply = send_registration(socket: socket, epoch: epoch)
       @wc_epoch = reply["epoch"]
@@ -300,8 +300,10 @@ module Workspace
       false
     end
 
+    # Interrupts the stage's pane, then types the steer (no reporting instructions: the agent has them already).
     def urgent_steer_reply(ref, entry, body)
-      delivery = deliver_urgent_steer(entry, body)
+      @tmux.send_key(@session_name, pane_target(entry[:pane_index]), "C-c")
+      delivery = @tmux.deliver(@session_name, pane_target(entry[:pane_index]), body)
       return AgentProtocol.ok(queued_for_pane: entry[:pane_index]) if delivery.ok?
       # "not_submitted": the text is, or may be, in the pane, so resending could type it twice.
       @error_output.puts "workspace agent: steer for #{ref} to pane #{entry[:pane_index]}: #{delivery.message}"
@@ -312,12 +314,6 @@ module Workspace
     def stale_token?(message, entry)
       expected = message["expected_token"]
       !expected.nil? && expected != entry[:sentinel_token]
-    end
-
-    # Interrupts the stage's pane, then types the steer (no reporting instructions: the agent has them already).
-    def deliver_urgent_steer(entry, body)
-      @tmux.send_key(@session_name, pane_target(entry[:pane_index]), "C-c")
-      @tmux.deliver(@session_name, pane_target(entry[:pane_index]), body)
     end
 
     # The stage after the one this entry is sitting on, or nil when it is last.
