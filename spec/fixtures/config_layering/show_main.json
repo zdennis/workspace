@@ -2133,7 +2133,7 @@
         "global"
       ],
       "layers": [],
-      "doc": "How many tmuxinator config backup batches (made by `template apply`, `template restore` and `template backup`) are kept (default `20`); pruning never drops the newest batch holding a workspace",
+      "doc": "How many tmuxinator config backup batches (made by `template apply`, `template restore`, `template backup` and `template import`) are kept (default `20`); pruning never drops the newest batch holding a workspace or a template set `template import` replaced",
       "problems": [],
       "min": 1
     },
@@ -2162,7 +2162,7 @@
         "global"
       ],
       "layers": [],
-      "doc": "How old a tmuxinator config backup batch may get before pruning removes it (a duration; unset: batches are only limited by `tmuxinator.backups.keep`); pruning never drops the newest batch holding a workspace",
+      "doc": "How old a tmuxinator config backup batch may get before pruning removes it (a duration; unset: batches are only limited by `tmuxinator.backups.keep`); pruning never drops the newest batch holding a workspace or a template set `template import` replaced",
       "problems": [],
       "unit": "seconds"
     },
