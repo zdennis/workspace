@@ -70,6 +70,7 @@ module Workspace
         "plan" => 6,
         "ticket" => 2,
         "skills" => 1,
+        "template" => 1,
         "goal" => 2,
         "spine" => 3,
         "spine_eval" => 3,

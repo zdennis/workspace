@@ -1634,6 +1634,65 @@ module Workspace
       }
     }.freeze
 
+    TEMPLATE_SCOPE_TEXT = "list: only this scope, global, project or builtin (default: all of them)"
+    TEMPLATE_KIND_TEXT = "show and path: only this file, project or worktree (default: both)"
+    TEMPLATE_NAME_TEXT = "Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"
+
+    TEMPLATE = {
+      "list" => {
+        usage: ["template list [--scope SCOPE] [--name WORKSPACE] [--json]"],
+        summary: "List the tmuxinator templates and which one each kind of new config uses",
+        about: [
+          "A tmuxinator template is a set of layout files (project.yml, worktree.yml) that new tmuxinator configs",
+          "are rendered from; each is a `template` entry of the library (built-in, global or the project's own).",
+          "Each row says which kinds select it, from tmuxinator.template and tmuxinator.worktree_template as that",
+          "workspace sees them (project over global over the default). An edited copy `workspace init` installed",
+          "in ~/.config/tmuxinator/ still wins while neither key is set, and shows as `legacy`. Reads only."
+        ],
+        options: [["--scope SCOPE", TEMPLATE_SCOPE_TEXT],
+          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        examples: [
+          ["workspace template list", "see which tmuxinator template a new project config and a new worktree config would use"],
+          ["workspace template list --scope global", "only the tmuxinator templates you added for every project"],
+          ["workspace template list --name api.worktree-login", "which one a config for that workspace would use, with its own settings"],
+          ["workspace template list --json", "for a script: each tmuxinator template with the kinds that select it"]
+        ]
+      },
+      "show" => {
+        usage: ["template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],
+        summary: "Print the files of a tmuxinator template",
+        about: [
+          "NAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the",
+          "workspace. With --kind, prints that one file as it is, so it can be piped or saved; without, both files,",
+          "each under a `==> path <==` line; a script should pass --kind to get the file raw. Reads only."
+        ],
+        options: [["--kind KIND", TEMPLATE_KIND_TEXT],
+          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        examples: [
+          ["workspace template show --kind worktree", "read the layout a new worktree config is rendered from"],
+          ["workspace template show team", "both files of the tmuxinator template team"],
+          ["workspace template show default --kind project > project.yml", "start your own copy from the built-in project layout"],
+          ["workspace template show --json", "for a script: each tmuxinator template file with its path, sha256 and text"]
+        ]
+      },
+      "path" => {
+        usage: ["template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],
+        summary: "Print where the files of a tmuxinator template are",
+        about: [
+          "NAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the",
+          "workspace. Prints one file path per line (project.yml, then worktree.yml), or one with --kind, so",
+          "\"$(workspace template path --kind project)\" works. Fails when a file is missing. Reads only."
+        ],
+        options: [["--kind KIND", TEMPLATE_KIND_TEXT],
+          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        examples: [
+          ["workspace template path --kind project", "the file a new project config is rendered from"],
+          ["workspace template path team", "where the files of the tmuxinator template team are"],
+          ["workspace template path --json", "for a script: each tmuxinator template file's kind, set, scope and path"]
+        ]
+      }
+    }.freeze
+
     NOTES = {
       "dir" => {
         usage: ["notes dir [--name WORKSPACE] [--create] [--json]"],
@@ -3238,7 +3297,7 @@ module Workspace
     # The tables by command; the specs and the routing tests read them.
     COMMANDS = {
       "plan" => PLAN, "daemon" => DAEMON, "workflow" => WORKFLOW, "library" => LIBRARY, "spine" => SPINE,
-      "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL,
+      "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL, "template" => TEMPLATE,
       "notes" => NOTES, "instructions" => INSTRUCTIONS, "ui" => UI, "event-log" => EVENT_LOG, "projects" => PROJECTS,
       "projects group" => GROUPS, "config" => CONFIG, "layout" => LAYOUT, "ask" => ASK, "inbox" => INBOX,
       "agent-run" => AGENT_RUN, "handoff" => HANDOFF, "lock" => LOCK, "dev" => DEV, "pipeline" => PIPELINE,

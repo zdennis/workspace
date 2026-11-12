@@ -91,6 +91,10 @@ The same pane list carries `waits` per pane: every open wait as `agent_id`, `too
 
 `goal show [REF] --json` prints `{"schema_version":1,"ok":true,"goal":{...},"warnings":[]}` and `goal list [--all] --json` prints `{"schema_version":1,"ok":true,"goals":[...],"warnings":[]}`. Both are read-only; a source that can't answer is a null level plus a warning. `show` also carries `done_means` and `not_yet` (lists of `{code, text}`) and `delivery`, and `list` rows `delivered` and `not_yet_codes`: a finished plan or spine is `done` only once the branch's commits are on the default branch (local git only). Every field, the closed value sets, nullability and warning codes are in [README.goal.md](README.goal.md).
 
+## Tmuxinator templates
+
+`template list [--scope SCOPE] [--name WS] --json` prints `{"schema_version":1,"ok":true,"workspace":...,"selected":{"project":{...},"worktree":{...}},"templates":[...],"warnings":[]}`. Each `templates` row has `name`, `ref`, `scope`, `project`, `description`, `path`, `files`, `effective` and `selected_for` (the kinds, `project` and `worktree`, that render from it for that workspace). `selected.<kind>` is `{name, scope, source}`, or null with a warning (`code`, `kind`, `message`) when the set it names can't be found; an edited copy `init` installed shows as the set `legacy`. `template show [NAME] --json` prints `{"schema_version":1,"ok":true,"templates":[...],"warnings":[]}` with one row per file (`kind`, `template`, `scope`, `source`, `path`, `content`, `sha256`), and `template path --json` the same rows without `content` and `sha256`. `source` is where the set's name came from (`worktree`, `project`, `global`, `default`, `legacy`), or `argument` when NAME was given. All three read only.
+
 ## Help pages
 
 `--help --json` (or `--json --help`) on any subcommand or verb prints its help page as one JSON document, made from the text the page prints, so the two say the same. It is not enveloped. It prints the page and does nothing else.

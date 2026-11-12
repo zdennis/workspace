@@ -1,0 +1,167 @@
+### workspace template --help
+--- exit 0
+--- stdout
+Usage: workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]
+       workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]
+       workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]
+
+A tmuxinator template is a set of tmuxinator layout files (project.yml for a standard project,
+worktree.yml for a git worktree) that new tmuxinator configs are rendered from. Sets are
+`template` entries of the library; `tmuxinator.template` and `tmuxinator.worktree_template` choose one.
+
+Subcommands:
+  list  List the tmuxinator templates and which one each kind of new config uses
+  show  Print the files of a tmuxinator template
+  path  Print where the files of a tmuxinator template are
+Run `workspace template VERB --help` for a verb's options.
+
+        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them)
+        --kind KIND                  show and path: only this file, project or worktree (default: both)
+        --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
+        --json                       Print one JSON document
+    -h, --help                       Show this help
+
+Examples:
+  workspace template list    # every tmuxinator template, and which one a new config of each kind uses
+  workspace template show --kind worktree    # the worktree layout a new worktree config is rendered from
+  workspace template path team    # where the files of the tmuxinator template team are
+--- stderr
+--- end
+### workspace template --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]","workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"A tmuxinator template is a set of tmuxinator layout files (project.yml for a standard project,\nworktree.yml for a git worktree) that new tmuxinator configs are rendered from. Sets are\n`template` entries of the library; `tmuxinator.template` and `tmuxinator.worktree_template` choose one.","options":[],"examples":[{"command":"workspace template list","scenario":"every tmuxinator template, and which one a new config of each kind uses"},{"command":"workspace template show --kind worktree","scenario":"the worktree layout a new worktree config is rendered from"},{"command":"workspace template path team","scenario":"where the files of the tmuxinator template team are"}],"sections":[{"heading":"Subcommands","text":"list  List the tmuxinator templates and which one each kind of new config uses\n  show  Print the files of a tmuxinator template\n  path  Print where the files of a tmuxinator template are\nRun `workspace template VERB --help` for a verb's options.\n\n        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them)\n        --kind KIND                  show and path: only this file, project or worktree (default: both)\n        --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)\n        --json                       Print one JSON document\n    -h, --help                       Show this help"}]}
+--- stderr
+--- end
+### workspace template list --help
+--- exit 0
+--- stdout
+Usage: workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]
+
+List the tmuxinator templates and which one each kind of new config uses.
+
+A tmuxinator template is a set of layout files (project.yml, worktree.yml) that new tmuxinator configs
+are rendered from; each is a `template` entry of the library (built-in, global or the project's own).
+Each row says which kinds select it, from tmuxinator.template and tmuxinator.worktree_template as that
+workspace sees them (project over global over the default). An edited copy `workspace init` installed
+in ~/.config/tmuxinator/ still wins while neither key is set, and shows as `legacy`. Reads only.
+
+Options:
+    --scope SCOPE                list: only this scope, global, project or builtin (default: all of them)
+    --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace template list    # see which tmuxinator template a new project config and a new worktree config would use
+  workspace template list --scope global    # only the tmuxinator templates you added for every project
+  workspace template list --name api.worktree-login    # which one a config for that workspace would use, with its own settings
+  workspace template list --json    # for a script: each tmuxinator template with the kinds that select it
+--- stderr
+--- end
+### workspace template list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]"],"description":"List the tmuxinator templates and which one each kind of new config uses.\n\nA tmuxinator template is a set of layout files (project.yml, worktree.yml) that new tmuxinator configs\nare rendered from; each is a `template` entry of the library (built-in, global or the project's own).\nEach row says which kinds select it, from tmuxinator.template and tmuxinator.worktree_template as that\nworkspace sees them (project over global over the default). An edited copy `workspace init` installed\nin ~/.config/tmuxinator/ still wins while neither key is set, and shows as `legacy`. Reads only.","options":[{"flags":"--scope SCOPE","description":"list: only this scope, global, project or builtin (default: all of them)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template list","scenario":"see which tmuxinator template a new project config and a new worktree config would use"},{"command":"workspace template list --scope global","scenario":"only the tmuxinator templates you added for every project"},{"command":"workspace template list --name api.worktree-login","scenario":"which one a config for that workspace would use, with its own settings"},{"command":"workspace template list --json","scenario":"for a script: each tmuxinator template with the kinds that select it"}]}
+--- stderr
+--- end
+### workspace template show --help
+--- exit 0
+--- stdout
+Usage: workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]
+
+Print the files of a tmuxinator template.
+
+NAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the
+workspace. With --kind, prints that one file as it is, so it can be piped or saved; without, both files,
+each under a `==> path <==` line; a script should pass --kind to get the file raw. Reads only.
+
+Options:
+    --kind KIND                  show and path: only this file, project or worktree (default: both)
+    --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace template show --kind worktree    # read the layout a new worktree config is rendered from
+  workspace template show team    # both files of the tmuxinator template team
+  workspace template show default --kind project > project.yml    # start your own copy from the built-in project layout
+  workspace template show --json    # for a script: each tmuxinator template file with its path, sha256 and text
+--- stderr
+--- end
+### workspace template show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Print the files of a tmuxinator template.\n\nNAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the\nworkspace. With --kind, prints that one file as it is, so it can be piped or saved; without, both files,\neach under a `==> path <==` line; a script should pass --kind to get the file raw. Reads only.","options":[{"flags":"--kind KIND","description":"show and path: only this file, project or worktree (default: both)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template show --kind worktree","scenario":"read the layout a new worktree config is rendered from"},{"command":"workspace template show team","scenario":"both files of the tmuxinator template team"},{"command":"workspace template show default --kind project > project.yml","scenario":"start your own copy from the built-in project layout"},{"command":"workspace template show --json","scenario":"for a script: each tmuxinator template file with its path, sha256 and text"}]}
+--- stderr
+--- end
+### workspace template path --help
+--- exit 0
+--- stdout
+Usage: workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]
+
+Print where the files of a tmuxinator template are.
+
+NAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the
+workspace. Prints one file path per line (project.yml, then worktree.yml), or one with --kind, so
+"$(workspace template path --kind project)" works. Fails when a file is missing. Reads only.
+
+Options:
+    --kind KIND                  show and path: only this file, project or worktree (default: both)
+    --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace template path --kind project    # the file a new project config is rendered from
+  workspace template path team    # where the files of the tmuxinator template team are
+  workspace template path --json    # for a script: each tmuxinator template file's kind, set, scope and path
+--- stderr
+--- end
+### workspace template path --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Print where the files of a tmuxinator template are.\n\nNAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the\nworkspace. Prints one file path per line (project.yml, then worktree.yml), or one with --kind, so\n\"$(workspace template path --kind project)\" works. Fails when a file is missing. Reads only.","options":[{"flags":"--kind KIND","description":"show and path: only this file, project or worktree (default: both)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template path --kind project","scenario":"the file a new project config is rendered from"},{"command":"workspace template path team","scenario":"where the files of the tmuxinator template team are"},{"command":"workspace template path --json","scenario":"for a script: each tmuxinator template file's kind, set, scope and path"}]}
+--- stderr
+--- end
+### workspace template --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace template --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace template
+--- exit 0
+--- stdout
+Usage: workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]
+       workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]
+       workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]
+
+A tmuxinator template is a set of tmuxinator layout files (project.yml for a standard project,
+worktree.yml for a git worktree) that new tmuxinator configs are rendered from. Sets are
+`template` entries of the library; `tmuxinator.template` and `tmuxinator.worktree_template` choose one.
+
+Subcommands:
+  list  List the tmuxinator templates and which one each kind of new config uses
+  show  Print the files of a tmuxinator template
+  path  Print where the files of a tmuxinator template are
+Run `workspace template VERB --help` for a verb's options.
+
+        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them)
+        --kind KIND                  show and path: only this file, project or worktree (default: both)
+        --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
+        --json                       Print one JSON document
+    -h, --help                       Show this help
+
+Examples:
+  workspace template list    # every tmuxinator template, and which one a new config of each kind uses
+  workspace template show --kind worktree    # the worktree layout a new worktree config is rendered from
+  workspace template path team    # where the files of the tmuxinator template team are
+--- stderr
+--- end

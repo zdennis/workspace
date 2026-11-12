@@ -16,7 +16,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill rename finish relaunch restore
       focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects go
-      capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
+      template capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log events
       whereis lookup dir alfred shell-init version help
@@ -24,7 +24,7 @@ module Workspace
 
     # The verbs a family parser takes, each to the key of its object in +families:+. {#run} hands
     # such a verb, its arguments and the run's {Invocation} to that family before its own case.
-    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent, "agent-run" => :agent_run, "handoff" => :agent_run, "pipeline" => :pipeline, "plan" => :plan_spine, "spine" => :plan_spine, "journey" => :plan_spine, "goal" => :plan_spine}.freeze
+    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent, "agent-run" => :agent_run, "handoff" => :agent_run, "pipeline" => :pipeline, "plan" => :plan_spine, "spine" => :plan_spine, "journey" => :plan_spine, "goal" => :plan_spine, "template" => :template}.freeze
 
     # @param workspace_name [Workspace::WorkspaceName, nil] settles a given workspace name to its on-disk spelling (nil leaves names as given)
     # @param config [Workspace::Config] configuration for path lookups
@@ -604,6 +604,7 @@ module Workspace
           set-command     Set the shell command for a pane in a project config (--pane <N>)
           statusline      Render Claude Code's status line (install as its statusLine command)
           stop            Stop a workspace and its tmux session (default: the current one; --all for every active one)
+          template        List the tmuxinator templates and which one a new config uses (list), print their files (show), or where they are (path)
           ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show), or list yours (list), in this workspace's project
           tile            Tile all windows for a project across the screen
           tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)

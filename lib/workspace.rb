@@ -446,6 +446,7 @@ require_relative "workspace/commands/skills"
 require_relative "workspace/delivery_facts"
 require_relative "workspace/goal_state"
 require_relative "workspace/commands/goal"
+require_relative "workspace/commands/template"
 require_relative "workspace/commands/spine"
 require_relative "workspace/commands/spine_init"
 require_relative "workspace/commands/spine_start"
@@ -500,6 +501,7 @@ require_relative "workspace/cli/agent"
 require_relative "workspace/cli/agent_run"
 require_relative "workspace/cli/pipeline"
 require_relative "workspace/cli/plan_spine"
+require_relative "workspace/cli/template"
 require_relative "workspace/cli"
 
 module Workspace
@@ -1278,6 +1280,8 @@ module Workspace
       agent_executables_command: agent_executables_command, agent_run: ->(args, invocation) { agent_run_family.prompt(args, invocation) },
       project_detector: project_detector, common: common, names: names, working_dir: working_dir)
     pipeline_family = CLI::Pipeline.new(config: config, agent_client: agent_client, common: common, names: names)
+    template_command = Commands::Template.new(library: library, output: output)
+    template_family = CLI::Template.new(template_command: template_command, common: common, names: names, working_dir: working_dir)
     plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,
       spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,
       status_scope: status_scope, project_detector: project_detector, launcher: launcher, common: common, names: names, working_dir: working_dir)
@@ -1286,7 +1290,7 @@ module Workspace
       common: common,
       names: names,
       launcher: launcher,
-      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family},
+      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family, template: template_family},
       working_dir: working_dir,
       config: config,
       state: state,

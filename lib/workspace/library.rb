@@ -272,7 +272,7 @@ module Workspace
       resolve("template/#{name}", template_stores(workspace))
     rescue Error => e
       raise unless e.code == "unknown_library_entry"
-      raise Error.new("No tmuxinator template '#{name}'#{" (from #{source})" if source}. List them with: workspace library list --kind template",
+      raise Error.new("No tmuxinator template '#{name}'#{" (from #{source})" if source}. List them with: workspace template list",
         code: "unknown_template",
         details: {"template" => name, "kind" => "tmuxinator", "scopes" => e.details["scopes"], "source" => source})
     end

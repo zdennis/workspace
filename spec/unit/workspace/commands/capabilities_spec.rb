@@ -170,6 +170,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("go" => 3)
     end
 
+    it "reports template 1 once template list, show and path exist" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("template" => 1)
+    end
+
     it "reports goal 2 once goal show and goal list exist" do
       command.call(json: true)
 
