@@ -51,18 +51,19 @@ RSpec.describe Workspace::PaneAlerts do
 
   describe ".mark" do
     it "marks the quiet stretch by its start" do
-      described_class.mark(pane, described_class::IDLE, now - 120)
-      expect(pane[:alerted_idle_since]).to eq(now - 120)
+      marked = described_class.mark(pane, described_class::IDLE, now - 120)
+      expect(marked[:alerted_idle_since]).to eq(now - 120)
+      expect(pane).not_to have_key(:alerted_idle_since)
     end
 
     it "marks the wait under the key only while it is the wait that began at the value" do
       pane[:waits]["a1"] = {since: now - 30}
-      described_class.mark(pane, "a1", now - 10)
-      expect(pane[:waits]["a1"][:alerted]).to be_nil
+      expect(described_class.mark(pane, "a1", now - 10)).to equal(pane)
 
-      described_class.mark(pane, "a1", now - 30)
-      expect(pane[:waits]["a1"][:alerted]).to be(true)
-      expect { described_class.mark(pane, "gone", now) }.not_to change { pane[:waits] }
+      marked = described_class.mark(pane, "a1", now - 30)
+      expect(marked[:waits]["a1"][:alerted]).to be(true)
+      expect(pane[:waits]["a1"]).to eq(since: now - 30)
+      expect(described_class.mark(pane, "gone", now)).to equal(pane)
     end
   end
 
@@ -71,18 +72,20 @@ RSpec.describe Workspace::PaneAlerts do
 
     it "takes an open wait up as alerted at the logged start" do
       pane[:waits]["a1"] = {since: now}
-      described_class.restore_waits(pane, 200, now - 300, alerts)
-      expect(pane[:waits]["a1"]).to eq(since: now - 60, alerted: true)
+      restored = described_class.restore_waits(pane, 200, now - 300, alerts)
+      expect(restored[:waits]["a1"]).to eq(since: now - 60, alerted: true)
+      expect(pane[:waits]["a1"]).to eq(since: now)
     end
 
     it "keeps the logged start for the agent's next wait when none is open" do
-      described_class.restore_waits(pane, 200, now - 300, alerts)
-      expect(pane[:alerted_waits]).to eq("a1" => now - 60)
+      restored = described_class.restore_waits(pane, 200, now - 300, alerts)
+      expect(restored[:alerted_waits]).to eq("a1" => now - 60)
+      expect(pane).not_to have_key(:alerted_waits)
     end
 
     it "ignores an alert for another pane process or from before the stretch" do
-      described_class.restore_waits(pane, 201, now - 300, alerts)
-      described_class.restore_waits(pane, 200, now - 30, alerts)
+      expect(described_class.restore_waits(pane, 201, now - 300, alerts)).to equal(pane)
+      expect(described_class.restore_waits(pane, 200, now - 30, alerts)).to equal(pane)
       expect(pane[:alerted_waits]).to be_nil
     end
   end

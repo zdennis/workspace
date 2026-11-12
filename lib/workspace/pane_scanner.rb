@@ -74,14 +74,15 @@ module Workspace
     # screen says about a screen wait, an answered permission dialog and a
     # question closed by Esc.
     #
-    # @param pane [Hash] the pane's record, changed in place
+    # @param pane [Hash] the pane's record, changed in place unless a logged
+    #   alert mark is taken up, which answers a new one
     # @param detail [Hash] the pane's row from {#pane_details}
     # @param tree [Workspace::ProcessTree::Snapshot] from {#process_snapshot}
     # @param now [Time] the scan's time
-    # @return [void]
+    # @return [Hash] the pane brought up to date, to be stored under its id
     def refresh(pane, detail, tree, now)
       load_history
-      restore_state(pane, detail) if @history.key?(detail[:id])
+      pane = restore_state(pane, detail) if @history.key?(detail[:id])
       pane[:index] = detail[:index]
       pane[:title] = detail[:title]
       pane[:cwd] = detail[:cwd]
@@ -103,7 +104,7 @@ module Workspace
       PaneScreenRules.screen_wait(pane, provider, screen, @clock.now)
       PaneScreenRules.end_answered_permission_waits(pane, provider, screen)
       refresh_question(pane, now)
-      nil
+      pane
     end
 
     private
@@ -122,10 +123,11 @@ module Workspace
     # again. An idle pane stays idle, and keeps the time it went idle, until
     # its output changes. A quiet stretch or a wait the last daemon already
     # alerted for counts as alerted, so a restart doesn't send its alert again.
+    # Answers the pane with the marks taken up.
     def restore_state(pane, detail)
       logged = @history.delete(detail[:id])
       alerts = @alert_history.delete(detail[:id]) || {}
-      return unless logged["pane_pid"] == detail[:pid] && !PaneStates::GONE_STATES.include?(logged["state"])
+      return pane unless logged["pane_pid"] == detail[:pid] && !PaneStates::GONE_STATES.include?(logged["state"])
       since = Time.iso8601(logged["since"].to_s)
       pane[:logged_state] = logged["state"]
       pane[:state_since] = since
@@ -135,9 +137,10 @@ module Workspace
       when "done" then restore_done(pane, detail, since, logged["stop_reason"], alerts["idle"])
       when "idle" then restore_idle(pane, detail, since, alerts["idle"])
       when "waiting" then PaneAlerts.restore_waits(pane, detail[:pid], since, alerts["waiting"] || {})
+      else pane
       end
     rescue ArgumentError
-      nil
+      pane
     end
 
     # A done pane still alerts for its quiet stretch, so the stretch the last
@@ -145,18 +148,19 @@ module Workspace
     def restore_done(pane, detail, since, stop_reason, alert)
       pane[:done] = {since: since, stop_reason: stop_reason || "end_turn"}
       at = PaneAlerts.logged_time(alert, detail[:pid], "idle_since")
-      return unless at
+      return pane unless at
 
       pane[:last_activity_at] = at
-      PaneAlerts.mark(pane, PaneAlerts::IDLE, at)
-      pane[:quiet_since_restore] = true
+      PaneAlerts.mark(pane, PaneAlerts::IDLE, at).merge(quiet_since_restore: true)
     end
 
     def restore_idle(pane, detail, since, alert)
       pane[:last_activity_at] = since - @idle_after
       pane[:quiet_since_restore] = true
       at = PaneAlerts.logged_time(alert, detail[:pid], "idle_since")
-      PaneAlerts.mark(pane, PaneAlerts::IDLE, pane[:last_activity_at]) if at && (at - pane[:last_activity_at]).abs < 0.002
+      return pane unless at && (at - pane[:last_activity_at]).abs < 0.002
+
+      PaneAlerts.mark(pane, PaneAlerts::IDLE, pane[:last_activity_at])
     end
 
     # Output is hashed rather than compared: a pane's scrollback is large, and

@@ -13,7 +13,9 @@ RSpec.describe Workspace::PaneScanner do
   let(:err) { StringIO.new }
   let(:logger) { Workspace::Logger.new(output: StringIO.new) }
   let(:detail) { {id: "%2", index: 1, pid: 200, command: "node", cwd: "/project", title: "Claude"} }
-  let(:pane) { Workspace::PaneEvents.new_pane("%2") }
+  let(:new_pane) { Workspace::PaneEvents.new_pane("%2") }
+
+  def pane = @pane ||= new_pane
 
   subject(:scanner) do
     described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj", providers: Workspace::AgentProvider.all,
@@ -23,7 +25,7 @@ RSpec.describe Workspace::PaneScanner do
 
   before { allow(tmux).to receive(:capture_pane).with("proj", 1).and_return("output") }
 
-  def refresh(at = now) = scanner.refresh(pane, detail, snapshot, at)
+  def refresh(at = now) = (@pane = scanner.refresh(pane, detail, snapshot, at))
 
   def fixture(name)
     File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "#{name}.txt"))

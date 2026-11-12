@@ -478,7 +478,7 @@ module Workspace
       due.filter_map do |alert|
         next unless @notifier.notify(alert.env)
         pane_id, wait_key = alert.key
-        @lock.synchronize { (pane = @panes[pane_id]) && PaneAlerts.mark(pane, wait_key, alert.value) }
+        @lock.synchronize { (pane = @panes[pane_id]) && (@panes[pane_id] = PaneAlerts.mark(pane, wait_key, alert.value)) }
         record_alert(alert.logged)
         alert.env
       rescue => e
@@ -571,7 +571,7 @@ module Workspace
     end
 
     def refresh_pane(detail, tree, now)
-      @scanner.refresh(@panes[detail[:id]] ||= PaneEvents.new_pane(detail[:id]), detail, tree, now)
+      @panes[detail[:id]] = @scanner.refresh(@panes[detail[:id]] || PaneEvents.new_pane(detail[:id]), detail, tree, now)
     end
   end
 end

@@ -10,9 +10,10 @@ module Workspace
   # Nothing here takes a lock, reads the clock or does I/O. The monitor
   # works out what is due and sends it, then marks each alert sent by its
   # {Due#key}, +[pane_id, wait_key]+, on the pane it finds under that id
-  # while it holds its lock again; no Hash read before the notifier ran is
-  # written. The marks a restart reads back from the event log are written
-  # here too ({.restore_waits}, {.logged_time} with {.mark}); {PaneScanner}
+  # while it holds its lock again, and stores the marked pane {.mark}
+  # answers under that id; no Hash is changed in place. The marks a restart
+  # reads back from the event log are made here too ({.restore_waits},
+  # {.logged_time} with {.mark}); {PaneScanner}
   # owns that read and the alert history it holds until each pane's first
   # refresh.
   module PaneAlerts
@@ -66,17 +67,19 @@ module Workspace
     # one that began at +value+; a wait ended and begun again since is a new
     # wait and stays unmarked.
     #
-    # @param pane [Hash] the pane the alert's key names, changed in place
+    # @param pane [Hash] the pane the alert's key names, left unchanged
     # @param wait_key [Symbol, String, nil] {IDLE} or the wait's agent id
     # @param value [Time] the start of the wait or stretch
-    # @return [void]
+    # @return [Hash] the pane marked, a new Hash; +pane+ itself when there is
+    #   nothing to mark
     def mark(pane, wait_key, value)
       if wait_key == IDLE
-        pane[:alerted_idle_since] = value
+        pane.merge(alerted_idle_since: value)
       elsif (wait = pane[:waits][wait_key]) && wait[:since] == value
-        wait[:alerted] = true
+        pane.merge(waits: pane[:waits].merge(wait_key => wait.merge(alerted: true)))
+      else
+        pane
       end
-      nil
     end
 
     # Remembers, per agent, each wait in the pane's logged waiting stretch
@@ -85,23 +88,24 @@ module Workspace
     # the agent ends it first. A notification that arrived before this first
     # scan is taken up here.
     #
-    # @param pane [Hash] changed in place
+    # @param pane [Hash] left unchanged
     # @param pane_pid [Integer] the pane's process now
     # @param stretch_since [Time] when the logged waiting stretch began
     # @param alerts [Hash{String, nil => Hash}] the last waiting alert logged
     #   per agent id
-    # @return [void]
+    # @return [Hash] the pane with the waits taken up, a new Hash; +pane+
+    #   itself when there is nothing to take up
     def restore_waits(pane, pane_pid, stretch_since, alerts)
-      alerts.each do |agent_id, alert|
+      alerts.reduce(pane) do |restored, (agent_id, alert)|
         waiting_since = logged_time(alert, pane_pid, "waiting_since")
-        next unless waiting_since && waiting_since - stretch_since > -0.002
-        if (wait = pane[:waits][agent_id])
-          wait.merge!(since: waiting_since, alerted: true) unless wait[:alerted]
+        next restored unless waiting_since && waiting_since - stretch_since > -0.002
+        if (wait = restored[:waits][agent_id])
+          next restored if wait[:alerted]
+          restored.merge(waits: restored[:waits].merge(agent_id => wait.merge(since: waiting_since, alerted: true)))
         else
-          (pane[:alerted_waits] ||= {})[agent_id] = waiting_since
+          restored.merge(alerted_waits: (restored[:alerted_waits] || {}).merge(agent_id => waiting_since))
         end
       end
-      nil
     end
 
     # @param alert [Hash, nil] a logged `agent_alert` event's data

@@ -1,9 +1,11 @@
 RSpec.describe Workspace::PaneEvents do
   let(:now) { Time.utc(2026, 9, 26, 12, 0, 0) }
-  let(:pane) { described_class.new_pane("%2") }
+  let(:new_pane) { described_class.new_pane("%2") }
+
+  def pane = @pane ||= new_pane
 
   def apply(name, extra = {}, at = now)
-    described_class.apply(pane, {"event" => name, "pane_id" => "%2"}.merge(extra), now: at)
+    @pane = described_class.apply(pane, {"event" => name, "pane_id" => "%2"}.merge(extra), now: at)
   end
 
   describe ".new_pane" do
@@ -15,8 +17,34 @@ RSpec.describe Workspace::PaneEvents do
   end
 
   describe ".apply" do
-    it "changes the pane it is given and returns it" do
-      expect(apply("user_prompt")).to equal(pane)
+    it "answers a new pane and leaves the one it is given, nested collections included, unchanged" do
+      given = described_class.new_pane("%2").merge(
+        session_id: "s1", transcript_path: "/t.jsonl", last_prompt: "fix it", done: {since: now - 60, stop_reason: "end_turn"},
+        waits: {nil => {since: now - 30}, "a1" => {since: now - 20, tool: "Bash", input: "ls"}},
+        permission_requests: {"a1" => {tool: "Bash", input: "ls"}},
+        agents: [{name: "agent", state: "running", started_at: now - 40, agent_id: "a1"}, {name: "agent", state: "running", started_at: now - 35}],
+        background_subagents: [{agent_id: "a1"}, {agent_id: nil}],
+        open_tools: {"t1" => {tool: "Read", since: now - 10}}, alerted_waits: {"a2" => now - 50},
+        turn_failed: {session_id: "s1"}
+      )
+      before = Marshal.load(Marshal.dump(given))
+      events = [
+        {"event" => "tool_start", "tool" => "Bash", "tool_use_id" => "t2"}, {"event" => "tool_use", "tool_use_id" => "t1"},
+        {"event" => "permission_request", "agent_id" => "a2", "tool" => "Edit"},
+        {"event" => "notification", "notification_type" => "permission_prompt", "message" => "Allow?"},
+        {"event" => "notification", "agent_id" => "a2", "message" => "Asking"},
+        {"event" => "tool_start", "agent_id" => "a3", "tool" => "Read"},
+        {"event" => "subagent_start", "tool_use_id" => "t3"}, {"event" => "subagent_stop", "agent_id" => "a1"},
+        {"event" => "stop"}, {"event" => "user_prompt", "prompt" => "go on"},
+        {"event" => "session_start", "session_id" => "s2", "source" => "clear"}, {"event" => "session_end"},
+        {"event" => "turn_failed"}
+      ]
+
+      events.each do |event|
+        answer = described_class.apply(given, event.merge("pane_id" => "%2"), now: now)
+        expect(answer).not_to equal(given)
+        expect(given).to eq(before)
+      end
     end
 
     it "stamps the event's time, session and agent kind" do

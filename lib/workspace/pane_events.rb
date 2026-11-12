@@ -1,7 +1,8 @@
 module Workspace
   # The hook-event reducer of {SessionMonitor}: what one hook event an agent
   # reported does to its pane's record. A pane is the symbol-keyed Hash
-  # {.new_pane} builds; {.apply} changes only the pane it is given.
+  # {.new_pane} builds; {.apply} answers a new pane and leaves the one it is
+  # given, and every collection in it, unchanged.
   #
   # Nothing here takes a lock, reads the clock or does I/O: the time of the
   # event comes in as +now:+, and the monitor calls it while it holds its own
@@ -40,11 +41,12 @@ module Workspace
       # tools, waits, permission requests, done mark, failed turn and
       # sub-agents.
       #
-      # @param pane [Hash] the pane's record, changed in place
+      # @param pane [Hash] the pane's record, left unchanged
       # @param event [Hash] a "session_event" payload
       # @param now [Time] when the event is recorded
-      # @return [Hash] the same pane
+      # @return [Hash] a new pane, sharing no Hash or Array with +pane+
       def apply(pane, event, now:)
+        pane = copy(pane)
         forget_label_source(pane, event["session_id"])
         pane[:session_id] = event["session_id"] || pane[:session_id]
         note_label_source(pane, event)
@@ -80,6 +82,17 @@ module Workspace
       end
 
       private
+
+      # The pane's Hashes and Arrays copied all the way down, so the event is
+      # applied to the copy. Times, Strings and Symbols are never changed in
+      # place here, so they are shared.
+      def copy(value)
+        case value
+        when Hash then value.to_h { |key, item| [key, copy(item)] }
+        when Array then value.map { |item| copy(item) }
+        else value
+        end
+      end
 
       # A main Stop starts the count again. A sub-agent's tool says nothing of the
       # main agent, but any sub-agent start does, as it takes away the done mark.
