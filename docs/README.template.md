@@ -2,6 +2,8 @@
 
 Tmuxinator templates and the placeholders they may hold. The full guide comes later; the table below is generated.
 
+`workspace template variables [--kind K] [--name WS]` prints it (with each placeholder's value in a workspace's config under `--name`). `workspace template render [NAME | --file F] [--kind K] [--name WS | --sample] [--diff]` fills a tmuxinator template without writing anything: from a workspace's render record and current agent settings, or from the sample values below; `--file` tries one you have not saved, `--diff` shows what would change in the workspace's config. Problems with the file go to stderr, and the exit status is 1 when one is an error.
+
 ## Placeholders
 
 <!-- BEGIN GENERATED: placeholders -->

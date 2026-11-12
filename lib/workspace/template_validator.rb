@@ -49,6 +49,13 @@ module Workspace
       Result.new(errors: problems.select { |p| p.severity == "error" }, warnings: problems.select { |p| p.severity == "warning" })
     end
 
+    # @param kind [Symbol] `:project` or `:worktree`
+    # @param path [String] one tmuxinator template file, saved or not
+    # @return [Array<Problem>] its errors and warnings, errors first
+    def call_file(kind, path)
+      file(kind, path).sort_by { |p| (p.severity == "error") ? 0 : 1 }
+    end
+
     private
 
     def file(kind, path)
@@ -118,10 +125,7 @@ module Workspace
     end
 
     def sample_inputs(kind)
-      inputs = TemplateVariables.for_kind(kind).to_h { |row| [row.input, row.sample] }
-      inputs[:agent_kind] = "claude"
-      inputs[:task_id] = "t_sample" if kind == :worktree
-      inputs.merge(agent_command: ProjectConfig.yaml_item(SAMPLE_AGENT_COMMAND))
+      TemplateVariables.sample_inputs(kind).merge(agent_command: ProjectConfig.yaml_item(SAMPLE_AGENT_COMMAND))
     end
 
     def problem(severity, code, kind, message)

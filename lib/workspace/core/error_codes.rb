@@ -48,6 +48,7 @@ module Workspace
       "repository_in_group" => "projects group add: the repository is already in another group. details.repository, details.group, details.path.",
       "not_a_repository" => "projects group add: the path is not inside a git checkout. details.path.",
       "group_not_supported" => "projects stop, kill, show or members was given a group: id; groups are not acted on as a whole (projects group show reads one). details.id.",
+      "no_render_record" => "template render --name WS: the workspace has no render record, so there are no inputs to fill a tmuxinator template with (use --sample). details.name.",
       "unknown_template" => "spine init was given a template name no spine library entry has, or tmuxinator.template/tmuxinator.worktree_template names no template library set. details.template, details.kind (spine or tmuxinator), details.scopes, details.source.",
       "no_plan" => "The workspace has no IMPLEMENTATION_PLAN.md in its notes directory. `go --here TEXT` found a run going whose plan step has not written it (details.run_id, details.step).",
       "plan_exists" => "plan init would replace a plan that is already there; pass --force.",

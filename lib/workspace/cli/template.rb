@@ -10,10 +10,12 @@ module Workspace
       SUBCOMMANDS = {
         "list" => %i[scope name json],
         "show" => %i[kind name json],
-        "path" => %i[kind name json]
+        "path" => %i[kind name json],
+        "variables" => %i[kind name json],
+        "render" => %i[kind name sample diff file json]
       }.freeze
 
-      # @param template_command [Workspace::Commands::Template, nil] `template list|show|path`; nil refuses `template`
+      # @param template_command [Workspace::Commands::Template, nil] `template` verbs; nil refuses `template`
       # @param common [CLI::Common] the output, exit and help helpers
       # @param names [CLI::Names] finds the workspace of the working directory
       # @param working_dir [String] the directory the CLI runs from
@@ -47,7 +49,7 @@ module Workspace
         options[:given].uniq.each do |key|
           raise UsageError, "--#{key} does not apply to 'template #{subcommand}'. Run 'workspace template --help'." unless SUBCOMMANDS[subcommand].include?(key)
         end
-        raise UsageError, "Unexpected argument: #{args[(subcommand == "list") ? 0 : 1]}. Run 'workspace template --help'." if args.size > ((subcommand == "list") ? 0 : 1)
+        raise UsageError, "Unexpected argument: #{args[%w[list variables].include?(subcommand) ? 0 : 1]}. Run 'workspace template --help'." if args.size > (%w[list variables].include?(subcommand) ? 0 : 1)
         raise Error, "template is not available: no template command was wired" unless @template_command
 
         workspace = options[:name] || @names.workspace_here
@@ -56,10 +58,20 @@ module Workspace
         when "list" then @template_command.list(workspace: workspace, scope: options[:scope], cwd: @working_dir, json: json)
         when "show" then @template_command.show(set: args.first, kind: options[:kind], workspace: workspace, json: json)
         when "path" then @template_command.path(set: args.first, kind: options[:kind], workspace: workspace, json: json)
+        when "variables" then @template_command.variables(kind: options[:kind], workspace: options[:name] ? workspace : nil, json: json)
+        when "render" then render(args.first, options, workspace, invocation)
         end
       end
 
       private
+
+      # `render` fills from the named workspace, else the current one, unless --sample asks for sample values.
+      def render(set, options, workspace, invocation)
+        sample = options[:sample] || false
+        ok = @template_command.render(set: set, file: options[:file], kind: options[:kind], workspace: sample ? options[:name] : workspace,
+          context: workspace, sample: sample, diff: options[:diff] || false, json: options[:json] || false)
+        invocation.exit_handler.exit(1) unless ok
+      end
 
       def parser(options)
         OptionParser.new do |opts|
@@ -76,6 +88,9 @@ module Workspace
           opts.on("--scope SCOPE", HelpPages::TEMPLATE_SCOPE_TEXT) { |v| take(options, :scope, v) }
           opts.on("--kind KIND", HelpPages::TEMPLATE_KIND_TEXT) { |v| take(options, :kind, v) }
           opts.on("--name NAME", HelpPages::TEMPLATE_NAME_TEXT) { |v| take(options, :name, v) }
+          opts.on("--file FILE", HelpPages::TEMPLATE_FILE_TEXT) { |v| take(options, :file, v) }
+          opts.on("--sample", HelpPages::TEMPLATE_SAMPLE_TEXT) { take(options, :sample, true) }
+          opts.on("--diff", HelpPages::TEMPLATE_DIFF_TEXT) { take(options, :diff, true) }
           opts.on("--json", "Print one JSON document") { take(options, :json, true) }
           opts.on("-h", "--help", "Show this help") { options[:help] = true }
           opts.separator ""
@@ -83,6 +98,8 @@ module Workspace
           opts.separator "  workspace template list    # every tmuxinator template, and which one a new config of each kind uses"
           opts.separator "  workspace template show --kind worktree    # the worktree layout a new worktree config is rendered from"
           opts.separator "  workspace template path team    # where the files of the tmuxinator template team are"
+          opts.separator "  workspace template variables --name api.worktree-login    # the placeholders and what that config holds"
+          opts.separator "  workspace template render --sample    # fill the tmuxinator template with sample values, writing nothing"
         end
       end
 

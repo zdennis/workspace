@@ -51,6 +51,18 @@ module Workspace
         source: "the workspace's task", sample: "t_abc123")
     ].each(&:freeze).freeze
 
+    # The values `template render --sample` and the validator's dummy render fill: each row's sample, a Claude Code
+    # agent kind and, for a worktree, a task id.
+    #
+    # @param kind [Symbol] `:project` or `:worktree`
+    # @return [Hash{Symbol=>String}] render inputs by their key
+    def self.sample_inputs(kind)
+      inputs = for_kind(kind).to_h { |row| [row.input, row.sample] }
+      inputs[:agent_kind] = "claude"
+      inputs[:task_id] = "t_sample" if kind == :worktree
+      inputs
+    end
+
     # @param name [String]
     # @return [Row, nil]
     def self.find(name)

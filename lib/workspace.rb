@@ -192,6 +192,7 @@ require_relative "workspace/notes_config"
 require_relative "workspace/spine_config"
 require_relative "workspace/tmuxinator_template_config"
 require_relative "workspace/template_validator"
+require_relative "workspace/text_diff"
 require_relative "workspace/main_agent"
 require_relative "workspace/instruction_composer"
 require_relative "workspace/tmuxinator_config_writer"
@@ -1280,7 +1281,8 @@ module Workspace
       agent_executables_command: agent_executables_command, agent_run: ->(args, invocation) { agent_run_family.prompt(args, invocation) },
       project_detector: project_detector, common: common, names: names, working_dir: working_dir)
     pipeline_family = CLI::Pipeline.new(config: config, agent_client: agent_client, common: common, names: names)
-    template_command = Commands::Template.new(library: library, output: output)
+    template_command = Commands::Template.new(library: library, project_config: project_config, writer: tmuxinator_config_writer,
+      template_validator: template_validator, differ: TextDiff.new, output: output, error_output: error_output)
     template_family = CLI::Template.new(template_command: template_command, common: common, names: names, working_dir: working_dir)
     plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,
       spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,

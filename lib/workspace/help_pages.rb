@@ -1635,8 +1635,11 @@ module Workspace
     }.freeze
 
     TEMPLATE_SCOPE_TEXT = "list: only this scope, global, project or builtin (default: all of them)"
-    TEMPLATE_KIND_TEXT = "show and path: only this file, project or worktree (default: both)"
-    TEMPLATE_NAME_TEXT = "Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"
+    TEMPLATE_KIND_TEXT = "show, path and variables: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)"
+    TEMPLATE_NAME_TEXT = "Workspace whose settings choose the set, and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"
+    TEMPLATE_FILE_TEXT = "render: fill this tmuxinator template file, saved or not, instead of a set"
+    TEMPLATE_SAMPLE_TEXT = "render: fill with each placeholder's sample value instead of a workspace's"
+    TEMPLATE_DIFF_TEXT = "render: print a unified diff against the workspace's current config instead of the text"
 
     TEMPLATE = {
       "list" => {
@@ -1689,6 +1692,45 @@ module Workspace
           ["workspace template path --kind project", "the file a new project config is rendered from"],
           ["workspace template path team", "where the files of the tmuxinator template team are"],
           ["workspace template path --json", "for a script: each tmuxinator template file's kind, set, scope and path"]
+        ]
+      },
+      "variables" => {
+        usage: ["template variables [--kind KIND] [--name WORKSPACE] [--json]"],
+        summary: "List the placeholders a tmuxinator template may hold",
+        about: [
+          "Each row is a {{PLACEHOLDER}}, the kinds of config it is filled for, the kinds of tmuxinator template that must",
+          "hold it, and what it means. With --name, adds what that workspace's config holds, from its render record;",
+          "a config with no record shows (no record). Reads only."
+        ],
+        options: [["--kind KIND", TEMPLATE_KIND_TEXT],
+          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        examples: [
+          ["workspace template variables", "the placeholders you can use in a tmuxinator template"],
+          ["workspace template variables --kind worktree", "only the ones a worktree tmuxinator template is filled with"],
+          ["workspace template variables --name api.worktree-login", "what each placeholder holds in that workspace's config"],
+          ["workspace template variables --json", "for a script: each placeholder with its kinds, requirement and sample"]
+        ]
+      },
+      "render" => {
+        usage: ["template render [NAME | --file FILE] [--kind KIND] [--name WORKSPACE | --sample] [--diff] [--json]"],
+        summary: "Fill a tmuxinator template and print the result, writing nothing",
+        about: [
+          "Fills the tmuxinator template NAME (default: the one the kind selects) the way a new config is filled: from",
+          "the render record of --name (default: the workspace detected from the current directory) with its current",
+          "agent settings, or from sample values with --sample. --file fills a file you have not saved as a set yet.",
+          "The file is checked first; problems go to stderr (the document's warnings with --json). When one is an",
+          "error the text is still shown as far as it can be filled, and the exit status is 1. Writes no file.",
+          "The text goes out as it is to a pipe, escaped on a terminal; --diff prints the difference from the",
+          "workspace's current config instead."
+        ],
+        options: [["--kind KIND", TEMPLATE_KIND_TEXT], ["--file FILE", TEMPLATE_FILE_TEXT],
+          ["--sample", TEMPLATE_SAMPLE_TEXT], ["--diff", TEMPLATE_DIFF_TEXT],
+          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        examples: [
+          ["workspace template render --sample", "see what the selected project tmuxinator template makes, with made-up values"],
+          ["workspace template render --file ./worktree.yml --kind worktree --sample", "try a tmuxinator template you are still editing"],
+          ["workspace template render team --name api.worktree-login --diff", "what switching that config to the team tmuxinator template would change"],
+          ["workspace template render --name api --json", "for a script: the filled text, its inputs and any problems"]
         ]
       }
     }.freeze

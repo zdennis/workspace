@@ -19,10 +19,20 @@ module Workspace
       SCOPES = %w[global project builtin].freeze
 
       # @param library [Workspace::Library] finds the sets and resolves the one a kind selects
+      # @param project_config [Workspace::ProjectConfig] `render` fills a template with it and `config_path_for` finds a config
+      # @param writer [Workspace::TmuxinatorConfigWriter] reads a workspace's render record
+      # @param template_validator [Workspace::TemplateValidator] checks the file `render` fills
+      # @param differ [#call] `(old, new, old_label:, new_label:)` to a unified diff, empty when the same (a {TextDiff})
       # @param output [IO] output stream
-      def initialize(library:, output: $stdout)
+      # @param error_output [IO] where `render`'s problems go in text mode
+      def initialize(library:, project_config:, writer:, template_validator:, differ:, output: $stdout, error_output: $stderr)
         @library = library
+        @project_config = project_config
+        @writer = writer
+        @template_validator = template_validator
+        @differ = differ
         @output = output
+        @error_output = error_output
       end
 
       # Prints every tmuxinator template set with the kinds each selects for +workspace+.
@@ -94,7 +104,162 @@ module Workspace
         end
       end
 
+      # Prints the placeholders a tmuxinator template may hold, with what each holds in a workspace's config.
+      #
+      # @param kind [String, nil] `project` or `worktree`; nil is both
+      # @param workspace [String, nil] adds each placeholder's value from that workspace's render record
+      # @param json [Boolean] print the document instead of the table
+      # @return [void]
+      # @raise [Workspace::UsageError] for a kind other than {KINDS}
+      def variables(kind: nil, workspace: nil, json: false)
+        kinds = kinds_for(kind)
+        record = workspace && @writer.record(workspace)
+        inputs = record_inputs(record) if record
+        rows = TemplateVariables::ROWS.select { |row| (row.kinds & kinds).any? }.map { |row| variable_row(row, inputs, workspace) }
+        if json
+          doc = JsonEnvelope.document("variables", rows, schema_version: JSON_SCHEMA_VERSION).merge("workspace" => workspace)
+          doc["value_state"] = if workspace
+            record ? "recorded" : "no_record"
+          end
+          @output.puts JSON.generate(doc)
+        else
+          print_variables(rows, workspace, !record.nil?)
+        end
+      end
+
+      # Fills a tmuxinator template and prints the result; nothing is written. The file is checked first
+      # and its problems are reported, but a file with errors is still filled as far as it goes.
+      #
+      # @param set [String, nil] a set name; nil is the set the kind selects (or +file+)
+      # @param file [String, nil] a template file, saved or not, instead of a set
+      # @param kind [String, nil] `project` or `worktree`; nil is the workspace's recorded kind, else the kind its name says
+      # @param workspace [String, nil] fill from this workspace's render record and its current agent settings
+      # @param context [String, nil] the workspace whose settings choose the set when +workspace+ is nil
+      # @param sample [Boolean] fill with each placeholder's sample value instead
+      # @param diff [Boolean] print a unified diff against the workspace's current config instead of the text
+      # @param json [Boolean] print the document
+      # @return [Boolean] false when a problem is an error (the CLI exits 1)
+      # @raise [Workspace::UsageError] for a bad combination of options or a kind other than {KINDS}
+      # @raise [Workspace::Error] `no_render_record`, `unknown_template`, `library_source_missing`
+      def render(set: nil, file: nil, kind: nil, workspace: nil, context: nil, sample: false, diff: false, json: false)
+        raise UsageError, "Give a tmuxinator template NAME or --file, not both." if set && file
+        raise UsageError, "Give --name or --sample, not both." if sample && workspace
+        unless sample || workspace
+          raise Error.new("Not in a workspace: pass --name WORKSPACE to fill from one, or --sample to fill with sample values.", code: "not_in_workspace")
+        end
+        raise UsageError, "--diff compares with a workspace's config; give --name, not --sample." if diff && sample
+
+        record = workspace && @writer.record(workspace)
+        raise no_record(workspace) if workspace && !record
+        kind = (kind ? kinds_for(kind).first : nil) || record&.kind || default_kind(workspace)
+        target = render_target(set, file, kind, workspace || context)
+        problems = @template_validator.call_file(kind, target["path"]).map(&:to_h)
+        text = read(target.merge("kind" => kind.to_s))
+        inputs = sample ? sample_inputs(kind) : record_inputs(record)
+        content = filled(kind, inputs, text, problems)
+        difference = (current_diff(workspace, content) if diff && content)
+        ok = problems.none? { |p| p["severity"] == "error" }
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => ok, "template" => target["template"],
+                                      "source" => target["source"], "path" => target["path"], "kind" => kind.to_s, "workspace" => workspace,
+                                      "inputs" => inputs.transform_keys(&:to_s), "content" => content, "diff" => difference, "warnings" => problems}
+            .merge(diff ? {"changed" => !difference.to_s.empty?} : {}))
+        else
+          print_render(problems, diff ? difference : content, diff)
+        end
+        ok
+      end
+
       private
+
+      # The inputs `render --name` fills with, which `variables --name` shows: the record's, with the agent command
+      # worked out from the current agent settings (the recorded one is the pane text written then). Left out when
+      # the renderer would refuse it, so `render` reports why.
+      def record_inputs(record)
+        inputs = record.inputs.except(:agent_command)
+        value = @project_config.agent_pane_value(inputs[:agent_kind], inputs[:workspace_name])
+        value ? inputs.merge(agent_command: ProjectConfig.yaml_item(value)) : inputs
+      rescue Error
+        inputs
+      end
+
+      def variable_row(row, inputs, workspace)
+        data = {"name" => row.name, "kinds" => row.kinds.map(&:to_s), "required" => row.kinds.to_h { |k| [k.to_s, row.required[k]] },
+                "description" => row.description, "source" => row.source, "sample" => row.sample, "whole_line" => row.fill == :line}
+        data["value"] = variable_value(row, inputs) if inputs
+        data
+      end
+
+      # What the renderer writes for a placeholder; a whole-line one with no value is dropped.
+      def variable_value(row, inputs)
+        value = inputs[row.input]
+        return value unless row.fill == :line
+        value ? "pre_window: export WORKSPACE_TASK=#{value}" : "(dropped)"
+      end
+
+      def print_variables(rows, workspace, record)
+        header = %w[NAME KINDS REQUIRED] + (workspace ? ["VALUE"] : []) + %w[DESCRIPTION]
+        table = rows.map do |r|
+          required = r["required"].select { |_, needed| needed }.keys
+          cells = [r["name"], r["kinds"].join(", "), required.empty? ? "no" : required.join(", ")]
+          cells << (record ? TerminalText.escape(r["value"].to_s) : "(no record)") if workspace
+          cells << r["description"]
+        end
+        table.unshift(header)
+        widths = (0...header.size - 1).map { |i| table.map { |r| r[i].length }.max }
+        table.each { |r| @output.puts(r.each_with_index.map { |c, i| (i < widths.size) ? c.ljust(widths[i]) : c }.join("  ").rstrip) }
+      end
+
+      # A worktree's name says its kind; anything else is a project.
+      def default_kind(workspace)
+        (workspace && WorkspaceName.worktree?(workspace)) ? :worktree : :project
+      end
+
+      def no_record(workspace)
+        Error.new("Workspace '#{workspace}' has no render record, so there are no inputs to fill the tmuxinator template with. Use --sample to fill it with sample values.",
+          code: "no_render_record", details: {"name" => workspace})
+      end
+
+      def render_target(set, file, kind, workspace)
+        return {"template" => nil, "source" => "file", "path" => File.expand_path(file)} if file
+        if set
+          dir = @library.tmuxinator_set(set, workspace: workspace)["path"]
+          return {"template" => set, "source" => "argument", "path" => File.join(dir, "#{kind}.yml")}
+        end
+
+        chosen = @library.tmuxinator_template(kind, workspace: workspace)
+        {"template" => chosen["name"], "source" => chosen["source"], "path" => chosen["path"]}
+      end
+
+      def sample_inputs(kind)
+        TemplateVariables.sample_inputs(kind).merge(agent_command: ProjectConfig.yaml_item(TemplateVariables.find("AGENT_COMMAND").sample))
+      end
+
+      # The filled text, or nil with the reason added to +problems+ when the renderer refuses.
+      def filled(kind, inputs, text, problems)
+        @project_config.render(kind, inputs, text)
+      rescue Error => e
+        unless problems.any? { |p| p["code"] == "render_failed" }
+          problems << {"severity" => "error", "code" => "render_failed", "kind" => kind.to_s, "message" => e.message}
+        end
+        nil
+      end
+
+      def current_diff(workspace, content)
+        path = @project_config.config_path_for(workspace)
+        @differ.call(File.exist?(path) ? File.read(path) : "", content, old_label: path, new_label: "rendered")
+      end
+
+      def print_render(problems, text, diff)
+        problems.each { |p| @error_output.puts "#{(p["severity"] == "error") ? "Error" : "Warning"}: #{TerminalText.escape(p["message"])}" }
+        return unless text
+        @error_output.puts "No differences from the current config." if diff && text.empty?
+        if @output.respond_to?(:tty?) && @output.tty?
+          text.each_line { |line| @output.write(TerminalText.escape(line.chomp, keep_tabs: true) + (line.end_with?("\n") ? "\n" : "")) }
+        else
+          @output.write(text)
+        end
+      end
 
       # What a kind selects, or nil with a warning when its set can't be found.
       def selection(kind, workspace, warnings)

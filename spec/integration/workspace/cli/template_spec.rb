@@ -27,9 +27,12 @@ RSpec.describe Workspace::CLI do
     Workspace::Library.new(config: config, lineage: lineage, project_config: project_config,
       template_config: Workspace::TmuxinatorTemplateConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)))
   end
+  let(:writer) { instance_double(Workspace::TmuxinatorConfigWriter, record: nil) }
   let(:detector) { instance_double(Workspace::ProjectDetector, detect: "app") }
   let(:built) do
-    build_test_cli(template_command: Workspace::Commands::Template.new(library: library, output: output), project_detector: detector,
+    build_test_cli(template_command: Workspace::Commands::Template.new(library: library, project_config: project_config, writer: writer,
+      template_validator: Workspace::TemplateValidator.new(project_config: project_config), differ: ->(*, **) { "" }, output: output, error_output: error_output),
+      project_detector: detector,
       output: output, error_output: error_output, working_dir: File.join(@dir, "src"))
   end
   let(:cli) { built[0] }
@@ -121,6 +124,28 @@ RSpec.describe Workspace::CLI do
       cli.run(["template", "path", "--json"])
 
       expect(Dir.glob("**/*", base: @dir).sort).to eq(before)
+    end
+  end
+
+  describe "template variables and render" do
+    it "prints the placeholders as a document" do
+      cli.run(["template", "variables", "--kind", "worktree", "--json"])
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => true, "workspace" => nil)
+      expect(doc["variables"].map { |v| v["name"] }).to include("WORKTREE_BRANCH", "PRE_WINDOW")
+      expect(doc["variables"].map { |v| v["name"] }).not_to include("PROJECT_ROOT")
+    end
+
+    it "answers render for a workspace with no record with no_render_record, exit 1" do
+      expect(exit_status { cli.run(["template", "render", "--json"]) }).to eq(1)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "no_render_record", "details" => {"name" => "app"})
+    end
+
+    it "refuses --sample with --name as a usage error" do
+      expect(exit_status { cli.run(["template", "render", "--sample", "--name", "app"]) }).to eq(1)
+      expect(error_output.string).to include("--name or --sample")
     end
   end
 

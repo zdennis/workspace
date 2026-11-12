@@ -5,7 +5,7 @@ RSpec.describe Workspace::CLI::Template do
   let(:out) { StringIO.new }
   let(:err) { StringIO.new }
   let(:detector) { RecordingProjectDetector.new("/src/app" => "app") }
-  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil) }
+  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true) }
 
   def family(command = template_command)
     names = Workspace::CLI::Names.new(project_config: CLITestHelpers::FakeProjectConfig.new, project_detector: detector,
@@ -54,7 +54,41 @@ RSpec.describe Workspace::CLI::Template do
   it "shows the overview for a bare template, and refuses an unknown subcommand" do
     run
     expect(out.string).to include("Usage: workspace template list", "Subcommands:")
-    expect { run("render") }.to raise_error(Workspace::UsageError, /Unknown tmuxinator template subcommand: render/)
+    expect { run("bogus") }.to raise_error(Workspace::UsageError, /Unknown tmuxinator template subcommand: bogus/)
+  end
+
+  it "hands variables its kind, and the workspace only when --name names one" do
+    run("variables", "--kind", "worktree", "--json")
+    run("variables", "--name", "api")
+
+    expect(template_command).to have_received(:variables).with(kind: "worktree", workspace: nil, json: true)
+    expect(template_command).to have_received(:variables).with(kind: nil, workspace: "api", json: false)
+  end
+
+  it "renders for the detected workspace, with the set and the workspace that picks it" do
+    run("render", "team", "--kind", "project", "--diff", "--json")
+
+    expect(template_command).to have_received(:render).with(set: "team", file: nil, kind: "project", workspace: "app", context: "app",
+      sample: false, diff: true, json: true)
+  end
+
+  it "renders a sample with no workspace but the one that chooses the set, and a file as given" do
+    run("render", "--sample", "--file", "./w.yml", "--kind", "worktree")
+
+    expect(template_command).to have_received(:render).with(set: nil, file: "./w.yml", kind: "worktree", workspace: nil, context: "app",
+      sample: true, diff: false, json: false)
+  end
+
+  it "exits 1 when render says the file had an error" do
+    allow(template_command).to receive(:render).and_return(false)
+
+    expect { run("render", "--sample") }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+  end
+
+  it "refuses render flags on the other verbs, and a stray argument to variables" do
+    expect { run("show", "--sample") }.to raise_error(Workspace::UsageError, /--sample does not apply to 'template show'/)
+    expect { run("variables", "--file", "x") }.to raise_error(Workspace::UsageError, /--file does not apply/)
+    expect { run("variables", "team") }.to raise_error(Workspace::UsageError, /Unexpected argument: team/)
   end
 
   it "refuses a flag the verb does not take" do
