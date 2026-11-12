@@ -604,7 +604,7 @@ module Workspace
           set-command     Set the shell command for a pane in a project config (--pane <N>)
           statusline      Render Claude Code's status line (install as its statusLine command)
           stop            Stop a workspace and its tmux session (default: the current one; --all for every active one)
-          template        List the tmuxinator templates and which one a new config uses (list), print their files (show), or where they are (path)
+          template        List the tmuxinator templates and which one a new config uses (list), print their files (show), where they are (path), check one (validate) or compare two (diff)
           ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show), or list yours (list), in this workspace's project
           tile            Tile all windows for a project across the screen
           tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)

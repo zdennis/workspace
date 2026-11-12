@@ -424,4 +424,110 @@ RSpec.describe Workspace::Commands::Template do
       expect { command.render(workspace: "app", kind: "window") }.to raise_error(Workspace::UsageError, /Unknown kind/)
     end
   end
+  describe "#validate" do
+    let(:error) { Workspace::TemplateValidator::Problem.new(severity: "error", code: "missing_placeholder", kind: :project, message: "{{WORKSPACE_NAME}} is required.") }
+    let(:warning) { Workspace::TemplateValidator::Problem.new(severity: "warning", code: "literal_agent_pane", kind: :worktree, message: "literal pane") }
+
+    before do
+      allow(library).to receive(:tmuxinator_set).with("team", workspace: "app").and_return("name" => "team", "path" => set_dir("team"))
+    end
+
+    it "checks both files of a named set, and is true for no problems" do
+      expect(command.validate(set: "team", workspace: "app")).to be(true)
+
+      expect(validator).to have_received(:call_file).with(:project, File.join(@dir, "team", "project.yml"))
+      expect(validator).to have_received(:call_file).with(:worktree, File.join(@dir, "team", "worktree.yml"))
+      expect(out.string.lines.map { |l| l.sub(@dir, "DIR") }).to eq(["team: DIR/team/project.yml: valid\n", "team: DIR/team/worktree.yml: valid\n"])
+    end
+
+    it "lists problems and is false when one is an error, true for warnings alone" do
+      allow(validator).to receive(:call_file).with(:project, anything).and_return([error])
+      allow(validator).to receive(:call_file).with(:worktree, anything).and_return([warning])
+
+      expect(command.validate(set: "team", workspace: "app")).to be(false)
+      expect(out.string).to include("1 error, 0 warnings", "  Error: {{WORKSPACE_NAME}} is required.", "0 errors, 1 warning", "  Warning: literal pane")
+
+      allow(validator).to receive(:call_file).with(:project, anything).and_return([])
+      expect(command.validate(set: "team", workspace: "app")).to be(true)
+    end
+
+    it "checks the file each kind selects when no set is named, only the kind asked for" do
+      selects(:worktree, "default")
+
+      command.validate(kind: "worktree", workspace: "app")
+
+      expect(validator).to have_received(:call_file).with(:worktree, File.join(@dir, "default", "worktree.yml"))
+      expect(validator).not_to have_received(:call_file).with(:project, anything)
+    end
+
+    it "checks a file as it is given, its kind from its name unless --kind says" do
+      command.validate(file: "w/worktree.yml")
+      command.validate(file: "w/x.yml")
+      command.validate(file: "w/x.yml", kind: "worktree")
+
+      expect(validator).to have_received(:call_file).with(:worktree, File.expand_path("w/worktree.yml"))
+      expect(validator).to have_received(:call_file).with(:project, File.expand_path("w/x.yml"))
+      expect(validator).to have_received(:call_file).with(:worktree, File.expand_path("w/x.yml"))
+    end
+
+    it "gives the document for --json, ok false on an error" do
+      allow(validator).to receive(:call_file).with(:project, anything).and_return([error])
+      allow(validator).to receive(:call_file).with(:worktree, anything).and_return([warning])
+
+      command.validate(set: "team", workspace: "app", json: true)
+
+      doc = JSON.parse(out.string)
+      expect(doc).to include("schema_version" => 1, "ok" => false, "errors" => 1, "warnings" => 1)
+      expect(doc["files"].map { |f| [f["kind"], f["template"], f["problems"].map { |p| p["code"] }] }).to eq(
+        [["project", "team", ["missing_placeholder"]], ["worktree", "team", ["literal_agent_pane"]]]
+      )
+    end
+
+    it "refuses a set with --file, and a kind that is not one" do
+      expect { command.validate(set: "team", file: "x.yml") }.to raise_error(Workspace::UsageError, /not both/)
+      expect { command.validate(set: "team", kind: "nope") }.to raise_error(Workspace::UsageError, /Unknown kind/)
+    end
+  end
+
+  describe "#diff" do
+    before do
+      allow(library).to receive(:tmuxinator_set).with("default", workspace: "app").and_return("name" => "default", "path" => set_dir("default"))
+      allow(library).to receive(:tmuxinator_set).with("team", workspace: "app").and_return("name" => "team", "path" => set_dir("team"))
+    end
+
+    it "diffs each file of the set against the same file of default, labelled by path" do
+      command.diff(set: "team", workspace: "app")
+
+      expect(out.string).to include("--- #{@dir}/default/project.yml\n+++ #{@dir}/team/project.yml\n-default project\n+team project\n",
+        "--- #{@dir}/default/worktree.yml\n+++ #{@dir}/team/worktree.yml")
+      expect(err.string).to eq("")
+    end
+
+    it "compares with --against, one kind, and the set each kind selects when none is named" do
+      allow(library).to receive(:tmuxinator_set).with("old", workspace: "app").and_return("name" => "old", "path" => set_dir("old"))
+      selects(:worktree, "team", scope: "global", source: "global")
+
+      command.diff(against: "old", kind: "worktree", workspace: "app")
+
+      expect(out.string).to eq("--- #{@dir}/old/worktree.yml\n+++ #{@dir}/team/worktree.yml\n-old worktree\n+team worktree\n")
+    end
+
+    it "says on stderr when nothing differs" do
+      allow(differ).to receive(:call).and_return("")
+
+      command.diff(set: "default", workspace: "app")
+
+      expect(out.string).to eq("")
+      expect(err.string).to eq("No differences from default.\n")
+    end
+
+    it "gives the document for --json with each diff and whether any changed" do
+      command.diff(set: "team", against: "default", kind: "project", workspace: "app", json: true)
+
+      doc = JSON.parse(out.string)
+      expect(doc).to include("ok" => true, "against" => "default", "changed" => true)
+      expect(doc["files"].first).to include("kind" => "project", "template" => "team", "changed" => true, "path" => File.join(@dir, "team", "project.yml"),
+        "against_path" => File.join(@dir, "default", "project.yml"))
+    end
+  end
 end

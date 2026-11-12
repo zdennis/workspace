@@ -1635,9 +1635,10 @@ module Workspace
     }.freeze
 
     TEMPLATE_SCOPE_TEXT = "list: only this scope, global, project or builtin (default: all of them)"
-    TEMPLATE_KIND_TEXT = "show, path and variables: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)"
-    TEMPLATE_NAME_TEXT = "Workspace whose settings choose the set, and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"
-    TEMPLATE_FILE_TEXT = "render: fill this tmuxinator template file, saved or not, instead of a set"
+    TEMPLATE_KIND_TEXT = "show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)"
+    TEMPLATE_NAME_TEXT = "Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"
+    TEMPLATE_AGAINST_TEXT = "diff: the tmuxinator template to compare with (default: default)"
+    TEMPLATE_FILE_TEXT = "validate and render: use this tmuxinator template file, saved or not, instead of a set"
     TEMPLATE_SAMPLE_TEXT = "render: fill with each placeholder's sample value instead of a workspace's"
     TEMPLATE_DIFF_TEXT = "render: print a unified diff against the workspace's current config instead of the text"
 
@@ -1731,6 +1732,41 @@ module Workspace
           ["workspace template render --file ./worktree.yml --kind worktree --sample", "try a tmuxinator template you are still editing"],
           ["workspace template render team --name api.worktree-login --diff", "what switching that config to the team tmuxinator template would change"],
           ["workspace template render --name api --json", "for a script: the filled text, its inputs and any problems"]
+        ]
+      },
+      "validate" => {
+        usage: ["template validate [NAME | --file FILE] [--kind KIND] [--name WORKSPACE] [--json]"],
+        summary: "Check a tmuxinator template before using it, writing nothing",
+        about: [
+          "NAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the",
+          "workspace. --file checks one file you have not saved as a set yet (its kind is project unless the file is",
+          "named worktree.yml or --kind says). Checks the placeholders, the agent pane, and that a trial fill with",
+          "sample values is a tmuxinator config. Problems are listed per file; the exit status is 1 when one is an",
+          "error and 0 for warnings alone. Reads only."
+        ],
+        options: [["--kind KIND", TEMPLATE_KIND_TEXT], ["--file FILE", TEMPLATE_FILE_TEXT],
+          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        examples: [
+          ["workspace template validate team", "check both files of the tmuxinator template team"],
+          ["workspace template validate --file ./worktree.yml", "check a file you are still editing"],
+          ["workspace template validate --kind project", "check the project file a new config would be rendered from"],
+          ["workspace template validate team --json", "for a script: each file's problems, and ok false when one is an error"]
+        ]
+      },
+      "diff" => {
+        usage: ["template diff [NAME] [--against NAME] [--kind KIND] [--name WORKSPACE] [--json]"],
+        summary: "Show how a tmuxinator template differs from another",
+        about: [
+          "A unified diff of each file of the tmuxinator template NAME (default: the one each kind selects for the",
+          "workspace) against the same file of --against (default: the built-in default), so you can see what a copy",
+          "changed. Prints nothing but a note on stderr when they are the same. Reads only."
+        ],
+        options: [["--against NAME", TEMPLATE_AGAINST_TEXT], ["--kind KIND", TEMPLATE_KIND_TEXT],
+          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        examples: [
+          ["workspace template diff team", "what the tmuxinator template team changed from the default"],
+          ["workspace template diff team --against old-team --kind worktree", "only the worktree file, against another template"],
+          ["workspace template diff --json", "for a script: each file's diff and whether it changed"]
         ]
       }
     }.freeze

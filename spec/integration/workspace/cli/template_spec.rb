@@ -127,6 +127,48 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "template validate and diff" do
+    before { allow(project_config).to receive(:agent_pane_in_template?).and_return(false) }
+
+    it "lists a set's errors and exits 1, as a document with ok false under --json" do
+      expect(exit_status { cli.run(["template", "validate", "team"]) }).to eq(1)
+      expect(output.string).to include("team: #{@dir}/library/global/template/team/project.yml: ", "Error: {{PROJECT_NAME}}")
+
+      output.truncate(0)
+      output.rewind
+      expect(exit_status { cli.run(["template", "validate", "team", "--kind", "worktree", "--json"]) }).to eq(1)
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => false)
+      expect(doc["files"].map { |f| f["kind"] }).to eq(["worktree"])
+    end
+
+    it "reports a file that can't be read as an unreadable error" do
+      expect(exit_status { cli.run(["template", "validate", "--file", File.join(@dir, "none.yml")]) }).to eq(1)
+      expect(output.string).to include("Error: can't read")
+    end
+
+    it "reports a missing --file path as ok false in the document" do
+      expect(exit_status { cli.run(["template", "validate", "--file", File.join(@dir, "none.yml"), "--json"]) }).to eq(1)
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => false, "errors" => 1)
+      expect(doc["files"].first["problems"].first).to include("code" => "unreadable")
+    end
+
+    it "diffs a set against the default through the injected differ, writing nothing" do
+      before = Dir.glob("**/*", base: @dir).sort
+
+      cli.run(["template", "diff", "team", "--json"])
+
+      expect(JSON.parse(output.string)).to include("ok" => true, "against" => "default", "changed" => false)
+      expect(Dir.glob("**/*", base: @dir).sort).to eq(before)
+    end
+
+    it "answers an unknown --against with unknown_template, exit 1" do
+      expect(exit_status { cli.run(["template", "diff", "team", "--against", "nope", "--json"]) }).to eq(1)
+      expect(JSON.parse(output.string)).to include("code" => "unknown_template")
+    end
+  end
+
   describe "template variables and render" do
     it "prints the placeholders as a document" do
       cli.run(["template", "variables", "--kind", "worktree", "--json"])

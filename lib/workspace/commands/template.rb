@@ -170,6 +170,63 @@ module Workspace
         ok
       end
 
+      # Checks a tmuxinator template set, or one file, with {TemplateValidator}; nothing is written.
+      #
+      # @param set [String, nil] a set name; nil is the set each kind selects (unless +file+)
+      # @param file [String, nil] one template file, saved or not, instead of a set
+      # @param kind [String, nil] `project` or `worktree`; nil checks both files of a set, and for +file+ is read from its name (else `project`)
+      # @param workspace [String, nil] the workspace whose settings choose the set
+      # @param json [Boolean] print the document
+      # @return [Boolean] false when a file has an error (the CLI exits 1); warnings alone are true
+      # @raise [Workspace::UsageError] for NAME with --file, or a kind other than {KINDS}
+      # @raise [Workspace::Error] `unknown_template` for a set that isn't there
+      def validate(set: nil, file: nil, kind: nil, workspace: nil, json: false)
+        raise UsageError, "Give a tmuxinator template NAME or --file, not both." if set && file
+
+        files = validation_targets(set, file, kind, workspace).map do |target|
+          problems = @template_validator.call_file(target["kind"].to_sym, target["path"]).map(&:to_h)
+          target.merge("problems" => problems)
+        end
+        problems = files.flat_map { |f| f["problems"] }
+        errors = problems.count { |p| p["severity"] == "error" }
+        ok = errors.zero?
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => ok, "files" => files, "errors" => errors,
+                                      "warnings" => problems.size - errors})
+        else
+          print_validation(files)
+        end
+        ok
+      end
+
+      # Prints a unified diff of each file of a tmuxinator template set against the same file of another set.
+      #
+      # @param set [String, nil] the set to compare; nil is the set each kind selects
+      # @param against [String, nil] the set to compare with; nil is `default`
+      # @param kind [String, nil] `project` or `worktree`; nil is both
+      # @param workspace [String, nil] the workspace whose settings choose the set
+      # @param json [Boolean] print the document, with each file's diff
+      # @return [void]
+      # @raise [Workspace::UsageError] for a kind other than {KINDS}
+      # @raise [Workspace::Error] `unknown_template`, `library_source_missing`
+      def diff(set: nil, against: nil, kind: nil, workspace: nil, json: false)
+        against ||= "default"
+        olds = targets(against, kind, workspace)
+        rows = targets(set, kind, workspace).zip(olds).map do |target, old|
+          text = @differ.call(read(old), read(target), old_label: old["path"], new_label: target["path"])
+          {"kind" => target["kind"], "template" => target["template"], "path" => target["path"], "against_path" => old["path"],
+           "changed" => !text.empty?, "diff" => text}
+        end
+        changed = rows.any? { |row| row["changed"] }
+        if json
+          @output.puts JSON.generate(JsonEnvelope.document("files", rows, schema_version: JSON_SCHEMA_VERSION)
+            .merge("against" => against, "changed" => changed))
+        else
+          @error_output.puts "No differences from #{against}." unless changed
+          rows.each { |row| write_text(row["diff"]) }
+        end
+      end
+
       private
 
       # The inputs `render --name` fills with, which `variables --name` shows: the record's, with the agent command
@@ -254,10 +311,53 @@ module Workspace
         problems.each { |p| @error_output.puts "#{(p["severity"] == "error") ? "Error" : "Warning"}: #{TerminalText.escape(p["message"])}" }
         return unless text
         @error_output.puts "No differences from the current config." if diff && text.empty?
+        write_text(text)
+      end
+
+      # Text goes out as it is to a pipe, escaped on a terminal.
+      def write_text(text)
         if @output.respond_to?(:tty?) && @output.tty?
           text.each_line { |line| @output.write(TerminalText.escape(line.chomp, keep_tabs: true) + (line.end_with?("\n") ? "\n" : "")) }
         else
           @output.write(text)
+        end
+      end
+
+      # One hash per file to check: kind, template, path. A missing file is left for the validator to report.
+      def validation_targets(set, file, kind, workspace)
+        if file
+          path = File.expand_path(file)
+          kinds = if kind
+            kinds_for(kind)
+          else
+            [(File.basename(path) == "worktree.yml") ? :worktree : :project]
+          end
+          return [{"kind" => kinds.first.to_s, "template" => nil, "path" => path}]
+        end
+
+        kinds_for(kind).map do |k|
+          if set
+            entry = @library.tmuxinator_set(set, workspace: workspace)
+            {"kind" => k.to_s, "template" => entry["name"], "path" => File.join(entry["path"], TemplateValidator::TEMPLATE_FILES[k])}
+          else
+            chosen = @library.tmuxinator_template(k, workspace: workspace)
+            {"kind" => k.to_s, "template" => chosen["name"], "path" => chosen["path"]}
+          end
+        end
+      end
+
+      def count(number, word)
+        "#{number} #{word}#{"s" unless number == 1}"
+      end
+
+      def print_validation(files)
+        files.each do |target|
+          problems = target["problems"]
+          errors = problems.count { |p| p["severity"] == "error" }
+          label = [target["template"] && "#{target["template"]}:", target["path"]].compact.join(" ")
+          warnings = problems.size - errors
+          @output.puts(problems.empty? ? "#{label}: valid" : "#{label}: #{count(errors, "error")}, #{count(warnings, "warning")}")
+          problems.each { |p| @output.puts "  #{(p["severity"] == "error") ? "Error" : "Warning"}: #{TerminalText.escape(p["message"])}" }
         end
       end
 

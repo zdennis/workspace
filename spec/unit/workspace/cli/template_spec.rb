@@ -5,7 +5,7 @@ RSpec.describe Workspace::CLI::Template do
   let(:out) { StringIO.new }
   let(:err) { StringIO.new }
   let(:detector) { RecordingProjectDetector.new("/src/app" => "app") }
-  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true) }
+  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true, validate: true, diff: nil) }
 
   def family(command = template_command)
     names = Workspace::CLI::Names.new(project_config: CLITestHelpers::FakeProjectConfig.new, project_detector: detector,
@@ -83,6 +83,27 @@ RSpec.describe Workspace::CLI::Template do
     allow(template_command).to receive(:render).and_return(false)
 
     expect { run("render", "--sample") }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+  end
+
+  it "validates the named set or file for the detected workspace, and exits 1 when a file has an error" do
+    run("validate", "team", "--kind", "worktree", "--json")
+    run("validate", "--file", "./w.yml")
+
+    expect(template_command).to have_received(:validate).with(set: "team", file: nil, kind: "worktree", workspace: "app", json: true)
+    expect(template_command).to have_received(:validate).with(set: nil, file: "./w.yml", kind: nil, workspace: "app", json: false)
+    allow(template_command).to receive(:validate).and_return(false)
+    expect { run("validate") }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+  end
+
+  it "diffs the named set against --against, with no exit status of its own" do
+    run("diff", "team", "--against", "old", "--kind", "project", "--json")
+
+    expect(template_command).to have_received(:diff).with(set: "team", against: "old", kind: "project", workspace: "app", json: true)
+  end
+
+  it "refuses --against outside diff and --file on diff" do
+    expect { run("validate", "--against", "x") }.to raise_error(Workspace::UsageError, /--against does not apply to 'template validate'/)
+    expect { run("diff", "--file", "x") }.to raise_error(Workspace::UsageError, /--file does not apply to 'template diff'/)
   end
 
   it "refuses render flags on the other verbs, and a stray argument to variables" do

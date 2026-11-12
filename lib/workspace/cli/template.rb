@@ -12,7 +12,9 @@ module Workspace
         "show" => %i[kind name json],
         "path" => %i[kind name json],
         "variables" => %i[kind name json],
-        "render" => %i[kind name sample diff file json]
+        "render" => %i[kind name sample diff file json],
+        "validate" => %i[kind name file json],
+        "diff" => %i[kind name against json]
       }.freeze
 
       # @param template_command [Workspace::Commands::Template, nil] `template` verbs; nil refuses `template`
@@ -60,6 +62,10 @@ module Workspace
         when "path" then @template_command.path(set: args.first, kind: options[:kind], workspace: workspace, json: json)
         when "variables" then @template_command.variables(kind: options[:kind], workspace: options[:name] ? workspace : nil, json: json)
         when "render" then render(args.first, options, workspace, invocation)
+        when "validate"
+          ok = @template_command.validate(set: args.first, file: options[:file], kind: options[:kind], workspace: workspace, json: json)
+          invocation.exit_handler.exit(1) unless ok
+        when "diff" then @template_command.diff(set: args.first, against: options[:against], kind: options[:kind], workspace: workspace, json: json)
         end
       end
 
@@ -89,6 +95,7 @@ module Workspace
           opts.on("--kind KIND", HelpPages::TEMPLATE_KIND_TEXT) { |v| take(options, :kind, v) }
           opts.on("--name NAME", HelpPages::TEMPLATE_NAME_TEXT) { |v| take(options, :name, v) }
           opts.on("--file FILE", HelpPages::TEMPLATE_FILE_TEXT) { |v| take(options, :file, v) }
+          opts.on("--against NAME", HelpPages::TEMPLATE_AGAINST_TEXT) { |v| take(options, :against, v) }
           opts.on("--sample", HelpPages::TEMPLATE_SAMPLE_TEXT) { take(options, :sample, true) }
           opts.on("--diff", HelpPages::TEMPLATE_DIFF_TEXT) { take(options, :diff, true) }
           opts.on("--json", "Print one JSON document") { take(options, :json, true) }
@@ -100,6 +107,8 @@ module Workspace
           opts.separator "  workspace template path team    # where the files of the tmuxinator template team are"
           opts.separator "  workspace template variables --name api.worktree-login    # the placeholders and what that config holds"
           opts.separator "  workspace template render --sample    # fill the tmuxinator template with sample values, writing nothing"
+          opts.separator "  workspace template validate team    # check the tmuxinator template team before using it"
+          opts.separator "  workspace template diff team    # how the tmuxinator template team differs from the default"
         end
       end
 
