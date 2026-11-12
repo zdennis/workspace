@@ -237,6 +237,8 @@ module Workspace
       @interactive = interactive || -> { $stdin.tty? && $stdout.tty? }
       @common = Common.new
       @names = Names.new(project_config: project_config, project_detector: project_detector, lineage: lineage, working_dir: working_dir, workspace_name: workspace_name)
+      @launcher = Launcher.new(project_config: project_config, launch_command: launch_command, launch_mode: @launch_mode, state: state, project_settings: project_settings,
+        hook_runner: hook_runner, common: @common, working_dir: working_dir, library: library, instruction_composer: instruction_composer, name_migration: name_migration)
     end
 
     # Parses the subcommand from argv and dispatches to the appropriate method.
@@ -794,16 +796,16 @@ module Workspace
       raise UsageError, "--no-packs cannot be combined with --handoff." if no_packs && handoff == true
 
       run_action("launch", json: json) do
-        launched = launch_projects(args.map { |arg| launch_arg(arg) }, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays.uniq,
+        launched = @launcher.launch(@invocation, args.map { |arg| launch_arg(arg) }, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays.uniq,
           packs: packs, no_packs: no_packs, handoff: handoff, with_packs: true, arrange: arrange)
-        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]) : [],
+        {exit_code: launched[:exit_code], results: json ? @launcher.rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]) : [],
          warnings: launched[:skipped_packs].values.flatten.map { |pack| pack["message"] } + (launched[:result]&.dig(:skipped_prompts) || {}).values + (launched[:result]&.dig(:warnings) || [])}
       end
     end
 
-    # A launch argument as `launch_projects` should get it: a path or an existing directory stays
+    # A launch argument as `Launcher#launch` should get it: a path or an existing directory stays
     # as typed, any other word is settled to a workspace's on-disk name (a short name resolves).
-    # `relaunch` and `restore` call `launch_projects` directly, with state keys, and skip this.
+    # `relaunch` and `restore` call `Launcher#launch` directly, with state keys, and skip this.
     #
     # @param arg [String]
     # @return [String]
@@ -811,121 +813,6 @@ module Workspace
     def launch_arg(arg)
       _name, root = @project_config.resolve_project_arg(arg)
       root ? arg : settle_name(arg)
-    end
-
-    # Launches the given project args (already parsed, no leading flags) and
-    # returns `{exit_code:, projects:, result:, plays:, packs:}` (the project names,
-    # Launch's own result, each project's resolved plays (a list), and each project's
-    # composed packs) without exiting -- so callers with multiple batches to run
-    # (e.g. cmd_relaunch) can attempt every batch before deciding whether to exit.
-    # The plays and the packs are resolved for every project before any config is
-    # created. Packs are sent only when +with_packs+ is true (`launch` itself), so
-    # `relaunch` and `restore` do not type them into an agent again.
-    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, plays: [], packs: [], no_packs: false, handoff: nil, with_packs: false, arrange: false)
-      # A mixed-case workspace is renamed to lowercase before anything is keyed on its name
-      # (see NameMigration), as its agent daemon would rename it once started.
-      resolved = args.map { |arg| @project_config.resolve_project_arg(arg) }
-        .map { |name, root| [settle_launch_name(name), root] }
-      Library.check_play_count!(plays.uniq)
-      by_project = plays.empty? ? {} : resolved.to_h { |name, root| [name, resolve_plays(plays, root || @project_config.project_root_for(name))] }
-      composed = with_packs ? compose_launch_packs(resolved, packs, no_packs, handoff) : {}
-      skipped_packs = composed.transform_values { |c| c["skipped"] || [] }.reject { |_, skipped| skipped.empty? }
-      composed = composed.reject { |_, c| c["packs"].empty? }
-      skipped_packs.each_value { |skipped| skipped.each { |pack| @error_output.puts "Warning: #{pack["message"]}" } }
-      projects = resolved.map { |name, root| root ? @project_config.create(name, root) : name }
-
-      prompts = projects.each_with_object({}) do |p, h|
-        text = (by_project[p] || composed[p]) ? @library.play_prompt(by_project[p], prompt, packs: composed[p]&.fetch("text")) : prompt
-        h[p] = text if text
-      end
-
-      call_options = {reattach: reattach, prompts: prompts}
-      pane_bindings = projects.to_h do |name|
-        names = composed[name] ? InstructionComposer.pack_names(composed[name]["packs"]) : []
-        [name, by_project[name] ? @library.play_binding(by_project[name], packs: names) : (@library.packs_binding(names) if names.any?)]
-      end.compact
-      call_options[:bindings] = pane_bindings if pane_bindings.any?
-      call_options[:report_panes] = true if composed.any? || prompts.any?
-      optional = composed.select { |name, c| InstructionComposer.optional_prompt?(c, prompt: prompt, play: by_project[name]&.first) }
-      call_options[:optional] = optional.transform_values { |c| InstructionComposer.pack_names(c["packs"]) } if optional.any?
-      call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
-      call_options[:headless] = true if @launch_mode.resolve(headless).headless?
-      call_options[:arrange] = true if arrange
-      result = @launch_command.call(projects, **call_options)
-
-      projects.each do |p|
-        @project_settings.ensure_exists(p)
-        @hook_runner.run(p, "post_launch")
-      end
-      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: by_project, packs: composed, skipped_packs: skipped_packs, prompts: prompts}
-    end
-
-    # The lowercase name once a mixed-case workspace is renamed; the name as
-    # given when nothing was renamed, or its agent daemon is running.
-    def settle_launch_name(name)
-      result = @name_migration&.call_locked(name)
-      return name unless result
-
-      result.warnings.each { |warning| @error_output.puts "Warning: #{warning}" }
-      result.from ? result.name : name
-    end
-
-    # The packs `launch` sends each project, from its root's library and config; a
-    # project with none has no entry. An unknown pack fails before any config is created.
-    def compose_launch_packs(resolved, packs, no_packs, handoff = nil)
-      resolved.each_with_object({}) do |(name, root), composed|
-        cwd = root || @project_config.project_root_for(name)
-        next if cwd.nil? && packs.empty? && handoff != true
-        if @instruction_composer.nil?
-          raise Error, "--pack is not available: no library was wired." if packs.any?
-          raise Error, "--handoff is not available: no library was wired." if handoff == true
-          next
-        end
-        result = @instruction_composer.compose_start(cwd: cwd || @working_dir, packs: packs, none: no_packs, handoff: handoff)
-        composed[name] = result unless result["packs"].empty? && result["skipped"].to_a.empty?
-      end
-    end
-
-    # The plays `launch --play` sends one project, from its root's library, then global.
-    def resolve_plays(plays, root)
-      raise Error, "--play is not available: no library was wired." unless @library
-      plays.map { |play| @library.play(play, cwd: root) }.uniq { |play| play["ref"] }
-    end
-
-    # One `results` row per launched project, from the state Launch wrote.
-    def launch_rows(projects, result, ok_outcome: "launched", plays: {}, packs: nil, skipped_packs: {}, prompts: {})
-      @state.load
-      reused = result&.dig(:reused) || []
-      prompt_failures = result&.dig(:prompt_failures) || {}
-      start_failures = result&.dig(:start_failures) || {}
-      projects.map do |project|
-        entry = @state[project]
-        sent = !result.nil? && !entry.nil? && !prompt_failures.key?(project) && !start_failures.key?(project)
-        skipped = result&.dig(:skipped_prompts)&.key?(project)
-        details = {iterm_window_id: entry.is_a?(Hash) ? entry["iterm_window_id"] : nil, headless: entry.is_a?(Hash) && entry["headless"] == true}
-        prompt_sent = prompts[project] ? (sent && !skipped) : nil
-        details[:position] = result&.dig(:positions, project)
-        details[:prompt_sent] = prompt_sent
-        details[:pane] = prompt_sent ? result&.dig(:delivered_panes, project) : nil
-        if plays[project]&.any?
-          rows = Array(plays[project]).map { |play| play.merge("delivered" => sent, "pane" => result&.dig(:bound_panes, project)) }
-          details[:play] = rows.first
-          details[:plays] = rows
-        end
-        if packs
-          details[:packs] = InstructionComposer.delivery_rows(packs[project] ? packs[project]["packs"] : [], delivered: sent && !skipped,
-            pane: result&.dig(:delivered_panes, project), skipped: skipped_packs[project] || [])
-        end
-        if start_failures[project]
-          action_row(project, "failed", reason: "session_not_started", message: start_failures[project].to_s, **details)
-        elsif entry.nil?
-          action_row(project, "failed", reason: "not_launched", message: "No state was recorded for '#{project}'.", **details)
-        elsif prompt_failures[project]
-          action_row(project, "failed", reason: "prompt_not_sent", message: prompt_failures[project].to_s, **details)
-        else
-          action_row(project, reused.include?(project) ? "reused" : ok_outcome, **details)
-        end
-      end
     end
 
     def cmd_start(args)
@@ -5601,10 +5488,10 @@ module Workspace
       # fails, so a windowed failure never silently drops the headless
       # relaunch; the combined exit code reflects either failure.
       launches = []
-      launches << launch_projects(windowed.dup) if windowed.any?
-      launches << launch_projects(headless.dup, headless: true) if headless.any?
+      launches << @launcher.launch(@invocation, windowed.dup) if windowed.any?
+      launches << @launcher.launch(@invocation, headless.dup, headless: true) if headless.any?
       failed = launches.any? { |l| l[:exit_code] && !l[:exit_code].zero? }
-      rows = json ? launches.flat_map { |l| launch_rows(l[:projects], l[:result], ok_outcome: "relaunched") } : []
+      rows = json ? launches.flat_map { |l| @launcher.rows(l[:projects], l[:result], ok_outcome: "relaunched") } : []
       {exit_code: failed ? 1 : 0, results: rows}
     end
 
@@ -5678,8 +5565,8 @@ module Workspace
       [[windowed, nil], [headless, true]].each_with_object({}) do |(batch, mode), failures|
         next if batch.empty?
 
-        launch = launch_projects(batch.dup, headless: mode)
-        launch_rows(launch[:projects], launch[:result]).each do |row|
+        launch = @launcher.launch(@invocation, batch.dup, headless: mode)
+        @launcher.rows(launch[:projects], launch[:result]).each do |row|
           failures[row["workspace"]] = row["message"] || row["reason"] if row["outcome"] == "failed"
         end
       rescue Workspace::Error => e
@@ -7738,7 +7625,7 @@ module Workspace
     # packs a launch sends (the spine pack among them). Returns `{ok:, reason:, message:, pane:}`.
     def spine_launcher
       lambda do |workspace, play, prompt|
-        launched = launch_projects([workspace], plays: Array(play), prompt: prompt, with_packs: true)
+        launched = @launcher.launch(@invocation, [workspace], plays: Array(play), prompt: prompt, with_packs: true)
         launched_pane(launched)
       end
     end
@@ -8007,12 +7894,12 @@ module Workspace
       report_failure(e, json ? ["--json"] : [], e.message, exit_code: 2)
     end
 
-    # What `promote --launch` launches the new workspace with: {#launch_projects} with the packs composed from
+    # What `promote --launch` launches the new workspace with: {Launcher#launch} with the packs composed from
     # its own checkout (after the carry), a play and a prompt. Returns `{ok:, started:, reason:, message:, pane:, packs:}`.
     def promote_launcher(headless:, prompt_timeout:)
       lambda do |workspace, prompt:, play:|
-        launched = launch_projects([workspace], plays: Array(play), prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, with_packs: true)
-        row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs],
+        launched = @launcher.launch(@invocation, [workspace], plays: Array(play), prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, with_packs: true)
+        row = @launcher.rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs],
           skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
         {ok: row["outcome"] != "failed", started: !%w[session_not_started not_launched].include?(row["reason"]),
          reason: row["reason"], message: row["message"], pane: row.dig("play", "pane") || row["pane"], packs: row["packs"]}
@@ -8222,13 +8109,13 @@ module Workspace
     # --prompt "Continue the plan."` (or a task's prompt), with the packs a launch sends. Returns `{ok:, reason:, message:, pane:}`.
     def plan_launcher
       lambda do |workspace, prompt = Commands::PlanDispatch::CONTINUE_PROMPT|
-        launched_pane(launch_projects([workspace], plays: [Commands::PlanDispatch::PLAY], prompt: prompt, with_packs: true))
+        launched_pane(@launcher.launch(@invocation, [workspace], plays: [Commands::PlanDispatch::PLAY], prompt: prompt, with_packs: true))
       end
     end
 
-    # The one launched workspace's row from {#launch_projects}, as `{ok:, reason:, message:, pane:}`.
+    # The one launched workspace's row from {Launcher#launch}, as `{ok:, reason:, message:, pane:}`.
     def launched_pane(launched)
-      row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
+      row = @launcher.rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
       pane = row.dig("play", "pane") || row["pane"]
       {ok: row["outcome"] != "failed", reason: row["reason"], message: row["message"], pane: pane}
     end

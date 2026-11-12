@@ -380,6 +380,20 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::RecoveryFacts, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+  describe "the CLI launcher's fakes" do
+    {
+      RecordingLaunchCommand => Workspace::Commands::Launch,
+      RecordingLaunchLibrary => Workspace::Library,
+      RecordingStartComposer => Workspace::InstructionComposer,
+      RecordingNameMigration => Workspace::NameMigration,
+      RecordingLaunchSettings => Workspace::ProjectSettings
+    }.each do |fake, real|
+      it "holds #{fake} to every call #{real.name.delete_prefix("Workspace::")} accepts" do
+        expect(FakeContract.problems(fake, real, control: fake::CONTROL_METHODS)).to be_empty
+      end
+    end
+  end
+
   describe "the CLI's fake commands" do
     {
       CLITestHelpers::FakeAgentCommand => Workspace::Commands::Agent,

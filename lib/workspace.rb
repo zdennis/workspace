@@ -487,6 +487,7 @@ require_relative "workspace/commands/run_and_report"
 require_relative "workspace/cli/invocation"
 require_relative "workspace/cli/common"
 require_relative "workspace/cli/names"
+require_relative "workspace/cli/launcher"
 require_relative "workspace/cli"
 
 module Workspace
