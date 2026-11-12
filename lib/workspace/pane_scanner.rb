@@ -10,6 +10,11 @@ module Workspace
   # It holds no panes and takes no lock: the monitor lists the panes and
   # snapshots the process table through it outside its lock, then calls
   # {#refresh} for each pane while it holds its own lock.
+  #
+  # It owns the alert history read back after a restart: the last alerts
+  # logged per pane, read with the state history and handed out at each
+  # pane's first refresh. The marks that history restores are written
+  # through {PaneAlerts}, the one writer of alert marks.
   class PaneScanner
     # @param tmux [Workspace::Tmux] pane listing and capture
     # @param process_tree [Workspace::ProcessTree] process table snapshots
@@ -129,7 +134,7 @@ module Workspace
       case logged["state"]
       when "done" then restore_done(pane, detail, since, logged["stop_reason"], alerts["idle"])
       when "idle" then restore_idle(pane, detail, since, alerts["idle"])
-      when "waiting" then restore_waits(pane, detail, since, alerts["waiting"] || {})
+      when "waiting" then PaneAlerts.restore_waits(pane, detail[:pid], since, alerts["waiting"] || {})
       end
     rescue ArgumentError
       nil
@@ -139,45 +144,19 @@ module Workspace
     # daemon already alerted for is not alerted for again.
     def restore_done(pane, detail, since, stop_reason, alert)
       pane[:done] = {since: since, stop_reason: stop_reason || "end_turn"}
-      at = alert_time(detail, alert, "idle_since")
+      at = PaneAlerts.logged_time(alert, detail[:pid], "idle_since")
       return unless at
 
       pane[:last_activity_at] = at
-      pane[:alerted_idle_since] = at
+      PaneAlerts.mark(pane, PaneAlerts::IDLE, at)
       pane[:quiet_since_restore] = true
     end
 
     def restore_idle(pane, detail, since, alert)
       pane[:last_activity_at] = since - @idle_after
       pane[:quiet_since_restore] = true
-      at = alert_time(detail, alert, "idle_since")
-      pane[:alerted_idle_since] = pane[:last_activity_at] if at && (at - pane[:last_activity_at]).abs < 0.002
-    end
-
-    # Remembers, per agent, each wait in the pane's logged waiting stretch
-    # that the last daemon alerted for. The agent's next notification takes
-    # that wait up again, already alerted, unless another hook event from
-    # the agent ends it first. A notification that arrived before this first
-    # scan is taken up here.
-    def restore_waits(pane, detail, stretch_since, alerts)
-      alerts.each do |agent_id, alert|
-        waiting_since = alert_time(detail, alert, "waiting_since")
-        next unless waiting_since && waiting_since - stretch_since > -0.002
-        if (wait = pane[:waits][agent_id])
-          wait.merge!(since: waiting_since, alerted: true) unless wait[:alerted]
-        else
-          (pane[:alerted_waits] ||= {})[agent_id] = waiting_since
-        end
-      end
-    end
-
-    # The time logged under +key+ (to the millisecond) of an alert sent for
-    # this pane process, or nil.
-    def alert_time(detail, alert, key)
-      return nil unless alert && alert["pane_pid"] == detail[:pid]
-      Time.iso8601(alert[key].to_s)
-    rescue ArgumentError
-      nil
+      at = PaneAlerts.logged_time(alert, detail[:pid], "idle_since")
+      PaneAlerts.mark(pane, PaneAlerts::IDLE, pane[:last_activity_at]) if at && (at - pane[:last_activity_at]).abs < 0.002
     end
 
     # Output is hashed rather than compared: a pane's scrollback is large, and

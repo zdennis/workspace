@@ -434,7 +434,7 @@ module Workspace
       return false unless @notifier
       pane = @lock.synchronize { @panes[pane_id]&.dup }
       return false unless pane
-      env = alert_env(pane, "handoff_stalled", seconds, nil, followups: followups)
+      env = PaneAlerts.env(pane, "handoff_stalled", seconds, nil, session_name: @session_name, followups: followups)
       !!@notifier.notify(env)
     rescue => e
       log_alert_failure(e)
@@ -468,7 +468,11 @@ module Workspace
     # scans it spans. Shell panes never alert. The notifier returns at once.
     # An alert counts as sent only once the notifier accepts it, so one the
     # notifier skips (too many runs still going) or that raises is retried on
-    # the next scan, and doesn't keep later ones from going out. Anything
+    # the next scan, and doesn't keep later ones from going out. Which alerts
+    # are due comes from {PaneAlerts.due}; each one sent is marked by its
+    # +[pane_id, wait_key]+ on the pane found under that id now, through
+    # {PaneAlerts.mark}. The stale flag and the failed-scan streak stay here:
+    # they are scan state, which the rule takes as +stale:+. Anything
     # raised here is logged and swallowed, so alerting can never stall or end
     # the scan thread.
     #
@@ -476,12 +480,17 @@ module Workspace
     def send_alerts
       return [] unless @notifier
       now = @clock.now
-      due = @lock.synchronize { @panes.values.flat_map { |pane| due_alerts(pane, now) } }
-      due.filter_map do |target, mark, value, alert, logged|
-        next unless @notifier.notify(alert)
-        @lock.synchronize { target[mark] = value }
-        record_alert(logged)
-        alert
+      due = @lock.synchronize do
+        @panes.values.flat_map do |pane|
+          PaneAlerts.due(pane, now, session_name: @session_name, idle_alert_after: @idle_alert_after, stale: @activity_stale)
+        end
+      end
+      due.filter_map do |alert|
+        next unless @notifier.notify(alert.env)
+        pane_id, wait_key = alert.key
+        @lock.synchronize { (pane = @panes[pane_id]) && PaneAlerts.mark(pane, wait_key, alert.value) }
+        record_alert(alert.logged)
+        alert.env
       rescue => e
         log_alert_failure(e)
         nil
@@ -543,16 +552,6 @@ module Workspace
       record_changes(changes)
     end
 
-    def idle_alert_data(pane, idle_since)
-      {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "kind" => "idle",
-       "idle_since" => idle_since.utc.iso8601(3)}
-    end
-
-    def waiting_alert_data(pane, agent_id, wait)
-      {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "kind" => "waiting",
-       "agent_id" => agent_id, "waiting_since" => wait[:since].utc.iso8601(3)}
-    end
-
     # Logged so a restarted daemon knows this stretch or wait already
     # alerted. EventLog#record doesn't raise on a failed write.
     def record_alert(data)
@@ -567,29 +566,6 @@ module Workspace
       changes.each { |data| @event_log.record(type: EventLog::AGENT_STATE, project: @project, data: data) }
     end
 
-    # Each wait alerts on its own, so a second agent in the pane starting to
-    # wait alerts even though the pane was already waiting.
-    #
-    # @return [Array<Array>] per alert due: the hash to mark alerted, the key
-    #   and value that mark it, the alert's environment, and the event to log
-    #   once it is sent
-    def due_alerts(pane, now)
-      return [] if PaneStates::NOT_AGENTS.include?(pane[:kind])
-
-      unless pane[:waits].empty?
-        return pane[:waits].reject { |_, wait| wait[:alerted] }.map do |agent_id, wait|
-          [wait, :alerted, true, alert_env(pane, "waiting", now - wait[:since], wait[:message]),
-            waiting_alert_data(pane, agent_id, wait)]
-        end
-      end
-
-      return [] if @activity_stale || !@idle_alert_after || !pane[:last_activity_at]
-      idle_for = now - pane[:last_activity_at]
-      return [] if idle_for < @idle_alert_after || pane[:alerted_idle_since] == pane[:last_activity_at]
-      [[pane, :alerted_idle_since, pane[:last_activity_at], alert_env(pane, "idle", idle_for, nil),
-        idle_alert_data(pane, pane[:last_activity_at])]]
-    end
-
     # Printed once per streak; a scan that succeeds starts a new one.
     def warn_failed_scans(error)
       @error_output.puts "workspace agent: can't read the process table for #{@session_name} " \
@@ -602,27 +578,6 @@ module Workspace
       @logger.debug { "session monitor: alert failed (#{error.class}: #{error.message})" }
     rescue
       nil
-    end
-
-    def alert_env(pane, alert, seconds, message, followups: nil)
-      where = "#{@session_name} pane 0.#{pane[:index]} (#{pane[:label]})"
-      text = if alert == "waiting"
-        "#{where} is waiting#{": #{message}" if message}"
-      elsif alert == "handoff_stalled"
-        "#{where} has not handed off after #{followups} follow-ups"
-      else
-        "#{where} has been idle for #{Duration.humanize(seconds)}"
-      end
-      {
-        "WORKSPACE_ALERT" => alert,
-        "WORKSPACE_ALERT_WORKSPACE" => @session_name,
-        "WORKSPACE_ALERT_PANE" => "0.#{pane[:index]}",
-        "WORKSPACE_ALERT_PANE_ID" => pane[:pane_id].to_s,
-        "WORKSPACE_ALERT_KIND" => pane[:kind].to_s,
-        "WORKSPACE_ALERT_SECONDS" => seconds.round.to_s,
-        "WORKSPACE_ALERT_MESSAGE" => message.to_s,
-        "WORKSPACE_ALERT_TEXT" => text
-      }.transform_values { |value| value.delete("\0") }
     end
 
     def refresh_pane(detail, tree, now)
