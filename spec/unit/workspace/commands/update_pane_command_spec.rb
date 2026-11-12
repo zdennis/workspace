@@ -92,12 +92,36 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
       expect(writer.current?("myproject")).to be(true)
     end
 
-    it "keeps the recorded pane text when the edit leaves no agent pane" do
-      allow(project_config).to receive(:agent_pane_text).and_return(nil)
+    it "leaves the record as it is for an edit of another pane, so the file reads as modified" do
+      recorded = writer.record("myproject")
 
       command.call(project: "myproject", command: "vim .", pane_index: 3)
 
-      expect(writer.record("myproject").inputs).to include(agent_command: "claude --continue || claude")
+      expect(File.read(config_path)).to include("vim .")
+      expect(writer.record("myproject")).to eq(recorded)
+      expect(writer.current?("myproject")).to be(false)
+    end
+
+    it "leaves the record as it is for a new pane, even an agent command" do
+      input.string = "y\n"
+      recorded = writer.record("myproject")
+
+      command.call(project: "myproject", command: "claude --model opus", pane_index: 4)
+
+      expect(File.read(config_path)).to include("claude --model opus")
+      expect(writer.record("myproject")).to eq(recorded)
+    end
+
+    it "leaves the record as it is when the agent pane is replaced by a command that is not an agent" do
+      recorded = writer.record("myproject")
+      allow(project_config).to receive(:agent_pane_text) { |content, _name| content[/- (claude.*)$/, 1] }
+
+      command.call(project: "myproject", command: "vim .", pane_index: 2)
+
+      expect(File.read(config_path)).to include("vim .")
+      expect(File.read(config_path)).not_to include("claude --continue")
+      expect(writer.record("myproject")).to eq(recorded)
+      expect(writer.current?("myproject")).to be(false)
     end
 
     it "writes the config alone when it has no render record" do

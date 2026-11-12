@@ -50,12 +50,16 @@ module Workspace
           adjusted_index = pane_count
         end
 
-        # The kind is not known here, so `agent_kind` stays what the record has; the pane text is recorded
-        # only when the edit left an agent pane.
-        updated_raw = @writer.patch(project, inputs: ->(text) {
-          agent_command = @project_config.agent_pane_text(text, project)
-          agent_command ? {agent_command: agent_command} : {}
-        }) { |text| update_pane_in_raw(text, adjusted_index, command) }
+        # The kind is not known here, so `agent_kind` stays what the record has. The record follows the file
+        # only when the edit replaced the agent pane with an agent command; any other edit is one the render
+        # inputs can't reproduce, so it is written but left reading as an edit of the rendered config.
+        edited_agent = false
+        updated_raw = @writer.patch(project,
+          inputs: ->(text) { {agent_command: @project_config.agent_pane_text(text, project)} },
+          keep_sha: ->(text) { !(edited_agent && @project_config.agent_pane_text(text, project)) }) do |text|
+          edited_agent = agent_pane_at?(text, adjusted_index, config_path, project)
+          update_pane_in_raw(text, adjusted_index, command)
+        end
 
         updated_doc = YAML.safe_load(updated_raw)
         updated_panes = extract_panes(updated_doc, config_path)
@@ -63,6 +67,13 @@ module Workspace
       end
 
       private
+
+      # Whether the pane at +index+ (0-based) of +text+ is the agent pane: the one the agent-pane reader finds.
+      def agent_pane_at?(text, index, config_path, project)
+        agent = @project_config.agent_pane_text(text, project)
+        pane = extract_panes(YAML.safe_load(text), config_path)[index]
+        !agent.nil? && pane.is_a?(String) && pane.strip == agent.strip
+      end
 
       def validate!(project, pane_index)
         raise Workspace::UsageError, "No project name provided. Usage: workspace set-command [PROJECT] <command> --pane N (or --name WS)" unless project

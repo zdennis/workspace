@@ -229,6 +229,27 @@ RSpec.describe Workspace::TmuxinatorConfigWriter do
       expect(writer.current?("myapp")).to be(true)
     end
 
+    it "writes the config and leaves the sidecar as it was with keep_sha, so the file reads as edited" do
+      write
+      recorded = writer.record("myapp")
+
+      writer.patch("myapp", inputs: {agent_command: "ignored"}, keep_sha: true) { "name: other\n" }
+
+      expect(File.read(path)).to eq("name: other\n")
+      expect(writer.record("myapp")).to eq(recorded)
+      expect(writer.current?("myapp")).to be(false)
+    end
+
+    it "takes keep_sha from a callable given the new text, and then does not call the inputs callable" do
+      write
+      called = false
+
+      writer.patch("myapp", inputs: ->(_) { called = true }, keep_sha: ->(text) { text.include?("other") }) { "name: other\n" }
+
+      expect(called).to be(false)
+      expect(writer.current?("myapp")).to be(false)
+    end
+
     it "takes inputs from a callable given the new text" do
       write
 

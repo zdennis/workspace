@@ -89,15 +89,19 @@ module Workspace
     # @param name [String] the workspace name
     # @param inputs [Hash, #call] inputs to merge into the sidecar's, by Symbol; a callable is given the new
     #   text and answers the Hash, so the record follows what was written
+    # @param keep_sha [Boolean, #call] true (or a callable given the new text that answers true) writes the config and
+    #   leaves the sidecar as it is, so the file reads as edited: for a change the render inputs can't reproduce
     # @yieldparam text [String] the config as it is now
     # @yieldreturn [String, nil] the new text; nil writes nothing
     # @return [String, nil] the text written
     # @raise [SystemCallError] when the config can't be read or a write fails
-    def patch(name, inputs: {})
+    def patch(name, inputs: {}, keep_sha: false)
       text = yield File.read(@config.config_path_for(name))
       return unless text
-      inputs = inputs.call(text) if inputs.respond_to?(:call)
+      keep_sha = keep_sha.call(text) if keep_sha.respond_to?(:call)
+      inputs = inputs.call(text) if !keep_sha && inputs.respond_to?(:call)
       write_config(name, text)
+      return text if keep_sha
       current = record(name)
       return text unless current
       write_record(name, {
