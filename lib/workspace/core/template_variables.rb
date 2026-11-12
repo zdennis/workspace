@@ -40,6 +40,10 @@ module Workspace
         sample: "/Users/me/src/myapp/.worktrees/proj-123"),
       Row.new(name: "WORKTREE_BRANCH", kinds: %i[worktree], required: WORKTREE_ONLY, input: :worktree_branch,
         description: "The worktree's git branch.", source: "the worktree", sample: "proj-123"),
+      Row.new(name: "AGENT_COMMAND", kinds: BOTH, required: WORKTREE_ONLY, input: :agent_command,
+        description: "The agent pane's command: for Claude Code the flagged `--continue ||` line with the configured program, for another kind the bare configured command.",
+        source: "`agent.kind` and `agent.commands.<kind>`",
+        sample: "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions"),
       Row.new(name: "PRE_WINDOW", kinds: %i[worktree], required: {project: false, worktree: false}, input: :task_id, fill: :line,
         description: "A whole line: `pre_window: export WORKSPACE_TASK=ID` with a task id, dropped without one.",
         source: "the workspace's task", sample: "t_abc123")

@@ -1032,6 +1032,124 @@ RSpec.describe Workspace::ProjectConfig do
       expect(File.exist?(File.join(tmpdir, ".render"))).to be(false)
     end
 
+    describe "the {{AGENT_COMMAND}} placeholder" do
+      let(:legacy) { File.join(PROJECT_ROOT, "spec", "fixtures", "legacy_templates") }
+      let(:placeholder_templates) { File.join(PROJECT_ROOT, "lib", "templates") }
+      let(:flagged) { "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions" }
+
+      def template_file(dir, kind)
+        name = (kind == "project") ? "workspace.project-template.yml" : "workspace.project-worktree-template.yml"
+        File.join(dir, (dir == legacy) ? "#{kind}.yml" : name)
+      end
+
+      def use_templates(dir)
+        allow(config).to receive(:project_template_path).and_return(template_file(dir, "project"))
+        allow(config).to receive(:worktree_template_path).and_return(template_file(dir, "worktree"))
+      end
+
+      def create_all
+        pc.create("myapp", "/src/my app")
+        pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123")
+      end
+
+      it "ships in both templates as the agent pane line" do
+        %w[workspace.project-template.yml workspace.project-worktree-template.yml].each do |name|
+          lines = File.readlines(File.join(placeholder_templates, name))
+          expect(lines.grep(/AGENT_COMMAND/).map(&:strip)).to eq(["- {{AGENT_COMMAND}}"])
+          expect(lines.grep(/claude/)).to be_empty
+        end
+      end
+
+      it "has a DEFAULT_CLAUDE_PANE equal to the legacy worktree template's pane, frozen" do
+        pane = File.readlines(File.join(legacy, "worktree.yml")).filter_map { |l| l[/^\s*- (claude .*?)\s*$/, 1] }
+        expect(pane).to eq([described_class::DEFAULT_CLAUDE_PANE])
+        expect(described_class::DEFAULT_CLAUDE_PANE).to be_frozen
+      end
+
+      [
+        ["the placeholder templates", :placeholder_templates],
+        ["the legacy templates, through the literal-line path", :legacy]
+      ].each do |label, dir|
+        context "with #{label}" do
+          before { use_templates(send(dir)) }
+
+          it "renders the four pinned files" do
+            pc.create("myapp", "/src/my app")
+            expect(written("myapp")).to eq(fixture("project.yml"))
+            pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123")
+            expect(written("myapp.worktree-proj-123")).to eq(fixture("worktree.yml"))
+            File.delete(File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml"))
+            pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123", agent_kind: "codex")
+            expect(written("myapp.worktree-proj-123")).to eq(fixture("worktree-codex.yml"))
+            File.delete(File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml"))
+            settings.replace("agent" => {"commands" => {"claude" => "claude-dev"}})
+            pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123")
+            expect(written("myapp.worktree-proj-123")).to eq(fixture("worktree-claude-dev.yml"))
+          end
+
+          it "quotes a shell-unsafe configured command as rewrite_agent_pane does" do
+            settings.replace("agent" => {"commands" => {"claude" => "my cl: #x"}})
+            pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123")
+
+            text = written("myapp.worktree-proj-123")
+            expect(text).to include(%(- "my cl: #x --dangerously-skip-permissions --continue || my cl: #x --dangerously-skip-permissions"))
+            expect(text).to eq(pc.rewrite_agent_pane(fixture("worktree.yml"), "claude", "myapp.worktree-proj-123"))
+          end
+
+          it "pins spawn_command" do
+            main_agent = Workspace::MainAgent.new(project_config: pc, agent_commands: agent_commands)
+
+            expect(pc.agent_pane_command("claude")).to eq(flagged)
+            expect(pc.agent_pane_command("codex")).to eq("codex")
+            expect(main_agent.spawn_command("myapp", "claude")).to eq("claude --dangerously-skip-permissions")
+            expect(main_agent.spawn_command("myapp", "codex")).to eq("codex")
+          end
+
+          it "swaps a codex pane back to claude with the flags" do
+            codex = fixture("worktree-codex.yml")
+            expect(pc.rewrite_agent_pane(codex, "claude", "myapp.worktree-proj-123")).to eq(fixture("worktree.yml"))
+          end
+
+          it "raises the same error for a kind with no AgentProvider entry" do
+            expect { pc.check_agent_kind!("vim") }.not_to raise_error
+            expect { pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", agent_kind: "vim") }
+              .to raise_error(ArgumentError, /unknown agent kind "vim"/)
+          end
+        end
+      end
+
+      it "gives agent_pane_command the flagged default line for a placeholder template and the literal line's flags for a literal one" do
+        use_templates(placeholder_templates)
+        expect(pc.agent_pane_command("claude")).to eq(flagged)
+        use_templates(legacy)
+        expect(pc.agent_pane_command("claude")).to eq(flagged)
+        File.write(File.join(tmpdir, "literal.yml"), "panes:\n  - claude --model opus\n")
+        allow(config).to receive(:worktree_template_path).and_return(File.join(tmpdir, "literal.yml"))
+        expect(pc.agent_pane_command("claude")).to eq("claude --model opus")
+      end
+
+      it "raises the swap error for an unknown kind when no AgentCommands is wired, under either template style" do
+        bare = described_class.new(config: config, output: output, git: git)
+        [placeholder_templates, legacy].each do |dir|
+          use_templates(dir)
+          expect { bare.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", agent_kind: "vim") }
+            .to raise_error(Workspace::Error, /no Claude Code pane to swap for vim/)
+        end
+      end
+
+      it "passes check_agent_kind! for a placeholder template" do
+        use_templates(placeholder_templates)
+        expect { pc.check_agent_kind!("codex") }.not_to raise_error
+      end
+
+      it "records the agent pane text the placeholder was filled with" do
+        use_templates(placeholder_templates)
+        create_all
+        writer = Workspace::TmuxinatorConfigWriter.new(config: config)
+        expect(writer.record("myapp.worktree-proj-123").inputs[:agent_command]).to eq(flagged)
+      end
+    end
+
     describe "#render" do
       let(:project_text) { File.read(config.project_template_path) }
       let(:worktree_text) { File.read(config.worktree_template_path) }
@@ -1076,7 +1194,7 @@ RSpec.describe Workspace::ProjectConfig do
       end
 
       it "raises for a worktree whose template has no pane to swap for the agent kind" do
-        text = worktree_text.lines.grep_v(/claude|codex/).join
+        text = worktree_text.lines.grep_v(/claude|codex|AGENT_COMMAND/).join
 
         expect { pc.render(:worktree, worktree_inputs.merge(agent_kind: "codex"), text) }
           .to raise_error(Workspace::Error, /no Claude Code pane to swap for codex/)

@@ -5,6 +5,10 @@ require "yaml"
 module Workspace
   # Manages tmuxinator config file generation for projects and worktrees.
   class ProjectConfig
+    # The Claude Code pane line a new config runs: what the shipped templates held before they took
+    # `{{AGENT_COMMAND}}`, and the base {#agent_pane_value} swaps the configured program into.
+    DEFAULT_CLAUDE_PANE = "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions".freeze
+
     # @param config [Workspace::Config] configuration for path lookups
     # @param git [Workspace::Git] git operations for sanitize_for_filesystem
     # @param output [IO] output stream for user-facing messages
@@ -73,6 +77,8 @@ module Workspace
     #   required input (see {TemplateVariables}) that is nil while the template holds its placeholder
     def render(kind, inputs, template_text)
       content = template_text.dup
+      has_agent_placeholder = content.include?("{{AGENT_COMMAND}}")
+      inputs = with_agent_command(kind, inputs) if has_agent_placeholder
       TemplateVariables::ROWS.each do |row|
         next unless row.fill == :value
         value = inputs[row.input]
@@ -86,7 +92,18 @@ module Workspace
         task_id = inputs[:task_id]
         content = content.sub(/^\{\{PRE_WINDOW\}\}\n/) { task_id ? "pre_window: export WORKSPACE_TASK=#{task_id}\n" : "" }
       end
+      return content if has_agent_placeholder # the placeholder already holds the configured pane, which replaces with_agent_kind
       with_agent_kind(content, inputs[:agent_kind], inputs[:workspace_name], strict: kind == :worktree)
+    end
+
+    # The agent pane text {#render} writes for `{{AGENT_COMMAND}}`: for `claude` {DEFAULT_CLAUDE_PANE} with
+    # the configured program swapped in (flags kept), for another kind the bare configured command.
+    #
+    # @param kind [String] an {AgentProvider} key
+    # @param workspace [String, nil] the workspace whose config layers pick the command
+    # @return [String, nil] nil for an unknown kind
+    def agent_pane_value(kind, workspace = nil)
+      pane_value(kind, workspace, DEFAULT_CLAUDE_PANE)
     end
 
     # @param project_name [String] parent project name
@@ -251,11 +268,10 @@ module Workspace
     # @return [String, nil] nil for `claude` when the template has no Claude Code pane, or for an unknown kind
     def agent_pane_command(kind, workspace = nil)
       return unless AgentProvider.find(kind)
-      command = configured_command(kind, workspace)
-      return command unless kind == "claude"
+      return configured_command(kind, workspace) unless kind == "claude"
       return unless File.exist?(@config.worktree_template_path)
       line = template_claude_line(workspace)
-      line && claude_line(line, command, claude_names(workspace))
+      line && pane_value(kind, workspace, line)
     end
 
     # +text+ with the program of each `||` half that runs a Claude Code program swapped for the configured
@@ -412,17 +428,42 @@ module Workspace
       end.uniq
     end
 
+    # +inputs+ with `agent_command` filled for the template's `{{AGENT_COMMAND}}` (one a caller gave stays);
+    # an unknown kind leaves it nil, so a worktree raises the swap error as {#with_agent_kind} does, and a
+    # project gets the default pane with that method's warning.
+    def with_agent_command(kind, inputs)
+      return inputs if inputs[:agent_command]
+      configured_command(inputs[:agent_kind], inputs[:workspace_name]) # raises for an unknown kind where {AgentCommands} is wired, as {#with_agent_kind} does
+      value = agent_pane_value(inputs[:agent_kind], inputs[:workspace_name])
+      if value.nil?
+        if kind == :worktree
+          raise Workspace::Error, "The worktree template has no Claude Code pane to swap for #{inputs[:agent_kind]}; run `workspace init --force` to refresh it."
+        end
+        @output.puts "Warning: agent.kind is set, but the template has no agent pane line to rewrite; the pane was left as is."
+        value = DEFAULT_CLAUDE_PANE
+      end
+      inputs.merge(agent_command: yaml_item(value))
+    end
+
+    def pane_value(kind, workspace, base)
+      return unless AgentProvider.find(kind)
+      command = configured_command(kind, workspace)
+      (kind == "claude") ? claude_line(base, command, claude_names(workspace)) : command
+    end
+
     # The text of the worktree template's Claude Code pane, looking only at pane items from the first
     # `panes:` line on: the item with the skip-permissions flag anywhere in the file, else the first item
     # whose `||` chain runs a program of {#claude_names} in any half (unlike {#agent_pane_text?}, which
     # reads the first half only). With no workspace (or no {AgentCommands}) those names are the bare
     # executable, so `claude-dev --continue || claude` is found through its second half.
+    # A template whose pane items include `{{AGENT_COMMAND}}` answers {DEFAULT_CLAUDE_PANE}.
     def template_claude_line(workspace)
       return unless File.exist?(@config.worktree_template_path)
       lines = File.readlines(@config.worktree_template_path)
       start = lines.index { |line| line.match?(/\A\s*(- )?panes:/) }
       return unless start
       texts = lines[start..].filter_map { |line| pane_item(line)&.at(1)&.strip }
+      return DEFAULT_CLAUDE_PANE if texts.include?("{{AGENT_COMMAND}}")
       names = claude_names(workspace)
       texts.find { |text| flagged_pane?(text) } || texts.find { |text| runs_program?(text, names) }
     end
