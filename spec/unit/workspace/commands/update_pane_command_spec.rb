@@ -18,6 +18,8 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
     allow(pc).to receive(:agent_pane_text) { |content, _name| content[/- (claude.*)$/, 1] }
     pc
   end
+  let(:reproduces) { false }
+  let(:template_status) { instance_double(Workspace::TemplateStatus, reproduces?: reproduces) }
   let(:before_patch) { [] }
   let(:writer_class) do
     hooks = before_patch
@@ -37,6 +39,7 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
       config: config,
       project_config: project_config,
       writer: writer,
+      template_status: template_status,
       output: output,
       input: input
     )
@@ -76,20 +79,35 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
         inputs: {workspace_name: "myproject", agent_kind: "claude", agent_command: "claude --continue || claude"})
     end
 
-    it "stays current and takes the new agent pane text" do
+    context "when a render today writes the new text" do
+      let(:reproduces) { true }
+
+      it "stays current and takes the new agent pane text" do
+        command.call(project: "myproject", command: "claude --model opus", pane_index: 2)
+
+        expect(writer.current?("myproject")).to be(true)
+        expect(writer.record("myproject").inputs).to include(agent_kind: "claude", agent_command: "claude --model opus")
+      end
+    end
+
+    it "leaves the record as it is for an agent command a render does not write" do
+      recorded = writer.record("myproject")
+
       command.call(project: "myproject", command: "claude --model opus", pane_index: 2)
 
-      expect(writer.current?("myproject")).to be(true)
-      expect(writer.record("myproject").inputs).to include(agent_kind: "claude", agent_command: "claude --model opus")
+      expect(File.read(config_path)).to include("claude --model opus")
+      expect(writer.record("myproject")).to eq(recorded)
+      expect(writer.current?("myproject")).to be(false)
     end
 
     it "edits the text the writer reads when the file changed after the caller's read" do
+      allow(template_status).to receive(:reproduces?).and_return(true)
       before_patch << -> { File.write(config_path, base_config.sub("echo 'Ready'", "echo 'Changed'")) }
 
       command.call(project: "myproject", command: "claude --model opus", pane_index: 2)
 
       expect(File.read(config_path)).to include("echo 'Changed'").and include("claude --model opus")
-      expect(writer.current?("myproject")).to be(true)
+      expect(writer.current?("myproject")).to be(false) # the file was edited before the patch, so it stays modified
     end
 
     it "leaves the record as it is for an edit of another pane, so the file reads as modified" do

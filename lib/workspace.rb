@@ -226,6 +226,7 @@ require_relative "workspace/workspace_checkout"
 require_relative "workspace/ticket_source"
 require_relative "workspace/project_catalog"
 require_relative "workspace/status_scope"
+require_relative "workspace/template_status"
 require_relative "workspace/project_groups"
 require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/agent_message_client"
@@ -878,7 +879,8 @@ module Workspace
     remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
-    update_pane_command = Commands::UpdatePaneCommand.new(config: config, project_config: project_config, writer: tmuxinator_config_writer, output: output, input: input)
+    template_status = TemplateStatus.new(library: library, project_config: project_config, writer: tmuxinator_config_writer)
+    update_pane_command = Commands::UpdatePaneCommand.new(config: config, project_config: project_config, writer: tmuxinator_config_writer, template_status: template_status, output: output, input: input)
     run_command = Commands::Run.new(
       tmux: tmux,
       agent_labels: agent_labels,

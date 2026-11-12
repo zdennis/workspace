@@ -9,12 +9,15 @@ module Workspace
       # @param project_config [Workspace::ProjectConfig] project config management
       # @param writer [Workspace::TmuxinatorConfigWriter, nil] rewrites the config and keeps its render record
       #   in step; nil builds one over +config+
+      # @param template_status [Workspace::TemplateStatus, nil] says whether an edit is what a render writes today;
+      #   nil never does, so the record is always left as it is
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(config:, project_config:, writer: nil, output: $stdout, input: $stdin)
+      def initialize(config:, project_config:, writer: nil, template_status: nil, output: $stdout, input: $stdin)
         @config = config
         @project_config = project_config
         @writer = writer || TmuxinatorConfigWriter.new(config: config)
+        @template_status = template_status
         @output = output
         @input = input
       end
@@ -51,15 +54,11 @@ module Workspace
         end
 
         # The kind is not known here, so `agent_kind` stays what the record has. The record follows the file
-        # only when the edit replaced the agent pane with an agent command; any other edit is one the render
-        # inputs can't reproduce, so it is written but left reading as an edit of the rendered config.
-        edited_agent = false
+        # only when a render today with the record's inputs writes exactly the new text; any other edit is
+        # written but left reading as an edit of the rendered config.
         updated_raw = @writer.patch(project,
           inputs: ->(text) { {agent_command: @project_config.agent_pane_text(text, project)} },
-          keep_sha: ->(text) { !(edited_agent && @project_config.agent_pane_text(text, project)) }) do |text|
-          edited_agent = agent_pane_at?(text, adjusted_index, config_path, project)
-          update_pane_in_raw(text, adjusted_index, command)
-        end
+          keep_sha: ->(text) { !@template_status&.reproduces?(project, text) }) { |text| update_pane_in_raw(text, adjusted_index, command) }
 
         updated_doc = YAML.safe_load(updated_raw)
         updated_panes = extract_panes(updated_doc, config_path)
@@ -67,13 +66,6 @@ module Workspace
       end
 
       private
-
-      # Whether the pane at +index+ (0-based) of +text+ is the agent pane: the one the agent-pane reader finds.
-      def agent_pane_at?(text, index, config_path, project)
-        agent = @project_config.agent_pane_text(text, project)
-        pane = extract_panes(YAML.safe_load(text), config_path)[index]
-        !agent.nil? && pane.is_a?(String) && pane.strip == agent.strip
-      end
 
       def validate!(project, pane_index)
         raise Workspace::UsageError, "No project name provided. Usage: workspace set-command [PROJECT] <command> --pane N (or --name WS)" unless project

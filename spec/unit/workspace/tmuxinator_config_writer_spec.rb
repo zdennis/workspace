@@ -229,6 +229,18 @@ RSpec.describe Workspace::TmuxinatorConfigWriter do
       expect(writer.current?("myapp")).to be(true)
     end
 
+    it "leaves the sidecar as it was when the config was already edited, so it stays modified" do
+      write
+      File.write(path, "name: by hand\n")
+      recorded = writer.record("myapp")
+
+      writer.patch("myapp", inputs: {agent_command: "claude-dev"}) { |text| "#{text}# patched\n" }
+
+      expect(File.read(path)).to eq("name: by hand\n# patched\n")
+      expect(writer.record("myapp")).to eq(recorded)
+      expect(writer.current?("myapp")).to be(false)
+    end
+
     it "writes the config and leaves the sidecar as it was with keep_sha, so the file reads as edited" do
       write
       recorded = writer.record("myapp")

@@ -90,15 +90,18 @@ module Workspace
     # @param inputs [Hash, #call] inputs to merge into the sidecar's, by Symbol; a callable is given the new
     #   text and answers the Hash, so the record follows what was written
     # @param keep_sha [Boolean, #call] true (or a callable given the new text that answers true) writes the config and
-    #   leaves the sidecar as it is, so the file reads as edited: for a change the render inputs can't reproduce
+    #   leaves the sidecar as it is, so the file reads as edited: for a change the render inputs can't reproduce.
+    #   A config that was already edited (not at the record's `rendered_sha` before the patch) keeps its sidecar too.
     # @yieldparam text [String] the config as it is now
     # @yieldreturn [String, nil] the new text; nil writes nothing
     # @return [String, nil] the text written
     # @raise [SystemCallError] when the config can't be read or a write fails
     def patch(name, inputs: {}, keep_sha: false)
-      text = yield File.read(@config.config_path_for(name))
+      before = File.read(@config.config_path_for(name))
+      text = yield before
       return unless text
       keep_sha = keep_sha.call(text) if keep_sha.respond_to?(:call)
+      keep_sha ||= !was_rendered?(name, before)
       inputs = inputs.call(text) if !keep_sha && inputs.respond_to?(:call)
       write_config(name, text)
       return text if keep_sha
@@ -128,6 +131,12 @@ module Workspace
     end
 
     private
+
+    # Whether +text+, the config as it was, is what the record says was last rendered.
+    def was_rendered?(name, text)
+      current = record(name)
+      !current.nil? && sha(text) == current.rendered_sha
+    end
 
     KINDS = %w[project worktree].freeze
     private_constant :KINDS
