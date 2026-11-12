@@ -3,13 +3,13 @@
 require "fileutils"
 
 module Workspace
-  # The agent daemon's pipeline and its work-coordinator traffic: a command typed into the first stage
-  # (or the Claude pane), each stage watched for its sentinel and handed on, steers (+inject+), and every
-  # status report stamped, retried, buffered while the coordinator is away and replayed when it is back.
+  # The agent daemon's pipeline and its work-coordinator traffic: a command typed into the first stage (or the
+  # Claude pane), each stage watched for its sentinel and handed on, steers (+inject+), the (re-)registrations,
+  # and every status report stamped, retried, buffered while the coordinator is away and replayed when it is back.
   #
-  # Poller threads and the accept loop both change the pollers, steers, pipeline state and report buffer,
-  # so those change under one state lock, held briefly and never across a delivery to a pane. Deliveries
-  # take turns under the daemon's delivery lock, taken before the state lock and never inside it.
+  # Poller threads and the accept loop both change the pollers, steers, pipeline state and report buffer, under
+  # one state lock held briefly and never across a delivery to a pane. Deliveries take turns under the daemon's
+  # delivery lock, taken before the state lock and never inside it.
   class PipelineDesk
     # How many times one status report is sent before it is buffered for replay.
     REPORT_ATTEMPTS = 3
@@ -30,12 +30,13 @@ module Workspace
     #   {Workspace::SentinelPoller} that watches a stage
     # @param stage_marks [#call] given a stage's timeout in seconds (nil for none), answers a fresh sentinel token and
     #   the stage's deadline (nil with no timeout) for a stage started now
+    # @param epoch_generator [#call] returns a fresh epoch for each re-registration
     # @param retry_backoff [Numeric] seconds to wait between status report retries (times the attempt number)
     # @param event_log [Workspace::EventLog, nil] records dispatches, stage completions and failures; nil records nothing
     # @param logger [Workspace::Logger] debug logger
     # @param error_output [IO] where failures and warnings are written
     def initialize(workspace:, session_name:, tmux:, config:, pipeline_config:, pipeline_state:, client:, delivery_lock:,
-      sentinel_poller_factory:, stage_marks:, retry_backoff: 0.5, event_log: nil, logger: Workspace::Logger.new, error_output: $stderr)
+      sentinel_poller_factory:, stage_marks:, epoch_generator:, retry_backoff: 0.5, event_log: nil, logger: Workspace::Logger.new, error_output: $stderr)
       @workspace = workspace
       @session_name = session_name
       @tmux = tmux
@@ -47,11 +48,12 @@ module Workspace
       @delivery_lock = delivery_lock
       @sentinel_poller_factory = sentinel_poller_factory
       @stage_marks = stage_marks
+      @epoch_generator = epoch_generator
       @retry_backoff = retry_backoff
       @event_log = event_log
       @logger = logger
       @error_output = error_output
-      @re_register = -> { false }
+      @re_register_warned = false
       @pollers = {}
       @sequences = Hash.new(0)
       @queued_steers = {}
@@ -62,14 +64,9 @@ module Workspace
       @state_lock = Mutex.new
     end
 
-    # @return [#call] re-registers the workspace when the coordinator restarted, answering true when it took
-    #   the registration (the buffered reports are then replayed)
-    attr_writer :re_register
-
-    # Picks up work the previous agent process left behind: a stage whose pane is alive gets its watch
-    # re-armed (its persisted token, or any sentinel for an entry without one; a passed deadline fails it
-    # on the first pass unless that pass finds its sentinel); one whose pane died is dropped, which tells
-    # the coordinator, through the registration, to reconcile it.
+    # Picks up work the previous agent process left behind: a stage whose pane is alive has its watch re-armed
+    # (its persisted token, or any sentinel without one; a passed deadline fails it on the first pass unless that
+    # pass finds its sentinel); one whose pane died is dropped, which the registration tells the coordinator.
     # @return [void]
     def recover_in_flight
       @pipeline_state.in_flight_refs.each do |ref|
@@ -91,8 +88,7 @@ module Workspace
       end
     end
 
-    # Registers the workspace with the coordinator at startup, through a client rebound to +wc_socket+
-    # when one is given.
+    # Registers the workspace with the coordinator at startup, through a client rebound to any +wc_socket+.
     # @param socket [String] the daemon's own socket path
     # @param epoch [String] this daemon's epoch
     # @param wc_socket [String, nil] a coordinator socket to use instead of the configured one
@@ -118,6 +114,19 @@ module Workspace
     def send_registration(socket:, epoch:)
       status_client.register(name: @workspace, socket: socket, pipeline: @pipeline_config.pipeline?(@workspace),
         epoch: epoch, in_flight: @pipeline_state.in_flight)
+    end
+
+    # Registers again (own socket, fresh epoch) after a coordinator restart or a socket rebind; warns once while
+    # refused and says once when it lands after that, so a coordinator left down does not spam the pane.
+    # @return [Boolean] true when the coordinator accepted the registration
+    def re_register
+      reply = send_registration(socket: @config.agent_socket_path(@workspace), epoch: @epoch_generator.call)
+      return registered_after_outage if reply["ok"]
+      warn_once("workspace agent: work-coordinator refused re-registration: #{reply["error"]}; will keep retrying")
+      false
+    rescue Workspace::Error => e
+      warn_once("workspace agent: could not re-register with work-coordinator: #{e.message}; will keep retrying")
+      false
     end
 
     # Tells the coordinator the daemon is going away.
@@ -149,10 +158,9 @@ module Workspace
       end
     end
 
-    # Delivers a command body to the first pipeline stage (told how to signal it is done), or the Claude
-    # pane with no pipeline. Text that never reached the pane is reported and answered "not_delivered", and
-    # its item dropped; text that may not have been submitted still starts the stage, with a warning,
-    # since sending it again would type it twice.
+    # Delivers a command body to the first pipeline stage (told how to signal it is done), or the Claude pane
+    # with no pipeline. Text that never reached the pane is reported, answered "not_delivered" and its item
+    # dropped; text that may not have been submitted still starts the stage, warned, as resending types it twice.
     # @param message [Hash] the parsed +command+ message
     # @param claude_pane [#call] answers the tmux target of the workspace's Claude pane
     # @return [Hash] the reply for the sender
@@ -207,14 +215,12 @@ module Workspace
       AgentProtocol.ok
     end
 
-    # Accepts a mid-pipeline steer: an urgent one interrupts the running stage, an ordinary one waits
-    # for the next stage.
+    # Accepts a mid-pipeline steer: an urgent one interrupts the running stage, an ordinary one waits for the next.
     # @param message [Hash] the parsed +inject+ message
     # @return [Hash] the reply for the sender
     def inject(message)
       ref = message["work_item_ref"]
-      # Held across the decision and the keystrokes, or a hand-off mid-inject could get C-c sent to a
-      # pane the work item has left.
+      # Held across the decision and the keystrokes, or a mid-inject hand-off could get C-c sent to a pane left.
       @delivery_lock.synchronize do
         urgent = nil
         decided = @state_lock.synchronize do
@@ -275,6 +281,18 @@ module Workspace
 
     private
 
+    def warn_once(message)
+      return if @re_register_warned
+      @re_register_warned = true
+      Warn.puts(@error_output, message)
+    end
+
+    def registered_after_outage
+      @error_output.puts "workspace agent: re-registered with work-coordinator" if @re_register_warned
+      @re_register_warned = false
+      true
+    end
+
     def pane_alive?(pane_index)
       @tmux.panes(@session_name).include?(pane_index)
     rescue => e
@@ -296,8 +314,7 @@ module Workspace
       !expected.nil? && expected != entry[:sentinel_token]
     end
 
-    # Interrupts the stage's pane, then types the steer, which carries no reporting instructions (the
-    # agent has them from its command).
+    # Interrupts the stage's pane, then types the steer (no reporting instructions: the agent has them already).
     def deliver_urgent_steer(entry, body)
       @tmux.send_key(@session_name, pane_target(entry[:pane_index]), "C-c")
       @tmux.deliver(@session_name, pane_target(entry[:pane_index]), body)
@@ -310,8 +327,7 @@ module Workspace
       index && stages[index + 1]
     end
 
-    # Frames the coordinator's ready-rendered reporting block (its text and whether to send it are the
-    # coordinator's). Only stage 1 sees it; later stages are seen through this desk's own reports.
+    # Frames the coordinator's ready-rendered reporting block; only stage 1 sees it (later ones: this desk reports).
     def reporting_text(message)
       instructions = message["reporting_instructions"]
       stripped = instructions.strip if instructions.is_a?(String)
@@ -319,19 +335,13 @@ module Workspace
     end
 
     # Pane N of window 0, the one window a workspace uses.
-    def pane_target(index)
-      "0.#{index}"
-    end
+    def pane_target(index) = "0.#{index}"
 
     # Never raises: {Workspace::EventLog#record} swallows write errors.
-    def log_activity(type, data)
-      @event_log&.record(type: type, project: @workspace, data: data)
-    end
+    def log_activity(type, data) = @event_log&.record(type: type, project: @workspace, data: data)
 
     # A one-shot entry to stamp a report on for work the pipeline does not track.
-    def untracked_entry(work_item_ref)
-      {work_item_ref: work_item_ref, workspace_name: @workspace}
-    end
+    def untracked_entry(work_item_ref) = {work_item_ref: work_item_ref, workspace_name: @workspace}
 
     # Arms the watch for a stage started outside the lock, unless the item has since moved on.
     def arm_watch(work_item_ref, pane, token, deadline, timeout)
@@ -370,9 +380,9 @@ module Workspace
       "#{seconds}s"
     end
 
-    # Hands the finished stage's output to the next stage, or reports the item complete. Only the poller
-    # watching the item may move it. The next watch is armed after the reports, so the coordinator hears
-    # the hand-off first; a hand-off that raises fails the item, since nothing else would look again.
+    # Hands the finished stage's output to the next stage, or reports the item complete; only its poller may move
+    # it. The next watch is armed after the reports, so the coordinator hears the hand-off first; a hand-off that
+    # raises fails the item, since nothing else would look again.
     def advance_pipeline(work_item_ref, summary, poller)
       entry, next_stage, from_pane, next_watch, steer_failures =
         @delivery_lock.synchronize { advance_state(work_item_ref, poller) }
@@ -397,10 +407,9 @@ module Workspace
       fail_pipeline(work_item_ref, e.message, watched_by: poller)
     end
 
-    # Moves the item onto its next stage (or off the pipeline), under the delivery lock; answers the entry,
-    # next stage, pane left, arm_watch arguments (nil after the last) and failed steers' reports, or nil
-    # when +poller+ no longer watches it. The state lock is held to decide and to commit, the panes typed
-    # between; the old poller stays registered until the next watch replaces it.
+    # Moves the item onto its next stage (or off the pipeline), under the delivery lock; answers the entry, next
+    # stage, pane left, arm_watch arguments (nil after the last) and failed steers' reports, or nil when +poller+
+    # no longer watches it. The state lock is held to decide and to commit, the panes typed between.
     def advance_state(work_item_ref, poller)
       entry, next_stage, steers = @state_lock.synchronize do
         next unless @pollers[work_item_ref].equal?(poller)
@@ -460,8 +469,8 @@ module Workspace
       end
     end
 
-    # Where the previous stage's output is and how to signal done; the token is fresh per stage, so a
-    # stage that prints its context (holding the old sentinel) does not end itself.
+    # Where the previous stage's output is and how to signal done; a fresh token per stage, so printing the
+    # context (holding the old sentinel) does not end the stage.
     def handoff_instructions(role, handoff_path, token)
       "You are the #{role} stage. Context from the previous stage: #{handoff_path}\n" \
         "#{SentinelPoller.instruction(token)}"
@@ -476,12 +485,9 @@ module Workspace
       path
     end
 
-    def path_safe(value)
-      value.to_s.gsub(/[^A-Za-z0-9_-]/, "_")
-    end
+    def path_safe(value) = value.to_s.gsub(/[^A-Za-z0-9_-]/, "_")
 
-    # Stamps a payload with the item's next message id and sequence, then sends it; an unreachable
-    # coordinator buffers it rather than take the pipeline down.
+    # Stamps a payload with the item's next message id and sequence and sends it; unreachable, it is buffered.
     def report(entry, payload)
       # Stamped once: a retry is the same report, with the same id and sequence.
       full_payload = stamp(entry).merge(payload)
@@ -554,7 +560,7 @@ module Workspace
       @logger.debug { "work-coordinator restarted (epoch #{@wc_epoch.inspect} -> #{epoch.inspect}); re-registering" }
       @wc_epoch = epoch
       # The drain waits on a good registration, or it would burn the buffer.
-      if @re_register.call
+      if re_register
         @state_lock.synchronize { @coordinator_unavailable = false }
         drain_pending_reports
       end
@@ -586,9 +592,7 @@ module Workspace
       end
     end
 
-    def status_client
-      @client || @work_coordinator_client
-    end
+    def status_client = @client || @work_coordinator_client
 
     def rebind_client(wc_socket)
       WorkCoordinatorClient.new(socket_path: wc_socket, status_socket_path: @work_coordinator_client.status_socket_path, logger: @logger)

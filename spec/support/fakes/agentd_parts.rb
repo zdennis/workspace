@@ -184,26 +184,34 @@ class RecordingPipelineState
 end
 
 # Fake of Workspace::WorkCoordinatorClient: records registrations and reports, answers +register_reply+ and
-# the +replies+ in turn (the last repeating), and raises Workspace::Error for the first +failures+ reports.
+# the +replies+ in turn (the last repeating), and raises Workspace::Error for the first +register_failures+
+# registrations and the first +failures+ reports.
 class RecordingCoordinatorClient
-  CONTROL_METHODS = %i[calls reports registrations replies=].freeze
+  CONTROL_METHODS = %i[calls reports registrations replies= register_reply= register_failures=].freeze
 
   attr_reader :calls, :status_socket_path
-  attr_writer :replies
+  attr_writer :replies, :register_reply, :register_failures
 
   # @param register_reply [Hash] what each +register+ answers
   # @param replies [Array<Hash>] what the reports answer in turn
   # @param failures [Integer] how many reports fail before one is answered
-  def initialize(register_reply: {"ok" => true, "epoch" => "wc-1"}, replies: [{"ok" => true}], failures: 0, status_socket_path: "/tmp/wc-status.sock")
+  # @param register_failures [Integer] how many registrations fail before one is answered
+  def initialize(register_reply: {"ok" => true, "epoch" => "wc-1"}, replies: [{"ok" => true}], failures: 0, register_failures: 0,
+    status_socket_path: "/tmp/wc-status.sock")
     @register_reply = register_reply
     @replies = replies.dup
     @failures = failures
+    @register_failures = register_failures
     @status_socket_path = status_socket_path
     @calls = []
   end
 
   def register(name:, socket:, pipeline:, epoch:, in_flight: [], pid: Process.pid)
     @calls << [:register, {name: name, socket: socket, pipeline: pipeline, epoch: epoch, in_flight: in_flight}]
+    if @register_failures.positive?
+      @register_failures -= 1
+      raise Workspace::Error, "connection refused"
+    end
     @register_reply
   end
 

@@ -25,7 +25,7 @@ RSpec.describe "Workspace.build_agentd_parts" do
   end
   let(:registry) { Workspace::RestartRegistry.new }
   let(:per_workspace) do
-    {workspace: "ws", session_name: "ws", delivery_lock: Mutex.new, registry: registry, recovering: ->(_pane_id) { false }}
+    {workspace: "ws", session_name: "ws", delivery_lock: Mutex.new, registry: registry, epoch_generator: -> { "wa-1" }, recovering: ->(_pane_id) { false }}
   end
   let(:options) do
     {tmux: tmux, config: Workspace::Config.new, work_coordinator_client: RecordingCoordinatorClient.new,

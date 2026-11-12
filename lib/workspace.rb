@@ -582,8 +582,8 @@ module Workspace
   # @param logger [Workspace::Logger] debug logger
   # @param error_output [IO] where a restart worker's failure is written
   # @return [Proc] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+ (the
-  #   {Workspace::RestartRegistry}) and +recovering:+ (pane id to whether a recovery holds it), the frozen
-  #   {Workspace::AgentdParts}; +pipeline_desk:+ is one an earlier call built (nil builds one), and
+  #   {Workspace::RestartRegistry}), +epoch_generator:+ (the pipeline desk's fresh epoch for each re-registration)
+  #   and +recovering:+ (pane id to whether a recovery holds it), the frozen {Workspace::AgentdParts}; +pipeline_desk:+ is one an earlier call built (nil builds one), and
   #   +pipeline_only: true+ builds the pipeline desk alone (every other member nil), so the daemon can
   #   recover and register its pipeline before the rest are built
   def self.build_agentd_parts(tmux:, config:, work_coordinator_client:, pipeline_config:, session_monitor_factory:, event_log: nil, context_reader: nil, agent_restart_factory: nil,
@@ -597,11 +597,11 @@ module Workspace
         clock: clock, logger: logger, error_output: error_output)
     end
     stage_marks = ->(timeout) { [token_generator.call, timeout && clock.call + timeout] }
-    pipeline_desk_for = lambda do |workspace, session_name, delivery_lock|
+    pipeline_desk_for = lambda do |workspace, session_name, delivery_lock, epoch_generator|
       PipelineDesk.new(workspace: workspace, session_name: session_name, tmux: tmux, config: config, pipeline_config: pipeline_config,
         pipeline_state: pipeline_state || PipelineState.new(pipeline_config: pipeline_config, state_path: config.pipeline_state_path(workspace)),
         client: work_coordinator_client, delivery_lock: delivery_lock, sentinel_poller_factory: sentinel_poller_factory,
-        stage_marks: stage_marks, retry_backoff: retry_backoff, event_log: event_log, logger: logger, error_output: error_output)
+        stage_marks: stage_marks, epoch_generator: epoch_generator, retry_backoff: retry_backoff, event_log: event_log, logger: logger, error_output: error_output)
     end
     agent_restart_factory ||= ->(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:,
       delivery_facts: ->(_pane_id) {}, **proof) do
@@ -631,8 +631,8 @@ module Workspace
         typer: typer, delivery_lock: delivery_lock, restarting: restarting, event_log: event_log, logger: logger, **paused)
     end
 
-    lambda do |workspace:, session_name:, delivery_lock:, registry:, recovering:, pipeline_desk: nil, pipeline_only: false|
-      pipeline_desk ||= pipeline_desk_for.call(workspace, session_name, delivery_lock)
+    lambda do |workspace:, session_name:, delivery_lock:, registry:, epoch_generator:, recovering:, pipeline_desk: nil, pipeline_only: false|
+      pipeline_desk ||= pipeline_desk_for.call(workspace, session_name, delivery_lock, epoch_generator)
       next AgentdParts.new(pipeline_desk: pipeline_desk).freeze if pipeline_only
 
       pipeline_ref = pipeline_desk.method(:pipeline_ref_on)

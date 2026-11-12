@@ -8,7 +8,8 @@ RSpec.describe Workspace::PipelineDesk do
   let(:pipeline_state) { RecordingPipelineState.new(stages: stages) }
   let(:client) { RecordingCoordinatorClient.new }
   let(:tmux) { FakeTmux.new }
-  let(:config) { instance_double(Workspace::Config, handoff_dir: File.join(tmpdir, "handoffs")) }
+  let(:config) { instance_double(Workspace::Config, handoff_dir: File.join(tmpdir, "handoffs"), agent_socket_path: "/tmp/myapp.sock") }
+  let(:epochs) { %w[wa-2 wa-3 wa-4] }
   let(:now) { Time.utc(2026, 11, 11, 12) }
   let(:pollers) { [] }
   let(:events) { [] }
@@ -20,7 +21,7 @@ RSpec.describe Workspace::PipelineDesk do
     described_class.new(workspace: "myapp", session_name: "myapp-session", tmux: tmux, config: config,
       pipeline_config: pipeline_config, pipeline_state: pipeline_state, client: client, delivery_lock: Mutex.new,
       sentinel_poller_factory: ->(**given) { RecordingSentinelPoller.new(**given).tap { |poller| pollers << poller } },
-      stage_marks: ->(timeout) { ["tok-#{count += 1}", timeout && now + timeout] }, retry_backoff: 0,
+      stage_marks: ->(timeout) { ["tok-#{count += 1}", timeout && now + timeout] }, epoch_generator: -> { epochs.shift }, retry_backoff: 0,
       event_log: BlockEventLog.new { |type:, project:, data:| events << [type, project, data] }, error_output: error_output)
   end
 
@@ -62,7 +63,7 @@ RSpec.describe Workspace::PipelineDesk do
       pipeline_config = RecordingPipelineConfig.new
       desk = described_class.new(workspace: "myapp", session_name: "myapp-session", tmux: tmux, config: config,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state, client: client, delivery_lock: Mutex.new,
-        sentinel_poller_factory: ->(**) { raise "no watch" }, stage_marks: ->(_) { raise "no marks" }, retry_backoff: 0)
+        sentinel_poller_factory: ->(**) { raise "no watch" }, stage_marks: ->(_) { raise "no marks" }, epoch_generator: -> { "wa-1" }, retry_backoff: 0)
 
       expect(desk.command(command, claude_pane: claude_pane)).to eq("ok" => true)
       expect(tmux.sent_keys).to eq([{session: "myapp-session", pane: "0.3", text: "do it", enter: true}])
@@ -262,7 +263,7 @@ RSpec.describe Workspace::PipelineDesk do
       client = RecordingCoordinatorClient.new(register_reply: {"ok" => false, "error" => "name taken"})
       desk = described_class.new(workspace: "myapp", session_name: "myapp-session", tmux: tmux, config: config,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state, client: client, delivery_lock: Mutex.new,
-        sentinel_poller_factory: ->(**) {}, stage_marks: ->(_) {}, error_output: error_output)
+        sentinel_poller_factory: ->(**) {}, stage_marks: ->(_) {}, epoch_generator: -> { "wa-1" }, error_output: error_output)
 
       expect(desk.register(socket: "/tmp/ws.sock", epoch: "wa-1")).to be(false)
       expect(error_output.string).to eq("Could not register with work-coordinator: name taken\n")
@@ -303,7 +304,7 @@ RSpec.describe Workspace::PipelineDesk do
       desk = described_class.new(workspace: "myapp", session_name: "myapp-session", tmux: tmux, config: config,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state, client: client, delivery_lock: Mutex.new,
         sentinel_poller_factory: ->(**) { RecordingSentinelPoller.new(session_name: "s", pane: 1, token: "t", deadline: nil) },
-        stage_marks: ->(_) { ["t", nil] }, retry_backoff: 0, error_output: error_output)
+        stage_marks: ->(_) { ["t", nil] }, epoch_generator: -> { "wa-1" }, retry_backoff: 0, error_output: error_output)
 
       desk.command(command, claude_pane: claude_pane)
 
@@ -336,27 +337,66 @@ RSpec.describe Workspace::PipelineDesk do
     end
   end
 
-  describe "#re_register=" do
-    let(:client) { RecordingCoordinatorClient.new(failures: 3, replies: [{"ok" => true, "action" => "reregister", "epoch" => "wc-2"}, {"ok" => true}]) }
+  describe "#re_register" do
+    it "registers at the daemon's socket under a fresh epoch and answers true" do
+      expect(desk.re_register).to be(true)
+      expect(desk.re_register).to be(true)
 
-    it "is asked to re-register when the coordinator says so, and the held reports are replayed once it is taken" do
-      asked = []
-      desk.re_register = -> { asked << :again }
-      desk.command(command, claude_pane: claude_pane)
-
-      desk.report_progress("WC-1", "after the restart")
-
-      expect(asked).to eq([:again])
-      expect(client.reports.map { |report| report["message_id"] }).to eq(%w[m-1 m-1 m-1 m-2 m-1])
+      expect(client.registrations.map { |registration| registration.slice(:name, :socket, :epoch) })
+        .to eq([{name: "myapp", socket: "/tmp/myapp.sock", epoch: "wa-2"}, {name: "myapp", socket: "/tmp/myapp.sock", epoch: "wa-3"}])
+      expect(error_output.string).to be_empty
     end
 
-    it "keeps the held reports when the re-registration is refused" do
-      desk.re_register = -> { false }
-      desk.command(command, claude_pane: claude_pane)
+    it "warns once while the coordinator cannot be reached, then says once that it re-registered" do
+      client.register_failures = 2
 
-      desk.report_progress("WC-1", "after the restart")
+      expect([desk.re_register, desk.re_register, desk.re_register, desk.re_register]).to eq([false, false, true, true])
+      expect(error_output.string).to eq("workspace agent: could not re-register with work-coordinator: connection refused; will keep retrying\n" \
+                                        "workspace agent: re-registered with work-coordinator\n")
+    end
 
-      expect(client.reports.map { |report| report["message_id"] }).to eq(%w[m-1 m-1 m-1 m-2])
+    it "warns once while the coordinator refuses, then says once that it re-registered" do
+      client.register_reply = {"ok" => false, "error" => "name taken"}
+
+      expect([desk.re_register, desk.re_register]).to eq([false, false])
+      client.register_reply = {"ok" => true}
+      expect(desk.re_register).to be(true)
+
+      expect(error_output.string).to eq("workspace agent: work-coordinator refused re-registration: name taken; will keep retrying\n" \
+                                        "workspace agent: re-registered with work-coordinator\n")
+    end
+
+    it "warns again after an outage that follows a registration" do
+      client.register_failures = 1
+      desk.re_register
+      desk.re_register
+      client.register_failures = 1
+      desk.re_register
+
+      expect(error_output.string.scan("could not re-register").size).to eq(2)
+    end
+
+    context "when the coordinator answers a report with reregister" do
+      let(:client) { RecordingCoordinatorClient.new(failures: 3, replies: [{"ok" => true, "action" => "reregister", "epoch" => "wc-2"}, {"ok" => true}]) }
+
+      it "re-registers and replays the held reports once the registration is taken" do
+        desk.command(command, claude_pane: claude_pane)
+
+        desk.report_progress("WC-1", "after the restart")
+
+        expect(client.registrations.map { |registration| registration[:epoch] }).to eq(["wa-2"])
+        expect(client.reports.map { |report| report["message_id"] }).to eq(%w[m-1 m-1 m-1 m-2 m-1])
+      end
+
+      it "keeps the held reports when the re-registration is refused, and warns once" do
+        client.register_reply = {"ok" => false, "error" => "name taken"}
+        desk.command(command, claude_pane: claude_pane)
+
+        desk.report_progress("WC-1", "after the restart")
+
+        expect(client.reports.map { |report| report["message_id"] }).to eq(%w[m-1 m-1 m-1 m-2])
+        expect(error_output.string.scan("refused re-registration").size).to eq(1)
+      end
     end
   end
 end

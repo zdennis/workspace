@@ -52,20 +52,6 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
-    context "with a fast socket poll" do
-      let(:socket_poll_interval) { 0.1 }
-
-      it "warns once while the coordinator is down, then announces the later registration" do
-        run_agent do
-          wait_until { error_output.string.include?("could not re-register with work-coordinator") }
-          coordinator.start
-          wait_until { error_output.string.include?("workspace agent: re-registered with work-coordinator") }
-        end
-
-        expect(error_output.string.scan("could not re-register with work-coordinator").size).to eq(1)
-      end
-    end
-
     context "when the workspace has a pipeline configured" do
       before do
         File.write(project_config_path, <<~YAML)

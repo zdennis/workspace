@@ -23,10 +23,11 @@ module Workspace
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
       # @param pipeline_config [Workspace::PipelineConfig] per-project pipeline configuration, checked at startup
-      # @param epoch_generator [#call] returns a new epoch string
+      # @param epoch_generator [#call] returns a new epoch string, for the registration and (through the parts) each
+      #   re-registration
       # @param signal_trapper [#trap] receives SIGTERM/SIGINT handler registration
-      # @param parts [#call] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+, +recovering:+ and
-      #   +pipeline_desk:+ (or +pipeline_only: true+), builds the {Workspace::AgentdParts} of the workspace served,
+      # @param parts [#call] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+, +epoch_generator:+,
+      #   +recovering:+ and +pipeline_desk:+ (or +pipeline_only: true+), builds the {Workspace::AgentdParts} of the workspace served,
       #   none of them started ({Workspace.build_agentd_parts} returns it)
       # @param clock [#call] returns the current Time, for when a turn began
       # @param event_log [Workspace::EventLog, nil] records the daemon's start and stop; nil records nothing
@@ -79,7 +80,6 @@ module Workspace
         # When the main agent's current turn began, by pane id, for the workflow nudger.
         @turn_starts = {}
         @event_log = event_log
-        @re_register_warned = false
         @shutting_down = false
         @shutdown_signal = Queue.new
         @server = nil
@@ -244,14 +244,12 @@ module Workspace
       # The parts builder's call for the workspace served; +extra+ is +pipeline_desk:+ or +pipeline_only:+.
       def build_parts(**extra)
         @parts.call(workspace: @current_name, session_name: @tmux_session, delivery_lock: @delivery_lock,
-          registry: @restarts, recovering: ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false }, **extra)
+          registry: @restarts, epoch_generator: @epoch_generator, recovering: ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false }, **extra)
       end
 
-      # Builds the served workspace's pipeline desk, which asks this daemon to re-register when the
-      # coordinator restarts.
+      # Builds the served workspace's pipeline desk.
       def build_pipeline_desk
         @pipeline_desk = build_parts(pipeline_only: true).pipeline_desk
-        @pipeline_desk.re_register = method(:re_register)
       end
 
       # Routes a parsed message, ignoring anything addressed to another workspace.
@@ -515,38 +513,9 @@ module Workspace
             # Retry re_register each cycle until it succeeds — if it failed
             # after a rebind (e.g. coordinator was also down), the coordinator
             # has no record of our socket and will never dispatch work to us.
-            needs_registration = !re_register if needs_registration
+            needs_registration = !@pipeline_desk.re_register if needs_registration
           end
         end
-      end
-
-      # Retries are quiet after the first warning, and a registration that
-      # lands after one says so once, so a coordinator left down does not
-      # spam the pane.
-      #
-      # @return [Boolean] true when the coordinator accepted the registration
-      def re_register
-        reply = @pipeline_desk.send_registration(socket: @config.agent_socket_path(@current_name), epoch: @epoch_generator.call)
-        return registered_after_outage if reply["ok"]
-
-        warn_once("workspace agent: work-coordinator refused re-registration: #{reply["error"]}; will keep retrying")
-        false
-      rescue Workspace::Error => e
-        warn_once("workspace agent: could not re-register with work-coordinator: #{e.message}; will keep retrying")
-        false
-      end
-
-      def warn_once(message)
-        return if @re_register_warned
-
-        @re_register_warned = true
-        Warn.puts(@error_output, message)
-      end
-
-      def registered_after_outage
-        @error_output.puts "workspace agent: re-registered with work-coordinator" if @re_register_warned
-        @re_register_warned = false
-        true
       end
 
       # Renames a mixed-case workspace to lowercase when no daemon answers for it,
