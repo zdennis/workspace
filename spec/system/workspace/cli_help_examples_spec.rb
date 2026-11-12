@@ -50,7 +50,7 @@ RSpec.describe "help pages end with examples" do
     {
       "daemon" => Workspace::CLI::DAEMON_SUBCOMMANDS,
       "library" => Workspace::CLI::LIBRARY_SUBCOMMANDS,
-      "workflow" => Workspace::CLI::WORKFLOW_SUBCOMMANDS
+      "workflow" => Workspace::CLI::Workflow::SUBCOMMANDS
     }.each do |command, verbs|
       expect(verbs - pages.filter_map { |p| p.delete_prefix("#{command} ") if p.start_with?("#{command} ") }).to eq([])
     end

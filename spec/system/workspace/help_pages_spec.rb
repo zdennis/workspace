@@ -58,7 +58,7 @@ RSpec.describe Workspace::HelpPages do
       )
       expect(pages["daemon"].keys).to match_array(Workspace::CLI::DAEMON_SUBCOMMANDS)
       expect(pages["library"].keys).to match_array(Workspace::CLI::LIBRARY_SUBCOMMANDS)
-      expect(pages["workflow"].keys).to match_array(Workspace::CLI::WORKFLOW_SUBCOMMANDS)
+      expect(pages["workflow"].keys).to match_array(Workspace::CLI::Workflow::SUBCOMMANDS)
     end
 
     it "name the verbs of the commands whose verbs are not in a constant" do

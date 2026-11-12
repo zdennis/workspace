@@ -4,11 +4,16 @@ require "stringio"
 RSpec.describe "CLITestHelpers.build_cli" do
   let(:out) { StringIO.new }
 
-  it "builds Workspace::CLI.new from exactly the keywords given when one of them is the CLI's own" do
-    keywords = {lineage: LineageSupport.lineage, output: out, error_output: StringIO.new}
-    expect(Workspace::CLI).to receive(:new).with(**keywords).and_return(:cli)
+  it "builds Workspace::CLI.new from the keywords given, with the parts build_cli makes, when one of them is the CLI's own" do
+    keywords = {lineage: LineageSupport.lineage, output: out, error_output: StringIO.new, working_dir: "/src/app"}
+    given = nil
+    expect(Workspace::CLI).to receive(:new) { |**kw| given = kw }.and_return(:cli)
 
     expect(CLITestHelpers.build_cli(**keywords)).to eq(:cli)
+    expect(given.slice(:output, :error_output, :working_dir)).to eq(keywords.slice(:output, :error_output, :working_dir))
+    expect(given).not_to have_key(:lineage)
+    expect([given[:common], given[:names], given[:launcher], given[:families][:workflow]].map(&:class))
+      .to eq([Workspace::CLI::Common, Workspace::CLI::Names, Workspace::CLI::Launcher, Workspace::CLI::Workflow])
   end
 
   it "builds through Workspace.build_cli, forwarding osascript:, ui_osascript: and workflow_source_runner:, given only its keywords" do

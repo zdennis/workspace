@@ -11,16 +11,35 @@ module CLITestHelpers
   # not every spec. Given only the streams and Workspace.build_cli's named overrides
   # (osascript:, ui_osascript:, workflow_source_runner:, tmux:, ...), it builds the production
   # graph through Workspace.build_cli, forwarding each. Given any other keyword (+lineage:+, a
-  # command, ...), it builds Workspace::CLI.new with exactly the keywords given. A
-  # Workspace.build_cli override beside a Workspace::CLI.new keyword is an ArgumentError, since
-  # one of them would be dropped.
+  # command, ...), it builds Workspace::CLI.new from the keywords given, with the parts
+  # build_cli would make from them (see .cli_parts). A Workspace.build_cli override beside a
+  # Workspace::CLI.new keyword is an ArgumentError, since one of them would be dropped.
   def self.build_cli(**keywords)
     return Workspace.build_cli(**keywords) if (keywords.keys - STREAM_KEYWORDS - BUILD_CLI_OVERRIDES).empty?
 
     overrides = keywords.keys & BUILD_CLI_OVERRIDES
     raise ArgumentError, "Workspace::CLI.new does not take #{overrides.join(", ")}" if overrides.any?
 
-    Workspace::CLI.new(**keywords)
+    Workspace::CLI.new(**cli_parts(**keywords))
+  end
+
+  # The keywords given, as Workspace::CLI.new takes them: +lineage:+ goes to the CLI::Names it
+  # builds, and +workflow_command:+ and +workflow_project:+ to the CLI::Workflow family, as
+  # build_cli wires them; CLI::Common and CLI::Launcher are built over the same keywords.
+  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, **keywords)
+    keywords[:working_dir] ||= Dir.pwd
+    keywords[:launch_mode] ||= Workspace::LaunchMode.new(project_settings: keywords[:project_settings])
+    keywords[:input] ||= $stdin
+    common = Workspace::CLI::Common.new
+    names = Workspace::CLI::Names.new(project_config: keywords[:project_config], project_detector: keywords[:project_detector], lineage: lineage,
+      working_dir: keywords[:working_dir], workspace_name: keywords[:workspace_name])
+    launcher = Workspace::CLI::Launcher.new(project_config: keywords[:project_config], launch_command: keywords[:launch_command], launch_mode: keywords[:launch_mode],
+      state: keywords[:state], project_settings: keywords[:project_settings], hook_runner: keywords[:hook_runner], common: common, working_dir: keywords[:working_dir],
+      library: keywords[:library], instruction_composer: keywords[:instruction_composer], name_migration: keywords[:name_migration])
+    workflow = Workspace::CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: keywords[:workflow_start_command], workflow_project: workflow_project,
+      status_scope: keywords[:status_scope], config: keywords[:config], project_config: keywords[:project_config], project_detector: keywords[:project_detector],
+      git: keywords[:git], launch_mode: keywords[:launch_mode], common: common, names: names, input: keywords[:input], working_dir: keywords[:working_dir])
+    keywords.merge(common: common, names: names, launcher: launcher, families: {workflow: workflow})
   end
 
   # A LaunchMode whose automatic choice is fixed, so specs never depend on the
@@ -893,7 +912,7 @@ module CLITestHelpers
       @row = {"workspace" => "app", "outcome" => "started", "reason" => nil, "message" => nil, "run" => {"id" => "wr_1", "state" => "running"}}
     end
 
-    %i[show validate status events files attempts advance step_status].each do |name|
+    %i[show validate render simulate status events files attempts advance step_status].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error
@@ -921,6 +940,13 @@ module CLITestHelpers
     def check(**kw)
       @calls << [:check, kw]
       {exit_code: 0}
+    end
+
+    %i[stats compare audit].each do |name|
+      define_method(name) do |**kw|
+        @calls << [name, kw]
+        {exit_code: 0}
+      end
     end
 
     def check_removable(**kw)

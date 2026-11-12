@@ -394,6 +394,18 @@ RSpec.describe "fake contracts" do
     end
   end
 
+  describe "the CLI workflow family's fakes" do
+    {
+      RecordingWorkflowProject => Workspace::WorkflowProject,
+      RecordingStatusScope => Workspace::StatusScope,
+      RecordingProjectDetector => Workspace::ProjectDetector
+    }.each do |fake, real|
+      it "holds #{fake} to every call #{real.name.delete_prefix("Workspace::")} accepts" do
+        expect(FakeContract.problems(fake, real, control: fake::CONTROL_METHODS)).to be_empty
+      end
+    end
+  end
+
   describe "the CLI's fake commands" do
     {
       CLITestHelpers::FakeAgentCommand => Workspace::Commands::Agent,

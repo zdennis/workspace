@@ -60,6 +60,36 @@ RSpec.describe Workspace::CLI::Common do
     end
   end
 
+  describe "#run_row_action" do
+    it "prints the row as the one result and exits 1 when it failed" do
+      status = exit_status { common.run_row_action(invocation, "workflow run", json: true) { {"workspace" => "app", "outcome" => "failed"} } }
+
+      expect(status).to eq(1)
+      expect(JSON.parse(out.string)).to include("action" => "workflow run", "status" => "failed", "results" => [{"workspace" => "app", "outcome" => "failed"}])
+    end
+
+    it "marks a dry_run row and reports a nil row as cancelled" do
+      common.run_row_action(invocation, "workflow run", json: true) { {"workspace" => "app", "outcome" => "dry_run"} }
+      common.run_row_action(invocation, "workflow remove", json: true) { nil }
+
+      expect(out.string.lines.map { |line| JSON.parse(line)["status"] }).to eq(["dry_run", "cancelled"])
+    end
+  end
+
+  describe "#refuse_bad_bytes!" do
+    it "retags the arguments as UTF-8" do
+      args = ["caf\xC3\xA9".b]
+      common.refuse_bad_bytes!(args)
+
+      expect(args.first.encoding).to eq(Encoding::UTF_8)
+    end
+
+    it "names the flag before an argument that is not valid UTF-8, else says an argument" do
+      expect { common.refuse_bad_bytes!(["--note", "\xFF".b]) }.to raise_error(Workspace::UsageError, /\A--note holds bytes that are not valid UTF-8 text/)
+      expect { common.refuse_bad_bytes!(["\xFF".b]) }.to raise_error(Workspace::UsageError, /\AAn argument holds bytes/)
+    end
+  end
+
   describe "#exit_code_row" do
     it "answers the ok outcome on 0, else a failed row carrying the code" do
       expect(common.exit_code_row("app", "released", 0, lock: "edit"))

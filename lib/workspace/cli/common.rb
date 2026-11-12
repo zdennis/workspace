@@ -43,6 +43,40 @@ module Workspace
         invocation.exit_handler.exit(exit_code) unless exit_code.zero?
       end
 
+      # {#run_action} for a command that answers one row (or nil, when a prompt was declined):
+      # that row is the one result, a `failed` outcome exits 1 and a `dry_run` one is the
+      # document's status; nil is a `cancelled` document with no rows.
+      #
+      # @param invocation [Invocation]
+      # @param action [String] the verb in the document, e.g. "workflow run"
+      # @param json [Boolean] whether `--json` was given
+      # @yieldreturn [Hash, nil] the command's row
+      # @return [void]
+      def run_row_action(invocation, action, json:)
+        run_action(invocation, action, json: json) do
+          row = yield
+          next {exit_code: 0, results: [], status: "cancelled"} unless row
+          {exit_code: (row["outcome"] == "failed") ? 1 : 0, results: [row], status: (row["outcome"] == "dry_run") ? "dry_run" : nil}
+        end
+      end
+
+      # Text that is not valid in its encoding can't be parsed as an option or stored in a
+      # run's file; it is refused here, before a pane is typed into or a lock taken.
+      # Arguments are read as UTF-8 whatever the locale: with none (cron, an app started by
+      # launchd) Ruby tags them binary, which calls any bytes valid and can't be joined
+      # with a definition's text.
+      #
+      # @param args [Array<String>] retagged as UTF-8 in place
+      # @return [void]
+      # @raise [Workspace::UsageError] naming the flag before the first invalid argument
+      def refuse_bad_bytes!(args)
+        args.map! { |arg| arg.dup.force_encoding(Encoding::UTF_8) }
+        index = args.index { |arg| !arg.valid_encoding? }
+        return unless index
+        flag = (index.positive? && args[index - 1].start_with?("--")) ? args[index - 1] : "An argument"
+        raise UsageError, "#{flag} holds bytes that are not valid UTF-8 text (was it cut in the middle of a character?)."
+      end
+
       # Sends what collaborators print to stderr while the block runs, so stdout
       # stays free for one JSON document. A plain stream (a test double) is left alone.
       #

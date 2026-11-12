@@ -467,7 +467,7 @@ RSpec.describe Workspace::ShellInit do
   describe "completion" do
     let(:ids_file) { File.join(sandbox, "ids") }
     let(:subcommands) { Workspace::CLI::SUBCOMMANDS }
-    let(:verbs) { Workspace::CLI::WORKFLOW_SUBCOMMANDS - ["advance"] }
+    let(:verbs) { Workspace::CLI::Workflow::SUBCOMMANDS - ["advance"] }
     let(:id_env) { {"WF_SHOW" => ids_file} }
 
     before do
