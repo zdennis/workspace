@@ -177,6 +177,12 @@ RSpec.describe "fake contracts" do
     end
   end
 
+  describe FakeSentinelPoller do
+    it "accepts every call Workspace::SentinelPoller accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SentinelPoller, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
   describe RecordingRestartMonitor do
     it "accepts every call Workspace::SessionMonitor accepts" do
       expect(FakeContract.problems(described_class, Workspace::SessionMonitor, control: described_class::CONTROL_METHODS)).to be_empty
