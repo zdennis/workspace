@@ -12,6 +12,8 @@ module CLITestHelpers
   AGENT_RUN_FAMILY_KEYWORDS = %i[restart_agent_command send_command prompt_queue_command handoff_command].freeze
   # The keywords .cli_parts gives the CLI::Pipeline family instead of Workspace::CLI.new.
   PIPELINE_FAMILY_KEYWORDS = %i[clock].freeze
+  # The commands .cli_parts gives the CLI::PlanSpine family instead of Workspace::CLI.new.
+  PLAN_SPINE_FAMILY_KEYWORDS = %i[plan_command plan_dispatch_command plan_task_command spine_command spine_init_command spine_start_command goal_command].freeze
 
   # The one way a spec builds a CLI, so a change to the CLI's keywords touches this builder and
   # not every spec. Given only the streams and Workspace.build_cli's named overrides
@@ -33,13 +35,16 @@ module CLITestHelpers
   # builds, +workflow_command:+ and +workflow_project:+ to the CLI::Workflow family, and the agent
   # family's commands (AGENT_FAMILY_KEYWORDS) to CLI::Agent and the agent-run family's
   # (AGENT_RUN_FAMILY_KEYWORDS) to CLI::AgentRun, whose #prompt CLI::Agent hands `agent run`, and
-  # the pipeline family's (PIPELINE_FAMILY_KEYWORDS) to CLI::Pipeline, as build_cli wires them;
+  # the pipeline family's (PIPELINE_FAMILY_KEYWORDS) to CLI::Pipeline, and the plan and spine
+  # family's (PLAN_SPINE_FAMILY_KEYWORDS) to CLI::PlanSpine, which shares +status_scope:+ with
+  # CLI::Workflow, as build_cli wires them;
   # CLI::Common, CLI::Launcher and the AgentMessageClient the agent-run and pipeline families
   # share (unless given as +agent_client:+) are built over the same keywords.
-  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_client: nil, **keywords)
+  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_client: nil, status_scope: nil, **keywords)
     agent_commands = AGENT_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
     agent_run_commands = AGENT_RUN_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
     pipeline_keywords = PIPELINE_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }.compact
+    plan_spine_commands = PLAN_SPINE_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
     agent_client ||= Workspace::AgentMessageClient.new(config: keywords[:config])
     keywords[:working_dir] ||= Dir.pwd
     keywords[:launch_mode] ||= Workspace::LaunchMode.new(project_settings: keywords[:project_settings])
@@ -51,14 +56,16 @@ module CLITestHelpers
       state: keywords[:state], project_settings: keywords[:project_settings], hook_runner: keywords[:hook_runner], common: common, working_dir: keywords[:working_dir],
       library: keywords[:library], instruction_composer: keywords[:instruction_composer], name_migration: keywords[:name_migration])
     workflow = Workspace::CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: keywords[:workflow_start_command], workflow_project: workflow_project,
-      status_scope: keywords[:status_scope], config: keywords[:config], project_config: keywords[:project_config], project_detector: keywords[:project_detector],
+      status_scope: status_scope, config: keywords[:config], project_config: keywords[:project_config], project_detector: keywords[:project_detector],
       git: keywords[:git], launch_mode: keywords[:launch_mode], common: common, names: names, input: keywords[:input], working_dir: keywords[:working_dir])
     agent_run = Workspace::CLI::AgentRun.new(**agent_run_commands, config: keywords[:config], agent_client: agent_client,
       project_detector: keywords[:project_detector], common: common, names: names, working_dir: keywords[:working_dir])
     agent = Workspace::CLI::Agent.new(**agent_commands, agent_run: ->(args, invocation) { agent_run.prompt(args, invocation) }, project_detector: keywords[:project_detector], common: common, names: names,
       working_dir: keywords[:working_dir])
     pipeline = Workspace::CLI::Pipeline.new(**pipeline_keywords, config: keywords[:config], agent_client: agent_client, common: common, names: names)
-    keywords.merge(common: common, names: names, launcher: launcher, families: {workflow: workflow, agent: agent, agent_run: agent_run, pipeline: pipeline})
+    plan_spine = Workspace::CLI::PlanSpine.new(**plan_spine_commands, status_scope: status_scope, project_detector: keywords[:project_detector], launcher: launcher,
+      common: common, names: names, working_dir: keywords[:working_dir])
+    keywords.merge(common: common, names: names, launcher: launcher, families: {workflow: workflow, agent: agent, agent_run: agent_run, pipeline: pipeline, plan_spine: plan_spine})
   end
 
   # A LaunchMode whose automatic choice is fixed, so specs never depend on the
@@ -1309,6 +1316,49 @@ module CLITestHelpers
         agent_executables_command: overrides[:agent_executables_command],
         **AGENT_RUN_FAMILY_KEYWORDS.to_h { |key| [key, overrides[key]] },
         **PIPELINE_FAMILY_KEYWORDS.to_h { |key| [key, overrides[key]] }.compact,
+        logger: Workspace::Logger.new(output: error_output),
+        output: output,
+        error_output: error_output,
+        exit_handler: FakeExitHandler,
+        input: input,
+        working_dir: overrides[:working_dir] || Dir.tmpdir,
+        sleeper: ->(_) {},
+        launch_mode: CLITestHelpers.launch_mode(headless: false),
+        env: {},
+        **unused
+      )
+      [cli, output, error_output]
+    end
+  end
+
+  # The plan and spine family's CLI over fake commands, for the plan, spine and goal CLI specs.
+  # Include it in a group that needs it.
+  module PlanSpineFamilyCli
+    # A CLI with only the plan and spine family's collaborators: the commands no plan, spine or
+    # goal verb reaches are nil.
+    def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
+      state = CLITestHelpers::FakeState.new
+      project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
+      project_detector = overrides[:project_detector] || Workspace::ProjectDetector.new(state: state, project_config: project_config)
+      status_scope = Workspace::StatusScope.new(project_detector: project_detector, catalog: overrides[:project_catalog] || CLITestHelpers::FakeStatusCatalog.new)
+      unused = %i[launch_command kill_command finish_command start_command stop_command focus_command tile_command layout_command resize_command
+        init_command repair_command cleanup_command prune_command claude_command lookup_command update_pane_command run_command run_result_store
+        run_and_report_command capture_command wait_until_content_command lock_command dev_command parent_command agent_command sessions_command
+        session_event_command config_command statusline_command ask_command].to_h { |key| [key, nil] }
+
+      cli = CLITestHelpers.build_cli(
+        config: Workspace::Config.new,
+        state: state,
+        project_config: project_config,
+        git: FakeGit.new,
+        window_manager: CLITestHelpers::FakeWindowManager.new,
+        doctor: CLITestHelpers::FakeDoctor.new,
+        project_settings: CLITestHelpers::FakeProjectSettings.new,
+        hook_runner: CLITestHelpers::FakeHookRunner.new,
+        project_detector: project_detector,
+        status_scope: status_scope,
+        lineage: CLITestHelpers::FakeLineage.new,
+        **PLAN_SPINE_FAMILY_KEYWORDS.to_h { |key| [key, overrides[key]] },
         logger: Workspace::Logger.new(output: error_output),
         output: output,
         error_output: error_output,

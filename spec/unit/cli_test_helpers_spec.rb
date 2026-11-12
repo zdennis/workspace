@@ -12,8 +12,8 @@ RSpec.describe "CLITestHelpers.build_cli" do
     expect(CLITestHelpers.build_cli(**keywords)).to eq(:cli)
     expect(given.slice(:output, :error_output, :working_dir)).to eq(keywords.slice(:output, :error_output, :working_dir))
     expect(given).not_to have_key(:lineage)
-    expect([given[:common], given[:names], given[:launcher], given[:families][:workflow], given[:families][:agent], given[:families][:agent_run]].map(&:class))
-      .to eq([Workspace::CLI::Common, Workspace::CLI::Names, Workspace::CLI::Launcher, Workspace::CLI::Workflow, Workspace::CLI::Agent, Workspace::CLI::AgentRun])
+    expect([given[:common], given[:names], given[:launcher], given[:families][:workflow], given[:families][:agent], given[:families][:agent_run], given[:families][:plan_spine]].map(&:class))
+      .to eq([Workspace::CLI::Common, Workspace::CLI::Names, Workspace::CLI::Launcher, Workspace::CLI::Workflow, Workspace::CLI::Agent, Workspace::CLI::AgentRun, Workspace::CLI::PlanSpine])
   end
 
   it "builds through Workspace.build_cli, forwarding osascript:, ui_osascript: and workflow_source_runner:, given only its keywords" do

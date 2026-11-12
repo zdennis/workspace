@@ -493,6 +493,7 @@ require_relative "workspace/cli/workflow"
 require_relative "workspace/cli/agent"
 require_relative "workspace/cli/agent_run"
 require_relative "workspace/cli/pipeline"
+require_relative "workspace/cli/plan_spine"
 require_relative "workspace/cli"
 
 module Workspace
@@ -1264,12 +1265,15 @@ module Workspace
       agent_executables_command: agent_executables_command, agent_run: ->(args, invocation) { agent_run_family.prompt(args, invocation) },
       project_detector: project_detector, common: common, names: names, working_dir: working_dir)
     pipeline_family = CLI::Pipeline.new(config: config, agent_client: agent_client, common: common, names: names)
+    plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,
+      spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,
+      status_scope: status_scope, project_detector: project_detector, launcher: launcher, common: common, names: names, working_dir: working_dir)
 
     CLI.new(
       common: common,
       names: names,
       launcher: launcher,
-      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family},
+      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family},
       working_dir: working_dir,
       config: config,
       state: state,
@@ -1280,7 +1284,6 @@ module Workspace
       project_settings: project_settings,
       hook_runner: hook_runner,
       project_detector: project_detector,
-      status_scope: status_scope,
       workspace_name: workspace_name,
       launch_command: launch_command,
       kill_command: kill_command,
@@ -1310,14 +1313,8 @@ module Workspace
       parent_command: parent_command,
       notes_command: notes_command,
       notes_setup: notes_setup,
-      plan_command: plan_command,
-      plan_dispatch_command: plan_dispatch_command,
-      plan_task_command: plan_task_command,
       ticket_command: ticket_command,
       skills_command: skills_command,
-      spine_command: spine_command,
-      spine_init_command: spine_init_command,
-      spine_start_command: spine_start_command,
       pull_request_command: pull_request_command,
       rebase_command: rebase_command,
       push_command: push_command,
@@ -1335,7 +1332,6 @@ module Workspace
       go_command: go_command,
       restore_command: restore_command,
       snapshot_command: snapshot_command,
-      goal_command: goal_command,
       events_command: events_command,
       project_actions_command: project_actions_command,
       groups_command: groups_command,
