@@ -25,11 +25,12 @@ RSpec.describe "Workspace.build_agentd_parts" do
   end
   let(:registry) { Workspace::RestartRegistry.new }
   let(:per_workspace) do
-    {workspace: "ws", session_name: "ws", delivery_lock: Mutex.new, registry: registry, pipeline_ref: ->(_index) {},
-     recovering: ->(_pane_id) { false }}
+    {workspace: "ws", session_name: "ws", delivery_lock: Mutex.new, registry: registry, recovering: ->(_pane_id) { false }}
   end
   let(:options) do
-    {tmux: tmux, config: Workspace::Config.new, session_monitor_factory: ->(_workspace) { monitor }, event_log: event_log}
+    {tmux: tmux, config: Workspace::Config.new, work_coordinator_client: RecordingCoordinatorClient.new,
+     pipeline_config: RecordingPipelineConfig.new, pipeline_state: RecordingPipelineState.new,
+     session_monitor_factory: ->(_workspace) { monitor }, event_log: event_log}
   end
 
   def build(**given)
@@ -48,7 +49,7 @@ RSpec.describe "Workspace.build_agentd_parts" do
     events.select { |type, _| type == Workspace::EventLog::HANDOFF_FOLLOWUP }.map { |_, data| data["outcome"] }
   end
 
-  it "returns a builder that makes a frozen AgentdParts with its eleven members" do
+  it "returns a builder that makes a frozen AgentdParts with its twelve members" do
     builder = Workspace.build_agentd_parts(**options)
     expect(builder).to respond_to(:call)
 
@@ -57,15 +58,27 @@ RSpec.describe "Workspace.build_agentd_parts" do
     expect(parts).to be_a(Workspace::AgentdParts)
     expect(parts).to be_frozen
     expect(parts.members).to eq(%i[hook_event_log monitor restart_runner restart_desk plan_progress_watcher spine_owner_report
-      spine_watcher status_desk queue_desk recovery_desk handoff_watcher])
+      spine_watcher status_desk queue_desk recovery_desk handoff_watcher pipeline_desk])
     expect(parts.monitor).to equal(monitor)
     expect(parts.restart_runner).to be_a(Workspace::RestartRunner)
     expect(parts.restart_desk).to be_a(Workspace::AgentdRestartDesk)
     expect(parts.status_desk).to be_a(Workspace::AgentStatusDesk)
     expect(parts.queue_desk).to be_a(Workspace::PromptQueueDesk)
     expect(parts.handoff_watcher).to be_a(Workspace::HandoffWatcher)
+    expect(parts.pipeline_desk).to be_a(Workspace::PipelineDesk)
     expect(parts.hook_event_log).to be_nil
     expect(parts.recovery_desk).to be_nil
+  end
+
+  it "builds the pipeline desk alone with pipeline_only, and puts a desk it is given in its member" do
+    built = []
+    only = Workspace.build_agentd_parts(**options, session_monitor_factory: ->(_workspace) { built << :monitor })
+      .call(**per_workspace, pipeline_only: true)
+
+    expect(only.pipeline_desk).to be_a(Workspace::PipelineDesk)
+    expect(only.to_h.except(:pipeline_desk).values).to all(be_nil)
+    expect(built).to be_empty
+    expect(Workspace.build_agentd_parts(**options).call(**per_workspace, pipeline_desk: only.pipeline_desk).pipeline_desk).to equal(only.pipeline_desk)
   end
 
   it "puts what a part's factory builds in its member" do

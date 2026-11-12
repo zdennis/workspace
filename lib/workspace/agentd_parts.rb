@@ -25,6 +25,8 @@ module Workspace
   #   @return [Workspace::AgentRecoveryDesk, nil] recovers a failed turn; nil with recovery off
   # @!attribute [r] handoff_watcher
   #   @return [Workspace::HandoffWatcher] follows up on a stalled handoff
+  # @!attribute [r] pipeline_desk
+  #   @return [Workspace::PipelineDesk] runs coordinator commands through the pipeline and reports to the coordinator
   AgentdParts = Struct.new(:hook_event_log, :monitor, :restart_runner, :restart_desk, :plan_progress_watcher, :spine_owner_report,
-    :spine_watcher, :status_desk, :queue_desk, :recovery_desk, :handoff_watcher, keyword_init: true)
+    :spine_watcher, :status_desk, :queue_desk, :recovery_desk, :handoff_watcher, :pipeline_desk, keyword_init: true)
 end

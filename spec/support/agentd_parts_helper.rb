@@ -6,8 +6,9 @@ module AgentdPartsHelper
   PARTS_KEYWORDS = %i[tmux config session_monitor_factory event_log context_reader agent_restart_factory handoff_typer
     transcript_summary idle_prompt_check pane_bindings plan_paused_for hook_event_log_factory plan_progress_watcher_factory
     spine_watcher_factory spine_owner_report_factory agent_recovery_desk_factory agent_status_desk_factory
-    prompt_queue_desk_factory handoff_watcher_factory restart_runner_factory logger error_output].freeze
-  SHARED_KEYWORDS = %i[tmux config event_log logger error_output].freeze
+    prompt_queue_desk_factory handoff_watcher_factory restart_runner_factory work_coordinator_client pipeline_config
+    pipeline_state sentinel_poller_factory token_generator clock retry_backoff logger error_output].freeze
+  SHARED_KEYWORDS = %i[tmux config pipeline_config clock event_log logger error_output].freeze
 
   def build_agentd(**given)
     agent_given = given.reject { |key, _| PARTS_KEYWORDS.include?(key) && !SHARED_KEYWORDS.include?(key) }

@@ -200,4 +200,28 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::RestartRunner, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingPipelineConfig do
+    it "accepts every call Workspace::PipelineConfig accepts" do
+      expect(FakeContract.problems(described_class, Workspace::PipelineConfig, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingPipelineState do
+    it "accepts every call Workspace::PipelineState accepts" do
+      expect(FakeContract.problems(described_class, Workspace::PipelineState, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingCoordinatorClient do
+    it "accepts every call Workspace::WorkCoordinatorClient accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkCoordinatorClient, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingSentinelPoller do
+    it "accepts every call Workspace::SentinelPoller accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SentinelPoller, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end

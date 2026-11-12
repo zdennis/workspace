@@ -461,6 +461,7 @@ require_relative "workspace/pipeline_state"
 require_relative "workspace/sentinel_poller"
 require_relative "workspace/agentd_parts"
 require_relative "workspace/agentd_restart_desk"
+require_relative "workspace/pipeline_desk"
 require_relative "workspace/commands/agent"
 require_relative "workspace/run_result"
 require_relative "workspace/run_result_cleaner"
@@ -528,7 +529,9 @@ module Workspace
   # daemon specs build theirs through it. The builder only constructs; {Commands::Agent#call} starts the parts.
   #
   # @param tmux [Workspace::Tmux] the tmux adapter the desks' panes read and type through
-  # @param config [Workspace::Config] path configuration (the prompt queue file)
+  # @param config [Workspace::Config] path configuration (the prompt queue, pipeline state and hand-off files)
+  # @param work_coordinator_client [Workspace::WorkCoordinatorClient] the coordinator the pipeline desk registers and reports with
+  # @param pipeline_config [Workspace::PipelineConfig] per-project pipeline configuration
   # @param session_monitor_factory [#call] given the workspace name, builds its {Workspace::SessionMonitor}
   # @param event_log [Workspace::EventLog, nil] gets the desks' and the handoff watcher's events
   # @param context_reader [Workspace::ContextReader, nil] reads a pane's context use for the default {Workspace::AgentRestart}
@@ -569,16 +572,37 @@ module Workspace
   #   stalled handoff and takes `handoff_watch`; nil builds the real one
   # @param restart_runner_factory [#call, nil] given the session monitor, builds the {Workspace::RestartRunner};
   #   nil builds the real one
+  # @param pipeline_state [Workspace::PipelineState, nil] the pipeline desk's in-flight work items; nil builds one over
+  #   the workspace's persisted state file
+  # @param sentinel_poller_factory [#call, nil] given +session_name:+, +pane:+, +token:+ and +deadline:+, builds the
+  #   {Workspace::SentinelPoller} that watches a pipeline stage; nil builds the real one
+  # @param token_generator [#call] returns a fresh completion token for one stage dispatch
+  # @param clock [#call] returns the current Time, for stage deadlines
+  # @param retry_backoff [Numeric] seconds to wait between status report retries
   # @param logger [Workspace::Logger] debug logger
   # @param error_output [IO] where a restart worker's failure is written
   # @return [Proc] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+ (the
-  #   {Workspace::RestartRegistry}), +pipeline_ref:+ (pane index to the work item on it) and +recovering:+
-  #   (pane id to whether a recovery holds it), the frozen {Workspace::AgentdParts}
-  def self.build_agentd_parts(tmux:, config:, session_monitor_factory:, event_log: nil, context_reader: nil, agent_restart_factory: nil,
+  #   {Workspace::RestartRegistry}) and +recovering:+ (pane id to whether a recovery holds it), the frozen
+  #   {Workspace::AgentdParts}; +pipeline_desk:+ is one an earlier call built (nil builds one), and
+  #   +pipeline_only: true+ builds the pipeline desk alone (every other member nil), so the daemon can
+  #   recover and register its pipeline before the rest are built
+  def self.build_agentd_parts(tmux:, config:, work_coordinator_client:, pipeline_config:, session_monitor_factory:, event_log: nil, context_reader: nil, agent_restart_factory: nil,
     handoff_typer: :prompt_typer, transcript_summary: TranscriptSummary.new, idle_prompt_check: IdlePromptCheck.new, pane_bindings: nil,
     plan_paused_for: nil, hook_event_log_factory: nil, plan_progress_watcher_factory: nil, spine_watcher_factory: nil,
     spine_owner_report_factory: nil, agent_recovery_desk_factory: nil, agent_status_desk_factory: nil, prompt_queue_desk_factory: nil,
-    handoff_watcher_factory: nil, restart_runner_factory: nil, logger: Workspace::Logger.new, error_output: $stderr)
+    handoff_watcher_factory: nil, restart_runner_factory: nil, pipeline_state: nil, sentinel_poller_factory: nil,
+    token_generator: -> { SecureRandom.hex(4) }, clock: -> { Time.now }, retry_backoff: 0.5, logger: Workspace::Logger.new, error_output: $stderr)
+    sentinel_poller_factory ||= ->(session_name:, pane:, token:, deadline:) do
+      SentinelPoller.new(tmux: tmux, session_name: session_name, pane: pane, token: token, deadline: deadline,
+        clock: clock, logger: logger, error_output: error_output)
+    end
+    stage_marks = ->(timeout) { [token_generator.call, timeout && clock.call + timeout] }
+    pipeline_desk_for = lambda do |workspace, session_name, delivery_lock|
+      PipelineDesk.new(workspace: workspace, session_name: session_name, tmux: tmux, config: config, pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state || PipelineState.new(pipeline_config: pipeline_config, state_path: config.pipeline_state_path(workspace)),
+        client: work_coordinator_client, delivery_lock: delivery_lock, sentinel_poller_factory: sentinel_poller_factory,
+        stage_marks: stage_marks, retry_backoff: retry_backoff, event_log: event_log, logger: logger, error_output: error_output)
+    end
     agent_restart_factory ||= ->(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:,
       delivery_facts: ->(_pane_id) {}, **proof) do
       AgentRestart.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), context_reader: context_reader, session_name: session_name,
@@ -607,7 +631,11 @@ module Workspace
         typer: typer, delivery_lock: delivery_lock, restarting: restarting, event_log: event_log, logger: logger, **paused)
     end
 
-    lambda do |workspace:, session_name:, delivery_lock:, registry:, pipeline_ref:, recovering:|
+    lambda do |workspace:, session_name:, delivery_lock:, registry:, recovering:, pipeline_desk: nil, pipeline_only: false|
+      pipeline_desk ||= pipeline_desk_for.call(workspace, session_name, delivery_lock)
+      next AgentdParts.new(pipeline_desk: pipeline_desk).freeze if pipeline_only
+
+      pipeline_ref = pipeline_desk.method(:pipeline_ref_on)
       hook_event_log = hook_event_log_factory&.call(workspace)
       monitor = session_monitor_factory.call(workspace)
       restart_runner = if restart_runner_factory
@@ -651,7 +679,8 @@ module Workspace
         restarting: ->(pane_id) { restarting.call(pane_id) || recovering.call(pane_id) })
       AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner, restart_desk: restart_desk,
         plan_progress_watcher: plan_progress_watcher, spine_owner_report: spine_owner_report, spine_watcher: spine_watcher,
-        status_desk: status_desk, queue_desk: queue_desk, recovery_desk: recovery_desk, handoff_watcher: handoff_watcher).freeze
+        status_desk: status_desk, queue_desk: queue_desk, recovery_desk: recovery_desk, handoff_watcher: handoff_watcher,
+        pipeline_desk: pipeline_desk).freeze
     end
   end
 
@@ -1089,6 +1118,8 @@ module Workspace
     agentd_parts = build_agentd_parts(
       tmux: tmux,
       config: config,
+      work_coordinator_client: work_coordinator_client,
+      pipeline_config: pipeline_config,
       session_monitor_factory: session_monitor_builder,
       event_log: event_log,
       context_reader: context_reader,
@@ -1109,7 +1140,6 @@ module Workspace
       tmux: tmux,
       agent_labels: agent_labels,
       agent_commands: agent_commands,
-      work_coordinator_client: work_coordinator_client,
       pipeline_config: pipeline_config,
       parts: agentd_parts,
       event_log: event_log,

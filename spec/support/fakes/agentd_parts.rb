@@ -114,3 +114,150 @@ class RecordingRestartRunner
     nil
   end
 end
+
+# Fake of Workspace::PipelineConfig: the stages given for each workspace (nil: no pipeline).
+class RecordingPipelineConfig
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param stages [Hash{String=>Array<Hash>}] workspace name to its stages (+:pane_index+, +:role+, +:timeout+)
+  def initialize(stages: {})
+    @stages = stages
+    @calls = []
+  end
+
+  def stages_for(name)
+    @calls << [:stages_for, name]
+    @stages[name]
+  end
+
+  def pipeline?(name)
+    @calls << [:pipeline?, name]
+    !@stages[name].nil?
+  end
+end
+
+# Fake of Workspace::PipelineState held in memory: the entries a work item moves through, in the shape the
+# real one keeps (a started item sits at its workspace's first stage of +stages+).
+class RecordingPipelineState
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param stages [Array<Hash>] the stages a started item's first stage is read from
+  # @param entries [Array<Hash>] entries already in flight, as a previous daemon left them
+  def initialize(stages: [], entries: [])
+    @stages = stages
+    @entries = entries.to_h { |entry| [entry[:work_item_ref], entry.dup] }
+    @calls = []
+  end
+
+  def start(work_item_ref:, workspace_name:, dispatch_id:, sentinel_token: nil, deadline: nil)
+    @calls << [:start, work_item_ref]
+    stage = @stages.first
+    @entries[work_item_ref] = {work_item_ref: work_item_ref, workspace_name: workspace_name, dispatch_id: dispatch_id,
+                               pane_index: stage ? stage[:pane_index] : 0, phase: stage && stage[:role],
+                               sentinel_token: sentinel_token, deadline: deadline}
+  end
+
+  def current(work_item_ref) = @entries[work_item_ref]
+
+  def advance(work_item_ref:, to_stage:, sentinel_token: nil, deadline: nil)
+    @calls << [:advance, work_item_ref, to_stage[:role]]
+    entry = @entries[work_item_ref]
+    entry&.merge!(pane_index: to_stage[:pane_index], phase: to_stage[:role], sentinel_token: sentinel_token, deadline: deadline)
+  end
+
+  def deadline(work_item_ref) = @entries[work_item_ref]&.dig(:deadline)
+
+  def complete(work_item_ref:)
+    @calls << [:complete, work_item_ref]
+    @entries.delete(work_item_ref)
+  end
+
+  def in_flight_refs = @entries.keys
+
+  def in_flight
+    @entries.values.map { |entry| {"work_item_ref" => entry[:work_item_ref], "dispatch_id" => entry[:dispatch_id], "phase" => entry[:phase]} }
+  end
+end
+
+# Fake of Workspace::WorkCoordinatorClient: records registrations and reports, answers +register_reply+ and
+# the +replies+ in turn (the last repeating), and raises Workspace::Error for the first +failures+ reports.
+class RecordingCoordinatorClient
+  CONTROL_METHODS = %i[calls reports registrations replies=].freeze
+
+  attr_reader :calls, :status_socket_path
+  attr_writer :replies
+
+  # @param register_reply [Hash] what each +register+ answers
+  # @param replies [Array<Hash>] what the reports answer in turn
+  # @param failures [Integer] how many reports fail before one is answered
+  def initialize(register_reply: {"ok" => true, "epoch" => "wc-1"}, replies: [{"ok" => true}], failures: 0, status_socket_path: "/tmp/wc-status.sock")
+    @register_reply = register_reply
+    @replies = replies.dup
+    @failures = failures
+    @status_socket_path = status_socket_path
+    @calls = []
+  end
+
+  def register(name:, socket:, pipeline:, epoch:, in_flight: [], pid: Process.pid)
+    @calls << [:register, {name: name, socket: socket, pipeline: pipeline, epoch: epoch, in_flight: in_flight}]
+    @register_reply
+  end
+
+  def deregister(name:)
+    @calls << [:deregister, name]
+    {"ok" => true}
+  end
+
+  def report_status(payload)
+    @calls << [:report_status, payload]
+    if @failures.positive?
+      @failures -= 1
+      raise Workspace::Error, "connection refused"
+    end
+    (@replies.size > 1) ? @replies.shift : @replies.first
+  end
+
+  def reports = @calls.select { |call| call.first == :report_status }.map(&:last)
+
+  def registrations = @calls.select { |call| call.first == :register }.map(&:last)
+end
+
+# Fake of Workspace::SentinelPoller: keeps the callbacks +start+ is given and runs none on its own, so a spec
+# finishes, fails or times out the stage by hand.
+class RecordingSentinelPoller
+  CONTROL_METHODS = %i[session_name pane token deadline complete report_error time_out stopped?].freeze
+
+  attr_reader :session_name, :pane, :token, :deadline
+
+  def initialize(session_name:, pane:, token:, deadline:)
+    @session_name = session_name
+    @pane = pane
+    @token = token
+    @deadline = deadline
+    @stopped = false
+  end
+
+  def start(on_error: nil, on_timeout: nil, &on_complete)
+    @on_error = on_error
+    @on_timeout = on_timeout
+    @on_complete = on_complete
+    self
+  end
+
+  def stop
+    @stopped = true
+  end
+
+  def stopped? = @stopped
+
+  # Runs the completion callback as a poller that saw the sentinel does.
+  def complete(summary) = @on_complete.call(summary)
+
+  def report_error(message) = @on_error.call(message)
+
+  def time_out = @on_timeout.call
+end
