@@ -255,7 +255,7 @@ module Workspace
     def check_agent_kind!(kind, workspace = nil)
       return if kind == "claude"
       return if template_claude_line(workspace, tmuxinator_template(:worktree, workspace))
-      raise Workspace::Error.new("The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it.",
+      raise Workspace::Error.new("The worktree tmuxinator template has no Claude Code pane to swap for #{kind}; check it with `workspace template validate`, or replace it with `workspace template import`.",
         code: "template_outdated", details: {"kind" => kind})
     end
 
@@ -469,7 +469,7 @@ module Workspace
       value = agent_pane_value(inputs[:agent_kind], inputs[:workspace_name])
       if value.nil?
         if kind == :worktree
-          raise Workspace::Error, "The worktree template has no Claude Code pane to swap for #{inputs[:agent_kind]}; run `workspace init --force` to refresh it."
+          raise Workspace::Error, "The worktree tmuxinator template has no Claude Code pane to swap for #{inputs[:agent_kind]}; check it with `workspace template validate`, or replace it with `workspace template import`."
         end
         @output.puts "Warning: agent.kind is set, but the template has no agent pane line to rewrite; the pane was left as is."
         value = DEFAULT_CLAUDE_PANE
@@ -542,7 +542,7 @@ module Workspace
       rewritten = rewrite_agent_pane(content, kind, workspace)
       return rewritten if rewritten
       if strict && kind != "claude"
-        raise Workspace::Error, "The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it."
+        raise Workspace::Error, "The worktree tmuxinator template has no Claude Code pane to swap for #{kind}; check it with `workspace template validate`, or replace it with `workspace template import`."
       end
       unless default && kind == "claude"
         key = default ? "agent.kind" : "agent.commands.#{kind}"

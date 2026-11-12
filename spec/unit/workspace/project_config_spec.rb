@@ -304,7 +304,7 @@ RSpec.describe Workspace::ProjectConfig do
         File.write(template_path, "panes:\n  - echo hi\n")
 
         expect { pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", agent_kind: "codex") }
-          .to raise_error(Workspace::Error, /workspace init --force/)
+          .to raise_error(Workspace::Error, /workspace template validate/)
       end
     end
 

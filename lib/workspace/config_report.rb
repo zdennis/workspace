@@ -444,7 +444,7 @@ module Workspace
     rescue Workspace::Error => e
       raise unless e.code == "unknown_template"
       located(file, "warning", "unknown_tmuxinator_template", key,
-        "#{key} names '#{name}', and no tmuxinator template has that name. List them with: workspace library list --kind template")
+        "#{key} names '#{name}', and no tmuxinator template has that name. List them with: workspace template list")
     end
 
     # A `workflows.default` or `workflows.by_ref.<kind>` that names no workflow: `workflow start` would answer
