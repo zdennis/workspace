@@ -76,13 +76,13 @@ module Workspace
     # Seconds with no sub-agent event after which a sub-agent still recorded as
     # running stops holding off an attempt: an outage can kill one before it
     # sends SubagentStop.
-    SUBAGENT_QUIET = 600
+    SUBAGENT_QUIET = RecoveryVerdicts::SUBAGENT_QUIET
 
     # How long the screen must stay unchanged to count as quiet.
     QUIET_FOR = AgentRestart::QUIET_FOR
 
     # What Claude Code shows while it is retrying by itself, or still working.
-    BUSY_SCREEN = /Retrying in|esc to interrupt/
+    BUSY_SCREEN = RecoveryVerdicts::BUSY_SCREEN
 
     # Seconds a stopped agent has to leave the pane, read once a second.
     STOP_WAIT = 15
@@ -451,7 +451,7 @@ module Workspace
     end
 
     def same_process?(entry, live)
-      !entry["agent_pid"].nil? && live[:pid] == entry["agent_pid"] && live[:started] == entry["agent_started"]
+      RecoveryVerdicts.same_process?(entry, live)
     end
 
     # `agent_flags` describes the stored agent. A read of the same process
@@ -1403,7 +1403,7 @@ module Workspace
       return verdict(:never) unless File.file?(entry["transcript_path"].to_s)
 
       command = resume_line(entry)
-      return verdict(:defer) unless command && entry["session_id"].to_s.match?(AgentResumeCommand::SESSION_ID)
+      return verdict(:defer) unless RecoveryVerdicts.resumable?(command, entry)
       clear = @stopper.pane_clear?(pane_pid: detail[:pid], command: detail[:command], detector: @detector, tree: tree)
       return verdict(:defer) if !clear || @stopper.session_held?(session_id: entry["session_id"], tree: tree)
       return verdict(:defer) unless still_screen(pane_id, screen)
@@ -1414,9 +1414,7 @@ module Workspace
     # agent whose SessionStart came while the daemon was down. A ledger that
     # can't be read raises, which {#safe_check} answers with `:defer`.
     def started_since_signal?(entry)
-      signalled = parse_time(entry["last_signal_at"])
-      started = parse_time(@ledger.last_start_at(entry["session_id"]))
-      !signalled.nil? && !started.nil? && started > signalled
+      RecoveryVerdicts.started_since_signal?(entry, @ledger.last_start_at(entry["session_id"]))
     end
 
     # What may clear comes first, so an agent at work is deferred and never
@@ -1430,12 +1428,12 @@ module Workspace
         @store.update(pane_id) { |current| store_agent(current, agent) if same_wait?(current, entry) }
         return verdict(:defer)
       end
-      return verdict(:clear) unless agent[:pid] == entry["agent_pid"] && agent[:started] == entry["agent_started"]
+      return verdict(:clear) unless same_process?(entry, agent)
 
       entry = fill_flags(pane_id, entry, agent)
       confirmed = confirmed_error(pane_id, entry)
       return verdict(confirmed) if confirmed
-      return verdict(:go, mode: :typed) if entry["attempts"].to_i.zero?
+      return verdict(:go, mode: :typed) if RecoveryVerdicts.first_attempt?(entry)
 
       restart_verdict(pane_id, entry, detail, tree, agent)
     end
@@ -1458,20 +1456,16 @@ module Workspace
     # @return [Symbol, nil] +:defer+ or +:clear+ unless the transcript and the
     #   ledger both still show the stored failure of the stored session
     def confirmed_error(pane_id, entry)
-      record = @transcript.last_turn_record(entry["transcript_path"])
-      return :defer unless record && entry["last_turn_uuid"]
-      return :clear unless record["api_error"] && record["uuid"] == entry["last_turn_uuid"]
-
-      opened = open_record(pane_id)
-      return :defer unless opened.is_a?(Hash)
-      (opened["session_id"] == entry["session_id"]) ? nil : :clear
+      answer = RecoveryVerdicts.transcript_verdict(@transcript.last_turn_record(entry["transcript_path"]), entry)
+      return answer if answer
+      RecoveryVerdicts.session_verdict(open_record(pane_id), entry)
     end
 
     def restart_verdict(pane_id, entry, detail, tree, agent)
       pane = @panes.for(pane_id)
       start_command = pane.is_a?(Symbol) ? :gone : pane.start_command
-      return verdict(:defer) if start_command == :gone
-      return verdict(:never) if start_command
+      answer = RecoveryVerdicts.start_command_verdict(start_command)
+      return verdict(answer) if answer
       return verdict(:never) unless @stopper.restartable?(pid: agent[:pid], pane_pid: detail[:pid], tree: tree)
 
       command = resume_line(entry)
@@ -1496,24 +1490,18 @@ module Workspace
     # @return [Boolean] whether the monitor holds a prompt later than +time+;
     #   true when it has no facts for the pane
     def prompt_after?(pane_id, time)
-      facts = @session_monitor.delivery_facts(pane_id)
-      return true unless facts
-      prompt = facts[:last_user_prompt_at]
-      !prompt.nil? && prompt.to_f > time.to_f
+      RecoveryVerdicts.prompt_after?(@session_monitor.delivery_facts(pane_id), time)
     end
 
     def subagents_running?(pane_id, entry)
       running = @session_monitor.running_subagents(pane_id)
       return true if running.nil?
       return false unless running.positive?
-
-      latest = [parse_time(entry["last_subagent_at"]), parse_time(entry["failed_at"])].compact.max
-      latest.nil? || @clock.now - latest < SUBAGENT_QUIET
+      RecoveryVerdicts.subagents_recent?(entry, @clock.now)
     end
 
     def screen_busy?(pane_id, quiet)
-      screen = still_screen(pane_id, quiet)
-      screen.nil? || BUSY_SCREEN.match?(screen)
+      RecoveryVerdicts.screen_busy?(still_screen(pane_id, quiet))
     end
 
     # @param quiet [String, nil] a screen that already stood still, compared
@@ -1541,7 +1529,7 @@ module Workspace
 
     def signalled_lately?(entry)
       signalled = parse_time(entry["last_signal_at"])
-      !signalled.nil? && @clock.now - signalled < AgentRecoveryStore::SIGNAL_HOLD
+      !signalled.nil? && RecoveryVerdicts.signalled_lately?(entry, @clock.now)
     end
 
     def live_agent(pane_id)
