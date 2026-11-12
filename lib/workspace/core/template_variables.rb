@@ -6,7 +6,7 @@ module Workspace
   module TemplateVariables
     # @!attribute name [String] the placeholder text between the braces
     # @!attribute kinds [Array<Symbol>] the config kinds (`:project`, `:worktree`) the renderer fills it for
-    # @!attribute required [Hash{Symbol=>Boolean}] per kind, whether a template holding it needs a value
+    # @!attribute required [Hash{Symbol=>Boolean}] per kind, whether a template of that kind must hold it (`template validate` refuses one that does not)
     # @!attribute description [String]
     # @!attribute source [String] where the value comes from
     # @!attribute sample [String] an example value
@@ -19,18 +19,20 @@ module Workspace
     BOTH = %i[project worktree].freeze
     ALWAYS = {project: true, worktree: true}.freeze
     WORKTREE_ONLY = {project: false, worktree: true}.freeze
+    PROJECT_ONLY = {project: true, worktree: false}.freeze
+    NEVER = {project: false, worktree: false}.freeze
 
     ROWS = [
-      Row.new(name: "PROJECT_NAME", kinds: BOTH, required: ALWAYS, input: :project_name,
+      Row.new(name: "PROJECT_NAME", kinds: BOTH, required: PROJECT_ONLY, input: :project_name,
         description: "The project's name (a worktree's parent project).", source: "the project", sample: "myapp"),
       Row.new(name: "WORKSPACE_NAME", kinds: BOTH, required: ALWAYS, input: :workspace_name,
         description: "The workspace's name, which is its config's name.", source: "the workspace",
         sample: "myapp.worktree-proj-123"),
-      Row.new(name: "PROJECT_ROOT", kinds: %i[project], required: {project: true, worktree: false}, input: :project_root,
+      Row.new(name: "PROJECT_ROOT", kinds: %i[project], required: PROJECT_ONLY, input: :project_root,
         description: "The project's checkout directory.", source: "the project", sample: "/Users/me/src/myapp"),
-      Row.new(name: "DISPLAY_NAME", kinds: BOTH, required: ALWAYS, input: :display_name,
+      Row.new(name: "DISPLAY_NAME", kinds: BOTH, required: NEVER, input: :display_name,
         description: "The text of the launcher pane's banner.", source: "the workspace name", sample: "myapp"),
-      Row.new(name: "CONFIG_PATH", kinds: BOTH, required: ALWAYS, input: :config_path,
+      Row.new(name: "CONFIG_PATH", kinds: BOTH, required: NEVER, input: :config_path,
         description: "The path of the config being written.", source: "the config directory",
         sample: "/Users/me/.config/tmuxinator/myapp.yml"),
       Row.new(name: "TMUX_SESSION_NAME", kinds: %i[worktree], required: WORKTREE_ONLY, input: :tmux_session_name,
@@ -40,11 +42,11 @@ module Workspace
         sample: "/Users/me/src/myapp/.worktrees/proj-123"),
       Row.new(name: "WORKTREE_BRANCH", kinds: %i[worktree], required: WORKTREE_ONLY, input: :worktree_branch,
         description: "The worktree's git branch.", source: "the worktree", sample: "proj-123"),
-      Row.new(name: "AGENT_COMMAND", kinds: BOTH, required: WORKTREE_ONLY, input: :agent_command,
+      Row.new(name: "AGENT_COMMAND", kinds: BOTH, required: NEVER, input: :agent_command,
         description: "The agent pane's command: for Claude Code the flagged `--continue ||` line with the configured program, for another kind the bare configured command.",
         source: "`agent.kind` and `agent.commands.<kind>`",
         sample: "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions"),
-      Row.new(name: "PRE_WINDOW", kinds: %i[worktree], required: {project: false, worktree: false}, input: :task_id, fill: :line,
+      Row.new(name: "PRE_WINDOW", kinds: %i[worktree], required: NEVER, input: :task_id, fill: :line,
         description: "A whole line: `pre_window: export WORKSPACE_TASK=ID` with a task id, dropped without one.",
         source: "the workspace's task", sample: "t_abc123")
     ].each(&:freeze).freeze

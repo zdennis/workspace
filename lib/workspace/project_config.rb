@@ -76,7 +76,7 @@ module Workspace
     # @param template_text [String]
     # @return [String] the config text
     # @raise [Workspace::Error] for a worktree and an agent kind the template has no pane to swap for, or a
-    #   required input (see {TemplateVariables}) that is nil while the template holds its placeholder
+    #   input that is nil while the template holds its placeholder (the whole-line `{{PRE_WINDOW}}` is dropped instead)
     def render(kind, inputs, template_text)
       content = template_text.dup
       has_agent_placeholder = content.include?("{{AGENT_COMMAND}}")
@@ -86,7 +86,7 @@ module Workspace
         value = inputs[row.input]
         if value
           content = content.gsub("{{#{row.name}}}") { value }
-        elsif row.required[kind] && content.include?("{{#{row.name}}}")
+        elsif content.include?("{{#{row.name}}}")
           raise Workspace::Error, "Cannot render the #{kind} template: no value for #{row.name}"
         end
       end
@@ -325,7 +325,7 @@ module Workspace
       else
         command
       end
-      lines[index] = "#{indent}#{yaml_item(pane)}#{lines[index][/\r?\n\z/]}"
+      lines[index] = "#{indent}#{self.class.yaml_item(pane)}#{lines[index][/\r?\n\z/]}"
       lines.join
     end
 
@@ -369,6 +369,25 @@ module Workspace
     # @return [String] the text the templates' banner line shows
     def banner_text(text)
       text.gsub(/[^[:word:]]/, " ")
+    end
+
+    # Whether the template file at +path+ has an agent pane the renderer can find: `{{AGENT_COMMAND}}` or a
+    # literal Claude Code line.
+    #
+    # @param path [String] a template file
+    # @return [Boolean]
+    def agent_pane_in_template?(path)
+      !template_claude_line(nil, {"path" => path}).nil?
+    end
+
+    # +text+ as a YAML list item's text: as is when it reads back unchanged, else a JSON (double-quoted) string.
+    #
+    # @param text [String]
+    # @return [String]
+    def self.yaml_item(text)
+      (YAML.safe_load("- #{text}") == [text]) ? text : text.to_json
+    rescue Psych::Exception
+      text.to_json
     end
 
     private
@@ -455,7 +474,7 @@ module Workspace
         @output.puts "Warning: agent.kind is set, but the template has no agent pane line to rewrite; the pane was left as is."
         value = DEFAULT_CLAUDE_PANE
       end
-      inputs.merge(agent_command: yaml_item(value))
+      inputs.merge(agent_command: self.class.yaml_item(value))
     end
 
     def pane_value(kind, workspace, base)
@@ -511,14 +530,6 @@ module Workspace
       (raw.size == Shellwords.split(text).size) ? raw : text.split
     rescue ArgumentError
       text.split
-    end
-
-    # A YAML list item's text: plain when that reads back as the same string, else a double-quoted
-    # scalar, so any command (`#`, `: `, quotes) keeps the config valid.
-    def yaml_item(text)
-      (YAML.safe_load("- #{text}") == [text]) ? text : text.to_json
-    rescue Psych::Exception
-      text.to_json
     end
 
     # Points the config's agent pane at the configured command. A config with no agent pane line is

@@ -50,7 +50,7 @@ RSpec.describe Workspace::TemplateVariablesDocs do
   it "keeps the Kinds and Required cells apart for a row that differs" do
     row = described_class.render("placeholders").lines.grep(/`\{\{PROJECT_ROOT\}\}`/).first
     expect(row).to start_with("| `{{PROJECT_ROOT}}` | project | project | ")
-    agent = described_class.render("placeholders").lines.grep(/`\{\{AGENT_COMMAND\}\}`/).first
-    expect(agent).to start_with("| `{{AGENT_COMMAND}}` | project, worktree | worktree | ")
+    agent = described_class.render("placeholders").lines.grep(/`\{\{PROJECT_NAME\}\}`/).first
+    expect(agent).to start_with("| `{{PROJECT_NAME}}` | project, worktree | project | ")
   end
 end

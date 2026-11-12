@@ -218,6 +218,7 @@ module Workspace
       "status_not_logged" => "agent status post: the agent daemon couldn't write the agent_status line.",
       "unknown_library_entry" => "No library entry has that name in the scopes searched.",
       "ambiguous_library_entry" => "A bare library name matches more than one kind.",
+      "invalid_template" => "A tmuxinator template set has an error (library add/update of a template, template validate). details.ref, details.problems (each {severity, code, kind, message}).",
       "invalid_recipe" => "A library recipe has a field that isn't allowed (library add/update, start --recipe). details.ref, details.problems.",
       "recipe_workflow_conflict" => "start --recipe named a workflow recipe and a flag that run cannot use. details.ref, details.workflow, details.flags.",
       "library_entry_exists" => "library add would replace an entry with different content; pass --force.",

@@ -35,7 +35,7 @@ module Workspace
     def self.kinds_cell(row) = row.kinds.join(", ")
     private_class_method :kinds_cell
 
-    # The kinds in which a template holding the placeholder needs a value, or "no".
+    # The kinds of template that must hold the placeholder, or "no".
     def self.required_cell(row)
       kinds = row.kinds.select { |kind| row.required[kind] }
       kinds.empty? ? "no" : kinds.join(", ")

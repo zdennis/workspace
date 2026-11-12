@@ -25,7 +25,8 @@ module Workspace
       # @param event_log [Workspace::EventLog, nil] records `library_changed` after a write that changed the store
       # @param installer [Workspace::LibraryInstaller, nil] copies into and removes from a worktree, for `install` and `uninstall`
       # @param checkout [Workspace::WorkspaceCheckout, nil] finds the worktree `install` and `uninstall` act on
-      def initialize(library:, output: $stdout, input: $stdin, event_log: nil, installer: nil, checkout: nil)
+      def initialize(library:, output: $stdout, input: $stdin, event_log: nil, installer: nil, checkout: nil, template_validator: nil)
+        @template_validator = template_validator
         @installer = installer
         @checkout = checkout
         @library = library
@@ -401,11 +402,22 @@ module Workspace
         [entry, stores.find { |s| s.scope == entry["scope"] && s.project == entry["project"] }]
       end
 
-      # A recipe is checked before it is stored, so `start --recipe` never meets a bad one.
+      # A recipe or a tmuxinator template set is checked before it is stored, so `start --recipe` and a new
+      # config never meet a bad one. A template's warnings are left to `template validate`.
       def check_recipe(kind, content, ref)
+        return check_template(content, ref) if kind == "template"
         return unless kind == "recipe"
         text = content[:target] ? File.read(content[:target]) : content[:body]
         Workspace::RecipeFile.parse(text, ref: ref)
+      end
+
+      def check_template(content, ref)
+        return unless @template_validator
+        dir = content[:target] || content[:tree]
+        result = @template_validator.call_set(dir)
+        return if result.valid?
+        raise Error.new("The tmuxinator template #{ref} is not valid: #{result.errors.map(&:to_s).join("; ")}",
+          code: "invalid_template", details: {"ref" => ref, "problems" => result.errors.map(&:to_h)})
       end
 
       # What to store: `{target:}` to link, `{tree:}` to copy a skill's

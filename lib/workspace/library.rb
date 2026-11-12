@@ -254,18 +254,27 @@ module Workspace
                 "path" => LegacyTmuxinatorTemplates.path(kind, @config.tmuxinator_dir)}
       end
       name = chosen["name"]
-      entry = begin
-        resolve("template/#{name}", template_stores(workspace))
-      rescue Error => e
-        raise unless e.code == "unknown_library_entry"
-        raise Error.new("No tmuxinator template '#{name}' (from #{chosen["source"]}). List them with: workspace library list --kind template",
-          code: "unknown_template",
-          details: {"template" => name, "kind" => "tmuxinator", "scopes" => e.details["scopes"], "source" => chosen["source"]})
-      end
+      entry = tmuxinator_set(name, workspace: workspace, source: chosen["source"])
       path = File.join(entry["path"], "#{kind}.yml")
       file = entry.merge("ref" => "#{entry["ref"]}/#{kind}.yml", "path" => path)
       raise source_missing(file) unless File.file?(path) && File.readable?(path)
       entry.slice("ref", "name", "scope").merge("source" => chosen["source"], "path" => path)
+    end
+
+    # The `template` library set called +name+, looked up in the project store of +workspace+, then global, then built-in.
+    #
+    # @param name [String] a set name
+    # @param workspace [String, nil] see {#tmuxinator_template}
+    # @param source [String, nil] where the name came from, for the error (`global`, `project`, `worktree`, `default`)
+    # @return [Hash] the entry: "ref", "name", "scope" and "path" (the set's directory)
+    # @raise [Workspace::Error] code `unknown_template` (details `template`, `kind` `tmuxinator`, `scopes`, `source`)
+    def tmuxinator_set(name, workspace:, source: nil)
+      resolve("template/#{name}", template_stores(workspace))
+    rescue Error => e
+      raise unless e.code == "unknown_library_entry"
+      raise Error.new("No tmuxinator template '#{name}'#{" (from #{source})" if source}. List them with: workspace library list --kind template",
+        code: "unknown_template",
+        details: {"template" => name, "kind" => "tmuxinator", "scopes" => e.details["scopes"], "source" => source})
     end
 
     # The text sent to the agent when it starts: one line pointing at the

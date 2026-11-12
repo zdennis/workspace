@@ -600,6 +600,37 @@ RSpec.describe Workspace::Commands::Library do
       expect(JSON.parse(output.string)["entries"].first).to include("ref" => "template/default", "scope" => "builtin")
     end
 
+    describe "validation" do
+      let(:builtin_set) { File.join(PROJECT_ROOT, "lib/library/template/default") }
+      let(:validator) do
+        Workspace::TemplateValidator.new(project_config: Workspace::ProjectConfig.new(config: Workspace::Config.new(workspace_dir: @dir), git: Workspace::Git.new, output: StringIO.new))
+      end
+      subject(:command) { described_class.new(library: library, output: output, input: input, template_validator: validator) }
+
+      it "stores a set that validates, and warns about nothing it refuses" do
+        expect(command.add(kind: "template", path: builtin_set, name: "copy", cwd: cwd).outcome).to eq("added")
+      end
+
+      it "stores an invalid set unchecked when no validator is wired" do
+        bare = described_class.new(library: library, output: output, input: input)
+
+        expect(bare.add(kind: "template", path: template_set, name: "loose", cwd: cwd).outcome).to eq("added")
+      end
+
+      it "refuses an invalid set as invalid_template on add and update, storing nothing" do
+        bad = template_set("bad", files: {"project.yml" => File.read(File.join(builtin_set, "project.yml")), "worktree.yml" => "name: x\n"})
+
+        expect { command.add(kind: "template", path: bad, name: "bad", cwd: cwd) }.to raise_error(Workspace::Error) { |e|
+          expect([e.code, e.details["ref"]]).to eq(["invalid_template", "template/bad"])
+          expect(e.details["problems"].map { |p| p["code"] }).to include("missing_placeholder")
+        }
+        expect(Dir.exist?(File.join(@dir, "library/global/template/bad"))).to be(false)
+
+        command.add(kind: "template", path: builtin_set, name: "good", cwd: cwd)
+        expect { command.update("template/good", path: bad, cwd: cwd) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_template") }
+      end
+    end
+
     it "refuses a folder missing worktree.yml or project.yml, a file, a missing path and stdin" do
       %w[worktree.yml project.yml].each do |missing|
         files = {"project.yml" => "p\n", "worktree.yml" => "w\n"}.reject { |k, _| k == missing }

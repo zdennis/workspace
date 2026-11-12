@@ -191,6 +191,7 @@ require_relative "workspace/commands_config"
 require_relative "workspace/notes_config"
 require_relative "workspace/spine_config"
 require_relative "workspace/tmuxinator_template_config"
+require_relative "workspace/template_validator"
 require_relative "workspace/main_agent"
 require_relative "workspace/instruction_composer"
 require_relative "workspace/tmuxinator_config_writer"
@@ -829,6 +830,7 @@ module Workspace
     lineage = WorkspaceLineage.new(rev_parse: git.method(:path_of))
     library = Library.new(config: config, lineage: lineage, project_config: project_config,
       template_config: TmuxinatorTemplateConfig.new(config_resolver: config_resolver))
+    template_validator = TemplateValidator.new(project_config: project_config)
     library_installer = LibraryInstaller.new(git: git, dirs: LibraryInstallDirs.new(config_resolver: config_resolver))
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
       git_exclude: GitExclude.new(git: git), output: output)
@@ -961,7 +963,7 @@ module Workspace
     ui_command = Commands::Ui.new(output: output, notes: notes_command, app_probe: ui_app_probe)
     workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
     library_command = Commands::Library.new(library: library, output: output, input: input, event_log: event_log,
-      installer: library_installer, checkout: workspace_checkout)
+      installer: library_installer, checkout: workspace_checkout, template_validator: template_validator)
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
     workflow_evidence = WorkflowEvidence.new(dir: config.workflow_evidence_dir)
@@ -1144,7 +1146,7 @@ module Workspace
       state: state, tmux: tmux, git: git, lock_namespace: lock_namespace, lock_holder: lock_holder,
       hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, project_config: project_config, agent_command_check: AgentCommandCheck.new, project_detector: project_detector, config_resolver: config_resolver, output: output, error_output: error_output)
-    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library, catalog: workflow_catalog)
+    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library, catalog: workflow_catalog, template_validator: template_validator)
     tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands)
     agent_resume_command = AgentResumeCommand.new(tmuxinator_report: tmuxinator_report, agent_commands: agent_commands)
     restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,

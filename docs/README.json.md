@@ -395,6 +395,7 @@ The plan (`rename --dry-run --json`, from `RenamePlan::Plan#to_h`) has these fie
 | `status_not_logged` | `agent status post`: the agent daemon couldn't write the `agent_status` line. |
 | `unknown_library_entry` | No library entry has that name in the scopes searched. `details.ref`, `details.scopes` in the order searched, e.g. `["project:api", "global", "builtin"]` (see [`library`](README.library.md)). |
 | `ambiguous_library_entry` | A bare library name matches more than one kind. `details.ref`, `details.candidates`. |
+| `invalid_template` | A tmuxinator template set has an error (`library add`/`update` of a `template`, `template validate`). `details.ref`, `details.problems` (each `{severity, code, kind, message}`). |
 | `invalid_recipe` | A library recipe has a field that isn't allowed (`library add`/`update`, `start --recipe`). `details.ref`, `details.problems` (every problem, as text). |
 | `recipe_workflow_conflict` | `start --recipe` named a recipe with a `workflow` and was given a flag that run cannot use (`--prompt`, `--play`, `--pack`, `--no-packs`, `--handoff`, `--no-handoff`, `--agent`, `--skill`, `--no-launch`, `--spine`, `--plan`, `--title`, `--title-from-ticket`). `details.ref`, `details.workflow`, `details.flags` (every flag given). Nothing was created. |
 | `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |
