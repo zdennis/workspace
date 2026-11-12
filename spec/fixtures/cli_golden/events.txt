@@ -1,0 +1,59 @@
+### workspace events --help
+--- exit 0
+--- stdout
+Usage: workspace events [--follow] [--json] [--types A,B] [--since CURSOR] [--name WS]
+
+Read the event log ($HOME/.workspace-events.jsonl) and every agent daemon's
+hook events ($HOME/.local/state/workspace/.events/<workspace>.jsonl) as one stream,
+oldest first. Each line carries a cursor; pass it to --since to resume
+after that line. Only files are read, so a slow reader never holds up a daemon.
+
+Hook event types: tool_started, tool_finished, subagent_started, subagent_stopped, session_started, session_ended, prompt_submitted, agent_status.
+tool_started and tool_finished carry input: the first line of a Bash command, a file
+tool's path, a Grep or Glob pattern, a WebFetch URL; at most 300 bytes, with
+control characters blanked and a trailing … when cut. Other tools have none.
+Stream lines: follow_started (first, with a cursor) and gap (the cursor is older
+than what is kept; the lines after its time follow).
+
+Options:
+        --follow                     Keep reading new lines until stopped (JSONL with --json)
+        --json                       JSON: one line per event with --follow, else one {schema_version, ok, events, cursor} document
+        --types A,B                  Only these types (repeatable, or comma-separated)
+        --since CURSOR               Resume after the line that printed CURSOR
+        --name WS                    Only this workspace's events (this workspace only; its worktree workspaces are not included)
+    -h, --help                       Show this help
+
+Without --since, --follow starts at the end of every file, and a plain read prints
+what is kept: the current event log and each daemon's file and its rotated copy.
+
+Examples:
+  workspace events    # read everything kept so far, as text, oldest first
+  workspace events --types session_started,session_ended    # which sessions started and ended
+  workspace events --follow --json    # watch every workspace live from a program, one JSON line per event; runs until stopped
+  workspace events --follow --json --since "$LAST_CURSOR"    # pick a follower up after a restart; LAST_CURSOR is the cursor of the last line it printed (every line has one); runs until stopped
+  workspace events --follow --json --name myapp --types tool_finished    # follow the tool calls of one workspace; runs until stopped
+--- stderr
+--- end
+### workspace events --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace events [--follow] [--json] [--types A,B] [--since CURSOR] [--name WS]"],"description":"Read the event log ($HOME/.workspace-events.jsonl) and every agent daemon's\nhook events ($HOME/.local/state/workspace/.events/<workspace>.jsonl) as one stream,\noldest first. Each line carries a cursor; pass it to --since to resume\nafter that line. Only files are read, so a slow reader never holds up a daemon.\n\nHook event types: tool_started, tool_finished, subagent_started, subagent_stopped, session_started, session_ended, prompt_submitted, agent_status.\ntool_started and tool_finished carry input: the first line of a Bash command, a file\ntool's path, a Grep or Glob pattern, a WebFetch URL; at most 300 bytes, with\ncontrol characters blanked and a trailing … when cut. Other tools have none.\nStream lines: follow_started (first, with a cursor) and gap (the cursor is older\nthan what is kept; the lines after its time follow).","options":[{"flags":"--follow","description":"Keep reading new lines until stopped (JSONL with --json)"},{"flags":"--json","description":"JSON: one line per event with --follow, else one {schema_version, ok, events, cursor} document"},{"flags":"--types A,B","description":"Only these types (repeatable, or comma-separated)"},{"flags":"--since CURSOR","description":"Resume after the line that printed CURSOR"},{"flags":"--name WS","description":"Only this workspace's events (this workspace only; its worktree workspaces are not included)"},{"flags":"-h, --help","description":"Show this help Without --since, --follow starts at the end of every file, and a plain read prints what is kept: the current event log and each daemon's file and its rotated copy."}],"examples":[{"command":"workspace events","scenario":"read everything kept so far, as text, oldest first"},{"command":"workspace events --types session_started,session_ended","scenario":"which sessions started and ended"},{"command":"workspace events --follow --json","scenario":"watch every workspace live from a program, one JSON line per event; runs until stopped"},{"command":"workspace events --follow --json --since \"$LAST_CURSOR\"","scenario":"pick a follower up after a restart; LAST_CURSOR is the cursor of the last line it printed (every line has one); runs until stopped"},{"command":"workspace events --follow --json --name myapp --types tool_finished","scenario":"follow the tool calls of one workspace; runs until stopped"}]}
+--- stderr
+--- end
+### workspace events --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace events --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace events
+--- exit 0
+--- stdout
+--- stderr
+--- end

@@ -1,0 +1,134 @@
+### workspace alfred --help
+--- exit 0
+--- stdout
+Usage: workspace alfred <subcommand>
+
+Subcommands:
+  install     Install or update the Alfred workflow
+  uninstall   Remove the Alfred workflow
+  info        Show workflow installation status
+
+The workflow lets you type 'wf' in Alfred to list and focus
+active workspace projects. Assign a hotkey in Alfred Preferences
+> Workflows > Workspace Focus.
+
+Examples:
+  workspace alfred install    # install or update the Alfred workflow
+  workspace alfred info    # show the workflow's installation status
+  workspace alfred uninstall    # remove the Alfred workflow
+--- stderr
+--- end
+### workspace alfred --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace alfred <subcommand>"],"description":"","options":[],"examples":[{"command":"workspace alfred install","scenario":"install or update the Alfred workflow"},{"command":"workspace alfred info","scenario":"show the workflow's installation status"},{"command":"workspace alfred uninstall","scenario":"remove the Alfred workflow"}],"sections":[{"heading":"Subcommands","text":"install     Install or update the Alfred workflow\n  uninstall   Remove the Alfred workflow\n  info        Show workflow installation status\n\nThe workflow lets you type 'wf' in Alfred to list and focus\nactive workspace projects. Assign a hotkey in Alfred Preferences\n> Workflows > Workspace Focus."}]}
+--- stderr
+--- end
+### workspace alfred install --help
+--- exit 0
+--- stdout
+Usage: workspace alfred install
+
+Install or update the Alfred workflow for workspace focus.
+Copies workflow files to Alfred's preferences directory.
+
+Examples:
+  workspace alfred install    # add the 'wf' workflow to Alfred, or update it after upgrading workspace
+  workspace alfred install && workspace alfred info    # install, then confirm where it went
+  workspace alfred install | grep Installed    # print the line saying where it was installed
+--- stderr
+--- end
+### workspace alfred install --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace alfred install"],"description":"Install or update the Alfred workflow for workspace focus.\nCopies workflow files to Alfred's preferences directory.","options":[],"examples":[{"command":"workspace alfred install","scenario":"add the 'wf' workflow to Alfred, or update it after upgrading workspace"},{"command":"workspace alfred install && workspace alfred info","scenario":"install, then confirm where it went"},{"command":"workspace alfred install | grep Installed","scenario":"print the line saying where it was installed"}]}
+--- stderr
+--- end
+### workspace alfred uninstall --help
+--- exit 0
+--- stdout
+Usage: workspace alfred uninstall
+
+Remove the Alfred workflow for workspace focus. Asks for a y/N
+confirmation before deleting; nothing is removed if the workflow is
+not installed.
+
+Examples:
+  workspace alfred uninstall    # remove the workflow from Alfred, after confirming
+  workspace alfred uninstall </dev/null    # answer nothing: it cancels and removes nothing
+  WORKSPACE_NO_INPUT=1 workspace alfred uninstall    # in an unattended script with the workflow installed: exits 1 with an error instead of waiting
+--- stderr
+--- end
+### workspace alfred uninstall --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace alfred uninstall"],"description":"Remove the Alfred workflow for workspace focus. Asks for a y/N\nconfirmation before deleting; nothing is removed if the workflow is\nnot installed.","options":[],"examples":[{"command":"workspace alfred uninstall","scenario":"remove the workflow from Alfred, after confirming"},{"command":"workspace alfred uninstall </dev/null","scenario":"answer nothing: it cancels and removes nothing"},{"command":"WORKSPACE_NO_INPUT=1 workspace alfred uninstall","scenario":"in an unattended script with the workflow installed: exits 1 with an error instead of waiting"}]}
+--- stderr
+--- end
+### workspace alfred info --help
+--- exit 0
+--- stdout
+Usage: workspace alfred info
+
+Show the installation status of the Alfred workflow.
+
+Examples:
+  workspace alfred info    # see whether the workflow is installed, and where
+  workspace alfred info | grep -q 'is installed' || workspace alfred install    # install it only when missing
+  workspace alfred info | grep Location    # find the workflow's folder to edit it by hand
+--- stderr
+--- end
+### workspace alfred info --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace alfred info"],"description":"Show the installation status of the Alfred workflow.","options":[],"examples":[{"command":"workspace alfred info","scenario":"see whether the workflow is installed, and where"},{"command":"workspace alfred info | grep -q 'is installed' || workspace alfred install","scenario":"install it only when missing"},{"command":"workspace alfred info | grep Location","scenario":"find the workflow's folder to edit it by hand"}]}
+--- stderr
+--- end
+### workspace alfred --bogus
+--- exit 1
+--- stdout
+--- stderr
+Unknown alfred subcommand: --bogus
+
+Usage: workspace alfred <subcommand>
+
+Subcommands:
+  install     Install or update the Alfred workflow
+  uninstall   Remove the Alfred workflow
+  info        Show workflow installation status
+
+The workflow lets you type 'wf' in Alfred to list and focus
+active workspace projects. Assign a hotkey in Alfred Preferences
+> Workflows > Workspace Focus.
+
+Examples:
+  workspace alfred install    # install or update the Alfred workflow
+  workspace alfred info    # show the workflow's installation status
+  workspace alfred uninstall    # remove the Alfred workflow
+--- end
+### workspace alfred --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"Unknown alfred subcommand: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace alfred
+--- exit 0
+--- stdout
+Usage: workspace alfred <subcommand>
+
+Subcommands:
+  install     Install or update the Alfred workflow
+  uninstall   Remove the Alfred workflow
+  info        Show workflow installation status
+
+The workflow lets you type 'wf' in Alfred to list and focus
+active workspace projects. Assign a hotkey in Alfred Preferences
+> Workflows > Workspace Focus.
+
+Examples:
+  workspace alfred install    # install or update the Alfred workflow
+  workspace alfred info    # show the workflow's installation status
+  workspace alfred uninstall    # remove the Alfred workflow
+--- stderr
+--- end

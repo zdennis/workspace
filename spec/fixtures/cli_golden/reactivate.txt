@@ -1,0 +1,54 @@
+### workspace reactivate --help
+--- exit 0
+--- stdout
+Usage: workspace reactivate [options] [project]
+
+Reactivate Claude in a project's tmux pane with 'claude --continue || claude'.
+Auto-detects the project from the current directory if not specified.
+
+Options:
+        --all                        Reactivate Claude in all active projects
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+
+Examples:
+  workspace reactivate my-project    # reactivate Claude in a specific project
+  workspace reactivate    # auto-detected from the current directory
+  workspace reactivate --all    # reactivate Claude in all active projects
+--- stderr
+--- end
+### workspace reactivate --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace reactivate [options] [project]"],"description":"Reactivate Claude in a project's tmux pane with 'claude --continue || claude'.\nAuto-detects the project from the current directory if not specified.","options":[{"flags":"--all","description":"Reactivate Claude in all active projects"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr"}],"examples":[{"command":"workspace reactivate my-project","scenario":"reactivate Claude in a specific project"},{"command":"workspace reactivate","scenario":"auto-detected from the current directory"},{"command":"workspace reactivate --all","scenario":"reactivate Claude in all active projects"}]}
+--- stderr
+--- end
+### workspace reactivate --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace reactivate --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace reactivate
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace reactivate [options] [project]
+
+Reactivate Claude in a project's tmux pane with 'claude --continue || claude'.
+Auto-detects the project from the current directory if not specified.
+
+Options:
+        --all                        Reactivate Claude in all active projects
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+
+Examples:
+  workspace reactivate my-project    # reactivate Claude in a specific project
+  workspace reactivate    # auto-detected from the current directory
+  workspace reactivate --all    # reactivate Claude in all active projects
+--- end

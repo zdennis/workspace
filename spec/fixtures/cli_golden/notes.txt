@@ -1,0 +1,110 @@
+### workspace notes --help
+--- exit 0
+--- stdout
+Usage: workspace notes dir [--name WORKSPACE] [--create] [--json]
+
+Notes are the working files an agent or a person keeps for a workspace (plans, findings, handoffs),
+outside the source tree.
+
+Prints the absolute path alone, so "$(workspace notes dir)" works. The workspace is the one detected
+from the current directory unless --name picks another.
+
+The path is the workspace's own notes.dir (a worktree's own, or the project's for a main checkout),
+else the project's notes.default_dir rule, else tmp/workspace-notes in the checkout. Nothing is
+written to config.
+
+        --name NAME                  Workspace to answer for instead of the one detected from the current directory
+        --create                     Make the directory; inside the checkout, also keep it out of git (info/exclude)
+        --json                       Print one JSON document (see docs/README.notes.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace notes dir    # where do this workspace's notes live
+  workspace notes dir --create    # first note of a new worktree: make the directory and keep it out of git
+  workspace notes dir --name api.worktree-login    # ask from outside the checkout, such as a script run from another workspace
+  workspace notes dir --json    # also learn where the path came from and whether the directory exists yet
+--- stderr
+--- end
+### workspace notes --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace notes dir [--name WORKSPACE] [--create] [--json]"],"description":"Notes are the working files an agent or a person keeps for a workspace (plans, findings, handoffs),\noutside the source tree.\n\nPrints the absolute path alone, so \"$(workspace notes dir)\" works. The workspace is the one detected\nfrom the current directory unless --name picks another.\n\nThe path is the workspace's own notes.dir (a worktree's own, or the project's for a main checkout),\nelse the project's notes.default_dir rule, else tmp/workspace-notes in the checkout. Nothing is\nwritten to config.\n\n        --name NAME                  Workspace to answer for instead of the one detected from the current directory\n        --create                     Make the directory; inside the checkout, also keep it out of git (info/exclude)\n        --json                       Print one JSON document (see docs/README.notes.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace notes dir","scenario":"where do this workspace's notes live"},{"command":"workspace notes dir --create","scenario":"first note of a new worktree: make the directory and keep it out of git"},{"command":"workspace notes dir --name api.worktree-login","scenario":"ask from outside the checkout, such as a script run from another workspace"},{"command":"workspace notes dir --json","scenario":"also learn where the path came from and whether the directory exists yet"}]}
+--- stderr
+--- end
+### workspace notes dir --help
+--- exit 0
+--- stdout
+Usage: workspace notes dir [--name WORKSPACE] [--create] [--json]
+
+Print where a workspace's notes are kept.
+
+Notes are the working files an agent or a person keeps for a workspace (plans, findings, handoffs),
+outside the source tree.
+
+Prints the absolute path alone, so "$(workspace notes dir)" works. The workspace is the one detected
+from the current directory unless --name picks another.
+
+The path is the workspace's own notes.dir (a worktree's own, or the project's for a main checkout),
+else the project's notes.default_dir rule, else tmp/workspace-notes in the checkout. Nothing is
+written to config.
+
+Options:
+    --name NAME                  Workspace to answer for instead of the one detected from the current directory
+    --create                     Make the directory; inside the checkout, also keep it out of git (info/exclude)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace notes dir    # where do this workspace's notes live
+  workspace notes dir --create    # first note of a new worktree: make the directory and keep it out of git
+  workspace notes dir --name api.worktree-login    # ask from outside the checkout, such as a script run from another workspace
+  workspace notes dir --json    # also learn where the path came from and whether the directory exists yet
+--- stderr
+--- end
+### workspace notes dir --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace notes dir [--name WORKSPACE] [--create] [--json]"],"description":"Print where a workspace's notes are kept.\n\nNotes are the working files an agent or a person keeps for a workspace (plans, findings, handoffs),\noutside the source tree.\n\nPrints the absolute path alone, so \"$(workspace notes dir)\" works. The workspace is the one detected\nfrom the current directory unless --name picks another.\n\nThe path is the workspace's own notes.dir (a worktree's own, or the project's for a main checkout),\nelse the project's notes.default_dir rule, else tmp/workspace-notes in the checkout. Nothing is\nwritten to config.","options":[{"flags":"--name NAME","description":"Workspace to answer for instead of the one detected from the current directory"},{"flags":"--create","description":"Make the directory; inside the checkout, also keep it out of git (info/exclude)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace notes dir","scenario":"where do this workspace's notes live"},{"command":"workspace notes dir --create","scenario":"first note of a new worktree: make the directory and keep it out of git"},{"command":"workspace notes dir --name api.worktree-login","scenario":"ask from outside the checkout, such as a script run from another workspace"},{"command":"workspace notes dir --json","scenario":"also learn where the path came from and whether the directory exists yet"}]}
+--- stderr
+--- end
+### workspace notes --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace notes --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace notes
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: dir.
+
+Usage: workspace notes dir [--name WORKSPACE] [--create] [--json]
+
+Notes are the working files an agent or a person keeps for a workspace (plans, findings, handoffs),
+outside the source tree.
+
+Prints the absolute path alone, so "$(workspace notes dir)" works. The workspace is the one detected
+from the current directory unless --name picks another.
+
+The path is the workspace's own notes.dir (a worktree's own, or the project's for a main checkout),
+else the project's notes.default_dir rule, else tmp/workspace-notes in the checkout. Nothing is
+written to config.
+
+        --name NAME                  Workspace to answer for instead of the one detected from the current directory
+        --create                     Make the directory; inside the checkout, also keep it out of git (info/exclude)
+        --json                       Print one JSON document (see docs/README.notes.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace notes dir    # where do this workspace's notes live
+  workspace notes dir --create    # first note of a new worktree: make the directory and keep it out of git
+  workspace notes dir --name api.worktree-login    # ask from outside the checkout, such as a script run from another workspace
+  workspace notes dir --json    # also learn where the path came from and whether the directory exists yet
+--- end

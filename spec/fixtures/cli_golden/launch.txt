@@ -1,0 +1,134 @@
+### workspace launch --help
+--- exit 0
+--- stdout
+Usage: workspace launch [options] <project1> [project2] ...
+
+Launch tmuxinator projects in iTerm2, each in its own window.
+Reuses existing launcher panes when available.
+Windows are arranged left-to-right with slight overlap.
+
+Options:
+        --reattach                   Reuse a launcher pane's existing tmux session instead of relaunching
+                                     into it (see docs/README.launch.md).
+        --[no-]headless              Start each session in the background with plain tmux: no iTerm2,
+                                     AppleScript or window-tool. Default: the launch.headless config key if set,
+                                     else headless when not on macOS, when osascript is missing, or when CI is set
+        --prompt PROMPT              Send an initial prompt to the coding agent in each project, once it is
+                                     ready (up to 60s); exits 1 if it can't be sent
+        --prompt-timeout DURATION    How long to wait for the coding agent to be ready for --prompt
+                                     (e.g. "90s", or a plain number of seconds); default 60s
+        --play NAME[,NAME...]        Send each project's agent 'Read "<path>" and follow it.' for a library play,
+                                     then any --prompt text. Repeatable, and each value may list plays separated by
+                                     commas; the agent gets one line per play, in order. Looked up per project (its
+                                     library, then global); an unknown or unreadable play fails before anything launches
+        --pack NAME                  Also send the agent a library pack's text with the first prompt (repeatable; see
+                                     'workspace instructions compose --help'). An unknown pack fails before anything launches
+        --no-packs                   Send no automatic packs (the notes pack, unless notes.instructions is false;
+                                     the spine pack, when spine/ exists; the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true);
+                                     cannot be combined with --pack
+        --[no-]handoff               Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude
+                                     Code or Codex agent run 'workspace handoff check' after every task. --handoff for a project
+                                     whose main agent is neither fails before anything launches (handoff_unsupported_agent)
+        --arrange                    Tile the new windows, ignoring the window positions saved when they were
+                                     stopped (launch.restore_window_position false does the same on every launch)
+        --json                       Print one action document (see docs/README.json.md) instead of progress text;
+                                     the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did
+
+Headless: a session already running is reused as it is; attach with
+'tmux attach -t <session>'. --reattach has no effect headless.
+
+Note: --reattach uses tmux -CC attach which may trigger an iTerm dialog.
+To suppress it, set iTerm > Settings > General > tmux >
+  'When attaching, restore windows' to 'Always'.
+
+A directory path creates a config named in lowercase. A name that differs only
+in case from another workspace's is refused (workspace_name_case_conflict); the
+same directory's mixed-case config is reused.
+
+Examples:
+  workspace launch my-project    # launch one project by name
+  workspace launch my-notes work-notes billing    # launch several projects
+  workspace launch ~/Code/my-project    # launch from a directory path (creates a config)
+  workspace launch --reattach my-project    # reuse the pane's existing tmux session
+  workspace launch --arrange my-project    # tile the window, ignoring its saved position
+  workspace launch --prompt "Review the README" my-project    # send the agent an initial prompt
+  workspace launch --play kickoff my-project    # point the agent at a library play
+  workspace launch --play kickoff,review my-project    # two plays; --play a --play b does the same
+--- stderr
+--- end
+### workspace launch --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace launch [options] <project1> [project2] ..."],"description":"Launch tmuxinator projects in iTerm2, each in its own window.\nReuses existing launcher panes when available.\nWindows are arranged left-to-right with slight overlap.","options":[{"flags":"--reattach","description":"Reuse a launcher pane's existing tmux session instead of relaunching into it (see docs/README.launch.md)."},{"flags":"--[no-]headless","description":"Start each session in the background with plain tmux: no iTerm2, AppleScript or window-tool. Default: the launch.headless config key if set, else headless when not on macOS, when osascript is missing, or when CI is set"},{"flags":"--prompt PROMPT","description":"Send an initial prompt to the coding agent in each project, once it is ready (up to 60s); exits 1 if it can't be sent"},{"flags":"--prompt-timeout DURATION","description":"How long to wait for the coding agent to be ready for --prompt (e.g. \"90s\", or a plain number of seconds); default 60s"},{"flags":"--play NAME[,NAME...]","description":"Send each project's agent 'Read \"<path>\" and follow it.' for a library play, then any --prompt text. Repeatable, and each value may list plays separated by commas; the agent gets one line per play, in order. Looked up per project (its library, then global); an unknown or unreadable play fails before anything launches"},{"flags":"--pack NAME","description":"Also send the agent a library pack's text with the first prompt (repeatable; see 'workspace instructions compose --help'). An unknown pack fails before anything launches"},{"flags":"--no-packs","description":"Send no automatic packs (the notes pack, unless notes.instructions is false; the spine pack, when spine/ exists; the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true); cannot be combined with --pack"},{"flags":"--[no-]handoff","description":"Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude Code or Codex agent run 'workspace handoff check' after every task. --handoff for a project whose main agent is neither fails before anything launches (handoff_unsupported_agent)"},{"flags":"--arrange","description":"Tile the new windows, ignoring the window positions saved when they were stopped (launch.restore_window_position false does the same on every launch)"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of progress text; the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did Headless: a session already running is reused as it is; attach with 'tmux attach -t <session>'. --reattach has no effect headless. Note: --reattach uses tmux -CC attach which may trigger an iTerm dialog. To suppress it, set iTerm > Settings > General > tmux > 'When attaching, restore windows' to 'Always'. A directory path creates a config named in lowercase. A name that differs only in case from another workspace's is refused (workspace_name_case_conflict); the same directory's mixed-case config is reused."}],"examples":[{"command":"workspace launch my-project","scenario":"launch one project by name"},{"command":"workspace launch my-notes work-notes billing","scenario":"launch several projects"},{"command":"workspace launch ~/Code/my-project","scenario":"launch from a directory path (creates a config)"},{"command":"workspace launch --reattach my-project","scenario":"reuse the pane's existing tmux session"},{"command":"workspace launch --arrange my-project","scenario":"tile the window, ignoring its saved position"},{"command":"workspace launch --prompt \"Review the README\" my-project","scenario":"send the agent an initial prompt"},{"command":"workspace launch --play kickoff my-project","scenario":"point the agent at a library play"},{"command":"workspace launch --play kickoff,review my-project","scenario":"two plays; --play a --play b does the same"}]}
+--- stderr
+--- end
+### workspace launch --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace launch --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace launch
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace launch [options] <project1> [project2] ...
+
+Launch tmuxinator projects in iTerm2, each in its own window.
+Reuses existing launcher panes when available.
+Windows are arranged left-to-right with slight overlap.
+
+Options:
+        --reattach                   Reuse a launcher pane's existing tmux session instead of relaunching
+                                     into it (see docs/README.launch.md).
+        --[no-]headless              Start each session in the background with plain tmux: no iTerm2,
+                                     AppleScript or window-tool. Default: the launch.headless config key if set,
+                                     else headless when not on macOS, when osascript is missing, or when CI is set
+        --prompt PROMPT              Send an initial prompt to the coding agent in each project, once it is
+                                     ready (up to 60s); exits 1 if it can't be sent
+        --prompt-timeout DURATION    How long to wait for the coding agent to be ready for --prompt
+                                     (e.g. "90s", or a plain number of seconds); default 60s
+        --play NAME[,NAME...]        Send each project's agent 'Read "<path>" and follow it.' for a library play,
+                                     then any --prompt text. Repeatable, and each value may list plays separated by
+                                     commas; the agent gets one line per play, in order. Looked up per project (its
+                                     library, then global); an unknown or unreadable play fails before anything launches
+        --pack NAME                  Also send the agent a library pack's text with the first prompt (repeatable; see
+                                     'workspace instructions compose --help'). An unknown pack fails before anything launches
+        --no-packs                   Send no automatic packs (the notes pack, unless notes.instructions is false;
+                                     the spine pack, when spine/ exists; the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true);
+                                     cannot be combined with --pack
+        --[no-]handoff               Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude
+                                     Code or Codex agent run 'workspace handoff check' after every task. --handoff for a project
+                                     whose main agent is neither fails before anything launches (handoff_unsupported_agent)
+        --arrange                    Tile the new windows, ignoring the window positions saved when they were
+                                     stopped (launch.restore_window_position false does the same on every launch)
+        --json                       Print one action document (see docs/README.json.md) instead of progress text;
+                                     the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did
+
+Headless: a session already running is reused as it is; attach with
+'tmux attach -t <session>'. --reattach has no effect headless.
+
+Note: --reattach uses tmux -CC attach which may trigger an iTerm dialog.
+To suppress it, set iTerm > Settings > General > tmux >
+  'When attaching, restore windows' to 'Always'.
+
+A directory path creates a config named in lowercase. A name that differs only
+in case from another workspace's is refused (workspace_name_case_conflict); the
+same directory's mixed-case config is reused.
+
+Examples:
+  workspace launch my-project    # launch one project by name
+  workspace launch my-notes work-notes billing    # launch several projects
+  workspace launch ~/Code/my-project    # launch from a directory path (creates a config)
+  workspace launch --reattach my-project    # reuse the pane's existing tmux session
+  workspace launch --arrange my-project    # tile the window, ignoring its saved position
+  workspace launch --prompt "Review the README" my-project    # send the agent an initial prompt
+  workspace launch --play kickoff my-project    # point the agent at a library play
+  workspace launch --play kickoff,review my-project    # two plays; --play a --play b does the same
+--- end

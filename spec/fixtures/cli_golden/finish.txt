@@ -1,0 +1,54 @@
+### workspace finish --help
+--- exit 0
+--- stdout
+Usage: workspace finish [--name WS] [--pr] [--json] [project]
+
+Verify a worktree project is clean and fully pushed, then remove it
+the same way 'workspace kill' does (session, worktree, config, state).
+
+If no project is given (positionally or with --name), finishes the workspace
+the current directory is in: a worktree's .workspace-project marker, else the
+active workspace whose root holds it. Outside any workspace it refuses
+(not_in_workspace).
+
+Refuses when the branch has uncommitted changes to tracked files
+(untracked files don't count), has no upstream, or is ahead of its
+upstream. There is no override; push or commit first.
+
+Options:
+        --name NAME                  The worktree workspace to finish (default: the one detected from the current directory)
+        --pr                         Open a PR with `gh pr create --fill` (or reuse an existing one) first;
+                                     skipped with a note if `gh` isn't installed
+        --json                       Emit the documented JSON schema instead of plain text (see docs/README.finish.md)
+
+Examples:
+  workspace finish    # remove the worktree workspace you are in (session, worktree, config), once it is clean and pushed; the branch is kept
+  workspace finish --pr    # open (or reuse) a PR for the branch first, then remove the workspace
+  workspace finish --name myproject.worktree-PROJ-123    # finish a named worktree workspace, from anywhere
+  workspace finish myproject.worktree-PROJ-123 --json    # the same, scripted; JSON on stdout
+--- stderr
+--- end
+### workspace finish --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace finish [--name WS] [--pr] [--json] [project]"],"description":"Verify a worktree project is clean and fully pushed, then remove it\nthe same way 'workspace kill' does (session, worktree, config, state).\n\nIf no project is given (positionally or with --name), finishes the workspace\nthe current directory is in: a worktree's .workspace-project marker, else the\nactive workspace whose root holds it. Outside any workspace it refuses\n(not_in_workspace).\n\nRefuses when the branch has uncommitted changes to tracked files\n(untracked files don't count), has no upstream, or is ahead of its\nupstream. There is no override; push or commit first.","options":[{"flags":"--name NAME","description":"The worktree workspace to finish (default: the one detected from the current directory)"},{"flags":"--pr","description":"Open a PR with `gh pr create --fill` (or reuse an existing one) first; skipped with a note if `gh` isn't installed"},{"flags":"--json","description":"Emit the documented JSON schema instead of plain text (see docs/README.finish.md)"}],"examples":[{"command":"workspace finish","scenario":"remove the worktree workspace you are in (session, worktree, config), once it is clean and pushed; the branch is kept"},{"command":"workspace finish --pr","scenario":"open (or reuse) a PR for the branch first, then remove the workspace"},{"command":"workspace finish --name myproject.worktree-PROJ-123","scenario":"finish a named worktree workspace, from anywhere"},{"command":"workspace finish myproject.worktree-PROJ-123 --json","scenario":"the same, scripted; JSON on stdout"}]}
+--- stderr
+--- end
+### workspace finish --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace finish --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace finish
+--- exit 1
+--- stdout
+--- stderr
+Error: No workspace found for $CWD. Run from inside a worktree workspace or name one (--name WS).
+--- end

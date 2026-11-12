@@ -1,0 +1,383 @@
+### workspace agent-run --help
+--- exit 0
+--- stdout
+Usage: workspace agent-run <subcommand> [options]
+       workspace agent-run --body '<full message JSON>' [--dry-run]
+
+Send a raw JSONL message to a running agent socket.
+Always prints the message being sent before sending it.
+
+Subcommands:
+  command   Send a "command" message that delivers work to the first pipeline stage
+  inject    Send an "inject" message that steers a running work item
+  restart   Clear the coding agent in one pane and give it a fresh prompt
+  send      Type text or tmux keys into one pane of a workspace's tmux session
+  queue     List or cancel the prompts `agent-run send --when-idle` has queued, and see why each waits
+  examples  Print all stock example messages without sending anything
+
+Raw mode (paste a full message directly):
+  --body JSON         Complete message JSON; workspace is read from the message
+  --dry-run           Print without sending
+
+Run `workspace agent-run VERB --help` for a verb's options.
+
+Examples:
+  workspace agent-run command --body "Add OAuth support"    # send a task to the current directory's workspace
+  workspace agent-run command --name myapp --dry-run    # see the message for a named workspace, send nothing
+  workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"    # steer a running work item
+  workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md"    # clear a pane's agent and give it a prompt
+  workspace agent-run send --pane %19 --body "yes"    # type into a pane and press Enter
+  workspace agent-run queue list    # what `send --when-idle` has queued
+  workspace agent-run queue cancel --id 3f9a2c41d07b5e88    # take a queued prompt back
+  workspace agent-run --body '{"type":"command","workspace":"myapp","work_item_ref":"WC-42","dispatch_id":"debug-1","body":"go"}' --dry-run    # a full message you wrote
+  workspace agent-run examples    # stock messages to copy, nothing sent
+--- stderr
+--- end
+### workspace agent-run --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent-run <subcommand> [options]","workspace agent-run --body '<full message JSON>' [--dry-run]"],"description":"Send a raw JSONL message to a running agent socket.\nAlways prints the message being sent before sending it.","options":[],"examples":[{"command":"workspace agent-run command --body \"Add OAuth support\"","scenario":"send a task to the current directory's workspace"},{"command":"workspace agent-run command --name myapp --dry-run","scenario":"see the message for a named workspace, send nothing"},{"command":"workspace agent-run inject --work-item WC-42 --body \"Use Postgres, not SQLite\"","scenario":"steer a running work item"},{"command":"workspace agent-run restart --pane %18 --prompt \"Resume from HANDOFF.md\"","scenario":"clear a pane's agent and give it a prompt"},{"command":"workspace agent-run send --pane %19 --body \"yes\"","scenario":"type into a pane and press Enter"},{"command":"workspace agent-run queue list","scenario":"what `send --when-idle` has queued"},{"command":"workspace agent-run queue cancel --id 3f9a2c41d07b5e88","scenario":"take a queued prompt back"},{"command":"workspace agent-run --body '{\"type\":\"command\",\"workspace\":\"myapp\",\"work_item_ref\":\"WC-42\",\"dispatch_id\":\"debug-1\",\"body\":\"go\"}' --dry-run","scenario":"a full message you wrote"},{"command":"workspace agent-run examples","scenario":"stock messages to copy, nothing sent"}],"sections":[{"heading":"Subcommands","text":"command   Send a \"command\" message that delivers work to the first pipeline stage\n  inject    Send an \"inject\" message that steers a running work item\n  restart   Clear the coding agent in one pane and give it a fresh prompt\n  send      Type text or tmux keys into one pane of a workspace's tmux session\n  queue     List or cancel the prompts `agent-run send --when-idle` has queued, and see why each waits\n  examples  Print all stock example messages without sending anything"},{"heading":"Raw mode (paste a full message directly)","text":"--body JSON         Complete message JSON; workspace is read from the message\n  --dry-run           Print without sending\n\nRun `workspace agent-run VERB --help` for a verb's options."}]}
+--- stderr
+--- end
+### workspace agent-run command --help
+--- exit 0
+--- stdout
+Usage: workspace agent-run command [--name NAME] [--work-item REF] [--body TEXT] [--dry-run]
+
+Send a "command" message that delivers work to the first pipeline stage.
+
+Prints the message, sends it to the workspace's agent daemon and prints the reply. Without --dry-run the message is really sent; with no daemon running it exits 1 with an error.
+A --body that parses as JSON is compacted to one line first.
+A reply with ok:false (not_delivered, for one) still exits 0: a script must read the reply.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --work-item REF              Work item reference, e.g. WC-42 (default: a random UUID)
+    --body TEXT                  Text to type into the first pipeline pane (default: "Begin work.")
+    --dry-run                    Print the message without sending it
+    -h, --help                   Show this help
+
+Examples:
+  workspace agent-run command --body "Add OAuth support"    # send a task to the current directory's workspace, under a generated work item
+  workspace agent-run command --work-item WC-42 --body "Add OAuth support"    # send it under a work item reference you choose
+  workspace agent-run command --name myapp --work-item WC-42 --body "Add OAuth support" --dry-run    # see the message for a named workspace and send nothing
+  workspace agent-run command --name myapp    # send the default body, "Begin work.", from any directory
+--- stderr
+--- end
+### workspace agent-run command --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent-run command [--name NAME] [--work-item REF] [--body TEXT] [--dry-run]"],"description":"Send a \"command\" message that delivers work to the first pipeline stage.\n\nPrints the message, sends it to the workspace's agent daemon and prints the reply. Without --dry-run the message is really sent; with no daemon running it exits 1 with an error.\nA --body that parses as JSON is compacted to one line first.\nA reply with ok:false (not_delivered, for one) still exits 0: a script must read the reply.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--work-item REF","description":"Work item reference, e.g. WC-42 (default: a random UUID)"},{"flags":"--body TEXT","description":"Text to type into the first pipeline pane (default: \"Begin work.\")"},{"flags":"--dry-run","description":"Print the message without sending it"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace agent-run command --body \"Add OAuth support\"","scenario":"send a task to the current directory's workspace, under a generated work item"},{"command":"workspace agent-run command --work-item WC-42 --body \"Add OAuth support\"","scenario":"send it under a work item reference you choose"},{"command":"workspace agent-run command --name myapp --work-item WC-42 --body \"Add OAuth support\" --dry-run","scenario":"see the message for a named workspace and send nothing"},{"command":"workspace agent-run command --name myapp","scenario":"send the default body, \"Begin work.\", from any directory"}]}
+--- stderr
+--- end
+### workspace agent-run inject --help
+--- exit 0
+--- stdout
+Usage: workspace agent-run inject [--name NAME] --work-item REF --body TEXT [--interrupt] [--dry-run]
+
+Send an "inject" message that steers a running work item.
+
+Prints the message, sends it to the workspace's agent daemon and prints the reply. Without --dry-run the message is really sent; with no daemon running it exits 1 with an error.
+A --body that parses as JSON is compacted to one line first.
+Without --interrupt the text is held for the next stage (the reply is ok:true with queued_for_pane);
+it is not typed now. A reply with ok:false (no_active_pipeline, no_next_stage, stale_token) still
+exits 0: a script must read the reply.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --work-item REF              Work item reference (required)
+    --body TEXT                  Text to inject into the pane (required)
+    --interrupt                  Interrupt the running stage first (sends Ctrl-C)
+    --dry-run                    Print the message without sending it
+    -h, --help                   Show this help
+
+Examples:
+  workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"    # queue a steer for the next stage of a work item in the current directory's workspace
+  workspace agent-run inject --work-item WC-42 --body "Stop and pivot to the auth approach" --interrupt    # stop the running stage first, then redirect
+  workspace agent-run inject --name myapp --work-item WC-42 --body "Use Postgres, not SQLite" --dry-run    # see the message for a named workspace and send nothing
+--- stderr
+--- end
+### workspace agent-run inject --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent-run inject [--name NAME] --work-item REF --body TEXT [--interrupt] [--dry-run]"],"description":"Send an \"inject\" message that steers a running work item.\n\nPrints the message, sends it to the workspace's agent daemon and prints the reply. Without --dry-run the message is really sent; with no daemon running it exits 1 with an error.\nA --body that parses as JSON is compacted to one line first.\nWithout --interrupt the text is held for the next stage (the reply is ok:true with queued_for_pane);\nit is not typed now. A reply with ok:false (no_active_pipeline, no_next_stage, stale_token) still\nexits 0: a script must read the reply.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--work-item REF","description":"Work item reference (required)"},{"flags":"--body TEXT","description":"Text to inject into the pane (required)"},{"flags":"--interrupt","description":"Interrupt the running stage first (sends Ctrl-C)"},{"flags":"--dry-run","description":"Print the message without sending it"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace agent-run inject --work-item WC-42 --body \"Use Postgres, not SQLite\"","scenario":"queue a steer for the next stage of a work item in the current directory's workspace"},{"command":"workspace agent-run inject --work-item WC-42 --body \"Stop and pivot to the auth approach\" --interrupt","scenario":"stop the running stage first, then redirect"},{"command":"workspace agent-run inject --name myapp --work-item WC-42 --body \"Use Postgres, not SQLite\" --dry-run","scenario":"see the message for a named workspace and send nothing"}]}
+--- stderr
+--- end
+### workspace agent-run restart --help
+--- exit 0
+--- stdout
+Usage: workspace agent-run restart --pane PANE --prompt TEXT [--name NAME] [--force] [--wait] [--timeout DURATION] [--json]
+
+Clear the coding agent in one pane and give it a fresh prompt.
+
+This restarts the pane for real. The agent daemon first waits up to 120s (fixed, not bounded by
+--timeout) for the pane to go quiet, types /clear, then waits until the new session's first
+status-line render confirms the clear, then types the prompt. --timeout only bounds that confirm
+step. A draft in a Claude pane's input box refuses it (pane_busy, reason input_not_empty; Claude's
+grey suggestion is not a draft), and so does a running turn (turn_started). A screen that keeps
+moving after the agent went idle is accepted once the turn is proven over for 5s, with a warning
+that background work may be lost. A sub-agent still running (seen by hooks) when /clear is typed
+gets its own warning; a background shell is not detected. Both are warnings only. Without --wait a
+refusal shows only in the daemon's log.
+If the clear can't be confirmed, the prompt is not typed. An agent can run this on its own
+pane and end its turn: the daemon types from outside the pane. Only Claude panes are accepted
+(other agents fail with code unsupported_agent). Needs context readings, so `workspace statusline`
+must be installed as Claude's statusLine.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --pane PANE                  Pane to restart: a pane id (%12), window.pane (0.1), session:window.pane, or a pane index in window 0 (required)
+    --prompt TEXT                Text typed once /clear is confirmed (required)
+    --force                      Restart even when a pipeline stage is running on the pane
+    --wait                       Wait for the restart to finish and report how it went
+    --timeout DURATION           Longest wait for context usage to drop after /clear (e.g. "45s", or seconds); default 30s, at most 600s
+    --json                       Print the result as JSON; errors as {"schema_version":1,"ok":false,"error":...}
+    -h, --help                   Show this help
+
+Examples:
+  workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md"    # restart pane %18 of the current directory's workspace; returns once the restart has started
+  workspace agent-run restart --name myapp --pane 0.1 --prompt "Read HANDOFF.md and follow it." --wait    # restart a named workspace's pane and wait for the outcome
+  workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md" --json    # the result as a JSON document, for a script
+  workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md" --wait --timeout 45s    # allow 45 seconds for context usage to drop after /clear
+  workspace agent-run restart --pane %18 --prompt "Start over from HANDOFF.md" --force    # restart even though a pipeline stage is running on the pane
+--- stderr
+--- end
+### workspace agent-run restart --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent-run restart --pane PANE --prompt TEXT [--name NAME] [--force] [--wait] [--timeout DURATION] [--json]"],"description":"Clear the coding agent in one pane and give it a fresh prompt.\n\nThis restarts the pane for real. The agent daemon first waits up to 120s (fixed, not bounded by\n--timeout) for the pane to go quiet, types /clear, then waits until the new session's first\nstatus-line render confirms the clear, then types the prompt. --timeout only bounds that confirm\nstep. A draft in a Claude pane's input box refuses it (pane_busy, reason input_not_empty; Claude's\ngrey suggestion is not a draft), and so does a running turn (turn_started). A screen that keeps\nmoving after the agent went idle is accepted once the turn is proven over for 5s, with a warning\nthat background work may be lost. A sub-agent still running (seen by hooks) when /clear is typed\ngets its own warning; a background shell is not detected. Both are warnings only. Without --wait a\nrefusal shows only in the daemon's log.\nIf the clear can't be confirmed, the prompt is not typed. An agent can run this on its own\npane and end its turn: the daemon types from outside the pane. Only Claude panes are accepted\n(other agents fail with code unsupported_agent). Needs context readings, so `workspace statusline`\nmust be installed as Claude's statusLine.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--pane PANE","description":"Pane to restart: a pane id (%12), window.pane (0.1), session:window.pane, or a pane index in window 0 (required)"},{"flags":"--prompt TEXT","description":"Text typed once /clear is confirmed (required)"},{"flags":"--force","description":"Restart even when a pipeline stage is running on the pane"},{"flags":"--wait","description":"Wait for the restart to finish and report how it went"},{"flags":"--timeout DURATION","description":"Longest wait for context usage to drop after /clear (e.g. \"45s\", or seconds); default 30s, at most 600s"},{"flags":"--json","description":"Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace agent-run restart --pane %18 --prompt \"Resume from HANDOFF.md\"","scenario":"restart pane %18 of the current directory's workspace; returns once the restart has started"},{"command":"workspace agent-run restart --name myapp --pane 0.1 --prompt \"Read HANDOFF.md and follow it.\" --wait","scenario":"restart a named workspace's pane and wait for the outcome"},{"command":"workspace agent-run restart --pane %18 --prompt \"Resume from HANDOFF.md\" --json","scenario":"the result as a JSON document, for a script"},{"command":"workspace agent-run restart --pane %18 --prompt \"Resume from HANDOFF.md\" --wait --timeout 45s","scenario":"allow 45 seconds for context usage to drop after /clear"},{"command":"workspace agent-run restart --pane %18 --prompt \"Start over from HANDOFF.md\" --force","scenario":"restart even though a pipeline stage is running on the pane"}]}
+--- stderr
+--- end
+### workspace agent-run send --help
+--- exit 0
+--- stdout
+Usage: workspace agent-run send --pane PANE (--body TEXT | --keys KEYS) [--name NAME] [--no-enter] [--when-idle] [--clear-first] [--interrupt] [--json]
+
+Type text or tmux keys into one pane of a workspace's tmux session.
+
+Goes straight through tmux (no agent daemon) unless --when-idle, --clear-first or --interrupt is given.
+The pane is always named: a pane id (%19, from `workspace sessions --json`) or window.pane (0.1). It is
+checked against the workspace's own tmux session first, so a wrong or stale pane is an error, never a
+different pane.
+
+  --body TEXT  pastes TEXT literally (no key names are interpreted), then presses Enter.
+  --keys KEYS  sends tmux key names, never text and never an implicit Enter: add Enter
+               yourself ("Escape", "Up Up Enter", "C-c", "y"). Anything that isn't a key
+               name is refused before the first key is sent.
+
+  --when-idle  hands --body to the workspace's agent daemon instead: typed now if the agent's
+               turn has ended, else queued and typed (paste, then Enter) when it ends, one
+               prompt per turn end, in order. Claude Code panes only; a pane waiting on a
+               person is refused (pane_waiting), and so is a 9th queued prompt (queue_full).
+  --clear-first  types the agent's clear (/clear) first and waits up to 15s for its hooks to report
+               the new conversation (SessionStart, source clear), then the text. Claude Code panes
+               with hooks only (else clear_unsupported). With --when-idle it waits for the turn to
+               end; without, a pane mid-turn, with a draft or with prompts queued is refused
+               (pane_busy). Not confirmed: nothing more
+               is typed (clear_unconfirmed, exit 75, details.clear_typed).
+  --interrupt  with --body, in one call: presses the agent's interrupt key (Escape), waits up to 15s
+               for its prompt to come back, then types the text. The agent daemon does all three
+               under its delivery lock, so no other writer types in between. Claude Code panes
+               only (unsupported_agent, no_interrupt_key); prompt not back in time: not_ready,
+               nothing typed. Not with --keys, --no-enter, --when-idle or --clear-first.
+
+Exit codes: 0 delivered (or, with --when-idle, queued); 1 not delivered (safe to resend), refused or
+  bad input, except --when-idle's connection_failed with details.maybe_delivered (check first);
+  2 text landed but wasn't confirmed submitted (check the pane before resending);
+  75 --clear-first typed the clear but it wasn't confirmed, so the text wasn't typed (check, then retry).
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --pane PANE                  Pane id (%19) or window.pane (0.1)  (required)
+    --body TEXT                  Literal text to paste, then Enter
+    --keys KEYS                  Space-separated tmux key names
+    --no-enter                   With --body, paste the text without pressing Enter
+    --when-idle                  With --body, type it once the agent's turn ends (queued by the agent daemon)
+    --clear-first                With --body, clear the conversation and confirm it before typing (agent daemon)
+    --interrupt                  With --body, interrupt the agent, wait for its prompt, then type (agent daemon)
+    --json                       Print the result as JSON; errors as {"schema_version":1,"ok":false,"error":...}
+    -h, --help                   Show this help
+
+Examples:
+  workspace agent-run send --pane %19 --body "yes"    # answer pane %19 of the current directory's workspace and press Enter
+  workspace agent-run send --pane 0.1 --keys "Up Enter"    # press keys, not text: Up, then Enter
+  workspace agent-run send --name api --pane %19 --keys Escape --json    # interrupt a named workspace's pane; the result as JSON
+  workspace agent-run send --pane %19 --body "Fix the typo in" --no-enter    # leave a draft in the pane without submitting it
+  workspace agent-run send --name api --pane %19 --body "Now run the specs" --when-idle --json    # queue the prompt for when the agent's turn ends
+  workspace agent-run send --name api --pane %19 --body "Start on the docs" --when-idle --clear-first --json    # queue it, and start from a cleared conversation
+  workspace agent-run send --name api --pane %19 --body "Stop; do this instead" --interrupt --json    # interrupt a working agent and redirect it in one call
+--- stderr
+--- end
+### workspace agent-run send --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent-run send --pane PANE (--body TEXT | --keys KEYS) [--name NAME] [--no-enter] [--when-idle] [--clear-first] [--interrupt] [--json]"],"description":"Type text or tmux keys into one pane of a workspace's tmux session.\n\nGoes straight through tmux (no agent daemon) unless --when-idle, --clear-first or --interrupt is given.\nThe pane is always named: a pane id (%19, from `workspace sessions --json`) or window.pane (0.1). It is\nchecked against the workspace's own tmux session first, so a wrong or stale pane is an error, never a\ndifferent pane.\n\n  --body TEXT  pastes TEXT literally (no key names are interpreted), then presses Enter.\n  --keys KEYS  sends tmux key names, never text and never an implicit Enter: add Enter\n               yourself (\"Escape\", \"Up Up Enter\", \"C-c\", \"y\"). Anything that isn't a key\n               name is refused before the first key is sent.\n\n  --when-idle  hands --body to the workspace's agent daemon instead: typed now if the agent's\n               turn has ended, else queued and typed (paste, then Enter) when it ends, one\n               prompt per turn end, in order. Claude Code panes only; a pane waiting on a\n               person is refused (pane_waiting), and so is a 9th queued prompt (queue_full).\n  --clear-first  types the agent's clear (/clear) first and waits up to 15s for its hooks to report\n               the new conversation (SessionStart, source clear), then the text. Claude Code panes\n               with hooks only (else clear_unsupported). With --when-idle it waits for the turn to\n               end; without, a pane mid-turn, with a draft or with prompts queued is refused\n               (pane_busy). Not confirmed: nothing more\n               is typed (clear_unconfirmed, exit 75, details.clear_typed).\n  --interrupt  with --body, in one call: presses the agent's interrupt key (Escape), waits up to 15s\n               for its prompt to come back, then types the text. The agent daemon does all three\n               under its delivery lock, so no other writer types in between. Claude Code panes\n               only (unsupported_agent, no_interrupt_key); prompt not back in time: not_ready,\n               nothing typed. Not with --keys, --no-enter, --when-idle or --clear-first.\n\nExit codes: 0 delivered (or, with --when-idle, queued); 1 not delivered (safe to resend), refused or\n  bad input, except --when-idle's connection_failed with details.maybe_delivered (check first);\n  2 text landed but wasn't confirmed submitted (check the pane before resending);\n  75 --clear-first typed the clear but it wasn't confirmed, so the text wasn't typed (check, then retry).","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--pane PANE","description":"Pane id (%19) or window.pane (0.1)  (required)"},{"flags":"--body TEXT","description":"Literal text to paste, then Enter"},{"flags":"--keys KEYS","description":"Space-separated tmux key names"},{"flags":"--no-enter","description":"With --body, paste the text without pressing Enter"},{"flags":"--when-idle","description":"With --body, type it once the agent's turn ends (queued by the agent daemon)"},{"flags":"--clear-first","description":"With --body, clear the conversation and confirm it before typing (agent daemon)"},{"flags":"--interrupt","description":"With --body, interrupt the agent, wait for its prompt, then type (agent daemon)"},{"flags":"--json","description":"Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace agent-run send --pane %19 --body \"yes\"","scenario":"answer pane %19 of the current directory's workspace and press Enter"},{"command":"workspace agent-run send --pane 0.1 --keys \"Up Enter\"","scenario":"press keys, not text: Up, then Enter"},{"command":"workspace agent-run send --name api --pane %19 --keys Escape --json","scenario":"interrupt a named workspace's pane; the result as JSON"},{"command":"workspace agent-run send --pane %19 --body \"Fix the typo in\" --no-enter","scenario":"leave a draft in the pane without submitting it"},{"command":"workspace agent-run send --name api --pane %19 --body \"Now run the specs\" --when-idle --json","scenario":"queue the prompt for when the agent's turn ends"},{"command":"workspace agent-run send --name api --pane %19 --body \"Start on the docs\" --when-idle --clear-first --json","scenario":"queue it, and start from a cleared conversation"},{"command":"workspace agent-run send --name api --pane %19 --body \"Stop; do this instead\" --interrupt --json","scenario":"interrupt a working agent and redirect it in one call"}]}
+--- stderr
+--- end
+### workspace agent-run queue --help
+--- exit 0
+--- stdout
+Usage: workspace agent-run queue list [--name NAME] [--pane PANE] [--json]
+       workspace agent-run queue cancel --id ID [--name NAME] [--json]
+
+List or cancel the prompts `agent-run send --when-idle` has queued, and see why each waits.
+
+Both read the queue file directly, so they work with no agent daemon running.
+
+list    One row per queued prompt: pane_id, position (from 1, within the pane), state
+        (queued or delivering), queued_at, clear_first, a 200-character preview and the
+        full length, and waiting_reason, waiting_message and waiting_since (null unless the
+        pane refused the text at its last try, e.g. input_not_empty for a draft). Rows come
+        grouped by pane, the pane with the oldest entry first.
+cancel  Removes a queued prompt and answers its full text. See `queue cancel --help`.
+
+Options:
+    -h, --help                   Show this help
+
+Examples:
+  workspace agent-run queue list    # what is queued in the current directory's workspace
+  workspace agent-run queue list --name api --pane %19 --json    # one pane of a named workspace, for a script
+  workspace agent-run queue cancel --id 3f9a2c41d07b5e88    # take a queued prompt back
+--- stderr
+--- end
+### workspace agent-run queue --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent-run queue list [--name NAME] [--pane PANE] [--json]","workspace agent-run queue cancel --id ID [--name NAME] [--json]"],"description":"List or cancel the prompts `agent-run send --when-idle` has queued, and see why each waits.\n\nBoth read the queue file directly, so they work with no agent daemon running.\n\nlist    One row per queued prompt: pane_id, position (from 1, within the pane), state\n        (queued or delivering), queued_at, clear_first, a 200-character preview and the\n        full length, and waiting_reason, waiting_message and waiting_since (null unless the\n        pane refused the text at its last try, e.g. input_not_empty for a draft). Rows come\n        grouped by pane, the pane with the oldest entry first.\ncancel  Removes a queued prompt and answers its full text. See `queue cancel --help`.","options":[{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace agent-run queue list","scenario":"what is queued in the current directory's workspace"},{"command":"workspace agent-run queue list --name api --pane %19 --json","scenario":"one pane of a named workspace, for a script"},{"command":"workspace agent-run queue cancel --id 3f9a2c41d07b5e88","scenario":"take a queued prompt back"}]}
+--- stderr
+--- end
+### workspace agent-run queue list --help
+--- exit 0
+--- stdout
+Usage: workspace agent-run queue list [--name NAME] [--pane PANE] [--json]
+
+List the prompts `agent-run send --when-idle` has queued, per pane.
+
+Reads the queue file directly, so it works with no agent daemon running. One row per queued
+prompt: pane_id, position (from 1, within the pane), state (queued or delivering), queued_at,
+clear_first, a 200-character preview and the full length, and waiting_reason, waiting_message and
+waiting_since (null unless the pane refused the text at its last try, e.g. input_not_empty for a
+draft). Rows come grouped by pane, the pane with the oldest entry first. --pane takes a pane id (%19, matched as given, no tmux call) or window.pane
+(0.1, looked up in the workspace's tmux session). Writes nothing.
+
+Options:
+    --name NAME                  Workspace (default: detected from the current directory)
+    --pane PANE                  Only this pane: a pane id (%19) or window.pane (0.1)
+    --json                       Print {"entries":[...]} as JSON; errors as {"schema_version":1,"ok":false,"error":...}
+    -h, --help                   Show this help
+
+Examples:
+  workspace agent-run queue list    # what is queued in the current directory's workspace
+  workspace agent-run queue list --name api --pane %19    # only one pane of a named workspace
+  workspace agent-run queue list --name api --json    # every queued prompt of a named workspace, for a script
+--- stderr
+--- end
+### workspace agent-run queue list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent-run queue list [--name NAME] [--pane PANE] [--json]"],"description":"List the prompts `agent-run send --when-idle` has queued, per pane.\n\nReads the queue file directly, so it works with no agent daemon running. One row per queued\nprompt: pane_id, position (from 1, within the pane), state (queued or delivering), queued_at,\nclear_first, a 200-character preview and the full length, and waiting_reason, waiting_message and\nwaiting_since (null unless the pane refused the text at its last try, e.g. input_not_empty for a\ndraft). Rows come grouped by pane, the pane with the oldest entry first. --pane takes a pane id (%19, matched as given, no tmux call) or window.pane\n(0.1, looked up in the workspace's tmux session). Writes nothing.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--pane PANE","description":"Only this pane: a pane id (%19) or window.pane (0.1)"},{"flags":"--json","description":"Print {\"entries\":[...]} as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace agent-run queue list","scenario":"what is queued in the current directory's workspace"},{"command":"workspace agent-run queue list --name api --pane %19","scenario":"only one pane of a named workspace"},{"command":"workspace agent-run queue list --name api --json","scenario":"every queued prompt of a named workspace, for a script"}]}
+--- stderr
+--- end
+### workspace agent-run queue cancel --help
+--- exit 0
+--- stdout
+Usage: workspace agent-run queue cancel --id ID [--name NAME] [--json]
+
+Take a queued prompt back and print its text.
+
+Removes the prompt from the queue file for real, with no agent daemon needed, and records a
+prompt_dequeued event. A prompt the daemon has claimed but not started to paste is stopped before
+anything is typed. One already being typed, already typed, or unknown is refused as unknown_id
+(details.state "delivering" when it is being typed). The id is the one `send --when-idle` answered,
+or `queue list` shows. Without --name every workspace's queue is searched.
+
+Options:
+    --id ID                      The id `send --when-idle` answered  (required)
+    --name NAME                  Workspace name (default: look through every workspace's queue)
+    --json                       Print {"cancelled":true,"id","pane_id","text"} as JSON; errors as {"schema_version":1,"ok":false,"error":...}
+    -h, --help                   Show this help
+
+Examples:
+  workspace agent-run queue cancel --id 3f9a2c41d07b5e88    # take a prompt back, whichever workspace queued it
+  workspace agent-run queue cancel --id 3f9a2c41d07b5e88 --name api    # look only in one workspace's queue
+  workspace agent-run queue cancel --id 3f9a2c41d07b5e88 --json    # the cancelled prompt's text as JSON, for a script
+--- stderr
+--- end
+### workspace agent-run queue cancel --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent-run queue cancel --id ID [--name NAME] [--json]"],"description":"Take a queued prompt back and print its text.\n\nRemoves the prompt from the queue file for real, with no agent daemon needed, and records a\nprompt_dequeued event. A prompt the daemon has claimed but not started to paste is stopped before\nanything is typed. One already being typed, already typed, or unknown is refused as unknown_id\n(details.state \"delivering\" when it is being typed). The id is the one `send --when-idle` answered,\nor `queue list` shows. Without --name every workspace's queue is searched.","options":[{"flags":"--id ID","description":"The id `send --when-idle` answered  (required)"},{"flags":"--name NAME","description":"Workspace name (default: look through every workspace's queue)"},{"flags":"--json","description":"Print {\"cancelled\":true,\"id\",\"pane_id\",\"text\"} as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace agent-run queue cancel --id 3f9a2c41d07b5e88","scenario":"take a prompt back, whichever workspace queued it"},{"command":"workspace agent-run queue cancel --id 3f9a2c41d07b5e88 --name api","scenario":"look only in one workspace's queue"},{"command":"workspace agent-run queue cancel --id 3f9a2c41d07b5e88 --json","scenario":"the cancelled prompt's text as JSON, for a script"}]}
+--- stderr
+--- end
+### workspace agent-run examples --help
+--- exit 0
+--- stdout
+Usage: workspace agent-run examples
+
+Print all stock example messages without sending anything.
+
+Each example shows the command to run and the JSONL it sends, for the workspace of the current
+directory (or "workspace" outside one). Takes no options; nothing is sent.
+
+Options:
+    -h, --help                   Show this help
+
+Examples:
+  workspace agent-run examples    # print every stock message
+  workspace agent-run examples | less    # page through them
+  workspace agent-run examples | grep 'Run it:'    # list only the commands to copy
+--- stderr
+--- end
+### workspace agent-run examples --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent-run examples"],"description":"Print all stock example messages without sending anything.\n\nEach example shows the command to run and the JSONL it sends, for the workspace of the current\ndirectory (or \"workspace\" outside one). Takes no options; nothing is sent.","options":[{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace agent-run examples","scenario":"print every stock message"},{"command":"workspace agent-run examples | less","scenario":"page through them"},{"command":"workspace agent-run examples | grep 'Run it:'","scenario":"list only the commands to copy"}]}
+--- stderr
+--- end
+### workspace agent-run --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace agent-run --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace agent-run
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace agent-run <subcommand> [options]
+       workspace agent-run --body '<full message JSON>' [--dry-run]
+
+Send a raw JSONL message to a running agent socket.
+Always prints the message being sent before sending it.
+
+Subcommands:
+  command   Send a "command" message that delivers work to the first pipeline stage
+  inject    Send an "inject" message that steers a running work item
+  restart   Clear the coding agent in one pane and give it a fresh prompt
+  send      Type text or tmux keys into one pane of a workspace's tmux session
+  queue     List or cancel the prompts `agent-run send --when-idle` has queued, and see why each waits
+  examples  Print all stock example messages without sending anything
+
+Raw mode (paste a full message directly):
+  --body JSON         Complete message JSON; workspace is read from the message
+  --dry-run           Print without sending
+
+Run `workspace agent-run VERB --help` for a verb's options.
+
+Examples:
+  workspace agent-run command --body "Add OAuth support"    # send a task to the current directory's workspace
+  workspace agent-run command --name myapp --dry-run    # see the message for a named workspace, send nothing
+  workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"    # steer a running work item
+  workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md"    # clear a pane's agent and give it a prompt
+  workspace agent-run send --pane %19 --body "yes"    # type into a pane and press Enter
+  workspace agent-run queue list    # what `send --when-idle` has queued
+  workspace agent-run queue cancel --id 3f9a2c41d07b5e88    # take a queued prompt back
+  workspace agent-run --body '{"type":"command","workspace":"myapp","work_item_ref":"WC-42","dispatch_id":"debug-1","body":"go"}' --dry-run    # a full message you wrote
+  workspace agent-run examples    # stock messages to copy, nothing sent
+--- end

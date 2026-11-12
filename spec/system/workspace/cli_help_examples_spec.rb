@@ -1,118 +1,12 @@
-require "stringio"
-require "tmpdir"
-
 # Every help page must end with an `Examples:` section of 3 to 10 commented
-# examples. PAGES is the one list of pages; every page must pass.
-#
-# The real CLI is built and run in a throwaway HOME, in a throwaway working
-# directory, with PATH holding only Ruby's directory, so tmux, git, osascript
-# and gh are not found and no real state is read or written.
-module HelpExamplesSpec
-  # Help pages by argv (without --help).
-  PAGES = [
-    "", "version", "help",
-    "add", "agent", "agent run", "agent status", "agent status request", "agent status post", "agent executables",
-    "agentd", "agentd restart",
-    "agent-run", "agent-run command", "agent-run inject", "agent-run restart", "agent-run send",
-    "agent-run queue", "agent-run queue list", "agent-run queue cancel", "agent-run examples",
-    "alfred", "alfred install", "alfred uninstall", "alfred info",
-    "ask", "ask list", "ask answer", "ask deliver", "ask withdraw",
-    "binding", "binding set", "binding show", "binding clear",
-    "capabilities", "capture", "cleanup", "current", "deactivate", "dir", "doctor",
-    "config", "config show", "config set", "config get", "config unset", "config edit", "config keys", "config validate",
-    "daemon", "daemon status", "daemon restart", "daemon log", "daemon list",
-    "dev", "dev up", "dev down", "dev status", "dev wait", "dev leave", "dev __run",
-    "event-log", "event-log show", "event-log compact",
-    "events", "finish", "focus",
-    "go", "goal", "goal show", "goal list",
-    "handoff", "handoff check", "handoff new",
-    "hooks", "hooks uninstall",
-    "inbox", "inbox add", "inbox list", "inbox show", "inbox edit", "inbox done", "inbox dismiss", "inbox reopen",
-    "inbox snooze", "inbox ack",
-    "init",
-    "instructions", "instructions compose",
-    "kill", "launch",
-    "layout", "layout save", "layout restore", "layout list",
-    "library", "library list", "library show", "library info", "library add", "library update", "library remove",
-    "library install", "library uninstall", "library installed",
-    "list", "lock", "lock acquire", "lock release", "lock status", "lock clear", "lock instructions",
-    "lookup", "notes", "notes dir", "parent",
-    "pipeline", "pipeline start", "pipeline advance", "pipeline status", "pipeline reset",
-    "plan", "plan status", "plan path", "plan show", "plan init", "plan start", "plan pause", "plan delete",
-    "plan task add", "plan task set-state", "plan task set-title", "plan task move",
-    "pr", "pr create", "pr feedback",
-    "projects", "projects list", "projects show", "projects members", "projects stop", "projects kill",
-    "projects group", "projects group create", "projects group add", "projects group list", "projects group show",
-    "promote", "prune", "push", "reactivate", "rebase", "relaunch", "remove", "rename", "repair", "resize", "restore",
-    "run", "run-and-report", "report-run-status", "session-event", "sessions", "set-command", "shell-init", "snapshot",
-    "review", "review show", "review list",
-    "skills", "skills install", "skills uninstall",
-    "spine", "spine show", "spine init", "spine set", "spine check", "spine verify", "spine start", "spine goal",
-    "spine goal set",
-    "start", "status", "statusline", "step", "step done", "step status", "stop",
-    "ticket", "ticket show", "ticket list", "tile", "tmux", "tmux show",
-    "ui", "ui open", "ui open task", "ui open notes", "ui open inbox", "ui status",
-    "wait-until-content", "whereis",
-    "workflow", "workflow list", "workflow show", "workflow validate", "workflow add", "workflow update", "workflow remove", "workflow install", "workflow uninstall",
-    "workflow run", "workflow render", "workflow check", "workflow simulate", "workflow start", "workflow status", "workflow events", "workflow files", "workflow attempts", "workflow audit", "workflow stats", "workflow compare", "workflow sweep", "workflow resume",
-    "workflow cancel", "workflow approve", "workflow reject", "workflow advance"
-  ].freeze
-
-  # Each alias must print the page of the command it names.
-  ALIASES = {
-    "journey" => "spine",
-    "lib" => "library",
-    "add-project" => "add",
-    "list-projects" => "list"
-  }.freeze
-end
-
+# examples. HelpExamplesSpec::PAGES (spec/support/cli_golden.rb) is the one list
+# of pages; every page must pass. Each page runs through CliGolden.run.
 RSpec.describe "help pages end with examples" do
   pages = HelpExamplesSpec::PAGES
   aliases = HelpExamplesSpec::ALIASES
   def run_help(argv, extra: [])
-    out = StringIO.new
-    err = StringIO.new
-    status = 0
-    text = nil
-    combined = nil
-    Dir.mktmpdir("workspace-help-home") do |home|
-      Dir.mktmpdir("workspace-help-cwd") do |cwd|
-        saved = ENV.to_h
-        begin
-          # Fakes are not used: cli_spec.rb's builder is local to that file and leaves most
-          # commands nil, and the help of library, config and the like reads real Config paths.
-          # Instead HOME is a temp directory and every other variable (XDG_*, TMUX) is dropped.
-          ENV.replace("HOME" => home, "PATH" => File.dirname(RbConfig.ruby))
-          Dir.chdir(cwd) do
-            config = Workspace::Config.new
-            [Dir.home, config.event_log_file, config.state_file, config.state_dir].each do |path|
-              raise "#{path} is outside the throwaway HOME" unless path.start_with?(home)
-            end
-            cli = Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {})
-            # OptionParser's own --help writes to $stdout, so only the run itself swaps the streams.
-            saved_streams = [$stdout, $stderr]
-            begin
-              $stdout = out
-              $stderr = err
-              cli.run(argv + ["--help"] + extra)
-            rescue SystemExit => e
-              status = e.status
-            rescue Workspace::Error => e
-              status = 1
-              err.puts e.message
-            ensure
-              $stdout, $stderr = saved_streams
-            end
-          end
-        ensure
-          ENV.replace(saved)
-        end
-        text = out.string.gsub(home, "$HOME")
-        combined = text + err.string
-      end
-    end
-    [text, status, combined]
+    result = CliGolden.run(argv + ["--help"] + extra)
+    [result.stdout, result.status, result.stdout + result.stderr]
   end
 
   def problems(argv)

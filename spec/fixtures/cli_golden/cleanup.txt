@@ -1,0 +1,52 @@
+### workspace cleanup --help
+--- exit 0
+--- stdout
+Usage: workspace cleanup [options]
+
+Detect and remove zombie sessions from state.
+A zombie session is one where the state file has an entry but
+the corresponding tmux session or iTerm window no longer exists.
+
+Lists all zombie sessions and asks for confirmation before removing.
+
+Options:
+    -f, --force                      Skip confirmation and remove zombies immediately
+        --dry-run                    List what would be removed; no prompt, nothing changes, exit 0
+        --tmux-dead-only             Count only entries whose tmux session is gone (a closed window alone
+                                     does not make an entry a zombie)
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes
+                                     to stderr; without --force the prompt still asks (or fails under --no-input).
+                                     Rows carry tmux_alive and window_alive (null: headless, or iTerm's windows
+                                     could not be listed; a window that could not be read is never called gone)
+
+Examples:
+  workspace cleanup    # list zombie sessions and ask before removing them from state
+  workspace cleanup --dry-run --json    # report the zombies, change nothing
+  workspace cleanup --tmux-dead-only --force    # remove only entries with no tmux session
+  workspace cleanup --force    # remove all zombie sessions immediately
+--- stderr
+--- end
+### workspace cleanup --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace cleanup [options]"],"description":"Detect and remove zombie sessions from state.\nA zombie session is one where the state file has an entry but\nthe corresponding tmux session or iTerm window no longer exists.\n\nLists all zombie sessions and asks for confirmation before removing.","options":[{"flags":"-f, --force","description":"Skip confirmation and remove zombies immediately"},{"flags":"--dry-run","description":"List what would be removed; no prompt, nothing changes, exit 0"},{"flags":"--tmux-dead-only","description":"Count only entries whose tmux session is gone (a closed window alone does not make an entry a zombie)"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr; without --force the prompt still asks (or fails under --no-input). Rows carry tmux_alive and window_alive (null: headless, or iTerm's windows could not be listed; a window that could not be read is never called gone)"}],"examples":[{"command":"workspace cleanup","scenario":"list zombie sessions and ask before removing them from state"},{"command":"workspace cleanup --dry-run --json","scenario":"report the zombies, change nothing"},{"command":"workspace cleanup --tmux-dead-only --force","scenario":"remove only entries with no tmux session"},{"command":"workspace cleanup --force","scenario":"remove all zombie sessions immediately"}]}
+--- stderr
+--- end
+### workspace cleanup --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace cleanup --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace cleanup
+--- exit 0
+--- stdout
+No tracked sessions. State is clean.
+--- stderr
+--- end

@@ -1,0 +1,44 @@
+### workspace status --help
+--- exit 0
+--- stdout
+Usage: workspace status [options]
+
+Show detailed state of tracked launcher sessions. Each is marked [alive] (its tmux
+session exists), [dead] (the session is gone; remove it with 'workspace cleanup'),
+or [unknown] (tmux didn't answer, or the project uses a custom tmux socket).
+
+Options:
+        --json                       Output as JSON
+        --json-envelope              Output as JSON in the standard envelope (implies --json)
+
+Examples:
+  workspace status          # tracked sessions with window ids, headless ones marked
+  workspace status --json   # machine-readable state (unique ids, window ids, alive: true/false/null)
+  workspace status --json-envelope    # the same under a "status" key, with schema_version, ok and warnings
+  workspace status --json | jq -r '.["my-notes"].iterm_window_id'    # one project's window id
+--- stderr
+--- end
+### workspace status --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace status [options]"],"description":"Show detailed state of tracked launcher sessions. Each is marked [alive] (its tmux\nsession exists), [dead] (the session is gone; remove it with 'workspace cleanup'),\nor [unknown] (tmux didn't answer, or the project uses a custom tmux socket).","options":[{"flags":"--json","description":"Output as JSON"},{"flags":"--json-envelope","description":"Output as JSON in the standard envelope (implies --json)"}],"examples":[{"command":"workspace status","scenario":"tracked sessions with window ids, headless ones marked"},{"command":"workspace status --json","scenario":"machine-readable state (unique ids, window ids, alive: true/false/null)"},{"command":"workspace status --json-envelope","scenario":"the same under a \"status\" key, with schema_version, ok and warnings"},{"command":"workspace status --json | jq -r '.[\"my-notes\"].iterm_window_id'","scenario":"one project's window id"}]}
+--- stderr
+--- end
+### workspace status --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace status --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace status
+--- exit 0
+--- stdout
+No tracked sessions.
+--- stderr
+--- end

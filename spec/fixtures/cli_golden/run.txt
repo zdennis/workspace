@@ -1,0 +1,96 @@
+### workspace run --help
+--- exit 0
+--- stdout
+Usage: workspace run [project] <command> [options]
+
+Send a shell command to a pane in a running project's tmux session.
+Defaults to the bottommost pane. Auto-detects project from cwd if omitted.
+
+Options:
+        --pane N                     Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact
+        --bottom                     Target the bottommost pane (default behavior)
+        --split                      Create a new pane below the bottommost and run command there
+        --vertical                   With --split, split side-by-side (vertical divider) instead of horizontal
+        --no-enter                   Send command text without pressing Enter
+        --focus                      Bring the project's iTerm window to the front after sending
+        --dry-run                    Print the tmux command without executing it
+        --wait                       Wait for the command to finish and report exit status, stdout, stderr
+        --timeout N                  Seconds to wait (default: 300, requires --wait)
+        --close                      Send 'exit' to the pane after the command runs (closes the shell/pane)
+        --pipe CMD                   Pipe command output into CMD (repeatable for multi-stage pipelines)
+        --json                       Print one action document (see docs/README.json.md) naming the pane
+                                     (the new pane's id with --split, else null); not with --wait or --dry-run
+
+Exit codes: 0 delivered; 1 not delivered, safe to run again; 2 text
+  landed but wasn't confirmed submitted — do not resend, check the pane first.
+
+Examples:
+  workspace run 'rake spec'    # bottommost pane, project auto-detected from cwd
+  workspace run scooter 'rake spec' --pane 1    # explicit project and pane
+  workspace run scooter 'bundle exec rails console' --no-enter    # pre-fill without pressing Enter
+  workspace run scooter 'rake spec' --split    # run in a new pane below the bottommost
+  workspace run scooter 'bin/dev' --split --vertical    # run in a new pane beside the bottommost
+  workspace run scooter 'rake spec' --wait --timeout 60    # a script must block until the suite finishes, then act on its exit status (gives up after 60s)
+  workspace run scooter 'rake spec' --split --wait --close    # run in a throwaway pane and close it when done
+  workspace run scooter 'grep ERROR log/production.log' --pipe 'sort' --pipe 'uniq -c'    # count the distinct errors in a log, with each stage checked for quoting
+  workspace run scooter 'rake spec' --dry-run    # check where the command would go before sending it
+  workspace run scooter 'tail -f log/development.log' --split --json    # print an action document naming the new pane
+--- stderr
+--- end
+### workspace run --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace run [project] <command> [options]"],"description":"Send a shell command to a pane in a running project's tmux session.\nDefaults to the bottommost pane. Auto-detects project from cwd if omitted.","options":[{"flags":"--pane N","description":"Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact"},{"flags":"--bottom","description":"Target the bottommost pane (default behavior)"},{"flags":"--split","description":"Create a new pane below the bottommost and run command there"},{"flags":"--vertical","description":"With --split, split side-by-side (vertical divider) instead of horizontal"},{"flags":"--no-enter","description":"Send command text without pressing Enter"},{"flags":"--focus","description":"Bring the project's iTerm window to the front after sending"},{"flags":"--dry-run","description":"Print the tmux command without executing it"},{"flags":"--wait","description":"Wait for the command to finish and report exit status, stdout, stderr"},{"flags":"--timeout N","description":"Seconds to wait (default: 300, requires --wait)"},{"flags":"--close","description":"Send 'exit' to the pane after the command runs (closes the shell/pane)"},{"flags":"--pipe CMD","description":"Pipe command output into CMD (repeatable for multi-stage pipelines)"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) naming the pane (the new pane's id with --split, else null); not with --wait or --dry-run Exit codes: 0 delivered; 1 not delivered, safe to run again; 2 text landed but wasn't confirmed submitted — do not resend, check the pane first."}],"examples":[{"command":"workspace run 'rake spec'","scenario":"bottommost pane, project auto-detected from cwd"},{"command":"workspace run scooter 'rake spec' --pane 1","scenario":"explicit project and pane"},{"command":"workspace run scooter 'bundle exec rails console' --no-enter","scenario":"pre-fill without pressing Enter"},{"command":"workspace run scooter 'rake spec' --split","scenario":"run in a new pane below the bottommost"},{"command":"workspace run scooter 'bin/dev' --split --vertical","scenario":"run in a new pane beside the bottommost"},{"command":"workspace run scooter 'rake spec' --wait --timeout 60","scenario":"a script must block until the suite finishes, then act on its exit status (gives up after 60s)"},{"command":"workspace run scooter 'rake spec' --split --wait --close","scenario":"run in a throwaway pane and close it when done"},{"command":"workspace run scooter 'grep ERROR log/production.log' --pipe 'sort' --pipe 'uniq -c'","scenario":"count the distinct errors in a log, with each stage checked for quoting"},{"command":"workspace run scooter 'rake spec' --dry-run","scenario":"check where the command would go before sending it"},{"command":"workspace run scooter 'tail -f log/development.log' --split --json","scenario":"print an action document naming the new pane"}]}
+--- stderr
+--- end
+### workspace run --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace run --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace run
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace run [project] <command> [options]
+
+Send a shell command to a pane in a running project's tmux session.
+Defaults to the bottommost pane. Auto-detects project from cwd if omitted.
+
+Options:
+        --pane N                     Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact
+        --bottom                     Target the bottommost pane (default behavior)
+        --split                      Create a new pane below the bottommost and run command there
+        --vertical                   With --split, split side-by-side (vertical divider) instead of horizontal
+        --no-enter                   Send command text without pressing Enter
+        --focus                      Bring the project's iTerm window to the front after sending
+        --dry-run                    Print the tmux command without executing it
+        --wait                       Wait for the command to finish and report exit status, stdout, stderr
+        --timeout N                  Seconds to wait (default: 300, requires --wait)
+        --close                      Send 'exit' to the pane after the command runs (closes the shell/pane)
+        --pipe CMD                   Pipe command output into CMD (repeatable for multi-stage pipelines)
+        --json                       Print one action document (see docs/README.json.md) naming the pane
+                                     (the new pane's id with --split, else null); not with --wait or --dry-run
+
+Exit codes: 0 delivered; 1 not delivered, safe to run again; 2 text
+  landed but wasn't confirmed submitted — do not resend, check the pane first.
+
+Examples:
+  workspace run 'rake spec'    # bottommost pane, project auto-detected from cwd
+  workspace run scooter 'rake spec' --pane 1    # explicit project and pane
+  workspace run scooter 'bundle exec rails console' --no-enter    # pre-fill without pressing Enter
+  workspace run scooter 'rake spec' --split    # run in a new pane below the bottommost
+  workspace run scooter 'bin/dev' --split --vertical    # run in a new pane beside the bottommost
+  workspace run scooter 'rake spec' --wait --timeout 60    # a script must block until the suite finishes, then act on its exit status (gives up after 60s)
+  workspace run scooter 'rake spec' --split --wait --close    # run in a throwaway pane and close it when done
+  workspace run scooter 'grep ERROR log/production.log' --pipe 'sort' --pipe 'uniq -c'    # count the distinct errors in a log, with each stage checked for quoting
+  workspace run scooter 'rake spec' --dry-run    # check where the command would go before sending it
+  workspace run scooter 'tail -f log/development.log' --split --json    # print an action document naming the new pane
+--- end

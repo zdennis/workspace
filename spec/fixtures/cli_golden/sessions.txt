@@ -1,0 +1,106 @@
+### workspace sessions --help
+--- exit 0
+--- stdout
+Usage: workspace sessions [options] [project]
+
+Show the coding-agent sessions running in a workspace's panes,
+whether each is working, idle, waiting on a person, or done, and any
+sub-agents they started.
+
+STATE column: working (output changing), idle (output unchanged 30s+),
+waiting (the agent asked for permission or input; needs the
+Notification hook from workspace init), or done (the agent's turn
+ended; needs the Stop hook). A waiting pane shows the
+agent's message on the line below it. waiting is Claude Code only;
+other agents (Codex, OpenCode, Pi) only ever show working or idle.
+
+Requires a running agent daemon (workspace agentd <project>; re-run
+`workspace init` if `workspace doctor` reports it missing).
+
+LOCK column: shows every lock a pane holds or waits on (e.g. "edit ✓ devenv #2",
+space-joined, edit first and others alphabetical). JSON output includes a locks array.
+
+--worktrees also shows sessions for the project's child worktree workspaces
+(config names "<project>.worktree-*"), one table per workspace that has an
+agent daemon running; workspaces without one are omitted silently. With no
+[project], the parent of the current worktree is used, so the whole family
+shows even when run from inside a worktree. --json nests them under a
+"workspaces" array.
+
+Options:
+        --name WS                    The project, as an option (same as the positional [project])
+        --json                       Emit the raw payload instead of a table
+        --watch                      Redraw until interrupted
+        --interval SECONDS           Seconds between redraws (default 2)
+        --worktrees                  Also show sessions for child worktree workspaces
+
+Examples:
+  workspace sessions    # sessions for the current directory's project
+  workspace sessions my-project    # sessions for a named project
+  workspace sessions --watch    # watch and redraw every 2 seconds
+  workspace sessions --json    # emit raw JSON for scripting
+  workspace sessions my-project --worktrees    # include the project's worktree workspaces
+--- stderr
+--- end
+### workspace sessions --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace sessions [options] [project]"],"description":"Show the coding-agent sessions running in a workspace's panes,\nwhether each is working, idle, waiting on a person, or done, and any\nsub-agents they started.\n\nSTATE column: working (output changing), idle (output unchanged 30s+),\nwaiting (the agent asked for permission or input; needs the\nNotification hook from workspace init), or done (the agent's turn\nended; needs the Stop hook). A waiting pane shows the\nagent's message on the line below it. waiting is Claude Code only;\nother agents (Codex, OpenCode, Pi) only ever show working or idle.\n\nRequires a running agent daemon (workspace agentd <project>; re-run\n`workspace init` if `workspace doctor` reports it missing).\n\nLOCK column: shows every lock a pane holds or waits on (e.g. \"edit ✓ devenv #2\",\nspace-joined, edit first and others alphabetical). JSON output includes a locks array.\n\n--worktrees also shows sessions for the project's child worktree workspaces\n(config names \"<project>.worktree-*\"), one table per workspace that has an\nagent daemon running; workspaces without one are omitted silently. With no\n[project], the parent of the current worktree is used, so the whole family\nshows even when run from inside a worktree. --json nests them under a\n\"workspaces\" array.","options":[{"flags":"--name WS","description":"The project, as an option (same as the positional [project])"},{"flags":"--json","description":"Emit the raw payload instead of a table"},{"flags":"--watch","description":"Redraw until interrupted"},{"flags":"--interval SECONDS","description":"Seconds between redraws (default 2)"},{"flags":"--worktrees","description":"Also show sessions for child worktree workspaces"}],"examples":[{"command":"workspace sessions","scenario":"sessions for the current directory's project"},{"command":"workspace sessions my-project","scenario":"sessions for a named project"},{"command":"workspace sessions --watch","scenario":"watch and redraw every 2 seconds"},{"command":"workspace sessions --json","scenario":"emit raw JSON for scripting"},{"command":"workspace sessions my-project --worktrees","scenario":"include the project's worktree workspaces"}]}
+--- stderr
+--- end
+### workspace sessions --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace sessions --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace sessions
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace sessions [options] [project]
+
+Show the coding-agent sessions running in a workspace's panes,
+whether each is working, idle, waiting on a person, or done, and any
+sub-agents they started.
+
+STATE column: working (output changing), idle (output unchanged 30s+),
+waiting (the agent asked for permission or input; needs the
+Notification hook from workspace init), or done (the agent's turn
+ended; needs the Stop hook). A waiting pane shows the
+agent's message on the line below it. waiting is Claude Code only;
+other agents (Codex, OpenCode, Pi) only ever show working or idle.
+
+Requires a running agent daemon (workspace agentd <project>; re-run
+`workspace init` if `workspace doctor` reports it missing).
+
+LOCK column: shows every lock a pane holds or waits on (e.g. "edit ✓ devenv #2",
+space-joined, edit first and others alphabetical). JSON output includes a locks array.
+
+--worktrees also shows sessions for the project's child worktree workspaces
+(config names "<project>.worktree-*"), one table per workspace that has an
+agent daemon running; workspaces without one are omitted silently. With no
+[project], the parent of the current worktree is used, so the whole family
+shows even when run from inside a worktree. --json nests them under a
+"workspaces" array.
+
+Options:
+        --name WS                    The project, as an option (same as the positional [project])
+        --json                       Emit the raw payload instead of a table
+        --watch                      Redraw until interrupted
+        --interval SECONDS           Seconds between redraws (default 2)
+        --worktrees                  Also show sessions for child worktree workspaces
+
+Examples:
+  workspace sessions    # sessions for the current directory's project
+  workspace sessions my-project    # sessions for a named project
+  workspace sessions --watch    # watch and redraw every 2 seconds
+  workspace sessions --json    # emit raw JSON for scripting
+  workspace sessions my-project --worktrees    # include the project's worktree workspaces
+--- end

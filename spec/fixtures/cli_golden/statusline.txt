@@ -1,0 +1,46 @@
+### workspace statusline --help
+--- exit 0
+--- stdout
+Usage: workspace statusline
+
+Reads Claude Code's status-line JSON on stdin, records its context-window
+usage for this pane, and prints a status line. Install as Claude Code's
+statusLine command; not normally run by hand.
+
+Never fails: bad input or a storage error still prints something and
+exits 0. A `statusline.command` in the global config (see 'workspace
+config set') delegates rendering to another command; a slow or hung
+delegate falls back to the built-in line.
+
+Install it by adding this to ~/.claude/settings.json (or run
+'workspace doctor --fix'):
+  { "statusLine": { "type": "command", "command": "workspace statusline" } }
+
+Each run records its reading against $TMUX_PANE (or $CLAUDE_PID), which
+'workspace sessions --json' then reports. Run these examples outside an
+agent's pane so they don't overwrite its real reading.
+
+Examples:
+  workspace statusline <<< '{"context_window":{"used_percentage":42}}'    # see the line Claude Code would show for 42% context used
+  workspace statusline <<< '{}'    # empty input still prints a line and exits 0
+  workspace statusline < payload.json    # replay a saved Claude Code payload while debugging a delegate command
+--- stderr
+--- end
+### workspace statusline --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace statusline"],"description":"Reads Claude Code's status-line JSON on stdin, records its context-window\nusage for this pane, and prints a status line. Install as Claude Code's\nstatusLine command; not normally run by hand.\n\nNever fails: bad input or a storage error still prints something and\nexits 0. A `statusline.command` in the global config (see 'workspace\nconfig set') delegates rendering to another command; a slow or hung\ndelegate falls back to the built-in line.\n\nInstall it by adding this to ~/.claude/settings.json (or run","options":[],"examples":[{"command":"workspace statusline <<< '{\"context_window\":{\"used_percentage\":42}}'","scenario":"see the line Claude Code would show for 42% context used"},{"command":"workspace statusline <<< '{}'","scenario":"empty input still prints a line and exits 0"},{"command":"workspace statusline < payload.json","scenario":"replay a saved Claude Code payload while debugging a delegate command"}],"sections":[{"heading":"'workspace doctor --fix')","text":"{ \"statusLine\": { \"type\": \"command\", \"command\": \"workspace statusline\" } }\n\nEach run records its reading against $TMUX_PANE (or $CLAUDE_PID), which\n'workspace sessions --json' then reports. Run these examples outside an\nagent's pane so they don't overwrite its real reading."}]}
+--- stderr
+--- end
+### workspace statusline --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace statusline --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end

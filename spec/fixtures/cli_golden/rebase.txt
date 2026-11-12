@@ -1,0 +1,80 @@
+### workspace rebase --help
+--- exit 0
+--- stdout
+Usage: workspace rebase --onto local|update|remote|upstream [--name WORKSPACE] [--json]
+
+Rebase a workspace's branch onto the repository's default branch.
+  local    the local default branch; nothing is fetched
+  update   fetch origin, move the local default branch up to origin's (stashing and
+           restoring changes in the checkout that has it), then rebase onto it
+  remote   fetch origin, rebase onto origin/<default>
+  upstream fetch the branch's own upstream and rebase onto it; works on the default
+           branch too (refused: no_upstream, upstream_gone)
+A successful rebase rewrites the branch's commits. Refuses a workspace with changes to tracked
+files and never stashes them. A rebase that stops on a conflict is aborted, so the workspace
+is left as it was. Exits 0 for every outcome (rebased, up_to_date, conflict,
+default_not_updated); read the outcome in the text or with --json. Exits 1 with an error when
+it refuses or fails; --json prints the code (dirty_worktree, no_upstream, ...).
+
+        --onto TARGET                local, update, remote or upstream (required)
+        --name NAME                  The workspace (default: the one the current directory is in)
+        --json                       Print one JSON document (see docs/README.rebase.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace rebase --onto update    # catch the branch up with origin's default branch: fetches, may move the local default branch, rewrites this branch's commits
+  workspace rebase --onto local    # rebase onto the local default branch with nothing fetched, for example offline
+  workspace rebase --onto remote --name api.worktree-PROJ-123 --json    # another workspace, for a script: rebase onto origin/<default> and read the outcome, even a conflict exits 0
+  workspace rebase --onto upstream    # pick up commits others pushed to this branch itself; also works on the default branch
+--- stderr
+--- end
+### workspace rebase --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace rebase --onto local|update|remote|upstream [--name WORKSPACE] [--json]"],"description":"Rebase a workspace's branch onto the repository's default branch.\n  local    the local default branch; nothing is fetched\n  update   fetch origin, move the local default branch up to origin's (stashing and\n           restoring changes in the checkout that has it), then rebase onto it\n  remote   fetch origin, rebase onto origin/<default>\n  upstream fetch the branch's own upstream and rebase onto it; works on the default\n           branch too (refused: no_upstream, upstream_gone)\nA successful rebase rewrites the branch's commits. Refuses a workspace with changes to tracked\nfiles and never stashes them. A rebase that stops on a conflict is aborted, so the workspace\nis left as it was. Exits 0 for every outcome (rebased, up_to_date, conflict,\ndefault_not_updated); read the outcome in the text or with --json. Exits 1 with an error when\nit refuses or fails; --json prints the code (dirty_worktree, no_upstream, ...).\n\n        --onto TARGET                local, update, remote or upstream (required)\n        --name NAME                  The workspace (default: the one the current directory is in)\n        --json                       Print one JSON document (see docs/README.rebase.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace rebase --onto update","scenario":"catch the branch up with origin's default branch: fetches, may move the local default branch, rewrites this branch's commits"},{"command":"workspace rebase --onto local","scenario":"rebase onto the local default branch with nothing fetched, for example offline"},{"command":"workspace rebase --onto remote --name api.worktree-PROJ-123 --json","scenario":"another workspace, for a script: rebase onto origin/<default> and read the outcome, even a conflict exits 0"},{"command":"workspace rebase --onto upstream","scenario":"pick up commits others pushed to this branch itself; also works on the default branch"}]}
+--- stderr
+--- end
+### workspace rebase --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace rebase --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace rebase
+--- exit 1
+--- stdout
+--- stderr
+Missing --onto local|update|remote|upstream.
+
+Usage: workspace rebase --onto local|update|remote|upstream [--name WORKSPACE] [--json]
+
+Rebase a workspace's branch onto the repository's default branch.
+  local    the local default branch; nothing is fetched
+  update   fetch origin, move the local default branch up to origin's (stashing and
+           restoring changes in the checkout that has it), then rebase onto it
+  remote   fetch origin, rebase onto origin/<default>
+  upstream fetch the branch's own upstream and rebase onto it; works on the default
+           branch too (refused: no_upstream, upstream_gone)
+A successful rebase rewrites the branch's commits. Refuses a workspace with changes to tracked
+files and never stashes them. A rebase that stops on a conflict is aborted, so the workspace
+is left as it was. Exits 0 for every outcome (rebased, up_to_date, conflict,
+default_not_updated); read the outcome in the text or with --json. Exits 1 with an error when
+it refuses or fails; --json prints the code (dirty_worktree, no_upstream, ...).
+
+        --onto TARGET                local, update, remote or upstream (required)
+        --name NAME                  The workspace (default: the one the current directory is in)
+        --json                       Print one JSON document (see docs/README.rebase.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace rebase --onto update    # catch the branch up with origin's default branch: fetches, may move the local default branch, rewrites this branch's commits
+  workspace rebase --onto local    # rebase onto the local default branch with nothing fetched, for example offline
+  workspace rebase --onto remote --name api.worktree-PROJ-123 --json    # another workspace, for a script: rebase onto origin/<default> and read the outcome, even a conflict exits 0
+  workspace rebase --onto upstream    # pick up commits others pushed to this branch itself; also works on the default branch
+--- end

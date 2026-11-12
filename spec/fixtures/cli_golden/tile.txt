@@ -1,0 +1,56 @@
+### workspace tile --help
+--- exit 0
+--- stdout
+Usage: workspace tile [options] [project]
+
+Tile all active windows for a project across the screen.
+Auto-detects the project from the current directory if not specified.
+Matches the base project and all its worktree sessions.
+Exits 1 when every matching project is headless: it has no window to tile.
+
+Options:
+        --all                        Tile all active workspace projects
+
+Examples:
+  workspace tile    # tile the current directory's project and its worktrees side by side
+  workspace tile window-tool    # tile window-tool and all its window-tool.* worktree windows
+  workspace tile --all    # tile every active workspace window across the screen
+--- stderr
+--- end
+### workspace tile --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace tile [options] [project]"],"description":"Tile all active windows for a project across the screen.\nAuto-detects the project from the current directory if not specified.\nMatches the base project and all its worktree sessions.\nExits 1 when every matching project is headless: it has no window to tile.","options":[{"flags":"--all","description":"Tile all active workspace projects"}],"examples":[{"command":"workspace tile","scenario":"tile the current directory's project and its worktrees side by side"},{"command":"workspace tile window-tool","scenario":"tile window-tool and all its window-tool.* worktree windows"},{"command":"workspace tile --all","scenario":"tile every active workspace window across the screen"}]}
+--- stderr
+--- end
+### workspace tile --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace tile --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace tile
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace tile [options] [project]
+
+Tile all active windows for a project across the screen.
+Auto-detects the project from the current directory if not specified.
+Matches the base project and all its worktree sessions.
+Exits 1 when every matching project is headless: it has no window to tile.
+
+Options:
+        --all                        Tile all active workspace projects
+
+Examples:
+  workspace tile    # tile the current directory's project and its worktrees side by side
+  workspace tile window-tool    # tile window-tool and all its window-tool.* worktree windows
+  workspace tile --all    # tile every active workspace window across the screen
+--- end

@@ -1,0 +1,71 @@
+### workspace tmux --help
+--- exit 0
+--- stdout
+Usage: workspace tmux show [--name NAME] [--json]
+
+  show    A workspace's tmuxinator file as session fields, windows and panes
+
+Examples:
+  workspace tmux show    # the current directory's workspace: windows and panes as a summary
+  workspace tmux show --name myproject    # a named workspace, from anywhere
+  workspace tmux show --name myproject --json    # the same as one JSON document, for a script
+--- stderr
+--- end
+### workspace tmux --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace tmux show [--name NAME] [--json]"],"description":"show    A workspace's tmuxinator file as session fields, windows and panes","options":[],"examples":[{"command":"workspace tmux show","scenario":"the current directory's workspace: windows and panes as a summary"},{"command":"workspace tmux show --name myproject","scenario":"a named workspace, from anywhere"},{"command":"workspace tmux show --name myproject --json","scenario":"the same as one JSON document, for a script"}]}
+--- stderr
+--- end
+### workspace tmux show --help
+--- exit 0
+--- stdout
+Usage: workspace tmux show [--name NAME] [--json]
+
+Show a workspace's tmuxinator file (~/.config/tmuxinator/workspace.<name>.yml) as
+session fields, windows and panes. Each pane has its command, a kind (claude,
+agentd, banner, shell or command) and its line in the file; when the session is
+running, each pane also has its tmux pane id and start command. Read-only: an
+edit to the file takes effect the next time the session is launched.
+
+Options:
+        --name, --project NAME       Workspace to show instead of the one inferred from cwd
+        --json                       Print one document (see docs/README.tmux.md)
+
+Examples:
+  workspace tmux show    # the current directory's workspace: windows and panes as a summary
+  workspace tmux show --name myproject    # a named workspace, from anywhere
+  workspace tmux show --name myproject --json    # the same as one JSON document, for a script
+--- stderr
+--- end
+### workspace tmux show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace tmux show [--name NAME] [--json]"],"description":"Show a workspace's tmuxinator file (~/.config/tmuxinator/workspace.<name>.yml) as\nsession fields, windows and panes. Each pane has its command, a kind (claude,\nagentd, banner, shell or command) and its line in the file; when the session is\nrunning, each pane also has its tmux pane id and start command. Read-only: an\nedit to the file takes effect the next time the session is launched.","options":[{"flags":"--name, --project NAME","description":"Workspace to show instead of the one inferred from cwd"},{"flags":"--json","description":"Print one document (see docs/README.tmux.md)"}],"examples":[{"command":"workspace tmux show","scenario":"the current directory's workspace: windows and panes as a summary"},{"command":"workspace tmux show --name myproject","scenario":"a named workspace, from anywhere"},{"command":"workspace tmux show --name myproject --json","scenario":"the same as one JSON document, for a script"}]}
+--- stderr
+--- end
+### workspace tmux --bogus
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace tmux show [--name NAME] [--json]
+--- end
+### workspace tmux --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"Usage: workspace tmux show [--name NAME] [--json]","code":"usage"}
+--- stderr
+--- end
+### workspace tmux
+--- exit 0
+--- stdout
+Usage: workspace tmux show [--name NAME] [--json]
+
+  show    A workspace's tmuxinator file as session fields, windows and panes
+
+Examples:
+  workspace tmux show    # the current directory's workspace: windows and panes as a summary
+  workspace tmux show --name myproject    # a named workspace, from anywhere
+  workspace tmux show --name myproject --json    # the same as one JSON document, for a script
+--- stderr
+--- end

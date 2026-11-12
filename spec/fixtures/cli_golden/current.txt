@@ -1,0 +1,39 @@
+### workspace current --help
+--- exit 0
+--- stdout
+Usage: workspace current
+
+Print the workspace project name for the current directory.
+Detects worktree projects via .workspace-project marker files,
+then falls back to matching active project roots.
+
+Examples:
+  workspace current    # which workspace am I in
+  workspace current | xargs workspace focus    # bring this workspace's window to the front from a script
+  workspace current | xargs workspace dir    # the root directory of the workspace I am in
+--- stderr
+--- end
+### workspace current --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace current"],"description":"Print the workspace project name for the current directory.\nDetects worktree projects via .workspace-project marker files,\nthen falls back to matching active project roots.","options":[],"examples":[{"command":"workspace current","scenario":"which workspace am I in"},{"command":"workspace current | xargs workspace focus","scenario":"bring this workspace's window to the front from a script"},{"command":"workspace current | xargs workspace dir","scenario":"the root directory of the workspace I am in"}]}
+--- stderr
+--- end
+### workspace current --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace current --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace current
+--- exit 1
+--- stdout
+--- stderr
+Error: Not inside a workspace project directory. Run 'workspace list --all' to see available projects.
+--- end

@@ -760,8 +760,10 @@ module Workspace
   # @param task_store [Workspace::TaskStore, nil] the task store `start`, `finish`, `kill` and `rename` share; nil builds the one over the state directory
   # @param skill_source [Workspace::SkillSource, nil] where skill links and the sweep schedule's program come from; nil builds one over the installation directory
   # @param workflow_source_runner [#call, nil] runs the `gh` calls of `workflow install`: `(argv, chdir:, timeout:)` answering `[stdout, stderr, success]`; nil runs the real one
+  # @param osascript [#call, nil] runs the AppleScript `ITerm` and `WindowManager` send: `(script)` answering an `OsascriptRunner::Result`; nil runs the real `osascript`
+  # @param ui_osascript [#call, nil] runs the JXA script of `ui status`, the same way; nil runs the real `osascript -l JavaScript`
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil, osascript: nil, ui_osascript: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -775,7 +777,7 @@ module Workspace
     config_resolver = ConfigResolver.new(project_settings: project_settings)
     event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
     state = State.new(config: config, event_log: event_log, logger: logger)
-    osascript = OsascriptRunner.new
+    osascript ||= OsascriptRunner.new
     iterm = ITerm.new(config: config, output: output, logger: logger, osascript: osascript)
     window_manager = WindowManager.new(config: config, logger: logger, osascript: osascript)
     git = Git.new(output: output, input: input, logger: logger)
@@ -935,7 +937,7 @@ module Workspace
     capabilities_command = Commands::Capabilities.new(config: config, output: output)
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
       process_tree: ProcessTree.new(logger: logger), output: output)
-    ui_app_probe = UiAppProbe.new(osascript: OsascriptRunner.new(command: ["osascript", "-l", "JavaScript"]))
+    ui_app_probe = UiAppProbe.new(osascript: ui_osascript || OsascriptRunner.new(command: ["osascript", "-l", "JavaScript"]))
     ui_command = Commands::Ui.new(output: output, notes: notes_command, app_probe: ui_app_probe)
     workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
     library_command = Commands::Library.new(library: library, output: output, input: input, event_log: event_log,

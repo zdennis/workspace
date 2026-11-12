@@ -1,0 +1,54 @@
+### workspace deactivate --help
+--- exit 0
+--- stdout
+Usage: workspace deactivate [options] [project]
+
+Deactivate Claude in a project's tmux pane by sending Ctrl-C.
+Auto-detects the project from the current directory if not specified.
+
+Options:
+        --all                        Deactivate Claude in all active projects
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+
+Examples:
+  workspace deactivate my-project    # deactivate Claude in a specific project
+  workspace deactivate    # auto-detected from the current directory
+  workspace deactivate --all    # deactivate Claude in all active projects
+--- stderr
+--- end
+### workspace deactivate --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace deactivate [options] [project]"],"description":"Deactivate Claude in a project's tmux pane by sending Ctrl-C.\nAuto-detects the project from the current directory if not specified.","options":[{"flags":"--all","description":"Deactivate Claude in all active projects"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr"}],"examples":[{"command":"workspace deactivate my-project","scenario":"deactivate Claude in a specific project"},{"command":"workspace deactivate","scenario":"auto-detected from the current directory"},{"command":"workspace deactivate --all","scenario":"deactivate Claude in all active projects"}]}
+--- stderr
+--- end
+### workspace deactivate --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace deactivate --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace deactivate
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace deactivate [options] [project]
+
+Deactivate Claude in a project's tmux pane by sending Ctrl-C.
+Auto-detects the project from the current directory if not specified.
+
+Options:
+        --all                        Deactivate Claude in all active projects
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+
+Examples:
+  workspace deactivate my-project    # deactivate Claude in a specific project
+  workspace deactivate    # auto-detected from the current directory
+  workspace deactivate --all    # deactivate Claude in all active projects
+--- end

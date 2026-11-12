@@ -1,0 +1,75 @@
+### workspace journey --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace journey --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace journey
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: show, set, check, verify, goal, start or init.
+
+Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--evaluate] [--json]
+       workspace spine set [WORKSPACE] STAGE-PATH [--status VALUE] [--note TEXT] [--owner VALUE] [--if-revision REV] [--recursive] [--by LABEL] [--json]
+       workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone) [--if-revision REV] [--by LABEL] [--json]
+       workspace spine verify [WORKSPACE] STAGE-PATH (--pass | --fail) --note TEXT [--by LABEL] [--if-revision REV] [--json]
+       workspace spine goal set [WORKSPACE] TEXT [--if-revision REV] [--by LABEL] [--json]
+       workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF] [--if-revision REV] [--json]
+       workspace spine start [WORKSPACE] STAGE-PATH --fan-out [--spawn KIND] [--max N] [--json]
+       workspace spine init [WORKSPACE] [--name WORKSPACE] [--template NAME] [--dry-run] [--json]
+
+A spine is the stage files in spine/ of a workspace's notes directory, one Markdown file
+per stage. Writers of a workspace take turns.
+
+Verbs:
+  show      Read a workspace's stages
+  set       Change one stage's status, note or owner
+  check     Tick or untick items of a stage's Done when checklist
+  verify    Record a separate check of a completed stage
+  goal set  Write the goal's title
+  start     Get an agent working on one stage
+  init      Create the spine/ folder from a template
+Run `workspace spine VERB --help` for a verb's options.
+
+        --name NAME                  The workspace (default: the one detected from the current directory)
+        --stage STAGE-PATH           show: only that stage (with its sub-stages); unknown_stage when there is none
+        --body                       show: add the text after the frontmatter (16 KB at most) to the stage, or to the goal without --stage
+        --evaluate                   show: judge each stage against the plan, git, the pull request, the review agent and the panes (reads gh and the agent daemon, up to about 5s; an unreadable source leaves its gates unchecked; a completed stage with a check: line reads checking or check_failed until the check passes)
+        --status VALUE               set: not_started, in_progress, blocked, completed or skipped (or an alias such as done)
+        --note TEXT                  set: one line of at most 300 characters; alone it changes only the note (empty clears it). With a new status and no --note the note is cleared. verify: the verdict's note, required, 300 characters at most
+        --pass                       verify: the stage passed its check
+        --fail                       verify: the stage failed its check
+        --owner VALUE                set: who works the stage: a pane id such as %6, you, or an agent label; one line of at most 64 characters (empty clears it). Not with --recursive
+        --if-revision REV            set, verify, goal set, start: refuse with stale_revision unless the stage file's (goal.md's for goal set) revision (from show) is REV
+        --item N                     check: the checklist item, 1-based; repeat for several
+        --done                       check: tick the items
+        --undone                     check: untick the items
+        --pane PANE                  start: the pane to send the stage to, a pane id (%21) or window.pane (0.1) of the workspace's session
+        --spawn KIND                 start: split a new pane and start that agent in it (claude, codex, opencode, pi)
+        --fan-out                    start: start every startable sub-stage of STAGE-PATH, each in a new pane
+        --max N                      start --fan-out: spawn at most N panes (default 3)
+        --play REF                   start: the play to send (default: the stage's play:, else research, implementation-plan or review by its kind)
+        --recursive                  set: also set every sub-stage that is not completed or skipped
+        --by LABEL                   set: the updated_by label; verify: the checked_by label (default: the agent and pane id of $TMUX_PANE, else person)
+        --json                       Print one JSON document (see docs/README.spine.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace spine show    # the stages of the workspace you are in
+  workspace spine show --evaluate --json    # judge every stage against the plan, git, the pull request and the panes (up to about 5s)
+  workspace spine init --dry-run    # preview the spine/ files; nothing is written
+  workspace spine set verify --status in_progress    # mark a stage started
+  workspace spine set verify --owner %6 --note "waiting on CI"    # record who works it and a note
+  workspace spine check verify --item 2 --done    # tick item 2 of the stage's Done when list
+  workspace spine verify implement --pass --note "CI green, all 4 items met"    # a checker records a pass (not the agent that did the stage)
+  workspace spine goal set "Fix the OAuth refresh race"    # write the goal's title
+  workspace spine start verify    # type the stage's brief into its owner pane, else the main agent pane
+  workspace spine start implement --fan-out --max 2    # one new agent pane per ready sub-stage, at most two
+--- end

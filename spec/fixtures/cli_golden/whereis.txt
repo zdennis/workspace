@@ -1,0 +1,37 @@
+### workspace whereis --help
+--- exit 0
+--- stdout
+Usage: workspace whereis
+
+Print the workspace installation directory.
+
+Examples:
+  workspace whereis    # find out where a symlinked install really lives
+  workspace whereis | xargs -I{} ls {}/lib/templates    # look at the project templates it ships
+  workspace whereis | xargs -I{} git -C {} log -1 --oneline    # which commit this install runs
+--- stderr
+--- end
+### workspace whereis --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace whereis"],"description":"Print the workspace installation directory.","options":[],"examples":[{"command":"workspace whereis","scenario":"find out where a symlinked install really lives"},{"command":"workspace whereis | xargs -I{} ls {}/lib/templates","scenario":"look at the project templates it ships"},{"command":"workspace whereis | xargs -I{} git -C {} log -1 --oneline","scenario":"which commit this install runs"}]}
+--- stderr
+--- end
+### workspace whereis --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace whereis --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace whereis
+--- exit 0
+--- stdout
+$ROOT
+--- stderr
+--- end

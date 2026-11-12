@@ -1,0 +1,70 @@
+### workspace promote --help
+--- exit 0
+--- stdout
+Usage: workspace promote [BRANCH] [--name PROJECT] [--title TEXT] [--spine[=TEMPLATE] | --no-spine] [--plan[=TITLE]]
+                         [--carry-note FILE]... [--launch [--prompt TEXT] [--prompt-timeout DURATION]]
+                         [--agent-kind KIND] [--[no-]headless] [--force] [--dry-run] [--json]
+
+Move the work in a main checkout into a new workspace: the staged, unstaged and untracked changes, and
+the commits of the branch it is on, go to a worktree at .worktrees/BRANCH; the main checkout is left
+clean on the default branch. Ignored files stay behind. The plan (IMPLEMENTATION_PLAN.md) and spine/
+move to the new notes directory (the old ones are renamed .moved-<time>), and each --carry-note is copied.
+BRANCH omitted moves the current branch; on the default branch, name a new one (made at HEAD).
+Nothing is launched unless --launch: seed the new workspace first, as the promote pack says
+(workspace instructions compose --pack promote).
+
+        --name PROJECT               The main checkout's workspace, from any directory (default: the working directory, which
+                                     must be the top of a main checkout)
+        --title TEXT                 The new workspace's task title
+        --spine=[TEMPLATE]           Make the spine (spine init) when none was carried; TEMPLATE as for start --spine
+        --no-spine                   Make no spine, even when spine.auto is true
+        --plan=[TITLE]               Make the plan (plan init) when none was carried
+        --carry-note FILE            Copy a note (relative to the main notes directory) into the new one; repeatable;
+                                     never over a file that is there
+        --launch                     Launch the new workspace once it is made: with a plan, as plan start does; else with --prompt
+        --prompt TEXT                With --launch: text for the agent's first prompt
+        --prompt-timeout DURATION    With --launch: how long to wait for the agent (default 60s)
+        --agent-kind KIND            The new workspace's main agent: claude, codex, opencode, pi
+        --[no-]headless              With --launch: start the session in plain tmux (see workspace launch --help)
+        --force                      Move even while an agent pane of the main checkout works or waits (the caller's own
+                                     pane, $TMUX_PANE, never counts)
+        --dry-run                    Say what would move and write nothing; on the default branch BRANCH may be left out
+        --json                       Print one JSON document; other output goes to stderr
+    -h, --help                       Show this help
+
+A failure part way is undone (move_failed); if undoing fails too, the changes are kept under
+refs/workspace/promote/<id> and the error lists the git commands that get them back (move_incomplete).
+Allow 60s without --launch, and --prompt-timeout plus 60s with it.
+
+Examples:
+  workspace promote    # on a feature branch: move its commits and the checkout's changes into a new worktree workspace
+  workspace promote fix-login --dry-run    # on the default branch: say what would move to a new branch fix-login, write nothing
+  workspace promote fix-login --dry-run --json    # the same, as one JSON document
+  workspace promote fix-login --title "Fix the login bug" --spine --plan --carry-note research-login.md --json    # move it, make a spine and plan, copy one note, scripted
+  workspace promote --name api --launch    # move the branch the "api" checkout is on, from any directory, then launch the new workspace
+--- stderr
+--- end
+### workspace promote --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace promote [BRANCH] [--name PROJECT] [--title TEXT] [--spine[=TEMPLATE] | --no-spine] [--plan[=TITLE]]"],"description":"[--carry-note FILE]... [--launch [--prompt TEXT] [--prompt-timeout DURATION]]\n                         [--agent-kind KIND] [--[no-]headless] [--force] [--dry-run] [--json]\n\nMove the work in a main checkout into a new workspace: the staged, unstaged and untracked changes, and\nthe commits of the branch it is on, go to a worktree at .worktrees/BRANCH; the main checkout is left\nclean on the default branch. Ignored files stay behind. The plan (IMPLEMENTATION_PLAN.md) and spine/\nmove to the new notes directory (the old ones are renamed .moved-<time>), and each --carry-note is copied.\nBRANCH omitted moves the current branch; on the default branch, name a new one (made at HEAD).\nNothing is launched unless --launch: seed the new workspace first, as the promote pack says\n(workspace instructions compose --pack promote).\n\n        --name PROJECT               The main checkout's workspace, from any directory (default: the working directory, which\n                                     must be the top of a main checkout)\n        --title TEXT                 The new workspace's task title\n        --spine=[TEMPLATE]           Make the spine (spine init) when none was carried; TEMPLATE as for start --spine\n        --no-spine                   Make no spine, even when spine.auto is true\n        --plan=[TITLE]               Make the plan (plan init) when none was carried\n        --carry-note FILE            Copy a note (relative to the main notes directory) into the new one; repeatable;\n                                     never over a file that is there\n        --launch                     Launch the new workspace once it is made: with a plan, as plan start does; else with --prompt\n        --prompt TEXT                With --launch: text for the agent's first prompt\n        --prompt-timeout DURATION    With --launch: how long to wait for the agent (default 60s)\n        --agent-kind KIND            The new workspace's main agent: claude, codex, opencode, pi\n        --[no-]headless              With --launch: start the session in plain tmux (see workspace launch --help)\n        --force                      Move even while an agent pane of the main checkout works or waits (the caller's own\n                                     pane, $TMUX_PANE, never counts)\n        --dry-run                    Say what would move and write nothing; on the default branch BRANCH may be left out\n        --json                       Print one JSON document; other output goes to stderr\n    -h, --help                       Show this help\n\nA failure part way is undone (move_failed); if undoing fails too, the changes are kept under\nrefs/workspace/promote/<id> and the error lists the git commands that get them back (move_incomplete).\nAllow 60s without --launch, and --prompt-timeout plus 60s with it.","options":[],"examples":[{"command":"workspace promote","scenario":"on a feature branch: move its commits and the checkout's changes into a new worktree workspace"},{"command":"workspace promote fix-login --dry-run","scenario":"on the default branch: say what would move to a new branch fix-login, write nothing"},{"command":"workspace promote fix-login --dry-run --json","scenario":"the same, as one JSON document"},{"command":"workspace promote fix-login --title \"Fix the login bug\" --spine --plan --carry-note research-login.md --json","scenario":"move it, make a spine and plan, copy one note, scripted"},{"command":"workspace promote --name api --launch","scenario":"move the branch the \"api\" checkout is on, from any directory, then launch the new workspace"}]}
+--- stderr
+--- end
+### workspace promote --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace promote --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace promote
+--- exit 1
+--- stdout
+--- stderr
+Error: $CWD is not the top of a main checkout.
+--- end

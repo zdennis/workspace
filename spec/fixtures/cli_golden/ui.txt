@@ -1,0 +1,268 @@
+### workspace ui --help
+--- exit 0
+--- stdout
+Usage: workspace ui open [task|review|plan] [WORKSPACE] [--print] [--json]
+       workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]
+       workspace ui open pane [WORKSPACE] PANE [--print] [--json]
+       workspace ui open inbox [--print] [--json]
+       workspace ui status [--json]
+
+The views:
+  task WORKSPACE     workspace-ui://task/WORKSPACE (the workspace's default view)
+  review WORKSPACE   workspace-ui://review/WORKSPACE
+  notes WORKSPACE    workspace-ui://notes/WORKSPACE, or .../REL when --path REL is given (an existing .md note in the notes directory)
+  plan WORKSPACE     workspace-ui://plan/WORKSPACE (opens the same workspace view as task, which holds the plan;
+                     there is no plan page, and task and plan share one tab)
+  pane WORKSPACE PANE  workspace-ui://pane/WORKSPACE/PANE
+                     (PANE is a tmux pane id such as %19, written %2519 in the link; WORKSPACE may be left out as for the others)
+  inbox              workspace-ui://inbox
+
+A note path (--path REL) uses the characters A-Z a-z 0-9 . _ - in one to four segments.
+The app takes a workspace name of at most 128 characters of A-Z a-z 0-9 . _ -, starting with a letter or
+digit, with no `..`. The CLI allows up to 255 characters and encodes the rest, but the app shows
+"Couldn't open the link" for a name it does not take, and `open` still exits 0: the exit status only
+says the app received the link. A pane link needs an app that declares link revision 1 or later (see
+`ui status`; a null revision means unknown, not old), and it goes stale when the pane closes.
+
+With no view, `ui open` and `ui open WORKSPACE` open the task view; a word that is neither a view nor a
+workspace with a config is a usage error and nothing opens. Use `ui open task WORKSPACE` for a workspace
+named like a view.
+
+Without --print this opens the link for the person, so the UI app comes to the front on that view.
+A link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)
+defaults to the project detected from the current directory. Opening needs the UI app installed,
+since it registers the scheme; without it `open` fails, the exit status is 1, and --print still
+shows the link.
+
+Run `workspace ui open VIEW --help` for the task, notes and inbox views.
+
+Options:
+        --name NAME                  Workspace name (every view but inbox)
+        --path REL                   Note to open, relative to the notes directory (notes view only)
+        --print                      Print the link and open nothing
+        --json                       Print one JSON action document (see docs/README.ui.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace ui open task my-app    # send the person to my-app's task view (opens the UI app)
+  workspace ui open review my-app.worktree-fix-login    # point the person at the review of one worktree's change
+  workspace ui open my-app    # shorthand for the task view of the workspace my-app (it must have a config)
+  workspace ui open plan --print    # learn the link that shows this workspace's plan, and open nothing
+  workspace ui open pane my-app %19    # show the person the pane an agent is stuck in
+  workspace ui open task my-app --json    # open from a script; on failure exits 1 with reason open_failed or open_unavailable
+--- stderr
+--- end
+### workspace ui --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ui open [task|review|plan] [WORKSPACE] [--print] [--json]","workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]","workspace ui open pane [WORKSPACE] PANE [--print] [--json]","workspace ui open inbox [--print] [--json]","workspace ui status [--json]"],"description":"","options":[{"flags":"--name NAME","description":"Workspace name (every view but inbox)"},{"flags":"--path REL","description":"Note to open, relative to the notes directory (notes view only)"},{"flags":"--print","description":"Print the link and open nothing"},{"flags":"--json","description":"Print one JSON action document (see docs/README.ui.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ui open task my-app","scenario":"send the person to my-app's task view (opens the UI app)"},{"command":"workspace ui open review my-app.worktree-fix-login","scenario":"point the person at the review of one worktree's change"},{"command":"workspace ui open my-app","scenario":"shorthand for the task view of the workspace my-app (it must have a config)"},{"command":"workspace ui open plan --print","scenario":"learn the link that shows this workspace's plan, and open nothing"},{"command":"workspace ui open pane my-app %19","scenario":"show the person the pane an agent is stuck in"},{"command":"workspace ui open task my-app --json","scenario":"open from a script; on failure exits 1 with reason open_failed or open_unavailable"}],"sections":[{"heading":"The views","text":"task WORKSPACE     workspace-ui://task/WORKSPACE (the workspace's default view)\n  review WORKSPACE   workspace-ui://review/WORKSPACE\n  notes WORKSPACE    workspace-ui://notes/WORKSPACE, or .../REL when --path REL is given (an existing .md note in the notes directory)\n  plan WORKSPACE     workspace-ui://plan/WORKSPACE (opens the same workspace view as task, which holds the plan;\n                     there is no plan page, and task and plan share one tab)\n  pane WORKSPACE PANE  workspace-ui://pane/WORKSPACE/PANE\n                     (PANE is a tmux pane id such as %19, written %2519 in the link; WORKSPACE may be left out as for the others)\n  inbox              workspace-ui://inbox\n\nA note path (--path REL) uses the characters A-Z a-z 0-9 . _ - in one to four segments.\nThe app takes a workspace name of at most 128 characters of A-Z a-z 0-9 . _ -, starting with a letter or\ndigit, with no `..`. The CLI allows up to 255 characters and encodes the rest, but the app shows\n\"Couldn't open the link\" for a name it does not take, and `open` still exits 0: the exit status only\nsays the app received the link. A pane link needs an app that declares link revision 1 or later (see\n`ui status`; a null revision means unknown, not old), and it goes stale when the pane closes.\n\nWith no view, `ui open` and `ui open WORKSPACE` open the task view; a word that is neither a view nor a\nworkspace with a config is a usage error and nothing opens. Use `ui open task WORKSPACE` for a workspace\nnamed like a view.\n\nWithout --print this opens the link for the person, so the UI app comes to the front on that view.\nA link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)\ndefaults to the project detected from the current directory. Opening needs the UI app installed,\nsince it registers the scheme; without it `open` fails, the exit status is 1, and --print still\nshows the link.\n\nRun `workspace ui open VIEW --help` for the task, notes and inbox views."}]}
+--- stderr
+--- end
+### workspace ui open --help
+--- exit 0
+--- stdout
+Usage: workspace ui open [task|review|plan] [WORKSPACE] [--print] [--json]
+       workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]
+       workspace ui open pane [WORKSPACE] PANE [--print] [--json]
+       workspace ui open inbox [--print] [--json]
+
+Open a view of the workspace UI through its workspace-ui:// link.
+
+The views:
+  task WORKSPACE     workspace-ui://task/WORKSPACE (the workspace's default view)
+  review WORKSPACE   workspace-ui://review/WORKSPACE
+  notes WORKSPACE    workspace-ui://notes/WORKSPACE, or .../REL when --path REL is given (an existing .md note in the notes directory)
+  plan WORKSPACE     workspace-ui://plan/WORKSPACE (opens the same workspace view as task, which holds the plan;
+                     there is no plan page, and task and plan share one tab)
+  pane WORKSPACE PANE  workspace-ui://pane/WORKSPACE/PANE
+                     (PANE is a tmux pane id such as %19, written %2519 in the link; WORKSPACE may be left out as for the others)
+  inbox              workspace-ui://inbox
+
+A note path (--path REL) uses the characters A-Z a-z 0-9 . _ - in one to four segments.
+The app takes a workspace name of at most 128 characters of A-Z a-z 0-9 . _ -, starting with a letter or
+digit, with no `..`. The CLI allows up to 255 characters and encodes the rest, but the app shows
+"Couldn't open the link" for a name it does not take, and `open` still exits 0: the exit status only
+says the app received the link. A pane link needs an app that declares link revision 1 or later (see
+`ui status`; a null revision means unknown, not old), and it goes stale when the pane closes.
+
+With no view, `ui open` and `ui open WORKSPACE` open the task view; a word that is neither a view nor a
+workspace with a config is a usage error and nothing opens. Use `ui open task WORKSPACE` for a workspace
+named like a view.
+
+Without --print this opens the link for the person, so the UI app comes to the front on that view.
+A link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)
+defaults to the project detected from the current directory. Opening needs the UI app installed,
+since it registers the scheme; without it `open` fails, the exit status is 1, and --print still
+shows the link.
+
+Run `workspace ui open VIEW --help` for the task, notes and inbox views.
+
+Options:
+    --name NAME                  Workspace name (every view but inbox)
+    --path REL                   Note to open, relative to the notes directory (notes view only)
+    --print                      Print the link and open nothing
+    --json                       Print one JSON action document (see docs/README.ui.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace ui open task my-app    # send the person to my-app's task view (opens the UI app)
+  workspace ui open review my-app.worktree-fix-login    # point the person at the review of one worktree's change
+  workspace ui open my-app    # shorthand for the task view of the workspace my-app (it must have a config)
+  workspace ui open plan --print    # learn the link that shows this workspace's plan, and open nothing
+  workspace ui open pane my-app %19    # show the person the pane an agent is stuck in
+  workspace ui open task my-app --json    # open from a script; on failure exits 1 with reason open_failed or open_unavailable
+--- stderr
+--- end
+### workspace ui open --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ui open [task|review|plan] [WORKSPACE] [--print] [--json]","workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]","workspace ui open pane [WORKSPACE] PANE [--print] [--json]","workspace ui open inbox [--print] [--json]"],"description":"Open a view of the workspace UI through its workspace-ui:// link.","options":[{"flags":"--name NAME","description":"Workspace name (every view but inbox)"},{"flags":"--path REL","description":"Note to open, relative to the notes directory (notes view only)"},{"flags":"--print","description":"Print the link and open nothing"},{"flags":"--json","description":"Print one JSON action document (see docs/README.ui.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ui open task my-app","scenario":"send the person to my-app's task view (opens the UI app)"},{"command":"workspace ui open review my-app.worktree-fix-login","scenario":"point the person at the review of one worktree's change"},{"command":"workspace ui open my-app","scenario":"shorthand for the task view of the workspace my-app (it must have a config)"},{"command":"workspace ui open plan --print","scenario":"learn the link that shows this workspace's plan, and open nothing"},{"command":"workspace ui open pane my-app %19","scenario":"show the person the pane an agent is stuck in"},{"command":"workspace ui open task my-app --json","scenario":"open from a script; on failure exits 1 with reason open_failed or open_unavailable"}],"sections":[{"heading":"The views","text":"task WORKSPACE     workspace-ui://task/WORKSPACE (the workspace's default view)\n  review WORKSPACE   workspace-ui://review/WORKSPACE\n  notes WORKSPACE    workspace-ui://notes/WORKSPACE, or .../REL when --path REL is given (an existing .md note in the notes directory)\n  plan WORKSPACE     workspace-ui://plan/WORKSPACE (opens the same workspace view as task, which holds the plan;\n                     there is no plan page, and task and plan share one tab)\n  pane WORKSPACE PANE  workspace-ui://pane/WORKSPACE/PANE\n                     (PANE is a tmux pane id such as %19, written %2519 in the link; WORKSPACE may be left out as for the others)\n  inbox              workspace-ui://inbox\n\nA note path (--path REL) uses the characters A-Z a-z 0-9 . _ - in one to four segments.\nThe app takes a workspace name of at most 128 characters of A-Z a-z 0-9 . _ -, starting with a letter or\ndigit, with no `..`. The CLI allows up to 255 characters and encodes the rest, but the app shows\n\"Couldn't open the link\" for a name it does not take, and `open` still exits 0: the exit status only\nsays the app received the link. A pane link needs an app that declares link revision 1 or later (see\n`ui status`; a null revision means unknown, not old), and it goes stale when the pane closes.\n\nWith no view, `ui open` and `ui open WORKSPACE` open the task view; a word that is neither a view nor a\nworkspace with a config is a usage error and nothing opens. Use `ui open task WORKSPACE` for a workspace\nnamed like a view.\n\nWithout --print this opens the link for the person, so the UI app comes to the front on that view.\nA link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)\ndefaults to the project detected from the current directory. Opening needs the UI app installed,\nsince it registers the scheme; without it `open` fails, the exit status is 1, and --print still\nshows the link.\n\nRun `workspace ui open VIEW --help` for the task, notes and inbox views."}]}
+--- stderr
+--- end
+### workspace ui open task --help
+--- exit 0
+--- stdout
+Usage: workspace ui open task [WORKSPACE] [--print] [--json]
+
+Open a workspace's default view (task) in the workspace UI.
+
+Opens workspace-ui://task/WORKSPACE for the person: the UI app comes to the front on the workspace's
+default view, which also holds its plan (`ui open plan` opens the same view). Nothing else happens; the
+link never starts an agent or runs a command. WORKSPACE (or --name)
+defaults to the project detected from the current directory; from anywhere else a usage error asks for
+one. `ui open task WORKSPACE` does not check that the workspace exists: the UI validates the link it
+receives. The shorthand `ui open WORKSPACE` does check: its word must be a view or a workspace with a
+config. Without the UI app installed `open` fails and the exit status is 1; --print still shows the link.
+
+Options:
+    --name NAME                  Workspace name
+    --print                      Print the link and open nothing
+    --json                       Print one JSON action document (see docs/README.ui.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace ui open task my-app    # send the person to my-app's task view (opens the UI app)
+  workspace ui open task    # from inside a project, open the task view of the workspace you are in
+  workspace ui open task my-app --print    # put the link in a message or a note, and open nothing
+  workspace ui open task --name my-app.worktree-fix-login    # open a worktree's task from outside its checkout
+  workspace ui open task my-app --json    # open from a script; on failure exits 1 with reason open_failed or open_unavailable
+--- stderr
+--- end
+### workspace ui open task --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ui open task [WORKSPACE] [--print] [--json]"],"description":"Open a workspace's default view (task) in the workspace UI.\n\nOpens workspace-ui://task/WORKSPACE for the person: the UI app comes to the front on the workspace's\ndefault view, which also holds its plan (`ui open plan` opens the same view). Nothing else happens; the\nlink never starts an agent or runs a command. WORKSPACE (or --name)\ndefaults to the project detected from the current directory; from anywhere else a usage error asks for\none. `ui open task WORKSPACE` does not check that the workspace exists: the UI validates the link it\nreceives. The shorthand `ui open WORKSPACE` does check: its word must be a view or a workspace with a\nconfig. Without the UI app installed `open` fails and the exit status is 1; --print still shows the link.","options":[{"flags":"--name NAME","description":"Workspace name"},{"flags":"--print","description":"Print the link and open nothing"},{"flags":"--json","description":"Print one JSON action document (see docs/README.ui.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ui open task my-app","scenario":"send the person to my-app's task view (opens the UI app)"},{"command":"workspace ui open task","scenario":"from inside a project, open the task view of the workspace you are in"},{"command":"workspace ui open task my-app --print","scenario":"put the link in a message or a note, and open nothing"},{"command":"workspace ui open task --name my-app.worktree-fix-login","scenario":"open a worktree's task from outside its checkout"},{"command":"workspace ui open task my-app --json","scenario":"open from a script; on failure exits 1 with reason open_failed or open_unavailable"}]}
+--- stderr
+--- end
+### workspace ui open notes --help
+--- exit 0
+--- stdout
+Usage: workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]
+
+Open a workspace's notes in the workspace UI, or one note.
+
+Opens workspace-ui://notes/WORKSPACE for the person, or .../REL with --path REL: the UI app comes to
+the front on the Notes view or on that note. WORKSPACE (or --name) defaults to the project detected
+from the current directory.
+
+REL is the note's path inside the workspace's notes directory (`workspace notes dir` prints it):
+an existing .md or .markdown file of at most 4 path segments, with no symlink on the way. Each segment
+uses only the characters A-Z a-z 0-9 . _ - (no space), does not start with a dot and is not node_modules,
+so `My Note.md` cannot be linked until it is renamed. The file is checked first; a path that fails the
+check is refused as invalid_note_path, exits 1 with an error, and nothing opens. With --path the
+workspace must exist: an unknown one is refused as unknown_workspace before the path is looked at.
+Without the UI app installed `open` fails and the exit status is 1; --print still shows the link.
+
+Options:
+    --name NAME                  Workspace name
+    --path REL                   Note to open, relative to the notes directory
+    --print                      Print the link and open nothing
+    --json                       Print one JSON action document (see docs/README.ui.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace ui open notes my-app    # send the person to the notes of my-app (opens the UI app)
+  workspace ui open notes my-app --path payment-retries.md    # show the person the one note you just wrote
+  workspace ui open notes --path research/findings.md --print    # in the workspace of the current directory, print the link to a note in a folder, to quote in a reply
+  workspace ui open notes my-app --path payment-retries.md --json    # open from a script; for a known workspace, a missing note is invalid_note_path in the error document
+--- stderr
+--- end
+### workspace ui open notes --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ui open notes [WORKSPACE] [--path REL] [--print] [--json]"],"description":"Open a workspace's notes in the workspace UI, or one note.\n\nOpens workspace-ui://notes/WORKSPACE for the person, or .../REL with --path REL: the UI app comes to\nthe front on the Notes view or on that note. WORKSPACE (or --name) defaults to the project detected\nfrom the current directory.","options":[{"flags":"--name NAME","description":"Workspace name"},{"flags":"--path REL","description":"Note to open, relative to the notes directory"},{"flags":"--print","description":"Print the link and open nothing"},{"flags":"--json","description":"Print one JSON action document (see docs/README.ui.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ui open notes my-app","scenario":"send the person to the notes of my-app (opens the UI app)"},{"command":"workspace ui open notes my-app --path payment-retries.md","scenario":"show the person the one note you just wrote"},{"command":"workspace ui open notes --path research/findings.md --print","scenario":"in the workspace of the current directory, print the link to a note in a folder, to quote in a reply"},{"command":"workspace ui open notes my-app --path payment-retries.md --json","scenario":"open from a script; for a known workspace, a missing note is invalid_note_path in the error document"}],"sections":[{"heading":"REL is the note's path inside the workspace's notes directory (`workspace notes dir` prints it)","text":"an existing .md or .markdown file of at most 4 path segments, with no symlink on the way. Each segment\nuses only the characters A-Z a-z 0-9 . _ - (no space), does not start with a dot and is not node_modules,\nso `My Note.md` cannot be linked until it is renamed. The file is checked first; a path that fails the\ncheck is refused as invalid_note_path, exits 1 with an error, and nothing opens. With --path the\nworkspace must exist: an unknown one is refused as unknown_workspace before the path is looked at.\nWithout the UI app installed `open` fails and the exit status is 1; --print still shows the link."}]}
+--- stderr
+--- end
+### workspace ui open inbox --help
+--- exit 0
+--- stdout
+Usage: workspace ui open inbox [--print] [--json]
+
+Open the inbox in the workspace UI.
+
+Opens workspace-ui://inbox for the person: the UI app comes to the front on the inbox. The inbox is
+not tied to a workspace, so a workspace or --name is a usage error. Without the UI app installed
+`open` fails and the exit status is 1; --print still shows the link.
+
+Options:
+    --print                      Print the link and open nothing
+    --json                       Print one JSON action document (see docs/README.ui.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace ui open inbox    # tell the person something waits for them (opens the UI app)
+  workspace ui open inbox --print    # learn the inbox link and open nothing
+  workspace ui open inbox --json    # open from a script; on failure exits 1 with reason open_failed or open_unavailable
+--- stderr
+--- end
+### workspace ui open inbox --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ui open inbox [--print] [--json]"],"description":"Open the inbox in the workspace UI.\n\nOpens workspace-ui://inbox for the person: the UI app comes to the front on the inbox. The inbox is\nnot tied to a workspace, so a workspace or --name is a usage error. Without the UI app installed\n`open` fails and the exit status is 1; --print still shows the link.","options":[{"flags":"--print","description":"Print the link and open nothing"},{"flags":"--json","description":"Print one JSON action document (see docs/README.ui.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ui open inbox","scenario":"tell the person something waits for them (opens the UI app)"},{"command":"workspace ui open inbox --print","scenario":"learn the inbox link and open nothing"},{"command":"workspace ui open inbox --json","scenario":"open from a script; on failure exits 1 with reason open_failed or open_unavailable"}]}
+--- stderr
+--- end
+### workspace ui status --help
+--- exit 0
+--- stdout
+Usage: workspace ui status [--json]
+
+Show which app would take a workspace-ui:// link, and whether it is running.
+
+Asks macOS, and only asks: nothing is opened or launched, and no link is built. Prints three lines
+(running, handler, links), or with --json one read document: running, pids, handler (path, id, version),
+links (revision, reason), probe and warnings. When macOS cannot be asked, running, pids and handler are
+null and probe says why (timed_out, unavailable, bad_answer); that is still exit 0.
+
+The rule for an agent: `handler: null`, or links.reason `foreign_handler`, means no UI app would take a
+link, so print it (`ui open ... --print`) rather than open it. `running: false` does not mean that:
+macOS launches the app for a link. links.revision is a number only when the handler is the shipped app
+and its bundle declares the links it takes; otherwise it is null and links.reason says why.
+
+Options:
+    --json                       Print one JSON read document (see docs/README.ui.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace ui status    # see whether the UI app is installed and running
+  workspace ui status --json    # read the same from a script
+  workspace ui status --json | jq .links.reason    # learn why links may not reach the running app (null when they will)
+--- stderr
+--- end
+### workspace ui status --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace ui status [--json]"],"description":"Show which app would take a workspace-ui:// link, and whether it is running.\n\nAsks macOS, and only asks: nothing is opened or launched, and no link is built. Prints three lines\n(running, handler, links), or with --json one read document: running, pids, handler (path, id, version),\nlinks (revision, reason), probe and warnings. When macOS cannot be asked, running, pids and handler are\nnull and probe says why (timed_out, unavailable, bad_answer); that is still exit 0.\n\nThe rule for an agent: `handler: null`, or links.reason `foreign_handler`, means no UI app would take a","options":[{"flags":"--json","description":"Print one JSON read document (see docs/README.ui.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace ui status","scenario":"see whether the UI app is installed and running"},{"command":"workspace ui status --json","scenario":"read the same from a script"},{"command":"workspace ui status --json | jq .links.reason","scenario":"learn why links may not reach the running app (null when they will)"}],"sections":[{"heading":"link, so print it (`ui open ... --print`) rather than open it. `running: false` does not mean that","text":"macOS launches the app for a link. links.revision is a number only when the handler is the shipped app\nand its bundle declares the links it takes; otherwise it is null and links.reason says why."}]}
+--- stderr
+--- end
+### workspace ui --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace ui --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end

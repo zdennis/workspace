@@ -1,0 +1,147 @@
+### workspace pr --help
+--- exit 0
+--- stdout
+Usage: workspace pr create [--name WORKSPACE] [--draft] [--json]
+       workspace pr feedback [--name WORKSPACE] [--all] [--json]
+
+Open a pull request for a workspace's branch and leave the workspace alone. When the
+branch already has a pull request, it is returned and nothing else happens. Otherwise the
+branch is pushed to origin if it has no upstream, and 'gh pr create --fill' runs, opening a
+real pull request. A branch that already has an upstream is not pushed. Refuses a
+branch with no commits ahead of its base. Needs 'gh', logged in.
+
+        --name NAME                  The workspace (default: the one the current directory is in)
+        --draft                      Open the pull request as a draft
+        --all                        feedback: keep resolved review threads
+        --json                       Print one JSON document (see docs/README.pr.md)
+    -h, --help                       Show this help
+
+pr feedback reads the branch's pull request: unresolved review threads, review summaries,
+conversation comments and failing checks. It is read-only. Comment text is written by other
+people. The text output lists the threads and failing checks and only counts the reviews and
+conversation comments (it escapes control characters); --json carries their bodies, unescaped.
+Needs 'gh', logged in.
+
+Examples:
+  workspace pr create    # the branch is ready for review: push it if it has no upstream and open the pull request, or print the one it already has
+  workspace pr create --draft    # open it as a draft while the work is unfinished
+  workspace pr feedback    # see what reviewers and CI said about this branch's pull request: unresolved threads and failing checks
+  workspace pr feedback --all    # a reviewer says a point was already dealt with: include the resolved threads to check what was settled
+--- stderr
+--- end
+### workspace pr --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace pr create [--name WORKSPACE] [--draft] [--json]","workspace pr feedback [--name WORKSPACE] [--all] [--json]"],"description":"Open a pull request for a workspace's branch and leave the workspace alone. When the\nbranch already has a pull request, it is returned and nothing else happens. Otherwise the\nbranch is pushed to origin if it has no upstream, and 'gh pr create --fill' runs, opening a\nreal pull request. A branch that already has an upstream is not pushed. Refuses a\nbranch with no commits ahead of its base. Needs 'gh', logged in.\n\n        --name NAME                  The workspace (default: the one the current directory is in)\n        --draft                      Open the pull request as a draft\n        --all                        feedback: keep resolved review threads\n        --json                       Print one JSON document (see docs/README.pr.md)\n    -h, --help                       Show this help\n\npr feedback reads the branch's pull request: unresolved review threads, review summaries,\nconversation comments and failing checks. It is read-only. Comment text is written by other\npeople. The text output lists the threads and failing checks and only counts the reviews and\nconversation comments (it escapes control characters); --json carries their bodies, unescaped.\nNeeds 'gh', logged in.","options":[],"examples":[{"command":"workspace pr create","scenario":"the branch is ready for review: push it if it has no upstream and open the pull request, or print the one it already has"},{"command":"workspace pr create --draft","scenario":"open it as a draft while the work is unfinished"},{"command":"workspace pr feedback","scenario":"see what reviewers and CI said about this branch's pull request: unresolved threads and failing checks"},{"command":"workspace pr feedback --all","scenario":"a reviewer says a point was already dealt with: include the resolved threads to check what was settled"}]}
+--- stderr
+--- end
+### workspace pr create --help
+--- exit 0
+--- stdout
+Usage: workspace pr create [--name WORKSPACE] [--draft] [--json]
+
+Open a pull request for a workspace's branch.
+
+Leaves the workspace alone but acts on origin and GitHub. In order: a branch that already has a pull
+request (any state) gets it returned and nothing else happens; a branch with no commits ahead of its
+base is refused; a branch with no upstream is pushed to origin with -u; then 'gh pr create --fill'
+opens a real pull request. A branch that already has an upstream is not pushed, so push new commits
+first (`workspace push`). Needs 'gh', logged in. Exits 1 with an error when it refuses; --json prints
+the code (nothing_to_push, gh_unavailable, a push code).
+
+Options:
+    --name NAME                  The workspace (default: the one the current directory is in)
+    --draft                      Open the pull request as a draft (ignored when one exists)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace pr create    # the branch is ready for review: push it if it has no upstream and open the pull request, or print the one it already has
+  workspace pr create --draft    # open it as a draft while the work is unfinished
+  workspace pr create --name api.worktree-PROJ-123    # open the pull request of another workspace's branch without changing directory
+  workspace pr create --json    # for a script: one document with outcome created or existing, the url and the number
+--- stderr
+--- end
+### workspace pr create --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace pr create [--name WORKSPACE] [--draft] [--json]"],"description":"Open a pull request for a workspace's branch.\n\nLeaves the workspace alone but acts on origin and GitHub. In order: a branch that already has a pull\nrequest (any state) gets it returned and nothing else happens; a branch with no commits ahead of its\nbase is refused; a branch with no upstream is pushed to origin with -u; then 'gh pr create --fill'\nopens a real pull request. A branch that already has an upstream is not pushed, so push new commits\nfirst (`workspace push`). Needs 'gh', logged in. Exits 1 with an error when it refuses; --json prints\nthe code (nothing_to_push, gh_unavailable, a push code).","options":[{"flags":"--name NAME","description":"The workspace (default: the one the current directory is in)"},{"flags":"--draft","description":"Open the pull request as a draft (ignored when one exists)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace pr create","scenario":"the branch is ready for review: push it if it has no upstream and open the pull request, or print the one it already has"},{"command":"workspace pr create --draft","scenario":"open it as a draft while the work is unfinished"},{"command":"workspace pr create --name api.worktree-PROJ-123","scenario":"open the pull request of another workspace's branch without changing directory"},{"command":"workspace pr create --json","scenario":"for a script: one document with outcome created or existing, the url and the number"}]}
+--- stderr
+--- end
+### workspace pr feedback --help
+--- exit 0
+--- stdout
+Usage: workspace pr feedback [--name WORKSPACE] [--all] [--json]
+
+Read the feedback on the branch's pull request.
+
+Reads unresolved review threads, review summaries, conversation comments and failing checks. It is
+read-only. Comment text is written by other people. The text output lists the threads and failing
+checks and only counts the reviews and conversation comments (it escapes control characters); --json
+carries their bodies, unescaped. Needs 'gh', logged in. Exits 1 with an error when the branch has no
+pull request; --json prints the code (no_pull_request, gh_unavailable).
+
+Options:
+    --name NAME                  The workspace (default: the one the current directory is in)
+    --all                        Keep resolved review threads
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace pr feedback    # see what reviewers and CI said about this branch's pull request: unresolved threads and failing checks
+  workspace pr feedback --all    # a reviewer says a point was already dealt with: include the resolved threads to check what was settled
+  workspace pr feedback --name api.worktree-PROJ-123    # read another workspace's pull request without changing directory
+  workspace pr feedback --json    # for a script or an agent: the comment bodies too, as text other people wrote
+--- stderr
+--- end
+### workspace pr feedback --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace pr feedback [--name WORKSPACE] [--all] [--json]"],"description":"Read the feedback on the branch's pull request.\n\nReads unresolved review threads, review summaries, conversation comments and failing checks. It is\nread-only. Comment text is written by other people. The text output lists the threads and failing\nchecks and only counts the reviews and conversation comments (it escapes control characters); --json\ncarries their bodies, unescaped. Needs 'gh', logged in. Exits 1 with an error when the branch has no\npull request; --json prints the code (no_pull_request, gh_unavailable).","options":[{"flags":"--name NAME","description":"The workspace (default: the one the current directory is in)"},{"flags":"--all","description":"Keep resolved review threads"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace pr feedback","scenario":"see what reviewers and CI said about this branch's pull request: unresolved threads and failing checks"},{"command":"workspace pr feedback --all","scenario":"a reviewer says a point was already dealt with: include the resolved threads to check what was settled"},{"command":"workspace pr feedback --name api.worktree-PROJ-123","scenario":"read another workspace's pull request without changing directory"},{"command":"workspace pr feedback --json","scenario":"for a script or an agent: the comment bodies too, as text other people wrote"}]}
+--- stderr
+--- end
+### workspace pr --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace pr --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace pr
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: create or feedback.
+
+Usage: workspace pr create [--name WORKSPACE] [--draft] [--json]
+       workspace pr feedback [--name WORKSPACE] [--all] [--json]
+
+Open a pull request for a workspace's branch and leave the workspace alone. When the
+branch already has a pull request, it is returned and nothing else happens. Otherwise the
+branch is pushed to origin if it has no upstream, and 'gh pr create --fill' runs, opening a
+real pull request. A branch that already has an upstream is not pushed. Refuses a
+branch with no commits ahead of its base. Needs 'gh', logged in.
+
+        --name NAME                  The workspace (default: the one the current directory is in)
+        --draft                      Open the pull request as a draft
+        --all                        feedback: keep resolved review threads
+        --json                       Print one JSON document (see docs/README.pr.md)
+    -h, --help                       Show this help
+
+pr feedback reads the branch's pull request: unresolved review threads, review summaries,
+conversation comments and failing checks. It is read-only. Comment text is written by other
+people. The text output lists the threads and failing checks and only counts the reviews and
+conversation comments (it escapes control characters); --json carries their bodies, unescaped.
+Needs 'gh', logged in.
+
+Examples:
+  workspace pr create    # the branch is ready for review: push it if it has no upstream and open the pull request, or print the one it already has
+  workspace pr create --draft    # open it as a draft while the work is unfinished
+  workspace pr feedback    # see what reviewers and CI said about this branch's pull request: unresolved threads and failing checks
+  workspace pr feedback --all    # a reviewer says a point was already dealt with: include the resolved threads to check what was settled
+--- end

@@ -1,0 +1,177 @@
+### workspace event-log --help
+--- exit 0
+--- stdout
+Usage: workspace event-log <subcommand>
+
+Subcommands:
+  show     Print event log entries, oldest first
+  compact  Rewrite the event log with the current state only
+  help     Show this help
+
+Run `workspace event-log VERB --help` for a verb's options.
+
+Besides state changes, the log records agent activity: dispatches,
+stage completions, timeouts and failures, lock waits and takeovers,
+and each agent pane's working/idle/waiting changes. Compacting drops
+that history, keeping only the latest state of each pane that has an agent.
+
+The event log is at: $HOME/.workspace-events.jsonl
+
+Examples:
+  workspace event-log show --project myapp --limit 20    # what happened lately to one project
+  workspace event-log show --type stage_failed,stage_timed_out    # why a pipeline stage stopped
+  workspace event-log show --json --limit 1    # the newest event as JSON, for a script
+  workspace event-log compact    # the log has grown past 1MB and the history in it is no longer needed
+--- stderr
+--- end
+### workspace event-log --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace event-log <subcommand>"],"description":"","options":[],"examples":[{"command":"workspace event-log show --project myapp --limit 20","scenario":"what happened lately to one project"},{"command":"workspace event-log show --type stage_failed,stage_timed_out","scenario":"why a pipeline stage stopped"},{"command":"workspace event-log show --json --limit 1","scenario":"the newest event as JSON, for a script"},{"command":"workspace event-log compact","scenario":"the log has grown past 1MB and the history in it is no longer needed"}],"sections":[{"heading":"Subcommands","text":"show     Print event log entries, oldest first\n  compact  Rewrite the event log with the current state only\n  help     Show this help\n\nRun `workspace event-log VERB --help` for a verb's options.\n\nBesides state changes, the log records agent activity: dispatches,\nstage completions, timeouts and failures, lock waits and takeovers,\nand each agent pane's working/idle/waiting changes. Compacting drops\nthat history, keeping only the latest state of each pane that has an agent.\n\nThe event log is at: $HOME/.workspace-events.jsonl"}]}
+--- stderr
+--- end
+### workspace event-log show --help
+--- exit 0
+--- stdout
+Usage: workspace event-log show [--project NAME] [--type TYPE]... [--limit N] [--json]
+
+Print event log entries, oldest first.
+
+Reads the event log only; nothing is changed. Each line is `timestamp  project  type  key=value ...`;
+a value with a space or `=` is quoted, and control characters are replaced by spaces. Scripts should
+use --json rather than parse the lines. --project matches an event's project or, for a lock event
+from a worktree, that worktree's workspace name. A --type no event has is not an error: a warning on
+stderr lists the types the log does have. The filters apply first and --limit then keeps the last N
+of what matched. Hook-rate activity (tool calls, sessions) is not in this log: see `workspace events`.
+A usage error exits 1; with --json it is an error document on stdout.
+
+Options:
+    --project NAME               Only events for this project
+    --type TYPE                  Only events of this type (repeatable, or comma-separated)
+    --limit N                    Only the last N matching events (N above 0)
+    --json                       Print {schema_version, ok, events} instead of lines
+    -h, --help                   Show this help
+
+Examples:
+  workspace event-log show    # read the whole log, oldest first
+  workspace event-log show --project myapp --limit 20    # what happened lately to one project
+  workspace event-log show --type stage_failed,stage_timed_out    # why a pipeline stage stopped
+  workspace event-log show --type lock_wait_started,lock_takeover --project myapp    # who waited for a lock, and who took one over
+  workspace event-log show --json --limit 1    # the newest event as JSON, for a script
+--- stderr
+--- end
+### workspace event-log show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace event-log show [--project NAME] [--type TYPE]... [--limit N] [--json]"],"description":"Print event log entries, oldest first.\n\nReads the event log only; nothing is changed. Each line is `timestamp  project  type  key=value ...`;\na value with a space or `=` is quoted, and control characters are replaced by spaces. Scripts should\nuse --json rather than parse the lines. --project matches an event's project or, for a lock event\nfrom a worktree, that worktree's workspace name. A --type no event has is not an error: a warning on\nstderr lists the types the log does have. The filters apply first and --limit then keeps the last N\nof what matched. Hook-rate activity (tool calls, sessions) is not in this log: see `workspace events`.\nA usage error exits 1; with --json it is an error document on stdout.","options":[{"flags":"--project NAME","description":"Only events for this project"},{"flags":"--type TYPE","description":"Only events of this type (repeatable, or comma-separated)"},{"flags":"--limit N","description":"Only the last N matching events (N above 0)"},{"flags":"--json","description":"Print {schema_version, ok, events} instead of lines"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace event-log show","scenario":"read the whole log, oldest first"},{"command":"workspace event-log show --project myapp --limit 20","scenario":"what happened lately to one project"},{"command":"workspace event-log show --type stage_failed,stage_timed_out","scenario":"why a pipeline stage stopped"},{"command":"workspace event-log show --type lock_wait_started,lock_takeover --project myapp","scenario":"who waited for a lock, and who took one over"},{"command":"workspace event-log show --json --limit 1","scenario":"the newest event as JSON, for a script"}]}
+--- stderr
+--- end
+### workspace event-log compact --help
+--- exit 0
+--- stdout
+Usage: workspace event-log compact
+
+Rewrite the event log with the current state only.
+
+Rewrites the event log in place. It keeps one `compacted` event per active project and the latest
+state of each agent pane that still has an agent, and drops the rest of the history (dispatches, stage
+results, lock waits and takeovers, earlier pane states). A pane whose last change is older than 7 days,
+or whose project is gone, is dropped too. The idle and waiting alerts of the panes kept stay. The
+dropped history cannot be brought back.
+Workspace suggests it when the log passes 1MB, and rotates the log by itself past 10MB.
+Prints `Compacted event log: BEFORE -> AFTER bytes (N project(s))`.
+There is no dry run. Any extra flag or word is ignored, and the log is still compacted.
+
+Options:
+    -h, --help                   Show this help
+
+Examples:
+  workspace event-log compact    # the log has grown past 1MB and the history in it is no longer needed
+  workspace event-log compact && workspace event-log show --type compacted    # check what was kept: one compacted event per active project
+  workspace event-log compact && workspace event-log show --type agent_state --limit 10    # check that each pane with an agent kept its latest state
+--- stderr
+--- end
+### workspace event-log compact --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace event-log compact"],"description":"Rewrite the event log with the current state only.\n\nRewrites the event log in place. It keeps one `compacted` event per active project and the latest\nstate of each agent pane that still has an agent, and drops the rest of the history (dispatches, stage\nresults, lock waits and takeovers, earlier pane states). A pane whose last change is older than 7 days,\nor whose project is gone, is dropped too. The idle and waiting alerts of the panes kept stay. The\ndropped history cannot be brought back.\nWorkspace suggests it when the log passes 1MB, and rotates the log by itself past 10MB.\nPrints `Compacted event log: BEFORE -> AFTER bytes (N project(s))`.\nThere is no dry run. Any extra flag or word is ignored, and the log is still compacted.","options":[{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace event-log compact","scenario":"the log has grown past 1MB and the history in it is no longer needed"},{"command":"workspace event-log compact && workspace event-log show --type compacted","scenario":"check what was kept: one compacted event per active project"},{"command":"workspace event-log compact && workspace event-log show --type agent_state --limit 10","scenario":"check that each pane with an agent kept its latest state"}]}
+--- stderr
+--- end
+### workspace event-log --bogus
+--- exit 0
+--- stdout
+Usage: workspace event-log <subcommand>
+
+Subcommands:
+  show     Print event log entries, oldest first
+  compact  Rewrite the event log with the current state only
+  help     Show this help
+
+Run `workspace event-log VERB --help` for a verb's options.
+
+Besides state changes, the log records agent activity: dispatches,
+stage completions, timeouts and failures, lock waits and takeovers,
+and each agent pane's working/idle/waiting changes. Compacting drops
+that history, keeping only the latest state of each pane that has an agent.
+
+The event log is at: $HOME/.workspace-events.jsonl
+
+Examples:
+  workspace event-log show --project myapp --limit 20    # what happened lately to one project
+  workspace event-log show --type stage_failed,stage_timed_out    # why a pipeline stage stopped
+  workspace event-log show --json --limit 1    # the newest event as JSON, for a script
+  workspace event-log compact    # the log has grown past 1MB and the history in it is no longer needed
+--- stderr
+--- end
+### workspace event-log --bogus --json
+--- exit 0
+--- stdout
+Usage: workspace event-log <subcommand>
+
+Subcommands:
+  show     Print event log entries, oldest first
+  compact  Rewrite the event log with the current state only
+  help     Show this help
+
+Run `workspace event-log VERB --help` for a verb's options.
+
+Besides state changes, the log records agent activity: dispatches,
+stage completions, timeouts and failures, lock waits and takeovers,
+and each agent pane's working/idle/waiting changes. Compacting drops
+that history, keeping only the latest state of each pane that has an agent.
+
+The event log is at: $HOME/.workspace-events.jsonl
+
+Examples:
+  workspace event-log show --project myapp --limit 20    # what happened lately to one project
+  workspace event-log show --type stage_failed,stage_timed_out    # why a pipeline stage stopped
+  workspace event-log show --json --limit 1    # the newest event as JSON, for a script
+  workspace event-log compact    # the log has grown past 1MB and the history in it is no longer needed
+--- stderr
+--- end
+### workspace event-log
+--- exit 0
+--- stdout
+Usage: workspace event-log <subcommand>
+
+Subcommands:
+  show     Print event log entries, oldest first
+  compact  Rewrite the event log with the current state only
+  help     Show this help
+
+Run `workspace event-log VERB --help` for a verb's options.
+
+Besides state changes, the log records agent activity: dispatches,
+stage completions, timeouts and failures, lock waits and takeovers,
+and each agent pane's working/idle/waiting changes. Compacting drops
+that history, keeping only the latest state of each pane that has an agent.
+
+The event log is at: $HOME/.workspace-events.jsonl
+
+Examples:
+  workspace event-log show --project myapp --limit 20    # what happened lately to one project
+  workspace event-log show --type stage_failed,stage_timed_out    # why a pipeline stage stopped
+  workspace event-log show --json --limit 1    # the newest event as JSON, for a script
+  workspace event-log compact    # the log has grown past 1MB and the history in it is no longer needed
+--- stderr
+--- end

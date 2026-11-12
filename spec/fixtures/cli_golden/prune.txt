@@ -1,0 +1,66 @@
+### workspace prune --help
+--- exit 0
+--- stdout
+Usage: workspace prune [options]
+
+Remove worktree-backed workspace projects whose associated GitHub PR
+is closed or merged. Scans all tmuxinator configs and state entries.
+
+For each eligible project, removes the git worktree, tmuxinator config,
+project settings, and state entry.
+
+A candidate with uncommitted changes to tracked files or commits that
+haven't been pushed anywhere (untracked files don't count) is skipped
+(and reported) rather than removed; the rest are still pruned. --force
+removes those anyway, along with skipping the confirmation prompt.
+
+--json removes every selected worktree without asking; narrow it with
+--name or preview it with --dry-run (which runs the same unsaved-work check).
+With --json the confirmation is skipped but the unsaved-work check still
+runs. Output is one action document (see docs/README.prune.md); the scan
+text goes to stderr. Exit 0 when every selected candidate was removed (or
+on a dry run), 3 when some were skipped or failed, 1 when none were removed.
+
+Requires the `gh` CLI to be installed and authenticated.
+
+Options:
+        --dry-run                    Show what would be removed without making changes
+    -f, --force                      Skip confirmation, and skip the uncommitted/unpushed-work check
+        --name NAME                  Prune only this workspace (repeatable; others are not_selected)
+        --json                       Print one action document of per-candidate rows; no confirmation prompt
+
+Examples:
+  workspace prune    # remove the worktree workspaces whose pull request is closed or merged, or whose directory is gone, after a confirmation
+  workspace prune --dry-run    # see what would be pruned without changing anything
+  workspace prune --dry-run --json    # the candidates as rows, outcome would_remove
+  workspace prune --json --name=feat-a --name=feat-b    # prune two without asking; one with unsaved work is skipped
+  workspace prune --force    # prune without asking, removing candidates with unsaved work too
+--- stderr
+--- end
+### workspace prune --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace prune [options]"],"description":"Remove worktree-backed workspace projects whose associated GitHub PR\nis closed or merged. Scans all tmuxinator configs and state entries.\n\nFor each eligible project, removes the git worktree, tmuxinator config,\nproject settings, and state entry.\n\nA candidate with uncommitted changes to tracked files or commits that\nhaven't been pushed anywhere (untracked files don't count) is skipped\n(and reported) rather than removed; the rest are still pruned. --force\nremoves those anyway, along with skipping the confirmation prompt.\n\n--json removes every selected worktree without asking; narrow it with\n--name or preview it with --dry-run (which runs the same unsaved-work check).\nWith --json the confirmation is skipped but the unsaved-work check still\nruns. Output is one action document (see docs/README.prune.md); the scan\ntext goes to stderr. Exit 0 when every selected candidate was removed (or\non a dry run), 3 when some were skipped or failed, 1 when none were removed.\n\nRequires the `gh` CLI to be installed and authenticated.","options":[{"flags":"--dry-run","description":"Show what would be removed without making changes"},{"flags":"-f, --force","description":"Skip confirmation, and skip the uncommitted/unpushed-work check"},{"flags":"--name NAME","description":"Prune only this workspace (repeatable; others are not_selected)"},{"flags":"--json","description":"Print one action document of per-candidate rows; no confirmation prompt"}],"examples":[{"command":"workspace prune","scenario":"remove the worktree workspaces whose pull request is closed or merged, or whose directory is gone, after a confirmation"},{"command":"workspace prune --dry-run","scenario":"see what would be pruned without changing anything"},{"command":"workspace prune --dry-run --json","scenario":"the candidates as rows, outcome would_remove"},{"command":"workspace prune --json --name=feat-a --name=feat-b","scenario":"prune two without asking; one with unsaved work is skipped"},{"command":"workspace prune --force","scenario":"prune without asking, removing candidates with unsaved work too"}]}
+--- stderr
+--- end
+### workspace prune --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace prune --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace prune
+--- exit 0
+--- stdout
+Scanning 0 workspace(s)...
+
+
+No projects eligible for pruning found.
+--- stderr
+--- end

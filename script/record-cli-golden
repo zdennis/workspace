@@ -1,0 +1,22 @@
+#!/usr/bin/env ruby
+# Records the CLI golden fixture (S8 T39) into spec/fixtures/cli_golden/: every help page with
+# --help and --help --json, every verb with --bogus and --bogus --json, the reviewed
+# no-argument verbs, the main help and an unknown verb. Each case runs through CliGolden.run
+# (spec/support/cli_golden.rb); spec/system/workspace/cli_golden_spec.rb compares.
+#
+#   script/record-cli-golden    rewrite every fixture file, removing ones no case writes
+#
+# S8 records it once, at T39; a diff in it fails the commit, so do not re-record within S8.
+
+require "fileutils"
+
+PROJECT_ROOT = File.expand_path("..", __dir__)
+$LOAD_PATH.unshift File.join(PROJECT_ROOT, "lib")
+require "workspace"
+require File.join(PROJECT_ROOT, "spec", "support", "cli_golden")
+
+FileUtils.mkdir_p(CliGolden::FIXTURE_DIR)
+cases = CliGolden.cases
+(Dir[File.join(CliGolden::FIXTURE_DIR, "*.txt")] - cases.keys.map { |name| CliGolden.fixture_path(name) }).each { |stale| File.delete(stale) }
+cases.each { |name, argvs| File.write(CliGolden.fixture_path(name), CliGolden.render(argvs)) }
+puts "Recorded #{cases.values.sum(&:size)} cases in #{cases.size} files under #{CliGolden::FIXTURE_DIR}."

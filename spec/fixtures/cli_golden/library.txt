@@ -1,0 +1,403 @@
+### workspace library --help
+--- exit 0
+--- stdout
+Usage: workspace library list [--kind KIND] [--global | --builtin | --project [NAME]] [--json]
+       workspace library show REF [--global | --builtin | --project [NAME]] [--json]
+       workspace library info REF [--global | --builtin | --project [NAME]] [--json]
+       workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]
+       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]
+       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]
+       workspace library install REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]
+       workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]
+       workspace library installed [--name WS | --user] [--kind skill|agent] [--json]
+
+A store of named plays, prompts, recipes, agents and skills under $HOME/.config/workspace/library.
+A play is a document an agent reads and follows; a prompt is short text sent as typed;
+an agent is a Claude Code subagent file; a skill is a directory holding SKILL.md, and
+`workspace start --agent/--skill` copies them into a new worktree. Entries are
+global unless --project narrows them to one project; a project entry hides a global one
+of the same name. REF is kind/name, or a bare name when one kind has it. `lib` is an
+alias for `library`, and `workspace library` alone lists.
+
+workspace ships built-in plays, the instruction packs binding, orchestrator, commits
+and review (see `workspace instructions --help`). They can't be changed. --play and
+show search them last, so a project or global play of the same name comes first there;
+`instructions compose --pack` always uses the built-in one.
+
+  list       List every library entry visible from here, sorted by kind then name
+  show       Print a library entry's body
+  info       Show a library entry's kind, scope, path, link target, description and modified time
+  add        Copy a file or directory into the library
+  update     Replace a library entry's content, or repoint its link
+  remove     Delete a library entry or its link
+  install    Copy a library skill or agent into a workspace's checkout
+  uninstall  Delete the copy of a library entry that `library install` made
+  installed  List the skills and agents installed from the library into a workspace's checkout or your home directory
+Run `workspace library VERB --help` for a verb's options.
+
+        --kind KIND                  agent, play, prompt, recipe, skill or spine (add: required; list: a filter);
+                                     add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt, or of workflow and workflow_inputs (for 'start --recipe');
+                                     add --kind skill takes a directory holding SKILL.md;
+                                     add --kind spine takes a folder of plan-spine stage files (a template for 'spine init')
+        --as NAME                    add: the entry name (lowercase letters, digits and hyphens)
+        --link                       add, update: store a symlink to PATH instead of a copy
+        --force                      add: replace an entry that has different content;
+                                     install: replace a copy that has different content;
+                                     uninstall: remove a copy that differs from the library entry
+        --user                       install: copy to the user-level directory instead of a workspace;
+                                     uninstall: remove the user-level copy
+        --from STORE                 install: copy the entry of this store, global or project (default: the project's, else global)
+        --yes                        remove: don't ask
+        --global                     reads: only the global store
+        --builtin                    reads: only the entries that ship with workspace
+        --project, --name [NAME]     the project's store (NAME, or the project of the current directory);
+                                     install, uninstall: the workspace to act on (default: the one of the current directory)
+        --dry-run                    add, update, remove, install, uninstall: report what would happen and write nothing
+        --json                       Print one JSON document (see docs/README.library.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace library list    # see everything you can use from here: your project's entries, the global ones and the built-in packs
+  workspace library show prompt/kickoff    # read back a prompt you saved, exactly as it will be sent
+  workspace library info kickoff    # find out where an entry lives and whether it is a link, and whether it is the one `library show` prints
+  workspace library add kickoff.md --kind prompt    # save a file as the global prompt kickoff, named after the file
+  workspace library update prompt/kickoff kickoff.md    # replace the global prompt with the edited file
+  workspace library remove prompt/kickoff    # delete a global entry, answering the question on the terminal
+  workspace library install skill/write-tests    # give the workspace you are in a skill from the library
+  workspace library uninstall skill/write-tests    # take a skill back out of the workspace you are in
+  workspace library installed    # see which skills and agents the workspace you are in got from the library, and which you edited
+--- stderr
+--- end
+### workspace library --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace library list [--kind KIND] [--global | --builtin | --project [NAME]] [--json]","workspace library show REF [--global | --builtin | --project [NAME]] [--json]","workspace library info REF [--global | --builtin | --project [NAME]] [--json]","workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]","workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]","workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]","workspace library install REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]","workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]","workspace library installed [--name WS | --user] [--kind skill|agent] [--json]"],"description":"A store of named plays, prompts, recipes, agents and skills under $HOME/.config/workspace/library.\nA play is a document an agent reads and follows; a prompt is short text sent as typed;\nan agent is a Claude Code subagent file; a skill is a directory holding SKILL.md, and\n`workspace start --agent/--skill` copies them into a new worktree. Entries are\nglobal unless --project narrows them to one project; a project entry hides a global one\nof the same name. REF is kind/name, or a bare name when one kind has it. `lib` is an\nalias for `library`, and `workspace library` alone lists.\n\nworkspace ships built-in plays, the instruction packs binding, orchestrator, commits\nand review (see `workspace instructions --help`). They can't be changed. --play and\nshow search them last, so a project or global play of the same name comes first there;\n`instructions compose --pack` always uses the built-in one.\n\n  list       List every library entry visible from here, sorted by kind then name\n  show       Print a library entry's body\n  info       Show a library entry's kind, scope, path, link target, description and modified time\n  add        Copy a file or directory into the library\n  update     Replace a library entry's content, or repoint its link\n  remove     Delete a library entry or its link\n  install    Copy a library skill or agent into a workspace's checkout\n  uninstall  Delete the copy of a library entry that `library install` made\n  installed  List the skills and agents installed from the library into a workspace's checkout or your home directory\nRun `workspace library VERB --help` for a verb's options.\n\n        --kind KIND                  agent, play, prompt, recipe, skill or spine (add: required; list: a filter);\n                                     add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt, or of workflow and workflow_inputs (for 'start --recipe');\n                                     add --kind skill takes a directory holding SKILL.md;\n                                     add --kind spine takes a folder of plan-spine stage files (a template for 'spine init')\n        --as NAME                    add: the entry name (lowercase letters, digits and hyphens)\n        --link                       add, update: store a symlink to PATH instead of a copy\n        --force                      add: replace an entry that has different content;\n                                     install: replace a copy that has different content;\n                                     uninstall: remove a copy that differs from the library entry\n        --user                       install: copy to the user-level directory instead of a workspace;\n                                     uninstall: remove the user-level copy\n        --from STORE                 install: copy the entry of this store, global or project (default: the project's, else global)\n        --yes                        remove: don't ask\n        --global                     reads: only the global store\n        --builtin                    reads: only the entries that ship with workspace\n        --project, --name [NAME]     the project's store (NAME, or the project of the current directory);\n                                     install, uninstall: the workspace to act on (default: the one of the current directory)\n        --dry-run                    add, update, remove, install, uninstall: report what would happen and write nothing\n        --json                       Print one JSON document (see docs/README.library.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace library list","scenario":"see everything you can use from here: your project's entries, the global ones and the built-in packs"},{"command":"workspace library show prompt/kickoff","scenario":"read back a prompt you saved, exactly as it will be sent"},{"command":"workspace library info kickoff","scenario":"find out where an entry lives and whether it is a link, and whether it is the one `library show` prints"},{"command":"workspace library add kickoff.md --kind prompt","scenario":"save a file as the global prompt kickoff, named after the file"},{"command":"workspace library update prompt/kickoff kickoff.md","scenario":"replace the global prompt with the edited file"},{"command":"workspace library remove prompt/kickoff","scenario":"delete a global entry, answering the question on the terminal"},{"command":"workspace library install skill/write-tests","scenario":"give the workspace you are in a skill from the library"},{"command":"workspace library uninstall skill/write-tests","scenario":"take a skill back out of the workspace you are in"},{"command":"workspace library installed","scenario":"see which skills and agents the workspace you are in got from the library, and which you edited"}]}
+--- stderr
+--- end
+### workspace library list --help
+--- exit 0
+--- stdout
+Usage: workspace library list [--kind KIND] [--global | --builtin | --project [NAME]] [--json]
+
+List every library entry visible from here, sorted by kind then name.
+
+Entries are global unless a project narrows them; a project entry hides a global one of the same
+name. `workspace library` alone lists.
+
+Options:
+    --kind KIND                  Only this kind: agent, play, prompt, recipe, skill or spine
+    --global                     Only the global store
+    --builtin                    Only the entries that ship with workspace
+    --project [NAME]             The project's store (NAME, or the project of the current directory)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace library list    # see everything you can use from here: your project's entries, the global ones and the built-in packs
+  workspace library list --kind skill --global    # only the skills in the global store, e.g. before installing one
+  workspace library list --builtin --kind play    # the packs that ship with workspace and that instructions compose can name
+  workspace library list --kind prompt --json    # for a script: the same rows as one JSON document
+--- stderr
+--- end
+### workspace library list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace library list [--kind KIND] [--global | --builtin | --project [NAME]] [--json]"],"description":"List every library entry visible from here, sorted by kind then name.\n\nEntries are global unless a project narrows them; a project entry hides a global one of the same\nname. `workspace library` alone lists.","options":[{"flags":"--kind KIND","description":"Only this kind: agent, play, prompt, recipe, skill or spine"},{"flags":"--global","description":"Only the global store"},{"flags":"--builtin","description":"Only the entries that ship with workspace"},{"flags":"--project [NAME]","description":"The project's store (NAME, or the project of the current directory)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace library list","scenario":"see everything you can use from here: your project's entries, the global ones and the built-in packs"},{"command":"workspace library list --kind skill --global","scenario":"only the skills in the global store, e.g. before installing one"},{"command":"workspace library list --builtin --kind play","scenario":"the packs that ship with workspace and that instructions compose can name"},{"command":"workspace library list --kind prompt --json","scenario":"for a script: the same rows as one JSON document"}]}
+--- stderr
+--- end
+### workspace library show --help
+--- exit 0
+--- stdout
+Usage: workspace library show REF [--global | --builtin | --project [NAME]] [--json]
+
+Print a library entry's body.
+
+REF is kind/name, or a bare name when one kind has it. The body is printed as it is, so you can pass
+it on, e.g. workspace start BRANCH --prompt "$(workspace library show prompt/kickoff)".
+
+Options:
+    --global                     Only the global store
+    --builtin                    Only the entries that ship with workspace
+    --project [NAME]             The project's store (NAME, or the project of the current directory)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace library show prompt/kickoff    # read back a prompt you saved, exactly as it will be sent
+  workspace library show kickoff    # the same with a bare name, when only one kind has an entry called kickoff
+  workspace library show play/commits --builtin    # read a pack that ships with workspace before you rely on it
+  workspace library show kickoff --json    # for a script: the entry and its body as one JSON document; a name nothing has exits 1 with unknown_library_entry
+--- stderr
+--- end
+### workspace library show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace library show REF [--global | --builtin | --project [NAME]] [--json]"],"description":"Print a library entry's body.\n\nREF is kind/name, or a bare name when one kind has it. The body is printed as it is, so you can pass\nit on, e.g. workspace start BRANCH --prompt \"$(workspace library show prompt/kickoff)\".","options":[{"flags":"--global","description":"Only the global store"},{"flags":"--builtin","description":"Only the entries that ship with workspace"},{"flags":"--project [NAME]","description":"The project's store (NAME, or the project of the current directory)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace library show prompt/kickoff","scenario":"read back a prompt you saved, exactly as it will be sent"},{"command":"workspace library show kickoff","scenario":"the same with a bare name, when only one kind has an entry called kickoff"},{"command":"workspace library show play/commits --builtin","scenario":"read a pack that ships with workspace before you rely on it"},{"command":"workspace library show kickoff --json","scenario":"for a script: the entry and its body as one JSON document; a name nothing has exits 1 with unknown_library_entry"}]}
+--- stderr
+--- end
+### workspace library info --help
+--- exit 0
+--- stdout
+Usage: workspace library info REF [--global | --builtin | --project [NAME]] [--json]
+
+Show a library entry's kind, scope, path, link target, description and modified time.
+
+REF is kind/name, or a bare name when one kind has it. effective says whether this entry is the one
+`library show` prints; it is false when a project entry of the same name hides a global one.
+
+Options:
+    --global                     Only the global store
+    --builtin                    Only the entries that ship with workspace
+    --project [NAME]             The project's store (NAME, or the project of the current directory)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace library info kickoff    # find out where an entry lives and whether it is a link, and whether it is the one `library show` prints
+  workspace library info play/commits --builtin    # see the path and description of a built-in pack
+  workspace library info skill/write-tests --global --json    # for a script: the global copy's details as one JSON document
+--- stderr
+--- end
+### workspace library info --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace library info REF [--global | --builtin | --project [NAME]] [--json]"],"description":"Show a library entry's kind, scope, path, link target, description and modified time.\n\nREF is kind/name, or a bare name when one kind has it. effective says whether this entry is the one\n`library show` prints; it is false when a project entry of the same name hides a global one.","options":[{"flags":"--global","description":"Only the global store"},{"flags":"--builtin","description":"Only the entries that ship with workspace"},{"flags":"--project [NAME]","description":"The project's store (NAME, or the project of the current directory)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace library info kickoff","scenario":"find out where an entry lives and whether it is a link, and whether it is the one `library show` prints"},{"command":"workspace library info play/commits --builtin","scenario":"see the path and description of a built-in pack"},{"command":"workspace library info skill/write-tests --global --json","scenario":"for a script: the global copy's details as one JSON document"}]}
+--- stderr
+--- end
+### workspace library add --help
+--- exit 0
+--- stdout
+Usage: workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]
+
+Copy a file or directory into the library.
+
+Copies PATH in (or links it with --link, or reads - from stdin with --as NAME). The name defaults to
+the file name in kebab case; identical content is a no-op, different content under the same name
+needs --force.
+
+--kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt, or of workflow and workflow_inputs (for 'start
+--recipe'); --kind skill takes a directory holding SKILL.md; --kind spine takes a folder of
+plan-spine stage files (a template for 'spine init').
+
+This writes to the library for real (the global store, or the project's with --project); --dry-run
+says what would happen and writes nothing.
+
+Options:
+    --kind KIND                  agent, play, prompt, recipe, skill or spine (required)
+    --as NAME                    The entry name (lowercase letters, digits and hyphens)
+    --link                       Store a symlink to PATH instead of a copy
+    --force                      Replace an entry that has different content
+    --project [NAME]             Add to the project's store (NAME, or the project of the current directory)
+    --dry-run                    Report what would happen and write nothing
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace library add kickoff.md --kind prompt    # save a file as the global prompt kickoff, named after the file
+  workspace library add kickoff.md --kind prompt --dry-run    # check first: it reports added, unchanged or the refusal and writes nothing
+  workspace library add kickoff.md --kind prompt --project    # keep it for the project of the current directory only
+  workspace library add ~/Notes/playbook.md --kind play --link    # link a note, so edits to the note show up in the library at once
+  workspace library add ~/Notes/spine-template --kind spine --as team --link    # keep a folder of stage files as a template for 'spine init'
+  workspace library add - --kind prompt --as resume-note < resume.txt    # save text from stdin, which needs --as for the name
+  workspace library add kickoff.md --kind prompt --force    # replace kickoff after you changed the file; without --force a different file under that name exits 1 with an error
+--- stderr
+--- end
+### workspace library add --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]"],"description":"Copy a file or directory into the library.\n\nCopies PATH in (or links it with --link, or reads - from stdin with --as NAME). The name defaults to\nthe file name in kebab case; identical content is a no-op, different content under the same name\nneeds --force.\n\n--kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt, or of workflow and workflow_inputs (for 'start\n--recipe'); --kind skill takes a directory holding SKILL.md; --kind spine takes a folder of\nplan-spine stage files (a template for 'spine init').\n\nThis writes to the library for real (the global store, or the project's with --project); --dry-run\nsays what would happen and writes nothing.","options":[{"flags":"--kind KIND","description":"agent, play, prompt, recipe, skill or spine (required)"},{"flags":"--as NAME","description":"The entry name (lowercase letters, digits and hyphens)"},{"flags":"--link","description":"Store a symlink to PATH instead of a copy"},{"flags":"--force","description":"Replace an entry that has different content"},{"flags":"--project [NAME]","description":"Add to the project's store (NAME, or the project of the current directory)"},{"flags":"--dry-run","description":"Report what would happen and write nothing"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace library add kickoff.md --kind prompt","scenario":"save a file as the global prompt kickoff, named after the file"},{"command":"workspace library add kickoff.md --kind prompt --dry-run","scenario":"check first: it reports added, unchanged or the refusal and writes nothing"},{"command":"workspace library add kickoff.md --kind prompt --project","scenario":"keep it for the project of the current directory only"},{"command":"workspace library add ~/Notes/playbook.md --kind play --link","scenario":"link a note, so edits to the note show up in the library at once"},{"command":"workspace library add ~/Notes/spine-template --kind spine --as team --link","scenario":"keep a folder of stage files as a template for 'spine init'"},{"command":"workspace library add - --kind prompt --as resume-note < resume.txt","scenario":"save text from stdin, which needs --as for the name"},{"command":"workspace library add kickoff.md --kind prompt --force","scenario":"replace kickoff after you changed the file; without --force a different file under that name exits 1 with an error"}]}
+--- stderr
+--- end
+### workspace library update --help
+--- exit 0
+--- stdout
+Usage: workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]
+
+Replace a library entry's content, or repoint its link.
+
+REF is kind/name, or a bare name when one kind has it. The entry must already exist in the global
+store, or in the project's with --project; this writes it for real unless --dry-run.
+
+Options:
+    --link                       Store a symlink to PATH instead of a copy
+    --project [NAME]             The project's store (NAME, or the project of the current directory)
+    --dry-run                    Report what would happen and write nothing
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace library update prompt/kickoff kickoff.md    # replace the global prompt with the edited file
+  workspace library update prompt/kickoff kickoff.md --dry-run    # see whether the file differs from the stored prompt: updated or unchanged, nothing written
+  workspace library update kickoff kickoff.md --project    # replace the project's copy only, by bare name
+  workspace library update play/playbook ~/Notes/new-playbook.md --link    # point a linked play at another note
+--- stderr
+--- end
+### workspace library update --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]"],"description":"Replace a library entry's content, or repoint its link.\n\nREF is kind/name, or a bare name when one kind has it. The entry must already exist in the global\nstore, or in the project's with --project; this writes it for real unless --dry-run.","options":[{"flags":"--link","description":"Store a symlink to PATH instead of a copy"},{"flags":"--project [NAME]","description":"The project's store (NAME, or the project of the current directory)"},{"flags":"--dry-run","description":"Report what would happen and write nothing"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace library update prompt/kickoff kickoff.md","scenario":"replace the global prompt with the edited file"},{"command":"workspace library update prompt/kickoff kickoff.md --dry-run","scenario":"see whether the file differs from the stored prompt: updated or unchanged, nothing written"},{"command":"workspace library update kickoff kickoff.md --project","scenario":"replace the project's copy only, by bare name"},{"command":"workspace library update play/playbook ~/Notes/new-playbook.md --link","scenario":"point a linked play at another note"}]}
+--- stderr
+--- end
+### workspace library remove --help
+--- exit 0
+--- stdout
+Usage: workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]
+
+Delete a library entry or its link.
+
+Deletes the entry or its link from the global store, or the project's with --project, for real; the
+source file is never touched. It asks first on a terminal. With --json it never asks, so pass --yes
+or --dry-run.
+
+Options:
+    --yes                        Don't ask
+    --project [NAME]             The project's store (NAME, or the project of the current directory)
+    --dry-run                    Report what would happen and write nothing
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace library remove prompt/kickoff    # delete a global entry, answering the question on the terminal
+  workspace library remove prompt/kickoff --dry-run    # see what would go before anything does
+  workspace library remove play/playbook --yes    # delete a linked play without being asked, as a script must; the note it linked stays
+  workspace library remove kickoff --project --yes    # delete the project's copy and let the global one show through again
+--- stderr
+--- end
+### workspace library remove --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]"],"description":"Delete a library entry or its link.\n\nDeletes the entry or its link from the global store, or the project's with --project, for real; the\nsource file is never touched. It asks first on a terminal. With --json it never asks, so pass --yes\nor --dry-run.","options":[{"flags":"--yes","description":"Don't ask"},{"flags":"--project [NAME]","description":"The project's store (NAME, or the project of the current directory)"},{"flags":"--dry-run","description":"Report what would happen and write nothing"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace library remove prompt/kickoff","scenario":"delete a global entry, answering the question on the terminal"},{"command":"workspace library remove prompt/kickoff --dry-run","scenario":"see what would go before anything does"},{"command":"workspace library remove play/playbook --yes","scenario":"delete a linked play without being asked, as a script must; the note it linked stays"},{"command":"workspace library remove kickoff --project --yes","scenario":"delete the project's copy and let the global one show through again"}]}
+--- stderr
+--- end
+### workspace library install --help
+--- exit 0
+--- stdout
+Usage: workspace library install REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]
+
+Copy a library skill or agent into a workspace's checkout.
+
+Copies to .claude/skills/NAME/ or .claude/agents/NAME.md unless library.install.skills_dir or
+agents_dir says otherwise, as start --skill/--agent does for a new workspace: identical content is
+unchanged, different content needs --force, a path the repo tracks is never overwritten; the copy is
+listed in info/exclude. --user copies to your home-level directory instead
+(library.install.user_skills_dir, user_agents_dir; ~/.claude/... by default). This writes files for
+real; --dry-run reports what it would do and writes nothing.
+
+Options:
+    --name NAME                  The workspace to act on (default: the one of the current directory)
+    --user                       Copy to the user-level directory instead of a workspace
+    --from STORE                 Copy the entry of this store, global or project (default: the project's, else global)
+    --force                      Replace a copy that has different content
+    --dry-run                    Report what would happen and write nothing
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace library install skill/write-tests    # give the workspace you are in a skill from the library
+  workspace library install skill/write-tests --dry-run    # check what would be copied into this workspace's checkout and write nothing
+  workspace library install agent/reviewer --name my-app    # give another workspace a subagent without leaving your directory
+  workspace library install skill/write-tests --user    # make a skill available in every project, from your home directory
+  workspace library install skill/write-tests --from global --force    # replace a copy you edited with the global entry, even where the project has its own
+  workspace library install skill/write-tests --name my-app --json    # for a script: the outcome (installed or unchanged) as one JSON document
+--- stderr
+--- end
+### workspace library install --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace library install REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]"],"description":"Copy a library skill or agent into a workspace's checkout.\n\nCopies to .claude/skills/NAME/ or .claude/agents/NAME.md unless library.install.skills_dir or\nagents_dir says otherwise, as start --skill/--agent does for a new workspace: identical content is\nunchanged, different content needs --force, a path the repo tracks is never overwritten; the copy is\nlisted in info/exclude. --user copies to your home-level directory instead\n(library.install.user_skills_dir, user_agents_dir; ~/.claude/... by default). This writes files for\nreal; --dry-run reports what it would do and writes nothing.","options":[{"flags":"--name NAME","description":"The workspace to act on (default: the one of the current directory)"},{"flags":"--user","description":"Copy to the user-level directory instead of a workspace"},{"flags":"--from STORE","description":"Copy the entry of this store, global or project (default: the project's, else global)"},{"flags":"--force","description":"Replace a copy that has different content"},{"flags":"--dry-run","description":"Report what would happen and write nothing"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace library install skill/write-tests","scenario":"give the workspace you are in a skill from the library"},{"command":"workspace library install skill/write-tests --dry-run","scenario":"check what would be copied into this workspace's checkout and write nothing"},{"command":"workspace library install agent/reviewer --name my-app","scenario":"give another workspace a subagent without leaving your directory"},{"command":"workspace library install skill/write-tests --user","scenario":"make a skill available in every project, from your home directory"},{"command":"workspace library install skill/write-tests --from global --force","scenario":"replace a copy you edited with the global entry, even where the project has its own"},{"command":"workspace library install skill/write-tests --name my-app --json","scenario":"for a script: the outcome (installed or unchanged) as one JSON document"}]}
+--- stderr
+--- end
+### workspace library uninstall --help
+--- exit 0
+--- stdout
+Usage: workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]
+
+Delete the copy of a library entry that `library install` made.
+
+Deletes the copy of REF that `library install` made in a workspace's checkout, or with --user from
+the home-level directory. A copy that differs from the library entry needs --force; the library entry
+and the info/exclude line stay. This deletes files for real; --dry-run reports and deletes nothing.
+
+Options:
+    --name NAME                  The workspace to act on (default: the one of the current directory)
+    --user                       Remove the user-level copy
+    --force                      Remove a copy that differs from the library entry
+    --dry-run                    Report what would happen and write nothing
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace library uninstall skill/write-tests    # take a skill back out of the workspace you are in
+  workspace library uninstall skill/write-tests --dry-run    # see which copy would be deleted from this workspace's checkout
+  workspace library uninstall agent/reviewer --name my-app    # take a subagent out of another workspace
+  workspace library uninstall skill/write-tests --force    # delete a copy you edited, which would otherwise be refused
+  workspace library uninstall agent/reviewer --user    # remove the copy from your home directory
+--- stderr
+--- end
+### workspace library uninstall --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]"],"description":"Delete the copy of a library entry that `library install` made.\n\nDeletes the copy of REF that `library install` made in a workspace's checkout, or with --user from\nthe home-level directory. A copy that differs from the library entry needs --force; the library entry\nand the info/exclude line stay. This deletes files for real; --dry-run reports and deletes nothing.","options":[{"flags":"--name NAME","description":"The workspace to act on (default: the one of the current directory)"},{"flags":"--user","description":"Remove the user-level copy"},{"flags":"--force","description":"Remove a copy that differs from the library entry"},{"flags":"--dry-run","description":"Report what would happen and write nothing"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace library uninstall skill/write-tests","scenario":"take a skill back out of the workspace you are in"},{"command":"workspace library uninstall skill/write-tests --dry-run","scenario":"see which copy would be deleted from this workspace's checkout"},{"command":"workspace library uninstall agent/reviewer --name my-app","scenario":"take a subagent out of another workspace"},{"command":"workspace library uninstall skill/write-tests --force","scenario":"delete a copy you edited, which would otherwise be refused"},{"command":"workspace library uninstall agent/reviewer --user","scenario":"remove the copy from your home directory"}]}
+--- stderr
+--- end
+### workspace library installed --help
+--- exit 0
+--- stdout
+Usage: workspace library installed [--name WS | --user] [--kind skill|agent] [--json]
+
+List the skills and agents installed from the library into a workspace's checkout or your home directory.
+
+Reads a workspace's checkout (--name WS, default: the current directory's) or the user level
+(--user); writes nothing. A copy counts when its name is a library entry's or the repo's
+info/exclude lists it; modified = differs from that entry.
+
+Options:
+    --name NAME                  The workspace to act on (default: the one of the current directory)
+    --user                       List the user-level copies
+    --kind KIND                  Only skills or only agents
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace library installed    # see which skills and agents the workspace you are in got from the library, and which you edited
+  workspace library installed --name my-app --kind skill    # only the skills of another workspace
+  workspace library installed --user --json    # for a script: the copies in your home directory as one JSON document
+--- stderr
+--- end
+### workspace library installed --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace library installed [--name WS | --user] [--kind skill|agent] [--json]"],"description":"List the skills and agents installed from the library into a workspace's checkout or your home directory.\n\nReads a workspace's checkout (--name WS, default: the current directory's) or the user level\n(--user); writes nothing. A copy counts when its name is a library entry's or the repo's\ninfo/exclude lists it; modified = differs from that entry.","options":[{"flags":"--name NAME","description":"The workspace to act on (default: the one of the current directory)"},{"flags":"--user","description":"List the user-level copies"},{"flags":"--kind KIND","description":"Only skills or only agents"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace library installed","scenario":"see which skills and agents the workspace you are in got from the library, and which you edited"},{"command":"workspace library installed --name my-app --kind skill","scenario":"only the skills of another workspace"},{"command":"workspace library installed --user --json","scenario":"for a script: the copies in your home directory as one JSON document"}]}
+--- stderr
+--- end
+### workspace library --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace library --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace library
+--- exit 0
+--- stdout
+play   binding              builtin  How to work in a pane that workspace has bound to a run, a review or a play
+play   commits              builtin  Cohesive commits, tests and lint first, no attribution, no push
+play   dev                  builtin  Queue for the project's shared dev environment before you implement, test or verify, and give it up when you are done
+play   handoff              builtin  Check context after every task and hand off to a fresh conversation before it runs out
+play   implementation-plan  builtin  Keep a counted task list in the workspace's IMPLEMENTATION_PLAN.md so progress shows in workspace and any session can resume
+play   notes                builtin  Read and write this workspace's working notes in its notes directory, never in the repo
+play   orchestrator         builtin  Work as an orchestrator that delegates to sub-agents
+play   plan-review          builtin  Review the workspace plan with reviewer sub-agents, write plan-review.md, and post the verdict to the inbox
+play   promote              builtin  Move this checkout's work into a new workspace, seed it, start its agent, and stop working on it here
+play   report               builtin  Hand a finished note to the person: post it to the inbox with a link and print the workspace-ui link
+play   research             builtin  Research a goal and write the findings to a note in the notes directory, with no code changes
+play   review               builtin  Review a diff with reviewer sub-agents and write review.md
+play   spine                builtin  Keep this workspace's stages current
+spine  default              builtin  Research, plan, implement, verify, review and ship, one file per stage
+--- stderr
+--- end

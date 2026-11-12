@@ -1,0 +1,67 @@
+### workspace kill --help
+--- exit 0
+--- stdout
+Usage: workspace kill [--name WS] [--force] [--delete-remote] [--json] [project]
+
+Kill a worktree project's session and remove its git worktree.
+The inverse of 'workspace start'.
+
+If no project is given (positionally or with --name), kills the workspace
+the current directory is in: a worktree's .workspace-project marker, else the
+active workspace whose root holds it. Outside any workspace it refuses
+(not_in_workspace).
+
+Refuses to remove a worktree with uncommitted changes to tracked files
+or commits that haven't been pushed anywhere (untracked files don't
+count). --force skips this check along with the confirmation prompt.
+
+Deletes the local branch too when 'workspace start' created it (git branch -d,
+which keeps a branch not merged into its upstream, or into HEAD without one).
+A branch that existed before start is kept. With --force the branch is deleted
+even if unmerged (git branch -D). --delete-remote also deletes the branch on its
+upstream remote once it is merged into the default branch and holds no commits
+the local branch lacks (any state with --force).
+
+Options:
+        --name NAME                  The worktree workspace to kill (default: the one detected from the current directory)
+    -f, --force                      Skip confirmation, skip the uncommitted/unpushed-work check and the open
+                                     pull request check, and delete an unmerged start-created branch (-D)
+        --delete-remote              Also delete the branch on its upstream remote when start created it (any branch
+                                     with --force), never an upstream of another name or the default branch; refuses
+                                     over an open pull request (open_pull_request) unless --force
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes
+                                     to stderr; a refusal is the error envelope with a retry hint
+
+Examples:
+  workspace kill    # after a confirmation, end the worktree workspace you are in: its session and git worktree, and the branch start made if it is merged
+  workspace kill myproject.worktree-PROJ-123    # the same for a named worktree workspace, from anywhere
+  workspace kill --name myproject.worktree-PROJ-123 --json    # the same, naming it with a flag; one action document (it still asks first)
+  workspace kill -f myproject.worktree-PROJ-123    # skip confirmation and the unsaved-work check, and force-delete the branch start made
+  workspace kill -f --json myproject.worktree-PROJ-123    # scripted: no prompt, and the unsaved-work check is skipped too
+  workspace kill --delete-remote    # also delete the branch on its remote
+--- stderr
+--- end
+### workspace kill --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace kill [--name WS] [--force] [--delete-remote] [--json] [project]"],"description":"Kill a worktree project's session and remove its git worktree.\nThe inverse of 'workspace start'.\n\nIf no project is given (positionally or with --name), kills the workspace\nthe current directory is in: a worktree's .workspace-project marker, else the\nactive workspace whose root holds it. Outside any workspace it refuses\n(not_in_workspace).\n\nRefuses to remove a worktree with uncommitted changes to tracked files\nor commits that haven't been pushed anywhere (untracked files don't\ncount). --force skips this check along with the confirmation prompt.\n\nDeletes the local branch too when 'workspace start' created it (git branch -d,\nwhich keeps a branch not merged into its upstream, or into HEAD without one).\nA branch that existed before start is kept. With --force the branch is deleted\neven if unmerged (git branch -D). --delete-remote also deletes the branch on its\nupstream remote once it is merged into the default branch and holds no commits\nthe local branch lacks (any state with --force).","options":[{"flags":"--name NAME","description":"The worktree workspace to kill (default: the one detected from the current directory)"},{"flags":"-f, --force","description":"Skip confirmation, skip the uncommitted/unpushed-work check and the open pull request check, and delete an unmerged start-created branch (-D)"},{"flags":"--delete-remote","description":"Also delete the branch on its upstream remote when start created it (any branch with --force), never an upstream of another name or the default branch; refuses over an open pull request (open_pull_request) unless --force"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr; a refusal is the error envelope with a retry hint"}],"examples":[{"command":"workspace kill","scenario":"after a confirmation, end the worktree workspace you are in: its session and git worktree, and the branch start made if it is merged"},{"command":"workspace kill myproject.worktree-PROJ-123","scenario":"the same for a named worktree workspace, from anywhere"},{"command":"workspace kill --name myproject.worktree-PROJ-123 --json","scenario":"the same, naming it with a flag; one action document (it still asks first)"},{"command":"workspace kill -f myproject.worktree-PROJ-123","scenario":"skip confirmation and the unsaved-work check, and force-delete the branch start made"},{"command":"workspace kill -f --json myproject.worktree-PROJ-123","scenario":"scripted: no prompt, and the unsaved-work check is skipped too"},{"command":"workspace kill --delete-remote","scenario":"also delete the branch on its remote"}]}
+--- stderr
+--- end
+### workspace kill --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace kill --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace kill
+--- exit 1
+--- stdout
+--- stderr
+Error: No workspace found for $CWD. Run from inside a workspace or pass --name.
+--- end

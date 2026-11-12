@@ -1,0 +1,415 @@
+### workspace projects --help
+--- exit 0
+--- stdout
+Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH] | stop [NAME|PATH] [--dry-run]
+                          | group create NAME | group add GROUP PATH | group list | group show GROUP
+                          | kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION]] [--json]
+
+Group workspaces by repository.
+
+A project is a repository's main checkout plus its linked git worktrees.
+Each member that has a tmuxinator config is a workspace. Other commands that
+take a [project] argument (launch, stop, sessions, pipeline...) and
+`list-projects` operate on single workspaces.
+
+Subcommands:
+  list              One row per project: its workspaces and how many are running (default)
+  show [NAME|PATH]  One project in detail: each workspace's running state, agent states, open
+                    asks and pipeline entries, plus the repo-wide locks and dev environment.
+                    NAME is a project name, a member workspace name or a path; it
+                    defaults to the project containing the current directory.
+  members [NAME|PATH]
+                    The project's workspaces, one name per line, main checkout first, for
+                    scripts: workspace projects members | while read -r ws; do ...; done
+                    Same NAME rules as show. Runs no git unless --all is given.
+
+Actions:
+  stop [NAME|PATH]  Stop every running workspace of the project (main checkout and worktrees).
+                    No prompt and no unsaved-work check, like 'workspace stop'. The session you
+                    run it from is stopped last. Same NAME rules as show.
+  kill NAME|PATH    Remove every worktree workspace of the project (session, worktree, config,
+                    state), never the main checkout. Checks every worktree first and removes
+                    nothing if any has unsaved work, can't be checked, is gone, or runs the dev
+                    env. Asks first; NAME is required. See 'workspace projects kill --help'.
+
+  group create|add|list|show
+                    Named groups of repositories (ids like group:billing), kept in
+                    ~/.config/workspace/groups/. A repository is in at most one group.
+                    See 'workspace projects group --help'. stop, kill, show and members refuse a group id.
+
+Options:
+  --dry-run   stop, kill: show what would happen and change nothing
+  --yes       kill only: don't ask for confirmation (required with --json or without a terminal)
+  --force     kill only: let worktrees whose checkout is gone or that git can't check through
+              preflight (the last-moment unsaved-work re-check still applies)
+  --discard-unsaved
+              kill only: remove worktrees that have unsaved work, losing it
+  --running   list only: projects with at least one running workspace
+  --path      members only: print checkout paths instead of workspace names (not with --json)
+  --all       members only: also list worktrees that have no workspace config (runs git)
+  --git       list only: add an UNSAVED column (runs git in every checkout)
+  --json      Print schema-versioned JSON (see docs/README.projects.md)
+  --no-agents show only: skip the agent daemons (no sockets are read)
+  --no-git    show only: skip git (no branch or unsaved work, no unconfigured worktrees)
+  --timeout SECONDS
+              show: how long to wait for each agent daemon (default 1) and for all
+              the git reads (default 5); members --all: for the worktree listing;
+              kill: for all the unsaved-work checks (a duration, e.g. 30s; default 5s)
+
+A workspace joins the project whose repository its directory belongs to. If that
+directory is gone, it is matched by config name. The note after a path flags a
+project with no git repo, a missing checkout, or a name shared with another project.
+
+Examples:
+  workspace projects list    # see every repository you have workspaces for, how many workspaces each has and how many are running
+  workspace projects show    # see the state of the project you are standing in: each workspace's session, agents, open asks and unsaved work, and the repo-wide locks
+  workspace projects members    # list the workspaces of the project you are in, one name per line, main checkout first
+  workspace projects stop    # end of the day: stop every running workspace of the project you are in, with no prompt
+  workspace projects kill app    # once the work has landed: remove every worktree workspace of app, sessions and worktrees included, after one confirmation; the main checkout stays
+  workspace projects group create Billing    # start a group for repositories that belong together; this writes groups/billing.yml with no repositories yet
+  workspace projects group list    # see which repositories belong to which group before adding another
+--- stderr
+--- end
+### workspace projects --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH] | stop [NAME|PATH] [--dry-run]"],"description":"| group create NAME | group add GROUP PATH | group list | group show GROUP\n                          | kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION]] [--json]\n\nGroup workspaces by repository.\n\nA project is a repository's main checkout plus its linked git worktrees.\nEach member that has a tmuxinator config is a workspace. Other commands that\ntake a [project] argument (launch, stop, sessions, pipeline...) and\n`list-projects` operate on single workspaces.","options":[{"flags":"--dry-run","description":"stop, kill: show what would happen and change nothing"},{"flags":"--yes","description":"kill only: don't ask for confirmation (required with --json or without a terminal)"},{"flags":"--force","description":"kill only: let worktrees whose checkout is gone or that git can't check through preflight (the last-moment unsaved-work re-check still applies)"},{"flags":"--discard-unsaved","description":"kill only: remove worktrees that have unsaved work, losing it"},{"flags":"--running","description":"list only: projects with at least one running workspace"},{"flags":"--path","description":"members only: print checkout paths instead of workspace names (not with --json)"},{"flags":"--all","description":"members only: also list worktrees that have no workspace config (runs git)"},{"flags":"--git","description":"list only: add an UNSAVED column (runs git in every checkout)"},{"flags":"--json","description":"Print schema-versioned JSON (see docs/README.projects.md)"},{"flags":"--no-agents","description":"show only: skip the agent daemons (no sockets are read)"},{"flags":"--no-git","description":"show only: skip git (no branch or unsaved work, no unconfigured worktrees)"},{"flags":"--timeout SECONDS","description":"show: how long to wait for each agent daemon (default 1) and for all the git reads (default 5); members --all: for the worktree listing; kill: for all the unsaved-work checks (a duration, e.g. 30s; default 5s) A workspace joins the project whose repository its directory belongs to. If that directory is gone, it is matched by config name. The note after a path flags a project with no git repo, a missing checkout, or a name shared with another project."}],"examples":[{"command":"workspace projects list","scenario":"see every repository you have workspaces for, how many workspaces each has and how many are running"},{"command":"workspace projects show","scenario":"see the state of the project you are standing in: each workspace's session, agents, open asks and unsaved work, and the repo-wide locks"},{"command":"workspace projects members","scenario":"list the workspaces of the project you are in, one name per line, main checkout first"},{"command":"workspace projects stop","scenario":"end of the day: stop every running workspace of the project you are in, with no prompt"},{"command":"workspace projects kill app","scenario":"once the work has landed: remove every worktree workspace of app, sessions and worktrees included, after one confirmation; the main checkout stays"},{"command":"workspace projects group create Billing","scenario":"start a group for repositories that belong together; this writes groups/billing.yml with no repositories yet"},{"command":"workspace projects group list","scenario":"see which repositories belong to which group before adding another"}],"sections":[{"heading":"Subcommands","text":"list              One row per project: its workspaces and how many are running (default)\n  show [NAME|PATH]  One project in detail: each workspace's running state, agent states, open\n                    asks and pipeline entries, plus the repo-wide locks and dev environment.\n                    NAME is a project name, a member workspace name or a path; it\n                    defaults to the project containing the current directory.\n  members [NAME|PATH]\n                    The project's workspaces, one name per line, main checkout first, for\n                    scripts: workspace projects members | while read -r ws; do ...; done\n                    Same NAME rules as show. Runs no git unless --all is given."},{"heading":"Actions","text":"stop [NAME|PATH]  Stop every running workspace of the project (main checkout and worktrees).\n                    No prompt and no unsaved-work check, like 'workspace stop'. The session you\n                    run it from is stopped last. Same NAME rules as show.\n  kill NAME|PATH    Remove every worktree workspace of the project (session, worktree, config,\n                    state), never the main checkout. Checks every worktree first and removes\n                    nothing if any has unsaved work, can't be checked, is gone, or runs the dev\n                    env. Asks first; NAME is required. See 'workspace projects kill --help'.\n\n  group create|add|list|show\n                    Named groups of repositories (ids like group:billing), kept in\n                    ~/.config/workspace/groups/. A repository is in at most one group.\n                    See 'workspace projects group --help'. stop, kill, show and members refuse a group id."}]}
+--- stderr
+--- end
+### workspace projects list --help
+--- exit 0
+--- stdout
+Usage: workspace projects list [--running] [--git] [--json]
+
+List projects, one row each, with their workspaces and how many are running.
+
+A project is a repository's main checkout plus its linked git worktrees. `workspace projects` alone lists.
+
+Options:
+    --running                    Only projects with at least one running workspace
+    --git                        Add an UNSAVED column (runs git in every checkout, and counts worktrees with no workspace config)
+    --json                       Print schema-versioned JSON (see docs/README.projects.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace projects list    # see every repository you have workspaces for, how many workspaces each has and how many are running
+  workspace projects list --running    # before stopping for the day: which projects still have a running session
+  workspace projects list --git    # check for unsaved work before cleaning up: adds an UNSAVED column, and is slower because it runs git in every checkout
+  workspace projects list --running --json    # for a script: the running projects as one schema-versioned JSON document
+--- stderr
+--- end
+### workspace projects list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects list [--running] [--git] [--json]"],"description":"List projects, one row each, with their workspaces and how many are running.\n\nA project is a repository's main checkout plus its linked git worktrees. `workspace projects` alone lists.","options":[{"flags":"--running","description":"Only projects with at least one running workspace"},{"flags":"--git","description":"Add an UNSAVED column (runs git in every checkout, and counts worktrees with no workspace config)"},{"flags":"--json","description":"Print schema-versioned JSON (see docs/README.projects.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace projects list","scenario":"see every repository you have workspaces for, how many workspaces each has and how many are running"},{"command":"workspace projects list --running","scenario":"before stopping for the day: which projects still have a running session"},{"command":"workspace projects list --git","scenario":"check for unsaved work before cleaning up: adds an UNSAVED column, and is slower because it runs git in every checkout"},{"command":"workspace projects list --running --json","scenario":"for a script: the running projects as one schema-versioned JSON document"}]}
+--- stderr
+--- end
+### workspace projects show --help
+--- exit 0
+--- stdout
+Usage: workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout SECONDS]
+
+Show one project in detail.
+
+Its workspaces (running, headless, agent states, open asks, pipeline entries, branch and unsaved work),
+worktrees with no workspace config, the repo-wide locks and the dev environment.
+NAME is a project name, a member workspace name or a path (use a path when two projects share a
+name); it defaults to the project containing the current directory.
+Changes no workspace (reading the lock store creates its empty directory and locks.json when they are
+missing). A daemon that is down or doesn't answer in time shows as unavailable, and a checkout git can't
+answer for shows as unknown (treated as unsaved); the command still exits 0. An unknown or ambiguous
+NAME, or a directory in no project, exits 1 with an error.
+A group: id is refused with group_not_supported (exit 1); name a repository's project instead.
+
+Options:
+    --json                       Print schema-versioned JSON (see docs/README.projects.md)
+    --no-agents                  Don't ask the agent daemons for agent states
+    --no-git                     Don't run git (no branch or unsaved work, no unconfigured worktrees)
+    --timeout SECONDS            Seconds to wait for each running workspace's agent daemon (default 1) and for all the git reads (default 5)
+    -h, --help                   Show this help
+
+Examples:
+  workspace projects show    # see the state of the project you are standing in: each workspace's session, agents, open asks and unsaved work, and the repo-wide locks
+  workspace projects show app    # the same for the project named app
+  workspace projects show ~/src/app --json    # pick one of two clones that share a name by its path, as one JSON document for a script
+  workspace projects show --no-agents --no-git    # the fastest read, when only the sessions and locks matter: no agent sockets and no git commands
+  workspace projects show --timeout 0.5    # give up on a slow agent daemon or checkout after half a second; it reads unavailable or unknown and the command still exits 0
+--- stderr
+--- end
+### workspace projects show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout SECONDS]"],"description":"Show one project in detail.\n\nIts workspaces (running, headless, agent states, open asks, pipeline entries, branch and unsaved work),\nworktrees with no workspace config, the repo-wide locks and the dev environment.\nNAME is a project name, a member workspace name or a path (use a path when two projects share a\nname); it defaults to the project containing the current directory.\nChanges no workspace (reading the lock store creates its empty directory and locks.json when they are\nmissing). A daemon that is down or doesn't answer in time shows as unavailable, and a checkout git can't\nanswer for shows as unknown (treated as unsaved); the command still exits 0. An unknown or ambiguous\nNAME, or a directory in no project, exits 1 with an error.\nA group: id is refused with group_not_supported (exit 1); name a repository's project instead.","options":[{"flags":"--json","description":"Print schema-versioned JSON (see docs/README.projects.md)"},{"flags":"--no-agents","description":"Don't ask the agent daemons for agent states"},{"flags":"--no-git","description":"Don't run git (no branch or unsaved work, no unconfigured worktrees)"},{"flags":"--timeout SECONDS","description":"Seconds to wait for each running workspace's agent daemon (default 1) and for all the git reads (default 5)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace projects show","scenario":"see the state of the project you are standing in: each workspace's session, agents, open asks and unsaved work, and the repo-wide locks"},{"command":"workspace projects show app","scenario":"the same for the project named app"},{"command":"workspace projects show ~/src/app --json","scenario":"pick one of two clones that share a name by its path, as one JSON document for a script"},{"command":"workspace projects show --no-agents --no-git","scenario":"the fastest read, when only the sessions and locks matter: no agent sockets and no git commands"},{"command":"workspace projects show --timeout 0.5","scenario":"give up on a slow agent daemon or checkout after half a second; it reads unavailable or unknown and the command still exits 0"}]}
+--- stderr
+--- end
+### workspace projects members --help
+--- exit 0
+--- stdout
+Usage: workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]
+
+List a project's member workspaces, one per line, main checkout first.
+
+NAME is a project name, a member workspace name or a path (use a path when two projects share a
+name); it defaults to the project containing the current directory.
+Without --all no git runs. Members whose checkout is gone are still listed. Names only: with --all
+the unconfigured worktrees are omitted (a note goes to stderr) unless --path or --json is given.
+An empty result prints a note to stderr and nothing to stdout, so loop over the output
+(for/while read -r) rather than pass it unquoted to a command that acts on every workspace
+when given no argument. An unknown or ambiguous NAME exits 1 with an error.
+A group: id is refused with group_not_supported (exit 1); name a repository's project instead.
+
+Options:
+    --path                       Print each checkout's path instead of its workspace name (not with --json)
+    --all                        Also list worktrees that have no workspace config, shown only with --path or --json (runs git)
+    --timeout SECONDS            Seconds to wait for the worktree listing under --all (default 5)
+    --json                       Print schema-versioned JSON (see docs/README.projects.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace projects members    # list the workspaces of the project you are in, one name per line, main checkout first
+  workspace projects members app | while read -r ws; do workspace plan status --name "$ws"; done    # read the plan state of each workspace of app in turn (read-only); read -r keeps a name with spaces whole
+  workspace projects members --path    # you need the directories, for example to run git in each checkout of the project you are in
+  workspace projects members --all --json    # include the worktrees that have no workspace config too (runs git); they read workspace null and configured false
+--- stderr
+--- end
+### workspace projects members --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]"],"description":"List a project's member workspaces, one per line, main checkout first.\n\nNAME is a project name, a member workspace name or a path (use a path when two projects share a\nname); it defaults to the project containing the current directory.\nWithout --all no git runs. Members whose checkout is gone are still listed. Names only: with --all\nthe unconfigured worktrees are omitted (a note goes to stderr) unless --path or --json is given.\nAn empty result prints a note to stderr and nothing to stdout, so loop over the output\n(for/while read -r) rather than pass it unquoted to a command that acts on every workspace\nwhen given no argument. An unknown or ambiguous NAME exits 1 with an error.\nA group: id is refused with group_not_supported (exit 1); name a repository's project instead.","options":[{"flags":"--path","description":"Print each checkout's path instead of its workspace name (not with --json)"},{"flags":"--all","description":"Also list worktrees that have no workspace config, shown only with --path or --json (runs git)"},{"flags":"--timeout SECONDS","description":"Seconds to wait for the worktree listing under --all (default 5)"},{"flags":"--json","description":"Print schema-versioned JSON (see docs/README.projects.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace projects members","scenario":"list the workspaces of the project you are in, one name per line, main checkout first"},{"command":"workspace projects members app | while read -r ws; do workspace plan status --name \"$ws\"; done","scenario":"read the plan state of each workspace of app in turn (read-only); read -r keeps a name with spaces whole"},{"command":"workspace projects members --path","scenario":"you need the directories, for example to run git in each checkout of the project you are in"},{"command":"workspace projects members --all --json","scenario":"include the worktrees that have no workspace config too (runs git); they read workspace null and configured false"}]}
+--- stderr
+--- end
+### workspace projects stop --help
+--- exit 0
+--- stdout
+Usage: workspace projects stop [NAME|PATH] [--dry-run] [--json]
+
+Stop every running workspace of a project and end their tmux sessions.
+
+Stops the project's main checkout and its worktrees in one step, for real.
+NAME is a project name, a member workspace name or a path (use a path when two projects share a
+name); it defaults to the project containing the current directory.
+There is no prompt and no unsaved-work check, like 'workspace stop'. If you run this from inside
+one of the project's sessions, that session is stopped last, after the result is printed.
+Exit status: 0 stopped or nothing running, 3 some stopped and some failed, 1 nothing stopped or
+a usage error.
+A group: id is refused with group_not_supported (exit 1); name a repository's project instead.
+
+Options:
+    --dry-run                    List the workspaces that would be stopped and stop nothing
+    --json                       Print one schema-versioned result object (see docs/README.projects.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace projects stop    # end of the day: stop every running workspace of the project you are in, with no prompt
+  workspace projects stop --dry-run    # before ending the day, check what is still running in the project you are in; nothing stops
+  workspace projects stop app --dry-run    # from another directory, see what stopping the project named app would do; nothing stops
+  workspace projects stop ~/src/app --json    # stop by path, for a script: one result object, and exit 3 when only some workspaces stopped
+--- stderr
+--- end
+### workspace projects stop --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects stop [NAME|PATH] [--dry-run] [--json]"],"description":"Stop every running workspace of a project and end their tmux sessions.\n\nStops the project's main checkout and its worktrees in one step, for real.\nNAME is a project name, a member workspace name or a path (use a path when two projects share a\nname); it defaults to the project containing the current directory.\nThere is no prompt and no unsaved-work check, like 'workspace stop'. If you run this from inside\none of the project's sessions, that session is stopped last, after the result is printed.\nExit status: 0 stopped or nothing running, 3 some stopped and some failed, 1 nothing stopped or\na usage error.\nA group: id is refused with group_not_supported (exit 1); name a repository's project instead.","options":[{"flags":"--dry-run","description":"List the workspaces that would be stopped and stop nothing"},{"flags":"--json","description":"Print one schema-versioned result object (see docs/README.projects.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace projects stop","scenario":"end of the day: stop every running workspace of the project you are in, with no prompt"},{"command":"workspace projects stop --dry-run","scenario":"before ending the day, check what is still running in the project you are in; nothing stops"},{"command":"workspace projects stop app --dry-run","scenario":"from another directory, see what stopping the project named app would do; nothing stops"},{"command":"workspace projects stop ~/src/app --json","scenario":"stop by path, for a script: one result object, and exit 3 when only some workspaces stopped"}]}
+--- stderr
+--- end
+### workspace projects kill --help
+--- exit 0
+--- stdout
+Usage: workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]
+
+Remove every worktree workspace of a project.
+
+Deletes for real, each the way 'workspace kill' does: tmux session, git worktree, tmuxinator config,
+project settings, state entry. The main checkout is never removed, and worktrees with no workspace
+config are not touched. NAME is required: a project name, a member workspace name or a path.
+
+Every worktree is checked before anything is removed. If any has unsaved work (uncommitted
+changes to tracked files or unpushed commits), can't be checked, has a checkout that is gone,
+or is running the dev environment, nothing is removed and each problem is listed. --force
+overrides only a gone checkout or a failed check; unsaved work needs --discard-unsaved. A
+running dev environment is never overridden: run 'workspace dev down' first.
+
+It asks first. --force does not skip the prompt; --yes does. Without a terminal, or with --json, pass --yes
+(or --dry-run). If you run this from one of the worktrees, it is removed last.
+Exit status: 0 removed, nothing to remove, cancelled or a dry run that would proceed;
+1 refused, nothing removed, or a usage error; 3 some removed and some failed.
+A group: id is refused with group_not_supported (exit 1); name a repository's project instead.
+
+Options:
+    --dry-run                    Run the checks and show what would be removed; remove nothing
+    --yes                        Don't ask for confirmation (every check still runs)
+    --force                      Let worktrees whose checkout is gone or that git can't check past preflight (kill still re-checks for unsaved work, so an unknown one can fail)
+    --discard-unsaved            Also remove worktrees that have unsaved work, losing it
+    --timeout DURATION           Time all the unsaved-work checks may take together, e.g. 10 or 30s (default 5s); a worktree not checked in time can't be checked
+    --json                       Print one schema-versioned result object (see docs/README.projects.md); needs --yes or --dry-run
+    -h, --help                   Show this help
+
+Examples:
+  workspace projects kill app    # once the work has landed: remove every worktree workspace of app, sessions and worktrees included, after one confirmation; the main checkout stays
+  workspace projects kill app --dry-run    # run every check and show what would be removed or what refuses, removing nothing
+  workspace projects kill app --yes --json    # for a script or without a terminal: no prompt, one result object
+  workspace projects kill ~/src/app --force --yes    # also remove worktrees whose checkout is gone or that git could not check; unsaved work still refuses
+  workspace projects kill app --discard-unsaved --yes    # remove worktrees that have unsaved work too, losing their uncommitted changes and unpushed commits
+--- stderr
+--- end
+### workspace projects kill --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]"],"description":"Remove every worktree workspace of a project.\n\nDeletes for real, each the way 'workspace kill' does: tmux session, git worktree, tmuxinator config,\nproject settings, state entry. The main checkout is never removed, and worktrees with no workspace\nconfig are not touched. NAME is required: a project name, a member workspace name or a path.\n\nEvery worktree is checked before anything is removed. If any has unsaved work (uncommitted\nchanges to tracked files or unpushed commits), can't be checked, has a checkout that is gone,\nor is running the dev environment, nothing is removed and each problem is listed. --force\noverrides only a gone checkout or a failed check; unsaved work needs --discard-unsaved. A\nrunning dev environment is never overridden: run 'workspace dev down' first.\n\nIt asks first. --force does not skip the prompt; --yes does. Without a terminal, or with --json, pass --yes\n(or --dry-run). If you run this from one of the worktrees, it is removed last.\nExit status: 0 removed, nothing to remove, cancelled or a dry run that would proceed;\n1 refused, nothing removed, or a usage error; 3 some removed and some failed.\nA group: id is refused with group_not_supported (exit 1); name a repository's project instead.","options":[{"flags":"--dry-run","description":"Run the checks and show what would be removed; remove nothing"},{"flags":"--yes","description":"Don't ask for confirmation (every check still runs)"},{"flags":"--force","description":"Let worktrees whose checkout is gone or that git can't check past preflight (kill still re-checks for unsaved work, so an unknown one can fail)"},{"flags":"--discard-unsaved","description":"Also remove worktrees that have unsaved work, losing it"},{"flags":"--timeout DURATION","description":"Time all the unsaved-work checks may take together, e.g. 10 or 30s (default 5s); a worktree not checked in time can't be checked"},{"flags":"--json","description":"Print one schema-versioned result object (see docs/README.projects.md); needs --yes or --dry-run"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace projects kill app","scenario":"once the work has landed: remove every worktree workspace of app, sessions and worktrees included, after one confirmation; the main checkout stays"},{"command":"workspace projects kill app --dry-run","scenario":"run every check and show what would be removed or what refuses, removing nothing"},{"command":"workspace projects kill app --yes --json","scenario":"for a script or without a terminal: no prompt, one result object"},{"command":"workspace projects kill ~/src/app --force --yes","scenario":"also remove worktrees whose checkout is gone or that git could not check; unsaved work still refuses"},{"command":"workspace projects kill app --discard-unsaved --yes","scenario":"remove worktrees that have unsaved work too, losing their uncommitted changes and unpushed commits"}]}
+--- stderr
+--- end
+### workspace projects group --help
+--- exit 0
+--- stdout
+Usage: workspace projects group create NAME [--json]
+       workspace projects group add GROUP PATH [--json]
+       workspace projects group list [--json]
+       workspace projects group show GROUP [--json] [--no-agents] [--no-git] [--timeout SECONDS]
+
+A group names several repositories that belong together. Its id is group:<slug>
+(the slug is NAME in lowercase with dashes). Each repository is kept by the
+realpath of its git common dir, so a moved checkout stays in its group. The group
+is a file at ~/.config/workspace/groups/<slug>.yml that you may edit by hand.
+
+Subcommands:
+  create  Make an empty group of repositories
+  add     Add the repository containing PATH to a group
+  list    List every group with its repositories
+  show    Show each repository of a group as 'projects show' shows it
+Run `workspace projects group VERB --help` for a verb's options.
+
+Examples:
+  workspace projects group create Billing    # start a group for repositories that belong together; this writes groups/billing.yml with no repositories yet
+  workspace projects group add billing ~/src/api    # put the api repository in the billing group (a worktree of it works too)
+  workspace projects group list    # see which repositories belong to which group before adding another
+  workspace projects group show billing    # see the state of every repository in the billing group in one place
+--- stderr
+--- end
+### workspace projects group --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects group create NAME [--json]","workspace projects group add GROUP PATH [--json]","workspace projects group list [--json]","workspace projects group show GROUP [--json] [--no-agents] [--no-git] [--timeout SECONDS]"],"description":"A group names several repositories that belong together. Its id is group:<slug>\n(the slug is NAME in lowercase with dashes). Each repository is kept by the\nrealpath of its git common dir, so a moved checkout stays in its group. The group\nis a file at ~/.config/workspace/groups/<slug>.yml that you may edit by hand.","options":[],"examples":[{"command":"workspace projects group create Billing","scenario":"start a group for repositories that belong together; this writes groups/billing.yml with no repositories yet"},{"command":"workspace projects group add billing ~/src/api","scenario":"put the api repository in the billing group (a worktree of it works too)"},{"command":"workspace projects group list","scenario":"see which repositories belong to which group before adding another"},{"command":"workspace projects group show billing","scenario":"see the state of every repository in the billing group in one place"}],"sections":[{"heading":"Subcommands","text":"create  Make an empty group of repositories\n  add     Add the repository containing PATH to a group\n  list    List every group with its repositories\n  show    Show each repository of a group as 'projects show' shows it\nRun `workspace projects group VERB --help` for a verb's options."}]}
+--- stderr
+--- end
+### workspace projects group create --help
+--- exit 0
+--- stdout
+Usage: workspace projects group create NAME [--json]
+
+Make an empty group of repositories.
+
+Its id is group:<slug> (the slug is NAME in lowercase with dashes). The group is a file at
+~/.config/workspace/groups/<slug>.yml that you may edit by hand. A name with no letter or digit,
+or a slug that already has a file, exits 1 with an error; --json prints the code (invalid_group_name,
+group_exists).
+
+Options:
+    --json                       Print schema-versioned JSON (see docs/README.projects.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace projects group create Billing    # start a group for repositories that belong together; this writes groups/billing.yml with no repositories yet
+  workspace projects group create "Payments Platform"    # a name with spaces gets the slug payments-platform, so its id is group:payments-platform
+  workspace projects group create Billing --json    # for a script: one document with the group's id and the path of its file
+--- stderr
+--- end
+### workspace projects group create --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects group create NAME [--json]"],"description":"Make an empty group of repositories.\n\nIts id is group:<slug> (the slug is NAME in lowercase with dashes). The group is a file at\n~/.config/workspace/groups/<slug>.yml that you may edit by hand. A name with no letter or digit,\nor a slug that already has a file, exits 1 with an error; --json prints the code (invalid_group_name,\ngroup_exists).","options":[{"flags":"--json","description":"Print schema-versioned JSON (see docs/README.projects.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace projects group create Billing","scenario":"start a group for repositories that belong together; this writes groups/billing.yml with no repositories yet"},{"command":"workspace projects group create \"Payments Platform\"","scenario":"a name with spaces gets the slug payments-platform, so its id is group:payments-platform"},{"command":"workspace projects group create Billing --json","scenario":"for a script: one document with the group's id and the path of its file"}]}
+--- stderr
+--- end
+### workspace projects group add --help
+--- exit 0
+--- stdout
+Usage: workspace projects group add GROUP PATH [--json]
+
+Add the repository containing PATH to a group.
+
+PATH is a main checkout or a worktree. GROUP is an id, a slug or a name. A repository in another
+group is refused; adding it again to the same group does nothing. Each repository is kept by the
+realpath of its git common dir, so a moved checkout stays in its group. Rewrites the group's file.
+
+Options:
+    --json                       Print schema-versioned JSON (see docs/README.projects.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace projects group add billing ~/src/api    # put the api repository in the billing group (a worktree of it works too)
+  workspace projects group add group:billing ~/src/web    # the group by its id instead of its slug
+  workspace projects group add billing ~/src/api --json    # for a script: outcome is added, or already_member when it was in the group already
+--- stderr
+--- end
+### workspace projects group add --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects group add GROUP PATH [--json]"],"description":"Add the repository containing PATH to a group.\n\nPATH is a main checkout or a worktree. GROUP is an id, a slug or a name. A repository in another\ngroup is refused; adding it again to the same group does nothing. Each repository is kept by the\nrealpath of its git common dir, so a moved checkout stays in its group. Rewrites the group's file.","options":[{"flags":"--json","description":"Print schema-versioned JSON (see docs/README.projects.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace projects group add billing ~/src/api","scenario":"put the api repository in the billing group (a worktree of it works too)"},{"command":"workspace projects group add group:billing ~/src/web","scenario":"the group by its id instead of its slug"},{"command":"workspace projects group add billing ~/src/api --json","scenario":"for a script: outcome is added, or already_member when it was in the group already"}]}
+--- stderr
+--- end
+### workspace projects group list --help
+--- exit 0
+--- stdout
+Usage: workspace projects group list [--json]
+
+List every group with its repositories.
+
+A repository that is gone reads exists: false. A group file that can't be read is named in
+"warnings" (--json) or on stderr. Changes nothing.
+
+Options:
+    --json                       Print schema-versioned JSON (see docs/README.projects.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace projects group list    # see which repositories belong to which group before adding another
+  workspace projects group list --json    # for a script: every group with its repositories, and a warning for each file that could not be read
+  workspace projects group list 2>/dev/null    # hide the stderr warnings about group files that could not be read, and keep the table
+--- stderr
+--- end
+### workspace projects group list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects group list [--json]"],"description":"List every group with its repositories.\n\nA repository that is gone reads exists: false. A group file that can't be read is named in\n\"warnings\" (--json) or on stderr. Changes nothing.","options":[{"flags":"--json","description":"Print schema-versioned JSON (see docs/README.projects.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace projects group list","scenario":"see which repositories belong to which group before adding another"},{"command":"workspace projects group list --json","scenario":"for a script: every group with its repositories, and a warning for each file that could not be read"},{"command":"workspace projects group list 2>/dev/null","scenario":"hide the stderr warnings about group files that could not be read, and keep the table"}]}
+--- stderr
+--- end
+### workspace projects group show --help
+--- exit 0
+--- stdout
+Usage: workspace projects group show GROUP [--json] [--no-agents] [--no-git] [--timeout SECONDS]
+
+Show each repository of a group as 'projects show' shows it.
+
+GROUP is an id, a slug or a name. A repository whose directory is gone, or that has no workspace
+config, is listed without a project. Changes nothing.
+
+Options:
+    --no-agents                  Skip the agent daemons (no sockets are read)
+    --no-git                     Skip git (no branch or unsaved work, no unconfigured worktrees)
+    --timeout SECONDS            How long to wait for each agent daemon (default 1) and for all the git reads (default 5)
+    --json                       Print schema-versioned JSON (see docs/README.projects.md)
+    -h, --help                   Show this help
+
+Examples:
+  workspace projects group show billing    # see the state of every repository in the billing group in one place
+  workspace projects group show billing --no-agents --no-git    # the fastest read, when only sessions and locks matter
+  workspace projects group show billing --json    # for a script: one document with a projects show document for each repository
+--- stderr
+--- end
+### workspace projects group show --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace projects group show GROUP [--json] [--no-agents] [--no-git] [--timeout SECONDS]"],"description":"Show each repository of a group as 'projects show' shows it.\n\nGROUP is an id, a slug or a name. A repository whose directory is gone, or that has no workspace\nconfig, is listed without a project. Changes nothing.","options":[{"flags":"--no-agents","description":"Skip the agent daemons (no sockets are read)"},{"flags":"--no-git","description":"Skip git (no branch or unsaved work, no unconfigured worktrees)"},{"flags":"--timeout SECONDS","description":"How long to wait for each agent daemon (default 1) and for all the git reads (default 5)"},{"flags":"--json","description":"Print schema-versioned JSON (see docs/README.projects.md)"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace projects group show billing","scenario":"see the state of every repository in the billing group in one place"},{"command":"workspace projects group show billing --no-agents --no-git","scenario":"the fastest read, when only sessions and locks matter"},{"command":"workspace projects group show billing --json","scenario":"for a script: one document with a projects show document for each repository"}]}
+--- stderr
+--- end
+### workspace projects --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace projects --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end

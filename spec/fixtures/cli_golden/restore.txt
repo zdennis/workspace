@@ -1,0 +1,56 @@
+### workspace restore --help
+--- exit 0
+--- stdout
+Usage: workspace restore [WORKSPACE... | --name WS | --all] [--dry-run] [--json]
+
+Bring back the coding-agent panes a reboot or a tmux restart took. For each
+workspace (default: the one the current directory is in; --all for every active
+one; not_in_workspace outside any), restore reads the session ledger, launches
+the workspace if its tmux session is not running, recreates each recorded agent
+pane that is gone (including panes you split by hand), and types
+`claude --resume <session id>` into it from the session's directory.
+
+It never types into a pane that already runs an agent or another program, and it
+leaves the panes a workspace's config starts to the config. A session you ended
+yourself (/exit, /clear) is not restored. Pane bindings move to the new panes.
+
+        --name NAME                  The workspace to restore (default: the one detected from the current directory)
+        --all                        Restore every active workspace
+        --dry-run                    Show what would be restored and which recorded panes can't be matched; change nothing
+        --json                       Print one action document (see docs/README.restore.md) instead of text;
+                                     the text goes to stderr. Exit 0, 3 when some rows failed, 1 when all did
+
+Without --json the exit status is 1 when any workspace or pane failed, else 0.
+A recorded pane that could not be matched is reported, not a failure.
+
+Examples:
+  workspace restore    # restore the workspace you are in
+  workspace restore --dry-run    # what would come back here, and what can't
+  workspace restore --all    # restore every active workspace
+  workspace restore my-app --json    # bring back my-app only; a script reads the result
+--- stderr
+--- end
+### workspace restore --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace restore [WORKSPACE... | --name WS | --all] [--dry-run] [--json]"],"description":"Bring back the coding-agent panes a reboot or a tmux restart took. For each\nworkspace (default: the one the current directory is in; --all for every active\none; not_in_workspace outside any), restore reads the session ledger, launches\nthe workspace if its tmux session is not running, recreates each recorded agent\npane that is gone (including panes you split by hand), and types\n`claude --resume <session id>` into it from the session's directory.\n\nIt never types into a pane that already runs an agent or another program, and it\nleaves the panes a workspace's config starts to the config. A session you ended\nyourself (/exit, /clear) is not restored. Pane bindings move to the new panes.\n\n        --name NAME                  The workspace to restore (default: the one detected from the current directory)\n        --all                        Restore every active workspace\n        --dry-run                    Show what would be restored and which recorded panes can't be matched; change nothing\n        --json                       Print one action document (see docs/README.restore.md) instead of text;\n                                     the text goes to stderr. Exit 0, 3 when some rows failed, 1 when all did\n\nWithout --json the exit status is 1 when any workspace or pane failed, else 0.\nA recorded pane that could not be matched is reported, not a failure.","options":[],"examples":[{"command":"workspace restore","scenario":"restore the workspace you are in"},{"command":"workspace restore --dry-run","scenario":"what would come back here, and what can't"},{"command":"workspace restore --all","scenario":"restore every active workspace"},{"command":"workspace restore my-app --json","scenario":"bring back my-app only; a script reads the result"}]}
+--- stderr
+--- end
+### workspace restore --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace restore --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace restore
+--- exit 1
+--- stdout
+--- stderr
+Error: No workspace found for $CWD. Run from inside a workspace or pass --name.
+--- end

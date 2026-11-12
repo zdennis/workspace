@@ -1,0 +1,47 @@
+### workspace push --help
+--- exit 0
+--- stdout
+Usage: workspace push [--name WORKSPACE] [--json]
+
+Push a workspace's branch to origin. A branch with no upstream is pushed with -u. When the
+upstream has commits the branch lacks, the push uses --force-with-lease, but only if the
+branch's own history once held all of them (a rebase replaced them); otherwise it is refused.
+A pull request checkout (pr-N, from `start '#N'`) is pushed to the pull request's head branch
+once gh confirms the pull request is open, comes from origin, and is at the commit fetched.
+This changes origin for real. Exits 1 with an error when it refuses or the push fails; --json
+prints the code (push_rejected, push_auth_failed, ...).
+
+        --name NAME                  The workspace (default: the one the current directory is in)
+        --json                       Print one JSON document (push is documented in docs/README.rebase.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace push    # publish this branch to origin, setting its upstream the first time
+  workspace push --name api.worktree-PROJ-123    # push another workspace's branch without changing directory
+  workspace push --json    # after a rebase, for a script: forced with a lease only when the rebase replaced the upstream's commits; read outcome and forced
+--- stderr
+--- end
+### workspace push --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace push [--name WORKSPACE] [--json]"],"description":"Push a workspace's branch to origin. A branch with no upstream is pushed with -u. When the\nupstream has commits the branch lacks, the push uses --force-with-lease, but only if the\nbranch's own history once held all of them (a rebase replaced them); otherwise it is refused.\nA pull request checkout (pr-N, from `start '#N'`) is pushed to the pull request's head branch\nonce gh confirms the pull request is open, comes from origin, and is at the commit fetched.\nThis changes origin for real. Exits 1 with an error when it refuses or the push fails; --json\nprints the code (push_rejected, push_auth_failed, ...).\n\n        --name NAME                  The workspace (default: the one the current directory is in)\n        --json                       Print one JSON document (push is documented in docs/README.rebase.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace push","scenario":"publish this branch to origin, setting its upstream the first time"},{"command":"workspace push --name api.worktree-PROJ-123","scenario":"push another workspace's branch without changing directory"},{"command":"workspace push --json","scenario":"after a rebase, for a script: forced with a lease only when the rebase replaced the upstream's commits; read outcome and forced"}]}
+--- stderr
+--- end
+### workspace push --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace push --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace push
+--- exit 1
+--- stdout
+--- stderr
+Error: No workspace found for $CWD. Run from inside a workspace or pass --name.
+--- end

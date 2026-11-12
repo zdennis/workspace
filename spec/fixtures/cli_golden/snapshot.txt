@@ -1,0 +1,50 @@
+### workspace snapshot --help
+--- exit 0
+--- stdout
+Usage: workspace snapshot --json [--name WORKSPACE]... [--pr]
+
+Print one JSON document with everything a UI polls: each project's workspaces (running
+state, git facts, agent panes, open questions, pipeline entries), the repo-wide locks
+and the dev environment, plus a cursor into the event log taken before anything is read.
+
+Reads only; nothing is written. A source that can't answer (tmux, an agent daemon, git,
+gh) is reported as unavailable, never as clean. Agent daemons are read in parallel,
+1 second each; a running workspace without one is listed in daemons_unavailable.
+
+        --json                       Print schema-versioned JSON (see docs/README.snapshot.md); required
+        --name WORKSPACE             Only this workspace (repeatable); its project's locks and dev are still included
+        --pr                         Also read each branch's pull request with `gh pr view` (adds git.pr; slower)
+    -h, --help                       Show this help
+
+Examples:
+  workspace snapshot --json    # one document with every project and workspace, for a UI or script to poll
+  workspace snapshot --json --name my-app    # only one workspace, when a script watches a single project
+  workspace snapshot --json --name my-app --name my-app.worktree-fix-login    # two workspaces in one read
+  workspace snapshot --json --pr    # also read each branch's pull request, when you need review state
+  workspace snapshot --json | jq -r '.projects[].members[] | select(.running) | .workspace'    # list the running workspaces
+--- stderr
+--- end
+### workspace snapshot --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace snapshot --json [--name WORKSPACE]... [--pr]"],"description":"Print one JSON document with everything a UI polls: each project's workspaces (running\nstate, git facts, agent panes, open questions, pipeline entries), the repo-wide locks\nand the dev environment, plus a cursor into the event log taken before anything is read.\n\nReads only; nothing is written. A source that can't answer (tmux, an agent daemon, git,\ngh) is reported as unavailable, never as clean. Agent daemons are read in parallel,\n1 second each; a running workspace without one is listed in daemons_unavailable.\n\n        --json                       Print schema-versioned JSON (see docs/README.snapshot.md); required\n        --name WORKSPACE             Only this workspace (repeatable); its project's locks and dev are still included\n        --pr                         Also read each branch's pull request with `gh pr view` (adds git.pr; slower)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace snapshot --json","scenario":"one document with every project and workspace, for a UI or script to poll"},{"command":"workspace snapshot --json --name my-app","scenario":"only one workspace, when a script watches a single project"},{"command":"workspace snapshot --json --name my-app --name my-app.worktree-fix-login","scenario":"two workspaces in one read"},{"command":"workspace snapshot --json --pr","scenario":"also read each branch's pull request, when you need review state"},{"command":"workspace snapshot --json | jq -r '.projects[].members[] | select(.running) | .workspace'","scenario":"list the running workspaces"}]}
+--- stderr
+--- end
+### workspace snapshot --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace snapshot --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace snapshot
+--- exit 1
+--- stdout
+--- stderr
+snapshot only has JSON output: pass --json.
+--- end

@@ -1,0 +1,92 @@
+### workspace focus --help
+--- exit 0
+--- stdout
+Usage: workspace focus [options] [project]
+
+Bring the project's iTerm window to the front, then run the window-tool steps of the
+global focus.chain (default: bare `focus`, no extra steps).
+A failed step is a warning, not an error. `workspace config set focus.chain
+"focus + center + dim --opacity 0.5 --duration 3"` also centers the window
+and dims the others for 3 seconds. See docs/README.focus.md.
+Auto-detects the project from the current directory if not specified.
+
+Options:
+        --name WS                    The project to focus, as an option (same as the positional [project])
+        --shake                      Shake the window after focusing
+        --highlight                  Highlight the window after focusing
+        --color COLOR                Color for highlight (default: green)
+                                     Colors: red, green, blue, yellow, orange, purple, white, cyan, magenta, random
+        --pane PANE                  Also select this pane once the window is up front: a pane id (%19) or
+                                     window.pane (0.1). Must belong to the project's tmux session
+        --cycle                      Focus the next tracked project with a live window, by name, after the one in front
+        --reverse                    With --cycle, go to the previous one
+        --center                     Center the window on the visible area of its screen after focusing, keeping its size
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+
+Examples:
+  workspace focus    # focus the current directory's project
+  workspace focus my-notes --pane %19    # focus the window and select pane %19
+  workspace focus my-notes    # focus a specific project
+  workspace focus --shake my-notes    # shake the window after focusing
+  workspace focus --highlight my-notes    # highlight the window green (default)
+  workspace focus --highlight --color blue my-notes    # highlight in another color
+  workspace focus --cycle    # focus the next workspace window; repeat to keep going
+  workspace focus --cycle --reverse    # go the other way
+  workspace focus --center my-notes    # center the window on its screen
+--- stderr
+--- end
+### workspace focus --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace focus [options] [project]"],"description":"Bring the project's iTerm window to the front, then run the window-tool steps of the\nglobal focus.chain (default: bare `focus`, no extra steps).\nA failed step is a warning, not an error. `workspace config set focus.chain\n\"focus + center + dim --opacity 0.5 --duration 3\"` also centers the window\nand dims the others for 3 seconds. See docs/README.focus.md.\nAuto-detects the project from the current directory if not specified.","options":[{"flags":"--name WS","description":"The project to focus, as an option (same as the positional [project])"},{"flags":"--shake","description":"Shake the window after focusing"},{"flags":"--highlight","description":"Highlight the window after focusing"},{"flags":"--color COLOR","description":"Color for highlight (default: green) Colors: red, green, blue, yellow, orange, purple, white, cyan, magenta, random"},{"flags":"--pane PANE","description":"Also select this pane once the window is up front: a pane id (%19) or window.pane (0.1). Must belong to the project's tmux session"},{"flags":"--cycle","description":"Focus the next tracked project with a live window, by name, after the one in front"},{"flags":"--reverse","description":"With --cycle, go to the previous one"},{"flags":"--center","description":"Center the window on the visible area of its screen after focusing, keeping its size"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text, which goes to stderr"}],"examples":[{"command":"workspace focus","scenario":"focus the current directory's project"},{"command":"workspace focus my-notes --pane %19","scenario":"focus the window and select pane %19"},{"command":"workspace focus my-notes","scenario":"focus a specific project"},{"command":"workspace focus --shake my-notes","scenario":"shake the window after focusing"},{"command":"workspace focus --highlight my-notes","scenario":"highlight the window green (default)"},{"command":"workspace focus --highlight --color blue my-notes","scenario":"highlight in another color"},{"command":"workspace focus --cycle","scenario":"focus the next workspace window; repeat to keep going"},{"command":"workspace focus --cycle --reverse","scenario":"go the other way"},{"command":"workspace focus --center my-notes","scenario":"center the window on its screen"}]}
+--- stderr
+--- end
+### workspace focus --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace focus --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace focus
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace focus [options] [project]
+
+Bring the project's iTerm window to the front, then run the window-tool steps of the
+global focus.chain (default: bare `focus`, no extra steps).
+A failed step is a warning, not an error. `workspace config set focus.chain
+"focus + center + dim --opacity 0.5 --duration 3"` also centers the window
+and dims the others for 3 seconds. See docs/README.focus.md.
+Auto-detects the project from the current directory if not specified.
+
+Options:
+        --name WS                    The project to focus, as an option (same as the positional [project])
+        --shake                      Shake the window after focusing
+        --highlight                  Highlight the window after focusing
+        --color COLOR                Color for highlight (default: green)
+                                     Colors: red, green, blue, yellow, orange, purple, white, cyan, magenta, random
+        --pane PANE                  Also select this pane once the window is up front: a pane id (%19) or
+                                     window.pane (0.1). Must belong to the project's tmux session
+        --cycle                      Focus the next tracked project with a live window, by name, after the one in front
+        --reverse                    With --cycle, go to the previous one
+        --center                     Center the window on the visible area of its screen after focusing, keeping its size
+        --json                       Print one action document (see docs/README.json.md) instead of text, which goes to stderr
+
+Examples:
+  workspace focus    # focus the current directory's project
+  workspace focus my-notes --pane %19    # focus the window and select pane %19
+  workspace focus my-notes    # focus a specific project
+  workspace focus --shake my-notes    # shake the window after focusing
+  workspace focus --highlight my-notes    # highlight the window green (default)
+  workspace focus --highlight --color blue my-notes    # highlight in another color
+  workspace focus --cycle    # focus the next workspace window; repeat to keep going
+  workspace focus --cycle --reverse    # go the other way
+  workspace focus --center my-notes    # center the window on its screen
+--- end

@@ -1,0 +1,76 @@
+### workspace wait-until-content --help
+--- exit 0
+--- stdout
+Usage: workspace wait-until-content [project] "content" [options] [-- command...]
+
+Poll a tmux pane's scrollback until it contains CONTENT,
+then exec COMMAND in this process (it takes over the terminal:
+direct Ctrl-C, untouched STDIN/STDOUT/STDERR).
+
+Options:
+        --name WS                    The project, as an option (same as the positional [project])
+        --pane N                     Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact (default: bottom)
+        --lines N                    Match against the last N lines of scrollback (default: 100)
+        --interval SECONDS           Seconds between polls (default: 0.5)
+        --max-wait-time SECONDS      Give up after this many seconds (default: wait forever)
+        --since-start                Only match content written after this command starts
+    -e, --exec CMD                   Shell command to exec on match (a command after -- takes precedence)
+
+Examples:
+  workspace wait-until-content "Listening on" -- open http://localhost:3000    # open the browser once the dev server is up, project auto-detected
+  workspace wait-until-content scooter "Ready to accept" -- bin/console    # explicit project, bottommost pane
+  workspace wait-until-content --name scooter "Ready to accept" -- bin/console    # a script keeps the project name apart from the text to match
+  workspace wait-until-content scooter "Ready to accept" --pane 0 --max-wait-time 120 -- bin/console    # watch pane 0, give up (exit 1) after 2 minutes
+  workspace wait-until-content scooter "WORKSPACE_DONE" --pane "Claude Code" -- irb    # watch the pane whose title matches
+  workspace wait-until-content scooter "namespace is running" --since-start --max-wait-time 60 -- ./scripts/attach.sh    # ignore output already in the scrollback
+  workspace wait-until-content scooter "READY" --lines 20 --interval 2 -- ./scripts/go.sh    # match the last 20 lines, poll every 2 seconds
+  workspace wait-until-content scooter "READY" -e 'echo matched && open http://localhost:3000'    # run more than one command once it matches
+--- stderr
+--- end
+### workspace wait-until-content --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace wait-until-content [project] \"content\" [options] [-- command...]"],"description":"Poll a tmux pane's scrollback until it contains CONTENT,","options":[{"flags":"--name WS","description":"The project, as an option (same as the positional [project])"},{"flags":"--pane N","description":"Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact (default: bottom)"},{"flags":"--lines N","description":"Match against the last N lines of scrollback (default: 100)"},{"flags":"--interval SECONDS","description":"Seconds between polls (default: 0.5)"},{"flags":"--max-wait-time SECONDS","description":"Give up after this many seconds (default: wait forever)"},{"flags":"--since-start","description":"Only match content written after this command starts"},{"flags":"-e, --exec CMD","description":"Shell command to exec on match (a command after -- takes precedence)"}],"examples":[{"command":"workspace wait-until-content \"Listening on\" -- open http://localhost:3000","scenario":"open the browser once the dev server is up, project auto-detected"},{"command":"workspace wait-until-content scooter \"Ready to accept\" -- bin/console","scenario":"explicit project, bottommost pane"},{"command":"workspace wait-until-content --name scooter \"Ready to accept\" -- bin/console","scenario":"a script keeps the project name apart from the text to match"},{"command":"workspace wait-until-content scooter \"Ready to accept\" --pane 0 --max-wait-time 120 -- bin/console","scenario":"watch pane 0, give up (exit 1) after 2 minutes"},{"command":"workspace wait-until-content scooter \"WORKSPACE_DONE\" --pane \"Claude Code\" -- irb","scenario":"watch the pane whose title matches"},{"command":"workspace wait-until-content scooter \"namespace is running\" --since-start --max-wait-time 60 -- ./scripts/attach.sh","scenario":"ignore output already in the scrollback"},{"command":"workspace wait-until-content scooter \"READY\" --lines 20 --interval 2 -- ./scripts/go.sh","scenario":"match the last 20 lines, poll every 2 seconds"},{"command":"workspace wait-until-content scooter \"READY\" -e 'echo matched && open http://localhost:3000'","scenario":"run more than one command once it matches"}],"sections":[{"heading":"then exec COMMAND in this process (it takes over the terminal","text":"direct Ctrl-C, untouched STDIN/STDOUT/STDERR)."}]}
+--- stderr
+--- end
+### workspace wait-until-content --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace wait-until-content --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace wait-until-content
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace wait-until-content [project] "content" [options] [-- command...]
+
+Poll a tmux pane's scrollback until it contains CONTENT,
+then exec COMMAND in this process (it takes over the terminal:
+direct Ctrl-C, untouched STDIN/STDOUT/STDERR).
+
+Options:
+        --name WS                    The project, as an option (same as the positional [project])
+        --pane N                     Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact (default: bottom)
+        --lines N                    Match against the last N lines of scrollback (default: 100)
+        --interval SECONDS           Seconds between polls (default: 0.5)
+        --max-wait-time SECONDS      Give up after this many seconds (default: wait forever)
+        --since-start                Only match content written after this command starts
+    -e, --exec CMD                   Shell command to exec on match (a command after -- takes precedence)
+
+Examples:
+  workspace wait-until-content "Listening on" -- open http://localhost:3000    # open the browser once the dev server is up, project auto-detected
+  workspace wait-until-content scooter "Ready to accept" -- bin/console    # explicit project, bottommost pane
+  workspace wait-until-content --name scooter "Ready to accept" -- bin/console    # a script keeps the project name apart from the text to match
+  workspace wait-until-content scooter "Ready to accept" --pane 0 --max-wait-time 120 -- bin/console    # watch pane 0, give up (exit 1) after 2 minutes
+  workspace wait-until-content scooter "WORKSPACE_DONE" --pane "Claude Code" -- irb    # watch the pane whose title matches
+  workspace wait-until-content scooter "namespace is running" --since-start --max-wait-time 60 -- ./scripts/attach.sh    # ignore output already in the scrollback
+  workspace wait-until-content scooter "READY" --lines 20 --interval 2 -- ./scripts/go.sh    # match the last 20 lines, poll every 2 seconds
+  workspace wait-until-content scooter "READY" -e 'echo matched && open http://localhost:3000'    # run more than one command once it matches
+--- end

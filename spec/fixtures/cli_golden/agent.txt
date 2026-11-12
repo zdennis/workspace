@@ -1,0 +1,234 @@
+### workspace agent --help
+--- exit 0
+--- stdout
+Usage: workspace agent <subcommand> [options]
+
+Subcommands:
+  run PROMPT    Send a prompt to the workspace's pipeline (a "command" message)
+  status        Ask an agent pane for a status line, or post one (see `agent status --help`)
+  executables   List the agent programs on PATH by family and which one each runs (see `agent executables --help`)
+
+The long-lived agent daemon now runs as `workspace agentd`
+(see docs/README.agentd.md). During the deprecation window, daemon-era
+invocations like `workspace agent --name myproject --force` still start
+the daemon, with a warning.
+
+Options (run):
+  --name NAME         Workspace name (default: detected from cwd)
+  --work-item REF     Work item reference (default: random UUID)
+  --dry-run           Print the message without sending it
+  --json              Print one JSON document with the agent's reply; text goes to stderr
+
+Examples:
+  workspace agent run "Add OAuth support"    # send a prompt to the pipeline of the project in this directory
+  workspace agent run --name myapp --dry-run "Add OAuth support"    # show the message for a named workspace, send nothing
+  workspace agent status request --pane %19    # ask the agent in one pane for a status line
+  workspace agent executables --kind claude    # which claude program is on PATH and which one runs
+--- stderr
+--- end
+### workspace agent --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent <subcommand> [options]"],"description":"","options":[],"examples":[{"command":"workspace agent run \"Add OAuth support\"","scenario":"send a prompt to the pipeline of the project in this directory"},{"command":"workspace agent run --name myapp --dry-run \"Add OAuth support\"","scenario":"show the message for a named workspace, send nothing"},{"command":"workspace agent status request --pane %19","scenario":"ask the agent in one pane for a status line"},{"command":"workspace agent executables --kind claude","scenario":"which claude program is on PATH and which one runs"}],"sections":[{"heading":"Subcommands","text":"run PROMPT    Send a prompt to the workspace's pipeline (a \"command\" message)\n  status        Ask an agent pane for a status line, or post one (see `agent status --help`)\n  executables   List the agent programs on PATH by family and which one each runs (see `agent executables --help`)\n\nThe long-lived agent daemon now runs as `workspace agentd`\n(see docs/README.agentd.md). During the deprecation window, daemon-era\ninvocations like `workspace agent --name myproject --force` still start\nthe daemon, with a warning."},{"heading":"Options (run)","text":"--name NAME         Workspace name (default: detected from cwd)\n  --work-item REF     Work item reference (default: random UUID)\n  --dry-run           Print the message without sending it\n  --json              Print one JSON document with the agent's reply; text goes to stderr"}]}
+--- stderr
+--- end
+### workspace agent run --help
+--- exit 0
+--- stdout
+Usage: workspace agent run PROMPT [options]
+
+Send a prompt to the workspace's pipeline as a "command" message.
+
+Options:
+        --name NAME                  Workspace name (default: detected from cwd)
+        --work-item REF              Work item reference (default: random UUID)
+        --dry-run                    Print the message without sending it
+        --json                       Print one JSON document with the agent's reply (see docs/README.json.md) instead of
+                                     text; the text goes to stderr. Exit 0 whatever the reply says: read reply.ok
+
+Examples:
+  workspace agent run Add OAuth support    # send the prompt to the project in this directory; no quotes needed
+  workspace agent run --name myapp "Run the linter and report any issues"    # a named workspace
+  workspace agent run --dry-run "Add OAuth support"    # print the message, send nothing
+  workspace agent run --work-item WC-42 "Fix the flaky spec"    # tie the prompt to a work item
+  workspace agent run --json "Add OAuth support"    # one JSON document with the reply; exits 0 whatever it says
+--- stderr
+--- end
+### workspace agent run --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent run PROMPT [options]"],"description":"Send a prompt to the workspace's pipeline as a \"command\" message.","options":[{"flags":"--name NAME","description":"Workspace name (default: detected from cwd)"},{"flags":"--work-item REF","description":"Work item reference (default: random UUID)"},{"flags":"--dry-run","description":"Print the message without sending it"},{"flags":"--json","description":"Print one JSON document with the agent's reply (see docs/README.json.md) instead of text; the text goes to stderr. Exit 0 whatever the reply says: read reply.ok"}],"examples":[{"command":"workspace agent run Add OAuth support","scenario":"send the prompt to the project in this directory; no quotes needed"},{"command":"workspace agent run --name myapp \"Run the linter and report any issues\"","scenario":"a named workspace"},{"command":"workspace agent run --dry-run \"Add OAuth support\"","scenario":"print the message, send nothing"},{"command":"workspace agent run --work-item WC-42 \"Fix the flaky spec\"","scenario":"tie the prompt to a work item"},{"command":"workspace agent run --json \"Add OAuth support\"","scenario":"one JSON document with the reply; exits 0 whatever it says"}]}
+--- stderr
+--- end
+### workspace agent status --help
+--- exit 0
+--- stdout
+Usage: workspace agent status request --pane PANE [--name NAME] [--json]
+       workspace agent status post --summary TEXT [--task ID] [--progress N/M] [--reply-to ID] [--json]
+
+Ask an agent pane for a status line, and answer one (see docs/README.agent.md).
+
+request  Types a fixed line carrying a request id into the pane, asking its agent to run
+         `agent status post --reply-to ID`. Refused (pane_not_ready, nothing typed) unless
+         Claude Code runs there, no permission prompt or question is open, no AskUserQuestion
+         or ExitPlanMode is running, and its input prompt is on screen with no draft in it.
+         Enter is pressed only if the prompt is still there once the line is pasted.
+         One request is open per pane at a time (status_request_open); it expires after
+         10 minutes.
+post     Run by an agent in its own pane ($TMUX_PANE). Logs an agent_status line, shown by
+         `workspace events --follow --types agent_status`. With --reply-to, accepted only from
+         the pane that was asked, while the request is open. The summary is cut to
+         500 characters and never typed anywhere.
+
+Exit codes: 0 done; 1 refused or failed; 2 (request) the line landed but wasn't confirmed
+  submitted: the request stays open, so check the pane before asking again.
+
+Examples:
+  workspace agent status request --pane %19    # ask the agent in pane %19 for a status line
+  workspace agent status request --name api --pane 0.1 --json    # a named workspace, the pane as window.pane, JSON out
+  workspace agent status post --summary "Writing specs for the parser"    # an agent reports its own status
+  workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary "Waiting on CI" --progress 3/7    # answer a request
+--- stderr
+--- end
+### workspace agent status --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent status request --pane PANE [--name NAME] [--json]","workspace agent status post --summary TEXT [--task ID] [--progress N/M] [--reply-to ID] [--json]"],"description":"Ask an agent pane for a status line, and answer one (see docs/README.agent.md).\n\nrequest  Types a fixed line carrying a request id into the pane, asking its agent to run\n         `agent status post --reply-to ID`. Refused (pane_not_ready, nothing typed) unless\n         Claude Code runs there, no permission prompt or question is open, no AskUserQuestion\n         or ExitPlanMode is running, and its input prompt is on screen with no draft in it.\n         Enter is pressed only if the prompt is still there once the line is pasted.\n         One request is open per pane at a time (status_request_open); it expires after\n         10 minutes.\npost     Run by an agent in its own pane ($TMUX_PANE). Logs an agent_status line, shown by\n         `workspace events --follow --types agent_status`. With --reply-to, accepted only from\n         the pane that was asked, while the request is open. The summary is cut to\n         500 characters and never typed anywhere.\n\nExit codes: 0 done; 1 refused or failed; 2 (request) the line landed but wasn't confirmed\n  submitted: the request stays open, so check the pane before asking again.","options":[],"examples":[{"command":"workspace agent status request --pane %19","scenario":"ask the agent in pane %19 for a status line"},{"command":"workspace agent status request --name api --pane 0.1 --json","scenario":"a named workspace, the pane as window.pane, JSON out"},{"command":"workspace agent status post --summary \"Writing specs for the parser\"","scenario":"an agent reports its own status"},{"command":"workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary \"Waiting on CI\" --progress 3/7","scenario":"answer a request"}]}
+--- stderr
+--- end
+### workspace agent status request --help
+--- exit 0
+--- stdout
+Usage: workspace agent status request --pane PANE [--name NAME] [--json]
+
+Ask the agent in one pane for a status line. The agent daemon types a fixed line
+carrying a request id; the agent answers with `workspace agent status post --reply-to ID`.
+Nothing is typed unless the pane can take text safely (see `agent status --help`); when it can,
+the line is typed into that pane for real.
+
+Options:
+        --name NAME                  Workspace name (default: detected from cwd)
+        --pane PANE                  Pane id (%19) or window.pane (0.1)  (required)
+        --json                       Print one JSON document: request_id, pane, pane_id, expires_at, delivery
+
+Exit codes: 0 typed and submitted; 1 refused or failed; 2 landed but not confirmed submitted.
+
+Examples:
+  workspace agent status request --pane %19    # ask the agent in pane %19 of the project in this directory
+  workspace agent status request --name api --pane 0.1    # a named workspace, the pane as window.pane
+  workspace agent status request --pane %19 --json    # one JSON document with the request id
+--- stderr
+--- end
+### workspace agent status request --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent status request --pane PANE [--name NAME] [--json]"],"description":"Ask the agent in one pane for a status line. The agent daemon types a fixed line\ncarrying a request id; the agent answers with `workspace agent status post --reply-to ID`.\nNothing is typed unless the pane can take text safely (see `agent status --help`); when it can,\nthe line is typed into that pane for real.","options":[{"flags":"--name NAME","description":"Workspace name (default: detected from cwd)"},{"flags":"--pane PANE","description":"Pane id (%19) or window.pane (0.1)  (required)"},{"flags":"--json","description":"Print one JSON document: request_id, pane, pane_id, expires_at, delivery Exit codes: 0 typed and submitted; 1 refused or failed; 2 landed but not confirmed submitted."}],"examples":[{"command":"workspace agent status request --pane %19","scenario":"ask the agent in pane %19 of the project in this directory"},{"command":"workspace agent status request --name api --pane 0.1","scenario":"a named workspace, the pane as window.pane"},{"command":"workspace agent status request --pane %19 --json","scenario":"one JSON document with the request id"}]}
+--- stderr
+--- end
+### workspace agent status post --help
+--- exit 0
+--- stdout
+Usage: workspace agent status post --summary TEXT [--task ID] [--progress N/M] [--reply-to ID] [--json]
+
+Post this pane's status as an agent_status event line. Run by an agent in its own
+tmux pane: the pane is $TMUX_PANE and the workspace is the one whose tmux session it is in.
+Every post writes a line to the workspace's event log; outside a tmux pane it is refused (no_pane).
+
+Options:
+        --summary TEXT               One line on what the agent is doing (required; cut to 500 characters)
+        --task ID                    The task being worked on
+        --progress N/M               Steps done out of the total, e.g. 3/7
+        --reply-to ID                The status request this answers (from the typed line)
+        --json                       Print one JSON document: the line as logged, plus truncated
+
+Examples:
+  workspace agent status post --summary "Writing specs for the parser"    # report what this pane is doing
+  workspace agent status post --summary "Writing specs for the parser" --task T3 --progress 3/7    # with the task and steps done
+  workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary "Waiting on CI"    # answer a status request
+  workspace agent status post --summary "Waiting on CI" --json    # one JSON document, the line as logged
+--- stderr
+--- end
+### workspace agent status post --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent status post --summary TEXT [--task ID] [--progress N/M] [--reply-to ID] [--json]"],"description":"Post this pane's status as an agent_status event line. Run by an agent in its own\ntmux pane: the pane is $TMUX_PANE and the workspace is the one whose tmux session it is in.\nEvery post writes a line to the workspace's event log; outside a tmux pane it is refused (no_pane).","options":[{"flags":"--summary TEXT","description":"One line on what the agent is doing (required; cut to 500 characters)"},{"flags":"--task ID","description":"The task being worked on"},{"flags":"--progress N/M","description":"Steps done out of the total, e.g. 3/7"},{"flags":"--reply-to ID","description":"The status request this answers (from the typed line)"},{"flags":"--json","description":"Print one JSON document: the line as logged, plus truncated"}],"examples":[{"command":"workspace agent status post --summary \"Writing specs for the parser\"","scenario":"report what this pane is doing"},{"command":"workspace agent status post --summary \"Writing specs for the parser\" --task T3 --progress 3/7","scenario":"with the task and steps done"},{"command":"workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary \"Waiting on CI\"","scenario":"answer a status request"},{"command":"workspace agent status post --summary \"Waiting on CI\" --json","scenario":"one JSON document, the line as logged"}]}
+--- stderr
+--- end
+### workspace agent executables --help
+--- exit 0
+--- stdout
+Usage: workspace agent executables [--kind KIND] [--name WORKSPACE] [--json]
+
+List the coding-agent programs on PATH by family (claude, codex, opencode, pi): a file named
+the family program or starting with it and a dash (claude-dev). Marks the one each family runs,
+and lists a configured program that is not found. Reads directory listings only; runs nothing.
+Pick one with `workspace config set agent.commands.<kind> NAME-OR-PATH`.
+
+Options:
+        --kind KIND                  Only this family: claude, codex, opencode, pi
+        --name NAME                  Workspace whose settings decide the marked program (default: detected from cwd, else global settings)
+        --json                       Print one JSON document: workspace, path_dirs, executables, effective, kind[, truncated]
+    -h, --help                       Show this help
+
+Errors: unknown_agent_kind (details.kind, details.known), unknown_workspace.
+
+Examples:
+  workspace agent executables    # every family's programs on PATH, the one each runs marked
+  workspace agent executables --kind claude    # only the claude family
+  workspace agent executables --name api --kind codex    # the program workspace api's settings pick for codex
+  workspace agent executables --json    # one JSON document, for a script
+--- stderr
+--- end
+### workspace agent executables --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace agent executables [--kind KIND] [--name WORKSPACE] [--json]"],"description":"List the coding-agent programs on PATH by family (claude, codex, opencode, pi): a file named\nthe family program or starting with it and a dash (claude-dev). Marks the one each family runs,\nand lists a configured program that is not found. Reads directory listings only; runs nothing.\nPick one with `workspace config set agent.commands.<kind> NAME-OR-PATH`.","options":[{"flags":"--kind KIND","description":"Only this family: claude, codex, opencode, pi"},{"flags":"--name NAME","description":"Workspace whose settings decide the marked program (default: detected from cwd, else global settings)"},{"flags":"--json","description":"Print one JSON document: workspace, path_dirs, executables, effective, kind[, truncated]"},{"flags":"-h, --help","description":"Show this help Errors: unknown_agent_kind (details.kind, details.known), unknown_workspace."}],"examples":[{"command":"workspace agent executables","scenario":"every family's programs on PATH, the one each runs marked"},{"command":"workspace agent executables --kind claude","scenario":"only the claude family"},{"command":"workspace agent executables --name api --kind codex","scenario":"the program workspace api's settings pick for codex"},{"command":"workspace agent executables --json","scenario":"one JSON document, for a script"}]}
+--- stderr
+--- end
+### workspace agent --bogus
+--- exit 1
+--- stdout
+--- stderr
+`workspace agent` for the daemon is deprecated; use `workspace agentd`
+invalid option: --bogus
+--- end
+### workspace agent --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+`workspace agent` for the daemon is deprecated; use `workspace agentd`
+--- end
+### workspace agent
+--- exit 1
+--- stdout
+--- stderr
+`workspace agent` for the daemon is deprecated; use `workspace agentd`
+Usage: workspace agentd [PROJECT] [options]
+       workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]
+
+Run the long-lived workspace agent daemon for a project.
+Registers with the work-coordinator and serves commands until terminated.
+
+The workspace must already have a config; an unknown name is refused (unknown_workspace).
+A workspace with a mixed-case name is renamed to lowercase before the agent starts
+(see docs/README.agentd.md); a step that fails is a warning in the daemon log.
+
+Subcommands:
+  restart    Stop the agent running for the workspace and start a new one in the background;
+             see `workspace agentd restart --help`. A workspace named restart needs --name,
+             except with --force or --ensure, where restart is the workspace
+
+Options:
+        --name NAME                  Workspace name (defaults to the detected project or PROJECT)
+        --wc-socket PATH             Path to the work-coordinator socket
+    -f, --force                      Kill any running agent for this workspace before starting
+        --ensure                     Start the agent in the background unless one is already running (safe to repeat)
+
+Examples:
+  workspace agentd    # run for the project detected from the current directory
+  workspace agentd scooter --wc-socket /tmp/wc-dev.sock    # named project, non-default coordinator
+  workspace agentd --force    # replace the agent already running for this workspace
+  workspace agentd --ensure   # make sure one is running; exits 0 if it already was
+  workspace agentd restart    # stop the running agent and start a new one in the background
+--- end

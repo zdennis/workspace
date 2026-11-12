@@ -1,0 +1,53 @@
+### workspace go --help
+--- exit 0
+--- stdout
+Usage: workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--text] [--base REF] [--dry-run] [--json]
+
+Start a workflow with one argument. A ticket, pull request, issue or branch is the ref; text with a space
+is free text that names a new branch, unless it holds one pull request, issue or ticket (see below).
+Free text always makes a new worktree workspace off the default branch,
+even from inside a worktree workspace; --here runs it in this checkout instead. A ref makes or reuses its worktree
+workspace, as `workflow start` does, unless it is the branch you are on; bare `workspace go` runs here too, in a
+linked worktree workspace off the default branch. go never runs on the default branch or the main checkout's
+branch. It prints the workflow it chose and why (--workflow, then workflows.by_ref.KIND, workflows.default,
+then built in: pr-feedback for a pull request, else rpiv) before it acts. A sentence that holds one pull
+request, issue or ticket (a key in uppercase) is read as that ref, with the sentence as the task; --text keeps it plain.
+
+        --workflow ID                Use this workflow instead of the configured one
+        --input KEY=VALUE            Set a workflow input; repeatable
+        --here                       Run free text in this worktree workspace instead of making a new one; refused where go can't run in place
+        --text                       Treat the quoted sentence as plain text; find no ticket, pull request or issue in it
+        --base REF                   Start a new branch from this branch, tag or commit instead of the default branch; refused when go runs in place
+        --dry-run                    Check everything and create nothing
+        --json                       Print one JSON document; other output goes to stderr
+    -h, --help                       Show this help
+
+Examples:
+  workspace go PROJ-123    # a ticket: make or reuse its worktree workspace and start the chosen workflow
+  workspace go "try the thing"    # free text: a new branch named from it, in a new worktree workspace, even from inside one
+  workspace go --text "fix the login timeout from PROJ-123"    # plain text: a new branch named from it, nothing read as a ticket
+  workspace go --here "try the thing"    # in a worktree workspace off the default branch: run the workflow here, with the text as the task
+  workspace go    # in a worktree workspace off the default branch: run the workflow here
+  workspace go "try the thing" --base origin/main    # start the new branch from origin's main, when the local default branch may be behind
+  workspace go fix-login --workflow investigate --dry-run    # check a branch with a named workflow, create nothing
+  workspace go "try the thing" --input task="Try the thing" --json    # scripted, with a workflow input
+--- stderr
+--- end
+### workspace go --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace go [REF | \"TEXT\"] [--workflow ID] [--input KEY=VALUE]... [--here] [--text] [--base REF] [--dry-run] [--json]"],"description":"Start a workflow with one argument. A ticket, pull request, issue or branch is the ref; text with a space\nis free text that names a new branch, unless it holds one pull request, issue or ticket (see below).\nFree text always makes a new worktree workspace off the default branch,\neven from inside a worktree workspace; --here runs it in this checkout instead. A ref makes or reuses its worktree\nworkspace, as `workflow start` does, unless it is the branch you are on; bare `workspace go` runs here too, in a\nlinked worktree workspace off the default branch. go never runs on the default branch or the main checkout's\nbranch. It prints the workflow it chose and why (--workflow, then workflows.by_ref.KIND, workflows.default,\nthen built in: pr-feedback for a pull request, else rpiv) before it acts. A sentence that holds one pull\nrequest, issue or ticket (a key in uppercase) is read as that ref, with the sentence as the task; --text keeps it plain.\n\n        --workflow ID                Use this workflow instead of the configured one\n        --input KEY=VALUE            Set a workflow input; repeatable\n        --here                       Run free text in this worktree workspace instead of making a new one; refused where go can't run in place\n        --text                       Treat the quoted sentence as plain text; find no ticket, pull request or issue in it\n        --base REF                   Start a new branch from this branch, tag or commit instead of the default branch; refused when go runs in place\n        --dry-run                    Check everything and create nothing\n        --json                       Print one JSON document; other output goes to stderr\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace go PROJ-123","scenario":"a ticket: make or reuse its worktree workspace and start the chosen workflow"},{"command":"workspace go \"try the thing\"","scenario":"free text: a new branch named from it, in a new worktree workspace, even from inside one"},{"command":"workspace go --text \"fix the login timeout from PROJ-123\"","scenario":"plain text: a new branch named from it, nothing read as a ticket"},{"command":"workspace go --here \"try the thing\"","scenario":"in a worktree workspace off the default branch: run the workflow here, with the text as the task"},{"command":"workspace go","scenario":"in a worktree workspace off the default branch: run the workflow here"},{"command":"workspace go \"try the thing\" --base origin/main","scenario":"start the new branch from origin's main, when the local default branch may be behind"},{"command":"workspace go fix-login --workflow investigate --dry-run","scenario":"check a branch with a named workflow, create nothing"},{"command":"workspace go \"try the thing\" --input task=\"Try the thing\" --json","scenario":"scripted, with a workflow input"}]}
+--- stderr
+--- end
+### workspace go --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace go --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end

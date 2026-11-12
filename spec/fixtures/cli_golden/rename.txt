@@ -1,0 +1,54 @@
+### workspace rename --help
+--- exit 0
+--- stdout
+Usage: workspace rename [WORKSPACE] NEW [--name WS] [--dry-run] [--json]
+
+Give a stopped worktree workspace a new branch, and with it a new directory,
+workspace name and tmux session. Run 'workspace stop' first: a workspace with a
+session or a daemon is refused. Nothing is launched afterwards. 'workspace restore'
+with the new workspace name resumes its agent conversations; 'workspace launch'
+starts new ones. The remote branch is left alone.
+
+The workspace is the one given, else the one the current directory is in. Name it
+either as WORKSPACE before NEW or with --name, not both. A rename that stopped
+part way prints the command that finishes it: run it again, from anywhere.
+
+Options:
+        --name NAME                  The workspace to rename (default: the one detected from the current directory)
+        --dry-run                    Print what would change and what is refused; change nothing
+        --json                       Print one document (see docs/README.json.md) instead of text, which goes
+                                     to stderr; a refusal is the error envelope
+    -h, --help                       Show this help
+
+Examples:
+  workspace rename fix-login-v2    # rename the stopped workspace you are in to the branch fix-login-v2
+  workspace rename --dry-run fix-login-v2    # show the plan and any refusal; change nothing
+  workspace rename myproject.worktree-fix-login fix-login-v2    # name the workspace first, from anywhere
+  workspace rename fix-login-v2 --name myproject.worktree-fix-login    # the same, naming it with a flag
+  workspace rename fix-login-v2 --json    # one document with the plan, warnings and the next step
+--- stderr
+--- end
+### workspace rename --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace rename [WORKSPACE] NEW [--name WS] [--dry-run] [--json]"],"description":"Give a stopped worktree workspace a new branch, and with it a new directory,\nworkspace name and tmux session. Run 'workspace stop' first: a workspace with a\nsession or a daemon is refused. Nothing is launched afterwards. 'workspace restore'\nwith the new workspace name resumes its agent conversations; 'workspace launch'\nstarts new ones. The remote branch is left alone.\n\nThe workspace is the one given, else the one the current directory is in. Name it\neither as WORKSPACE before NEW or with --name, not both. A rename that stopped\npart way prints the command that finishes it: run it again, from anywhere.","options":[{"flags":"--name NAME","description":"The workspace to rename (default: the one detected from the current directory)"},{"flags":"--dry-run","description":"Print what would change and what is refused; change nothing"},{"flags":"--json","description":"Print one document (see docs/README.json.md) instead of text, which goes to stderr; a refusal is the error envelope"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace rename fix-login-v2","scenario":"rename the stopped workspace you are in to the branch fix-login-v2"},{"command":"workspace rename --dry-run fix-login-v2","scenario":"show the plan and any refusal; change nothing"},{"command":"workspace rename myproject.worktree-fix-login fix-login-v2","scenario":"name the workspace first, from anywhere"},{"command":"workspace rename fix-login-v2 --name myproject.worktree-fix-login","scenario":"the same, naming it with a flag"},{"command":"workspace rename fix-login-v2 --json","scenario":"one document with the plan, warnings and the next step"}]}
+--- stderr
+--- end
+### workspace rename --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace rename --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace rename
+--- exit 1
+--- stdout
+--- stderr
+workspace rename needs the new branch name. Run 'workspace rename --help'.
+--- end

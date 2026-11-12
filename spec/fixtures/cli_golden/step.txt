@@ -1,0 +1,133 @@
+### workspace step --help
+--- exit 0
+--- stdout
+Usage: workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]
+       workspace step status [--json]
+
+For the agent working on a workflow step, run from the pane the run is bound to.
+Neither is required: a step is decided when the agent's turn ends, from the files it
+was told to leave and the step's check (see `workspace workflow --help`).
+
+  done    Record what you say about a workflow step, then end your turn
+  status  Show which workflow run, step and attempt this pane is on
+Run `workspace step VERB --help` for a verb's options.
+
+        --status STATUS              done: pass (default) or fail
+        --summary TEXT               done: one line about what was done, or what is left
+        --code WORD                  done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)
+        --json                       Print one JSON document (see docs/README.workflow.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace step status    # which run, step and attempt this pane is on
+  workspace step done --summary "Plan written; three commits."    # record a pass, then end your turn
+  workspace step done --status fail --summary "Two specs still fail in billing."    # fail the step at the turn's end
+  workspace step done --status fail --code not_reproduced --summary "The failure did not happen locally."    # fail it with a word for why
+--- stderr
+--- end
+### workspace step --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]","workspace step status [--json]"],"description":"For the agent working on a workflow step, run from the pane the run is bound to.\nNeither is required: a step is decided when the agent's turn ends, from the files it\nwas told to leave and the step's check (see `workspace workflow --help`).\n\n  done    Record what you say about a workflow step, then end your turn\n  status  Show which workflow run, step and attempt this pane is on\nRun `workspace step VERB --help` for a verb's options.\n\n        --status STATUS              done: pass (default) or fail\n        --summary TEXT               done: one line about what was done, or what is left\n        --code WORD                  done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)\n        --json                       Print one JSON document (see docs/README.workflow.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace step status","scenario":"which run, step and attempt this pane is on"},{"command":"workspace step done --summary \"Plan written; three commits.\"","scenario":"record a pass, then end your turn"},{"command":"workspace step done --status fail --summary \"Two specs still fail in billing.\"","scenario":"fail the step at the turn's end"},{"command":"workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\"","scenario":"fail it with a word for why"}]}
+--- stderr
+--- end
+### workspace step done --help
+--- exit 0
+--- stdout
+Usage: workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]
+
+Record what you say about a workflow step, then end your turn.
+
+For the agent working on a workflow step, run from the pane the run is bound to. --status fail fails
+the step at the turn's end without running its check. It is not required: a step is decided when the
+agent's turn ends, from the files it was told to leave and the step's check (see `workspace
+workflow --help`).
+
+Options:
+    --status STATUS              pass (default) or fail
+    --summary TEXT               One line about what was done, or what is left
+    --code WORD                  A word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace step done    # record a pass for the step your pane is on; then end your turn
+  workspace step done --summary "Plan written; three commits."    # record a pass with one line on what was done
+  workspace step done --status fail --summary "Two specs still fail in billing."    # fail the step when the turn ends, without running its check
+  workspace step done --status fail --code not_reproduced --summary "The failure did not happen locally."    # fail it with a word for why, kept with the failed step
+  workspace step done --summary "Docs written" --json    # the same as one JSON document; outside a run's pane it exits 1 with not_bound
+--- stderr
+--- end
+### workspace step done --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]"],"description":"Record what you say about a workflow step, then end your turn.\n\nFor the agent working on a workflow step, run from the pane the run is bound to. --status fail fails\nthe step at the turn's end without running its check. It is not required: a step is decided when the\nagent's turn ends, from the files it was told to leave and the step's check (see `workspace\nworkflow --help`).","options":[{"flags":"--status STATUS","description":"pass (default) or fail"},{"flags":"--summary TEXT","description":"One line about what was done, or what is left"},{"flags":"--code WORD","description":"A word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace step done","scenario":"record a pass for the step your pane is on; then end your turn"},{"command":"workspace step done --summary \"Plan written; three commits.\"","scenario":"record a pass with one line on what was done"},{"command":"workspace step done --status fail --summary \"Two specs still fail in billing.\"","scenario":"fail the step when the turn ends, without running its check"},{"command":"workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\"","scenario":"fail it with a word for why, kept with the failed step"},{"command":"workspace step done --summary \"Docs written\" --json","scenario":"the same as one JSON document; outside a run's pane it exits 1 with not_bound"}]}
+--- stderr
+--- end
+### workspace step status --help
+--- exit 0
+--- stdout
+Usage: workspace step status [--json]
+
+Show which workflow run, step and attempt this pane is on.
+
+Also shows where the step's instructions are, and whether the files the step must leave are there: written this attempt, non-empty, regular files and not links (problem names the rule broken). Run
+from the pane the run is bound to.
+
+Options:
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace step status    # which workflow run, step and attempt this pane is on, and the files the step must leave
+  workspace step status --json    # the same as one JSON document, with whether each file is there (produces); outside a run's pane it exits 1 with not_bound
+  workspace step status --json | jq '.step.produces'    # list the files the step must leave, and whether each was written this attempt (current)
+--- stderr
+--- end
+### workspace step status --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace step status [--json]"],"description":"Show which workflow run, step and attempt this pane is on.\n\nAlso shows where the step's instructions are, and whether the files the step must leave are there: written this attempt, non-empty, regular files and not links (problem names the rule broken). Run\nfrom the pane the run is bound to.","options":[{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace step status","scenario":"which workflow run, step and attempt this pane is on, and the files the step must leave"},{"command":"workspace step status --json","scenario":"the same as one JSON document, with whether each file is there (produces); outside a run's pane it exits 1 with not_bound"},{"command":"workspace step status --json | jq '.step.produces'","scenario":"list the files the step must leave, and whether each was written this attempt (current)"}]}
+--- stderr
+--- end
+### workspace step --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace step --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace step
+--- exit 1
+--- stdout
+--- stderr
+Missing subcommand: done or status.
+
+Usage: workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]
+       workspace step status [--json]
+
+For the agent working on a workflow step, run from the pane the run is bound to.
+Neither is required: a step is decided when the agent's turn ends, from the files it
+was told to leave and the step's check (see `workspace workflow --help`).
+
+  done    Record what you say about a workflow step, then end your turn
+  status  Show which workflow run, step and attempt this pane is on
+Run `workspace step VERB --help` for a verb's options.
+
+        --status STATUS              done: pass (default) or fail
+        --summary TEXT               done: one line about what was done, or what is left
+        --code WORD                  done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)
+        --json                       Print one JSON document (see docs/README.workflow.md)
+    -h, --help                       Show this help
+
+Examples:
+  workspace step status    # which run, step and attempt this pane is on
+  workspace step done --summary "Plan written; three commits."    # record a pass, then end your turn
+  workspace step done --status fail --summary "Two specs still fail in billing."    # fail the step at the turn's end
+  workspace step done --status fail --code not_reproduced --summary "The failure did not happen locally."    # fail it with a word for why
+--- end

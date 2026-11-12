@@ -1,0 +1,51 @@
+### workspace list --help
+--- exit 0
+--- stdout
+Usage: workspace list [options]
+
+List currently active (launched) projects.
+Plain list reads the state file and does not check that each project is still
+running; add --liveness to check each project's tmux session.
+
+Options:
+        --all                        List all available projects (not just active ones)
+        --json                       Output as JSON
+        --json-envelope              Output as JSON in the standard envelope (implies --json)
+        --show-urls                  Include the git origin URL alongside each project name
+        --liveness                   Mark each active project alive, dead, or unknown from its tmux session
+
+Examples:
+  workspace list    # list active (launched) projects
+  workspace list --all    # list all available projects
+  workspace list --show-urls    # each active project with its git origin URL
+  workspace list --json    # active projects as JSON
+  workspace list --json-envelope    # {"schema_version":1,"ok":true,"workspaces":[...],"warnings":[]}
+  workspace list --liveness    # each active project marked [alive], [dead], or [unknown]
+  workspace list --liveness --json    # [{"name":"my-notes","alive":true,"window_alive":true},...]
+  workspace list --all --json --show-urls    # all projects with directories and URLs as JSON
+--- stderr
+--- end
+### workspace list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace list [options]"],"description":"List currently active (launched) projects.\nPlain list reads the state file and does not check that each project is still\nrunning; add --liveness to check each project's tmux session.","options":[{"flags":"--all","description":"List all available projects (not just active ones)"},{"flags":"--json","description":"Output as JSON"},{"flags":"--json-envelope","description":"Output as JSON in the standard envelope (implies --json)"},{"flags":"--show-urls","description":"Include the git origin URL alongside each project name"},{"flags":"--liveness","description":"Mark each active project alive, dead, or unknown from its tmux session"}],"examples":[{"command":"workspace list","scenario":"list active (launched) projects"},{"command":"workspace list --all","scenario":"list all available projects"},{"command":"workspace list --show-urls","scenario":"each active project with its git origin URL"},{"command":"workspace list --json","scenario":"active projects as JSON"},{"command":"workspace list --json-envelope","scenario":"{\"schema_version\":1,\"ok\":true,\"workspaces\":[...],\"warnings\":[]}"},{"command":"workspace list --liveness","scenario":"each active project marked [alive], [dead], or [unknown]"},{"command":"workspace list --liveness --json","scenario":"[{\"name\":\"my-notes\",\"alive\":true,\"window_alive\":true},...]"},{"command":"workspace list --all --json --show-urls","scenario":"all projects with directories and URLs as JSON"}]}
+--- stderr
+--- end
+### workspace list --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace list --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace list
+--- exit 0
+--- stdout
+No active projects. Run 'workspace list --all' to see available projects.
+--- stderr
+--- end

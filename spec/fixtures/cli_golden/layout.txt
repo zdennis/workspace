@@ -1,0 +1,178 @@
+### workspace layout --help
+--- exit 0
+--- stdout
+Usage: workspace layout <subcommand> [--name WS] [args]
+
+Subcommands:
+  save [name]                Save the current pane layout (default name: 'default')
+  restore [name]             Restore a saved layout (default name: 'default')
+  list                       List saved layouts for a project
+  save|restore <project> <name>   The same, for a named project
+  list <project>                  The same, for a named project
+
+Options:
+  --name WS                  The project, instead of the current directory's.
+                             One argument to save/restore is always the layout name.
+
+Layouts are auto-saved as '_before_resize' whenever you run 'workspace resize',
+so you can always undo with: workspace layout restore --name <project> _before_resize
+
+Examples:
+  workspace layout save                     # current directory's project, as 'default'
+  workspace layout save coding              # current directory's project, as 'coding'
+  workspace layout restore --name myproject # restore 'default' for a named project
+  workspace layout save myproject coding    # PROJECT NAME: save as 'coding'
+  workspace layout list myproject           # show saved layouts
+--- stderr
+--- end
+### workspace layout --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace layout <subcommand> [--name WS] [args]"],"description":"","options":[{"flags":"--name WS","description":"The project, instead of the current directory's. One argument to save/restore is always the layout name. Layouts are auto-saved as '_before_resize' whenever you run 'workspace resize', so you can always undo with: workspace layout restore --name <project> _before_resize"}],"examples":[{"command":"workspace layout save","scenario":"current directory's project, as 'default'"},{"command":"workspace layout save coding","scenario":"current directory's project, as 'coding'"},{"command":"workspace layout restore --name myproject","scenario":"restore 'default' for a named project"},{"command":"workspace layout save myproject coding","scenario":"PROJECT NAME: save as 'coding'"},{"command":"workspace layout list myproject","scenario":"show saved layouts"}],"sections":[{"heading":"Subcommands","text":"save [name]                Save the current pane layout (default name: 'default')\n  restore [name]             Restore a saved layout (default name: 'default')\n  list                       List saved layouts for a project\n  save|restore <project> <name>   The same, for a named project\n  list <project>                  The same, for a named project"}]}
+--- stderr
+--- end
+### workspace layout save --help
+--- exit 0
+--- stdout
+Usage: workspace layout save [--name WS] [NAME]
+       workspace layout save PROJECT NAME
+
+Save the project's current tmux pane layout under NAME (default: 'default').
+
+The project's tmux session must be running. A layout saved under an existing name is replaced.
+Outside a workspace it is a usage error unless you give --name or PROJECT NAME.
+
+Options:
+    --name WS                    The project, instead of the current directory's; then give only NAME. One argument is always the layout name
+    -h, --help                   Show this help
+
+Examples:
+  workspace layout save    # save the current directory's project as 'default'
+  workspace layout save coding    # save the current directory's project as 'coding'
+  workspace layout save --name myproject    # save a named project as 'default'
+  workspace layout save myproject coding    # PROJECT NAME: save a named project as 'coding'
+--- stderr
+--- end
+### workspace layout save --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace layout save [--name WS] [NAME]","workspace layout save PROJECT NAME"],"description":"Save the project's current tmux pane layout under NAME (default: 'default').\n\nThe project's tmux session must be running. A layout saved under an existing name is replaced.\nOutside a workspace it is a usage error unless you give --name or PROJECT NAME.","options":[{"flags":"--name WS","description":"The project, instead of the current directory's; then give only NAME. One argument is always the layout name"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace layout save","scenario":"save the current directory's project as 'default'"},{"command":"workspace layout save coding","scenario":"save the current directory's project as 'coding'"},{"command":"workspace layout save --name myproject","scenario":"save a named project as 'default'"},{"command":"workspace layout save myproject coding","scenario":"PROJECT NAME: save a named project as 'coding'"}]}
+--- stderr
+--- end
+### workspace layout restore --help
+--- exit 0
+--- stdout
+Usage: workspace layout restore [--name WS] [NAME]
+       workspace layout restore PROJECT NAME
+
+Apply a saved tmux pane layout to the project's running session (default NAME: 'default').
+
+`workspace resize` saves the layout it found as '_before_resize'.
+Outside a workspace it is a usage error unless you give --name or PROJECT NAME.
+
+Options:
+    --name WS                    The project, instead of the current directory's; then give only NAME. One argument is always the layout name
+    -h, --help                   Show this help
+
+Examples:
+  workspace layout restore    # restore 'default' for the current directory's project
+  workspace layout restore coding    # restore 'coding' for the current directory's project
+  workspace layout restore --name myproject    # restore 'default' for a named project
+  workspace layout restore --name myproject _before_resize    # undo the last resize
+  workspace layout restore myproject coding    # PROJECT NAME: restore 'coding' for a named project
+--- stderr
+--- end
+### workspace layout restore --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace layout restore [--name WS] [NAME]","workspace layout restore PROJECT NAME"],"description":"Apply a saved tmux pane layout to the project's running session (default NAME: 'default').\n\n`workspace resize` saves the layout it found as '_before_resize'.\nOutside a workspace it is a usage error unless you give --name or PROJECT NAME.","options":[{"flags":"--name WS","description":"The project, instead of the current directory's; then give only NAME. One argument is always the layout name"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace layout restore","scenario":"restore 'default' for the current directory's project"},{"command":"workspace layout restore coding","scenario":"restore 'coding' for the current directory's project"},{"command":"workspace layout restore --name myproject","scenario":"restore 'default' for a named project"},{"command":"workspace layout restore --name myproject _before_resize","scenario":"undo the last resize"},{"command":"workspace layout restore myproject coding","scenario":"PROJECT NAME: restore 'coding' for a named project"}]}
+--- stderr
+--- end
+### workspace layout list --help
+--- exit 0
+--- stdout
+Usage: workspace layout list [--name WS | PROJECT]
+
+List the names of the project's saved layouts.
+
+'_before_resize' is listed once a resize has run.
+Outside a workspace it is a usage error unless you give PROJECT or --name.
+
+Options:
+    --name WS                    The project, instead of PROJECT or the current directory's
+    -h, --help                   Show this help
+
+Examples:
+  workspace layout list    # layouts saved for the current directory's project
+  workspace layout list myproject    # layouts saved for a named project
+  workspace layout list --name myproject    # the same, named with --name
+--- stderr
+--- end
+### workspace layout list --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace layout list [--name WS | PROJECT]"],"description":"List the names of the project's saved layouts.\n\n'_before_resize' is listed once a resize has run.\nOutside a workspace it is a usage error unless you give PROJECT or --name.","options":[{"flags":"--name WS","description":"The project, instead of PROJECT or the current directory's"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace layout list","scenario":"layouts saved for the current directory's project"},{"command":"workspace layout list myproject","scenario":"layouts saved for a named project"},{"command":"workspace layout list --name myproject","scenario":"the same, named with --name"}]}
+--- stderr
+--- end
+### workspace layout --bogus
+--- exit 1
+--- stdout
+--- stderr
+Unknown layout subcommand: --bogus
+
+Usage: workspace layout <subcommand> [--name WS] [args]
+
+Subcommands:
+  save [name]                Save the current pane layout (default name: 'default')
+  restore [name]             Restore a saved layout (default name: 'default')
+  list                       List saved layouts for a project
+  save|restore <project> <name>   The same, for a named project
+  list <project>                  The same, for a named project
+
+Options:
+  --name WS                  The project, instead of the current directory's.
+                             One argument to save/restore is always the layout name.
+
+Layouts are auto-saved as '_before_resize' whenever you run 'workspace resize',
+so you can always undo with: workspace layout restore --name <project> _before_resize
+
+Examples:
+  workspace layout save                     # current directory's project, as 'default'
+  workspace layout save coding              # current directory's project, as 'coding'
+  workspace layout restore --name myproject # restore 'default' for a named project
+  workspace layout save myproject coding    # PROJECT NAME: save as 'coding'
+  workspace layout list myproject           # show saved layouts
+--- end
+### workspace layout --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"Unknown layout subcommand: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace layout
+--- exit 0
+--- stdout
+Usage: workspace layout <subcommand> [--name WS] [args]
+
+Subcommands:
+  save [name]                Save the current pane layout (default name: 'default')
+  restore [name]             Restore a saved layout (default name: 'default')
+  list                       List saved layouts for a project
+  save|restore <project> <name>   The same, for a named project
+  list <project>                  The same, for a named project
+
+Options:
+  --name WS                  The project, instead of the current directory's.
+                             One argument to save/restore is always the layout name.
+
+Layouts are auto-saved as '_before_resize' whenever you run 'workspace resize',
+so you can always undo with: workspace layout restore --name <project> _before_resize
+
+Examples:
+  workspace layout save                     # current directory's project, as 'default'
+  workspace layout save coding              # current directory's project, as 'coding'
+  workspace layout restore --name myproject # restore 'default' for a named project
+  workspace layout save myproject coding    # PROJECT NAME: save as 'coding'
+  workspace layout list myproject           # show saved layouts
+--- stderr
+--- end

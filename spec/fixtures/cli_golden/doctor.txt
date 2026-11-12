@@ -1,0 +1,41 @@
+### workspace doctor --help
+--- exit 0
+--- stdout
+Usage: workspace doctor [options]
+
+Check that all required dependencies are installed and configured.
+
+Options:
+        --[no-]headless              Check for a headless setup (skips iTerm2 and window-tool), or not;
+                                     default follows the same rule as 'workspace launch'
+        --fix                        Link the workspace skills that are missing or dangling, route Claude's statusLine
+                                     through 'workspace statusline' (backs up settings.json first), install Codex's hooks,
+                                     and rewrite stale agent panes; everything else it reports is fixed by hand
+        --json                       Print one JSON document with a row per check (see docs/README.doctor.md);
+                                     exits 1 when a check failed
+
+Examples:
+  workspace doctor    # check the current machine's setup
+  workspace doctor --json    # the same checks as one document
+  workspace doctor --fix    # also fix what can be fixed: link the missing skills, set up Claude's status line and Codex's hooks, and update stale agent panes
+  workspace doctor --headless    # check for a headless setup (skips iTerm2 and window-tool)
+--- stderr
+--- end
+### workspace doctor --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace doctor [options]"],"description":"Check that all required dependencies are installed and configured.","options":[{"flags":"--[no-]headless","description":"Check for a headless setup (skips iTerm2 and window-tool), or not; default follows the same rule as 'workspace launch'"},{"flags":"--fix","description":"Link the workspace skills that are missing or dangling, route Claude's statusLine through 'workspace statusline' (backs up settings.json first), install Codex's hooks, and rewrite stale agent panes; everything else it reports is fixed by hand"},{"flags":"--json","description":"Print one JSON document with a row per check (see docs/README.doctor.md); exits 1 when a check failed"}],"examples":[{"command":"workspace doctor","scenario":"check the current machine's setup"},{"command":"workspace doctor --json","scenario":"the same checks as one document"},{"command":"workspace doctor --fix","scenario":"also fix what can be fixed: link the missing skills, set up Claude's status line and Codex's hooks, and update stale agent panes"},{"command":"workspace doctor --headless","scenario":"check for a headless setup (skips iTerm2 and window-tool)"}]}
+--- stderr
+--- end
+### workspace doctor --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace doctor --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end

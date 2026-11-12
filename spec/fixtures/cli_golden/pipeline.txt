@@ -1,0 +1,221 @@
+### workspace pipeline --help
+--- exit 0
+--- stdout
+Usage: workspace pipeline start PROJECT --work-item REF [--body TEXT] [--json]
+       workspace pipeline advance PROJECT --work-item REF [--body TEXT] [--json]
+       workspace pipeline status PROJECT [--json]
+       workspace pipeline reset PROJECT [--json]
+
+Deprecated: use `workspace workflow`, which runs ordered steps in a workspace's agent pane
+and shows where a run is stuck. `pipeline` will be removed in a later release.
+
+  start    Send a work item into a project's pipeline
+  advance  Mark a work item's running stage complete and move on
+  status   Show what a project has in flight
+  reset    Clear a stopped project's pipeline state
+
+Examples:
+  workspace pipeline start myapp --work-item WC-42    # hand WC-42 to myapp's agent with the default message
+  workspace pipeline advance myapp --work-item WC-42    # push WC-42 past a stage that is done but did not say so
+  workspace pipeline status myapp    # what is myapp working on, and when is each stage due
+  workspace pipeline reset myapp    # clear leftover state after stopping myapp's agent
+  workspace pipeline start --help    # read the page of one subcommand
+--- stderr
+--- end
+### workspace pipeline --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace pipeline start PROJECT --work-item REF [--body TEXT] [--json]","workspace pipeline advance PROJECT --work-item REF [--body TEXT] [--json]","workspace pipeline status PROJECT [--json]","workspace pipeline reset PROJECT [--json]"],"description":"Deprecated: use `workspace workflow`, which runs ordered steps in a workspace's agent pane\nand shows where a run is stuck. `pipeline` will be removed in a later release.\n\n  start    Send a work item into a project's pipeline\n  advance  Mark a work item's running stage complete and move on\n  status   Show what a project has in flight\n  reset    Clear a stopped project's pipeline state","options":[],"examples":[{"command":"workspace pipeline start myapp --work-item WC-42","scenario":"hand WC-42 to myapp's agent with the default message"},{"command":"workspace pipeline advance myapp --work-item WC-42","scenario":"push WC-42 past a stage that is done but did not say so"},{"command":"workspace pipeline status myapp","scenario":"what is myapp working on, and when is each stage due"},{"command":"workspace pipeline reset myapp","scenario":"clear leftover state after stopping myapp's agent"},{"command":"workspace pipeline start --help","scenario":"read the page of one subcommand"}]}
+--- stderr
+--- end
+### workspace pipeline start --help
+--- exit 0
+--- stdout
+Usage: workspace pipeline start PROJECT --work-item REF [--body TEXT] [--json]
+
+Send a work item into a project's pipeline.
+
+This command will be removed in a later release; use `workspace workflow`.
+
+Sends the item to the project's running agent daemon (no_daemon when none runs), which takes it
+from there. This changes the project's pipeline state for real.
+
+Options:
+    --work-item REF              Work item reference (e.g. WC-42)
+    --body TEXT                  The message to send (default: "Begin work on REF.")
+    --json                       Print one action document (see docs/README.json.md) instead of text
+    -h, --help                   Show this help
+
+Examples:
+  workspace pipeline start myapp --work-item WC-42    # hand WC-42 to myapp's agent with the default message
+  workspace pipeline start myapp --work-item WC-42 --body "/build add OAuth support"    # say what the first stage should do
+  workspace pipeline start myapp --work-item WC-42 --json    # for a script: one action document, with an error document and code when no agent runs
+--- stderr
+Warning: `workspace pipeline` is deprecated and will be removed in a later release. Use `workspace workflow` (see `workspace workflow --help`).
+--- end
+### workspace pipeline start --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace pipeline start PROJECT --work-item REF [--body TEXT] [--json]"],"description":"Send a work item into a project's pipeline.\n\nThis command will be removed in a later release; use `workspace workflow`.\n\nSends the item to the project's running agent daemon (no_daemon when none runs), which takes it\nfrom there. This changes the project's pipeline state for real.","options":[{"flags":"--work-item REF","description":"Work item reference (e.g. WC-42)"},{"flags":"--body TEXT","description":"The message to send (default: \"Begin work on REF.\")"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace pipeline start myapp --work-item WC-42","scenario":"hand WC-42 to myapp's agent with the default message"},{"command":"workspace pipeline start myapp --work-item WC-42 --body \"/build add OAuth support\"","scenario":"say what the first stage should do"},{"command":"workspace pipeline start myapp --work-item WC-42 --json","scenario":"for a script: one action document, with an error document and code when no agent runs"}]}
+--- stderr
+--- end
+### workspace pipeline advance --help
+--- exit 0
+--- stdout
+Usage: workspace pipeline advance PROJECT --work-item REF [--body TEXT] [--json]
+
+Mark a work item's running stage complete and move on.
+
+This command will be removed in a later release; use `workspace workflow`.
+
+Interrupts whatever the stage's pane is doing (Ctrl-C), then types the completion sentinel, even if
+the stage has not finished. Needs the project's agent daemon and a stage running for REF.
+
+Options:
+    --work-item REF              Work item reference (e.g. WC-42)
+    --body TEXT                  The text after the sentinel (default: "manual advance")
+    --json                       Print one action document (see docs/README.json.md) instead of text
+    -h, --help                   Show this help
+
+Examples:
+  workspace pipeline advance myapp --work-item WC-42    # push WC-42 past a stage that is done but did not say so
+  workspace pipeline advance myapp --work-item WC-42 --body "done by hand"    # record why you pushed it on, e.g. a stage you finished by hand
+  workspace pipeline advance myapp --work-item WC-42 --json    # for a script: one action document
+--- stderr
+Warning: `workspace pipeline` is deprecated and will be removed in a later release. Use `workspace workflow` (see `workspace workflow --help`).
+--- end
+### workspace pipeline advance --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace pipeline advance PROJECT --work-item REF [--body TEXT] [--json]"],"description":"Mark a work item's running stage complete and move on.\n\nThis command will be removed in a later release; use `workspace workflow`.\n\nInterrupts whatever the stage's pane is doing (Ctrl-C), then types the completion sentinel, even if\nthe stage has not finished. Needs the project's agent daemon and a stage running for REF.","options":[{"flags":"--work-item REF","description":"Work item reference (e.g. WC-42)"},{"flags":"--body TEXT","description":"The text after the sentinel (default: \"manual advance\")"},{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace pipeline advance myapp --work-item WC-42","scenario":"push WC-42 past a stage that is done but did not say so"},{"command":"workspace pipeline advance myapp --work-item WC-42 --body \"done by hand\"","scenario":"record why you pushed it on, e.g. a stage you finished by hand"},{"command":"workspace pipeline advance myapp --work-item WC-42 --json","scenario":"for a script: one action document"}]}
+--- stderr
+--- end
+### workspace pipeline status --help
+--- exit 0
+--- stdout
+Usage: workspace pipeline status PROJECT [--json]
+
+Show what a project has in flight.
+
+This command will be removed in a later release; use `workspace workflow`.
+
+Reads the project's saved pipeline state, so it works with no agent running. A project with nothing
+in flight says so and exits 0.
+
+Options:
+    --json                       Print JSON ({schema_version, ok, entries}; failures print {schema_version, ok: false, error, code}) instead of a table
+    -h, --help                   Show this help
+
+Examples:
+  workspace pipeline status myapp    # what is myapp working on, and when is each stage due
+  workspace pipeline status myapp --json    # the same as one document, for a script
+  workspace pipeline status api    # a project with nothing in flight says so and exits 0
+--- stderr
+Warning: `workspace pipeline` is deprecated and will be removed in a later release. Use `workspace workflow` (see `workspace workflow --help`).
+--- end
+### workspace pipeline status --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace pipeline status PROJECT [--json]"],"description":"Show what a project has in flight.\n\nThis command will be removed in a later release; use `workspace workflow`.\n\nReads the project's saved pipeline state, so it works with no agent running. A project with nothing\nin flight says so and exits 0.","options":[{"flags":"--json","description":"Print JSON ({schema_version, ok, entries}; failures print {schema_version, ok: false, error, code}) instead of a table"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace pipeline status myapp","scenario":"what is myapp working on, and when is each stage due"},{"command":"workspace pipeline status myapp --json","scenario":"the same as one document, for a script"},{"command":"workspace pipeline status api","scenario":"a project with nothing in flight says so and exits 0"}]}
+--- stderr
+--- end
+### workspace pipeline reset --help
+--- exit 0
+--- stdout
+Usage: workspace pipeline reset PROJECT [--json]
+
+Clear a stopped project's pipeline state.
+
+This command will be removed in a later release; use `workspace workflow`.
+
+Deletes the project's saved pipeline state. Refused while its agent daemon is running.
+
+Options:
+    --json                       Print one action document (see docs/README.json.md) instead of text
+    -h, --help                   Show this help
+
+Examples:
+  workspace pipeline reset myapp    # clear leftover state after stopping myapp's agent
+  workspace pipeline reset myapp --json    # for a script: one action document, an error document if the agent still runs
+  workspace pipeline reset api    # a project with no saved state succeeds too, printing the same line
+--- stderr
+Warning: `workspace pipeline` is deprecated and will be removed in a later release. Use `workspace workflow` (see `workspace workflow --help`).
+--- end
+### workspace pipeline reset --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace pipeline reset PROJECT [--json]"],"description":"Clear a stopped project's pipeline state.\n\nThis command will be removed in a later release; use `workspace workflow`.\n\nDeletes the project's saved pipeline state. Refused while its agent daemon is running.","options":[{"flags":"--json","description":"Print one action document (see docs/README.json.md) instead of text"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace pipeline reset myapp","scenario":"clear leftover state after stopping myapp's agent"},{"command":"workspace pipeline reset myapp --json","scenario":"for a script: one action document, an error document if the agent still runs"},{"command":"workspace pipeline reset api","scenario":"a project with no saved state succeeds too, printing the same line"}]}
+--- stderr
+--- end
+### workspace pipeline --bogus
+--- exit 0
+--- stdout
+Usage: workspace pipeline start PROJECT --work-item REF [--body TEXT] [--json]
+       workspace pipeline advance PROJECT --work-item REF [--body TEXT] [--json]
+       workspace pipeline status PROJECT [--json]
+       workspace pipeline reset PROJECT [--json]
+
+Deprecated: use `workspace workflow`, which runs ordered steps in a workspace's agent pane
+and shows where a run is stuck. `pipeline` will be removed in a later release.
+
+  start    Send a work item into a project's pipeline
+  advance  Mark a work item's running stage complete and move on
+  status   Show what a project has in flight
+  reset    Clear a stopped project's pipeline state
+
+Examples:
+  workspace pipeline start myapp --work-item WC-42    # hand WC-42 to myapp's agent with the default message
+  workspace pipeline advance myapp --work-item WC-42    # push WC-42 past a stage that is done but did not say so
+  workspace pipeline status myapp    # what is myapp working on, and when is each stage due
+  workspace pipeline reset myapp    # clear leftover state after stopping myapp's agent
+  workspace pipeline start --help    # read the page of one subcommand
+--- stderr
+--- end
+### workspace pipeline --bogus --json
+--- exit 0
+--- stdout
+Usage: workspace pipeline start PROJECT --work-item REF [--body TEXT] [--json]
+       workspace pipeline advance PROJECT --work-item REF [--body TEXT] [--json]
+       workspace pipeline status PROJECT [--json]
+       workspace pipeline reset PROJECT [--json]
+
+Deprecated: use `workspace workflow`, which runs ordered steps in a workspace's agent pane
+and shows where a run is stuck. `pipeline` will be removed in a later release.
+
+  start    Send a work item into a project's pipeline
+  advance  Mark a work item's running stage complete and move on
+  status   Show what a project has in flight
+  reset    Clear a stopped project's pipeline state
+
+Examples:
+  workspace pipeline start myapp --work-item WC-42    # hand WC-42 to myapp's agent with the default message
+  workspace pipeline advance myapp --work-item WC-42    # push WC-42 past a stage that is done but did not say so
+  workspace pipeline status myapp    # what is myapp working on, and when is each stage due
+  workspace pipeline reset myapp    # clear leftover state after stopping myapp's agent
+  workspace pipeline start --help    # read the page of one subcommand
+--- stderr
+--- end
+### workspace pipeline
+--- exit 0
+--- stdout
+Usage: workspace pipeline start PROJECT --work-item REF [--body TEXT] [--json]
+       workspace pipeline advance PROJECT --work-item REF [--body TEXT] [--json]
+       workspace pipeline status PROJECT [--json]
+       workspace pipeline reset PROJECT [--json]
+
+Deprecated: use `workspace workflow`, which runs ordered steps in a workspace's agent pane
+and shows where a run is stuck. `pipeline` will be removed in a later release.
+
+  start    Send a work item into a project's pipeline
+  advance  Mark a work item's running stage complete and move on
+  status   Show what a project has in flight
+  reset    Clear a stopped project's pipeline state
+
+Examples:
+  workspace pipeline start myapp --work-item WC-42    # hand WC-42 to myapp's agent with the default message
+  workspace pipeline advance myapp --work-item WC-42    # push WC-42 past a stage that is done but did not say so
+  workspace pipeline status myapp    # what is myapp working on, and when is each stage due
+  workspace pipeline reset myapp    # clear leftover state after stopping myapp's agent
+  workspace pipeline start --help    # read the page of one subcommand
+--- stderr
+--- end

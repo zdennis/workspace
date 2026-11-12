@@ -1,0 +1,52 @@
+### workspace run-and-report --help
+--- exit 0
+--- stdout
+Usage: workspace run-and-report '<command>'
+
+Run a shell command as a subprocess (bypassing tmux).
+Captures stdout, stderr, and exit status, writes them under a UUID,
+prints the JSON result, and exits with the command's exit code.
+
+Examples:
+  workspace run-and-report 'echo hello'    # run a command and capture its output
+  workspace run-and-report 'rake spec'    # check the exit code in a script via $?
+  workspace run-and-report 'bundle exec rspec' | jq '.status'    # parse the JSON result
+  workspace run-and-report 'rake spec' | jq -r '.stderr'    # read only what the command wrote to stderr
+  workspace run-and-report 'exit 3'    # a failing command: the JSON says status 3 and workspace exits 3
+--- stderr
+--- end
+### workspace run-and-report --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace run-and-report '<command>'"],"description":"Run a shell command as a subprocess (bypassing tmux).\nCaptures stdout, stderr, and exit status, writes them under a UUID,\nprints the JSON result, and exits with the command's exit code.","options":[],"examples":[{"command":"workspace run-and-report 'echo hello'","scenario":"run a command and capture its output"},{"command":"workspace run-and-report 'rake spec'","scenario":"check the exit code in a script via $?"},{"command":"workspace run-and-report 'bundle exec rspec' | jq '.status'","scenario":"parse the JSON result"},{"command":"workspace run-and-report 'rake spec' | jq -r '.stderr'","scenario":"read only what the command wrote to stderr"},{"command":"workspace run-and-report 'exit 3'","scenario":"a failing command: the JSON says status 3 and workspace exits 3"}]}
+--- stderr
+--- end
+### workspace run-and-report --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace run-and-report --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace run-and-report
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace run-and-report '<command>'
+
+Run a shell command as a subprocess (bypassing tmux).
+Captures stdout, stderr, and exit status, writes them under a UUID,
+prints the JSON result, and exits with the command's exit code.
+
+Examples:
+  workspace run-and-report 'echo hello'    # run a command and capture its output
+  workspace run-and-report 'rake spec'    # check the exit code in a script via $?
+  workspace run-and-report 'bundle exec rspec' | jq '.status'    # parse the JSON result
+  workspace run-and-report 'rake spec' | jq -r '.stderr'    # read only what the command wrote to stderr
+  workspace run-and-report 'exit 3'    # a failing command: the JSON says status 3 and workspace exits 3
+--- end

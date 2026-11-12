@@ -1,0 +1,46 @@
+### workspace session-event --help
+--- exit 0
+--- stdout
+Usage: workspace session-event [options]
+
+Forward one coding-agent hook event, read as JSON on stdin, to that
+workspace's agent daemon. Installed as a hook by 'workspace init';
+not normally run by hand.
+
+Exits 2 when the caller's edit lock check fails (a PreToolUse for an
+editing tool while another agent holds the edit lock); a missing daemon
+otherwise never fails an agent's turn.
+
+Options:
+        --workspace NAME             Send to NAME instead of the pane's session
+        --agent KIND                 Read the payload as KIND's hook events: claude (the default) or codex
+
+These show what hooks send. Running one records it as a real event: a
+session start writes a ledger row, and in a tmux pane the event reaches
+the daemon.
+
+Examples:
+  workspace session-event <<< '{"hook_event_name":"SessionStart","session_id":"abc"}'    # as a Claude Code hook calls it, from the agent's pane
+  workspace session-event --workspace my-project <<< '{"hook_event_name":"Stop"}'    # from a tmux pane, send to my-project instead of the pane's own session
+  workspace session-event <<< '{"hook_event_name":"PreToolUse","tool_name":"Edit","cwd":"/src/api"}'    # in a repo where another agent holds the edit lock: exits 2, deny message on stderr
+  workspace session-event --agent=codex <<< '{"hook_event_name":"PermissionRequest","tool_name":"Bash"}'    # a Codex approval prompt, as Codex's hook sends it
+--- stderr
+--- end
+### workspace session-event --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace session-event [options]"],"description":"Forward one coding-agent hook event, read as JSON on stdin, to that\nworkspace's agent daemon. Installed as a hook by 'workspace init';\nnot normally run by hand.\n\nExits 2 when the caller's edit lock check fails (a PreToolUse for an\nediting tool while another agent holds the edit lock); a missing daemon\notherwise never fails an agent's turn.","options":[{"flags":"--workspace NAME","description":"Send to NAME instead of the pane's session"},{"flags":"--agent KIND","description":"Read the payload as KIND's hook events: claude (the default) or codex These show what hooks send. Running one records it as a real event: a session start writes a ledger row, and in a tmux pane the event reaches the daemon."}],"examples":[{"command":"workspace session-event <<< '{\"hook_event_name\":\"SessionStart\",\"session_id\":\"abc\"}'","scenario":"as a Claude Code hook calls it, from the agent's pane"},{"command":"workspace session-event --workspace my-project <<< '{\"hook_event_name\":\"Stop\"}'","scenario":"from a tmux pane, send to my-project instead of the pane's own session"},{"command":"workspace session-event <<< '{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Edit\",\"cwd\":\"/src/api\"}'","scenario":"in a repo where another agent holds the edit lock: exits 2, deny message on stderr"},{"command":"workspace session-event --agent=codex <<< '{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\"}'","scenario":"a Codex approval prompt, as Codex's hook sends it"}]}
+--- stderr
+--- end
+### workspace session-event --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace session-event --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end

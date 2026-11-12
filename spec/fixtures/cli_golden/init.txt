@@ -1,0 +1,42 @@
+### workspace init --help
+--- exit 0
+--- stdout
+Usage: workspace init [options]
+
+Set up workspace by installing tmuxinator templates and creating
+the config directory if it doesn't exist.
+
+Options:
+        --dry-run                    Show what would be done without making changes
+    -f, --force                      Overwrite existing templates even if they differ
+        --install-hooks              Install agent session hooks without asking
+        --no-install-hooks           Skip the agent session hooks step
+        --workflow-sources VALUE     Add workflows.sources entries to the global config (repeatable; commas or newlines separate several)
+
+Examples:
+  workspace init    # install templates and create the config directory
+  workspace init --dry-run    # preview what would be done
+  workspace init --force    # overwrite modified templates
+  workspace init --install-hooks    # install agent session hooks without prompting
+  workspace init --no-install-hooks    # skip the hooks step entirely
+  workspace init --workflow-sources acme/workflows/presets    # list a workflow source in the global config
+--- stderr
+--- end
+### workspace init --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace init [options]"],"description":"Set up workspace by installing tmuxinator templates and creating\nthe config directory if it doesn't exist.","options":[{"flags":"--dry-run","description":"Show what would be done without making changes"},{"flags":"-f, --force","description":"Overwrite existing templates even if they differ"},{"flags":"--install-hooks","description":"Install agent session hooks without asking"},{"flags":"--no-install-hooks","description":"Skip the agent session hooks step"},{"flags":"--workflow-sources VALUE","description":"Add workflows.sources entries to the global config (repeatable; commas or newlines separate several)"}],"examples":[{"command":"workspace init","scenario":"install templates and create the config directory"},{"command":"workspace init --dry-run","scenario":"preview what would be done"},{"command":"workspace init --force","scenario":"overwrite modified templates"},{"command":"workspace init --install-hooks","scenario":"install agent session hooks without prompting"},{"command":"workspace init --no-install-hooks","scenario":"skip the hooks step entirely"},{"command":"workspace init --workflow-sources acme/workflows/presets","scenario":"list a workflow source in the global config"}]}
+--- stderr
+--- end
+### workspace init --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace init --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end

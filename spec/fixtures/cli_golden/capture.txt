@@ -1,0 +1,64 @@
+### workspace capture --help
+--- exit 0
+--- stdout
+Usage: workspace capture [project] [options]
+
+Read a tmux pane's scrollback buffer and print it to stdout.
+Defaults to the bottommost pane and last 100 lines.
+
+Options:
+        --name WS                    The project, as an option (same as the positional [project])
+        --pane N                     Target pane: zero-based index, 'window.pane' (e.g. '0.1', from 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact
+        --lines N                    Number of lines from the bottom to capture (default: 100)
+        --all                        Capture full pane history up to tmux history-limit
+
+Examples:
+  workspace capture    # last 100 lines of the bottommost pane, project auto-detected
+  workspace capture scooter --lines 200    # last 200 lines of an explicit project
+  workspace capture --name scooter    # the same project, named with --name
+  workspace capture scooter --all    # full pane history
+  workspace capture scooter --pane 1    # specific pane by index
+  workspace capture scooter | grep ERROR    # composable — pipe to other tools
+--- stderr
+--- end
+### workspace capture --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace capture [project] [options]"],"description":"Read a tmux pane's scrollback buffer and print it to stdout.\nDefaults to the bottommost pane and last 100 lines.","options":[{"flags":"--name WS","description":"The project, as an option (same as the positional [project])"},{"flags":"--pane N","description":"Target pane: zero-based index, 'window.pane' (e.g. '0.1', from 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact"},{"flags":"--lines N","description":"Number of lines from the bottom to capture (default: 100)"},{"flags":"--all","description":"Capture full pane history up to tmux history-limit"}],"examples":[{"command":"workspace capture","scenario":"last 100 lines of the bottommost pane, project auto-detected"},{"command":"workspace capture scooter --lines 200","scenario":"last 200 lines of an explicit project"},{"command":"workspace capture --name scooter","scenario":"the same project, named with --name"},{"command":"workspace capture scooter --all","scenario":"full pane history"},{"command":"workspace capture scooter --pane 1","scenario":"specific pane by index"},{"command":"workspace capture scooter | grep ERROR","scenario":"composable — pipe to other tools"}]}
+--- stderr
+--- end
+### workspace capture --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace capture --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace capture
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace capture [project] [options]
+
+Read a tmux pane's scrollback buffer and print it to stdout.
+Defaults to the bottommost pane and last 100 lines.
+
+Options:
+        --name WS                    The project, as an option (same as the positional [project])
+        --pane N                     Target pane: zero-based index, 'window.pane' (e.g. '0.1', from 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact
+        --lines N                    Number of lines from the bottom to capture (default: 100)
+        --all                        Capture full pane history up to tmux history-limit
+
+Examples:
+  workspace capture    # last 100 lines of the bottommost pane, project auto-detected
+  workspace capture scooter --lines 200    # last 200 lines of an explicit project
+  workspace capture --name scooter    # the same project, named with --name
+  workspace capture scooter --all    # full pane history
+  workspace capture scooter --pane 1    # specific pane by index
+  workspace capture scooter | grep ERROR    # composable — pipe to other tools
+--- end

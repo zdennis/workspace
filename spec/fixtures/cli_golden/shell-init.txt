@@ -1,0 +1,42 @@
+### workspace shell-init --help
+--- exit 0
+--- stdout
+Usage: workspace shell-init zsh|bash
+
+Print shell functions for your rc file. Add this line (in zsh, after compinit):
+
+  eval "$(workspace shell-init zsh)"
+
+It defines wf, a short workflow start: wf [-w ID] [--dry-run] [--] REF|TEXT.
+The text is fixed; nothing from your workflows is put into it. There is no --json.
+
+Examples:
+  workspace shell-init zsh    # the text for zsh
+  workspace shell-init bash    # the text for bash 3.2 or later
+  workspace shell-init zsh > ~/.workspace.zsh    # write it once, source the file
+--- stderr
+--- end
+### workspace shell-init --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace shell-init zsh|bash"],"description":"","options":[],"examples":[{"command":"workspace shell-init zsh","scenario":"the text for zsh"},{"command":"workspace shell-init bash","scenario":"the text for bash 3.2 or later"},{"command":"workspace shell-init zsh > ~/.workspace.zsh","scenario":"write it once, source the file"}],"sections":[{"heading":"Print shell functions for your rc file. Add this line (in zsh, after compinit)","text":"eval \"$(workspace shell-init zsh)\"\n\nIt defines wf, a short workflow start: wf [-w ID] [--dry-run] [--] REF|TEXT.\nThe text is fixed; nothing from your workflows is put into it. There is no --json."}]}
+--- stderr
+--- end
+### workspace shell-init --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace shell-init --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace shell-init
+--- exit 1
+--- stdout
+--- stderr
+Usage: workspace shell-init zsh|bash
+--- end

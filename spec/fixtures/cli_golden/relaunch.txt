@@ -1,0 +1,40 @@
+### workspace relaunch --help
+--- exit 0
+--- stdout
+Usage: workspace relaunch [--json]
+
+Stop all active workspace projects and relaunch them.
+
+        --json                       Print one action document (see docs/README.json.md) instead of progress text;
+                                     the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did
+
+Examples:
+  workspace relaunch    # stop every active project and relaunch it (headless ones stay headless)
+  workspace relaunch --json    # a script relaunching everything and checking the result
+  workspace relaunch --json 2>/dev/null    # keep the progress text out of the way when piping the document
+--- stderr
+--- end
+### workspace relaunch --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace relaunch [--json]"],"description":"Stop all active workspace projects and relaunch them.\n\n        --json                       Print one action document (see docs/README.json.md) instead of progress text;\n                                     the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did","options":[],"examples":[{"command":"workspace relaunch","scenario":"stop every active project and relaunch it (headless ones stay headless)"},{"command":"workspace relaunch --json","scenario":"a script relaunching everything and checking the result"},{"command":"workspace relaunch --json 2>/dev/null","scenario":"keep the progress text out of the way when piping the document"}]}
+--- stderr
+--- end
+### workspace relaunch --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace relaunch --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace relaunch
+--- exit 1
+--- stdout
+--- stderr
+No active workspace projects to relaunch.
+--- end
