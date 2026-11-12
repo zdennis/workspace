@@ -16,7 +16,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill rename finish relaunch restore
       focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects go
-      capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
+      template capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log events
       whereis lookup dir alfred shell-init version help
@@ -24,7 +24,7 @@ module Workspace
 
     # The verbs a family parser takes, each to the key of its object in +families:+. {#run} hands
     # such a verb, its arguments and the run's {Invocation} to that family before its own case.
-    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent, "agent-run" => :agent_run, "handoff" => :agent_run, "pipeline" => :pipeline, "plan" => :plan_spine, "spine" => :plan_spine, "journey" => :plan_spine, "goal" => :plan_spine}.freeze
+    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent, "agent-run" => :agent_run, "handoff" => :agent_run, "pipeline" => :pipeline, "plan" => :plan_spine, "spine" => :plan_spine, "journey" => :plan_spine, "goal" => :plan_spine, "template" => :template}.freeze
 
     # @param workspace_name [Workspace::WorkspaceName, nil] settles a given workspace name to its on-disk spelling (nil leaves names as given)
     # @param config [Workspace::Config] configuration for path lookups
@@ -90,11 +90,7 @@ module Workspace
     # @param groups_command [Workspace::Commands::Groups, nil] pre-built `projects group` command
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
     # @param liveness [#call, nil] maps project names to true, false, or nil
-    # @param env [#[]] the environment `config edit` reads $VISUAL and $EDITOR from
-    # @param editor_launcher [#call, nil] runs an editor given its argv array (no shell) and returns
-    #   true when it exited 0; defaults to `system`
-    # @param interactive [#call, nil] says whether stdin and stdout are both terminals (`config edit` opens
-    #   no editor otherwise); defaults to a check of $stdin and $stdout
+    # @param env [#[]] the environment each run reads (the editor, for `config edit`, comes from it)
     #   (alive, dead, can't tell) for `list --liveness` and `status`; nil
     #   reports every project as unknown
     # @param window_liveness [#call, nil] maps project names to true, false, or
@@ -107,7 +103,7 @@ module Workspace
     # @param names [CLI::Names] the workspace-name and working-directory helpers, shared with the families
     # @param launcher [CLI::Launcher] what every launching verb shares
     # @param families [Hash{Symbol=>#call}] the family parser of each {ROUTES} key, called with the verb, its arguments and the {Invocation}
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -188,8 +184,6 @@ module Workspace
       @window_liveness = window_liveness || ->(entries) { entries.to_h { |name, _| [name, nil] } }
       @liveness = liveness || ->(names) { names.to_h { |name| [name, nil] } }
       @env = env
-      @editor_launcher = editor_launcher || ->(argv) { system(*argv) }
-      @interactive = interactive || -> { $stdin.tty? && $stdout.tty? }
       @common = common
       @names = names
       @launcher = launcher
@@ -558,7 +552,7 @@ module Workspace
           go              Start a workflow on a ticket, pull request, branch or free text; says which and why
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
-          init            Install tmuxinator templates and create config directory
+          init            Create the config directories and the global config
           inbox           Keep a durable list of things that need a person: add, list, show, edit, done, dismiss, reopen
           instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan, research, report, plan-review, spine, promote)
           kill            Kill a worktree project, remove its worktree and the branch start made (default: the current one)
@@ -604,6 +598,7 @@ module Workspace
           set-command     Set the shell command for a pane in a project config (--pane <N>)
           statusline      Render Claude Code's status line (install as its statusLine command)
           stop            Stop a workspace and its tmux session (default: the current one; --all for every active one)
+          template        List the tmuxinator templates and which one a new config uses (list), print their files (show), where they are (path), check one (validate) or compare two (diff)
           ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show), or list yours (list), in this workspace's project
           tile            Tile all windows for a project across the screen
           tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)
@@ -2915,14 +2910,16 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace init [options]"
         opts.separator ""
-        opts.separator "Set up workspace by installing tmuxinator templates and creating"
-        opts.separator "the config directory if it doesn't exist."
+        opts.separator "Set up workspace: create the config directories and the global config, and offer"
+        opts.separator "agent session hooks. Tmuxinator templates are built in (see 'workspace template list');"
+        opts.separator "an edited copy an earlier init installed keeps being used until you run"
+        opts.separator "'workspace template import'."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--dry-run", "Show what would be done without making changes") do
           dry_run = true
         end
-        opts.on("-f", "--force", "Overwrite existing templates even if they differ") do
+        opts.on("-f", "--force", "Accepted and ignored: init no longer copies templates") do
           force = true
         end
         opts.on("--install-hooks", "Install agent session hooks without asking") do
@@ -2936,9 +2933,8 @@ module Workspace
         end
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace init    # install templates and create the config directory"
+        opts.separator "  workspace init    # create the config directories and offer the agent hooks"
         opts.separator "  workspace init --dry-run    # preview what would be done"
-        opts.separator "  workspace init --force    # overwrite modified templates"
         opts.separator "  workspace init --install-hooks    # install agent session hooks without prompting"
         opts.separator "  workspace init --no-install-hooks    # skip the hooks step entirely"
         opts.separator "  workspace init --workflow-sources acme/workflows/presets    # list a workflow source in the global config"
@@ -3164,10 +3160,11 @@ module Workspace
         HelpPages.overview_verbs(HelpPages::LIBRARY).each { |line| opts.separator line }
         opts.separator "Run `workspace library VERB --help` for a verb's options."
         opts.separator ""
-        opts.on("--kind KIND", "agent, play, prompt, recipe, skill or spine (add: required; list: a filter);",
+        opts.on("--kind KIND", "agent, play, prompt, recipe, skill, spine or tmuxinator template (kind name: template) (add: required; list: a filter);",
           "add --kind recipe takes a YAML file of plays, packs, agents, skills, agent_kind and prompt, or of workflow and workflow_inputs (for 'start --recipe');",
           "add --kind skill takes a directory holding SKILL.md;",
-          "add --kind spine takes a folder of plan-spine stage files (a template for 'spine init')") { |v| options[:kind] = v }
+          "add --kind spine takes a folder of plan-spine stage files (a template for 'spine init');",
+          "add --kind template takes a folder holding project.yml and worktree.yml (a tmuxinator template set)") { |v| options[:kind] = v }
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }
         opts.on("--link", "add, update: store a symlink to PATH instead of a copy") { options[:link] = true }
         opts.on("--force", "add: replace an entry that has different content;", "install: replace a copy that has different content;", "uninstall: remove a copy that differs from the library entry") { options[:force] = true }
@@ -3281,7 +3278,7 @@ module Workspace
           end
         end
         library_action("library remove", options) do
-          @library_command.remove(ref, yes: options[:yes], dry_run: options[:dry_run], **where)
+          @library_command.remove(ref, yes: options[:yes], dry_run: options[:dry_run], force: options[:force], **where)
         end
       end
     rescue OptionParser::ParseError, UsageError => e
@@ -3302,7 +3299,7 @@ module Workspace
         result = yield
         next {exit_code: 0, results: [], status: "cancelled"} unless result
         row = action_row(result.workspace, result.outcome, message: result.message, entry: result.entry)
-        {exit_code: 0, results: [row], status: options[:dry_run] ? "dry_run" : nil}
+        {exit_code: 0, results: [row], status: options[:dry_run] ? "dry_run" : nil, warnings: result.respond_to?(:warnings) ? result.warnings.to_a : []}
       end
     end
 
@@ -4010,29 +4007,9 @@ module Workspace
         if json
           {results: [action_row(result.workspace, "ready", global: result.layer == "global", scope: result.scope, layer: result.layer, file: result.path, created: result.created)]}
         else
-          open_in_editor(result.path)
+          @common.open_in_editor(@invocation, result.path)
           nil
         end
-      end
-    end
-
-    # Runs $VISUAL or $EDITOR on +path+ without a shell. With neither set (blank counts as unset),
-    # under --no-input, or when stdin or stdout is not a terminal, prints the path and opens nothing.
-    def open_in_editor(path)
-      command = [@env["VISUAL"], @env["EDITOR"]].find { |value| !value.to_s.strip.empty? }
-      if command.nil? || (@input.respond_to?(:no_input?) && @input.no_input?) || !@interactive.call
-        @output.puts path
-        return
-      end
-      begin
-        argv = Shellwords.split(command)
-      rescue ArgumentError => e
-        raise Error.new("$EDITOR is not a valid command (#{e.message}). Edit #{path} directly.", code: "editor_failed", details: {path: path})
-      end
-      return @output.puts(path) if argv.empty?
-
-      unless @editor_launcher.call(argv + [path])
-        raise Error.new("Could not run the editor '#{argv.first}'. The file is at #{path}", code: "editor_failed", details: {path: path, editor: argv.first})
       end
     end
 
@@ -4960,7 +4937,7 @@ module Workspace
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace whereis    # find out where a symlinked install really lives"
-        opts.separator "  workspace whereis | xargs -I{} ls {}/lib/templates    # look at the project templates it ships"
+        opts.separator "  workspace whereis | xargs -I{} ls {}/lib/library/template/default    # look at the tmuxinator templates it ships"
         opts.separator "  workspace whereis | xargs -I{} git -C {} log -1 --oneline    # which commit this install runs"
       end
       parser.parse!(args)

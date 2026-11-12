@@ -40,12 +40,14 @@ module Workspace
       # @param main_agent [Workspace::MainAgent, nil] says which agent a config's pane runs; with +file_backup+,
       #   a config about to be started has its agent pane brought up to date. nil leaves configs alone
       # @param file_backup [Workspace::FileBackup, nil] copies a config aside before it is rewritten
+      # @param writer [Workspace::TmuxinatorConfigWriter, nil] rewrites a config's agent pane and keeps its render record
+      #   in step; nil builds one over +config+
       # @param sleeper [#call] sleeps the given seconds, injected for fast tests
       # @param clock [#call] monotonic seconds, bounding the wait for sessions
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
-        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, agent_commands: nil, main_agent: nil, file_backup: nil, event_log: nil, sleeper: ->(seconds) { sleep(seconds) },
+        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, agent_commands: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, sleeper: ->(seconds) { sleep(seconds) },
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
@@ -58,6 +60,7 @@ module Workspace
         @agent_ensurer = agent_ensurer || EnsureAgent.new(config: config, pipeline_config: @pipeline_config, sleeper: sleeper, clock: clock, error_output: error_output)
         @agent_readiness = agent_readiness || AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new)
         @prompt_timeout = prompt_timeout
+        @writer = writer || TmuxinatorConfigWriter.new(config: config)
         @window_positions = window_positions
         @restore_enabled = restore_enabled
         @binder = binder
@@ -444,7 +447,12 @@ module Workspace
         stale = @project_config.stale_agent_pane(project, @main_agent.kind(project))
         return unless stale
         backup = @file_backup.backup(stale[:path], quiet: true)
-        @project_config.write_config(stale[:path], stale[:content])
+        kind = @main_agent.kind(project)
+        written = @writer.patch(project, inputs: ->(text) { {agent_kind: kind, agent_command: @project_config.agent_pane_text(text, project)} }) do |text|
+          rewritten = @project_config.rewrite_agent_pane(text, kind, project)
+          rewritten unless rewritten == text
+        end
+        return unless written
         @event_log&.record(type: "agent_pane_refreshed", project: project,
           data: {"workspace" => project, "path" => stale[:path], "running" => stale[:running], "wanted" => stale[:wanted], "backup" => backup})
         message = "#{project}: agent pane now runs #{stale[:wanted]}"

@@ -201,7 +201,7 @@ module Workspace
               return 0
             fi
           elif [ "$CURRENT" -eq 2 ]; then
-            wf_list=(init doctor launch start stop add add-project kill rename finish relaunch restore focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects go capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step run-and-report report-run-status layout config tmux statusline current list-projects list status repair cleanup prune set-command event-log events whereis lookup dir alfred shell-init version help)
+            wf_list=(init doctor launch start stop add add-project kill rename finish relaunch restore focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects go template capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step run-and-report report-run-status layout config tmux statusline current list-projects list status repair cleanup prune set-command event-log events whereis lookup dir alfred shell-init version help)
             compadd -a wf_list
             return 0
           elif [ "${words[2]}" = workflow ]; then
@@ -241,7 +241,7 @@ module Workspace
               wf_list="$(_workspace_wf_ids)"
             fi
           elif [ "$COMP_CWORD" -eq 1 ]; then
-            wf_list="init doctor launch start stop add add-project kill rename finish relaunch restore focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects go capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step run-and-report report-run-status layout config tmux statusline current list-projects list status repair cleanup prune set-command event-log events whereis lookup dir alfred shell-init version help"
+            wf_list="init doctor launch start stop add add-project kill rename finish relaunch restore focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects go template capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step run-and-report report-run-status layout config tmux statusline current list-projects list status repair cleanup prune set-command event-log events whereis lookup dir alfred shell-init version help"
           elif [ "${COMP_WORDS[1]}" = workflow ]; then
             if [ "$COMP_CWORD" -eq 2 ]; then
               wf_list="list show validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep resume cancel approve reject"

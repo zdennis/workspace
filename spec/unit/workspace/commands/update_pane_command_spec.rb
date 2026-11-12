@@ -7,6 +7,7 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
   let(:config) do
     c = Workspace::Config.new(workspace_dir: tmpdir)
     allow(c).to receive(:tmuxinator_dir).and_return(tmuxinator_dir)
+    allow(c).to receive(:render_state_dir).and_return(File.join(tmpdir, "render"))
     allow(c).to receive(:config_path_for) { |name| File.join(tmuxinator_dir, "workspace.#{name}.yml") }
     c
   end
@@ -14,8 +15,22 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
     pc = instance_double(Workspace::ProjectConfig)
     allow(pc).to receive(:exists?).with("myproject").and_return(true)
     allow(pc).to receive(:exists?).with("missing").and_return(false)
+    allow(pc).to receive(:agent_pane_text) { |content, _name| content[/- (claude.*)$/, 1] }
     pc
   end
+  let(:reproduces) { false }
+  let(:template_status) { instance_double(Workspace::TemplateStatus, reproduces?: reproduces) }
+  let(:before_patch) { [] }
+  let(:writer_class) do
+    hooks = before_patch
+    Class.new(Workspace::TmuxinatorConfigWriter) do
+      define_method(:patch) do |*args, **kwargs, &block|
+        hooks.each(&:call)
+        super(*args, **kwargs, &block)
+      end
+    end
+  end
+  let(:writer) { writer_class.new(config: config) }
   let(:output) { StringIO.new }
   let(:input) { StringIO.new }
 
@@ -23,6 +38,8 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
     described_class.new(
       config: config,
       project_config: project_config,
+      writer: writer,
+      template_status: template_status,
       output: output,
       input: input
     )
@@ -55,6 +72,85 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
   end
 
   before { File.write(config_path, base_config) }
+
+  describe "the render record" do
+    before do
+      writer.write("myproject", base_config, kind: :worktree, template: "default", template_sha: "t",
+        inputs: {workspace_name: "myproject", agent_kind: "claude", agent_command: "claude --continue || claude"})
+    end
+
+    context "when a render today writes the new text" do
+      let(:reproduces) { true }
+
+      it "stays current and takes the new agent pane text" do
+        command.call(project: "myproject", command: "claude --model opus", pane_index: 2)
+
+        expect(writer.current?("myproject")).to be(true)
+        expect(writer.record("myproject").inputs).to include(agent_kind: "claude", agent_command: "claude --model opus")
+      end
+    end
+
+    it "leaves the record as it is for an agent command a render does not write" do
+      recorded = writer.record("myproject")
+
+      command.call(project: "myproject", command: "claude --model opus", pane_index: 2)
+
+      expect(File.read(config_path)).to include("claude --model opus")
+      expect(writer.record("myproject")).to eq(recorded)
+      expect(writer.current?("myproject")).to be(false)
+    end
+
+    it "edits the text the writer reads when the file changed after the caller's read" do
+      allow(template_status).to receive(:reproduces?).and_return(true)
+      before_patch << -> { File.write(config_path, base_config.sub("echo 'Ready'", "echo 'Changed'")) }
+
+      command.call(project: "myproject", command: "claude --model opus", pane_index: 2)
+
+      expect(File.read(config_path)).to include("echo 'Changed'").and include("claude --model opus")
+      expect(writer.current?("myproject")).to be(false) # the file was edited before the patch, so it stays modified
+    end
+
+    it "leaves the record as it is for an edit of another pane, so the file reads as modified" do
+      recorded = writer.record("myproject")
+
+      command.call(project: "myproject", command: "vim .", pane_index: 3)
+
+      expect(File.read(config_path)).to include("vim .")
+      expect(writer.record("myproject")).to eq(recorded)
+      expect(writer.current?("myproject")).to be(false)
+    end
+
+    it "leaves the record as it is for a new pane, even an agent command" do
+      input.string = "y\n"
+      recorded = writer.record("myproject")
+
+      command.call(project: "myproject", command: "claude --model opus", pane_index: 4)
+
+      expect(File.read(config_path)).to include("claude --model opus")
+      expect(writer.record("myproject")).to eq(recorded)
+    end
+
+    it "leaves the record as it is when the agent pane is replaced by a command that is not an agent" do
+      recorded = writer.record("myproject")
+      allow(project_config).to receive(:agent_pane_text) { |content, _name| content[/- (claude.*)$/, 1] }
+
+      command.call(project: "myproject", command: "vim .", pane_index: 2)
+
+      expect(File.read(config_path)).to include("vim .")
+      expect(File.read(config_path)).not_to include("claude --continue")
+      expect(writer.record("myproject")).to eq(recorded)
+      expect(writer.current?("myproject")).to be(false)
+    end
+
+    it "writes the config alone when it has no render record" do
+      File.delete(writer.record_path("myproject"))
+
+      command.call(project: "myproject", command: "vim .", pane_index: 3)
+
+      expect(File.read(config_path)).to include("vim .")
+      expect(File.exist?(writer.record_path("myproject"))).to be(false)
+    end
+  end
 
   describe "#call" do
     context "when project does not exist" do

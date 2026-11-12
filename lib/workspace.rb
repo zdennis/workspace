@@ -143,10 +143,12 @@ require_relative "workspace/push_failure"
 require_relative "workspace/prompt_input"
 require_relative "workspace/warn"
 require_relative "workspace/core/id_patterns"
+require_relative "workspace/core/template_variables"
 require_relative "workspace/core/logger"
 require_relative "workspace/config"
 require_relative "workspace/core/config_schema"
 require_relative "workspace/config_schema_docs"
+require_relative "workspace/template_variables_docs"
 require_relative "workspace/core/config_layering"
 require_relative "workspace/event_log"
 require_relative "workspace/tool_input_summary"
@@ -177,6 +179,7 @@ require_relative "workspace/pane_locator"
 require_relative "workspace/pane_bindings"
 require_relative "workspace/library_store"
 require_relative "workspace/recipe_file"
+require_relative "workspace/legacy_tmuxinator_templates"
 require_relative "workspace/library"
 require_relative "workspace/library_install_dirs"
 require_relative "workspace/library_installer"
@@ -187,8 +190,15 @@ require_relative "workspace/agent_stopper"
 require_relative "workspace/commands_config"
 require_relative "workspace/notes_config"
 require_relative "workspace/spine_config"
+require_relative "workspace/tmuxinator_template_config"
+require_relative "workspace/template_validator"
+require_relative "workspace/template_in_use"
+require_relative "workspace/text_diff"
 require_relative "workspace/main_agent"
 require_relative "workspace/instruction_composer"
+require_relative "workspace/tmuxinator_config_writer"
+require_relative "workspace/tmuxinator_backup_store"
+require_relative "workspace/tmuxinator_backup_config"
 require_relative "workspace/project_config"
 require_relative "workspace/protected_branch"
 require_relative "workspace/osascript_runner"
@@ -219,6 +229,11 @@ require_relative "workspace/workspace_checkout"
 require_relative "workspace/ticket_source"
 require_relative "workspace/project_catalog"
 require_relative "workspace/status_scope"
+require_relative "workspace/template_selection"
+require_relative "workspace/template_status"
+require_relative "workspace/template_batch_files"
+require_relative "workspace/template_apply"
+require_relative "workspace/template_adopt"
 require_relative "workspace/project_groups"
 require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/agent_message_client"
@@ -440,6 +455,8 @@ require_relative "workspace/commands/skills"
 require_relative "workspace/delivery_facts"
 require_relative "workspace/goal_state"
 require_relative "workspace/commands/goal"
+require_relative "workspace/commands/template"
+require_relative "workspace/commands/template_backups"
 require_relative "workspace/commands/spine"
 require_relative "workspace/commands/spine_init"
 require_relative "workspace/commands/spine_start"
@@ -494,6 +511,7 @@ require_relative "workspace/cli/agent"
 require_relative "workspace/cli/agent_run"
 require_relative "workspace/cli/pipeline"
 require_relative "workspace/cli/plan_spine"
+require_relative "workspace/cli/template"
 require_relative "workspace/cli"
 
 module Workspace
@@ -766,6 +784,7 @@ module Workspace
   # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
   # @param launchctl [#call, nil] runs `launchctl` for the sweep schedule: takes an argument array, answers `[output, exit_code]` (nil code: could not run); nil runs the real one
   # @param exit_handler [#exit, nil] receives the process exit; nil uses Kernel (specs pass a recorder)
+  # @param editor_launcher [#call, nil] runs the editor of `config edit` and `template edit` given its argv array (no shell), answering true when it exited 0; nil runs `system`
   # @param tmux [Workspace::Tmux, nil] the tmux adapter every collaborator shares; nil builds the real one
   # @param task_store [Workspace::TaskStore, nil] the task store `start`, `finish`, `kill` and `rename` share; nil builds the one over the state directory
   # @param skill_source [Workspace::SkillSource, nil] where skill links and the sweep schedule's program come from; nil builds one over the installation directory
@@ -773,7 +792,7 @@ module Workspace
   # @param osascript [#call, nil] runs the AppleScript `ITerm` and `WindowManager` send: `(script)` answering an `OsascriptRunner::Result`; nil runs the real `osascript`
   # @param ui_osascript [#call, nil] runs the JXA script of `ui status`, the same way; nil runs the real `osascript -l JavaScript`
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil, osascript: nil, ui_osascript: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, editor_launcher: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil, osascript: nil, ui_osascript: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -792,7 +811,11 @@ module Workspace
     window_manager = WindowManager.new(config: config, logger: logger, osascript: osascript)
     git = Git.new(output: output, input: input, logger: logger)
     agent_commands = AgentCommands.new(config_resolver: config_resolver)
-    project_config = ProjectConfig.new(config: config, git: git, output: output, agent_commands: agent_commands)
+    tmuxinator_config_writer = TmuxinatorConfigWriter.new(config: config)
+    library = nil # built below over project_config, which resolves its tmuxinator templates through it
+    # The `-> { library }` lambda is nil until Library.new below: ProjectConfig must not call it while it is constructed.
+    project_config = ProjectConfig.new(config: config, git: git, output: output, agent_commands: agent_commands,
+      writer: tmuxinator_config_writer, library: -> { library })
     window_positions = WindowPositions.new(dir: config.state_dir, logger: logger)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, width_percent: -> { project_settings.load_global.dig("launch", "window_width_percent") }, output: output, error_output: error_output, logger: logger)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
@@ -809,16 +832,19 @@ module Workspace
     agent_labels = AgentLabels.new(process_tree: ProcessTree.new(logger: logger))
     agent_readiness = AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new(logger: logger), logger: logger)
     name_migration = NameMigration.new(config: config, project_config: project_config, tmux: tmux, state: state, event_log: event_log,
-      project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) })
+      project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) }, writer: tmuxinator_config_writer)
     ensure_agent_command = Commands::EnsureAgent.new(config: config, pipeline_config: pipeline_config, error_output: error_output,
       name_migration: name_migration)
     pane_locator = PaneLocator.new(tmux: tmux)
     pane_bindings = PaneBindings.new(path: config.pane_bindings_path, logger: logger, error_output: error_output)
     binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output)
     main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
-    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, event_log: event_log, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
+    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new(rev_parse: git.method(:path_of))
-    library = Library.new(config: config, lineage: lineage, project_config: project_config)
+    library = Library.new(config: config, lineage: lineage, project_config: project_config,
+      template_config: TmuxinatorTemplateConfig.new(config_resolver: config_resolver))
+    template_validator = TemplateValidator.new(project_config: project_config)
+    template_in_use = TemplateInUse.new(template_config: TmuxinatorTemplateConfig.new(config_resolver: config_resolver), project_config: project_config)
     library_installer = LibraryInstaller.new(git: git, dirs: LibraryInstallDirs.new(config_resolver: config_resolver))
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
       git_exclude: GitExclude.new(git: git), output: output)
@@ -855,14 +881,15 @@ module Workspace
     workflow_source_installer = WorkflowSourceInstaller.new(config: config, source_dirs: workflow_source_dirs, state_dir: config.state_dir,
       fetcher: WorkflowSourceFetcher.new(runner: workflow_source_runner || WorkflowSourceFetcher.method(:run)))
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, workflow_installer: workflow_source_installer,
-      agent_commands: agent_commands, output: output, error_output: error_output, input: input)
+      agent_commands: agent_commands, library: library, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
-    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), output: output, input: input)
-    remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, output: output, input: input)
+    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), locks: name_migration, output: output, input: input)
+    remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, locks: name_migration, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
-    update_pane_command = Commands::UpdatePaneCommand.new(config: config, project_config: project_config, output: output, input: input)
+    template_status = TemplateStatus.new(library: library, project_config: project_config, writer: tmuxinator_config_writer)
+    update_pane_command = Commands::UpdatePaneCommand.new(config: config, project_config: project_config, writer: tmuxinator_config_writer, template_status: template_status, output: output, input: input)
     run_command = Commands::Run.new(
       tmux: tmux,
       agent_labels: agent_labels,
@@ -951,7 +978,7 @@ module Workspace
     ui_command = Commands::Ui.new(output: output, notes: notes_command, app_probe: ui_app_probe)
     workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
     library_command = Commands::Library.new(library: library, output: output, input: input, event_log: event_log,
-      installer: library_installer, checkout: workspace_checkout)
+      installer: library_installer, checkout: workspace_checkout, template_validator: template_validator, template_in_use: template_in_use)
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
     workflow_evidence = WorkflowEvidence.new(dir: config.workflow_evidence_dir)
@@ -1047,7 +1074,7 @@ module Workspace
     )
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
       log_path: ->(workspace) { config.agent_log_path(workspace) }, logger: logger, error_output: error_output)
-    kill_command = Commands::Kill.new(git: git, pr_status: PullRequestStatus.new, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, tmux: tmux, output: output, input: input)
+    kill_command = Commands::Kill.new(git: git, pr_status: PullRequestStatus.new, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, tmux: tmux, locks: name_migration, output: output, input: input)
     pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
     rebase_command = Commands::Rebase.new(git: git, checkout: workspace_checkout, output: output)
     push_command = Commands::Push.new(git: git, checkout: workspace_checkout, pr_status: PullRequestStatus.new, output: output)
@@ -1112,7 +1139,11 @@ module Workspace
       plan_command: plan_command, plan_dispatch: plan_dispatch_command, workspace_at: workspace_at, locks: held_locks, event_log: event_log, env: env,
       output: output, error_output: error_output
     )
-    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, event_log: event_log, skills: skills_command, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), output: output, env: env)
+    template_apply = TemplateApply.new(status: template_status, writer: tmuxinator_config_writer,
+      backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer), locks: name_migration,
+      project_config: project_config, tmux: tmux, differ: TextDiff.new,
+      retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output))
+    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, library: library, template_validator: template_validator, template_status: template_status, template_apply: template_apply, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), output: output, env: env)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
     )
@@ -1134,7 +1165,7 @@ module Workspace
       state: state, tmux: tmux, git: git, lock_namespace: lock_namespace, lock_holder: lock_holder,
       hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, project_config: project_config, agent_command_check: AgentCommandCheck.new, project_detector: project_detector, config_resolver: config_resolver, output: output, error_output: error_output)
-    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library, catalog: workflow_catalog)
+    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library, catalog: workflow_catalog, template_validator: template_validator)
     tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands)
     agent_resume_command = AgentResumeCommand.new(tmuxinator_report: tmuxinator_report, agent_commands: agent_commands)
     restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,
@@ -1246,9 +1277,10 @@ module Workspace
     rename_command = Commands::Rename.new(plan: rename_plan, journal: rename_journal, git: git, config: config, project_config: project_config,
       project_settings: project_settings, tmux: tmux, state: state, notes: notes_command, name_migration: name_migration, task_store: task_store,
       inbox_store_factory: inbox_store_factory, session_ledger: session_ledger, pane_bindings: pane_bindings, event_log: event_log,
-      project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) }, error_output: error_output)
+      project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) }, error_output: error_output,
+      writer: tmuxinator_config_writer)
 
-    common = CLI::Common.new
+    common = CLI::Common.new(input: input, editor_launcher: editor_launcher)
     working_dir = Dir.pwd
     names = CLI::Names.new(project_config: project_config, project_detector: project_detector, lineage: lineage, working_dir: working_dir, workspace_name: workspace_name)
     launcher = CLI::Launcher.new(project_config: project_config, launch_command: launch_command, launch_mode: launch_mode, state: state, project_settings: project_settings,
@@ -1265,6 +1297,19 @@ module Workspace
       agent_executables_command: agent_executables_command, agent_run: ->(args, invocation) { agent_run_family.prompt(args, invocation) },
       project_detector: project_detector, common: common, names: names, working_dir: working_dir)
     pipeline_family = CLI::Pipeline.new(config: config, agent_client: agent_client, common: common, names: names)
+    template_selection = TemplateSelection.new(status_scope: status_scope, catalog: project_catalog, project_config: project_config)
+    template_command = Commands::Template.new(library: library, project_config: project_config, writer: tmuxinator_config_writer,
+      template_validator: template_validator, differ: TextDiff.new, config_command: config_command,
+      selection: template_selection,
+      status: template_status, template_in_use: template_in_use, tmuxinator_dir: config.tmuxinator_dir,
+      backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer),
+      adopt: TemplateAdopt.new(library: library, project_config: project_config, writer: tmuxinator_config_writer, main_agent: main_agent, locks: name_migration),
+      apply: template_apply,
+      output: output, error_output: error_output)
+    template_backups_command = Commands::TemplateBackups.new(backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer),
+      selection: template_selection, locks: name_migration, project_config: project_config, writer: tmuxinator_config_writer,
+      retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output), library: library, template_in_use: template_in_use, output: output)
+    template_family = CLI::Template.new(template_command: template_command, backups_command: template_backups_command, common: common, names: names, working_dir: working_dir)
     plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,
       spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,
       status_scope: status_scope, project_detector: project_detector, launcher: launcher, common: common, names: names, working_dir: working_dir)
@@ -1273,7 +1318,7 @@ module Workspace
       common: common,
       names: names,
       launcher: launcher,
-      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family},
+      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family, template: template_family},
       working_dir: working_dir,
       config: config,
       state: state,

@@ -82,6 +82,7 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["agent-run"].keys).to eq(["command", "inject", "restart", "send", "queue", "queue list", "queue cancel", "examples"])
       expect(pages["handoff"].keys).to eq(%w[check new])
       expect(pages["skills"].keys).to eq(%w[install uninstall])
+      expect(pages["template"].keys).to eq(Workspace::CLI::Template::SUBCOMMANDS.keys)
     end
 
     it "name the verbs of lock and dev, the hidden dev __run apart" do
@@ -141,7 +142,7 @@ RSpec.describe Workspace::HelpPages do
     checked = {
       "plan" => nil, "daemon" => nil, "workflow" => nil, "library" => nil, "spine" => nil, "binding" => nil,
       "step" => nil, "review" => nil, "pr" => nil, "ticket" => nil, "goal" => nil, "notes" => nil,
-      "instructions" => nil, "ui" => nil, "skills" => nil, "event-log" => ["show"],
+      "instructions" => nil, "ui" => nil, "skills" => nil, "template" => nil, "event-log" => ["show"],
       "projects" => %w[show members stop kill]
     }
     checked.each do |command, only|

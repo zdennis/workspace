@@ -39,19 +39,9 @@ module Workspace
       File.expand_path("~/.workspace-events.jsonl")
     end
 
-    # @return [String] path to the source templates directory
+    # @return [String] path to the shipped default tmuxinator template set (until the library resolves it)
     def templates_dir
-      File.join(workspace_dir, "lib", "templates")
-    end
-
-    # @return [String] path to the installed project template
-    def project_template_path
-      File.join(tmuxinator_dir, "workspace.project-template.yml")
-    end
-
-    # @return [String] path to the installed worktree project template
-    def worktree_template_path
-      File.join(tmuxinator_dir, "workspace.project-worktree-template.yml")
+      File.join(workspace_dir, "lib", "library", "template", "default")
     end
 
     # @return [String] path to the workspace config directory
@@ -282,6 +272,22 @@ module Workspace
     # @return [String] path to the directory holding every daemon's hook event file
     def hook_events_dir
       File.join(state_dir, ".events")
+    end
+
+    # Dotted, like {#task_dir}, so no workspace name can produce it. Holds one render record per
+    # tmuxinator config (see {TmuxinatorConfigWriter}).
+    #
+    # @return [String] path to the directory of render records
+    def render_state_dir
+      File.join(state_dir, ".render")
+    end
+
+    # Holds one directory per batch of tmuxinator config backups, each with its `manifest.json`. `backups`
+    # is not a workspace-name-shaped directory of its own, so no workspace's state directory collides with it.
+    #
+    # @return [String] path to the directory of tmuxinator backup batches
+    def tmuxinator_backups_dir
+      File.join(state_dir, "backups", "tmuxinator")
     end
 
     # Dotted, like {#task_dir}, so no workspace name can produce it. Holds one journal per rename under way.

@@ -31,8 +31,10 @@ module Workspace
     # @param project_config [Workspace::ProjectConfig] lists the workspaces a change reaches and finds a checkout's root
     # @param notes_dir [Workspace::NotesDir] computes the `effective_path` of the notes keys
     # @param library [Workspace::Library, nil] finds the spine templates `spine.template` names; nil checks none
+    # @param template_validator [Workspace::TemplateValidator, nil] checks the tmuxinator template sets `tmuxinator.template` names; nil checks only that they exist
     # @param catalog [Workspace::WorkflowCatalog, nil] finds the workflows `workflows.default` and `workflows.by_ref.*` name; nil checks none
-    def initialize(project_settings:, project_config:, notes_dir:, library: nil, catalog: nil)
+    def initialize(project_settings:, project_config:, notes_dir:, library: nil, catalog: nil, template_validator: nil)
+      @template_validator = template_validator
       @library = library
       @catalog = catalog
       @project_settings = project_settings
@@ -344,7 +346,7 @@ module Workspace
       scope = (file.layer == "global") ? :global : :project
       declared = declared_keys(file.layer, scope)
       read_here = declared.reject { |key| unread_here?(key, file) }
-      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + spine_template_problems(file, scan, read_here) + default_workflow_problems(file, read_here, scan) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
+      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + spine_template_problems(file, scan, read_here) + tmuxinator_template_problems(file, scan, read_here) + default_workflow_problems(file, read_here, scan) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
     end
 
     # The keys a file of this layer holds: those of its scope, plus any layered key that may be set in the layer.
@@ -417,6 +419,32 @@ module Workspace
       raise unless e.code == "unknown_template"
       [located(file, "warning", "unknown_spine_template", "spine.template",
         "spine.template names '#{name}', and no spine template has that name. List them with: workspace library list --kind spine")]
+    end
+
+    # A `tmuxinator.template` or `tmuxinator.worktree_template` that names no `template` library set (a config
+    # would be made with `unknown_template`), or a set that does not validate. Warnings, as the set may be
+    # installed later or fixed; the set is looked up for the workspace the file belongs to.
+    def tmuxinator_template_problems(file, scan, declared)
+      return [] unless @library
+      declared.filter_map do |key|
+        next unless key.name.start_with?("tmuxinator.") && key.name.end_with?("template")
+        name = dig(file.data, key.name.split("."))
+        next unless name.is_a?(String) && name.match?(IdPatterns::LIBRARY_NAME)
+        tmuxinator_set_problem(file, scan, key.name, name)
+      end
+    end
+
+    def tmuxinator_set_problem(file, scan, key, name)
+      entry = @library.tmuxinator_set(name, workspace: scan.workspace)
+      return unless @template_validator
+      result = @template_validator.call_set(entry["path"])
+      return if result.errors.empty?
+      located(file, "warning", "invalid_tmuxinator_template", key,
+        "#{key} names '#{name}', which is not a valid tmuxinator template: #{result.errors.map(&:to_s).join("; ")}. Check it with: workspace template validate #{name}")
+    rescue Workspace::Error => e
+      raise unless e.code == "unknown_template"
+      located(file, "warning", "unknown_tmuxinator_template", key,
+        "#{key} names '#{name}', and no tmuxinator template has that name. List them with: workspace template list")
     end
 
     # A `workflows.default` or `workflows.by_ref.<kind>` that names no workflow: `workflow start` would answer

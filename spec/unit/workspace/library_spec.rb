@@ -120,6 +120,19 @@ RSpec.describe Workspace::Library do
       expect { library.resolve("", [global]) }.to raise_error(Workspace::UsageError, /not a valid library name/)
     end
   end
+  describe "the shipped default tmuxinator template set" do
+    let(:config) { instance_double(Workspace::Config, library_dir: File.join(@dir, "library"), builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library")) }
+
+    it "is the built-in template/default, readable, holding project.yml and worktree.yml" do
+      resolve_cwd_to("app")
+
+      entry = library.resolve("template/default", library.stores(cwd: "/work/app"))
+
+      expect(entry).to include("ref" => "template/default", "scope" => "builtin", "readable" => true)
+      expect(entry["files"]).to include("project.yml", "worktree.yml", "README.md")
+    end
+  end
+
   describe "#play and #play_prompt" do
     let(:global) { library.global_store }
     let(:project) { library.project_store("app") }
@@ -471,7 +484,7 @@ RSpec.describe Workspace::Library do
 
       expect { library.spine_template("other", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e|
         expect(e.code).to eq("unknown_template")
-        expect(e.details).to eq("template" => "other", "scopes" => ["project:app", "global", "builtin"])
+        expect(e.details).to eq("template" => "other", "kind" => "spine", "scopes" => ["project:app", "global", "builtin"])
       }
       expect { library.spine_template("Bad Name", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_template") }
     end
@@ -481,6 +494,131 @@ RSpec.describe Workspace::Library do
       File.symlink(File.join(@dir, "gone"), global.path_for("spine", "dead"))
 
       expect { library.spine_template("dead", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+    end
+  end
+
+  describe "#tmuxinator_template" do
+    let(:tmuxinator_dir) { File.join(@dir, "tmuxinator") }
+    let(:template_config) { instance_double(Workspace::TmuxinatorTemplateConfig) }
+    let(:chosen) { {project: {"name" => "default", "source" => "default"}, worktree: {"name" => "default", "source" => "default"}} }
+    subject(:library) { described_class.new(config: config, lineage: lineage, project_config: project_config, template_config: template_config) }
+
+    before do
+      allow(config).to receive(:tmuxinator_dir).and_return(tmuxinator_dir)
+      allow(template_config).to receive(:name) { |kind, **| chosen.fetch(kind) }
+      set(File.join(@dir, "builtin"), "default")
+    end
+
+    def set(store_dir, name)
+      dir = File.join(store_dir, "template", name)
+      FileUtils.mkdir_p(dir)
+      %w[project worktree].each { |kind| File.write(File.join(dir, "#{kind}.yml"), "#{name} #{kind}\n") }
+      dir
+    end
+
+    def pick(name, source: "global", kinds: %i[project worktree])
+      kinds.each { |kind| chosen[kind] = {"name" => name, "source" => source} }
+    end
+
+    def install(kind, text)
+      FileUtils.mkdir_p(tmuxinator_dir)
+      File.write(Workspace::LegacyTmuxinatorTemplates.path(kind, tmuxinator_dir), text)
+    end
+
+    def shipped(kind) = File.read(File.join(PROJECT_ROOT, "lib", "library", "template", "default", "#{kind}.yml"))
+
+    it "answers the built-in default's file for each kind" do
+      expect(library.tmuxinator_template(:project, workspace: "app")).to eq(
+        "ref" => "template/default", "name" => "default", "scope" => "builtin", "source" => "default",
+        "path" => File.join(@dir, "builtin", "template", "default", "project.yml")
+      )
+      expect(library.tmuxinator_template(:worktree, workspace: "app.worktree-x")["path"]).to end_with("default/worktree.yml")
+    end
+
+    it "layers the workspace's project over global over built-in" do
+      pick("team")
+      set(File.join(@dir, "builtin"), "team")
+      expect(library.tmuxinator_template(:project, workspace: "app")["scope"]).to eq("builtin")
+
+      set(File.join(@dir, "library", "global"), "team")
+      expect(library.tmuxinator_template(:project, workspace: "app")["scope"]).to eq("global")
+
+      set(File.join(@dir, "library", "projects", "app"), "team")
+      expect(library.tmuxinator_template(:worktree, workspace: "app.worktree-x")).to include("scope" => "project", "source" => "global")
+      expect(library.tmuxinator_template(:project, workspace: "unknown")["scope"]).to eq("global")
+    end
+
+    it "raises unknown_template with details.kind tmuxinator for a name no set has" do
+      pick("gone", source: "project")
+
+      expect { library.tmuxinator_template(:project, workspace: "app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_template")
+        expect(e.details).to eq("template" => "gone", "kind" => "tmuxinator", "scopes" => ["project:app", "global", "builtin"], "source" => "project")
+      }
+    end
+
+    it "raises library_source_missing for a set without the kind's file" do
+      pick("half")
+      dir = set(File.join(@dir, "library", "global"), "half")
+      File.delete(File.join(dir, "worktree.yml"))
+
+      expect(library.tmuxinator_template(:project, workspace: "app")["name"]).to eq("half")
+      expect { library.tmuxinator_template(:worktree, workspace: "app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("library_source_missing")
+        expect(e.details).to eq("ref" => "template/half/worktree.yml", "path" => File.join(dir, "worktree.yml"))
+        expect(e.message).to include(File.join(dir, "worktree.yml"))
+      }
+    end
+
+    describe "the legacy fallback" do
+      def fresh = described_class.new(config: config, lineage: lineage, project_config: project_config, template_config: template_config)
+
+      it "renders from an edited installed copy while no key is set" do
+        install(:project, shipped(:project) + "# mine\n")
+
+        expect(fresh.tmuxinator_template(:project, workspace: "app")).to eq(
+          "ref" => "legacy", "name" => "legacy", "scope" => "legacy", "source" => "legacy",
+          "path" => File.join(tmuxinator_dir, "workspace.project-template.yml")
+        )
+      end
+
+      it "is off for a stock copy of today's version or an older one" do
+        install(:project, shipped(:project))
+        install(:worktree, File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "legacy_templates", "worktree.yml")))
+
+        expect(fresh.tmuxinator_template(:project, workspace: "app")["name"]).to eq("default")
+        expect(fresh.tmuxinator_template(:worktree, workspace: "app")["name"]).to eq("default")
+      end
+
+      it "is off with no installed copies" do
+        expect(fresh.tmuxinator_template(:project, workspace: "app")["name"]).to eq("default")
+      end
+
+      it "is off once a key names a set, at any layer" do
+        install(:project, "edited\n")
+        pick("default", source: "worktree")
+
+        expect(fresh.tmuxinator_template(:project, workspace: "app")).to include("name" => "default", "scope" => "builtin")
+      end
+
+      it "is decided per kind" do
+        install(:project, shipped(:project))
+        install(:worktree, "edited\n")
+
+        library = fresh
+        expect(library.tmuxinator_template(:project, workspace: "app")["name"]).to eq("default")
+        expect(library.tmuxinator_template(:worktree, workspace: "app")["name"]).to eq("legacy")
+      end
+
+      it "reads each copy once per instance" do
+        install(:worktree, "edited\n")
+        library = fresh
+        library.tmuxinator_template(:worktree, workspace: "app")
+        File.write(Workspace::LegacyTmuxinatorTemplates.path(:worktree, tmuxinator_dir), shipped(:worktree))
+
+        expect(library.tmuxinator_template(:worktree, workspace: "app")["name"]).to eq("legacy")
+        expect(fresh.tmuxinator_template(:worktree, workspace: "app")["name"]).to eq("default")
+      end
     end
   end
 end

@@ -1,16 +1,29 @@
+require "digest"
 require "shellwords"
 require "yaml"
 
 module Workspace
   # Manages tmuxinator config file generation for projects and worktrees.
   class ProjectConfig
+    # The Claude Code pane line a new config runs: what the shipped templates held before they took
+    # `{{AGENT_COMMAND}}`, and the base {#agent_pane_value} swaps the configured program into.
+    DEFAULT_CLAUDE_PANE = "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions".freeze
+
     # @param config [Workspace::Config] configuration for path lookups
     # @param git [Workspace::Git] git operations for sanitize_for_filesystem
     # @param output [IO] output stream for user-facing messages
     # @param agent_commands [Workspace::AgentCommands, nil] the configured agent kind and commands; nil
     #   writes each agent's bare executable
-    def initialize(config:, git:, output: $stdout, agent_commands: nil)
+    # @param writer [Workspace::TmuxinatorConfigWriter, nil] writes each new config and its render record;
+    #   nil builds one over +config+
+    # @param library [#call, nil] answers the {Workspace::Library} that resolves each tmuxinator
+    #   template ({Library#tmuxinator_template}); a callable, since the Library reads this object to
+    #   know which workspaces exist. nil builds a Library over +config+ and this object, with no
+    #   template set configured
+    def initialize(config:, git:, output: $stdout, agent_commands: nil, writer: nil, library: nil)
       @config = config
+      @writer = writer || TmuxinatorConfigWriter.new(config: config)
+      @library = library
       @agent_commands = agent_commands
       @output = output
       @git = git
@@ -33,7 +46,8 @@ module Workspace
     # @param name [String] project name
     # @param root [String] project root directory
     # @return [String] the project name
-    # @raise [Workspace::Error] if the template is missing
+    # @raise [Workspace::Error] code `unknown_template` or `library_source_missing` when the
+    #   tmuxinator template can't be resolved (see {Library#tmuxinator_template})
     # @raise [Workspace::Error] code `workspace_name_case_conflict` (see {#settle_new_name})
     def create(name, root)
       name = settle_new_name(name, root)
@@ -43,22 +57,55 @@ module Workspace
         return name
       end
 
-      unless File.exist?(@config.project_template_path)
-        raise Workspace::Error, "Template not found: #{@config.project_template_path}. Run `workspace init` first to install the templates."
-      end
-
-      template = File.read(@config.project_template_path)
-      content = template
-        .gsub("{{PROJECT_NAME}}", name)
-        .gsub("{{WORKSPACE_NAME}}", name)
-        .gsub("{{PROJECT_ROOT}}", root)
-        .gsub("{{DISPLAY_NAME}}", banner_text(name))
-        .gsub("{{CONFIG_PATH}}", config_path)
-
-      content = with_agent_kind(content, default_kind(name), name, strict: false)
-      File.write(config_path, content)
+      write_new(name, :project, {
+        project_name: name, workspace_name: name, project_root: root,
+        display_name: banner_text(name), config_path: config_path,
+        agent_kind: default_kind(name)
+      }, tmuxinator_template(:project, name))
       @output.puts "Created config: #{config_path}"
       name
+    end
+
+    # Fills a tmuxinator template: no file is read or written (a warning may go to the output stream).
+    #
+    # @param kind [Symbol] `:project` or `:worktree`; a worktree is strict about the agent pane
+    # @param inputs [Hash] the placeholder values by lowercase symbol (`project_name`, `workspace_name`,
+    #   `project_root`, `display_name`, `config_path`, `tmux_session_name`, `worktree_path`,
+    #   `worktree_branch`), plus `task_id` (nil drops the `{{PRE_WINDOW}}` line) and `agent_kind`
+    #   (an {AgentProvider} key; the workspace its config layers read is `workspace_name`)
+    # @param template_text [String]
+    # @return [String] the config text
+    # @raise [Workspace::Error] for a worktree and an agent kind the template has no pane to swap for, or a
+    #   input that is nil while the template holds its placeholder (the whole-line `{{PRE_WINDOW}}` is dropped instead)
+    def render(kind, inputs, template_text)
+      content = template_text.dup
+      has_agent_placeholder = content.include?("{{AGENT_COMMAND}}")
+      inputs = with_agent_command(kind, inputs) if has_agent_placeholder
+      TemplateVariables::ROWS.each do |row|
+        next unless row.fill == :value
+        value = inputs[row.input]
+        if value
+          content = content.gsub("{{#{row.name}}}") { value }
+        elsif content.include?("{{#{row.name}}}")
+          raise Workspace::Error, "Cannot render the #{kind} template: no value for #{row.name}"
+        end
+      end
+      if kind == :worktree
+        task_id = inputs[:task_id]
+        content = content.sub(/^\{\{PRE_WINDOW\}\}\n/) { task_id ? "pre_window: export WORKSPACE_TASK=#{task_id}\n" : "" }
+      end
+      return content if has_agent_placeholder # the placeholder already holds the configured pane, which replaces with_agent_kind
+      with_agent_kind(content, inputs[:agent_kind], inputs[:workspace_name], strict: kind == :worktree)
+    end
+
+    # The agent pane text {#render} writes for `{{AGENT_COMMAND}}`: for `claude` {DEFAULT_CLAUDE_PANE} with
+    # the configured program swapped in (flags kept), for another kind the bare configured command.
+    #
+    # @param kind [String] an {AgentProvider} key
+    # @param workspace [String, nil] the workspace whose config layers pick the command
+    # @return [String, nil] nil for an unknown kind
+    def agent_pane_value(kind, workspace = nil)
+      pane_value(kind, workspace, DEFAULT_CLAUDE_PANE)
     end
 
     # @param project_name [String] parent project name
@@ -77,7 +124,8 @@ module Workspace
     # @param agent_kind [String, nil] an {AgentProvider} key; nil uses `agent.kind` (resolved for the new
     #   worktree workspace, so the project and global layers apply)
     # @return [String] the config name
-    # @raise [Workspace::Error] if the worktree template is missing
+    # @raise [Workspace::Error] code `unknown_template` or `library_source_missing` when the
+    #   tmuxinator template can't be resolved (see {Library#tmuxinator_template})
     def create_worktree(project_name, worktree_name, worktree_path, branch_name, quiet: false, task_id: nil, agent_kind: nil)
       project_name = WorkspaceName.normalize(project_name)
       tmux_session_name = worktree_session_name(project_name, worktree_name)
@@ -89,27 +137,19 @@ module Workspace
         return config_name
       end
 
-      unless File.exist?(@config.worktree_template_path)
-        raise Workspace::Error, "Worktree template not found: #{@config.worktree_template_path}"
-      end
-
-      template = File.read(@config.worktree_template_path)
-      content = template
-        .gsub("{{TMUX_SESSION_NAME}}", tmux_session_name)
-        .gsub("{{WORKSPACE_NAME}}", config_name)
-        .gsub("{{WORKTREE_PATH}}", worktree_path)
-        .gsub("{{PROJECT_NAME}}", project_name)
-        .gsub("{{WORKTREE_BRANCH}}", branch_name)
-        .gsub("{{DISPLAY_NAME}}", banner_text("#{project_name}/#{worktree_name}"))
-        .gsub("{{CONFIG_PATH}}", config_path)
-        .sub(/^\{\{PRE_WINDOW\}\}\n/, task_id ? "pre_window: export WORKSPACE_TASK=#{task_id}\n" : "")
-
-      content = with_agent_kind(content, agent_kind || default_kind(config_name), config_name)
-      File.write(config_path, content)
+      write_new(config_name, :worktree, {
+        tmux_session_name: tmux_session_name, workspace_name: config_name, worktree_path: worktree_path,
+        project_name: project_name, worktree_branch: branch_name,
+        display_name: banner_text("#{project_name}/#{worktree_name}"), config_path: config_path,
+        task_id: task_id, agent_kind: agent_kind || default_kind(config_name)
+      }, tmuxinator_template(:worktree, config_name))
       @output.puts "Created config: #{config_path}" unless quiet
       config_name
     end
 
+    # Deletes the config and its render record (with no config, a record left behind goes too). A record
+    # that can't be deleted is left behind rather than failing a remove whose config is already gone.
+    #
     # @param name [String] project or config name
     # @param quiet [Boolean] print nothing to the output stream
     # @return [void]
@@ -118,6 +158,11 @@ module Workspace
       if File.exist?(path)
         File.delete(path)
         @output.puts "Removed config: #{path}" unless quiet
+      end
+      begin
+        @writer.remove_record(name)
+      rescue SystemCallError
+        nil
       end
     end
 
@@ -199,34 +244,35 @@ module Workspace
       projects.find { |other| other == name } || projects.find { |other| WorkspaceName.same?(other, name) }
     end
 
-    # Refuses an agent kind the installed worktree template cannot take, so `start` fails before it
+    # Refuses an agent kind the resolved worktree template cannot take, so `start` fails before it
     # creates anything.
     #
     # @param kind [String] an {AgentProvider} key
-    # @param workspace [String, nil] the workspace whose configured Claude Code command the template may run
-    # @raise [Workspace::Error] code `template_outdated` when the template has no Claude Code pane to swap
+    # @param workspace [String, nil] the workspace whose configured Claude Code command the template may
+    #   run, and whose layers pick the template
+    # @raise [Workspace::Error] code `template_outdated` when the template has no Claude Code pane to swap,
+    #   or `unknown_template`/`library_source_missing` when it can't be resolved
     def check_agent_kind!(kind, workspace = nil)
-      return if kind == "claude" || !File.exist?(@config.worktree_template_path)
-      return if template_claude_line(workspace)
-      raise Workspace::Error.new("The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it.",
+      return if kind == "claude"
+      return if template_claude_line(workspace, tmuxinator_template(:worktree, workspace))
+      raise Workspace::Error.new("The worktree tmuxinator template has no Claude Code pane to swap for #{kind}; check it with `workspace template validate`, or replace it with `workspace template import`.",
         code: "template_outdated", details: {"kind" => kind})
     end
 
-    # The pane command a new config runs for an agent kind: for `claude` the installed worktree
+    # The pane command a new config runs for an agent kind: for `claude` the resolved worktree
     # template's Claude Code pane with `claude` swapped for the configured command in each half of its
     # `||` chain, else the configured command (the agent's executable when none is set).
     #
     # @param kind [String] an {AgentProvider} key
     # @param workspace [String, nil] the workspace whose config layers pick the command; nil, or no
     #   {AgentCommands} wired, means the agent's executable
-    # @return [String, nil] nil for `claude` when the template has no Claude Code pane, or for an unknown kind
+    # @return [String, nil] nil for `claude` when the template has no Claude Code pane or can't be
+    #   resolved, or for an unknown kind
     def agent_pane_command(kind, workspace = nil)
       return unless AgentProvider.find(kind)
-      command = configured_command(kind, workspace)
-      return command unless kind == "claude"
-      return unless File.exist?(@config.worktree_template_path)
+      return configured_command(kind, workspace) unless kind == "claude"
       line = template_claude_line(workspace)
-      line && claude_line(line, command, claude_names(workspace))
+      line && pane_value(kind, workspace, line)
     end
 
     # +text+ with the program of each `||` half that runs a Claude Code program swapped for the configured
@@ -279,7 +325,7 @@ module Workspace
       else
         command
       end
-      lines[index] = "#{indent}#{yaml_item(pane)}#{lines[index][/\r?\n\z/]}"
+      lines[index] = "#{indent}#{self.class.yaml_item(pane)}#{lines[index][/\r?\n\z/]}"
       lines.join
     end
 
@@ -303,16 +349,18 @@ module Workspace
       nil
     end
 
-    # Writes a config through a temp file and rename.
+    # The agent pane's text in a config: the first pane item that runs an agent program.
     #
-    # @param path [String]
-    # @param content [String]
-    def write_config(path, content)
-      tmp = "#{path}.tmp#{Process.pid}"
-      File.write(tmp, content)
-      File.rename(tmp, path)
-    ensure
-      File.delete(tmp) if tmp && File.exist?(tmp)
+    # @param content [String] a tmuxinator config
+    # @param workspace [String, nil] the workspace whose config layers name the agent programs
+    # @return [String, nil] nil when no agent pane is found
+    def agent_pane_text(content, workspace)
+      names = agent_program_names(workspace)
+      content.lines.each do |line|
+        item = pane_item(line)
+        return item[1] if item && agent_pane_text?(item[1], names)
+      end
+      nil
     end
 
     # ascii-banner wraps only at whitespace, so an unspaced name shrinks to tiny type.
@@ -323,7 +371,47 @@ module Workspace
       text.gsub(/[^[:word:]]/, " ")
     end
 
+    # Whether the template file at +path+ has an agent pane the renderer can find: `{{AGENT_COMMAND}}` or a
+    # literal Claude Code line.
+    #
+    # @param path [String] a template file
+    # @return [Boolean]
+    def agent_pane_in_template?(path)
+      !template_claude_line(nil, {"path" => path}).nil?
+    end
+
+    # +text+ as a YAML list item's text: as is when it reads back unchanged, else a JSON (double-quoted) string.
+    #
+    # @param text [String]
+    # @return [String]
+    def self.yaml_item(text)
+      (YAML.safe_load("- #{text}") == [text]) ? text : text.to_json
+    rescue Psych::Exception
+      text.to_json
+    end
+
     private
+
+    # Renders and writes a new config with its render record. Beside the render inputs the record keeps
+    # `agent_command`, the agent pane text the render wrote (nil when it found no agent pane), since the
+    # render reads the configured command from the config layers rather than from +inputs+.
+    # The record's `template` is the resolved set's name (`legacy` for an edited installed copy).
+    def write_new(name, kind, inputs, template)
+      template_text = File.read(template["path"])
+      content = render(kind, inputs, template_text)
+      @writer.write(name, content, kind: kind, template: template["name"], template_sha: Digest::SHA256.hexdigest(template_text),
+        inputs: inputs.merge(agent_command: agent_pane_text(content, name)))
+    end
+
+    # @return [Hash] see {Library#tmuxinator_template}
+    def tmuxinator_template(kind, workspace)
+      library.tmuxinator_template(kind, workspace: workspace)
+    end
+
+    # The fallback Library has no lineage: the tmuxinator template lookup never reads it.
+    def library
+      @library ? @library.call : (@own_library ||= Library.new(config: @config, lineage: nil, project_config: self))
+    end
 
     # @return [Array<String, nil>] the programs of the one pane line that differs between two contents:
     #   the first `||` half whose program changed, else the first half
@@ -372,17 +460,47 @@ module Workspace
       end.uniq
     end
 
+    # +inputs+ with `agent_command` filled for the template's `{{AGENT_COMMAND}}` (one a caller gave stays);
+    # an unknown kind leaves it nil, so a worktree raises the swap error as {#with_agent_kind} does, and a
+    # project gets the default pane with that method's warning.
+    def with_agent_command(kind, inputs)
+      return inputs if inputs[:agent_command]
+      configured_command(inputs[:agent_kind], inputs[:workspace_name]) # raises for an unknown kind where {AgentCommands} is wired, as {#with_agent_kind} does
+      value = agent_pane_value(inputs[:agent_kind], inputs[:workspace_name])
+      if value.nil?
+        if kind == :worktree
+          raise Workspace::Error, "The worktree tmuxinator template has no Claude Code pane to swap for #{inputs[:agent_kind]}; check it with `workspace template validate`, or replace it with `workspace template import`."
+        end
+        @output.puts "Warning: agent.kind is set, but the template has no agent pane line to rewrite; the pane was left as is."
+        value = DEFAULT_CLAUDE_PANE
+      end
+      inputs.merge(agent_command: self.class.yaml_item(value))
+    end
+
+    def pane_value(kind, workspace, base)
+      return unless AgentProvider.find(kind)
+      command = configured_command(kind, workspace)
+      (kind == "claude") ? claude_line(base, command, claude_names(workspace)) : command
+    end
+
     # The text of the worktree template's Claude Code pane, looking only at pane items from the first
     # `panes:` line on: the item with the skip-permissions flag anywhere in the file, else the first item
     # whose `||` chain runs a program of {#claude_names} in any half (unlike {#agent_pane_text?}, which
     # reads the first half only). With no workspace (or no {AgentCommands}) those names are the bare
     # executable, so `claude-dev --continue || claude` is found through its second half.
-    def template_claude_line(workspace)
-      return unless File.exist?(@config.worktree_template_path)
-      lines = File.readlines(@config.worktree_template_path)
+    # A template whose pane items include `{{AGENT_COMMAND}}` answers {DEFAULT_CLAUDE_PANE}. The template
+    # is +template+, else the worktree template resolved for +workspace+; nil when that can't be
+    # resolved or read.
+    def template_claude_line(workspace, template = nil)
+      lines = begin
+        File.readlines((template || tmuxinator_template(:worktree, workspace))["path"])
+      rescue Workspace::Error, SystemCallError
+        return
+      end
       start = lines.index { |line| line.match?(/\A\s*(- )?panes:/) }
       return unless start
       texts = lines[start..].filter_map { |line| pane_item(line)&.at(1)&.strip }
+      return DEFAULT_CLAUDE_PANE if texts.include?("{{AGENT_COMMAND}}")
       names = claude_names(workspace)
       texts.find { |text| flagged_pane?(text) } || texts.find { |text| runs_program?(text, names) }
     end
@@ -414,14 +532,6 @@ module Workspace
       text.split
     end
 
-    # A YAML list item's text: plain when that reads back as the same string, else a double-quoted
-    # scalar, so any command (`#`, `: `, quotes) keeps the config valid.
-    def yaml_item(text)
-      (YAML.safe_load("- #{text}") == [text]) ? text : text.to_json
-    rescue Psych::Exception
-      text.to_json
-    end
-
     # Points the config's agent pane at the configured command. A config with no agent pane line is
     # left as is: `strict` raises for a kind other than claude, else a warning says so when something
     # was configured.
@@ -432,7 +542,7 @@ module Workspace
       rewritten = rewrite_agent_pane(content, kind, workspace)
       return rewritten if rewritten
       if strict && kind != "claude"
-        raise Workspace::Error, "The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it."
+        raise Workspace::Error, "The worktree tmuxinator template has no Claude Code pane to swap for #{kind}; check it with `workspace template validate`, or replace it with `workspace template import`."
       end
       unless default && kind == "claude"
         key = default ? "agent.kind" : "agent.commands.#{kind}"

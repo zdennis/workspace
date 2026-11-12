@@ -27,6 +27,7 @@ RSpec.describe Workspace::Commands::Prune do
   let(:stop_command) { instance_double(Workspace::Commands::Stop) }
   let(:gh_usable) { true }
   let(:pr_table) { {} }
+  let(:locks) { nil }
 
   subject(:command) do
     described_class.new(
@@ -37,6 +38,7 @@ RSpec.describe Workspace::Commands::Prune do
       stop_command: stop_command,
       event_log: state.event_log,
       pull_requests: fake_pull_requests_class.new(-> { gh_usable }, pr_table),
+      locks: locks,
       output: output,
       input: input
     )
@@ -98,6 +100,21 @@ RSpec.describe Workspace::Commands::Prune do
         expect(output.string).to include("eligible (directory gone)")
         expect(output.string).to include("(directory gone)")
         expect(output.string).to include("Pruned 1 project(s).")
+      end
+
+      context "with the startup locks" do
+        let(:locks) { RecordingStartupLocks.new }
+
+        it "deletes the config inside the workspace's startup lock, so template apply never writes it back" do
+          held_at_remove = nil
+          allow(git).to receive(:worktree_exists?).with(project_root).and_return(false)
+          allow(project_config).to receive(:remove).with("gone-dir") { held_at_remove = locks.held }
+          allow(project_settings).to receive(:remove).with("gone-dir")
+
+          command.call
+
+          expect(held_at_remove).to eq("gone-dir")
+        end
       end
 
       it "does not call remove_worktree since the directory is already gone" do

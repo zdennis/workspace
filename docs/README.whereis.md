@@ -19,8 +19,8 @@ Outputs the directory where workspace is installed. Useful for debugging symlink
 $ workspace whereis
 /Users/zdennis/source/opensource/workspace
 
-# Look at the project templates it ships
-$ workspace whereis | xargs -I{} ls {}/lib/templates
+# Look at the tmuxinator templates it ships
+$ workspace whereis | xargs -I{} ls {}/lib/library/template/default
 
 # Which commit this install runs
 $ workspace whereis | xargs -I{} git -C {} log -1 --oneline

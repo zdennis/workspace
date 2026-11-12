@@ -611,6 +611,51 @@ RSpec.describe Workspace::ConfigReport do
       end
     end
 
+    describe "tmuxinator template keys" do
+      let(:library) { instance_double(Workspace::Library) }
+      let(:validator) { instance_double(Workspace::TemplateValidator) }
+      let(:problem) { Workspace::TemplateValidator::Problem.new(severity: "error", code: "missing_placeholder", kind: :project, message: "{{PROJECT_NAME}} is required and does not appear.") }
+      subject(:report) { described_class.new(project_settings: settings, project_config: project_config, notes_dir: notes_dir, library: library, template_validator: validator) }
+
+      before do
+        allow(library).to receive(:tmuxinator_set) do |name, workspace:|
+          raise Workspace::Error.new("No tmuxinator template '#{name}'.", code: "unknown_template") if name == "gone"
+          {"path" => "/sets/#{name}"}
+        end
+        allow(validator).to receive(:call_set) do |dir|
+          Workspace::TemplateValidator::Result.new(errors: dir.include?("/bad") ? [problem] : [], warnings: [])
+        end
+      end
+
+      def codes(name) = report.validate(name)["problems"].map { |p| [p["layer"], p["code"], p["severity"], p["key"]] }
+
+      it "warns on an unknown set, in the file that names it" do
+        write("api", "tmuxinator:\n  template: gone\n  worktree_template: team\n")
+
+        expect(codes("api")).to eq([["project", "unknown_tmuxinator_template", "warning", "tmuxinator.template"]])
+        expect(report.validate("api")["valid"]).to be(true)
+      end
+
+      it "warns on a set that does not validate, naming the problem" do
+        write("api", "tmuxinator:\n  worktree_template: bad\n")
+
+        result = report.validate("api")
+        expect(codes("api")).to eq([["project", "invalid_tmuxinator_template", "warning", "tmuxinator.worktree_template"]])
+        expect(result["problems"].first["message"]).to include("PROJECT_NAME")
+      end
+
+      it "says nothing for a valid set, a malformed name or no library" do
+        write("api", "tmuxinator:\n  template: team\n")
+        expect(codes("api")).to eq([])
+
+        write("api", "tmuxinator:\n  template: Not Valid\n")
+        expect(codes("api").map { |c| c[1] }).to eq(["invalid_value"])
+
+        write("api", "tmuxinator:\n  template: gone\n")
+        expect(described_class.new(project_settings: settings, project_config: project_config, notes_dir: notes_dir).validate("api")["problems"]).to eq([])
+      end
+    end
+
     it "raises unknown_workspace for a name nothing knows" do
       expect { report.show("nope") }.to raise_error(Workspace::Error) { |e|
         expect(e.code).to eq("unknown_workspace")

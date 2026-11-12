@@ -41,13 +41,13 @@ git clone git@github.com:zdennis/workspace.git ~/source/opensource/workspace
 export PATH="$HOME/source/opensource/workspace/bin:$PATH"
 ```
 
-2. Run the init command to install tmuxinator templates:
+2. Run the init command to create the config directories:
 
 ```sh
 workspace init
 ```
 
-This creates `~/.config/tmuxinator/` (if needed) and copies the project templates into it. Use `--dry-run` to preview what would happen:
+This creates `~/.config/tmuxinator/` (if needed); the tmuxinator templates are built in (see `workspace template list`). Use `--dry-run` to preview what would happen:
 
 ```sh
 workspace init --dry-run
@@ -110,7 +110,7 @@ workspace <subcommand> [options]
 | go | [README](docs/README.go.md) | Start a workflow with one argument: a ticket, pull request, issue or branch, or free text for a new branch (a sentence holding one pull request or issue link, or one uppercase ticket key or link, is read as that ref; `--text` keeps it plain). Free text makes a new worktree workspace (`--here` runs it in the current one); a ref makes or reuses one, or runs in place for the current branch; prints the workflow it chose and why |
 | goal | [README](docs/README.goal.md) | Say where a workspace's goal is (`show [REF]`): its journey stage, workflow step, agent turn and tool call, what it waits for and on whom, and the next expected event; or one line per goal (`list`). Reads only; `journey` is another name for `spine` |
 | handoff | [README](docs/README.handoff.md) | Check context usage and hand off to a fresh conversation |
-| init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
+| init | [README](docs/README.init.md) | Create the workspace config directories and offer agent hooks |
 | inbox | [README](docs/README.inbox.md) | A durable list of things that need a person, per workspace, project or globally: `add` (also `--from-json`, `--dedupe-key`, `--note REL` to point at a note in the notes dir that workspace-ui can open), `list`, `show`, `edit`, `done`, `dismiss`, `reopen`, `snooze`, `ack` (derived rows), `list --include-derived` |
 | instructions | [README](docs/README.instructions.md) | Print the instructions built from library packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`, `research`, `report`, `plan-review`, `spine`, `promote`); the `research` pack ends with an inbox item pointing at the note and a link from `ui open notes --path` |
 | kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree (default: the one you are in) |
@@ -155,6 +155,7 @@ workspace <subcommand> [options]
 | statusline | [README](docs/README.statusline.md) | Render Claude Code's status line (install as its statusLine command) |
 | step | [README](docs/README.workflow.md) | For the agent on a workflow step: report on it (`done`) or see what it is (`status`) |
 | stop | [README](docs/README.stop.md) | Stop a workspace and its tmux session (default: the one you are in; `--all` for every active one) |
+| template | [README](docs/README.template.md) | Choose, check and re-render the tmuxinator templates that new configs are written from: `list`, `show`, `path`, `variables`, `render`, `validate`, `diff`, `new`, `edit`, `use`, `export` and `import` for sets; `status`, `apply`, `adopt`, `backup`, `backups list|prune` and `restore` to bring existing configs along, with a backup before every write |
 | tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
 | ticket | [README](docs/README.ticket.md) | Look up a ticket the way `start` reads it (`show`): a JIRA key, pull request, issue or branch, with its title and body from `gh` or `jira` and whether a workspace for it already exists; or list the tickets assigned to you or changed lately (`list`) |
 | tmux | [README](docs/README.tmux.md) | Show a workspace's tmuxinator file as windows and panes |
@@ -186,7 +187,7 @@ lib/workspace/
   commands/
     cleanup.rb                    # Zombie session detection and removal
     focus.rb                      # Window focusing
-    init.rb                       # Template installation
+    init.rb                       # Config directories and hook setup
     kill.rb                       # Session teardown
     launch.rb                     # Launch orchestration
     layout.rb                     # Pane layout save/restore
@@ -232,12 +233,14 @@ Workspace tracks launcher pane UUIDs and iTerm window IDs in `~/.workspace-state
 
 ## Tmuxinator Templates
 
-The repo includes two templates in `lib/templates/` that are installed to `~/.config/tmuxinator/` by `workspace init`:
+The repo ships the built-in `default` tmuxinator template set in `lib/library/template/default/`. `workspace init` no longer copies it. The set holds two files:
 
-- **`workspace.project-template.yml`** — standard project layout with 3 panes (banner, claude, shell)
-- **`workspace.project-worktree-template.yml`** — worktree variant, roots into the worktree directory
+- **`project.yml`**: standard project layout with 3 panes (banner, claude, shell)
+- **`worktree.yml`**: worktree variant, roots into the worktree directory
 
-Templates use placeholders like `{{PROJECT_NAME}}` and `{{PROJECT_ROOT}}` that are filled in automatically by `workspace add` and `workspace start`. The banner line uses `{{DISPLAY_NAME}}`, the name with every non-word character replaced by a space, because `ascii-banner` wraps only at whitespace. Workspace never rewrites a config that already exists, so to change one, edit the `ascii-banner` line in its file in `~/.config/tmuxinator/`. New standard project configs need the current template: `workspace init --force` installs it, replacing any edits you made to the installed templates. New worktree configs get the spaced text with any installed template.
+An older install may still have copies named `workspace.project-template.yml` and `workspace.project-worktree-template.yml` in `~/.config/tmuxinator/`; `workspace template import` turns them into a set.
+
+Tmuxinator templates use placeholders like `{{PROJECT_NAME}}` and `{{PROJECT_ROOT}}` that are filled in automatically by `workspace add` and `workspace start`. The banner line uses `{{DISPLAY_NAME}}`, the name with every non-word character replaced by a space, because `ascii-banner` wraps only at whitespace. Existing configs are not rewritten when a template changes; `workspace template apply` re-renders them on request, with a backup (see [`template`](docs/README.template.md)). New standard project configs need the current tmuxinator template: the built-in set has it, and `workspace template validate` checks an edited one. New worktree configs get the spaced text with any tmuxinator template.
 
 ## License
 

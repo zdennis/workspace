@@ -39,8 +39,10 @@ module Workspace
     # @param state [Workspace::State] the state file whose key is renamed
     # @param event_log [Workspace::EventLog, nil] gets a `workspace_renamed` line per renamed workspace
     # @param project_catalog_factory [#call] builds a fresh {Workspace::ProjectCatalog}, for the project inbox file
-    def initialize(config:, project_config:, tmux:, state:, event_log:, project_catalog_factory:)
+    # @param writer [Workspace::TmuxinatorConfigWriter, nil] carries each config's render record; nil builds one over +config+
+    def initialize(config:, project_config:, tmux:, state:, event_log:, project_catalog_factory:, writer: nil)
       @config = config
+      @writer = writer || TmuxinatorConfigWriter.new(config: config)
       @project_config = project_config
       @tmux = tmux
       @state = state
@@ -110,6 +112,26 @@ module Workspace
       files.each(&:close)
     end
 
+    # {#with_locks} for one name, for a step that must not wait on a broken lock file: when the lock
+    # can't be opened or taken, or its path can't be built (a `Workspace::Error`), the block runs without it.
+    # An error from the block itself passes as it is, and the block never runs twice. `remove`, `kill` and
+    # `prune` delete a config this way, so `template apply`, which reads and writes a config inside the lock,
+    # never writes one back.
+    #
+    # @param name [String] a workspace name, in any case
+    # @yield with the lock held when it could be taken
+    # @return [Object] the block's value
+    def hold_if_possible(name)
+      ran = false
+      with_locks(name) do
+        ran = true
+        yield
+      end
+    rescue LockUnavailable, Workspace::Error
+      raise if ran
+      yield
+    end
+
     private
 
     # @return [Object, nil] the block's value; nil when the lock is taken elsewhere or the daemon answers
@@ -162,7 +184,7 @@ module Workspace
       new = WorkspaceName.normalize(old)
       session = @tmux.session_name_for(old)
       outcome = WorkspaceStoreRename.new(config: @config, project_config: @project_config, tmux: @tmux, state: @state,
-        project_catalog_factory: @project_catalog_factory, old: old, new: new, session: session, new_session: WorkspaceName.normalize(session)).call
+        project_catalog_factory: @project_catalog_factory, old: old, new: new, session: session, new_session: WorkspaceName.normalize(session), writer: @writer).call
       warnings.concat(outcome.warnings)
       renamed.concat(outcome.renamed)
       # Names only, never paths or messages, like every lifecycle event.

@@ -11,7 +11,7 @@ module Workspace
 
       # What a write did. `outcome` is "added", "unchanged", "replaced",
       # "updated" or "removed"; `workspace` is the project, or nil for global.
-      Result = Struct.new(:outcome, :workspace, :entry, :message)
+      Result = Struct.new(:outcome, :workspace, :entry, :message, :warnings)
 
       # The message verb for each write outcome: done, and what --dry-run would do.
       VERBS = {
@@ -25,7 +25,10 @@ module Workspace
       # @param event_log [Workspace::EventLog, nil] records `library_changed` after a write that changed the store
       # @param installer [Workspace::LibraryInstaller, nil] copies into and removes from a worktree, for `install` and `uninstall`
       # @param checkout [Workspace::WorkspaceCheckout, nil] finds the worktree `install` and `uninstall` act on
-      def initialize(library:, output: $stdout, input: $stdin, event_log: nil, installer: nil, checkout: nil)
+      # @param template_in_use [Workspace::TemplateInUse, nil] `remove` refuses a tmuxinator template a key selects; nil checks nothing
+      def initialize(library:, output: $stdout, input: $stdin, event_log: nil, installer: nil, checkout: nil, template_validator: nil, template_in_use: nil)
+        @template_validator = template_validator
+        @template_in_use = template_in_use
         @installer = installer
         @checkout = checkout
         @library = library
@@ -169,12 +172,21 @@ module Workspace
       # @param project [String, nil]
       # @param cwd [String]
       # @param dry_run [Boolean]
+      # @param force [Boolean] remove a tmuxinator template a `tmuxinator.template` key still selects
       # @return [Result, nil] nil when the person declined
-      # @raise [Workspace::Error] code `unknown_library_entry`, `ambiguous_library_entry` or `confirmation_required`
-      def remove(ref, yes: false, scope: nil, project: nil, cwd: Dir.pwd, dry_run: false)
+      # @raise [Workspace::Error] code `unknown_library_entry`, `ambiguous_library_entry`, `confirmation_required` or `template_in_use`
+      def remove(ref, yes: false, scope: nil, project: nil, cwd: Dir.pwd, dry_run: false, force: false)
         store = @library.write_store(scope: scope, project: project, cwd: cwd)
         entry = @library.resolve(ref, [store])
         kind, name = entry.values_at("kind", "name")
+        warning = nil
+        if kind == "template" && @template_in_use
+          if force
+            warning = @template_in_use.warning(name, store)
+          else
+            @template_in_use.check!(name, store, verb: "remove")
+          end
+        end
         unless yes || dry_run
           answer = Prompt.ask(@input, @output, "Remove #{entry["ref"]} from #{scope_label(store)}? [y/N] ", retry_flags: ["--yes"], destructive: true)
           unless answer.to_s.strip.casecmp?("y")
@@ -187,8 +199,9 @@ module Workspace
           record_change(store, kind, name, "remove")
         end
         message = "#{dry_run ? "Would remove" : "Removed"} #{entry["ref"]} from #{scope_label(store)}."
+        message += " Warning: #{warning["message"]}" if warning
         @output.puts message
-        Result.new("removed", store.project, entry, message)
+        Result.new("removed", store.project, entry, message, [warning].compact)
       end
 
       # What `install` and `uninstall` did, as the document `--json` prints.
@@ -401,20 +414,42 @@ module Workspace
         [entry, stores.find { |s| s.scope == entry["scope"] && s.project == entry["project"] }]
       end
 
-      # A recipe is checked before it is stored, so `start --recipe` never meets a bad one.
+      # A recipe or a tmuxinator template set is checked before it is stored, so `start --recipe` and a new
+      # config never meet a bad one. A template's warnings are left to `template validate`.
       def check_recipe(kind, content, ref)
+        return check_template(content, ref) if kind == "template"
         return unless kind == "recipe"
         text = content[:target] ? File.read(content[:target]) : content[:body]
         Workspace::RecipeFile.parse(text, ref: ref)
+      end
+
+      def check_template(content, ref)
+        return unless @template_validator
+        dir = content[:target] || content[:tree]
+        result = @template_validator.call_set(dir)
+        return if result.valid?
+        raise Error.new("The tmuxinator template #{ref} is not valid: #{result.errors.map(&:to_s).join("; ")}",
+          code: "invalid_template", details: {"ref" => ref, "problems" => result.errors.map(&:to_h)})
       end
 
       # What to store: `{target:}` to link, `{tree:}` to copy a skill's
       # directory, or `{body:}` to write a file (a skill's `SKILL.md`).
       def source_for(kind, source, body, link, ref)
         raise UsageError, "A spine template is a folder of stage files: give its path, not stdin (-)." if kind == "spine" && body
+        raise UsageError, "A tmuxinator template is a folder holding project.yml and worktree.yml: give its path, not stdin (-)." if kind == "template" && body
         return {body: body} if body && !link
         raise UsageError, "--link needs a file path, not stdin (-)." unless source
-        if Workspace::LibraryStore::OPTIONAL_BODY.include?(kind)
+        if kind == "template"
+          raise Errno::ENOENT, source unless File.exist?(source)
+          raise UsageError, "#{source} is a file, and a tmuxinator template is a folder holding project.yml and worktree.yml." unless File.directory?(source)
+          %w[project.yml worktree.yml].each do |file|
+            inside = File.join(source, file)
+            next if File.file?(inside) && File.readable?(inside)
+            raise Error.new("A tmuxinator template set needs project.yml and worktree.yml; #{source} has no #{file}.",
+              code: "library_source_missing", details: {"ref" => ref, "path" => inside})
+          end
+          link ? {target: source} : {tree: source}
+        elsif Workspace::LibraryStore::OPTIONAL_BODY.include?(kind)
           raise Errno::ENOENT, source unless File.exist?(source)
           raise UsageError, "#{source} is a file, and a #{kind} is a folder of stage files." unless File.directory?(source)
           raise Errno::ENOENT, "#{source}/*.md" if Dir.glob("**/*.md", base: File.realpath(source)).empty?

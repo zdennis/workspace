@@ -13,19 +13,20 @@ invalid option: --bogus
 ### workspace lib
 --- exit 0
 --- stdout
-play   binding              builtin  How to work in a pane that workspace has bound to a run, a review or a play
-play   commits              builtin  Cohesive commits, tests and lint first, no attribution, no push
-play   dev                  builtin  Queue for the project's shared dev environment before you implement, test or verify, and give it up when you are done
-play   handoff              builtin  Check context after every task and hand off to a fresh conversation before it runs out
-play   implementation-plan  builtin  Keep a counted task list in the workspace's IMPLEMENTATION_PLAN.md so progress shows in workspace and any session can resume
-play   notes                builtin  Read and write this workspace's working notes in its notes directory, never in the repo
-play   orchestrator         builtin  Work as an orchestrator that delegates to sub-agents
-play   plan-review          builtin  Review the workspace plan with reviewer sub-agents, write plan-review.md, and post the verdict to the inbox
-play   promote              builtin  Move this checkout's work into a new workspace, seed it, start its agent, and stop working on it here
-play   report               builtin  Hand a finished note to the person: post it to the inbox with a link and print the workspace-ui link
-play   research             builtin  Research a goal and write the findings to a note in the notes directory, with no code changes
-play   review               builtin  Review a diff with reviewer sub-agents and write review.md
-play   spine                builtin  Keep this workspace's stages current
-spine  default              builtin  Research, plan, implement, verify, review and ship, one file per stage
+play      binding              builtin  How to work in a pane that workspace has bound to a run, a review or a play
+play      commits              builtin  Cohesive commits, tests and lint first, no attribution, no push
+play      dev                  builtin  Queue for the project's shared dev environment before you implement, test or verify, and give it up when you are done
+play      handoff              builtin  Check context after every task and hand off to a fresh conversation before it runs out
+play      implementation-plan  builtin  Keep a counted task list in the workspace's IMPLEMENTATION_PLAN.md so progress shows in workspace and any session can resume
+play      notes                builtin  Read and write this workspace's working notes in its notes directory, never in the repo
+play      orchestrator         builtin  Work as an orchestrator that delegates to sub-agents
+play      plan-review          builtin  Review the workspace plan with reviewer sub-agents, write plan-review.md, and post the verdict to the inbox
+play      promote              builtin  Move this checkout's work into a new workspace, seed it, start its agent, and stop working on it here
+play      report               builtin  Hand a finished note to the person: post it to the inbox with a link and print the workspace-ui link
+play      research             builtin  Research a goal and write the findings to a note in the notes directory, with no code changes
+play      review               builtin  Review a diff with reviewer sub-agents and write review.md
+play      spine                builtin  Keep this workspace's stages current
+spine     default              builtin  Research, plan, implement, verify, review and ship, one file per stage
+template  default              builtin  The tmuxinator templates workspace ships: a three-pane project layout and its worktree variant
 --- stderr
 --- end

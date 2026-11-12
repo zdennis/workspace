@@ -4,29 +4,27 @@ require_relative "../core/atomic_file"
 
 module Workspace
   module Commands
-    # Sets up workspace by installing tmuxinator templates and creating
-    # the config directory if it doesn't exist.
+    # Sets up workspace: creates the config directories, the global config and the agent hooks.
+    # It no longer copies tmuxinator templates (they ship as the built-in `default` set); it
+    # offers `workspace template import` for an edited copy an earlier version installed.
     class Init
-      TEMPLATES = [
-        "workspace.project-template.yml",
-        "workspace.project-worktree-template.yml"
-      ].freeze
-
       # @param config [Workspace::Config] configuration for path lookups
       # @param hook_installer [Workspace::HookInstaller] installs agent hooks
       # @param workflow_installer [Workspace::WorkflowSourceInstaller, nil] installs the
       #   workflows of the sources `--workflow-sources` adds; nil reports the entries
       #   without installing them
+      # @param library [Workspace::Library, nil] says whether an edited copy is what new configs render from; nil offers for any edited copy
       # @param which [#call] returns true when an executable is on PATH
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       # @param input [IO] input stream for interactive confirmation
-      def initialize(config:, hook_installer:, workflow_installer: nil, which: nil, agent_commands: nil,
+      def initialize(config:, hook_installer:, workflow_installer: nil, which: nil, agent_commands: nil, library: nil,
         output: $stdout, error_output: $stderr, input: $stdin)
         @config = config
         @hook_installer = hook_installer
         @workflow_installer = workflow_installer
         @agent_commands = agent_commands
+        @library = library
         @which = which || ->(exe) { system("command", "-v", exe, out: File::NULL, err: File::NULL) }
         @output = output
         @error_output = error_output
@@ -36,7 +34,7 @@ module Workspace
       DEFAULT_GLOBAL_CONFIG = {"hooks" => {}, "layouts" => {}}.freeze
 
       # @param dry_run [Boolean] show what would be done without making changes
-      # @param force [Boolean] overwrite existing templates even if they differ
+      # @param force [Boolean] accepted and ignored: init no longer copies templates
       # @param project_root [String] project whose agent settings receive hooks
       # @param hooks [Boolean, nil] true installs without asking, false skips the
       #   phase entirely, nil (the default) prompts
@@ -48,7 +46,7 @@ module Workspace
         @output.puts ""
 
         ensure_tmuxinator_dir(dry_run)
-        install_templates(dry_run, force)
+        offer_legacy_import
         ensure_workspace_config_dir(dry_run)
         install_global_config(dry_run)
         install_workflow_sources(dry_run, add_workflow_sources(dry_run, workflow_sources))
@@ -147,18 +145,25 @@ module Workspace
         end
       end
 
-      def install_templates(dry_run, force)
-        TEMPLATES.each do |template|
-          src = File.join(@config.templates_dir, template)
-          dest = File.join(@config.tmuxinator_dir, template)
-
-          unless File.exist?(src)
-            @error_output.puts "  error   #{template} not found in #{@config.templates_dir}"
-            next
-          end
-
-          install_template(src, dest, template, dry_run, force)
+      # One line when an edited copy of a template an earlier `init` installed is what new configs still render
+      # from (no `tmuxinator.template` key selects another set). A stock copy (any version workspace shipped) is
+      # never offered: the built-in set replaces it.
+      def offer_legacy_import
+        used = LegacyTmuxinatorTemplates::FILES.keys.select do |kind|
+          path = LegacyTmuxinatorTemplates.path(kind, @config.tmuxinator_dir)
+          LegacyTmuxinatorTemplates.edited?(kind, path) && renders_from_copy?(kind)
         end
+        return if used.empty?
+
+        paths = used.map { |kind| LegacyTmuxinatorTemplates.path(kind, @config.tmuxinator_dir) }
+        @output.puts "  edited  Your edited tmuxinator template at #{paths.join(" and ")} is still used for new configs. Run `workspace template import` to keep it as the tmuxinator template set `local` and select it."
+      end
+
+      def renders_from_copy?(kind)
+        return true unless @library
+        @library.tmuxinator_template(kind, workspace: nil)["name"] == Workspace::Library::LEGACY_TEMPLATE
+      rescue Workspace::Error
+        false
       end
 
       def ensure_workspace_config_dir(dry_run)
@@ -260,24 +265,6 @@ module Workspace
           @error_output.puts "  warn    source:#{position} not installed: #{TerminalText.escape(e.message)}"
         end
         @output.puts "  re-run `workspace workflow install` to add, change or remove workflows from the sources."
-      end
-
-      def install_template(src, dest, template, dry_run, force)
-        if File.exist?(dest)
-          if FileUtils.identical?(src, dest)
-            @output.puts "  skip    #{template} (already up to date)"
-          elsif force
-            FileUtils.cp(src, dest) unless dry_run
-            @output.puts "  update  #{template} -> #{dest}"
-          else
-            @output.puts "  skip    #{template} (already exists, use --force to overwrite)"
-          end
-        elsif dry_run
-          @output.puts "  copy    #{template} -> #{dest}"
-        else
-          FileUtils.cp(src, dest)
-          @output.puts "  copy    #{template} -> #{dest}"
-        end
       end
     end
   end

@@ -568,6 +568,126 @@ RSpec.describe Workspace::Commands::Library do
     end
   end
 
+  describe "tmuxinator templates" do
+    def template_set(name = "team-set", files: {"project.yml" => "p\n", "worktree.yml" => "w\n", "README.md" => "# Team\n"})
+      File.join(@dir, name).tap do |dir|
+        files.each do |rel, text|
+          FileUtils.mkdir_p(File.dirname(File.join(dir, rel)))
+          File.write(File.join(dir, rel), text)
+        end
+      end
+    end
+
+    it "copies a folder holding project.yml and worktree.yml and lists it with its files" do
+      result = command.add(kind: "template", path: template_set, name: "team", cwd: cwd)
+
+      expect(result.outcome).to eq("added")
+      expect(File.read(File.join(@dir, "library/global/template/team/worktree.yml"))).to eq("w\n")
+
+      output.truncate(0)
+      output.rewind
+      command.list(kind: "template", cwd: cwd, json: true)
+      expect(JSON.parse(output.string)["entries"].first).to include("ref" => "template/team", "files" => %w[README.md project.yml worktree.yml])
+    end
+
+    it "lists a built-in set as a builtin entry" do
+      FileUtils.mkdir_p(File.join(@dir, "builtin/template/default"))
+      File.write(File.join(@dir, "builtin/template/default/project.yml"), "p\n")
+      File.write(File.join(@dir, "builtin/template/default/worktree.yml"), "w\n")
+
+      command.list(kind: "template", cwd: cwd, json: true)
+
+      expect(JSON.parse(output.string)["entries"].first).to include("ref" => "template/default", "scope" => "builtin")
+    end
+
+    describe "validation" do
+      let(:builtin_set) { File.join(PROJECT_ROOT, "lib/library/template/default") }
+      let(:validator) do
+        Workspace::TemplateValidator.new(project_config: Workspace::ProjectConfig.new(config: Workspace::Config.new(workspace_dir: @dir), git: Workspace::Git.new, output: StringIO.new))
+      end
+      subject(:command) { described_class.new(library: library, output: output, input: input, template_validator: validator) }
+
+      it "stores a set that validates, and warns about nothing it refuses" do
+        expect(command.add(kind: "template", path: builtin_set, name: "copy", cwd: cwd).outcome).to eq("added")
+      end
+
+      it "stores an invalid set unchecked when no validator is wired" do
+        bare = described_class.new(library: library, output: output, input: input)
+
+        expect(bare.add(kind: "template", path: template_set, name: "loose", cwd: cwd).outcome).to eq("added")
+      end
+
+      it "refuses an invalid set as invalid_template on add and update, storing nothing" do
+        bad = template_set("bad", files: {"project.yml" => File.read(File.join(builtin_set, "project.yml")), "worktree.yml" => "name: x\n"})
+
+        expect { command.add(kind: "template", path: bad, name: "bad", cwd: cwd) }.to raise_error(Workspace::Error) { |e|
+          expect([e.code, e.details["ref"]]).to eq(["invalid_template", "template/bad"])
+          expect(e.details["problems"].map { |p| p["code"] }).to include("missing_placeholder")
+        }
+        expect(Dir.exist?(File.join(@dir, "library/global/template/bad"))).to be(false)
+
+        command.add(kind: "template", path: builtin_set, name: "good", cwd: cwd)
+        expect { command.update("template/good", path: bad, cwd: cwd) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_template") }
+      end
+    end
+
+    describe "remove while a key selects the set" do
+      let(:in_use) { instance_double(Workspace::TemplateInUse) }
+      subject(:command) { described_class.new(library: library, output: output, input: input, template_in_use: in_use) }
+      let(:selected) do
+        Workspace::Error.new("in use", code: "template_in_use", details: {"template" => "team"})
+      end
+
+      before { command.add(kind: "template", path: template_set, name: "team", cwd: cwd) }
+
+      it "refuses, deleting nothing, even for --dry-run" do
+        allow(in_use).to receive(:check!).and_raise(selected)
+
+        expect { command.remove("template/team", yes: true, cwd: cwd) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("template_in_use") }
+        expect { command.remove("template/team", dry_run: true, cwd: cwd) }.to raise_error(Workspace::Error)
+        expect(Dir.exist?(File.join(@dir, "library/global/template/team"))).to be(true)
+      end
+
+      it "removes with --force without asking" do
+        allow(in_use).to receive(:check!).and_raise(selected)
+        allow(in_use).to receive(:warning).and_return(nil)
+
+        expect(command.remove("template/team", yes: true, force: true, cwd: cwd).outcome).to eq("removed")
+        expect(Dir.exist?(File.join(@dir, "library/global/template/team"))).to be(false)
+      end
+
+      it "warns which keys still name the set when --force removes it" do
+        allow(in_use).to receive(:warning).and_return({"code" => "template_in_use", "message" => "1 setting still name the tmuxinator template 'team' (global project via global)", "keys" => [{"workspace" => nil}]})
+
+        result = command.remove("template/team", yes: true, force: true, cwd: cwd)
+
+        expect(result.message).to include("Warning: 1 setting still name")
+        expect(result.warnings).to match([include("code" => "template_in_use", "keys" => [{"workspace" => nil}])])
+        expect(output.string).to include("Warning: 1 setting still name")
+      end
+
+      it "does not ask about other kinds" do
+        allow(in_use).to receive(:check!).and_raise(selected)
+        command.add(kind: "prompt", body: "x", name: "hello", cwd: cwd)
+
+        expect(command.remove("prompt/hello", yes: true, cwd: cwd).outcome).to eq("removed")
+      end
+    end
+
+    it "refuses a folder missing worktree.yml or project.yml, a file, a missing path and stdin" do
+      %w[worktree.yml project.yml].each do |missing|
+        files = {"project.yml" => "p\n", "worktree.yml" => "w\n"}.reject { |k, _| k == missing }
+        expect { command.add(kind: "template", path: template_set("no-#{missing}", files: files), name: "a", cwd: cwd) }
+          .to raise_error(Workspace::Error) { |e| expect([e.code, e.message, e.details["path"]]).to eq(["library_source_missing", "A tmuxinator template set needs project.yml and worktree.yml; #{File.join(@dir, "no-#{missing}")} has no #{missing}.", File.join(@dir, "no-#{missing}", missing)]) }
+      end
+      expect { command.add(kind: "template", path: source("one.yml", "x"), name: "b", cwd: cwd) }.to raise_error(Workspace::UsageError, /folder holding project.yml and worktree.yml/)
+      expect { command.add(kind: "template", path: File.join(@dir, "none"), name: "c", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+      expect { command.add(kind: "template", body: "x", name: "d", cwd: cwd) }.to raise_error(Workspace::UsageError, /not stdin/)
+      expect(Dir.exist?(File.join(@dir, "library/global/template"))).to be(false)
+    end
+  end
+
   describe "#install and #uninstall" do
     let(:installer) { instance_double(Workspace::LibraryInstaller) }
     let(:checkout) { instance_double(Workspace::WorkspaceCheckout) }

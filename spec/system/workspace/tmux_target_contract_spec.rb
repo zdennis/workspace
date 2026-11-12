@@ -69,7 +69,7 @@ RSpec.describe "tmux session targets (contract against real tmux)" do
   [["workspace.project-template.yml", {"PROJECT_NAME" => "proj.wt-x"}],
     ["workspace.project-worktree-template.yml", {"TMUX_SESSION_NAME" => "proj.wt-x"}]].each do |file, vars|
     it "sets @workspace from the line in #{file}" do
-      text = File.read(File.join(PROJECT_ROOT, "lib", "templates", file.to_s))
+      text = File.read(File.join(PROJECT_ROOT, "lib", "library", "template", "default", (file == "workspace.project-template.yml") ? "project.yml" : "worktree.yml"))
       vars.each { |k, v| text = text.gsub("{{#{k}}}", v) }
       text = text.gsub("{{WORKSPACE_NAME}}", "proj.worktree-x")
       line = text.lines.find { |l| l.include?("set-option") }

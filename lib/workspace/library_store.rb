@@ -1,3 +1,4 @@
+require "digest"
 require "fileutils"
 require "time"
 
@@ -12,15 +13,16 @@ module Workspace
     # play is a document an agent reads and follows; a prompt is short text
     # sent as typed; a recipe is the YAML fields `start --recipe` applies (see
     # {RecipeFile}); a skill is a directory holding `SKILL.md`; a spine is a
-    # template directory of plan-spine stage files.
-    KINDS = %w[agent play prompt recipe skill spine].freeze
+    # template directory of plan-spine stage files; a template is a tmuxinator
+    # template set, a directory holding `project.yml` and `worktree.yml`.
+    KINDS = %w[agent play prompt recipe skill spine template].freeze
 
     # Kinds stored as a directory, and the file inside it that holds the body.
-    DIRECTORY_KINDS = {"skill" => "SKILL.md", "spine" => "README.md"}.freeze
+    DIRECTORY_KINDS = {"skill" => "SKILL.md", "spine" => "README.md", "template" => "README.md"}.freeze
 
-    # Directory kinds whose body file may be missing: a spine template needs no
+    # Directory kinds whose body file may be missing: a spine or tmuxinator template needs no
     # `README.md`, which only describes it.
-    OPTIONAL_BODY = %w[spine].freeze
+    OPTIONAL_BODY = %w[spine template].freeze
 
     # @param dir [String] the scope's directory
     # @param scope [String] "global" or "project"
@@ -148,6 +150,28 @@ module Workspace
         .to_h { |rel| [rel, File.binread(File.join(root, rel))] }
     end
 
+    # The regular files of a template folder by relative path, sorted; a link and any name starting with a dot
+    # (`.DS_Store`, `.git`) are left out, so what is exported, imported and compared is the same set of files.
+    #
+    # @param path [String]
+    # @return [Array<String>]
+    def self.files_of(path)
+      root = File.realpath(path)
+      Dir.glob("**/*", base: root).sort.select do |rel|
+        full = File.join(root, rel)
+        File.file?(full) && !File.symlink?(full)
+      end
+    end
+
+    # A digest of {.files_of} and what each holds, to tell whether two template folders are the same.
+    #
+    # @param path [String]
+    # @return [String] sha256
+    def self.tree_sha(path)
+      root = File.realpath(path)
+      Digest::SHA256.hexdigest(files_of(path).map { |rel| "#{rel}\0#{Digest::SHA256.file(File.join(root, rel)).hexdigest}\n" }.join)
+    end
+
     # Removes a file, a symlink (never its target) or a directory tree.
     #
     # @param path [String]
@@ -204,7 +228,7 @@ module Workspace
         "description" => has_body ? description(File.read(body)) : nil,
         "updated_at" => stat.mtime.utc.iso8601
       }
-      result["files"] = readable ? template_files(path) : [] if kind == "spine"
+      result["files"] = readable ? template_files(path) : [] if %w[spine template].include?(kind)
       result
     end
 

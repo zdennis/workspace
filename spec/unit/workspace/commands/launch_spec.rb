@@ -816,7 +816,8 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
   let(:tmux) { double("tmux") }
   let(:path) { File.join(tmpdir, "workspace.proj1.yml") }
   let(:stale) { {path: path, running: "claude", wanted: "claude-dev", content: "new\n"} }
-  let(:project_config) { double("project_config", exists?: true, stale_agent_pane: stale, write_config: nil) }
+  let(:project_config) { double("project_config", exists?: true, stale_agent_pane: stale, agent_pane_text: "claude-dev") }
+  let(:writer) { instance_double(Workspace::TmuxinatorConfigWriter, patch: "new\n") }
   let(:main_agent) { instance_double(Workspace::MainAgent, kind: "claude") }
   let(:file_backup) { instance_double(Workspace::FileBackup, backup: "#{path}.workspace-backup-1") }
   let(:running) { [] }
@@ -827,7 +828,7 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
       project_config: project_config, window_layout: double("wl", arrange: nil), config: config,
       pipeline_config: double("pipeline_config", stages_for: nil, literal_sentinel_warnings: []),
       agent_ensurer: double("ensurer", call: Workspace::Commands::EnsureAgent::Result.new(:started)),
-      main_agent: main_agent, file_backup: file_backup, event_log: event_log,
+      main_agent: main_agent, file_backup: file_backup, writer: writer, event_log: event_log,
       sleeper: ->(_seconds) {}, output: output, error_output: error_output)
   end
   let(:event_log) { instance_double(Workspace::EventLog, record: true) }
@@ -854,7 +855,7 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
     launch
 
     expect(file_backup).to have_received(:backup).with(path, quiet: true)
-    expect(project_config).to have_received(:write_config).with(path, "new\n")
+    expect(writer).to have_received(:patch).with("proj1", inputs: respond_to(:call))
     expect(output.string).to include("proj1: agent pane now runs claude-dev (backup: #{path}.workspace-backup-1)")
   end
 
@@ -863,13 +864,13 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
 
     launch
 
-    expect(project_config).not_to have_received(:write_config)
+    expect(writer).not_to have_received(:patch)
     expect(file_backup).not_to have_received(:backup)
   end
 
   it "warns and goes on when the config can't be written" do
     allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
-    allow(project_config).to receive(:write_config).and_raise(Errno::EACCES)
+    allow(writer).to receive(:patch).and_raise(Errno::EACCES)
 
     expect(launch[:exit_code]).to eq(0)
     expect(error_output.string).to include("Warning: proj1: agent pane not brought up to date")
@@ -879,7 +880,7 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
   it "rewrites the config before a headless start" do
     allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
     allow(tmux).to receive(:custom_socket_option).and_return(nil)
-    allow(tmux).to receive(:start_headless) { expect(project_config).to have_received(:write_config).with(path, "new\n") }
+    allow(tmux).to receive(:start_headless) { expect(writer).to have_received(:patch).with("proj1", inputs: respond_to(:call)) }
 
     command.call(["proj1"], headless: true)
 
@@ -897,9 +898,10 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
     end
     let(:project_config) { Workspace::ProjectConfig.new(config: config, git: double("git"), output: StringIO.new, agent_commands: agent_commands) }
     let(:main_agent) { instance_double(Workspace::MainAgent, kind: "claude") }
+    let(:writer) { Workspace::TmuxinatorConfigWriter.new(config: config) }
 
     before do
-      allow(config).to receive(:tmuxinator_dir).and_return(tmpdir)
+      allow(config).to receive_messages(tmuxinator_dir: tmpdir, render_state_dir: File.join(tmpdir, "render"))
       File.write(path, "name: proj1\nwindows:\n  - w:\n      panes:\n        - claude-dev --continue || claude --continue\n")
     end
 
@@ -914,6 +916,57 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
     end
   end
 
+  context "with a render record" do
+    let(:project_config) { Workspace::ProjectConfig.new(config: config, git: double("git"), output: StringIO.new, agent_commands: agent_commands) }
+    let(:agent_commands) do
+      settings = Struct.new(:x) {
+        def load_global = {"agent" => {"commands" => {"claude" => "claude-dev"}}}
+
+        def load(_name) = {}
+      }.new
+      Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
+    end
+    let(:writer) { Workspace::TmuxinatorConfigWriter.new(config: config) }
+
+    before do
+      allow(config).to receive_messages(tmuxinator_dir: tmpdir, render_state_dir: File.join(tmpdir, "render"))
+      allow(config).to receive(:config_path_for) { |name| File.join(tmpdir, "workspace.#{name}.yml") }
+      text = "name: proj1\nwindows:\n  - w:\n      panes:\n        - claude --continue || claude\n"
+      File.write(path, text)
+      writer.write("proj1", text, kind: :project, template: "default", template_sha: "t", inputs: {workspace_name: "proj1", agent_kind: "claude", agent_command: "claude --continue || claude"})
+    end
+
+    it "keeps the config current and records the new kind and pane text" do
+      allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
+
+      launch
+
+      expect(writer.current?("proj1")).to be(true)
+      expect(writer.record("proj1").inputs).to include(agent_kind: "claude", agent_command: "claude-dev --continue || claude-dev")
+    end
+
+    it "rewrites the text the writer reads, not the text read before it" do
+      allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
+      changed = "name: proj1\nwindows:\n  - w:\n      panes:\n        - echo hi\n        - claude --continue || claude\n"
+      allow(file_backup).to receive(:backup) { File.write(path, changed) && nil }
+
+      launch
+
+      expect(File.read(path)).to eq(changed.sub("claude --continue || claude", "claude-dev --continue || claude-dev"))
+      expect(writer.current?("proj1")).to be(false) # the file was edited before the patch, so it stays modified
+    end
+
+    it "writes the config alone when it has no render record" do
+      allow(tmux).to receive(:sessions).and_return([], [], ["proj1"])
+      File.delete(writer.record_path("proj1"))
+
+      launch
+
+      expect(File.read(path)).to include("claude-dev --continue || claude-dev")
+      expect(File.exist?(writer.record_path("proj1"))).to be(false)
+    end
+  end
+
   context "when quiet" do
     let(:quiet) { true }
 
@@ -922,7 +975,7 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
 
       launch
 
-      expect(project_config).to have_received(:write_config)
+      expect(writer).to have_received(:patch)
       expect(output.string).to eq("")
     end
 

@@ -27,9 +27,12 @@ module Workspace
       #   before anything is removed. nil reads as no answer, which refuses without force.
       # @param tmux [Workspace::Tmux, nil] reads the project's tmux session name from its config before the config
       #   is removed, so stop can still kill a session whose name differs from the config name; nil uses the config name
+      # @param locks [Workspace::NameMigration, nil] the config is deleted inside the workspace's startup lock
+      #   ({NameMigration#hold_if_possible}), so `template apply` never writes it back; nil deletes without it
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, pr_status: nil, window_positions: nil, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, dev: nil, tmux: nil, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, pr_status: nil, window_positions: nil, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, dev: nil, tmux: nil, locks: nil, output: $stdout, input: $stdin)
         @tmux = tmux
+        @locks = locks
         @dev = dev
         @pr_status = pr_status
         @dev_stopped = false
@@ -204,7 +207,7 @@ module Workspace
         end_workflow_runs(project, out)
         archive_task(project, outcome, out)
         yield project if block_given?
-        @project_config.remove(project, quiet: quiet)
+        remove_config(project, quiet: quiet)
         @project_settings.remove(project)
         @window_positions&.delete(project)
         # EventLog#record never raises.
@@ -216,6 +219,12 @@ module Workspace
       end
 
       private
+
+      # Deletes the config and render record inside the workspace's startup lock when one was given.
+      def remove_config(name, **options)
+        return @project_config.remove(name, **options) unless @locks
+        @locks.hold_if_possible(name) { @project_config.remove(name, **options) }
+      end
 
       # Names the branches the kill is set to delete, so the person sees them before saying yes.
       def confirmation_question(branch_plan, remote_plan)

@@ -260,7 +260,20 @@ RSpec.describe Workspace::LibraryStore do
       expect(store.find("spine", "vault")).to include("readable" => false, "files" => [])
     end
 
-    it "gives only spine entries a files list" do
+    it "stores a tmuxinator template as a directory with an optional README.md and lists its files" do
+      dir = File.join(@dir, "set")
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, "project.yml"), "p\n")
+      File.write(File.join(dir, "worktree.yml"), "w\n")
+      store.copy_tree("template", "mine", dir)
+
+      expect(Workspace::LibraryStore::KINDS).to include("template")
+      expect(store.find("template", "mine")).to include("ref" => "template/mine", "path" => File.join(@dir, "global/template/mine"),
+        "readable" => true, "description" => nil, "files" => %w[project.yml worktree.yml])
+      expect(store.entries(kind: "template").map { |e| e["name"] }).to eq(["mine"])
+    end
+
+    it "gives only spine and template entries a files list" do
       store.write("play", "p", "# P\n")
       expect(store.find("play", "p")).not_to have_key("files")
     end

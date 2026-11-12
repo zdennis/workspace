@@ -46,6 +46,13 @@ RSpec.describe Workspace::ErrorCodes do
     expect(warnings.reject { |code| doc.include?("`#{code}`") }).to eq([])
   end
 
+  it "registers every row and warning code template apply gives" do
+    source = File.read(File.join(root, "lib/workspace/template_apply.rb"))
+    codes = source.scan(/"code" => "([a-z_]+)"|failed\(name, "([a-z_]+)"/).flatten.compact.uniq
+    expect(codes).to include("template_modified", "workspace_locked", "rollback_left_file", "prune_failed")
+    expect(codes - described_class::REGISTRY.keys).to eq([])
+  end
+
   it "documents every registered code in docs/README.json.md" do
     doc = File.read(File.join(root, "docs/README.json.md"))
     missing = described_class::REGISTRY.keys.reject { |code| doc.include?("`#{code}`") }

@@ -23,18 +23,6 @@ RSpec.describe Workspace::Config do
       expect(config.state_file).to eq(File.expand_path("~/.workspace-state.json"))
     end
 
-    it "returns the project template path" do
-      expect(config.project_template_path).to eq(
-        File.join(File.expand_path("~/.config/tmuxinator"), "workspace.project-template.yml")
-      )
-    end
-
-    it "returns the worktree template path" do
-      expect(config.worktree_template_path).to eq(
-        File.join(File.expand_path("~/.config/tmuxinator"), "workspace.project-worktree-template.yml")
-      )
-    end
-
     it "returns the window-tool binary name" do
       expect(config.window_tool).to eq("window-tool")
     end

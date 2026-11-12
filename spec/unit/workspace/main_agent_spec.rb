@@ -148,7 +148,7 @@ RSpec.describe Workspace::MainAgent do
     end
     subject(:main_agent) { described_class.new(project_config: project_config, agent_commands: agent_commands) }
     let(:project_config) do
-      config = double("config", worktree_template_path: File.join(Dir.tmpdir, "no-such-template.yml"))
+      config = double("config", tmuxinator_dir: File.join(Dir.tmpdir, "no-such-dir"), library_dir: File.join(Dir.tmpdir, "no-such-dir"), builtin_library_dir: File.join(Dir.tmpdir, "no-such-dir"))
       Workspace::ProjectConfig.new(config: config, git: nil, output: StringIO.new, agent_commands: agent_commands)
     end
 
@@ -236,7 +236,7 @@ RSpec.describe Workspace::MainAgent do
     end
     subject(:main_agent) { described_class.new(project_config: project_config, agent_commands: agent_commands) }
     let(:project_config) do
-      config = double("config", worktree_template_path: File.join(Dir.tmpdir, "no-such-template.yml"))
+      config = double("config", tmuxinator_dir: File.join(Dir.tmpdir, "no-such-dir"), library_dir: File.join(Dir.tmpdir, "no-such-dir"), builtin_library_dir: File.join(Dir.tmpdir, "no-such-dir"))
       Workspace::ProjectConfig.new(config: config, git: nil, output: StringIO.new, agent_commands: agent_commands)
     end
 
@@ -266,6 +266,34 @@ RSpec.describe Workspace::MainAgent do
       expect(main_agent.spawn_command("app", "claude")).to eq("claude")
     ensure
       File.delete(path) if path && File.exist?(path)
+    end
+  end
+
+  describe "#spawn_command over the shipped worktree tmuxinator template, for a workspace with no config" do
+    let(:settings) { {} }
+    let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: settings, load: {}) }
+    let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
+    let(:config) { instance_double(Workspace::Config) }
+    let(:real_project_config) { Workspace::ProjectConfig.new(config: config, git: instance_double(Workspace::Git), agent_commands: agent_commands, output: StringIO.new) }
+    subject(:main_agent) { described_class.new(project_config: real_project_config, agent_commands: agent_commands) }
+
+    before do
+      allow(config).to receive_messages(builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library"), library_dir: File.join(Dir.tmpdir, "no-such-dir"), tmuxinator_dir: File.join(Dir.tmpdir, "no-such-dir"))
+      allow(config).to receive(:config_path_for) { |name| File.join(@dir, "workspace.#{name}.yml") }
+    end
+
+    it "reads claude's template line, resume half dropped" do
+      expect(main_agent.spawn_command("app", "claude")).to eq("claude --dangerously-skip-permissions")
+    end
+
+    it "swaps in a configured claude program" do
+      settings.replace("agent" => {"commands" => {"claude" => "claude-dev"}})
+
+      expect(main_agent.spawn_command("app", "claude")).to eq("claude-dev --dangerously-skip-permissions")
+    end
+
+    it "is the bare executable for codex" do
+      expect(main_agent.spawn_command("app", "codex")).to eq("codex")
     end
   end
 end

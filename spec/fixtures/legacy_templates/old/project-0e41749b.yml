@@ -1,0 +1,24 @@
+# {{CONFIG_PATH}}
+
+name: {{PROJECT_NAME}}
+root: {{PROJECT_ROOT}}
+tmux_options: -CC
+attach: false
+
+on_project_start: |
+  tmux resize-pane -t {{PROJECT_NAME}}:0.0 -y 15%
+  tmux resize-pane -t {{PROJECT_NAME}}:0.2 -y 35%
+
+startup_pane: 2
+
+windows:
+  - workspace-{{PROJECT_NAME}}:
+      layout: even-vertical
+      panes:
+        - |
+          printf '\033]2;workspace-{{PROJECT_NAME}}\a' &&
+          tmux resize-pane -t {{PROJECT_NAME}}:0.0 -y 15% &&
+          tmux resize-pane -t {{PROJECT_NAME}}:0.2 -y 35% &&
+          ascii-banner "{{PROJECT_NAME}}" --rainbow --random -W --center --minimal
+        - claude --continue || claude
+        - echo "Ready to work on {{PROJECT_NAME}}"

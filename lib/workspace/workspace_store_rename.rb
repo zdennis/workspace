@@ -4,7 +4,7 @@ module Workspace
   # Renames the things keyed on one workspace's name, from +old+ to +new+: its
   # tmux session, project settings file, daemon run files, state directory,
   # inbox files, key in the state file, `.workspace-project` marker and, last,
-  # its tmuxinator config. The two names may differ in more than case.
+  # its tmuxinator config with its render record. The two names may differ in more than case.
   #
   # A step that fails is a warning and the next step still runs; a target name
   # already taken is left alone and warned about. The tmuxinator config is
@@ -63,10 +63,12 @@ module Workspace
     # @param display [String, nil] the banner text (`ascii-banner "..."`) now
     # @param new_display [String, nil] the banner text it gets; nil keeps the banner as it is
     # @param retry_hint [String] what the held-back config warning says about trying again
+    # @param writer [Workspace::TmuxinatorConfigWriter, nil] carries the config's render record; nil builds one over +config+
     def initialize(config:, project_config:, tmux:, state:, project_catalog_factory:, old:, new:, session:, new_session:,
       root: nil, branch: nil, new_branch: nil, display: nil, new_display: nil,
-      retry_hint: DEFAULT_RETRY_HINT)
+      retry_hint: DEFAULT_RETRY_HINT, writer: nil)
       @config = config
+      @writer = writer || TmuxinatorConfigWriter.new(config: config)
       @project_config = project_config
       @tmux = tmux
       @state = state
@@ -199,7 +201,8 @@ module Workspace
 
       session = Regexp.escape(@session)
       name = Regexp.escape(old)
-      text = File.read(from).each_line.with_index.map do |line, index|
+      before = File.read(from)
+      text = before.each_line.with_index.map do |line, index|
         line = line.sub("workspace.#{old}.yml", "workspace.#{new}.yml") if index.zero? && line.start_with?("#")
         next line.sub(/\A(name:\s*)#{session}(?=\s*\z)/) { "#{$1}#{new_session}" } if line.start_with?("name:")
         next line.sub(/\A(root:\s*).*?(?=\s*\z)/) { "#{$1}#{@root}" } if line.start_with?("root:") && @root
@@ -213,6 +216,7 @@ module Workspace
         line = line.sub(/(Worktree — )#{Regexp.escape(@branch)}(?= \()/) { "#{$1}#{@new_branch}" } if @branch && @new_branch
         line
       end.join
+      carry_record(before, text)
 
       # Between the two renames no config exists for a moment. The startup lock
       # keeps a daemon from starting; `launch` holds it only while it migrates
@@ -234,6 +238,36 @@ module Workspace
       [from, to]
     ensure
       File.delete(staged) if staged && File.exist?(staged)
+    end
+
+    # Moves the render record to the new name and rewrites what it says, before the config moves: while
+    # the config is under the old name its text tells whether the record was current, and a retry, which
+    # finds the config there still, carries a record the last run moved but did not rewrite. A record
+    # under the new name while the old one is there too is junk (the config step found no config under
+    # the new name) and is replaced.
+    def carry_record(before, after)
+      from = @writer.record_path(@old)
+      to = @writer.record_path(@new)
+      File.delete(to) if from != to && !File.basename(from).casecmp?(File.basename(to)) && listed?(from) && listed?(to)
+      move(from, to)
+      @writer.carry_record(@new, from: @old, before: before, after: after) { |inputs| carried_inputs(inputs) }
+    end
+
+    # Each input that names the old workspace, session, config path, branch or banner names the new one,
+    # and the checkout path is the new root when one was given; the rest stay as they are.
+    def carried_inputs(inputs)
+      swaps = {
+        workspace_name: [@old, @new], project_name: [@old, @new],
+        tmux_session_name: [@session, @new_session],
+        config_path: [@config.config_path_for(@old), @config.config_path_for(@new)],
+        worktree_branch: [@branch, @new_branch], display_name: [@display, @new_display]
+      }
+      carried = inputs.to_h do |key, value|
+        from, to = swaps[key]
+        [key, (to && value == from) ? to : value]
+      end
+      %i[project_root worktree_path].each { |key| carried[key] = @root if @root && carried.key?(key) }
+      carried
     end
 
     # What a swap killed part way left behind, under any process id: the old

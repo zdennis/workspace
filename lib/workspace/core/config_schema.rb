@@ -293,6 +293,15 @@ module Workspace
     end
     private_constant :NON_NEGATIVE_INTEGER
 
+    POSITIVE_INTEGER = lambda do |value|
+      number = NON_NEGATIVE_INTEGER.call(value)
+      raise ArgumentError, "must be an integer of 1 or more" if number.zero?
+      number
+    rescue ArgumentError
+      raise ArgumentError, "must be an integer of 1 or more"
+    end
+    private_constant :POSITIVE_INTEGER
+
     AGENT_KIND = lambda do |value|
       choices = AgentProvider.all.map(&:key)
       raise ArgumentError, "must be one of #{choices.join(", ")}" unless choices.include?(value)
@@ -330,6 +339,12 @@ module Workspace
       raise ArgumentError, "must be a spine template name: lowercase letters, digits and hyphens"
     end
     private_constant :SPINE_TEMPLATE
+
+    TMUXINATOR_TEMPLATE = lambda do |value|
+      return value if value.is_a?(String) && value.match?(IdPatterns::LIBRARY_NAME)
+      raise ArgumentError, "must be a tmuxinator template name: lowercase letters, digits and hyphens"
+    end
+    private_constant :TMUXINATOR_TEMPLATE
 
     # The kinds of start reference that `workflows.by_ref.<kind>` can pick a workflow for.
     WORKFLOW_REF_KINDS = %w[jira github_pr github_issue branch prompt].freeze
@@ -568,6 +583,11 @@ module Workspace
         doc: "The name of the `spine` library template that `spine init` and `start --spine` use when no `--template` is given (lowercase letters, digits and hyphens; default `default`, the built-in one). A worktree can set its own with `--name`; an unknown name is a `config validate` warning and `spine init` answers `unknown_template`"),
       Key.new(name: "spine.auto", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: false, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` runs [`spine init`](README.spine.md#spine-init) with the resolved `spine.template` once the worktree exists, so the new agent is sent the `spine` pack. `start --spine[=NAME]` and `--no-spine` override it for one start"),
+      # tmuxinator.template and tmuxinator.worktree_template choose the `template` library set a new tmuxinator config is rendered from.
+      Key.new(name: "tmuxinator.template", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, default: "default", examples: ["default", "team"], parser: TMUXINATOR_TEMPLATE,
+        doc: "The name of the `template` library set that new tmuxinator configs are rendered from (lowercase letters, digits and hyphens; default `default`, the built-in one). It names the set for both project and worktree configs unless `tmuxinator.worktree_template` is set; an unknown name is a `config validate` warning and `unknown_template` when a config is made"),
+      Key.new(name: "tmuxinator.worktree_template", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["default", "team"], parser: TMUXINATOR_TEMPLATE,
+        doc: "The name of the `template` library set that new worktree tmuxinator configs are rendered from, when it should differ from `tmuxinator.template` (unset: follows `tmuxinator.template`)"),
       Key.new(name: "plan.stall_seconds", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["300", "10m"], default: 300, parser: POSITIVE_DURATION,
         doc: "How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`)"),
       # go.* is read while a workspace is being created, so a worktree config does not exist yet: global and project layers only.
@@ -621,6 +641,11 @@ module Workspace
         doc: "Size at which a daemon's hook-event file rotates to `<workspace>.jsonl.1` (default `5MB`, at least `64KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes; see [`workspace events`](README.events.md)"),
       Key.new(name: "codex.hooks.install", scope: :global, type: :boolean, settable: true, default: true, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` installs workspace's hooks into Codex's user-level `$CODEX_HOME/hooks.json` (default `true`). `false` leaves that file alone, `doctor` reports the hooks as turned off by config, and Codex panes read as `hook_mode: \"scrape\"`; `init`, `doctor --fix` and `hooks uninstall` are unaffected. See [`start`](README.start.md)"),
+      # tmuxinator.backups.* bound the batches of tmuxinator config copies `template apply`, `restore` and `template backup` keep.
+      Key.new(name: "tmuxinator.backups.keep", scope: :global, type: :integer, settable: true, examples: ["20", "50"], default: 20, min: 1, parser: POSITIVE_INTEGER,
+        doc: "How many tmuxinator config backup batches (made by `template apply`, `template restore`, `template backup` and `template import`) are kept (default `20`); pruning never drops the newest batch holding a workspace or a template set `template import` replaced"),
+      Key.new(name: "tmuxinator.backups.max_age", scope: :global, type: :duration, settable: true, examples: ["720h", "48h"], parser: POSITIVE_DURATION,
+        doc: "How old a tmuxinator config backup batch may get before pruning removes it (a duration; unset: batches are only limited by `tmuxinator.backups.keep`); pruning never drops the newest batch holding a workspace or a template set `template import` replaced"),
       Key.new(name: "hooks", scope: :global, type: :mapping, sensitive: true, resolve: :none, settable: false, doc: "Global hooks applied to all projects"),
       Key.new(name: "layouts", scope: :global, type: :mapping, resolve: :merge, settable: false, doc: "Default tmux pane layouts"),
       Key.new(name: "event_log_compact_threshold", scope: :global, type: :text, settable: false,

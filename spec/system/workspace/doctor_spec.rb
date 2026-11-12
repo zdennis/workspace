@@ -968,7 +968,7 @@ RSpec.describe Workspace::Doctor do
 
       row = result[:rows].find { |r| r[:id] == "state-window-ids" }
       expect(row).to include(status: "fail", fix: "run 'workspace stop --all' then 'workspace launch' for affected projects")
-      expect(result[:rows].map { |r| r[:id] }).to include("ruby", "git", "templates")
+      expect(result[:rows].map { |r| r[:id] }).to include("ruby", "git")
       expect(result[:rows].find { |r| r[:id] == "iterm2" }[:status]).to eq("skipped")
       expect(result[:issues]).to eq(result[:rows].count { |r| r[:status] == "fail" })
       expect(output.string).to eq("")
@@ -1254,7 +1254,42 @@ RSpec.describe Workspace::Doctor do
         expect(pane_rows(result).map { |row| row[:status] }).to eq(["ok"])
       end
 
-      it "rewrites a stale fallback half after backing the file up" do
+      it "keeps the render record current with the new kind and pane text" do
+        path = write_config("myapp", pane)
+        writer = Workspace::TmuxinatorConfigWriter.new(config: config)
+        allow(config).to receive(:render_state_dir).and_return(File.join(tmpdir, "render"))
+        writer.write("myapp", File.read(path), kind: :worktree, template: "default", template_sha: "t",
+          inputs: {workspace_name: "myapp", agent_kind: "claude", agent_command: pane})
+
+        doctor_with(writer: writer).report(headless: true, fix: true)
+
+        expect(writer.current?("myapp")).to be(true)
+        expect(writer.record("myapp").inputs).to include(agent_kind: "claude",
+          agent_command: "claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions")
+      end
+
+      it "rewrites the text the writer reads when the file changed after the check" do
+        path = write_config("myapp", pane)
+        changed = File.read(path).sub("echo hi", "echo changed")
+        file_backup = instance_double(Workspace::FileBackup)
+        allow(file_backup).to receive(:backup) { File.write(path, changed) && nil }
+
+        doctor_with(file_backup: file_backup).report(headless: true, fix: true)
+
+        expect(File.read(path)).to include("echo changed").and include("- claude-dev --dangerously-skip-permissions")
+      end
+
+      it "writes the config alone when it has no render record" do
+        path = write_config("myapp", pane)
+        allow(config).to receive(:render_state_dir).and_return(File.join(tmpdir, "render"))
+
+        doctor_with.report(headless: true, fix: true)
+
+        expect(File.read(path)).to include("claude-dev")
+        expect(Dir.glob(File.join(tmpdir, "render", "*"))).to be_empty
+      end
+
+      it "rewrites the text the writer reads when the file changed after the check" do
         path = write_config("myapp", "claude-dev --continue || claude --continue")
         original = File.read(path)
 

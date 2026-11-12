@@ -1,13 +1,54 @@
 require "json"
+require "shellwords"
 
 module Workspace
   class CLI
-    # The output, exit and help helpers every command family calls. It holds no state: a method
-    # that writes or exits takes the {Invocation}, so it uses the streams of the run in progress
-    # (the buffers, inside `--help --json`).
+    # The output, exit, help and editor helpers every command family calls. A method that writes or
+    # exits takes the {Invocation}, so it uses the streams of the run in progress (the buffers, inside
+    # `--help --json`). What it holds is only what reaches outside the run: the input stream, how to
+    # tell a terminal and how to start an editor.
     class Common
       # Schema version of the action documents the mutating commands print with `--json`.
       ACTION_JSON_SCHEMA_VERSION = 1
+
+      # @param input [#no_input?, IO] the input stream; a {PromptInput} under `--no-input` opens no editor
+      # @param editor_launcher [#call, nil] runs an editor given its argv array (no shell) and returns true
+      #   when it exited 0; nil runs `system`
+      # @param interactive [#call, nil] says whether stdin and stdout are both terminals; nil checks $stdin and $stdout
+      def initialize(input: $stdin, editor_launcher: nil, interactive: nil)
+        @input = input
+        @editor_launcher = editor_launcher || ->(argv) { system(*argv) }
+        @interactive = interactive || -> { $stdin.tty? && $stdout.tty? }
+      end
+
+      # Runs $VISUAL or $EDITOR on +paths+ without a shell. With neither set (blank counts as unset),
+      # under --no-input, or when stdin or stdout is not a terminal, prints the paths and opens nothing.
+      #
+      # @param invocation [Invocation] whose `env` holds $VISUAL and $EDITOR and whose `output` gets the paths
+      # @param paths [Array<String>] the files to open
+      # @return [Boolean] true when an editor ran, false when the paths were printed instead
+      # @raise [Workspace::Error] `editor_failed` when $EDITOR is not a valid command or the editor fails
+      def open_in_editor(invocation, *paths)
+        command = [invocation.env["VISUAL"], invocation.env["EDITOR"]].find { |value| !value.to_s.strip.empty? }
+        if command.nil? || (@input.respond_to?(:no_input?) && @input.no_input?) || !@interactive.call
+          paths.each { |path| invocation.output.puts path }
+          return false
+        end
+        begin
+          argv = Shellwords.split(command)
+        rescue ArgumentError => e
+          raise Error.new("$EDITOR is not a valid command (#{e.message}). Edit #{paths.join(" ")} directly.", code: "editor_failed", details: {path: paths.first})
+        end
+        if argv.empty?
+          paths.each { |path| invocation.output.puts path }
+          return false
+        end
+
+        unless @editor_launcher.call(argv + paths)
+          raise Error.new("Could not run the editor '#{argv.first}'. The file is at #{paths.first}", code: "editor_failed", details: {path: paths.first, editor: argv.first})
+        end
+        true
+      end
 
       # Runs a mutating command's work and reports it. Without `--json` the
       # command's text is untouched and a non-zero `exit_code` from the block

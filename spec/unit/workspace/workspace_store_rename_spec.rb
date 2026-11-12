@@ -203,13 +203,13 @@ RSpec.describe Workspace::WorkspaceStoreRename do
   end
 
   describe "a config generated from the real templates" do
-    let(:templates) { File.join(PROJECT_ROOT, "lib", "templates") }
+    let(:templates) { File.join(PROJECT_ROOT, "lib", "library", "template", "default") }
     let(:new_root) { File.join(home, "src", "proj", ".worktrees", "other").tap { |dir| FileUtils.mkdir_p(dir) } }
 
     before do
       FileUtils.mkdir_p(config.tmuxinator_dir)
-      FileUtils.cp(File.join(templates, "workspace.project-template.yml"), config.project_template_path)
-      FileUtils.cp(File.join(templates, "workspace.project-worktree-template.yml"), config.worktree_template_path)
+      FileUtils.mkdir_p(File.join(config.builtin_library_dir, "template"))
+      FileUtils.cp_r(templates, File.join(config.builtin_library_dir, "template"))
       FileUtils.rm_f(config.config_path_for(old))
     end
 
@@ -300,6 +300,114 @@ RSpec.describe Workspace::WorkspaceStoreRename do
 
       expect(outcome.warnings.size).to eq(1)
       expect(outcome.warnings.first).to include("marker", '"elsewhere"', "neither #{old} nor #{new}")
+    end
+
+    describe "the render record" do
+      let(:carry_failures) { [] }
+      let(:writer_class) do
+        failures = carry_failures
+        Class.new(Workspace::TmuxinatorConfigWriter) do
+          define_method(:carry_record) do |*args, **options, &block|
+            error = failures.shift
+            raise error if error
+            super(*args, **options, &block)
+          end
+        end
+      end
+      let(:writer) { writer_class.new(config: config) }
+      let(:renamed) { "proj.worktree-other" }
+
+      def store_worktree
+        store(old: old, new: renamed, session: "proj-wt-feat", new_session: "proj-wt-other", root: new_root,
+          branch: "feat-branch", new_branch: "other-branch", display: "proj feat", new_display: "proj other", writer: writer)
+      end
+
+      def render_files
+        Dir.children(config.render_state_dir).sort
+      end
+
+      before { project_config.create_worktree("proj", "feat", checkout, "feat-branch", quiet: true) }
+
+      it "moves under the new name, says the new names and matches the rewritten config" do
+        outcome = store_worktree.call
+
+        expect(outcome.failed).to eq([])
+        expect(render_files).to eq(["#{renamed}.json"])
+        expect(writer.record(renamed).inputs).to include(workspace_name: renamed, tmux_session_name: "proj-wt-other",
+          worktree_path: new_root, worktree_branch: "other-branch", display_name: "proj other",
+          config_path: config.config_path_for(renamed), project_name: "proj", agent_kind: "claude")
+        expect(writer.current?(renamed)).to be(true)
+        expect(writer.record(old)).to be_nil
+      end
+
+      it "keeps a config edited by hand reading as edited" do
+        File.write(config.config_path_for(old), "#{File.read(config.config_path_for(old))}# mine\n")
+
+        store_worktree.call
+
+        expect(writer.record(renamed)).not_to be_nil
+        expect(writer.current?(renamed)).to be(false)
+      end
+
+      it "finishes on retry a record moved but not rewritten, the config still under the old name" do
+        carry_failures << Errno::ENOSPC
+
+        outcome = store_worktree.call
+
+        expect(outcome.failed).to eq(["tmuxinator_config"])
+        expect(described_class.listed?(config.config_path_for(old))).to be(true)
+        expect(render_files).to eq(["#{renamed}.json"])
+        expect(writer.record(renamed)).to be_nil
+        expect(writer.record(old)).to be_nil
+
+        expect(store_worktree.call.failed).to eq([])
+        expect(writer.record(renamed).inputs).to include(workspace_name: renamed, worktree_path: new_root)
+        expect(writer.current?(renamed)).to be(true)
+      end
+
+      it "finishes on retry a record rewritten when the config swap then failed" do
+        staged = File.join(config.tmuxinator_dir, described_class.staged_name(File.basename(config.config_path_for(renamed)), Process.pid))
+        allow(File).to receive(:rename).and_call_original
+        failed = false
+        allow(File).to receive(:rename).with(staged, config.config_path_for(renamed)).and_wrap_original do |original, *args|
+          next original.call(*args) if failed
+          failed = true
+          raise Errno::EIO
+        end
+
+        expect(store_worktree.call.failed).to eq(["tmuxinator_config"])
+        expect(described_class.listed?(config.config_path_for(old))).to be(true)
+        expect(render_files).to eq(["#{renamed}.json"])
+
+        expect(store_worktree.call.failed).to eq([])
+        expect(writer.record(renamed).inputs).to include(workspace_name: renamed, tmux_session_name: "proj-wt-other")
+        expect(writer.current?(renamed)).to be(true)
+      end
+
+      it "replaces a record left under the new name by a workspace that no longer has a config" do
+        write(writer.record_path(renamed), "{}")
+
+        store_worktree.call
+
+        expect(render_files).to eq(["#{renamed}.json"])
+        expect(writer.current?(renamed)).to be(true)
+      end
+
+      it "moves the record of a rename that changes only case" do
+        FileUtils.rm_f(config.config_path_for(old))
+        FileUtils.rm_rf(config.render_state_dir)
+        writer.write("Proj", "name: Proj\n", kind: :project, template: "default", template_sha: "abc",
+          inputs: {project_name: "Proj", workspace_name: "Proj", project_root: checkout})
+
+        allow(File).to receive(:delete).and_call_original
+        outcome = store(old: "Proj", new: "proj", session: "Proj", new_session: "proj", writer: writer).call
+
+        expect(File).not_to have_received(:delete).with(writer.record_path("proj"))
+        expect(outcome.failed).to eq([])
+        expect(render_files).to eq(["proj.json"])
+        expect(writer.record("proj").inputs).to include(workspace_name: "proj", project_name: "proj", project_root: checkout)
+        expect(writer.current?("proj")).to be(true)
+      end
     end
   end
 end

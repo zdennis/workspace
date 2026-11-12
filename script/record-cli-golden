@@ -1,12 +1,13 @@
 #!/usr/bin/env ruby
-# Records the CLI golden fixture (S8 T39) into spec/fixtures/cli_golden/: every help page with
+# Records the CLI golden fixture into spec/fixtures/cli_golden/: every help page with
 # --help and --help --json, every verb with --bogus and --bogus --json, the reviewed
 # no-argument verbs, the main help and an unknown verb. Each case runs through CliGolden.run
 # (spec/support/cli_golden.rb); spec/system/workspace/cli_golden_spec.rb compares.
 #
 #   script/record-cli-golden    rewrite every fixture file, removing ones no case writes
 #
-# S8 records it once, at T39; a diff in it fails the commit, so do not re-record within S8.
+# Re-record only when a change moves the output on purpose, and commit only the files it names
+# (`git diff --stat spec/fixtures/cli_golden/`).
 
 require "fileutils"
 
