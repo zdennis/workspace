@@ -231,6 +231,7 @@ require_relative "workspace/status_scope"
 require_relative "workspace/template_selection"
 require_relative "workspace/template_status"
 require_relative "workspace/template_apply"
+require_relative "workspace/template_adopt"
 require_relative "workspace/project_groups"
 require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/agent_message_client"
@@ -1292,6 +1293,7 @@ module Workspace
       template_validator: template_validator, differ: TextDiff.new, config_command: config_command,
       selection: TemplateSelection.new(status_scope: status_scope, catalog: project_catalog, project_config: project_config),
       status: template_status,
+      adopt: TemplateAdopt.new(library: library, project_config: project_config, writer: tmuxinator_config_writer, main_agent: main_agent, locks: name_migration),
       apply: TemplateApply.new(status: template_status, writer: tmuxinator_config_writer,
         backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer), locks: name_migration,
         project_config: project_config, tmux: tmux, differ: TextDiff.new,

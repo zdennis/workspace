@@ -12,7 +12,12 @@ module Workspace
 
     # What a sidecar holds, read back: `kind` a Symbol and `inputs` symbol-keyed, so
     # `ProjectConfig#render(record.kind, record.inputs, text)` takes them as they are.
-    Record = Data.define(:kind, :template, :template_sha, :inputs, :rendered_sha)
+    # `approx` is false unless the record was adopted from a config a render does not reproduce.
+    Record = Data.define(:kind, :template, :template_sha, :inputs, :rendered_sha, :approx) do
+      def initialize(approx: false, **fields)
+        super
+      end
+    end
 
     # @param config [Workspace::Config] for `config_path_for` and `render_state_dir`
     def initialize(config:)
@@ -44,13 +49,17 @@ module Workspace
     # @param template [String] see {#write}
     # @param template_sha [String] see {#write}
     # @param inputs [Hash] see {#write}
+    # @param approx [Boolean] the config does not hold +text+ (`template adopt` found no exact render): +text+ is
+    #   what a render writes, its sha256 is recorded, so the file reads as edited, and the record says `approx`
     # @return [void]
     # @raise [SystemCallError] when the write fails; the sidecar is left as it was
-    def write_record_for(name, text, kind:, template:, template_sha:, inputs:)
-      write_record(name, {
+    def write_record_for(name, text, kind:, template:, template_sha:, inputs:, approx: false)
+      data = {
         "schema" => SCHEMA, "kind" => kind.to_s, "template" => template, "template_sha" => template_sha,
         "inputs" => inputs.transform_keys(&:to_s), "rendered_sha" => sha(text)
-      })
+      }
+      data["approx"] = true if approx
+      write_record(name, data)
     end
 
     # @param name [String] the workspace name
@@ -61,7 +70,7 @@ module Workspace
       data = read_record(name)
       return unless data && data["inputs"]["workspace_name"] == name
       Record.new(kind: data["kind"].to_sym, template: data["template"], template_sha: data["template_sha"],
-        inputs: data["inputs"].transform_keys(&:to_sym), rendered_sha: data["rendered_sha"])
+        inputs: data["inputs"].transform_keys(&:to_sym), rendered_sha: data["rendered_sha"], approx: data["approx"] == true)
     end
 
     # Rewrites a sidecar a rename has moved to +name+ while its inputs still name +from+: the block gives

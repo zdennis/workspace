@@ -267,6 +267,22 @@ RSpec.describe Workspace::Commands::Template do
       expect(JSON.parse(out.string)).to include("value_state" => nil)
     end
 
+    it "shows the values adopt would recover for a workspace with no record, marked (recovered)" do
+      adopter = instance_double(Workspace::TemplateAdopt)
+      allow(adopter).to receive(:recover).with("app").and_return(Workspace::TemplateAdopt::Recovered.new(kind: :project, inputs: {workspace_name: "app", project_name: "app", agent_kind: "claude"}))
+      allow(project_config).to receive(:agent_pane_value).with("claude", "app").and_return("claude --current")
+      adopting = described_class.new(library: library, project_config: project_config, writer: writer, template_validator: validator, differ: differ, adopt: adopter, output: out, error_output: err)
+
+      adopting.variables(kind: "project", workspace: "app")
+
+      expect(out.string.lines.grep(/\AWORKSPACE_NAME/).first).to include("app (recovered)")
+      expect(out.string.lines.grep(/\AAGENT_COMMAND/).first).to include("claude --current (recovered)")
+      out.truncate(0)
+      out.rewind
+      adopting.variables(workspace: "app", json: true)
+      expect(JSON.parse(out.string)).to include("value_state" => "recovered")
+    end
+
     it "refuses an unknown kind, and writes nothing" do
       before = Dir.glob("**/*", base: @dir).sort
 
@@ -652,6 +668,91 @@ RSpec.describe Workspace::Commands::Template do
         expect(e.code).to eq("template_builtin_readonly")
       }
       expect(opened).to eq([])
+    end
+  end
+
+  describe "#status notes" do
+    let(:selection) { instance_double(Workspace::TemplateSelection, call: %w[old hand]) }
+    let(:statuses) { instance_double(Workspace::TemplateStatus) }
+    let(:reporting) do
+      described_class.new(library: library, project_config: project_config, writer: writer, template_validator: validator, differ: differ,
+        selection: selection, status: statuses, output: out, error_output: err)
+    end
+
+    def row(name, approx)
+      Workspace::TemplateStatus::Row.new(workspace: name, state: "modified", kind: "project", template: "default", selected: "default", stale: false, reasons: [], approx: approx)
+    end
+
+    it "says an adopted record may hold edits, apart from one edited since it was rendered" do
+      allow(statuses).to receive(:call).and_return([row("old", true), row("hand", false)])
+
+      reporting.status
+
+      lines = out.string.lines.map(&:rstrip)
+      expect(lines[1]).to include("adopted without an exact render; may hold edits (apply --force re-renders it)")
+      expect(lines[2]).to end_with("edited since it was rendered")
+    end
+
+    it "puts approx on each --json row" do
+      allow(statuses).to receive(:call).and_return([row("old", true)])
+
+      reporting.status(json: true)
+
+      expect(JSON.parse(out.string)["workspaces"].first).to include("approx" => true)
+    end
+  end
+
+  describe "#adopt" do
+    let(:selection) { instance_double(Workspace::TemplateSelection, call: %w[app api]) }
+    let(:adopter) { instance_double(Workspace::TemplateAdopt) }
+    let(:adopting) do
+      described_class.new(library: library, project_config: project_config, writer: writer, template_validator: validator, differ: differ,
+        selection: selection, adopt: adopter, output: out, error_output: err)
+    end
+
+    def row(name, outcome, reason = nil, match = nil)
+      {"workspace" => name, "outcome" => outcome, "reason" => reason, "message" => nil, "match" => match}
+    end
+
+    it "hands the selection and --dry-run to TemplateAdopt" do
+      allow(adopter).to receive(:call).and_return([])
+
+      adopting.adopt(names: ["app"], cwd: "/src", dry_run: true, json: true)
+
+      expect(selection).to have_received(:call).with(names: ["app"], all: false, project: nil, working_dir: "/src")
+      expect(adopter).to have_received(:call).with(%w[app api], dry_run: true)
+    end
+
+    it "is ok, partial or failed by the failed rows and dry_run under --dry-run, counting adopted rows by match" do
+      cases = {
+        [[row("app", "adopted", nil, "exact"), row("api", "adopted", nil, "approx"), row("x", "skipped", "tracked")], false] => ["ok", 0],
+        [[row("app", "failed", "adopt_unrecoverable"), row("api", "adopted", nil, "exact")], false] => ["partial", 3],
+        [[row("app", "failed", "adopt_unrecoverable")], false] => ["failed", 1],
+        [[row("app", "would_adopt", nil, "exact")], true] => ["dry_run", 0]
+      }
+      cases.each do |(rows, dry_run), (status, code)|
+        allow(adopter).to receive(:call).and_return(rows)
+        outcome = adopting.adopt(dry_run: dry_run, json: true)
+        expect([outcome[:status], outcome[:exit_code]]).to eq([status, code])
+      end
+      allow(adopter).to receive(:call).and_return([row("app", "adopted", nil, "exact"), row("api", "adopted", nil, "approx"), row("b", "adopted", nil, "exact")])
+      expect(adopting.adopt(json: true)[:extra]).to eq("adopted" => {"exact" => 2, "approx" => 1})
+    end
+
+    it "prints a line per row in text mode, and nothing under --json" do
+      allow(adopter).to receive(:call).and_return([row("app", "adopted", nil, "exact"), row("api", "skipped", "tracked")])
+
+      adopting.adopt(dry_run: true)
+
+      expect(out.string).to eq("app: adopted exact\napi: skipped: tracked\nDry run: nothing was written.\n")
+      out.truncate(0)
+      out.rewind
+      adopting.adopt(json: true)
+      expect(out.string).to be_empty
+    end
+
+    it "is not available without the adopt part" do
+      expect { command.adopt }.to raise_error(Workspace::Error, /template adopt is not available/)
     end
   end
 

@@ -1641,10 +1641,10 @@ module Workspace
     TEMPLATE_AGAINST_TEXT = "diff: the tmuxinator template to compare with (default: default)"
     TEMPLATE_FILE_TEXT = "validate and render: use this tmuxinator template file, saved or not, instead of a set"
     TEMPLATE_SAMPLE_TEXT = "render: fill with each placeholder's sample value instead of a workspace's"
-    TEMPLATE_ALL_TEXT = "status and apply: every workspace that has a tmuxinator config"
-    TEMPLATE_PROJECT_TEXT = "status and apply: every workspace of a project (NAME, or the project of the current workspace)"
+    TEMPLATE_ALL_TEXT = "status, apply and adopt: every workspace that has a tmuxinator config"
+    TEMPLATE_PROJECT_TEXT = "status, apply and adopt: every workspace of a project (NAME, or the project of the current workspace)"
     TEMPLATE_DIFF_TEXT = "render: print a unified diff against the workspace's current config instead of the text; apply: also show what each config would change by"
-    TEMPLATE_DRY_RUN_TEXT = "apply: say what would happen to each config, writing nothing and taking no backup"
+    TEMPLATE_DRY_RUN_TEXT = "apply and adopt: say what would happen to each config, writing nothing (apply: and taking no backup)"
     TEMPLATE_FORCE_TEXT = "apply: also overwrite configs edited since they were rendered (after a backup)"
     TEMPLATE_ROLLBACK_TEXT = "apply: on the first workspace that fails, put back every config the batch wrote and stop"
 
@@ -1670,6 +1670,7 @@ module Workspace
       diff: "Print a unified diff against the workspace's current config instead of the text",
       apply_diff: "Also print a unified diff of what each config would change by",
       dry_run: "Say what would happen to each config (would apply, unchanged, skipped), writing nothing and taking no backup",
+      dry_run_adopt: "Say what would happen to each config (would adopt exact or approx, tracked, gone), writing nothing",
       force: "Also overwrite configs edited since they were rendered (a backup is taken first); a config with no render record is still skipped",
       rollback: "On the first workspace that fails, put back every config and render record the batch wrote, and stop"
     }.freeze
@@ -1723,7 +1724,8 @@ module Workspace
           "selects now and the current agent settings, and writes it when that changes it. Every config and render",
           "record is copied into one backup batch before it is written (`Backup:` names it). A config edited since it",
           "was rendered is skipped (skipped: modified) unless --force; one with no render record is skipped",
-          "(skipped: untracked) even with --force. A running session keeps its old layout until it is relaunched.",
+          "(skipped: untracked; `template adopt` builds one) even with --force. A record adopted without an exact",
+          "render is skipped like an edited one (skipped: approx). A running session keeps its old layout until it is relaunched.",
           "Each workspace waits for its startup lock; one renamed or removed meanwhile is skipped: gone. A workspace",
           "that fails does not stop the others: exit 3 when some failed, 1 when all did. Name the workspaces, or give",
           "--all or --project; with none of them, the workspace of the current directory."
@@ -1737,6 +1739,28 @@ module Workspace
           ["workspace template apply api --force", "re-render api's config even though it was edited by hand"],
           ["workspace template apply --project api --rollback-all-on-error", "all of the project api, or none if one fails"],
           ["workspace template apply --all --json", "for a script: one row per workspace with its outcome"]
+        ]
+      },
+      "adopt" => {
+        usage: ["template adopt [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--json]"],
+        summary: "Build the render record of a tmuxinator config written before tmuxinator template records existed",
+        about: [
+          "A config with no render record is `untracked`: status and apply have nothing to render it from. Adopt reads",
+          "the inputs back out of the file (name:, root:, the banner, a worktree's `Worktree — BRANCH (PROJECT)` line,",
+          "its task id and the agent its main pane runs), renders the tmuxinator template a new config would use now,",
+          "and writes only the record, never the config. When that render is byte for byte the file the record is",
+          "`exact` and the config reads current. Otherwise it is `approx`: the file reads modified, and apply skips it",
+          "(skipped: approx) unless --force. A config that already has a record is skipped (tracked). Each workspace",
+          "waits for its startup lock. Name the workspaces, or give --all or --project; with none of them, the",
+          "workspace of the current directory."
+        ],
+        options: [["--all", TEMPLATE_PAGE_TEXT[:all]], ["--project [NAME]", TEMPLATE_PAGE_TEXT[:project]],
+          ["--dry-run", TEMPLATE_PAGE_TEXT[:dry_run_adopt]], JSON_OPT],
+        examples: [
+          ["workspace template adopt --all --dry-run", "which configs could be adopted and whether each would be exact"],
+          ["workspace template adopt --all", "build records for every config that has none"],
+          ["workspace template adopt api.worktree-login", "just that workspace"],
+          ["workspace template adopt --all --json", "for a script: one row per workspace with its match"]
         ]
       },
       "show" => {

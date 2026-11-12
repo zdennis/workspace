@@ -8,7 +8,7 @@ module Workspace
     # `template` library entry (a directory holding `project.yml` and `worktree.yml`); the choice
     # is the `tmuxinator.template` and `tmuxinator.worktree_template` keys, resolved by
     # {Workspace::Library#tmuxinator_template}. `list`, `show`, `path`, `variables`, `render`, `validate`, `diff` and `status`
-    # read; `new`, `edit` and `use` change a set or the key that selects one, and `apply` re-renders configs.
+    # read; `new`, `edit` and `use` change a set or the key that selects one, `apply` re-renders configs and `adopt` writes the render records of configs that have none.
     class Template
       # Bumped whenever a `--json` payload's shape changes in a backward-incompatible way.
       JSON_SCHEMA_VERSION = 1
@@ -28,13 +28,15 @@ module Workspace
       # @param selection [Workspace::TemplateSelection, nil] settles which workspaces `status` reports on; nil refuses `status`
       # @param status [Workspace::TemplateStatus, nil] classifies each one; nil refuses `status`
       # @param apply [Workspace::TemplateApply, nil] re-renders the selected configs; nil refuses `apply`
+      # @param adopt [Workspace::TemplateAdopt, nil] builds render records for configs that have none; nil refuses `adopt` (and `variables` shows no recovered values)
       # @param output [IO] output stream
       # @param error_output [IO] where `render`'s problems go in text mode
-      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, selection: nil, status: nil, apply: nil, output: $stdout, error_output: $stderr)
+      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, selection: nil, status: nil, apply: nil, adopt: nil, output: $stdout, error_output: $stderr)
         @config_command = config_command
         @selection = selection
         @status = status
         @apply = apply
+        @adopt = adopt
         @library = library
         @project_config = project_config
         @writer = writer
@@ -124,15 +126,25 @@ module Workspace
         kinds = kinds_for(kind)
         record = workspace && @writer.record(workspace)
         inputs = record_inputs(record) if record
+        recovered = workspace && !record && @adopt&.recover(workspace)
+        inputs = TemplateStatus.record_inputs(TmuxinatorConfigWriter::Record.new(kind: recovered.kind, template: "", template_sha: "", inputs: recovered.inputs, rendered_sha: ""), @project_config) if recovered
         rows = TemplateVariables::ROWS.select { |row| (row.kinds & kinds).any? }.map { |row| variable_row(row, inputs, workspace) }
         if json
           doc = JsonEnvelope.document("variables", rows, schema_version: JSON_SCHEMA_VERSION).merge("workspace" => workspace)
           doc["value_state"] = if workspace
-            record ? "recorded" : "no_record"
+            if record then "recorded"
+            elsif recovered then "recovered"
+            else
+              "no_record"
+            end
           end
           @output.puts JSON.generate(doc)
         else
-          print_variables(rows, workspace, !record.nil?)
+          print_variables(rows, workspace, if record
+            :recorded
+          else
+            (recovered ? :recovered : nil)
+          end)
         end
       end
 
@@ -261,6 +273,32 @@ module Workspace
         {results: result.rows, status: status, exit_code: JsonEnvelope::ACTION_EXIT_CODES.fetch(status), warnings: result.warnings,
          extra: {"backup" => result.backup, "rolled_back" => result.rolled_back,
                  "skipped" => result.rows.select { |row| row["outcome"] == "skipped" }.map { |row| row["reason"] }.tally}}
+      end
+
+      # Builds the render record of each selected workspace that has none (see {TemplateAdopt}) and answers what
+      # `CLI::Common#run_action` reports; in text mode each row is also printed. Only records are written.
+      #
+      # @param names [Array<String>] see {#status}
+      # @param all [Boolean] see {#status}
+      # @param project [nil, true, String] see {#status}
+      # @param cwd [String] see {#status}
+      # @param dry_run [Boolean] decide every row and write nothing
+      # @param json [Boolean] print nothing; the caller prints the action document
+      # @return [Hash] `results`, `status`, `exit_code` and `extra` (`adopted`: the adopted rows counted by `match`)
+      # @raise [Workspace::UsageError] for names mixed with `--all` or `--project`
+      # @raise [Workspace::Error] `unknown_workspace`, `not_in_workspace`
+      def adopt(names: [], all: false, project: nil, cwd: Dir.pwd, dry_run: false, json: false)
+        raise Error, "template adopt is not available: no selection was wired" unless @selection && @adopt
+
+        rows = @adopt.call(@selection.call(names: names, all: all, project: project, working_dir: cwd), dry_run: dry_run)
+        status = if rows.any? { |row| row["outcome"] == "failed" } then JsonEnvelope.action_status(rows)
+        elsif dry_run then "dry_run"
+        else
+          "ok"
+        end
+        print_adopt(rows, dry_run) unless json
+        {results: rows, status: status, exit_code: JsonEnvelope::ACTION_EXIT_CODES.fetch(status),
+         extra: {"adopted" => rows.select { |row| row["match"] }.map { |row| row["match"] }.tally}}
       end
 
       # Prints a unified diff of each file of a tmuxinator template set against the same file of another set.
@@ -411,6 +449,7 @@ module Workspace
         table = rows.map do |row|
           note = row.reasons.map { |reason| STATUS_REASONS.fetch(reason, reason) }.join(", ")
           note = "edited since it was rendered#{"; also #{note}" unless note.empty?}" if row.state == "modified"
+          note = "adopted without an exact render; may hold edits (apply --force re-renders it)#{"; also #{note}" unless note.empty?}" if row.state == "modified" && row.approx
           note = "no render record" if row.state == "untracked"
           [TerminalText.escape(row.workspace), row.state, TerminalText.escape(row.template || "-"), note]
         end
@@ -447,12 +486,30 @@ module Workspace
         value ? "pre_window: export WORKSPACE_TASK=#{value}" : "(dropped)"
       end
 
+      def print_adopt(rows, dry_run)
+        @output.puts "No workspaces to adopt." if rows.empty?
+        rows.each do |row|
+          line = "#{TerminalText.escape(row["workspace"])}: #{row["outcome"].tr("_", " ")}"
+          line += " #{row["match"]}" if row["match"]
+          line += ": #{row["reason"]}" if row["reason"]
+          line += " (#{TerminalText.escape(row["message"])})" if row["message"]
+          @output.puts line
+        end
+        @output.puts "Dry run: nothing was written." if dry_run
+      end
+
       def print_variables(rows, workspace, record)
         header = %w[NAME KINDS REQUIRED] + (workspace ? ["VALUE"] : []) + %w[DESCRIPTION]
         table = rows.map do |r|
           required = r["required"].select { |_, needed| needed }.keys
           cells = [r["name"], r["kinds"].join(", "), required.empty? ? "no" : required.join(", ")]
-          cells << (record ? TerminalText.escape(r["value"].to_s) : "(no record)") if workspace
+          if workspace
+            cells << (if record
+                        TerminalText.escape(r["value"].to_s) + ((record == :recovered) ? " (recovered)" : "")
+                      else
+                        "(no record)"
+            end)
+          end
           cells << r["description"]
         end
         table.unshift(header)

@@ -11,7 +11,7 @@ module Workspace
   #
   # Row outcomes: `unchanged`, `applied` (`running` says its tmux session is up, so a relaunch takes it;
   # `record_only` that only the render record was rewritten, for another set that renders the same text),
-  # `would_apply` in its place under a dry run, `skipped` (`modified` or untracked records, `gone`, or
+  # `would_apply` in its place under a dry run, `skipped` (`modified`, `approx` (a record `template adopt` made without an exact render) or untracked records, `gone`, or
   # `not_reached` after a roll back) and `failed` (`reason` is the error code, `workspace_locked` for a lock
   # that can't be taken); with a roll back, rows already written become `rolled_back`. A failed row does not
   # stop the others unless +rollback+ is asked for.
@@ -95,6 +95,7 @@ module Workspace
         return row(name, "skipped", "untracked", "no render record to render it from; run: workspace template adopt #{name}", base)
       end
       if state == "modified" && !force
+        return with_diff(approx_row(name, base), found, diff) if found.record.approx
         return with_diff(row(name, "skipped", "modified", "edited since it was rendered; --force overwrites it (after a backup)", base.merge("code" => "template_modified")), found, diff)
       end
       unless found.rendered
@@ -127,6 +128,11 @@ module Workspace
     def row(name, outcome, reason, message, extra = {})
       {"workspace" => name, "outcome" => outcome, "reason" => reason, "message" => message, "state" => nil, "template" => nil,
        "running" => false, "record_only" => false, "code" => nil}.merge(extra)
+    end
+
+    # A record `template adopt` could not make exact: no render ever wrote this file.
+    def approx_row(name, base)
+      row(name, "skipped", "approx", "adopted without an exact render, so it may hold edits; --force overwrites it (after a backup)", base.merge("code" => "template_approx"))
     end
 
     def failed(name, code, message, extra = {})

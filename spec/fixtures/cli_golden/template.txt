@@ -4,6 +4,7 @@
 Usage: workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]
        workspace template status [WORKSPACE...] [--all | --project [NAME]] [--json]
        workspace template apply [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--json]
+       workspace template adopt [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--json]
        workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]
        workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]
        workspace template variables [--kind KIND] [--name WORKSPACE] [--json]
@@ -22,6 +23,7 @@ Subcommands:
   list       List the tmuxinator templates and which one each kind of new config uses
   status     Show whether each tmuxinator config still matches its tmuxinator template
   apply      Re-render tmuxinator configs from the tmuxinator template each one selects today
+  adopt      Build the render record of a tmuxinator config written before tmuxinator template records existed
   show       Print the files of a tmuxinator template
   path       Print where the files of a tmuxinator template are
   variables  List the placeholders a tmuxinator template may hold
@@ -41,11 +43,11 @@ Run `workspace template VERB --help` for a verb's options.
         --against NAME               diff: the tmuxinator template to compare with (default: default)
         --sample                     render: fill with each placeholder's sample value instead of a workspace's
         --diff                       render: print a unified diff against the workspace's current config instead of the text; apply: also show what each config would change by
-        --dry-run                    apply: say what would happen to each config, writing nothing and taking no backup
+        --dry-run                    apply and adopt: say what would happen to each config, writing nothing (apply: and taking no backup)
         --force                      apply: also overwrite configs edited since they were rendered (after a backup)
         --rollback-all-on-error      apply: on the first workspace that fails, put back every config the batch wrote and stop
-        --all                        status and apply: every workspace that has a tmuxinator config
-        --project [NAME]             status and apply: every workspace of a project (NAME, or the project of the current workspace)
+        --all                        status, apply and adopt: every workspace that has a tmuxinator config
+        --project [NAME]             status, apply and adopt: every workspace of a project (NAME, or the project of the current workspace)
         --json                       Print one JSON document
     -h, --help                       Show this help
 
@@ -53,19 +55,19 @@ Examples:
   workspace template list    # every tmuxinator template, and which one a new config of each kind uses
   workspace template status --all    # which tmuxinator configs are current, stale, edited or have no render record
   workspace template apply --all --dry-run --diff    # what re-rendering every tmuxinator config would change, writing nothing
+  workspace template adopt --all --dry-run    # which tmuxinator configs with no render record could be adopted, writing nothing
   workspace template variables --name api.worktree-login    # the placeholders and what that config holds
   workspace template render --sample    # fill the tmuxinator template with sample values, writing nothing
   workspace template validate team    # check the tmuxinator template team before using it
   workspace template new team --from default    # start your own copy of the default tmuxinator template
   workspace template edit team    # change it in $EDITOR, then check it
   workspace template use team    # make new tmuxinator configs render from it
-  workspace template diff team    # how the tmuxinator template team differs from the default
 --- stderr
 --- end
 ### workspace template --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]","workspace template status [WORKSPACE...] [--all | --project [NAME]] [--json]","workspace template apply [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--json]","workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template variables [--kind KIND] [--name WORKSPACE] [--json]","workspace template render [NAME | --file FILE] [--kind KIND] [--name WORKSPACE | --sample] [--diff] [--json]","workspace template validate [NAME | --file FILE] [--kind KIND] [--name WORKSPACE] [--json]","workspace template diff [NAME] [--against NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template new NAME [--from NAME] [--scope SCOPE] [--name WORKSPACE] [--json]","workspace template edit [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template use NAME [--kind KIND] [--scope SCOPE] [--name WORKSPACE] [--json]"],"description":"A tmuxinator template is a set of tmuxinator layout files (project.yml for a standard project,\nworktree.yml for a git worktree) that new tmuxinator configs are rendered from. Sets are\n`template` entries of the library; `tmuxinator.template` and `tmuxinator.worktree_template` choose one.","options":[],"examples":[{"command":"workspace template list","scenario":"every tmuxinator template, and which one a new config of each kind uses"},{"command":"workspace template status --all","scenario":"which tmuxinator configs are current, stale, edited or have no render record"},{"command":"workspace template apply --all --dry-run --diff","scenario":"what re-rendering every tmuxinator config would change, writing nothing"},{"command":"workspace template variables --name api.worktree-login","scenario":"the placeholders and what that config holds"},{"command":"workspace template render --sample","scenario":"fill the tmuxinator template with sample values, writing nothing"},{"command":"workspace template validate team","scenario":"check the tmuxinator template team before using it"},{"command":"workspace template new team --from default","scenario":"start your own copy of the default tmuxinator template"},{"command":"workspace template edit team","scenario":"change it in $EDITOR, then check it"},{"command":"workspace template use team","scenario":"make new tmuxinator configs render from it"},{"command":"workspace template diff team","scenario":"how the tmuxinator template team differs from the default"}],"sections":[{"heading":"Subcommands","text":"list       List the tmuxinator templates and which one each kind of new config uses\n  status     Show whether each tmuxinator config still matches its tmuxinator template\n  apply      Re-render tmuxinator configs from the tmuxinator template each one selects today\n  show       Print the files of a tmuxinator template\n  path       Print where the files of a tmuxinator template are\n  variables  List the placeholders a tmuxinator template may hold\n  render     Fill a tmuxinator template and print the result, writing nothing\n  validate   Check a tmuxinator template before using it, writing nothing\n  diff       Show how a tmuxinator template differs from another\n  new        Copy a tmuxinator template into a new one you can edit\n  edit       Open a tmuxinator template in your editor, then check it\n  use        Select the tmuxinator template new configs render from\nRun `workspace template VERB --help` for a verb's options.\n\n        --from NAME                  new: the tmuxinator template to copy (default: default)\n        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them); new and use: global or project (new: default global; use: the layer `config set` picks, global outside a workspace)\n        --kind KIND                  show, path, variables, validate, diff and edit: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's); use: worktree sets tmuxinator.worktree_template (default: tmuxinator.template)\n        --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)\n        --file FILE                  validate and render: use this tmuxinator template file, saved or not, instead of a set\n        --against NAME               diff: the tmuxinator template to compare with (default: default)\n        --sample                     render: fill with each placeholder's sample value instead of a workspace's\n        --diff                       render: print a unified diff against the workspace's current config instead of the text; apply: also show what each config would change by\n        --dry-run                    apply: say what would happen to each config, writing nothing and taking no backup\n        --force                      apply: also overwrite configs edited since they were rendered (after a backup)\n        --rollback-all-on-error      apply: on the first workspace that fails, put back every config the batch wrote and stop\n        --all                        status and apply: every workspace that has a tmuxinator config\n        --project [NAME]             status and apply: every workspace of a project (NAME, or the project of the current workspace)\n        --json                       Print one JSON document\n    -h, --help                       Show this help"}]}
+{"usage":["workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]","workspace template status [WORKSPACE...] [--all | --project [NAME]] [--json]","workspace template apply [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--json]","workspace template adopt [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--json]","workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template variables [--kind KIND] [--name WORKSPACE] [--json]","workspace template render [NAME | --file FILE] [--kind KIND] [--name WORKSPACE | --sample] [--diff] [--json]","workspace template validate [NAME | --file FILE] [--kind KIND] [--name WORKSPACE] [--json]","workspace template diff [NAME] [--against NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template new NAME [--from NAME] [--scope SCOPE] [--name WORKSPACE] [--json]","workspace template edit [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template use NAME [--kind KIND] [--scope SCOPE] [--name WORKSPACE] [--json]"],"description":"A tmuxinator template is a set of tmuxinator layout files (project.yml for a standard project,\nworktree.yml for a git worktree) that new tmuxinator configs are rendered from. Sets are\n`template` entries of the library; `tmuxinator.template` and `tmuxinator.worktree_template` choose one.","options":[],"examples":[{"command":"workspace template list","scenario":"every tmuxinator template, and which one a new config of each kind uses"},{"command":"workspace template status --all","scenario":"which tmuxinator configs are current, stale, edited or have no render record"},{"command":"workspace template apply --all --dry-run --diff","scenario":"what re-rendering every tmuxinator config would change, writing nothing"},{"command":"workspace template adopt --all --dry-run","scenario":"which tmuxinator configs with no render record could be adopted, writing nothing"},{"command":"workspace template variables --name api.worktree-login","scenario":"the placeholders and what that config holds"},{"command":"workspace template render --sample","scenario":"fill the tmuxinator template with sample values, writing nothing"},{"command":"workspace template validate team","scenario":"check the tmuxinator template team before using it"},{"command":"workspace template new team --from default","scenario":"start your own copy of the default tmuxinator template"},{"command":"workspace template edit team","scenario":"change it in $EDITOR, then check it"},{"command":"workspace template use team","scenario":"make new tmuxinator configs render from it"}],"sections":[{"heading":"Subcommands","text":"list       List the tmuxinator templates and which one each kind of new config uses\n  status     Show whether each tmuxinator config still matches its tmuxinator template\n  apply      Re-render tmuxinator configs from the tmuxinator template each one selects today\n  adopt      Build the render record of a tmuxinator config written before tmuxinator template records existed\n  show       Print the files of a tmuxinator template\n  path       Print where the files of a tmuxinator template are\n  variables  List the placeholders a tmuxinator template may hold\n  render     Fill a tmuxinator template and print the result, writing nothing\n  validate   Check a tmuxinator template before using it, writing nothing\n  diff       Show how a tmuxinator template differs from another\n  new        Copy a tmuxinator template into a new one you can edit\n  edit       Open a tmuxinator template in your editor, then check it\n  use        Select the tmuxinator template new configs render from\nRun `workspace template VERB --help` for a verb's options.\n\n        --from NAME                  new: the tmuxinator template to copy (default: default)\n        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them); new and use: global or project (new: default global; use: the layer `config set` picks, global outside a workspace)\n        --kind KIND                  show, path, variables, validate, diff and edit: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's); use: worktree sets tmuxinator.worktree_template (default: tmuxinator.template)\n        --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)\n        --file FILE                  validate and render: use this tmuxinator template file, saved or not, instead of a set\n        --against NAME               diff: the tmuxinator template to compare with (default: default)\n        --sample                     render: fill with each placeholder's sample value instead of a workspace's\n        --diff                       render: print a unified diff against the workspace's current config instead of the text; apply: also show what each config would change by\n        --dry-run                    apply and adopt: say what would happen to each config, writing nothing (apply: and taking no backup)\n        --force                      apply: also overwrite configs edited since they were rendered (after a backup)\n        --rollback-all-on-error      apply: on the first workspace that fails, put back every config the batch wrote and stop\n        --all                        status, apply and adopt: every workspace that has a tmuxinator config\n        --project [NAME]             status, apply and adopt: every workspace of a project (NAME, or the project of the current workspace)\n        --json                       Print one JSON document\n    -h, --help                       Show this help"}]}
 --- stderr
 --- end
 ### workspace template list --help
@@ -146,7 +148,8 @@ Renders each workspace's tmuxinator config again from its render record, with th
 selects now and the current agent settings, and writes it when that changes it. Every config and render
 record is copied into one backup batch before it is written (`Backup:` names it). A config edited since it
 was rendered is skipped (skipped: modified) unless --force; one with no render record is skipped
-(skipped: untracked) even with --force. A running session keeps its old layout until it is relaunched.
+(skipped: untracked; `template adopt` builds one) even with --force. A record adopted without an exact
+render is skipped like an edited one (skipped: approx). A running session keeps its old layout until it is relaunched.
 Each workspace waits for its startup lock; one renamed or removed meanwhile is skipped: gone. A workspace
 that fails does not stop the others: exit 3 when some failed, 1 when all did. Name the workspaces, or give
 --all or --project; with none of them, the workspace of the current directory.
@@ -172,7 +175,43 @@ Examples:
 ### workspace template apply --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace template apply [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--json]"],"description":"Re-render tmuxinator configs from the tmuxinator template each one selects today.\n\nRenders each workspace's tmuxinator config again from its render record, with the tmuxinator template it\nselects now and the current agent settings, and writes it when that changes it. Every config and render\nrecord is copied into one backup batch before it is written (`Backup:` names it). A config edited since it\nwas rendered is skipped (skipped: modified) unless --force; one with no render record is skipped\n(skipped: untracked) even with --force. A running session keeps its old layout until it is relaunched.\nEach workspace waits for its startup lock; one renamed or removed meanwhile is skipped: gone. A workspace\nthat fails does not stop the others: exit 3 when some failed, 1 when all did. Name the workspaces, or give\n--all or --project; with none of them, the workspace of the current directory.","options":[{"flags":"--all","description":"Every workspace that has a tmuxinator config"},{"flags":"--project [NAME]","description":"Every workspace of a project (NAME, or the project of the current workspace)"},{"flags":"--dry-run","description":"Say what would happen to each config (would apply, unchanged, skipped), writing nothing and taking no backup"},{"flags":"--diff","description":"Also print a unified diff of what each config would change by"},{"flags":"--force","description":"Also overwrite configs edited since they were rendered (a backup is taken first); a config with no render record is still skipped"},{"flags":"--rollback-all-on-error","description":"On the first workspace that fails, put back every config and render record the batch wrote, and stop"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template apply --all --dry-run --diff","scenario":"what re-rendering every tmuxinator config would change, writing nothing"},{"command":"workspace template apply --all","scenario":"re-render every tmuxinator config that is stale, keeping hand-edited ones"},{"command":"workspace template apply api --force","scenario":"re-render api's config even though it was edited by hand"},{"command":"workspace template apply --project api --rollback-all-on-error","scenario":"all of the project api, or none if one fails"},{"command":"workspace template apply --all --json","scenario":"for a script: one row per workspace with its outcome"}]}
+{"usage":["workspace template apply [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--json]"],"description":"Re-render tmuxinator configs from the tmuxinator template each one selects today.\n\nRenders each workspace's tmuxinator config again from its render record, with the tmuxinator template it\nselects now and the current agent settings, and writes it when that changes it. Every config and render\nrecord is copied into one backup batch before it is written (`Backup:` names it). A config edited since it\nwas rendered is skipped (skipped: modified) unless --force; one with no render record is skipped\n(skipped: untracked; `template adopt` builds one) even with --force. A record adopted without an exact\nrender is skipped like an edited one (skipped: approx). A running session keeps its old layout until it is relaunched.\nEach workspace waits for its startup lock; one renamed or removed meanwhile is skipped: gone. A workspace\nthat fails does not stop the others: exit 3 when some failed, 1 when all did. Name the workspaces, or give\n--all or --project; with none of them, the workspace of the current directory.","options":[{"flags":"--all","description":"Every workspace that has a tmuxinator config"},{"flags":"--project [NAME]","description":"Every workspace of a project (NAME, or the project of the current workspace)"},{"flags":"--dry-run","description":"Say what would happen to each config (would apply, unchanged, skipped), writing nothing and taking no backup"},{"flags":"--diff","description":"Also print a unified diff of what each config would change by"},{"flags":"--force","description":"Also overwrite configs edited since they were rendered (a backup is taken first); a config with no render record is still skipped"},{"flags":"--rollback-all-on-error","description":"On the first workspace that fails, put back every config and render record the batch wrote, and stop"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template apply --all --dry-run --diff","scenario":"what re-rendering every tmuxinator config would change, writing nothing"},{"command":"workspace template apply --all","scenario":"re-render every tmuxinator config that is stale, keeping hand-edited ones"},{"command":"workspace template apply api --force","scenario":"re-render api's config even though it was edited by hand"},{"command":"workspace template apply --project api --rollback-all-on-error","scenario":"all of the project api, or none if one fails"},{"command":"workspace template apply --all --json","scenario":"for a script: one row per workspace with its outcome"}]}
+--- stderr
+--- end
+### workspace template adopt --help
+--- exit 0
+--- stdout
+Usage: workspace template adopt [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--json]
+
+Build the render record of a tmuxinator config written before tmuxinator template records existed.
+
+A config with no render record is `untracked`: status and apply have nothing to render it from. Adopt reads
+the inputs back out of the file (name:, root:, the banner, a worktree's `Worktree — BRANCH (PROJECT)` line,
+its task id and the agent its main pane runs), renders the tmuxinator template a new config would use now,
+and writes only the record, never the config. When that render is byte for byte the file the record is
+`exact` and the config reads current. Otherwise it is `approx`: the file reads modified, and apply skips it
+(skipped: approx) unless --force. A config that already has a record is skipped (tracked). Each workspace
+waits for its startup lock. Name the workspaces, or give --all or --project; with none of them, the
+workspace of the current directory.
+
+Options:
+    --all                        Every workspace that has a tmuxinator config
+    --project [NAME]             Every workspace of a project (NAME, or the project of the current workspace)
+    --dry-run                    Say what would happen to each config (would adopt exact or approx, tracked, gone), writing nothing
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace template adopt --all --dry-run    # which configs could be adopted and whether each would be exact
+  workspace template adopt --all    # build records for every config that has none
+  workspace template adopt api.worktree-login    # just that workspace
+  workspace template adopt --all --json    # for a script: one row per workspace with its match
+--- stderr
+--- end
+### workspace template adopt --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace template adopt [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--json]"],"description":"Build the render record of a tmuxinator config written before tmuxinator template records existed.\n\nA config with no render record is `untracked`: status and apply have nothing to render it from. Adopt reads\nthe inputs back out of the file (name:, root:, the banner, a worktree's `Worktree — BRANCH (PROJECT)` line,\nits task id and the agent its main pane runs), renders the tmuxinator template a new config would use now,\nand writes only the record, never the config. When that render is byte for byte the file the record is\n`exact` and the config reads current. Otherwise it is `approx`: the file reads modified, and apply skips it\n(skipped: approx) unless --force. A config that already has a record is skipped (tracked). Each workspace\nwaits for its startup lock. Name the workspaces, or give --all or --project; with none of them, the\nworkspace of the current directory.","options":[{"flags":"--all","description":"Every workspace that has a tmuxinator config"},{"flags":"--project [NAME]","description":"Every workspace of a project (NAME, or the project of the current workspace)"},{"flags":"--dry-run","description":"Say what would happen to each config (would adopt exact or approx, tracked, gone), writing nothing"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template adopt --all --dry-run","scenario":"which configs could be adopted and whether each would be exact"},{"command":"workspace template adopt --all","scenario":"build records for every config that has none"},{"command":"workspace template adopt api.worktree-login","scenario":"just that workspace"},{"command":"workspace template adopt --all --json","scenario":"for a script: one row per workspace with its match"}]}
 --- stderr
 --- end
 ### workspace template show --help
@@ -475,6 +514,7 @@ invalid option: --bogus
 Usage: workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]
        workspace template status [WORKSPACE...] [--all | --project [NAME]] [--json]
        workspace template apply [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--json]
+       workspace template adopt [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--json]
        workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]
        workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]
        workspace template variables [--kind KIND] [--name WORKSPACE] [--json]
@@ -493,6 +533,7 @@ Subcommands:
   list       List the tmuxinator templates and which one each kind of new config uses
   status     Show whether each tmuxinator config still matches its tmuxinator template
   apply      Re-render tmuxinator configs from the tmuxinator template each one selects today
+  adopt      Build the render record of a tmuxinator config written before tmuxinator template records existed
   show       Print the files of a tmuxinator template
   path       Print where the files of a tmuxinator template are
   variables  List the placeholders a tmuxinator template may hold
@@ -512,11 +553,11 @@ Run `workspace template VERB --help` for a verb's options.
         --against NAME               diff: the tmuxinator template to compare with (default: default)
         --sample                     render: fill with each placeholder's sample value instead of a workspace's
         --diff                       render: print a unified diff against the workspace's current config instead of the text; apply: also show what each config would change by
-        --dry-run                    apply: say what would happen to each config, writing nothing and taking no backup
+        --dry-run                    apply and adopt: say what would happen to each config, writing nothing (apply: and taking no backup)
         --force                      apply: also overwrite configs edited since they were rendered (after a backup)
         --rollback-all-on-error      apply: on the first workspace that fails, put back every config the batch wrote and stop
-        --all                        status and apply: every workspace that has a tmuxinator config
-        --project [NAME]             status and apply: every workspace of a project (NAME, or the project of the current workspace)
+        --all                        status, apply and adopt: every workspace that has a tmuxinator config
+        --project [NAME]             status, apply and adopt: every workspace of a project (NAME, or the project of the current workspace)
         --json                       Print one JSON document
     -h, --help                       Show this help
 
@@ -524,12 +565,12 @@ Examples:
   workspace template list    # every tmuxinator template, and which one a new config of each kind uses
   workspace template status --all    # which tmuxinator configs are current, stale, edited or have no render record
   workspace template apply --all --dry-run --diff    # what re-rendering every tmuxinator config would change, writing nothing
+  workspace template adopt --all --dry-run    # which tmuxinator configs with no render record could be adopted, writing nothing
   workspace template variables --name api.worktree-login    # the placeholders and what that config holds
   workspace template render --sample    # fill the tmuxinator template with sample values, writing nothing
   workspace template validate team    # check the tmuxinator template team before using it
   workspace template new team --from default    # start your own copy of the default tmuxinator template
   workspace template edit team    # change it in $EDITOR, then check it
   workspace template use team    # make new tmuxinator configs render from it
-  workspace template diff team    # how the tmuxinator template team differs from the default
 --- stderr
 --- end

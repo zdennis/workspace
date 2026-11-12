@@ -38,6 +38,20 @@ RSpec.describe Workspace::TemplateStatus do
     expect(status.row("app")).to have_attributes(state: "current", stale: false, reasons: [], kind: "project", template: "team", selected: "team")
   end
 
+  it "carries approx on the row of an adopted record that reads modified, and false otherwise" do
+    adopted = Workspace::TmuxinatorConfigWriter::Record.new(kind: :project, template: "team", template_sha: sha("tpl\n"), inputs: record.inputs, rendered_sha: sha("other\n"), approx: true)
+    allow(writer).to receive(:record).and_return(adopted)
+    File.write(File.join(@dir, "app.yml"), "edited\n")
+
+    row = status.row("app")
+
+    expect(row).to have_attributes(state: "modified", approx: true)
+    expect(row.to_h).to include("approx" => true)
+    allow(writer).to receive(:record).and_return(record)
+    File.write(File.join(@dir, "app.yml"), config_text)
+    expect(status.row("app").to_h).to include("approx" => false)
+  end
+
   it "is untracked with no record, keeping the kind and template of none" do
     allow(writer).to receive(:record).and_return(nil)
 
@@ -74,7 +88,7 @@ RSpec.describe Workspace::TemplateStatus do
 
     expect(rows.map(&:workspace)).to eq(%w[b a])
     expect(rows.first.to_h).to eq("workspace" => "b", "state" => "current", "kind" => "project", "template" => "team",
-      "selected" => "team", "stale" => false, "reasons" => [])
+      "selected" => "team", "stale" => false, "reasons" => [], "approx" => false)
   end
 
   describe "#assess" do

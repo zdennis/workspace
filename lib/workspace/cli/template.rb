@@ -11,6 +11,7 @@ module Workspace
         "list" => %i[scope name json],
         "status" => %i[all project json],
         "apply" => %i[all project dry_run diff force rollback json],
+        "adopt" => %i[all project dry_run json],
         "show" => %i[kind name json],
         "path" => %i[kind name json],
         "variables" => %i[kind name json],
@@ -57,7 +58,7 @@ module Workspace
           raise UsageError, "--#{key} does not apply to 'template #{subcommand}'. Run 'workspace template --help'." unless SUBCOMMANDS[subcommand].include?(key)
         end
         raise UsageError, "'template #{subcommand}' needs a tmuxinator template NAME. Run 'workspace template #{subcommand} --help'." if %w[new use].include?(subcommand) && args.empty?
-        limit = {"list" => 0, "variables" => 0, "status" => nil, "apply" => nil}.fetch(subcommand, 1)
+        limit = {"list" => 0, "variables" => 0, "status" => nil, "apply" => nil, "adopt" => nil}.fetch(subcommand, 1)
         raise UsageError, "Unexpected argument: #{args[limit]}. Run 'workspace template --help'." if limit && args.size > limit
         raise Error, "template is not available: no template command was wired" unless @template_command
 
@@ -67,6 +68,7 @@ module Workspace
         when "list" then @template_command.list(workspace: workspace, scope: options[:scope], cwd: @working_dir, json: json)
         when "status" then @template_command.status(names: args.dup, all: options[:all] || false, project: options[:project], cwd: @working_dir, json: json)
         when "apply" then apply(args.dup, options, invocation)
+        when "adopt" then adopt(args.dup, options, invocation)
         when "show" then @template_command.show(set: args.first, kind: options[:kind], workspace: workspace, json: json)
         when "path" then @template_command.path(set: args.first, kind: options[:kind], workspace: workspace, json: json)
         when "variables" then @template_command.variables(kind: options[:kind], workspace: options[:name] ? workspace : nil, json: json)
@@ -98,6 +100,15 @@ module Workspace
           @template_command.apply(names: names, all: options[:all] || false, project: options[:project], cwd: @working_dir,
             dry_run: options[:dry_run] || false, diff: options[:diff] || false, force: options[:force] || false,
             rollback: options[:rollback] || false, json: json)
+        end
+      end
+
+      # `adopt` reports one row per workspace, as an action document under --json.
+      def adopt(names, options, invocation)
+        json = options[:json] || false
+        @common.run_action(invocation, "template adopt", json: json) do
+          @template_command.adopt(names: names, all: options[:all] || false, project: options[:project], cwd: @working_dir,
+            dry_run: options[:dry_run] || false, json: json)
         end
       end
 
@@ -153,13 +164,13 @@ module Workspace
           opts.separator "  workspace template list    # every tmuxinator template, and which one a new config of each kind uses"
           opts.separator "  workspace template status --all    # which tmuxinator configs are current, stale, edited or have no render record"
           opts.separator "  workspace template apply --all --dry-run --diff    # what re-rendering every tmuxinator config would change, writing nothing"
+          opts.separator "  workspace template adopt --all --dry-run    # which tmuxinator configs with no render record could be adopted, writing nothing"
           opts.separator "  workspace template variables --name api.worktree-login    # the placeholders and what that config holds"
           opts.separator "  workspace template render --sample    # fill the tmuxinator template with sample values, writing nothing"
           opts.separator "  workspace template validate team    # check the tmuxinator template team before using it"
           opts.separator "  workspace template new team --from default    # start your own copy of the default tmuxinator template"
           opts.separator "  workspace template edit team    # change it in $EDITOR, then check it"
           opts.separator "  workspace template use team    # make new tmuxinator configs render from it"
-          opts.separator "  workspace template diff team    # how the tmuxinator template team differs from the default"
         end
       end
 

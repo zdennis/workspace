@@ -160,7 +160,7 @@ RSpec.describe Workspace::CLI do
 
       doc = JSON.parse(output.string)
       expect(doc).to include("ok" => true, "counts" => {"current" => 0, "stale" => 0, "modified" => 0, "untracked" => 1})
-      expect(doc["workspaces"]).to eq([{"workspace" => "app", "state" => "untracked", "kind" => nil, "template" => nil, "selected" => nil, "stale" => false, "reasons" => []}])
+      expect(doc["workspaces"]).to eq([{"workspace" => "app", "state" => "untracked", "kind" => nil, "template" => nil, "selected" => nil, "stale" => false, "reasons" => [], "approx" => false}])
     end
 
     it "answers an unknown name with unknown_workspace, exit 1, as a document under --json" do
@@ -246,6 +246,54 @@ RSpec.describe Workspace::CLI do
       cli.run(["template", "apply", "--help"])
 
       expect(output.string).to include("Usage: workspace template apply [WORKSPACE...]", "--rollback-all-on-error")
+    end
+  end
+
+  describe "template adopt" do
+    let(:status_scope) { instance_double(Workspace::StatusScope) }
+    let(:catalog) { instance_double(Workspace::ProjectCatalog) }
+    let(:adopter) { instance_double(Workspace::TemplateAdopt) }
+    let(:built) do
+      selection = Workspace::TemplateSelection.new(status_scope: status_scope, catalog: catalog, project_config: project_config)
+      build_test_cli(template_command: Workspace::Commands::Template.new(library: library, project_config: project_config, writer: writer,
+        template_validator: validator, differ: ->(*, **) { "" }, selection: selection, adopt: adopter, output: output, error_output: error_output),
+        project_detector: detector, output: output, error_output: error_output, working_dir: File.join(@dir, "src"))
+    end
+
+    def answer(*outcomes)
+      outcomes.each_with_index.map { |outcome, i| {"workspace" => "w#{i}", "outcome" => outcome, "reason" => nil, "message" => nil, "match" => (outcome == "adopted") ? "exact" : nil} }
+    end
+
+    before { allow(project_config).to receive(:exists?) { |name| %w[app api].include?(name) } }
+
+    it "prints the action document with the adopted count" do
+      allow(adopter).to receive(:call).and_return(answer("adopted", "skipped"))
+
+      cli.run(["template", "adopt", "app", "api", "--json"])
+
+      expect(JSON.parse(output.string)).to include("action" => "template adopt", "status" => "ok", "adopted" => {"exact" => 1}, "summary" => {"adopted" => 1, "skipped" => 1})
+      expect(adopter).to have_received(:call).with(%w[app api], dry_run: false)
+    end
+
+    it "is a dry_run document under --dry-run, and exits 3 when some rows failed" do
+      allow(adopter).to receive(:call).and_return(answer("would_adopt"))
+      cli.run(["template", "adopt", "app", "--dry-run", "--json"])
+      expect(JSON.parse(output.string)).to include("status" => "dry_run")
+
+      output.truncate(0)
+      output.rewind
+      allow(adopter).to receive(:call).and_return(answer("failed", "adopted"))
+      expect(exit_status { cli.run(["template", "adopt", "app", "api", "--json"]) }).to eq(3)
+    end
+
+    it "refuses a flag it does not take, and shows its help page" do
+      expect(exit_status { cli.run(["template", "adopt", "app", "--force", "--json"]) }).to eq(1)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+
+      output.truncate(0)
+      output.rewind
+      cli.run(["template", "adopt", "--help"])
+      expect(output.string).to include("Usage: workspace template adopt [WORKSPACE...]", "--dry-run")
     end
   end
 

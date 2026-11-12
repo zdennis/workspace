@@ -28,11 +28,12 @@ module Workspace
     # @!attribute selected [String, nil] the one a new config of that kind renders from now (nil when it can't be resolved)
     # @!attribute stale [Boolean] whether a render today would differ from the last one (or name another set)
     # @!attribute reasons [Array<String>] why, see the class description
-    Row = Data.define(:workspace, :state, :kind, :template, :selected, :stale, :reasons) do
+    # @!attribute approx [Boolean] whether the record was adopted without an exact render (`template adopt`), so `modified` may not mean edited by hand
+    Row = Data.define(:workspace, :state, :kind, :template, :selected, :stale, :reasons, :approx) do
       # @return [Hash] the `--json` row, string keys
       def to_h
         {"workspace" => workspace, "state" => state, "kind" => kind, "template" => template, "selected" => selected,
-         "stale" => stale, "reasons" => reasons}
+         "stale" => stale, "reasons" => reasons, "approx" => approx}
       end
     end
 
@@ -91,7 +92,7 @@ module Workspace
       record = @writer.record(name)
       text = read_config(name)
       if record.nil? || text.nil?
-        row = Row.new(workspace: name, state: "untracked", kind: record&.kind&.to_s, template: record&.template, selected: nil, stale: false, reasons: [])
+        row = Row.new(workspace: name, state: "untracked", kind: record&.kind&.to_s, template: record&.template, selected: nil, stale: false, reasons: [], approx: record&.approx || false)
         return Assessment.new(row: row, record: record, text: text, rendered: nil, inputs: nil, template_sha: nil, error: nil)
       end
 
@@ -105,7 +106,7 @@ module Workspace
         "stale"
       end
       reasons = [] if state == "current"
-      row = Row.new(workspace: name, state: state, kind: record.kind.to_s, template: record.template, selected: today[:selected], stale: !reasons.empty?, reasons: reasons)
+      row = Row.new(workspace: name, state: state, kind: record.kind.to_s, template: record.template, selected: today[:selected], stale: !reasons.empty?, reasons: reasons, approx: record.approx)
       Assessment.new(row: row, record: record, text: text, rendered: today[:rendered], inputs: today[:inputs], template_sha: today[:template_sha], error: today[:error])
     end
 

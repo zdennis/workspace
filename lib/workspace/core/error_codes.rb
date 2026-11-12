@@ -54,6 +54,8 @@ module Workspace
       "backup_symlink" => "A tmuxinator config or its render record is a symbolic link, which a backup batch cannot restore as a link, so it was not copied. details.path.",
       "workspace_locked" => "template apply could not open or take a workspace's startup lock (or build its path), so that workspace was not re-rendered (the reason of its failed row); the others went on.",
       "template_modified" => "template apply skipped a tmuxinator config edited since it was rendered (the code of its skipped row); --force overwrites it after a backup.",
+      "template_approx" => "template apply skipped a config whose render record template adopt made without an exact render (the code of its skipped row, reason approx); --force overwrites it after a backup.",
+      "adopt_unrecoverable" => "template adopt could not read the render inputs out of a tmuxinator config (not YAML, or no name: and root:); the reason of that row's failure. details.name.",
       # `template apply` warnings (`warnings[].code`); never an error envelope's code.
       "rollback_left_file" => "template apply warning: --rollback-all-on-error left a config or render record that changed after apply wrote it. workspace, kind (config or record), path.",
       "rollback_failed" => "template apply warning: --rollback-all-on-error could not put a workspace's files back (its lock or a copy could not be read or written). workspace.",
