@@ -51,12 +51,6 @@ module Workspace
     # idle alerts have quietly stopped.
     FAILED_SCANS_WARNING = 5
 
-    # How many poll intervals a scan-time cache stays fresh for a request.
-    # The scan refreshes it every interval, so this only matters when a scan
-    # is late or the scan thread has died — then requests fall back to
-    # reading for themselves rather than serving data gone stale.
-    CACHE_GRACE_INTERVALS = 3
-
     # Makes an agent's message safe to print, log, or pass to a command:
     # each run of whitespace and control characters (newlines, terminal
     # escapes, bells) becomes one space, and the result is capped.
@@ -92,7 +86,7 @@ module Workspace
     #   defaults to +session_name+
     # @param context_reader [Workspace::ContextReader, nil] resolves each
     #   coding-agent pane's context-window usage; nil omits `context_pct`,
-    #   `context_error`, and `context_updated_at` from {#present}
+    #   `context_error`, and `context_updated_at` from {#snapshot}
     # @param label_reader [Workspace::TranscriptLabel, nil] reads a pane's
     #   transcript for its `display_label`; nil falls back to the last prompt
     #   the daemon saw
@@ -113,7 +107,6 @@ module Workspace
       notifier: nil, idle_alert_after: nil, event_log: nil, project: nil,
       context_reader: nil, label_reader: nil, task_reader: nil, scan_slots: nil, question_check: QuestionClosedCheck.new, scanner: nil)
       @session_name = session_name
-      @providers = providers
       @poll_interval = poll_interval
       @idle_after = idle_after
       @clock = clock
@@ -124,9 +117,8 @@ module Workspace
       @idle_alert_after = idle_alert_after
       @event_log = event_log
       @project = project || session_name
-      @context_reader = context_reader
-      @label_reader = label_reader
-      @task_reader = task_reader
+      @view = PaneView.new(context_reader: context_reader, label_reader: label_reader, task_reader: task_reader,
+        providers: providers, idle_after: idle_after, poll_interval: poll_interval, project: @project, logger: logger)
       @scan_slots = scan_slots
       @scanner = scanner || PaneScanner.new(tmux: tmux, process_tree: process_tree, session_name: session_name,
         providers: providers, detector: detector, question_check: question_check, idle_after: idle_after,
@@ -235,18 +227,16 @@ module Workspace
       nil
     end
 
-    # @return [Hash] the current view, as `workspace sessions --json` prints it
+    # The current view, as `workspace sessions --json` prints it. The task
+    # is read before the lock; each pane row is built by {PaneView#present}
+    # while the lock is held, as new Hashes that share nothing with the pane.
+    #
+    # @return [Hash] {PaneView.document}
     def snapshot
       now = @clock.now
-      task = active_task
-      panes = @lock.synchronize { @panes.values.map { |pane| present(pane, now, task) } }
-      {
-        "workspace" => @session_name,
-        "updated_at" => now.utc.iso8601,
-        "features" => FEATURES,
-        "task" => present_task(task, panes),
-        "panes" => panes.sort_by { |p| p["index"] || 0 }
-      }
+      task = @view.task
+      panes = @lock.synchronize { @panes.values.map { |pane| @view.present(pane, now, task, scanned_at: @last_scan_at) } }
+      PaneView.document(workspace: @session_name, now: now, features: FEATURES, task: task, panes: panes)
     end
 
     # @param pane_id [String] tmux pane id
@@ -545,7 +535,7 @@ module Workspace
         # capturing and reading again per request. Both cost a tmux capture or
         # a transcript read per agent pane, which a burst of requests would
         # otherwise multiply into a process storm.
-        @panes.each_value { |pane| refresh_caches(pane, now) }
+        @panes.each_value { |pane| @view.refresh(pane, now) }
         closed.values.filter_map { |pane| PaneStates.gone_change(pane, "closed", now) } +
           @panes.values.filter_map { |pane| PaneStates.state_change(pane, now, @idle_after) }
       end
@@ -582,223 +572,6 @@ module Workspace
 
     def refresh_pane(detail, tree, now)
       @scanner.refresh(@panes[detail[:id]] ||= PaneEvents.new_pane(detail[:id]), detail, tree, now)
-    end
-
-    def present(pane, now, task = nil)
-      idle_for = now - (pane[:last_activity_at] || now)
-      wait = PaneStates.oldest_wait(pane)
-      waiting_since = wait&.dig(:since)
-      state = PaneStates.reported_state(pane, idle_for, @idle_after)
-      state_since = (state == pane[:logged_state]) ? pane[:state_since] : PaneStates.since_for(pane, state, now, @idle_after)
-      result = {
-        "pane_id" => pane[:pane_id],
-        "index" => pane[:index],
-        "kind" => pane[:kind],
-        "label" => pane[:label],
-        "title" => pane[:title],
-        "cwd" => pane[:cwd],
-        "state" => state,
-        "state_since" => state_since&.utc&.iso8601,
-        "activity_state" => PaneStates.state_of(pane, idle_for, @idle_after),
-        "main_turn_over_since" => PaneStates.main_turn_missing(pane) ? nil : pane[:main_stopped_at].utc.iso8601(3),
-        "transcript_path" => pane[:transcript_path],
-        "open_tools" => pane[:open_tools].to_h.values.map { |tool| tool[:tool] },
-        "idle_seconds" => idle_for.round,
-        "waiting_since" => waiting_since&.utc&.iso8601,
-        "waiting_seconds" => waiting_since && (now - waiting_since).round,
-        "waiting_message" => wait&.dig(:message),
-        "waiting_tool" => wait&.dig(:tool),
-        "waiting_input" => wait&.dig(:input),
-        "waits" => pane[:waits].map { |agent_id, w|
-          {"agent_id" => agent_id, "tool" => w[:tool], "input" => w[:input], "since" => w[:since]&.utc&.iso8601}
-        },
-        "stop_reason" => pane[:done]&.dig(:stop_reason),
-        "turn_failed" => !pane[:turn_failed].nil?,
-        "session_id" => pane[:session_id],
-        "display_label" => display_label(pane, task, now),
-        "agents" => pane[:agents].map { |agent|
-          {"name" => agent[:name], "state" => agent[:state],
-           "started_at" => agent[:started_at]&.utc&.iso8601,
-           "ended_at" => agent[:ended_at]&.utc&.iso8601}
-        }
-      }
-      unless pane[:kind] == "shell"
-        apply_context(result, pane, now)
-        apply_tool_status(result, pane)
-        apply_hook_mode(result, pane)
-      end
-      result
-    end
-
-    # `hook_mode`: "hooks" once the daemon has had a hook event from the
-    # pane's current kind of agent, "scrape" for a recognized agent it has
-    # not (no hooks installed, not trusted yet, or none since a daemon
-    # restart), "none" for a pane not yet identified. `hook_events`: the event
-    # types that kind of agent's hooks can report, whatever the mode.
-    def apply_hook_mode(result, pane)
-      provider = @providers.find { |p| p.key == pane[:kind] }
-      result["hook_mode"] = if provider.nil?
-        "none"
-      else
-        (pane[:hook_kind] == pane[:kind]) ? "hooks" : "scrape"
-      end
-      result["hook_events"] = provider ? provider.hook_events.dup : []
-    end
-
-    # `last_event_at`, `current_tool` (the name of the main agent's most
-    # recently started tool still running, else nil), `current_tool_since`
-    # and the running `subagents`. A coding-agent pane no hook has reached
-    # reports nulls and an empty list; a shell pane carries none of these.
-    def apply_tool_status(result, pane)
-      current = pane[:open_tools]&.values&.last
-      result["last_event_at"] = pane[:last_event_at]&.utc&.iso8601
-      result["current_tool"] = current&.dig(:tool)
-      result["current_tool_since"] = current&.dig(:since)&.utc&.iso8601
-      result["subagents"] = pane[:agents].select { |a| a[:state] == "running" }.map { |agent|
-        {"agent_id" => agent[:agent_id], "description" => agent[:description] || agent[:name],
-         "since" => agent[:started_at]&.utc&.iso8601}
-      }
-    end
-
-    # Longest prompt kept as a label fallback.
-    LABEL_PROMPT_LENGTH = TranscriptLabel::MAX_LENGTH
-
-    # What a person would call this pane: the task's title, else the transcript's
-    # AI title, else the last prompt, else nil. A shell pane has none.
-    #
-    # The task's title is cheap to read, so it is read per request; the
-    # transcript read is not, so it is served from the cache the scan thread
-    # refreshes, read here only when the cache is missing, keyed to something
-    # that changed (a new session, prompt or task), or past its freshness
-    # grace because the scan is late.
-    def display_label(pane, task = nil, now = @clock.now)
-      return nil if pane[:kind] == "shell"
-
-      title = task_title(task)
-      return title if title
-
-      cached = pane[:label_cache]
-      key = label_cache_key(pane)
-      if cached && cached[:key] == key && cache_fresh?(cached, now)
-        cached[:label]
-      else
-        transcript = pane[:transcript_path] && @label_reader&.read(pane[:transcript_path])
-        label = transcript&.dig(:title) || pane[:last_prompt] || transcript&.dig(:last_prompt)
-        pane[:label_cache] = {label: label, key: key, at: now}
-        label
-      end
-    end
-
-    # Everything the cached label depends on: another value for any of these
-    # means the cached label describes a different session or prompt. The
-    # task's title never enters it — it is read per request and comes ahead
-    # of the cache.
-    def label_cache_key(pane)
-      [pane[:session_id], pane[:transcript_path], pane[:last_prompt]]
-    end
-
-    # A cache is fresh while the scan thread is refreshing it on schedule,
-    # and no cache is trusted before the first scan. Once it goes past this
-    # grace, requests read for themselves again, so a dead or stalled scan
-    # thread degrades to the old per-request reads rather than serving
-    # ever-staler data.
-    def cache_fresh?(cached, now)
-      @last_scan_at && (now - cached[:at]) <= @poll_interval * CACHE_GRACE_INTERVALS
-    end
-
-    # What the scan thread calls per pane to refresh what requests read.
-    # Runs under the monitor's lock like the rest of the scan, so a request
-    # during a scan waits for it rather than interleaving its own captures.
-    def refresh_caches(pane, now)
-      return if pane[:kind] == "shell"
-
-      refresh_context_cache(pane, now) if @context_reader
-      pane[:label_cache] = {label: read_label(pane), key: label_cache_key(pane), at: now}
-    end
-
-    # Reads the label uncached, for the scan thread's refresh. A failure
-    # reads as no transcript label — falling back to the last prompt — so a
-    # bad transcript file never ends the scan thread, which would stop all
-    # monitoring.
-    def read_label(pane)
-      transcript = pane[:transcript_path] && @label_reader&.read(pane[:transcript_path])
-      transcript&.dig(:title) || pane[:last_prompt] || transcript&.dig(:last_prompt)
-    rescue => e
-      @logger.debug { "session monitor: label read failed (#{e.class}: #{e.message})" }
-      pane[:last_prompt]
-    end
-
-    # The project's active task, or nil. A failing reader reads as no task: the
-    # snapshot must never fail over a task file.
-    def active_task
-      @task_reader&.call(@project)
-    rescue => e
-      @logger.debug { "session monitor: task read failed (#{e.class}: #{e.message})" }
-      nil
-    end
-
-    def task_title(task)
-      title = task&.dig("title")
-      title.is_a?(String) ? self.class.clean_message(title)&.slice(0, LABEL_PROMPT_LENGTH) : nil
-    end
-
-    # The task's identity plus a status derived from the coding-agent panes
-    # when read, never stored: blocked when any agent waits, else working when
-    # any works, else done when any has ended its turn, else idle.
-    def present_task(task, panes)
-      return nil unless task
-
-      states = panes.reject { |p| p["kind"] == "shell" }.map { |p| p["state"] }
-      status = %w[waiting working done].find { |s| states.include?(s) }
-      {
-        "id" => task["id"], "title" => task["title"], "ref" => task["ref"], "branch" => task["branch"],
-        "status" => (status == "waiting") ? "blocked" : (status || "idle")
-      }
-    end
-
-    # Stamps `context_pct`/`context_error`/`context_updated_at` onto a
-    # coding-agent pane's presented hash. A pane whose kind is "shell" never
-    # gets these fields at all — never guessed, and never confused with a
-    # pane that legitimately has no coding agent to report on.
-    #
-    # The reading is served from the cache the scan thread refreshes, read
-    # here only when the cache is missing, keyed to another session, or past
-    # its freshness grace — in scrape mode a read is a tmux capture of the
-    # pane, which a burst of requests would otherwise multiply.
-    def apply_context(result, pane, now = @clock.now)
-      return unless @context_reader
-
-      reading = context_reading(pane, now)
-      result["context_pct"] = reading[:pct]
-      result["context_error"] = reading[:error]
-      result["context_updated_at"] = reading[:updated_at]
-    end
-
-    # The pane's context reading, from the cache when fresh, read and cached
-    # otherwise. A reading for another session of the same pane is stale even
-    # when fresh: the reading describes that session's context window.
-    def context_reading(pane, now = @clock.now)
-      cached = pane[:context_cache]
-      if cached && cached[:session_id] == pane[:session_id] && cache_fresh?(cached, now)
-        return cached[:reading]
-      end
-      reading = read_context(pane)
-      pane[:context_cache] = {reading: reading, session_id: pane[:session_id], at: now}
-      reading
-    end
-
-    # What the scan thread calls per pane to refresh the context cache.
-    def refresh_context_cache(pane, now)
-      pane[:context_cache] = {reading: read_context(pane), session_id: pane[:session_id], at: now}
-    end
-
-    # Reads the context uncached. A failure reads as no reading, so neither a
-    # scan nor a request ever fails over it.
-    def read_context(pane)
-      @context_reader.read(pane_id: pane[:pane_id], agent_pid: pane[:agent_pid], current_session_id: pane[:session_id], kind: pane[:kind])
-    rescue => e
-      @logger.debug { "session monitor: context read failed (#{e.class}: #{e.message})" }
-      {pct: nil, error: ContextReasons::NO_READING, updated_at: nil}
     end
   end
 end

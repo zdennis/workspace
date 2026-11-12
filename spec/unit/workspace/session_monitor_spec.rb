@@ -1925,18 +1925,6 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
-  describe "#snapshot" do
-    it "orders panes by index" do
-      monitor.scan
-
-      expect(monitor.snapshot["panes"].map { |p| p["index"] }).to eq([0, 1])
-    end
-
-    it "names the workspace and when it was taken" do
-      expect(monitor.snapshot).to include("workspace" => "proj", "updated_at" => now.iso8601)
-    end
-  end
-
   describe "state history in the event log" do
     let(:tmpdir) { Dir.mktmpdir }
     let(:log_config) do
@@ -2351,14 +2339,6 @@ RSpec.describe Workspace::SessionMonitor do
       expect(pane("%2")["context_updated_at"]).to eq("2026-09-27T00:00:00Z")
     end
 
-    it "never stamps context fields onto a shell pane" do
-      allow(context_reader).to receive(:read).and_return(pct: 1, error: nil, updated_at: nil)
-      monitor.scan
-
-      expect(pane("%1")).not_to have_key("context_pct")
-      expect(pane("%1")).not_to have_key("context_error")
-    end
-
     it "reports the reason when context can't be determined" do
       allow(context_reader).to receive(:read).and_return(pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil)
 
@@ -2366,15 +2346,6 @@ RSpec.describe Workspace::SessionMonitor do
 
       expect(pane("%2")["context_pct"]).to be_nil
       expect(pane("%2")["context_error"]).to eq(Workspace::ContextReasons::NO_READING)
-    end
-
-    it "omits context fields entirely when no context_reader is injected" do
-      no_reader_monitor = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
-        idle_after: 30, clock: clock)
-      no_reader_monitor.scan
-
-      pane = no_reader_monitor.snapshot["panes"].find { |p| p["pane_id"] == "%2" }
-      expect(pane).not_to have_key("context_pct")
     end
 
     it "never lets a context_reader failure raise out of a scan" do
@@ -2408,7 +2379,7 @@ RSpec.describe Workspace::SessionMonitor do
 
       it "reads again once the scan is overdue past its freshness grace" do
         monitor.scan
-        overdue = now + (Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL * Workspace::SessionMonitor::CACHE_GRACE_INTERVALS) + 1
+        overdue = now + (Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL * Workspace::PaneView::CACHE_GRACE_INTERVALS) + 1
         allow(clock).to receive(:now).and_return(overdue)
 
         expect(pane("%2")["context_pct"]).to eq(55)
@@ -2470,24 +2441,6 @@ RSpec.describe Workspace::SessionMonitor do
 
       expect(pane("%2")).to include("kind" => "codex", "hook_mode" => "scrape")
     end
-
-    it "lists no events for an agent with no hooks" do
-      allow(snapshot).to receive(:find_descendant).with(200, ["claude"], hash_including(include_root: true)).and_return(nil)
-      allow(snapshot).to receive(:find_descendant).with(200, ["opencode"], hash_including(include_root: true))
-        .and_return({pid: 270, command: "opencode", args: "opencode"})
-      monitor.scan
-
-      expect(pane("%2")).to include("kind" => "opencode", "hook_mode" => "scrape", "hook_events" => [])
-    end
-
-    it "is none for a pane not identified yet, and absent on a shell pane" do
-      monitor.record("event" => "stop", "pane_id" => "%9")
-
-      expect(pane("%9")).to include("kind" => "unknown", "hook_mode" => "none", "hook_events" => [])
-      monitor.scan
-      expect(pane("%1")).not_to have_key("hook_mode")
-      expect(pane("%1")).not_to have_key("hook_events")
-    end
   end
 
   describe "per-pane tool status" do
@@ -2499,15 +2452,6 @@ RSpec.describe Workspace::SessionMonitor do
 
     def tool_end(id, extra = {})
       monitor.record({"event" => "tool_use", "pane_id" => "%2", "tool" => "Bash", "tool_use_id" => id}.merge(extra))
-    end
-
-    it "reports nulls and no sub-agents for an agent pane no hook has reached" do
-      expect(pane("%2")).to include("last_event_at" => nil, "current_tool" => nil,
-        "current_tool_since" => nil, "subagents" => [])
-    end
-
-    it "leaves the fields off a shell pane" do
-      expect(pane("%1").keys).not_to include("last_event_at", "current_tool", "current_tool_since", "subagents")
     end
 
     it "reports the running tool by name with when it started" do
@@ -2858,36 +2802,6 @@ RSpec.describe Workspace::SessionMonitor, "task" do
 
     it "reads as no task instead of failing the snapshot" do
       expect(monitor.snapshot["task"]).to be_nil
-    end
-  end
-
-  describe "derived status" do
-    def status = monitor.snapshot["task"]["status"]
-
-    it "is idle when no agent has reported and the pane is quiet" do
-      allow(clock).to receive(:now).and_return(Time.utc(2026, 9, 26, 12, 5, 0))
-      monitor.scan
-
-      expect(status).to eq("idle")
-    end
-
-    it "is working while an agent works" do
-      record("user_prompt", prompt: "go")
-
-      expect(status).to eq("working")
-    end
-
-    it "is done once the Stop hook fires" do
-      record("stop")
-
-      expect(status).to eq("done")
-    end
-
-    it "is blocked while an agent waits for permission" do
-      record("user_prompt", prompt: "go")
-      record("notification", message: "needs permission")
-
-      expect(status).to eq("blocked")
     end
   end
 
