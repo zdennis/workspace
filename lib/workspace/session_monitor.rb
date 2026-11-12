@@ -1,5 +1,4 @@
 require "time"
-require "digest"
 
 module Workspace
   # Tracks which panes in a workspace are running a coding agent, whether each
@@ -105,16 +104,16 @@ module Workspace
     #   skipped rather than waited out. nil scans without a limit.
     # @param question_check [Workspace::QuestionClosedCheck] reads whether a
     #   question dialog is gone from a pane's screen
+    # @param scanner [Workspace::PaneScanner, nil] the scan's pane, process and
+    #   screen reads; nil builds one over +tmux+, +process_tree+, +providers+,
+    #   +detector+, +question_check+ and +event_log+
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, detector: AgentDetector.new, poll_interval: DEFAULT_POLL_INTERVAL, idle_after: AgentProvider::DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
       notifier: nil, idle_alert_after: nil, event_log: nil, project: nil,
-      context_reader: nil, label_reader: nil, task_reader: nil, scan_slots: nil, question_check: QuestionClosedCheck.new)
-      @tmux = tmux
-      @process_tree = process_tree
+      context_reader: nil, label_reader: nil, task_reader: nil, scan_slots: nil, question_check: QuestionClosedCheck.new, scanner: nil)
       @session_name = session_name
       @providers = providers
-      @detector = detector
       @poll_interval = poll_interval
       @idle_after = idle_after
       @clock = clock
@@ -125,13 +124,13 @@ module Workspace
       @idle_alert_after = idle_alert_after
       @event_log = event_log
       @project = project || session_name
-      @history = nil
-      @alert_history = {}
       @context_reader = context_reader
       @label_reader = label_reader
       @task_reader = task_reader
       @scan_slots = scan_slots
-      @question_check = question_check
+      @scanner = scanner || PaneScanner.new(tmux: tmux, process_tree: process_tree, session_name: session_name,
+        providers: providers, detector: detector, question_check: question_check, idle_after: idle_after,
+        clock: clock, logger: logger, error_output: error_output, event_log: event_log, project: @project)
       @panes = {}
       @failed_scans = 0
       @last_scan_at = nil
@@ -208,12 +207,12 @@ module Workspace
     # @param pane_id [String] tmux pane id
     # @return [void]
     def rescan_pane(pane_id)
-      detail = @tmux.pane_details(@session_name).find { |d| d[:id] == pane_id }
+      detail = @scanner.pane_details.find { |d| d[:id] == pane_id }
       return unless detail
-      tree = @process_tree.snapshot
+      tree = @scanner.process_snapshot
       now = @clock.now
       @lock.synchronize do
-        @history ||= load_history
+        @scanner.load_history
         refresh_pane(detail, tree, now)
       end
       nil
@@ -507,9 +506,9 @@ module Workspace
     # The body of {#scan}, run under a machine-wide scan slot when a limiter
     # is injected.
     def perform_scan
-      details = @tmux.pane_details(@session_name)
+      details = @scanner.pane_details
       begin
-        tree = @process_tree.snapshot
+        tree = @scanner.process_snapshot
       rescue Workspace::Error => e
         # The panes' output was not captured this time, so their activity is
         # stale; idle alerts wait for a scan that succeeds.
@@ -521,7 +520,7 @@ module Workspace
       @activity_stale = false
       @failed_scans = 0
       now = @clock.now
-      @history ||= load_history
+      @scanner.load_history
 
       changes = @lock.synchronize do
         seen = details.map { |d| d[:id] }
@@ -542,86 +541,6 @@ module Workspace
           @panes.values.filter_map { |pane| PaneStates.state_change(pane, now, @idle_after) }
       end
       record_changes(changes)
-    end
-
-    # Each pane's last logged state, keyed on pane id, along with each
-    # pane's last idle alert and last waiting alert per agent. Read once, on
-    # the first scan; nothing in the log is worth failing a scan over.
-    def load_history
-      return {} unless @event_log
-      @alert_history = @event_log.latest_agent_alerts(@project)
-      @event_log.latest_agent_states(@project)
-    rescue => e
-      @logger.debug { "session monitor: could not read state history (#{e.class}: #{e.message})" }
-      {}
-    end
-
-    # Takes up a pane's logged state after a daemon restart. The pane's pid is
-    # checked too, since a restarted tmux server hands out the same pane ids
-    # again. An idle pane stays idle, and keeps the time it went idle, until
-    # its output changes. A quiet stretch or a wait the last daemon already
-    # alerted for counts as alerted, so a restart doesn't send its alert again.
-    def restore_state(pane, detail)
-      logged = @history.delete(detail[:id])
-      alerts = @alert_history.delete(detail[:id]) || {}
-      return unless logged["pane_pid"] == detail[:pid] && !PaneStates::GONE_STATES.include?(logged["state"])
-      since = Time.iso8601(logged["since"].to_s)
-      pane[:logged_state] = logged["state"]
-      pane[:state_since] = since
-      # Read back, not seen: {#fresh_since} waits for this monitor's own evidence.
-      pane[:restored_ready] = true if %w[done idle].include?(logged["state"])
-      case logged["state"]
-      when "done" then restore_done(pane, detail, since, logged["stop_reason"], alerts["idle"])
-      when "idle" then restore_idle(pane, detail, since, alerts["idle"])
-      when "waiting" then restore_waits(pane, detail, since, alerts["waiting"] || {})
-      end
-    rescue ArgumentError
-      nil
-    end
-
-    # A done pane still alerts for its quiet stretch, so the stretch the last
-    # daemon already alerted for is not alerted for again.
-    def restore_done(pane, detail, since, stop_reason, alert)
-      pane[:done] = {since: since, stop_reason: stop_reason || "end_turn"}
-      at = alert_time(detail, alert, "idle_since")
-      return unless at
-
-      pane[:last_activity_at] = at
-      pane[:alerted_idle_since] = at
-      pane[:quiet_since_restore] = true
-    end
-
-    def restore_idle(pane, detail, since, alert)
-      pane[:last_activity_at] = since - @idle_after
-      pane[:quiet_since_restore] = true
-      at = alert_time(detail, alert, "idle_since")
-      pane[:alerted_idle_since] = pane[:last_activity_at] if at && (at - pane[:last_activity_at]).abs < 0.002
-    end
-
-    # Remembers, per agent, each wait in the pane's logged waiting stretch
-    # that the last daemon alerted for. The agent's next notification takes
-    # that wait up again, already alerted, unless another hook event from
-    # the agent ends it first. A notification that arrived before this first
-    # scan is taken up here.
-    def restore_waits(pane, detail, stretch_since, alerts)
-      alerts.each do |agent_id, alert|
-        waiting_since = alert_time(detail, alert, "waiting_since")
-        next unless waiting_since && waiting_since - stretch_since > -0.002
-        if (wait = pane[:waits][agent_id])
-          wait.merge!(since: waiting_since, alerted: true) unless wait[:alerted]
-        else
-          (pane[:alerted_waits] ||= {})[agent_id] = waiting_since
-        end
-      end
-    end
-
-    # The time logged under +key+ (to the millisecond) of an alert sent for
-    # this pane process, or nil.
-    def alert_time(detail, alert, key)
-      return nil unless alert && alert["pane_pid"] == detail[:pid]
-      Time.iso8601(alert[key].to_s)
-    rescue ArgumentError
-      nil
     end
 
     def idle_alert_data(pane, idle_since)
@@ -679,12 +598,6 @@ module Workspace
       nil
     end
 
-    def log_question_closed(pane)
-      @error_output.puts "workspace agent: question closed in #{pane[:pane_id]} of #{@session_name}: its dialog is gone from the screen"
-    rescue
-      nil
-    end
-
     def log_alert_failure(error)
       @logger.debug { "session monitor: alert failed (#{error.class}: #{error.message})" }
     rescue
@@ -713,149 +626,7 @@ module Workspace
     end
 
     def refresh_pane(detail, tree, now)
-      pane = (@panes[detail[:id]] ||= PaneEvents.new_pane(detail[:id]))
-      restore_state(pane, detail) if @history.key?(detail[:id])
-      pane[:index] = detail[:index]
-      pane[:title] = detail[:title]
-      pane[:cwd] = detail[:cwd]
-      pane[:pid] = detail[:pid]
-
-      agent = detect_agent(detail, tree)
-      pane[:kind] = agent ? agent[:provider].key : "shell"
-      pane[:label] = agent ? agent[:provider].label : detail[:command]
-      pane[:agent_pid] = agent && agent[:pid]
-      # Nobody is left to answer a prompt once the agent has exited.
-      unless agent
-        PaneEvents.clear_waiting(pane)
-        pane[:permission_requests].clear
-        pane.delete(:done)
-      end
-
-      screen = refresh_activity(pane, now)
-      refresh_screen_wait(pane, agent && agent[:provider], screen, now)
-      end_answered_permission_waits(pane, agent && agent[:provider], screen)
-      refresh_question(pane, now)
-    end
-
-    # The shortest permission dialog is 12 lines, so a tail this long can't reach above its top rule.
-    READY_TAIL_LINES = 12
-    private_constant :READY_TAIL_LINES
-
-    # An AskUserQuestion menu draws a rule above its last row, so with the
-    # cursor there it reads like the ready prompt.
-    MENU_ROW_PATTERN = /─{3,}\n❯[ \t ]?\d+\. /
-    private_constant :MENU_ROW_PATTERN
-
-    # Deny and Esc fire no hook. A bound permission wait ends when the ready
-    # prompt is back at the bottom of the screen; trailing blank rows (inline
-    # panes) are stripped first, and an empty capture says nothing.
-    def end_answered_permission_waits(pane, provider, screen)
-      return unless provider&.key == "claude" && provider.ready_pattern
-      tail = screen.scrub.rstrip.lines.last(READY_TAIL_LINES).join
-      return if tail.empty? || !provider.ready_pattern.match?(tail) || MENU_ROW_PATTERN.match?(tail)
-
-      pane[:waits].select { |_, wait| wait[:tool] }.each do |agent_id, wait|
-        pane[:waits].delete(agent_id)
-        pane[:alerted_waits]&.delete(agent_id)
-        # A differing request is newer than this wait, its dialog not yet drawn.
-        requests = pane[:permission_requests]
-        requests.delete(agent_id) if requests[agent_id] == wait.slice(:tool, :input)
-      end
-    end
-
-    # Esc on a question sends no hook, so a question tool stays open and the
-    # wait its Notification opened stays too, for good. One screen reading of
-    # {QuestionClosedCheck} held for {QuestionClosedCheck::HOLD} seconds, with no
-    # hook event since, closes both. The capture is made only for a pane with a
-    # question tool open. Anything else starts the wait over, a tool that opened
-    # since included, and nothing is closed.
-    def refresh_question(pane, now)
-      tools = pane[:open_tools].to_h.select { |_, tool| TypingSafety::QUESTION_TOOLS.include?(tool[:tool]) }.keys
-      return pane.delete(:question_screen) if tools.empty?
-
-      reading = @question_check.reading(pane[:kind], question_capture(pane))
-      held = pane[:question_screen]
-      if question_reading_held?(pane, held, tools, reading)
-        close_question(pane, tools) if now - held[:since] >= QuestionClosedCheck::HOLD
-      else
-        pane[:question_screen] = reading && {tools: tools, reading: reading, since: now}
-      end
-    end
-
-    # A failed capture proves nothing, so it reads as no screen.
-    def question_capture(pane)
-      @tmux.capture_screen_styled(pane[:pane_id])
-    rescue => e
-      @logger.debug { "session monitor: question capture failed in #{pane[:pane_id]} (#{e.class}: #{e.message})" }
-      nil
-    end
-
-    def question_reading_held?(pane, held, tools, reading)
-      return false unless reading && held
-      return false if pane[:last_event_at] && pane[:last_event_at] > held[:since]
-
-      held[:tools] == tools && held[:reading] == reading
-    end
-
-    # The turn ended with the Esc: as after a Stop, the idle notification that
-    # comes later opens no wait. Only the main agent's wait goes; a sub-agent's
-    # is its own.
-    def close_question(pane, tools)
-      tools.each { |id| pane[:open_tools].delete(id) }
-      pane[:waits].delete(nil)
-      pane[:alerted_waits]&.delete(nil)
-      pane[:permission_requests].delete(nil)
-      pane[:turn_ended] = true
-      pane.delete(:question_screen)
-      log_question_closed(pane)
-    end
-
-    # The key of the wait a matched screen opens in the pane's waits. Hooks
-    # key theirs by agent id, so this never meets one.
-    SCREEN_WAIT_KEY = "screen"
-    private_constant :SCREEN_WAIT_KEY
-
-    # Some agents stop on a screen before any hook can say so (Codex's
-    # sign-in and folder trust). A provider's waiting screens put the pane
-    # in `waiting` while one is shown, and take it out when it goes.
-    def refresh_screen_wait(pane, provider, screen, now)
-      return if screen.empty? # a failed capture says nothing about the prompt
-      message = provider&.waiting_screen(screen)&.fetch(:message)
-      hook_waiting = pane[:waits].keys.any? { |key| key != SCREEN_WAIT_KEY }
-      if message && !hook_waiting
-        wait = (pane[:waits][SCREEN_WAIT_KEY] ||= PaneEvents.resumed_wait(pane, SCREEN_WAIT_KEY, now: @clock.now))
-        wait[:message] = message
-        wait[:since] ||= now
-      else
-        pane[:waits].delete(SCREEN_WAIT_KEY)
-        pane[:alerted_waits]&.delete(SCREEN_WAIT_KEY)
-      end
-    end
-
-    def detect_agent(detail, tree)
-      @detector.call(command: detail[:command], pid: detail[:pid], tree: tree, providers: @providers)
-    end
-
-    # Output is hashed rather than compared: a pane's scrollback is large, and
-    # only the fact that it changed matters.
-    def refresh_activity(pane, now)
-      screen = @tmux.capture_pane(@session_name, pane[:index]).to_s
-      digest = Digest::SHA256.hexdigest(screen)
-
-      if pane[:digest] != digest
-        # The first capture after a restart is new to this monitor, not to the
-        # pane: a pane restored as idle stays idle until its output changes.
-        first_since_restore = pane[:digest].nil? && pane.delete(:quiet_since_restore)
-        pane[:digest] = digest
-        pane[:digest_seen_at] = now
-        pane.delete(:own_quiet_at)
-        pane[:last_activity_at] = now unless first_since_restore
-      elsif pane[:restored_ready] && !pane[:own_quiet_at] && now - pane[:digest_seen_at] >= @idle_after
-        # Two of this monitor's own scans, idle_after apart, saw the same screen.
-        pane[:own_quiet_at] = now
-      end
-      pane[:last_activity_at] ||= now
-      screen
+      @scanner.refresh(@panes[detail[:id]] ||= PaneEvents.new_pane(detail[:id]), detail, tree, now)
     end
 
     def present(pane, now, task = nil)
