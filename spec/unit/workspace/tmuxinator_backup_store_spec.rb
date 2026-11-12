@@ -81,13 +81,21 @@ RSpec.describe Workspace::TmuxinatorBackupStore do
       expect(store.copy_path(batch, "new", kind: :record)).to be_nil
     end
 
-    it "keeps the entry of an earlier workspace and replaces a repeated one" do
-      store.add(batch, name: "a", path: config_file("a", "a1"))
+    it "keeps the first entry and copy of a workspace added twice" do
+      path = config_file("a", "a1")
+      first = store.add(batch, name: "a", path: path)
       store.add(batch, name: "b", path: config_file("b", "b1"))
-      File.write(config_file("a", "a2"), "a2")
-      store.add(batch, name: "a", path: config_file("a", "a2"))
+      File.write(path, "a2")
 
-      expect(manifest(batch)["entries"].map { |e| [e["name"], e["sha_before"]] }).to eq([["b", sha("b1")], ["a", sha("a2")]])
+      expect(store.add(batch, name: "a", path: path)).to eq(first)
+      expect(manifest(batch)["entries"].map { |e| [e["name"], e["sha_before"]] }).to eq([["a", sha("a1")], ["b", sha("b1")]])
+      expect(File.read(store.copy_path(batch, "a"))).to eq("a1")
+    end
+
+    it "treats a manifest whose entries are not all Hashes as unreadable" do
+      File.write(File.join(batch.dir, "manifest.json"), JSON.generate(manifest(batch).merge("entries" => ["x"])))
+
+      expect(store.list).to eq([])
     end
 
     it "raises, and lists nothing, when the copy cannot be written, rather than calling a real file created" do
@@ -180,6 +188,14 @@ RSpec.describe Workspace::TmuxinatorBackupStore do
   end
 
   describe "#discard_if_empty" do
+    it "does nothing for a batch whose manifest is unreadable" do
+      batch = store.open(reason: "apply")
+      File.write(File.join(batch.dir, "manifest.json"), "{")
+
+      expect(store.discard_if_empty(batch)).to be(false)
+      expect(Dir.exist?(batch.dir)).to be(true)
+    end
+
     it "removes a batch with no entries" do
       batch = store.open(reason: "apply")
 

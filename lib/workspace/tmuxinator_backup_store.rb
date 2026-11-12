@@ -69,18 +69,22 @@ module Workspace
     # @param path [String] its tmuxinator config
     # @return [Hash] the manifest entry: `name`, `path`, `sha_before` (nil when the config did not exist),
     #   `record_path`, `record_sha_before` (nil when there was no render record)
+    # @return [Hash] the manifest entry; a workspace already in the batch keeps its first entry and copies, so
+    #   its `sha_before` is what it was before the batch's first write
     # @raise [ArgumentError] when +name+ is not a plain file name
     # @raise [Workspace::Error] `backup_symlink` when the config or its render record is a symbolic link
     # @raise [SystemCallError] when a copy or the manifest write fails; nothing is listed then
     def add(batch, name:, path:)
       plain_name!(name)
+      manifest = read_manifest(batch.dir)
+      existing = manifest["entries"].find { |listed| listed["name"] == name }
+      return existing if existing
       record = @writer.record_path(name)
       entry = {
         "name" => name, "path" => path, "sha_before" => copy(path, batch, "#{name}.yml"),
         "record_path" => record, "record_sha_before" => copy(record, batch, "#{name}.record.json")
       }
-      manifest = read_manifest(batch.dir)
-      manifest["entries"] = manifest["entries"].reject { |existing| existing["name"] == name } + [entry]
+      manifest["entries"] += [entry]
       write_manifest(batch, manifest)
       entry
     end
@@ -121,7 +125,8 @@ module Workspace
     # @param batch [Batch]
     # @return [Boolean] whether it was removed
     def discard_if_empty(batch)
-      return false unless read_manifest(batch.dir)["entries"].empty?
+      manifest = read_manifest(batch.dir)
+      return false unless manifest && manifest["entries"].empty?
       FileUtils.rm_rf(batch.dir)
       true
     end
@@ -207,14 +212,13 @@ module Workspace
     # source does not exist. Only a missing source is nil: a failed write raises, so a real file is never
     # recorded as one the batch created.
     def copy(source, batch, as)
-      if File.symlink?(source)
-        raise Workspace::Error.new("#{source} is a symbolic link; a backup cannot put a link back, so it is not copied.",
-          code: "backup_symlink", details: {"path" => source})
-      end
       bytes = begin
-        File.binread(source)
+        File.open(source, File::RDONLY | File::NOFOLLOW) { |file| file.binmode.read }
       rescue Errno::ENOENT
         return nil
+      rescue Errno::ELOOP
+        raise Workspace::Error.new("#{source} is a symbolic link; a backup cannot put a link back, so it is not copied.",
+          code: "backup_symlink", details: {"path" => source})
       end
       AtomicFile.write(File.join(batch.dir, as), bytes)
       Digest::SHA256.hexdigest(bytes)
@@ -228,7 +232,7 @@ module Workspace
 
     def read_manifest(dir)
       data = JSON.parse(File.read(File.join(dir, "manifest.json")))
-      data if data.is_a?(Hash) && data["schema"] == SCHEMA && data["entries"].is_a?(Array) && data["id"].is_a?(String)
+      data if data.is_a?(Hash) && data["schema"] == SCHEMA && data["entries"].is_a?(Array) && data["entries"].all?(Hash) && data["id"].is_a?(String)
     rescue SystemCallError, IOError, JSON::ParserError
       nil
     end
