@@ -1150,6 +1150,64 @@
       ]
     },
     {
+      "key": "tmuxinator.template",
+      "scope": "project",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": "default",
+      "effective": null,
+      "source": "unreadable",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "The name of the `template` library set that new tmuxinator configs are rendered from (lowercase letters, digits and hyphens; default `default`, the built-in one). It names the set for both project and worktree configs unless `tmuxinator.worktree_template` is set; an unknown name is a `config validate` warning and `unknown_template` when a config is made",
+      "problems": []
+    },
+    {
+      "key": "tmuxinator.worktree_template",
+      "scope": "project",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "unreadable",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "The name of the `template` library set that new worktree tmuxinator configs are rendered from, when it should differ from `tmuxinator.template` (unset: follows `tmuxinator.template`)",
+      "problems": []
+    },
+    {
       "key": "plan.stall_seconds",
       "scope": "project",
       "type": "duration",

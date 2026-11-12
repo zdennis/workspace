@@ -331,6 +331,12 @@ module Workspace
     end
     private_constant :SPINE_TEMPLATE
 
+    TMUXINATOR_TEMPLATE = lambda do |value|
+      return value if value.is_a?(String) && value.match?(IdPatterns::LIBRARY_NAME)
+      raise ArgumentError, "must be a tmuxinator template name: lowercase letters, digits and hyphens"
+    end
+    private_constant :TMUXINATOR_TEMPLATE
+
     # The kinds of start reference that `workflows.by_ref.<kind>` can pick a workflow for.
     WORKFLOW_REF_KINDS = %w[jira github_pr github_issue branch prompt].freeze
 
@@ -568,6 +574,11 @@ module Workspace
         doc: "The name of the `spine` library template that `spine init` and `start --spine` use when no `--template` is given (lowercase letters, digits and hyphens; default `default`, the built-in one). A worktree can set its own with `--name`; an unknown name is a `config validate` warning and `spine init` answers `unknown_template`"),
       Key.new(name: "spine.auto", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: false, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` runs [`spine init`](README.spine.md#spine-init) with the resolved `spine.template` once the worktree exists, so the new agent is sent the `spine` pack. `start --spine[=NAME]` and `--no-spine` override it for one start"),
+      # tmuxinator.template and tmuxinator.worktree_template choose the `template` library set a new tmuxinator config is rendered from.
+      Key.new(name: "tmuxinator.template", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, default: "default", examples: ["default", "team"], parser: TMUXINATOR_TEMPLATE,
+        doc: "The name of the `template` library set that new tmuxinator configs are rendered from (lowercase letters, digits and hyphens; default `default`, the built-in one). It names the set for both project and worktree configs unless `tmuxinator.worktree_template` is set; an unknown name is a `config validate` warning and `unknown_template` when a config is made"),
+      Key.new(name: "tmuxinator.worktree_template", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["default", "team"], parser: TMUXINATOR_TEMPLATE,
+        doc: "The name of the `template` library set that new worktree tmuxinator configs are rendered from, when it should differ from `tmuxinator.template` (unset: follows `tmuxinator.template`)"),
       Key.new(name: "plan.stall_seconds", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["300", "10m"], default: 300, parser: POSITIVE_DURATION,
         doc: "How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`)"),
       # go.* is read while a workspace is being created, so a worktree config does not exist yet: global and project layers only.
