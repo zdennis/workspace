@@ -49,7 +49,7 @@ RSpec.describe "Workspace.build_agentd_parts" do
     events.select { |type, _| type == Workspace::EventLog::HANDOFF_FOLLOWUP }.map { |_, data| data["outcome"] }
   end
 
-  it "returns a builder that makes a frozen AgentdParts with its twelve members" do
+  it "returns a builder that makes a frozen AgentdParts with its thirteen members" do
     builder = Workspace.build_agentd_parts(**options)
     expect(builder).to respond_to(:call)
 
@@ -58,7 +58,7 @@ RSpec.describe "Workspace.build_agentd_parts" do
     expect(parts).to be_a(Workspace::AgentdParts)
     expect(parts).to be_frozen
     expect(parts.members).to eq(%i[hook_event_log monitor restart_runner restart_desk plan_progress_watcher spine_owner_report
-      spine_watcher status_desk queue_desk recovery_desk handoff_watcher pipeline_desk])
+      spine_watcher status_desk queue_desk recovery_desk handoff_watcher pipeline_desk hook_fanout])
     expect(parts.monitor).to equal(monitor)
     expect(parts.restart_runner).to be_a(Workspace::RestartRunner)
     expect(parts.restart_desk).to be_a(Workspace::AgentdRestartDesk)
@@ -66,6 +66,7 @@ RSpec.describe "Workspace.build_agentd_parts" do
     expect(parts.queue_desk).to be_a(Workspace::PromptQueueDesk)
     expect(parts.handoff_watcher).to be_a(Workspace::HandoffWatcher)
     expect(parts.pipeline_desk).to be_a(Workspace::PipelineDesk)
+    expect(parts.hook_fanout).to be_a(Workspace::HookFanout)
     expect(parts.hook_event_log).to be_nil
     expect(parts.recovery_desk).to be_nil
   end
@@ -90,6 +91,19 @@ RSpec.describe "Workspace.build_agentd_parts" do
 
     sentinels.each { |name, sentinel| expect(parts[name]).to equal(sentinel) }
     expect(parts.restart_runner).to equal(restart_runner)
+  end
+
+  it "hands hook events through the fan-out to the parts built and the workflow nudger it is given" do
+    nudger = RecordingNudger.new
+    hook_log = RecordingHookLog.new
+    allow(monitor).to receive(:record)
+    parts = build(workflow_nudger: nudger, hook_event_log_factory: ->(_workspace) { hook_log })
+
+    parts.hook_fanout.session_event({"type" => "session_event", "workspace" => "ws", "event" => "stop", "pane_id" => "%5"})
+
+    expect(monitor).to have_received(:record)
+    expect(hook_log.calls.size).to eq(1)
+    expect(nudger.calls).to eq([[:turn_ended, "ws", "%5", {turn_started: nil, background: nil}]])
   end
 
   it "gives a replaced desk the keywords the builder passes" do

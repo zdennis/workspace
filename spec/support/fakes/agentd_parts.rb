@@ -269,3 +269,133 @@ class RecordingSentinelPoller
 
   def time_out = @on_timeout.call
 end
+
+# The hook fan-out's peers. Each records its calls in +calls+ and, when given a shared +order+ Array, appends
+# `[label, method]` to it, so a spec reads the order the fan-out called them in; +fail_with+ is raised by
+# every call after it is recorded.
+
+# Fake of Workspace::SessionMonitor#record.
+class RecordingHookMonitor
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize(order: [], label: :monitor)
+    @order = order
+    @label = label
+    @calls = []
+  end
+
+  def record(event)
+    @calls << [:record, event]
+    @order << [@label, :record]
+    nil
+  end
+end
+
+# Fake of Workspace::HookEventLog#record.
+class RecordingHookLog
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize(order: [], label: :hook_log)
+    @order = order
+    @label = label
+    @calls = []
+  end
+
+  def record(event)
+    @calls << [:record, event]
+    @order << [@label, :record]
+    nil
+  end
+end
+
+# Fake of Workspace::HandoffWatcher#session_event.
+class RecordingHandoffWatcher
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize(order: [], label: :handoff_watcher, fail_with: nil)
+    @order = order
+    @label = label
+    @fail_with = fail_with
+    @calls = []
+  end
+
+  def session_event(message)
+    @calls << [:session_event, message]
+    @order << [@label, :session_event]
+    raise @fail_with if @fail_with
+    nil
+  end
+end
+
+# Fake of Workspace::WorkflowNudger#turn_ended.
+class RecordingNudger
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize(order: [], label: :nudger)
+    @order = order
+    @label = label
+    @calls = []
+  end
+
+  def turn_ended(workspace, pane_id, turn_started: nil, background: nil)
+    @calls << [:turn_ended, workspace, pane_id, {turn_started: turn_started, background: background}]
+    @order << [@label, :turn_ended]
+    nil
+  end
+end
+
+# Fake of Workspace::SpineOwnerReport#turn_ended.
+class RecordingOwnerReport
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize(order: [], label: :owner_report)
+    @order = order
+    @label = label
+    @calls = []
+  end
+
+  def turn_ended(pane_id)
+    @calls << [:turn_ended, pane_id]
+    @order << [@label, :turn_ended]
+    nil
+  end
+end
+
+# Fake of the two desks the fan-out feeds, Workspace::PromptQueueDesk and Workspace::AgentRecoveryDesk:
+# +session_event+ and +scan+.
+class RecordingHookDesk
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize(order: [], label: :desk, fail_with: nil)
+    @order = order
+    @label = label
+    @fail_with = fail_with
+    @calls = []
+  end
+
+  def session_event(message)
+    @calls << [:session_event, message]
+    @order << [@label, :session_event]
+    raise @fail_with if @fail_with
+    nil
+  end
+
+  def scan
+    @calls << [:scan]
+    @order << [@label, :scan]
+    raise @fail_with if @fail_with
+    nil
+  end
+end

@@ -230,4 +230,41 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::SentinelPoller, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingHookMonitor do
+    it "accepts every call SessionMonitor accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SessionMonitor, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingHookLog do
+    it "accepts every call HookEventLog accepts" do
+      expect(FakeContract.problems(described_class, Workspace::HookEventLog, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingHandoffWatcher do
+    it "accepts every call HandoffWatcher accepts" do
+      expect(FakeContract.problems(described_class, Workspace::HandoffWatcher, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingNudger do
+    it "accepts every call WorkflowNudger accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowNudger, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingOwnerReport do
+    it "accepts every call SpineOwnerReport accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SpineOwnerReport, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingHookDesk do
+    it "accepts every call PromptQueueDesk and AgentRecoveryDesk accept" do
+      expect(FakeContract.problems(described_class, Workspace::PromptQueueDesk, control: described_class::CONTROL_METHODS)).to be_empty
+      expect(FakeContract.problems(described_class, Workspace::AgentRecoveryDesk, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end

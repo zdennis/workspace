@@ -462,6 +462,7 @@ require_relative "workspace/sentinel_poller"
 require_relative "workspace/agentd_parts"
 require_relative "workspace/agentd_restart_desk"
 require_relative "workspace/pipeline_desk"
+require_relative "workspace/hook_fanout"
 require_relative "workspace/commands/agent"
 require_relative "workspace/run_result"
 require_relative "workspace/run_result_cleaner"
@@ -576,8 +577,10 @@ module Workspace
   #   the workspace's persisted state file
   # @param sentinel_poller_factory [#call, nil] given +session_name:+, +pane:+, +token:+ and +deadline:+, builds the
   #   {Workspace::SentinelPoller} that watches a pipeline stage; nil builds the real one
+  # @param workflow_nudger [Workspace::WorkflowNudger, nil] the {Workspace::HookFanout} wakes a workflow run with it when a
+  #   turn ends in the run's pane; nil wakes none
   # @param token_generator [#call] returns a fresh completion token for one stage dispatch
-  # @param clock [#call] returns the current Time, for stage deadlines
+  # @param clock [#call] returns the current Time, for stage deadlines and when a turn began
   # @param retry_backoff [Numeric] seconds to wait between status report retries
   # @param logger [Workspace::Logger] debug logger
   # @param error_output [IO] where a restart worker's failure is written
@@ -590,7 +593,7 @@ module Workspace
     handoff_typer: :prompt_typer, transcript_summary: TranscriptSummary.new, idle_prompt_check: IdlePromptCheck.new, pane_bindings: nil,
     plan_paused_for: nil, hook_event_log_factory: nil, plan_progress_watcher_factory: nil, spine_watcher_factory: nil,
     spine_owner_report_factory: nil, agent_recovery_desk_factory: nil, agent_status_desk_factory: nil, prompt_queue_desk_factory: nil,
-    handoff_watcher_factory: nil, restart_runner_factory: nil, pipeline_state: nil, sentinel_poller_factory: nil,
+    handoff_watcher_factory: nil, restart_runner_factory: nil, pipeline_state: nil, sentinel_poller_factory: nil, workflow_nudger: nil,
     token_generator: -> { SecureRandom.hex(4) }, clock: -> { Time.now }, retry_backoff: 0.5, logger: Workspace::Logger.new, error_output: $stderr)
     sentinel_poller_factory ||= ->(session_name:, pane:, token:, deadline:) do
       SentinelPoller.new(tmux: tmux, session_name: session_name, pane: pane, token: token, deadline: deadline,
@@ -677,10 +680,12 @@ module Workspace
       handoff_watcher = handoff_watcher_factory.call(workspace: workspace, session_name: session_name,
         session_monitor: monitor, delivery_lock: delivery_lock, event_log: event_log,
         restarting: ->(pane_id) { restarting.call(pane_id) || recovering.call(pane_id) })
+      hook_fanout = HookFanout.new(workspace: workspace, monitor: monitor, hook_log: hook_event_log, handoff_watcher: handoff_watcher,
+        nudger: workflow_nudger, owner_report: spine_owner_report, desks: [queue_desk, recovery_desk], clock: clock, logger: logger)
       AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner, restart_desk: restart_desk,
         plan_progress_watcher: plan_progress_watcher, spine_owner_report: spine_owner_report, spine_watcher: spine_watcher,
         status_desk: status_desk, queue_desk: queue_desk, recovery_desk: recovery_desk, handoff_watcher: handoff_watcher,
-        pipeline_desk: pipeline_desk).freeze
+        pipeline_desk: pipeline_desk, hook_fanout: hook_fanout).freeze
     end
   end
 
@@ -1132,6 +1137,7 @@ module Workspace
       spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: notes_dir_of, event_log: event_log, logger: logger) },
       spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: notes_dir_of, event_log: event_log, logger: logger) },
       hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
+      workflow_nudger: workflow_nudger,
       logger: logger,
       error_output: error_output
     )

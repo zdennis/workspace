@@ -29,10 +29,9 @@ module Workspace
       # @param parts [#call] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+, +epoch_generator:+,
       #   +recovering:+ and +pipeline_desk:+ (or +pipeline_only: true+), builds the {Workspace::AgentdParts} of the workspace served,
       #   none of them started ({Workspace.build_agentd_parts} returns it)
-      # @param clock [#call] returns the current Time, for when a turn began
       # @param event_log [Workspace::EventLog, nil] records the daemon's start and stop; nil records nothing
-      # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes a workflow run when a turn ends in
-      #   its pane, and on a timer; nil leaves workflow runs alone
+      # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes the workspace's workflow runs on a timer
+      #   (the parts' hook fan-out wakes one when a turn ends in its pane); nil leaves workflow runs alone
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
       #   to lowercase before the socket is claimed; nil renames nothing
       # @param logger [Workspace::Logger] debug logger
@@ -49,7 +48,6 @@ module Workspace
       def initialize(config:, tmux:, pipeline_config:, parts:, agent_labels: nil, agent_commands: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
-        clock: -> { Time.now },
         event_log: nil,
         workflow_nudger: nil,
         restart_registry: RestartRegistry.new,
@@ -68,17 +66,15 @@ module Workspace
         @pipeline_config = pipeline_config
         @epoch_generator = epoch_generator
         @signal_trapper = signal_trapper
-        @clock = clock
         @parts = parts
         @session_monitor = nil
         @workflow_nudger = workflow_nudger
         @agent_recovery_desk = nil
+        @hook_fanout = nil
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = restart_registry
         @restart_desk = nil
         @pipeline_desk = nil
-        # When the main agent's current turn began, by pane id, for the workflow nudger.
-        @turn_starts = {}
         @event_log = event_log
         @shutting_down = false
         @shutdown_signal = Queue.new
@@ -134,21 +130,20 @@ module Workspace
 
         # Built here, before any worker thread can ask for it.
         parts = build_parts(pipeline_desk: @pipeline_desk)
-        @hook_event_log = parts.hook_event_log
         @session_monitor = parts.monitor
         @restart_desk = parts.restart_desk
         @session_monitor.start
         @plan_progress_watcher = parts.plan_progress_watcher
         @plan_progress_watcher&.start
-        @spine_owner_report = parts.spine_owner_report
         @spine_watcher = parts.spine_watcher
-        @spine_watcher.owner_report = @spine_owner_report if @spine_watcher.respond_to?(:owner_report=)
+        @spine_watcher.owner_report = parts.spine_owner_report if @spine_watcher.respond_to?(:owner_report=)
         @spine_watcher&.start
         @agent_status_desk = parts.status_desk
         @prompt_queue_desk = parts.queue_desk
         @agent_recovery_desk = parts.recovery_desk
+        @hook_fanout = parts.hook_fanout
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
-        @session_monitor.on_scan = -> { scan_desks } if @session_monitor.respond_to?(:on_scan=)
+        @session_monitor.on_scan = -> { @hook_fanout.scan_desks } if @session_monitor.respond_to?(:on_scan=)
         @handoff_watcher = parts.handoff_watcher
 
         @output.puts "workspace agent '#{name}' ready"
@@ -278,15 +273,8 @@ module Workspace
           # Before #call has built the parts there is no desk, and no context reader to confirm a /clear with.
           @restart_desk ? @restart_desk.handle(message, client) : reply_to(client, AgentdRestartDesk.refusal_before_start(message))
         when AgentProtocol::SESSION_EVENT
-          # Before the monitor records it: a /clear moves the pane's session_id there, and a poll
-          # in the gap would end the watch session_changed, not carried_out.
-          notify_handoff_watcher(message)
-          @session_monitor&.record(message)
-          @hook_event_log&.record(message)
-          nudge_workflow(message) if @workflow_nudger && message["agent_id"].nil?
-          report_owner_finished(message) if @spine_owner_report && message["agent_id"].nil?
-          @prompt_queue_desk&.session_event(message)
-          @agent_recovery_desk&.session_event(message)
+          # Before #call has built the parts there is no fan-out, and nothing to show the event to.
+          @hook_fanout&.session_event(message)
           reply_to(client, AgentProtocol.ok)
         when AgentProtocol::HANDOFF_WATCH then reply_to(client, handle_handoff_watch(message))
         when AgentProtocol::STATUS_REQUEST then handle_status_request(message, client)
@@ -436,45 +424,6 @@ module Workspace
       # Never raises: {Workspace::EventLog#record} swallows write errors.
       def log_activity(type, data)
         @event_log&.record(type: type, project: @current_name, data: data)
-      end
-
-      # Shows a hook event to the handoff watcher. A failure there is logged and costs the monitor nothing.
-      def notify_handoff_watcher(message)
-        @handoff_watcher&.session_event(message)
-      rescue => e
-        @logger.debug { "handoff watcher: #{e.class}: #{e.message}" }
-      end
-
-      # The session monitor's after-scan call: both desks run, and one that
-      # raises does not stop the other.
-      def scan_desks
-        [@prompt_queue_desk, @agent_recovery_desk].compact.each do |desk|
-          desk.scan
-        rescue => e
-          @logger.debug { "agent: #{desk.class.name.split("::").last} scan failed (#{e.class}: #{e.message})" }
-        end
-      end
-
-      # The main agent's turn ended: a workflow run bound to the pane decides
-      # its step now. The run is told when that turn began (the prompt that
-      # started it), so a turn already under way when the step's line was
-      # typed does not decide the step; a turn whose start this daemon did
-      # not see is sent without one.
-      def nudge_workflow(message)
-        pane_id = message["pane_id"]
-        case message["event"]
-        when "user_prompt" then @turn_starts[pane_id] = @clock.call
-        # A new conversation: a prompt this daemon then fails to see leaves no start, so its turn's end counts.
-        when "session_start", "session_end" then @turn_starts.delete(pane_id)
-        when "stop" then @workflow_nudger.turn_ended(@current_name, pane_id, turn_started: @turn_starts[pane_id], background: message["background_tasks"])
-        end
-      end
-
-      # The main agent's turn ended (the Stop hook): a stage the pane owns is reported as finished.
-      def report_owner_finished(message)
-        return unless message["event"] == "stop"
-        pane_id = message["pane_id"]
-        Thread.new { @spine_owner_report.turn_ended(pane_id) }
       end
 
       # Watches for the agent's socket file going missing — macOS sweeps old
