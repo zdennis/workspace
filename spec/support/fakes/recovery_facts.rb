@@ -104,7 +104,8 @@ class RecordingTurnTranscript
   end
 end
 
-# Fake of the Workspace::SessionMonitor reads a recovery check makes: delivery facts and running sub-agents.
+# Fake of the Workspace::SessionMonitor calls the recovery desk's parts make: delivery facts and running
+# sub-agents for a check, and a pane's rescan and agent pid for moving its queued prompts.
 class RecordingRecoveryMonitor
   CONTROL_METHODS = %i[calls].freeze
 
@@ -112,10 +113,21 @@ class RecordingRecoveryMonitor
 
   # @param delivery_facts [Hash, nil] what +delivery_facts+ answers
   # @param running [Integer, nil] what +running_subagents+ answers
-  def initialize(delivery_facts: nil, running: 0, calls: [])
+  # @param agent_pid [Integer, nil] what +agent_pid+ answers
+  def initialize(delivery_facts: nil, running: 0, agent_pid: nil, calls: [])
     @delivery_facts = delivery_facts
     @running = running
+    @agent_pid = agent_pid
     @calls = calls
+  end
+
+  def rescan_pane(pane_id)
+    @calls << [:rescan_pane, pane_id]
+  end
+
+  def agent_pid(pane_id)
+    @calls << [:agent_pid, pane_id]
+    @agent_pid
   end
 
   def delivery_facts(pane_id)

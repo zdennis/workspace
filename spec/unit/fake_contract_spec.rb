@@ -308,4 +308,16 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::PromptTyper, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingRecoveryStore do
+    it "accepts every call AgentRecoveryStore accepts" do
+      expect(FakeContract.problems(described_class, Workspace::AgentRecoveryStore, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingAgentFacts do
+    it "accepts every call RecoveryFacts accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryFacts, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end

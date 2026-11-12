@@ -68,6 +68,25 @@ RSpec.describe Workspace::RecoveryFacts do
     end
   end
 
+  describe "#live_agent" do
+    it "looks the pane up, then finds the agent under it" do
+      expect(facts.live_agent("%3")).to eq(pid: 90, started: "Mon")
+      expect(calls).to eq([[:snapshot], [:find_agent, 77, :tree]])
+    end
+
+    it "answers nil for a pane it can't look up, reading no table" do
+      expect(facts.live_agent("%9")).to be_nil
+      expect(facts(panes: FakePaneFactory.new(unlisted: true)).live_agent("%3")).to be_nil
+      expect(calls).to eq([])
+    end
+
+    it "answers nil when the table can't be read" do
+      broken = RecordingProcessTree.new(error: Workspace::Error.new("ps failed"), calls: calls)
+
+      expect(facts(process_tree: broken).live_agent("%3")).to be_nil
+    end
+  end
+
   it "#foreground? asks about the agent's pid against the pane's" do
     expect(facts.foreground?({pid: 90}, row)).to be(true)
     expect(calls).to eq([[:foreground?, 90, 77]])

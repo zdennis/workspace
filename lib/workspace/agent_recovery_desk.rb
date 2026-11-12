@@ -3,13 +3,8 @@ module Workspace
   # on an API error. It keeps one {AgentRecoveryStore} entry per pane, schedules
   # attempts, and gives up with one inbox item.
   #
-  # {#session_event} only queues the hook event: one worker at a time takes the
-  # queue in order, so the accept loop takes no file lock and runs no `ps`, and
-  # a pane's events can't overtake each other. The worker reads an entry's
-  # `phase` first, so an attempt's own events are never read as a person's.
-  # Unless a rule says otherwise, an event from a session other than the
-  # entry's is ignored: a fresh agent's Stop must not resolve the item that
-  # reports it.
+  # {#session_event} hands the hook event to {RecoveryIntake}, which queues it
+  # for its one worker and applies it to the pane's entry there.
   #
   # {#scan}, on the monitor's scan thread, confirms a failure against the
   # transcript once {SETTLE} seconds have passed, runs {#check} on the entries
@@ -64,7 +59,7 @@ module Workspace
   # signal's SessionEnd.
   class AgentRecoveryDesk
     # The `error` kinds that go on the attempt schedule; any other gives up at once.
-    RETRYABLE_ERRORS = %w[server_error overloaded rate_limit unknown].freeze
+    RETRYABLE_ERRORS = RecoveryIntake::RETRYABLE_ERRORS
 
     # Seconds after the failure before the transcript is read: Claude Code may
     # still recover by itself, and the error line may follow the hook.
@@ -77,9 +72,6 @@ module Workspace
     # running stops holding off an attempt: an outage can kill one before it
     # sends SubagentStop.
     SUBAGENT_QUIET = RecoveryVerdicts::SUBAGENT_QUIET
-
-    # How long the screen must stay unchanged to count as quiet.
-    QUIET_FOR = AgentRestart::QUIET_FOR
 
     # What Claude Code shows while it is retrying by itself, or still working.
     BUSY_SCREEN = RecoveryVerdicts::BUSY_SCREEN
@@ -153,9 +145,6 @@ module Workspace
     ATTEMPT_FIELDS = %w[turn_completed failed_during_attempt resumed_elsewhere attempt_session_id prompt_seen].freeze
     private_constant :ATTEMPT_FIELDS
 
-    HANDLED_EVENTS = %w[turn_failed stop user_prompt tool_start tool_use subagent_start session_start session_end].freeze
-    private_constant :HANDLED_EVENTS
-
     GIVE_UP_BODIES = {
       "attempts_exhausted" => "The API kept failing (%<error>s) through %<attempts>d recovery attempts, so workspace stopped trying.",
       "not_retryable" => "The turn failed with %<error>s, which trying again won't fix, so workspace won't try again.",
@@ -204,9 +193,12 @@ module Workspace
     # @param steps [Workspace::AgentRecoverySteps] picks the runner of steps 2 to 5 for each kind of attempt
     # @param max_attempts [Integer] attempts after which the desk gives up
     # @param logger [Workspace::Logger] debug logger
-    # @param facts [Workspace::RecoveryFacts] makes each read {#check} and the attempts make (default one over
-    #   +panes+, +process_tree+, +stopper+, +detector+, +ledger+, +transcript+, +session_monitor+, +prompt_typer+,
-    #   +clock+, +sleeper+ and +logger+)
+    # @param facts [Workspace::RecoveryFacts] makes each read {#check} and the attempts make; until T37.5 the
+    #   default is built here over +panes+, +process_tree+, +stopper+, +detector+, +ledger+, +transcript+,
+    #   +session_monitor+, +prompt_typer+, +clock+, +sleeper+ and +logger+
+    # @param intake [Workspace::RecoveryIntake] queues the hook events and applies them to the entries; until
+    #   T37.5 the default is built here over +store+, +session_monitor+, +facts+, +rebind_queue+,
+    #   +max_attempts+, +clock+, +spawn+, +logger+ and the desk's own give-up report and inbox resolve
     def initialize(panes:, workspace:, session_name:, session_monitor:, store:, transcript:, stopper:, detector:,
       process_tree:, ledger:, resume_command:, prompt_typer:, readiness:, marker:, inbox:, delivery_lock:, event_log: nil,
       restarting: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
@@ -215,7 +207,10 @@ module Workspace
       logger: Workspace::Logger.new,
       facts: RecoveryFacts.new(panes: panes, process_tree: process_tree, stopper: stopper, detector: detector, ledger: ledger,
         transcript: transcript, session_monitor: session_monitor, prompt_typer: prompt_typer, clock: clock, sleeper: sleeper,
-        logger: logger))
+        logger: logger),
+      intake: RecoveryIntake.new(store: store, session_monitor: session_monitor, facts: facts, rebind_queue: rebind_queue,
+        report_give_up: method(:report_give_up), resolve: method(:resolve), max_attempts: max_attempts, clock: clock,
+        spawn: spawn, logger: logger))
       @panes = panes
       @workspace = workspace
       @session_name = session_name
@@ -241,9 +236,7 @@ module Workspace
       @max_attempts = max_attempts
       @logger = logger
       @facts = facts
-      @queue = []
-      @queue_guard = Mutex.new
-      @draining = false
+      @intake = intake
       @unmarked = nil
     end
 
@@ -253,15 +246,7 @@ module Workspace
     # @param message [Hash] a "session_event" payload
     # @return [void]
     def session_event(message)
-      return unless message["pane_id"].is_a?(String)
-      return unless message["agent_id"] || HANDLED_EVENTS.include?(message["event"])
-
-      start = @queue_guard.synchronize do
-        @queue << message
-        !@draining && (@draining = true)
-      end
-      start_worker if start
-      nil
+      @intake.session_event(message)
     end
 
     # Runs from the monitor's scan: marks the failed panes once, then for each
@@ -307,289 +292,12 @@ module Workspace
 
     private
 
-    def start_worker
-      @spawn.call { drain }
-    rescue => e
-      @queue_guard.synchronize { @draining = false }
-      quiet_debug { "agent recovery: could not start the worker (#{e.class}: #{e.message})" }
-    end
-
-    def drain
-      while (message = next_message)
-        begin
-          take_in(message)
-        rescue => e
-          quiet_debug { "agent recovery: #{message["event"]} for #{message["pane_id"]} failed (#{e.class}: #{e.message})" }
-        end
-      end
-    end
-
-    # The worker's own logging: a logger that raises must not end it with
-    # `@draining` still set, which would leave every later event unread.
+    # The attempt thread's own logging: a logger that raises must not skip
+    # the claim's release.
     def quiet_debug(&block)
       @logger.debug(&block)
     rescue
       nil
-    end
-
-    # The check for an empty queue and the end of the worker are one step, so
-    # an event queued just after can't be left with no worker.
-    def next_message
-      @queue_guard.synchronize do
-        @draining = false if @queue.empty?
-        @queue.shift
-      end
-    end
-
-    def take_in(message)
-      return stamp_subagent(message) if message["agent_id"]
-
-      case message["event"]
-      when "turn_failed" then turn_failed(message)
-      when "stop" then turn_completed(message)
-      when "user_prompt", "tool_start", "tool_use", "subagent_start" then agent_active(message)
-      when "session_start" then session_started(message)
-      when "session_end" then session_ended(message)
-      end
-    end
-
-    def stamp_subagent(message)
-      @store.update(message["pane_id"]) do |entry|
-        entry["last_subagent_at"] = stamp if !entry.empty? && entry["session_id"] == message["session_id"]
-      end
-    end
-
-    def turn_failed(message)
-      session_id = message["session_id"]
-      return unless session_id.to_s.match?(AgentResumeCommand::SESSION_ID)
-
-      pane_id = message["pane_id"]
-      live = live_agent(pane_id)
-      seen = @store.get(pane_id)
-      rebind(pane_id) if seen && seen["session_id"] == session_id && agent_came_back?(seen, live)
-      gave_up = false
-      stored = @store.update(pane_id) do |entry|
-        gave_up = intake(entry, session_id, message["error"], message["transcript_path"], live)
-      end
-      report_give_up(pane_id, stored) if gave_up
-    end
-
-    # Applies one failed turn to an entry, inside the caller's {AgentRecoveryStore#update}.
-    #
-    # @param entry [Hash] the pane's entry, changed in place
-    # @param session_id [String] the session that failed
-    # @param error [String, nil] the error kind
-    # @param transcript_path [String, nil] the hook's transcript path
-    # @param live [Hash, nil] {AgentStopper#find_agent}'s answer, read before the update
-    # @return [Boolean] whether this gave up, which the caller reports after the update
-    def intake(entry, session_id, error, transcript_path, live)
-      same = entry["session_id"] == session_id
-      if entry["phase"] == "attempting"
-        if same
-          entry["failed_during_attempt"] = true
-          entry["error"] = error
-        end
-        return false
-      end
-
-      unless RETRYABLE_ERRORS.include?(error)
-        return false if same && entry["phase"] == "gave_up" && entry["give_up_reason"] != "not_retryable"
-        entry.clear unless same
-        fill(entry, session_id, error, transcript_path)
-        give_up_in(entry, "not_retryable")
-        return true
-      end
-
-      return false unless transcript_path.is_a?(String) && !transcript_path.empty?
-      entry.clear unless same
-      if entry["phase"] == "gave_up"
-        return false unless reopens?(entry, live)
-        entry["stopped"] = false
-        entry["last_signal_at"] = nil
-        entry["give_up_reason"] = nil
-        entry["item_open"] = true
-        entry["item_error"] = entry["error"]
-      end
-      fill(entry, session_id, error, transcript_path)
-      schedule(entry, live)
-    end
-
-    # A retryable failure can follow a give-up that said nothing about the API
-    # any more. An `unconfirmed` one needs a live agent: someone resumed the
-    # session, and with no agent the failure is a late line from one that left.
-    # The count is kept, so {AgentRecoveryStore::MAX_ATTEMPTS} still ends it.
-    def reopens?(entry, live)
-      entry["give_up_reason"] == "not_retryable" || (entry["give_up_reason"] == "unconfirmed" && !live.nil?)
-    end
-
-    def fill(entry, session_id, error, transcript_path)
-      entry["session_id"] = session_id
-      entry["error"] = error
-      entry["transcript_path"] = transcript_path || entry["transcript_path"]
-      entry["attempts"] = entry["attempts"].to_i
-      entry["stopped"] = entry["stopped"] == true
-    end
-
-    # @return [Boolean] whether this gave up
-    def schedule(entry, live)
-      return true if schedule_next(entry)
-
-      entry["failed_at"] = stamp
-      entry["draft_text"] = nil
-      entry["stopped"] = false if agent_came_back?(entry, live)
-      store_agent(entry, live) if live || entry["stopped"] != true
-      false
-    end
-
-    # Whether a stopped entry's agent has been replaced. The stopped process
-    # itself doesn't count: after a signal that didn't stop it, its late hooks
-    # must not end the recovery, and a pid that was never read proves nothing.
-    def agent_came_back?(entry, live)
-      entry["stopped"] == true && %w[waiting watching].include?(entry["phase"]) && other_agent?(entry, live)
-    end
-
-    # A pid that was never read proves nothing.
-    def other_agent?(entry, live)
-      return false unless live && !entry["agent_pid"].nil?
-      !same_process?(entry, live)
-    end
-
-    def same_process?(entry, live)
-      RecoveryVerdicts.same_process?(entry, live)
-    end
-
-    # `agent_flags` describes the stored agent. A read of the same process
-    # replaces them, and one that gave nil keeps them; any other process, or a
-    # pid left blank, which can't be called the same process, gets exactly what
-    # the read gave. No agent leaves them, for a `resume_only` once the process
-    # is gone.
-    def store_agent(entry, live)
-      if live
-        kept = entry["agent_flags"] if same_process?(entry, live)
-        entry["agent_flags"] = live[:flags] || kept
-      end
-      entry["agent_pid"] = live&.fetch(:pid)
-      entry["agent_started"] = live&.fetch(:started)
-    end
-
-    def next_attempt(entry)
-      stamp(@clock.now + AgentRecoveryStore.wait_before(entry["attempts"].to_i + 1))
-    end
-
-    def turn_completed(message)
-      session_id = message["session_id"]
-      finished = false
-      @store.update(message["pane_id"]) do |entry|
-        next if entry.empty? || entry["session_id"] != session_id
-        if entry["phase"] == "attempting"
-          entry["turn_completed"] = true
-        else
-          entry.clear
-          finished = true
-        end
-      end
-      resolve(session_id) if finished
-    end
-
-    def agent_active(message)
-      pane_id = message["pane_id"]
-      seen = @store.get(pane_id)
-      same = seen && seen["session_id"] == message["session_id"]
-      live = live_agent(pane_id) if same && seen["stopped"] == true && %w[waiting watching].include?(seen["phase"])
-      # Before the write that may end the hold, so no prune sees the old pid.
-      rebind(pane_id) if same && agent_came_back?(seen, live)
-      @store.update(pane_id) do |entry|
-        next if entry.empty? || entry["session_id"] != message["session_id"]
-        if entry["phase"] == "attempting"
-          entry["prompt_seen"] = true if message["event"] == "user_prompt"
-        elsif %w[waiting watching].include?(entry["phase"])
-          if agent_came_back?(entry, live)
-            entry["stopped"] = false
-            store_agent(entry, live)
-          end
-          entry.merge!("phase" => "watching", "defer_since" => nil) if entry["phase"] == "waiting" && entry["stopped"] != true
-        end
-      end
-    end
-
-    def session_started(message)
-      pane_id = message["pane_id"]
-      session_id = message["session_id"]
-      forget_resumed_elsewhere(pane_id, session_id)
-      seen = @store.get(pane_id)
-      return unless seen
-
-      open_phase = %w[waiting watching].include?(seen["phase"])
-      same = seen["session_id"] == session_id
-      live = live_agent(pane_id) if open_phase && same
-      # Before the write that may end the hold, so no prune sees the old pid.
-      rebind(pane_id) if open_phase && same && someone_resumed?(seen, live)
-
-      gave_up = false
-      stored = @store.update(pane_id) do |entry|
-        gave_up = apply_session_start(entry, session_id, message["source"], live)
-      end
-      report_give_up(pane_id, stored) if gave_up
-      resolve(seen["session_id"]) if stored.nil? && message["source"] == "clear"
-    end
-
-    # @return [Boolean] whether this gave up
-    def apply_session_start(entry, session_id, source, live)
-      case entry["phase"]
-      when "attempting"
-        entry["attempt_session_id"] = session_id
-        # The new agent is known: what it does next owes nothing to our signal.
-        forget_signal(entry) if session_id == entry["session_id"]
-      when "waiting", "watching"
-        if entry["session_id"] != session_id
-          return other_session_started(entry, source)
-        end
-        # Attempts run in `attempting`, so another agent here is someone else's resume, never to be signalled.
-        entry.merge!("stopped" => false, "phase" => "watching", "defer_since" => nil) if someone_resumed?(entry, live)
-        store_agent(entry, live)
-      end
-      false
-    end
-
-    # Whether a same-id SessionStart outside an attempt is a new agent. After
-    # attempts a blank pid proves it too: a `turn_failed` from a gone agent or a
-    # failed `ps` can blank the stored one, and any agent here must not be signalled.
-    def someone_resumed?(entry, live)
-      return true if entry["stopped"] == true || other_agent?(entry, live)
-      !live.nil? && entry["agent_pid"].nil? && entry["attempts"].to_i.positive?
-    end
-
-    # A person or a workflow cleared the conversation, or no stop of ours came
-    # before this session: nothing is left to report. After attempts, a slow
-    # exit may have reached a `||` branch, and this is the last place to say so.
-    def other_session_started(entry, source)
-      if source == "clear" || unreported?(entry)
-        entry.clear
-        return false
-      end
-      give_up_in(entry, "fresh_conversation")
-      true
-    end
-
-    # Nothing has been tried and no item waits on this entry, so it can go silently.
-    def unreported?(entry)
-      entry["attempts"].to_i.zero? && entry["item_open"] != true
-    end
-
-    # A stopped session opened in another pane must not be resumed twice. An
-    # attempt holds its entry until its end, so it only gets the flag.
-    def forget_resumed_elsewhere(pane_id, session_id)
-      @store.entries.each do |other, seen|
-        next if other == pane_id || seen["session_id"] != session_id
-        item_open = false
-        @store.update(other) do |entry|
-          next unless entry["session_id"] == session_id && entry["phase"] != "gave_up" && entry["stopped"] == true
-          next entry["resumed_elsewhere"] = true if entry["phase"] == "attempting"
-          item_open = entry["item_open"] == true
-          entry.clear
-        end
-        resolve(session_id) if item_open
-      end
     end
 
     # The queue compares the monitor's pid, which in an unwrapped pane is the
@@ -598,29 +306,6 @@ module Workspace
       @session_monitor.rescan_pane(pane_id)
       agent_pid = @session_monitor.agent_pid(pane_id)
       @rebind_queue.call(pane_id, agent_pid) if agent_pid
-    end
-
-    # After attempts the count is reported, never dropped: a Stop has already
-    # deleted the entry of an agent that finished a turn, so one still here ended
-    # with its recovery unfinished. A `/clear` is a person moving on, as ever.
-    def session_ended(message)
-      deleted = gave_up = false
-      stored = @store.update(message["pane_id"]) do |entry|
-        next if entry.empty? || entry["session_id"] != message["session_id"]
-        next unless %w[waiting watching].include?(entry["phase"]) && entry["stopped"] != true
-
-        if entry["phase"] == "waiting" && signalled_lately?(entry)
-          entry["stopped"] = true
-        elsif entry["attempts"].to_i.zero? || message["reason"] == "clear"
-          entry.clear
-          deleted = true
-        else
-          give_up_in(entry, "unconfirmed")
-          gave_up = true
-        end
-      end
-      resolve(message["session_id"]) if deleted
-      report_give_up(message["pane_id"], stored) if gave_up
     end
 
     # The monitor's failed-turn flag isn't persisted, so the panes failed when
@@ -674,7 +359,7 @@ module Workspace
         end
         found["last_turn_uuid"] = record["uuid"] if record
       end
-      live = live_agent(pane_id) unless entry["agent_pid"]
+      live = @facts.live_agent(pane_id) unless entry["agent_pid"]
       unless entry["cwd"]
         opened = @facts.ledger_session(pane_id)
         if opened.is_a?(Hash)
@@ -690,7 +375,7 @@ module Workspace
       @store.update(pane_id) do |current|
         next unless same_wait?(current, entry)
         current.merge!(found)
-        store_agent(current, live) if live && current["agent_pid"].nil?
+        RecoveryEntry.store_agent(current, live) if live && current["agent_pid"].nil?
       end
     end
 
@@ -1027,24 +712,19 @@ module Workspace
       @readiness.wait(@session_name, deadline: @readiness.deadline_in(READY_WAIT), only_pane: pane_id, detector: @detector)
       @session_monitor.rescan_pane(pane_id)
       @marker.clear(attempt.session_id)
-      agent = live_agent(pane_id)
+      agent = @facts.live_agent(pane_id)
       return ["not_ready"] unless agent
 
       attempt.pid, attempt.started = agent.values_at(:pid, :started)
       @store.update(pane_id) do |entry|
         next unless attempt_current?(entry, attempt)
-        store_agent(entry, agent)
-        forget_signal(entry)
+        RecoveryEntry.store_agent(entry, agent)
+        RecoveryEntry.forget_signal(entry)
       end
       session = await_session(attempt)
       return ["fresh_agent"] if session && session != attempt.session_id
       rebind(pane_id)
       session ? nil : ["not_ready"]
-    end
-
-    def forget_signal(entry)
-      entry["stopped"] = false
-      entry["last_signal_at"] = nil
     end
 
     # Step 5. The lock is held for one try, so the workspace's other deliveries
@@ -1149,15 +829,15 @@ module Workspace
         entry["draft_text"] = nil
       when "person_resumed"
         entry.merge!("phase" => "watching", "stopped" => false, "last_signal_at" => nil, "draft_text" => nil)
-        store_agent(entry, live)
+        RecoveryEntry.store_agent(entry, live)
       when "fresh_agent"
-        give_up_in(entry, "fresh_conversation")
+        RecoveryEntry.give_up(entry, "fresh_conversation")
         return :gave_up
       else
         apply_read(entry, live)
         entry["draft_text"] = attempt.message if DRAFT_OUTCOMES.include?(outcome)
         if agent_gone?(entry, live)
-          give_up_in(entry, "unconfirmed")
+          RecoveryEntry.give_up(entry, "unconfirmed")
           return :gave_up
         end
         return :gave_up if schedule_next(entry)
@@ -1179,7 +859,7 @@ module Workspace
         return :resolved
       end
       if opened && opened != entry["session_id"]
-        give_up_in(entry, "fresh_conversation")
+        RecoveryEntry.give_up(entry, "fresh_conversation")
         return :gave_up
       end
       return nil unless failed
@@ -1187,10 +867,10 @@ module Workspace
       apply_read(entry, live)
       entry["phase"] = "watching"
       known = (live == :unread) ? {pid: entry["agent_pid"], started: entry["agent_started"], flags: entry["agent_flags"]} : live
-      return :gave_up if intake(entry, entry["session_id"], entry["error"], entry["transcript_path"], known)
+      return :gave_up if @intake.apply_failure(entry, entry["session_id"], entry["error"], entry["transcript_path"], known)
       return :rescheduled unless agent_gone?(entry, live)
 
-      give_up_in(entry, "unconfirmed")
+      RecoveryEntry.give_up(entry, "unconfirmed")
       :gave_up
     end
 
@@ -1200,7 +880,7 @@ module Workspace
     def apply_read(entry, live)
       return unless live.is_a?(Hash)
       entry["stopped"] = false
-      store_agent(entry, live)
+      RecoveryEntry.store_agent(entry, live)
     end
 
     # Nothing is left to recover and no signal of ours explains why.
@@ -1223,9 +903,9 @@ module Workspace
     #   or the pane is gone, or :unread when tmux or the process table can't be read
     def last_read(pane_id)
       detail = @facts.pane_detail(pane_id)
-      tree = @facts.tree
-      return :unread if detail == :unknown || tree.nil?
-      detail && @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
+      return (@facts.tree.nil? || detail == :unknown) ? :unread : nil unless detail.is_a?(Hash)
+      reading = @facts.agent(detail)
+      reading ? reading.found : :unread
     end
 
     def defer(pane_id, seen)
@@ -1236,7 +916,7 @@ module Workspace
         if since.nil?
           entry["defer_since"] = stamp
         elsif @clock.now - since >= DEFER_LIMIT
-          give_up_in(entry, "deferred")
+          RecoveryEntry.give_up(entry, "deferred")
           gave_up = true
         end
       end
@@ -1249,10 +929,10 @@ module Workspace
       gave_up = false
       stored = @store.update(pane_id) do |entry|
         next unless same_wait?(entry, seen)
-        if unreported?(entry)
+        if RecoveryEntry.unreported?(entry)
           entry.clear
         else
-          give_up_in(entry, "unconfirmed")
+          RecoveryEntry.give_up(entry, "unconfirmed")
           gave_up = true
         end
       end
@@ -1263,7 +943,7 @@ module Workspace
       gave_up = false
       stored = @store.update(pane_id) do |entry|
         next unless same_wait?(entry, seen)
-        give_up_in(entry, reason)
+        RecoveryEntry.give_up(entry, reason)
         gave_up = true
       end
       report_give_up(pane_id, stored) if gave_up
@@ -1273,10 +953,6 @@ module Workspace
     # written between that read and this write.
     def same_wait?(entry, seen)
       %w[phase session_id failed_at].all? { |key| entry[key] == seen[key] }
-    end
-
-    def give_up_in(entry, reason)
-      entry.merge!("phase" => "gave_up", "give_up_reason" => reason, "next_attempt_at" => nil, "defer_since" => nil)
     end
 
     # An inbox that can't be written must not end the worker or the scan: the
@@ -1331,10 +1007,14 @@ module Workspace
     def reconcile(pane_id)
       detail = @facts.pane_detail(pane_id)
       return if detail == :unknown
-      tree = @facts.tree
-      return unless tree
+      if detail
+        reading = @facts.agent(detail)
+        return unless reading
+        agent = reading.found
+      else
+        return unless @facts.tree
+      end
 
-      agent = detail && @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
       opened = detail && @facts.ledger_session(pane_id)
       return if opened == :unreadable
 
@@ -1363,18 +1043,18 @@ module Workspace
       failed = entry.delete("failed_during_attempt") == true
       %w[turn_completed attempt_session_id prompt_seen].each { |key| entry.delete(key) }
       if open_session && open_session != entry["session_id"]
-        give_up_in(entry, "fresh_conversation")
+        RecoveryEntry.give_up(entry, "fresh_conversation")
         return true
       end
       if failed && !RETRYABLE_ERRORS.include?(entry["error"])
-        give_up_in(entry, "not_retryable")
+        RecoveryEntry.give_up(entry, "not_retryable")
         return true
       end
 
       apply_read(entry, agent)
       entry["failed_at"] = stamp if failed
       if agent_gone?(entry, agent)
-        give_up_in(entry, "unconfirmed")
+        RecoveryEntry.give_up(entry, "unconfirmed")
         return true
       end
       schedule_next(entry)
@@ -1382,12 +1062,7 @@ module Workspace
 
     # @return [Boolean] whether this gave up, the attempts being used up
     def schedule_next(entry)
-      if entry["attempts"].to_i >= @max_attempts
-        give_up_in(entry, "attempts_exhausted")
-        return true
-      end
-      entry.merge!("phase" => "waiting", "next_attempt_at" => next_attempt(entry), "last_turn_uuid" => nil, "defer_since" => nil)
-      false
+      RecoveryEntry.schedule_next(entry, max_attempts: @max_attempts, clock: @clock)
     end
 
     def record_interrupted(pane_id, entry)
@@ -1426,10 +1101,10 @@ module Workspace
       return verdict(:defer) if @facts.held_off?(pane_id, entry, screen)
 
       unless entry["agent_pid"]
-        @store.update(pane_id) { |current| store_agent(current, agent) if same_wait?(current, entry) }
+        @store.update(pane_id) { |current| RecoveryEntry.store_agent(current, agent) if same_wait?(current, entry) }
         return verdict(:defer)
       end
-      return verdict(:clear) unless same_process?(entry, agent)
+      return verdict(:clear) unless RecoveryVerdicts.same_process?(entry, agent)
 
       entry = fill_flags(pane_id, entry, agent)
       confirmed = confirmed_error(pane_id, entry)
@@ -1445,7 +1120,7 @@ module Workspace
     def fill_flags(pane_id, entry, agent)
       return entry unless entry["agent_flags"].nil? && agent[:flags]
 
-      @store.update(pane_id) { |current| store_agent(current, agent) if same_wait?(current, entry) && same_process?(current, agent) }
+      @store.update(pane_id) { |current| RecoveryEntry.store_agent(current, agent) if same_wait?(current, entry) && RecoveryVerdicts.same_process?(current, agent) }
       entry.merge("agent_flags" => agent[:flags])
     end
 
@@ -1474,24 +1149,16 @@ module Workspace
       @resume_command.call(workspace: @workspace, cwd: entry["cwd"], session_id: entry["session_id"], flags: entry["agent_flags"])
     end
 
-    # The clock is read only for a signal time that parses.
     def signalled_lately?(entry)
-      signalled = RecoveryVerdicts.time_of(entry["last_signal_at"])
-      !signalled.nil? && RecoveryVerdicts.signalled_lately?(signalled, @clock.now)
-    end
-
-    def live_agent(pane_id)
-      detail = @facts.pane_detail(pane_id)
-      return nil unless detail.is_a?(Hash)
-      @facts.agent(detail)&.found
+      RecoveryEntry.signalled_lately?(entry, @clock)
     end
 
     def verdict(answer, mode: nil, command: nil)
       Verdict.new(answer: answer, mode: mode, command: command)
     end
 
-    def stamp(time = @clock.now)
-      AgentRecoveryStore.stamp(time)
+    def stamp
+      AgentRecoveryStore.stamp(@clock.now)
     end
 
     def record(type, data)

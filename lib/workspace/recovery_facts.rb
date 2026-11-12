@@ -73,6 +73,17 @@ module Workspace
       Agent.new(found: @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: snapshot), tree: snapshot)
     end
 
+    # Looks the pane up, then reads the agent under it ({#pane_detail}, then {#agent}).
+    #
+    # @param pane_id [String]
+    # @return [Hash, nil] the agent found; nil when there is none, or when the
+    #   pane or the process table can't be read
+    def live_agent(pane_id)
+      detail = pane_detail(pane_id)
+      return nil unless detail.is_a?(Hash)
+      agent(detail)&.found
+    end
+
     # @param agent [Hash] the agent found (+:pid+)
     # @param detail [Hash] the pane's details
     # @return [Boolean] whether the agent's process group holds the pane's terminal, read now
