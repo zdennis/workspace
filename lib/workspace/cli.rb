@@ -1,5 +1,4 @@
 require "optparse"
-require "socket"
 require "securerandom"
 require "shellwords"
 require "time"
@@ -25,7 +24,7 @@ module Workspace
 
     # The verbs a family parser takes, each to the key of its object in +families:+. {#run} hands
     # such a verb, its arguments and the run's {Invocation} to that family before its own case.
-    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent}.freeze
+    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent, "agent-run" => :agent_run, "handoff" => :agent_run}.freeze
 
     # @param workspace_name [Workspace::WorkspaceName, nil] settles a given workspace name to its on-disk spelling (nil leaves names as given)
     # @param config [Workspace::Config] configuration for path lookups
@@ -58,14 +57,6 @@ module Workspace
     #   to lowercase before `launch` starts it; nil renames nothing
     # @param status_scope [Workspace::StatusScope, nil] resolves --name, --project and --all
     #   for the status commands; optional so test builders need not wire it
-    # @param restart_agent_command [Workspace::Commands::RestartAgent, nil] pre-built
-    #   `agent-run restart` command; optional so test builders need not wire it
-    # @param send_command [Workspace::Commands::Send, nil] pre-built
-    #   `agent-run send` command; optional so test builders need not wire it
-    # @param prompt_queue_command [Workspace::Commands::PromptQueue, nil] pre-built
-    #   `agent-run queue` command; optional so test builders need not wire it
-    # @param handoff_command [Workspace::Commands::Handoff, nil] pre-built
-    #   `handoff check`/`handoff new` command; optional so test builders need not wire it
     # @param logger [Workspace::Logger] debug logger
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
@@ -126,8 +117,10 @@ module Workspace
     # @param names [CLI::Names] the workspace-name and working-directory helpers, shared with the families
     # @param launcher [CLI::Launcher] what every launching verb shares
     # @param families [Hash{Symbol=>#call}] the family parser of each {ROUTES} key, called with the verb, its arguments and the {Invocation}
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, hooks_command: nil, restart_agent_command: nil, send_command: nil, prompt_queue_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    # @param agent_client [Workspace::AgentMessageClient] sends the `pipeline` messages to a workspace's agent daemon
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, agent_client:, hooks_command: nil, name_migration: nil, status_scope: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, goal_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
+      @agent_client = agent_client
       @state = state
       @project_config = project_config
       @git = git
@@ -185,11 +178,7 @@ module Workspace
       @statusline_command = statusline_command
       @ask_command = ask_command
       @inbox_command = inbox_command
-      @restart_agent_command = restart_agent_command
-      @send_command = send_command
-      @prompt_queue_command = prompt_queue_command
       @name_migration = name_migration
-      @handoff_command = handoff_command
       @projects_command = projects_command
       @groups_command = groups_command
       @capabilities_command = capabilities_command
@@ -335,10 +324,6 @@ module Workspace
         cmd_hooks(args)
       when "session-event"
         cmd_session_event(args)
-      when "agent-run"
-        cmd_agent_run(args)
-      when "handoff"
-        cmd_handoff(args)
       when "pipeline"
         cmd_pipeline(args)
       when "run"
@@ -431,13 +416,6 @@ module Workspace
     rescue Error => e
       report_failure(e, argv, "Error: #{e.message}")
     end
-
-    # `agent run PROMPT`, which {CLI::Agent} hands back here during a {#run}: it builds and sends
-    # its message with the helpers `agent-run command` uses.
-    #
-    # @param args [Array<String>] the arguments after `agent run`
-    # @return [void]
-    def agent_run_prompt(args) = cmd_agent_run_prompt(args)
 
     private
 
@@ -2789,554 +2767,6 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
-    # Sends a raw JSONL message to a running agent socket for manual testing and
-    # exploration. Always pretty-prints what is being sent before sending it.
-    #
-    # Usage with a subcommand (--work-item defaults to a random UUID):
-    #   workspace agent-run command --work-item WC-42
-    #
-    # Usage with raw JSON body (workspace is read from the message):
-    #   workspace agent-run --body '{"type":"command","workspace":"myproject",...}'
-    def cmd_agent_run(args)
-      body = nil
-      dry_run = false
-      help = false
-
-      # Peek for --body / --dry-run before deciding whether to dispatch to a
-      # subcommand. OptionParser would consume them anyway; doing it here lets
-      # us keep a clean subcommand path for the common case.
-      parser = OptionParser.new do |opts|
-        opts.on("--body JSON", "Full message JSON to send directly (workspace read from message)") { |v| body = v }
-        opts.on("--dry-run", "Print without sending") { dry_run = true }
-        opts.on("-h", "--help", "Show this help") { help = true }
-      end
-      parser.order!(args)  # stops at the first non-option so subcommand words survive
-
-      return @output.puts(agent_run_help) if help
-      return if verb_help_shown?(HelpPages::AGENT_RUN, args)
-
-      if body
-        return cmd_agent_run_raw(body, dry_run: dry_run)
-      end
-
-      subcommand = args.shift
-      case subcommand
-      when "command" then cmd_agent_run_command(args)
-      when "inject" then cmd_agent_run_inject(args)
-      when "restart" then cmd_agent_run_restart(args)
-      when "send" then cmd_agent_run_send(args)
-      when "queue" then cmd_agent_run_queue(args)
-      when "examples" then cmd_agent_run_examples
-      when "help" then @output.puts agent_run_help
-      else
-        raise UsageError, agent_run_help
-      end
-    end
-
-    # Parses +body+ as the full message JSON, compacts it to one line, and
-    # sends it directly to the agent socket named in the message's "workspace"
-    # field. Useful for copy-pasting an example and firing it immediately.
-    def cmd_agent_run_raw(body, dry_run: false)
-      message = begin
-        JSON.parse(jsonl_body(body))
-      rescue JSON::ParserError => e
-        raise UsageError, "Invalid JSON in --body: #{e.message}"
-      end
-
-      name = message["workspace"]
-      raise UsageError, "Message JSON must include a \"workspace\" key" if name.nil? || name.empty?
-
-      agent_run_send(name, message, dry_run: dry_run)
-    end
-
-    def agent_run_help
-      <<~HELP
-        Usage: workspace agent-run <subcommand> [options]
-               workspace agent-run --body '<full message JSON>' [--dry-run]
-
-        Send a raw JSONL message to a running agent socket.
-        Always prints the message being sent before sending it.
-
-        Subcommands:
-        #{HelpPages.overview_verbs(HelpPages::AGENT_RUN).join("\n")}
-
-        Raw mode (paste a full message directly):
-          --body JSON         Complete message JSON; workspace is read from the message
-          --dry-run           Print without sending
-
-        Run `workspace agent-run VERB --help` for a verb's options.
-
-        Examples:
-          workspace agent-run command --body "Add OAuth support"    # send a task to the current directory's workspace
-          workspace agent-run command --name myapp --dry-run    # see the message for a named workspace, send nothing
-          workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"    # steer a running work item
-          workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md"    # clear a pane's agent and give it a prompt
-          workspace agent-run send --pane %19 --body "yes"    # type into a pane and press Enter
-          workspace agent-run queue list    # what `send --when-idle` has queued
-          workspace agent-run queue cancel --id 3f9a2c41d07b5e88    # take a queued prompt back
-          workspace agent-run --body '{"type":"command","workspace":"myapp","work_item_ref":"WC-42","dispatch_id":"debug-1","body":"go"}' --dry-run    # a full message you wrote
-          workspace agent-run examples    # stock messages to copy, nothing sent
-      HELP
-    end
-
-    def cmd_agent_run_command(args)
-      name = nil
-      work_item = nil
-      body = nil
-      dry_run = false
-
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run command [options]"
-        opts.on("--name NAME", "Workspace name") { |v| name = v }
-        opts.on("--work-item REF", "Work item reference") { |v| work_item = v }
-        opts.on("--body TEXT", "Text to deliver to the pipeline") { |v| body = v }
-        opts.on("--dry-run", "Print without sending") { dry_run = true }
-      end
-      parser.parse!(args)
-
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{agent_run_help}" if name.nil?
-      work_item ||= SecureRandom.uuid
-
-      message = build_command_message(name: name, work_item: work_item, body: body)
-      agent_run_send(name, message, dry_run: dry_run)
-    end
-
-    # `workspace agent run PROMPT`: the prompt is the positional arguments
-    # joined with a space, so a multi-word prompt needs no quoting. Everything
-    # else matches `agent-run command` minus the default body — the prompt
-    # positional is required.
-    def cmd_agent_run_prompt(args)
-      name = nil
-      work_item = nil
-      dry_run = false
-      json = false
-
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent run PROMPT [options]"
-        opts.separator ""
-        opts.separator "Send a prompt to the workspace's pipeline as a \"command\" message."
-        opts.separator ""
-        opts.separator "Options:"
-        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
-        opts.on("--work-item REF", "Work item reference (default: random UUID)") { |v| work_item = v }
-        opts.on("--dry-run", "Print the message without sending it") { dry_run = true }
-        opts.on("--json", "Print one JSON document with the agent's reply (see docs/README.json.md) instead of",
-          "text; the text goes to stderr. Exit 0 whatever the reply says: read reply.ok") { json = true }
-        opts.separator ""
-        opts.separator "Examples:"
-        opts.separator "  workspace agent run Add OAuth support    # send the prompt to the project in this directory; no quotes needed"
-        opts.separator "  workspace agent run --name myapp \"Run the linter and report any issues\"    # a named workspace"
-        opts.separator "  workspace agent run --dry-run \"Add OAuth support\"    # print the message, send nothing"
-        opts.separator "  workspace agent run --work-item WC-42 \"Fix the flaky spec\"    # tie the prompt to a work item"
-        opts.separator "  workspace agent run --json \"Add OAuth support\"    # one JSON document with the reply; exits 0 whatever it says"
-      end
-      parser.parse!(args)
-
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
-
-      prompt = args.join(" ")
-      raise UsageError, "Missing prompt.\n\n#{parser.help}" if prompt.empty?
-      work_item ||= SecureRandom.uuid
-
-      unless json
-        message = build_command_message(name: name, work_item: work_item, body: prompt, dispatch_prefix: "agent-run-")
-        agent_run_send(name, message, dry_run: dry_run)
-        return
-      end
-
-      # Not an action document (the agent's reply is the result), so it diverts and prints by hand.
-      message = reply = nil
-      divert_output do
-        message = build_command_message(name: name, work_item: work_item, body: prompt, dispatch_prefix: "agent-run-")
-        reply = agent_run_send(name, message, dry_run: dry_run)
-      end
-      doc = {"schema_version" => ACTION_JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name,
-             "work_item_ref" => work_item, "dispatch_id" => message["dispatch_id"], "dry_run" => dry_run}
-      doc[dry_run ? "message" : "reply"] = dry_run ? message : reply
-      @output.puts JSON.generate(doc)
-    rescue OptionParser::ParseError => e
-      raise UsageError, "#{e.message}\nIf the prompt starts with a dash or looks like a flag, pass it after --.\n\n#{parser.help}"
-    end
-
-    # Builds the "command" message shared by `agent run` and
-    # `agent-run command`.
-    def build_command_message(name:, work_item:, body:, dispatch_prefix: "debug-")
-      AgentProtocol.command(workspace: name, work_item_ref: work_item,
-        dispatch_id: "#{dispatch_prefix}#{SecureRandom.hex(4)}", body: jsonl_body(body || "Begin work."))
-    end
-
-    def cmd_agent_run_inject(args)
-      name = nil
-      work_item = nil
-      body = nil
-      interrupt = false
-      dry_run = false
-
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run inject [options]"
-        opts.on("--name NAME", "Workspace name") { |v| name = v }
-        opts.on("--work-item REF", "Work item reference") { |v| work_item = v }
-        opts.on("--body TEXT", "Text to inject into the pane") { |v| body = v }
-        opts.on("--interrupt", "Interrupt the running stage first (sends Ctrl-C)") { interrupt = true }
-        opts.on("--dry-run", "Print without sending") { dry_run = true }
-      end
-      parser.parse!(args)
-
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{agent_run_help}" if name.nil?
-      raise UsageError, "Missing --work-item.\n\n#{agent_run_help}" if work_item.nil?
-      raise UsageError, "Missing --body.\n\n#{agent_run_help}" if body.nil?
-
-      message = AgentProtocol.inject(workspace: name, work_item_ref: work_item, interrupt: interrupt, body: jsonl_body(body))
-      agent_run_send(name, message, dry_run: dry_run)
-    end
-
-    # Asks the agent daemon to /clear the coding agent in one named pane and,
-    # once its context usage has dropped, type a prompt into it.
-    def cmd_agent_run_restart(args)
-      name = nil
-      pane = nil
-      prompt = nil
-      force = false
-      wait = false
-      timeout = nil
-      json = false
-
-      parser = OptionParser.new do |opts|
-        opts.on("--name NAME") { |v| name = v }
-        opts.on("--pane PANE") { |v| pane = v }
-        opts.on("--prompt TEXT") { |v| prompt = v }
-        opts.on("--force") { force = true }
-        opts.on("--wait") { wait = true }
-        opts.on("--timeout DURATION") { |v| timeout = parse_duration_option("--timeout", v, positive: true) }
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      page = HelpPages.render(HelpPages::AGENT_RUN.fetch("restart")).join("\n")
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
-
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{page}" if name.nil?
-      raise UsageError, "Missing --pane.\n\n#{page}" if pane.nil? || pane.strip.empty?
-      raise UsageError, "Missing --prompt.\n\n#{page}" if prompt.nil? || prompt.strip.empty?
-      if timeout && timeout > Commands::Agent::MAX_RESTART_TIMEOUT
-        raise UsageError, "--timeout: at most #{Commands::Agent::MAX_RESTART_TIMEOUT}s"
-      end
-      raise Error, "workspace agent-run restart is not available in this build" unless @restart_agent_command
-
-      result = @restart_agent_command.call(name: name, pane: pane, prompt: prompt, force: force, wait: wait,
-        timeout: timeout, json: json)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    rescue OptionParser::ParseError, UsageError => e
-      raise unless json_requested?(json, args)
-      emit_json_error(Commands::RestartAgent::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    # Types text or tmux key names into one named pane. The pane must be a
-    # pane id or window.pane of the workspace's own tmux session; there is
-    # no default pane. See {Workspace::Commands::Send}.
-    def cmd_agent_run_send(args)
-      name = nil
-      pane = nil
-      body = nil
-      keys = nil
-      no_enter = false
-      when_idle = false
-      clear_first = false
-      interrupt = false
-      json = false
-
-      parser = OptionParser.new do |opts|
-        opts.on("--name NAME") { |v| name = v }
-        opts.on("--pane PANE") { |v| pane = v }
-        opts.on("--body TEXT") { |v| body = v }
-        opts.on("--keys KEYS") { |v| keys = v }
-        opts.on("--no-enter") { no_enter = true }
-        opts.on("--when-idle") { when_idle = true }
-        opts.on("--clear-first") { clear_first = true }
-        opts.on("--interrupt") { interrupt = true }
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      page = HelpPages.render(HelpPages::AGENT_RUN.fetch("send")).join("\n")
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
-
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{page}" if name.nil?
-      raise UsageError, "Missing --pane.\n\n#{page}" if pane.nil? || pane.strip.empty?
-      raise UsageError, "Pass --body or --keys, not both.\n\n#{page}" if body && keys
-      raise UsageError, "Missing --body or --keys.\n\n#{page}" if body.nil? && keys.nil?
-      raise UsageError, "--body can't be empty.\n\n#{page}" if body && body.empty?
-      raise UsageError, "--no-enter applies to --body; --keys never presses Enter on its own.\n\n#{page}" if no_enter && keys
-      [["--when-idle", when_idle], ["--clear-first", clear_first]].each do |flag, given|
-        raise UsageError, "#{flag} takes --body, not --keys.\n\n#{page}" if given && keys
-        raise UsageError, "#{flag} always presses Enter; drop --no-enter.\n\n#{page}" if given && no_enter
-      end
-      if interrupt
-        raise UsageError, "--interrupt takes --body, not --keys.\n\n#{page}" if keys
-        raise UsageError, "--interrupt always presses Enter; drop --no-enter.\n\n#{page}" if no_enter
-        if when_idle || clear_first
-          raise UsageError, "--interrupt types now or not at all; it does not combine with --when-idle or --clear-first.\n\n#{page}"
-        end
-      end
-      raise Error, "workspace agent-run send is not available in this build" unless @send_command
-      return @send_command.interrupt_through_daemon(name: name, pane: pane, body: body, json: json) if interrupt
-      if when_idle || clear_first
-        return @send_command.through_daemon(name: name, pane: pane, body: body, when_idle: when_idle,
-          clear_first: clear_first, json: json)
-      end
-
-      key_names = keys && Commands::Send.parse_keys(keys)
-      @send_command.call(name: name, pane: pane, body: body, keys: key_names, enter: !no_enter, json: json)
-    end
-
-    def agent_run_queue_help
-      HelpPages.render(HelpPages::AGENT_RUN.fetch("queue")).join("\n") + "\n"
-    end
-
-    def cmd_agent_run_queue(args)
-      verb = args.shift
-      case verb
-      when "list" then cmd_agent_run_queue_list(args)
-      when "cancel" then cmd_agent_run_queue_cancel(args)
-      when "-h", "--help", "help" then @output.puts agent_run_queue_help
-      when nil then raise UsageError, "Missing queue verb (list or cancel).\n\n#{agent_run_queue_help}"
-      else raise UsageError, "Unknown queue verb: #{verb}.\n\n#{agent_run_queue_help}"
-      end
-    end
-
-    def cmd_agent_run_queue_list(args)
-      name = nil
-      pane = nil
-      json = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run queue list [--name NAME] [--pane PANE] [--json]"
-        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
-        opts.on("--pane PANE", "Only this pane: a pane id (%19) or window.pane (0.1)") { |v| pane = v }
-        opts.on("--json", "Print {\"entries\":[...]} as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
-      end
-      parser.parse!(args)
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
-      raise UsageError, "--pane can't be empty.\n\n#{parser.help}" if pane && pane.strip.empty?
-      raise Error, "workspace agent-run queue is not available in this build" unless @prompt_queue_command
-
-      @prompt_queue_command.list(name: name, pane: pane, json: json)
-    end
-
-    def cmd_agent_run_queue_cancel(args)
-      name = nil
-      id = nil
-      json = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent-run queue cancel --id ID [--name NAME] [--json]"
-        opts.on("--id ID", "The id `send --when-idle` answered  (required)") { |v| id = v }
-        opts.on("--name NAME", "Workspace name (default: look through every workspace's queue)") { |v| name = v }
-        opts.on("--json", "Print {\"cancelled\":true,\"id\",\"pane_id\",\"text\"} as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
-      end
-      parser.parse!(args)
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
-      raise UsageError, "Missing --id.\n\n#{parser.help}" if id.nil? || id.strip.empty?
-      raise Error, "workspace agent-run queue is not available in this build" unless @prompt_queue_command
-
-      @prompt_queue_command.cancel(id: id.strip, name: name, json: json)
-    end
-
-    def handoff_help
-      <<~HELP
-        #{HelpPages.overview_usage(HelpPages::HANDOFF)}
-
-        Watches a coding agent's context-window usage and hands off to a fresh
-        conversation before it fills up: `check` tells the agent to save its state
-        once usage crosses a threshold, `new` clears the conversation and resumes it
-        (the same flow as `workspace agent-run restart`).
-
-        #{HelpPages.overview_verbs(HelpPages::HANDOFF).join("\n")}
-        Run `workspace handoff VERB --help` for a verb's options.
-
-        Examples:
-          workspace handoff check    # this project's agent: a save-state prompt only if it is over the threshold
-          workspace handoff check myapp --threshold 20 --json    # a named workspace, for a script
-          workspace handoff new    # restart the first Claude Code pane (else Codex) of this project, which may not be yours
-          workspace handoff new myapp --pane "$TMUX_PANE"    # an agent restarting its own pane
-      HELP
-    end
-
-    # Dispatches `workspace handoff check|new`. Never guesses a pane or a
-    # context percentage; see {Workspace::Commands::Handoff}.
-    def cmd_handoff(args)
-      original_args = args.dup
-      subcommand = args.shift
-      case subcommand
-      when "check", "new"
-        send(:"cmd_handoff_#{subcommand}", args) unless verb_help_shown?(HelpPages::HANDOFF, [subcommand, *args])
-      when "help", "--help", "-h" then @output.puts handoff_help
-      else
-        raise UsageError, handoff_help
-      end
-    rescue UsageError => e
-      raise unless json_requested?(false, original_args)
-      emit_json_error(Commands::Handoff::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    def cmd_handoff_check(args)
-      pane = nil
-      threshold = nil
-      context_pct = nil
-      handoff_doc = nil
-      handoff_prompt = nil
-      json = false
-      name_opt = nil
-
-      page = HelpPages.render(HelpPages::HANDOFF.fetch("check")).join("\n")
-      parser = OptionParser.new do |opts|
-        opts.on("--name WS") { |v| name_opt = v }
-        opts.on("--pane PANE") { |v| pane = v }
-        opts.on("--threshold PCT") { |v| threshold = v }
-        opts.on("--context-pct N", Integer) { |v| context_pct = v }
-        opts.on("--handoff-doc PATH") { |v| handoff_doc = v }
-        opts.on("--handoff-prompt TEXT") { |v| handoff_prompt = v }
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{page}" if handoff_doc && handoff_prompt
-      if threshold
-        begin
-          threshold = HandoffConfig.parse_threshold(threshold)
-        rescue ArgumentError => e
-          raise UsageError, "--threshold #{e.message}\n\n#{page}"
-        end
-      end
-
-      name = pick_workspace_name(name_opt, args.shift)
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{page}" if name.nil?
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
-      raise Error, "workspace handoff is not available in this build" unless @handoff_command
-
-      result = @handoff_command.check(name: name, pane: pane, threshold: threshold, context_pct: context_pct,
-        handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, json: json)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    rescue OptionParser::ParseError, UsageError, Error => e
-      raise unless json_requested?(json, args)
-      emit_json_error(Commands::Handoff::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    def cmd_handoff_new(args)
-      pane = nil
-      handoff_doc = nil
-      handoff_prompt = nil
-      wait = false
-      json = false
-      name_opt = nil
-
-      page = HelpPages.render(HelpPages::HANDOFF.fetch("new")).join("\n")
-      parser = OptionParser.new do |opts|
-        opts.on("--name WS") { |v| name_opt = v }
-        opts.on("--pane PANE") { |v| pane = v }
-        opts.on("--handoff-doc PATH") { |v| handoff_doc = v }
-        opts.on("--handoff-prompt TEXT") { |v| handoff_prompt = v }
-        opts.on("--wait") { wait = true }
-        opts.on("--json") { json = true }
-      end
-      parser.parse!(args)
-      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{page}" if handoff_doc && handoff_prompt
-
-      name = pick_workspace_name(name_opt, args.shift)
-      name ||= @project_detector.detect(@working_dir)
-      raise UsageError, "Missing workspace name.\n\n#{page}" if name.nil?
-      raise UsageError, "Unexpected argument: #{args.first}\n\n#{page}" if args.any?
-      raise Error, "workspace handoff is not available in this build" unless @handoff_command
-
-      result = @handoff_command.new(name: name, pane: pane, handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, wait: wait, json: json)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    rescue OptionParser::ParseError, Error => e
-      raise unless json_requested?(json, args)
-      emit_json_error(Commands::Handoff::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
-    end
-
-    def cmd_agent_run_examples
-      name = @project_detector.detect(@working_dir) || "workspace"
-
-      examples = [
-        {
-          label: "command — check GitHub CI status (safe, read-only)",
-          cli: "workspace agent-run command --work-item WC-42 --body \"What is the current status of GitHub CI for this branch?\"",
-          message: AgentProtocol.command(workspace: name, work_item_ref: "WC-42", dispatch_id: "debug-abcd1234",
-            body: "What is the current status of GitHub CI for this branch?")
-        },
-        {
-          label: "command — run the linter (safe, re-runnable)",
-          cli: "workspace agent-run command --work-item WC-42 --body \"Run the linter and report any issues.\"",
-          message: AgentProtocol.command(workspace: name, work_item_ref: "WC-42", dispatch_id: "debug-abcd1234",
-            body: "Run the linter and report any issues.")
-        },
-        {
-          label: "inject — queue a steer for the next pipeline stage",
-          cli: "workspace agent-run inject --work-item WC-42 --body \"Focus on the failing tests, not the linter warnings.\"",
-          message: AgentProtocol.inject(workspace: name, work_item_ref: "WC-42", interrupt: false,
-            body: "Focus on the failing tests, not the linter warnings.")
-        },
-        {
-          label: "inject --interrupt — urgent steer: stop current stage and redirect",
-          cli: "workspace agent-run inject --interrupt --work-item WC-42 --body \"Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first.\"",
-          message: AgentProtocol.inject(workspace: name, work_item_ref: "WC-42", interrupt: true,
-            body: "Stop. Run bundle exec rspec spec/system/workspace/cli_spec.rb first.")
-        },
-        {
-          label: "restart — clear the coding agent in one pane and hand it a fresh prompt",
-          cli: "workspace agent-run restart --pane 0.1 --prompt \"Read HANDOFF.md and follow it.\" --wait",
-          message: AgentProtocol.restart_agent(workspace: name, pane: "0.1", prompt: "Read HANDOFF.md and follow it.",
-            force: false, wait: true)
-        }
-      ]
-
-      examples.each_with_index do |example, i|
-        @output.puts "#{i + 1}. #{example[:label]}"
-        @output.puts "   Run it: #{example[:cli]}"
-        @output.puts "   JSONL (sent as a single line):"
-        JSON.pretty_generate(example[:message]).each_line do |line|
-          @output.puts "   #{line}"
-        end
-        @output.puts unless i == examples.size - 1
-      end
-    end
-
-    # If +body+ looks like JSON (parses successfully), compact it to a single
-    # line so it travels safely as JSONL. Plain strings pass through unchanged.
-    def jsonl_body(body)
-      parsed = JSON.parse(body)
-      compacted = parsed.to_json
-      if compacted != body.strip
-        @output.puts "(body compacted to JSONL)"
-      end
-      compacted
-    rescue JSON::ParserError
-      body
-    end
-
-    # Pretty-prints +message+ as the JSONL that will be sent, then sends it
-    # (unless +dry_run+ is true) and pretty-prints the reply.
-    def agent_run_send(name, message, dry_run: false)
-      socket_path = @config.agent_socket_path(name)
-      @output.puts "Sending JSONL to #{socket_path}:"
-      JSON.pretty_generate(message).each_line { |line| @output.puts "  #{line}" }
-
-      if dry_run
-        @output.puts "(dry-run: not sent)"
-        return
-      end
-
-      @output.puts
-      reply = send_to_agent(name, message)
-      @output.puts "Reply:"
-      JSON.pretty_generate(reply).each_line { |line| @output.puts "  #{line}" }
-      reply
-    end
-
     # Drives and inspects a running agent's pipeline. These are operator tools:
     # everything that touches a pane goes through the agent that owns it, so a
     # manual nudge cannot get the agent's own view of the pipeline out of step.
@@ -3520,25 +2950,8 @@ module Workspace
       HelpPages.render(HelpPages::PIPELINE.fetch(verb)).join("\n")
     end
 
-    def send_to_agent(project, message)
-      socket = begin
-        UNIXSocket.open(@config.agent_socket_path(project))
-      rescue SystemCallError, IOError
-        raise Error.new("No agent is running for #{project}. Start one with: workspace agentd --name #{project}", code: "no_daemon")
-      end
-      reply = begin
-        socket.puts(message.to_json)
-        socket.gets
-      rescue SystemCallError, IOError
-        raise Error.new("The agent for #{project} closed the connection without replying", code: "connection_failed")
-      ensure
-        socket.close
-      end
-      raise Error.new("The agent for #{project} closed the connection without replying", code: "connection_failed") if reply.nil?
-      JSON.parse(reply)
-    rescue JSON::ParserError
-      raise Error.new("Unreadable reply from the agent for #{project}", code: "unreadable_reply")
-    end
+    # Sends one `pipeline` message through the {AgentMessageClient}.
+    def send_to_agent(project, message) = @agent_client.call(project, message)
 
     def agent_running?(project)
       @config.agent_running?(project)

@@ -5,7 +5,7 @@ require "json"
 require "socket"
 require "fileutils"
 
-# The agent family through CLI#run: its rescue funnel, `agent run` (which the CLI still sends),
+# The agent family through CLI#run: its rescue funnel, `agent run` (which CLI::AgentRun sends),
 # the main help, names settled by a real WorkspaceName, and a real Commands::Daemon or Commands::Sessions.
 RSpec.describe Workspace::CLI do
   include CLITestHelpers::AgentFamilyCli

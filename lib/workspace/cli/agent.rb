@@ -23,7 +23,7 @@ module Workspace
       # @param agent_status_command [Workspace::Commands::AgentStatus, nil] `agent status`; nil refuses it
       # @param agent_executables_command [Workspace::Commands::AgentExecutables, nil] `agent executables`; nil refuses it
       # @param agent_run [#call] runs `agent run PROMPT` given its arguments and the {Invocation}; it builds
-      #   and sends its message the way `agent-run command` does
+      #   and sends its message the way `agent-run command` does ({CLI::AgentRun#prompt}, as build_cli wires it)
       # @param project_detector [Workspace::ProjectDetector] finds the workspace of the working directory
       # @param common [CLI::Common] the output, exit and help helpers
       # @param names [CLI::Names] settles and checks the workspace names given

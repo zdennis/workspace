@@ -8,6 +8,8 @@ module CLITestHelpers
   STREAM_KEYWORDS = %i[output error_output input env logger exit_handler].freeze
   # The commands .cli_parts gives the CLI::Agent family instead of Workspace::CLI.new.
   AGENT_FAMILY_KEYWORDS = %i[agent_command ensure_agent_command daemon_command sessions_command review_command agent_status_command agent_executables_command].freeze
+  # The commands .cli_parts gives the CLI::AgentRun family instead of Workspace::CLI.new.
+  AGENT_RUN_FAMILY_KEYWORDS = %i[restart_agent_command send_command prompt_queue_command handoff_command].freeze
 
   # The one way a spec builds a CLI, so a change to the CLI's keywords touches this builder and
   # not every spec. Given only the streams and Workspace.build_cli's named overrides
@@ -22,16 +24,19 @@ module CLITestHelpers
     overrides = keywords.keys & BUILD_CLI_OVERRIDES
     raise ArgumentError, "Workspace::CLI.new does not take #{overrides.join(", ")}" if overrides.any?
 
-    cli = nil
-    cli = Workspace::CLI.new(**cli_parts(agent_run: ->(args, _invocation) { cli.agent_run_prompt(args) }, **keywords))
+    Workspace::CLI.new(**cli_parts(**keywords))
   end
 
   # The keywords given, as Workspace::CLI.new takes them: +lineage:+ goes to the CLI::Names it
   # builds, +workflow_command:+ and +workflow_project:+ to the CLI::Workflow family, and the agent
-  # family's commands (AGENT_FAMILY_KEYWORDS) and +agent_run:+ to CLI::Agent, as build_cli wires
-  # them; CLI::Common and CLI::Launcher are built over the same keywords.
-  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_run: nil, **keywords)
+  # family's commands (AGENT_FAMILY_KEYWORDS) to CLI::Agent and the agent-run family's
+  # (AGENT_RUN_FAMILY_KEYWORDS) to CLI::AgentRun, whose #prompt CLI::Agent hands `agent run`, as
+  # build_cli wires them; CLI::Common, CLI::Launcher and the AgentMessageClient (unless given as
+  # +agent_client:+) are built over the same keywords.
+  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, **keywords)
     agent_commands = AGENT_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
+    agent_run_commands = AGENT_RUN_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
+    keywords[:agent_client] ||= Workspace::AgentMessageClient.new(config: keywords[:config])
     keywords[:working_dir] ||= Dir.pwd
     keywords[:launch_mode] ||= Workspace::LaunchMode.new(project_settings: keywords[:project_settings])
     keywords[:input] ||= $stdin
@@ -44,9 +49,11 @@ module CLITestHelpers
     workflow = Workspace::CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: keywords[:workflow_start_command], workflow_project: workflow_project,
       status_scope: keywords[:status_scope], config: keywords[:config], project_config: keywords[:project_config], project_detector: keywords[:project_detector],
       git: keywords[:git], launch_mode: keywords[:launch_mode], common: common, names: names, input: keywords[:input], working_dir: keywords[:working_dir])
-    agent = Workspace::CLI::Agent.new(**agent_commands, agent_run: agent_run, project_detector: keywords[:project_detector], common: common, names: names,
+    agent_run = Workspace::CLI::AgentRun.new(**agent_run_commands, config: keywords[:config], agent_client: keywords[:agent_client],
+      project_detector: keywords[:project_detector], common: common, names: names, working_dir: keywords[:working_dir])
+    agent = Workspace::CLI::Agent.new(**agent_commands, agent_run: ->(args, invocation) { agent_run.prompt(args, invocation) }, project_detector: keywords[:project_detector], common: common, names: names,
       working_dir: keywords[:working_dir])
-    keywords.merge(common: common, names: names, launcher: launcher, families: {workflow: workflow, agent: agent})
+    keywords.merge(common: common, names: names, launcher: launcher, families: {workflow: workflow, agent: agent, agent_run: agent_run})
   end
 
   # A LaunchMode whose automatic choice is fixed, so specs never depend on the
@@ -1264,7 +1271,8 @@ module CLITestHelpers
   # The agent family's CLI over fake commands, shared by the agent CLI specs. Include it in a
   # group that needs it.
   module AgentFamilyCli
-    # A CLI with only the agent family's collaborators: the commands no agent verb reaches are nil.
+    # A CLI with only the agent and agent-run families' collaborators: the commands no agent or
+    # agent-run verb reaches are nil.
     def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
       config = overrides[:config] || Workspace::Config.new
       state = CLITestHelpers::FakeState.new
@@ -1294,6 +1302,7 @@ module CLITestHelpers
         review_command: overrides[:review_command],
         agent_status_command: overrides[:agent_status_command],
         agent_executables_command: overrides[:agent_executables_command],
+        **AGENT_RUN_FAMILY_KEYWORDS.to_h { |key| [key, overrides[key]] },
         logger: Workspace::Logger.new(output: error_output),
         output: output,
         error_output: error_output,

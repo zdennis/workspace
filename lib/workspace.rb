@@ -221,6 +221,7 @@ require_relative "workspace/project_catalog"
 require_relative "workspace/status_scope"
 require_relative "workspace/project_groups"
 require_relative "workspace/agent_snapshot_client"
+require_relative "workspace/agent_message_client"
 require_relative "workspace/project_agents"
 require_relative "workspace/project_facts"
 require_relative "workspace/core/duration"
@@ -490,6 +491,7 @@ require_relative "workspace/cli/names"
 require_relative "workspace/cli/launcher"
 require_relative "workspace/cli/workflow"
 require_relative "workspace/cli/agent"
+require_relative "workspace/cli/agent_run"
 require_relative "workspace/cli"
 
 module Workspace
@@ -1252,17 +1254,21 @@ module Workspace
     workflow_family = CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: workflow_start_command, workflow_project: workflow_project,
       status_scope: status_scope, config: config, project_config: project_config, project_detector: project_detector, git: git, launch_mode: launch_mode,
       common: common, names: names, input: input, working_dir: working_dir)
-    cli = nil
+    agent_client = AgentMessageClient.new(config: config)
+    agent_run_family = CLI::AgentRun.new(config: config, agent_client: agent_client, restart_agent_command: restart_agent_command,
+      send_command: send_command, prompt_queue_command: prompt_queue_command, handoff_command: handoff_command,
+      project_detector: project_detector, common: common, names: names, working_dir: working_dir)
     agent_family = CLI::Agent.new(agent_command: agent_command, ensure_agent_command: ensure_agent_command, daemon_command: daemon_command,
       sessions_command: sessions_command, review_command: review_command, agent_status_command: agent_status_command,
-      agent_executables_command: agent_executables_command, agent_run: ->(args, _invocation) { cli.agent_run_prompt(args) },
+      agent_executables_command: agent_executables_command, agent_run: ->(args, invocation) { agent_run_family.prompt(args, invocation) },
       project_detector: project_detector, common: common, names: names, working_dir: working_dir)
 
-    cli = CLI.new(
+    CLI.new(
       common: common,
       names: names,
       launcher: launcher,
-      families: {workflow: workflow_family, agent: agent_family},
+      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family},
+      agent_client: agent_client,
       working_dir: working_dir,
       config: config,
       state: state,
@@ -1343,11 +1349,7 @@ module Workspace
       launch_mode: launch_mode,
       liveness: Liveness.new(tmux: tmux),
       window_liveness: WindowLiveness.new(window_manager: window_manager),
-      restart_agent_command: restart_agent_command,
-      send_command: send_command,
-      prompt_queue_command: prompt_queue_command,
       name_migration: name_migration,
-      handoff_command: handoff_command,
       exit_handler: exit_handler,
       logger: logger,
       output: output,
