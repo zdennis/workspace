@@ -1,5 +1,24 @@
 require "spec_helper"
 require "tmpdir"
+require "delegate"
+
+# Wraps a real client and refuses the first N status reports, so specs can watch
+# what the agent does when a report goes unanswered.
+class FlakyStatusClient < SimpleDelegator
+  attr_reader :status_attempts
+
+  def initialize(inner, failures:)
+    super(inner)
+    @failures = failures
+    @status_attempts = []
+  end
+
+  def report_status(payload)
+    @status_attempts << payload
+    raise Workspace::Error, "connection refused" if @status_attempts.size <= @failures
+    __getobj__.report_status(payload)
+  end
+end
 
 RSpec.describe Workspace::Commands::Agent do
   include_context "an agent daemon over a fake coordinator"
@@ -438,6 +457,591 @@ RSpec.describe Workspace::Commands::Agent do
 
         expect(pipeline_state.current("WC-42")).to include(pane_index: 0, sentinel_token: "tok-2")
         expect(pollers.size).to eq(2)
+      end
+    end
+  end
+
+  describe "reporting status" do
+    def send_command(overrides = {})
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    before { coordinator.start }
+
+    def write_pipeline_config
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+    end
+
+    it "reports that work has started" do
+      write_pipeline_config
+
+      run_agent do
+        send_command
+        wait_until { coordinator.status_messages.any? }
+
+        expect(coordinator.status_messages.first).to include(
+          "type" => "status_update", "message_id" => "m-1", "sequence" => 1,
+          "workspace" => "myapp", "work_item_ref" => "WC-42",
+          "message" => "Pipeline started at stage researcher (pane 0)"
+        )
+      end
+    end
+
+    it "reports that a command reached a workspace with no pipeline" do
+      run_agent do
+        send_command
+        wait_until { coordinator.status_messages.any? }
+
+        expect(coordinator.status_messages.first).to include(
+          "type" => "status_update", "workspace" => "myapp", "work_item_ref" => "WC-42",
+          "message" => "Command delivered to myapp:0.1"
+        )
+      end
+    end
+
+    it "reports notable progress mid-stage without touching the pane" do
+      write_pipeline_config
+
+      run_agent do
+        send_command
+        wait_until { pipeline_state.current("WC-42") }
+        sent_before = tmux.sent_keys.size
+
+        agent.report_progress("WC-42", "Running tests in pane 1")
+
+        wait_until { coordinator.status_messages.size >= 2 }
+        expect(coordinator.status_messages.last).to include(
+          "type" => "status_update", "work_item_ref" => "WC-42",
+          "message" => "Running tests in pane 1"
+        )
+        expect(tmux.sent_keys.size).to eq(sent_before)
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 0)
+      end
+    end
+
+    it "ignores a progress report for a work item it is not tracking" do
+      run_agent do
+        agent.report_progress("WC-999", "nobody is listening")
+        sleep 0.05
+        expect(coordinator.status_messages).to be_empty
+      end
+    end
+  end
+
+  describe "reporting status the coordinator does not accept" do
+    def send_command(overrides = {})
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    def write_pipeline_config
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+    end
+
+    context "when the first attempt goes unanswered" do
+      let(:client) do
+        FlakyStatusClient.new(
+          Workspace::WorkCoordinatorClient.new(
+            socket_path: wc_socket_path, status_socket_path: wc_status_socket_path
+          ),
+          failures: 1
+        )
+      end
+
+      it "retries it as the same report rather than treating silence as success" do
+        coordinator.start
+        write_pipeline_config
+
+        run_agent do
+          send_command
+          wait_until { coordinator.status_messages.any? }
+
+          expect(client.status_attempts.size).to eq(2)
+          expect(client.status_attempts[0]).to eq(client.status_attempts[1])
+          expect(coordinator.status_messages.size).to eq(1)
+          expect(coordinator.status_messages.first).to include("message_id" => "m-1", "sequence" => 1)
+          expect(pipeline_state.current("WC-42")).to include(pane_index: 0)
+        end
+      end
+    end
+
+    it "gives up on a report the coordinator has no work item for" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        coordinator.reply = {"ok" => false, "error" => "unknown_work_item", "action" => "give_up"}
+        send_command
+        wait_until { pipeline_state.current("WC-42").nil? && coordinator.status_messages.any? }
+
+        expect(coordinator.status_messages.size).to eq(1)
+        expect(pipeline_state.current("WC-42")).to be_nil
+      end
+    end
+
+    it "keeps reporting for other work items after one is given up on" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        coordinator.reply = {"ok" => false, "error" => "unknown_work_item", "action" => "give_up"}
+        send_command
+        wait_until { coordinator.status_messages.any? }
+        coordinator.reply = {"ok" => true, "epoch" => "test-wc-epoch"}
+
+        send_command("work_item_ref" => "WC-43", "dispatch_id" => "d-7a2")
+        wait_until { coordinator.status_messages.size >= 2 }
+
+        expect(coordinator.status_messages.last).to include("work_item_ref" => "WC-43")
+        expect(pipeline_state.current("WC-43")).to include(pane_index: 0)
+      end
+    end
+
+    it "aborts the pipeline when the coordinator says the work item is already finished" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        coordinator.reply = {"ok" => false, "error" => "terminal_state", "action" => "abort_pipeline"}
+
+        agent.report_progress("WC-42", "still working")
+        wait_until { pipeline_state.current("WC-42").nil? }
+
+        expect(pipeline_state.current("WC-42")).to be_nil
+        expect(pollers.first).to be_stopped
+        expect(error_output.string).to include("work-coordinator aborted the pipeline")
+      end
+    end
+
+    it "keeps the pipeline running and replays reports after the coordinator comes back" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        coordinator.stop
+
+        agent.report_progress("WC-42", "buffered while the coordinator was down")
+
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 0)
+        expect(pollers.first).not_to be_stopped
+
+        restarted = FakeWorkCoordinator.new(
+          socket_path: wc_socket_path,
+          status_socket_path: wc_status_socket_path,
+          reply: {"ok" => true, "epoch" => "test-wc-epoch-2"}
+        )
+        restarted.start
+        begin
+          agent.report_progress("WC-42", "after the coordinator came back")
+          wait_until { restarted.status_messages.size >= 2 && restarted.registrations.any? }
+
+          expect(restarted.status_messages.map { |m| m["message"] }).to eq([
+            "after the coordinator came back",
+            "buffered while the coordinator was down"
+          ])
+          expect(restarted.registrations.last).to include("name" => "myapp")
+          expect(restarted.registrations.last["in_flight"]).to include(
+            hash_including("work_item_ref" => "WC-42")
+          )
+        ensure
+          restarted.stop
+        end
+      end
+    end
+  end
+
+  describe "coordinator_restart notification" do
+    def send_command(overrides = {})
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    def write_pipeline_config
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+    end
+
+    it "buffers the next report immediately without hitting the coordinator" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        UNIXSocket.open(agent_socket_path) do |s|
+          s.puts({"type" => "coordinator_restart", "dispatch_id" => "d-test-1"}.to_json)
+        end
+        sleep 0.05
+
+        coordinator.status_messages.clear
+        agent.report_progress("WC-42", "after coordinator_restart")
+        sleep 0.05
+
+        expect(coordinator.status_messages).to be_empty
+      end
+    end
+  end
+
+  describe "steering work in mid-pipeline" do
+    def send_command(overrides = {})
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    def send_inject(overrides = {})
+      message = {
+        "type" => "inject",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "use Postgres not SQLite",
+        "interrupt" => false
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) do |s|
+        s.puts(message.to_json)
+        JSON.parse(s.gets)
+      end
+    end
+
+    before do
+      coordinator.start
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+    end
+
+    it "holds a steer for the next stage without disturbing the running one" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        sent_before = tmux.sent_keys.size
+
+        expect(send_inject).to eq("ok" => true, "queued_for_pane" => 1)
+        expect(tmux.sent_keys.size).to eq(sent_before)
+
+        pollers.first.on_complete.call("research done")
+
+        expect(tmux.sent_keys.last).to include(pane: "0.1", text: "use Postgres not SQLite")
+      end
+    end
+
+    it "interrupts the running stage for an urgent steer" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        expect(send_inject("interrupt" => true)).to eq("ok" => true, "queued_for_pane" => 0)
+
+        expect(tmux.sent_key_names.last).to include(session: "myapp", pane: "0.0", key: "C-c")
+        expect(tmux.sent_keys.last).to include(pane: "0.0", text: "use Postgres not SQLite")
+      end
+    end
+
+    it "refuses a steer aimed at a stage that has already finished" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        old_token = pipeline_state.current("WC-42")[:sentinel_token]
+        pollers.first.on_complete.call("research done")
+        wait_until { pipeline_state.current("WC-42")&.[](:pane_index) == 1 }
+        sent_before = tmux.sent_keys.size
+
+        expect(send_inject("interrupt" => true, "expected_token" => old_token))
+          .to eq("ok" => false, "error" => "stale_token")
+        expect(tmux.sent_keys.size).to eq(sent_before)
+      end
+    end
+
+    it "accepts a steer naming the running stage's token" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        token = pipeline_state.current("WC-42")[:sentinel_token]
+
+        expect(send_inject("interrupt" => true, "expected_token" => token))
+          .to eq("ok" => true, "queued_for_pane" => 0)
+      end
+    end
+
+    it "refuses a steer for a work item that is not running" do
+      run_agent do
+        send_command("work_item_ref" => "WC-43", "dispatch_id" => "d-7a2")
+        wait_until { pollers.any? }
+        sent_before = tmux.sent_keys.size
+
+        expect(send_inject).to eq("ok" => false, "error" => "no_active_pipeline")
+        expect(tmux.sent_keys.size).to eq(sent_before)
+      end
+    end
+
+    it "refuses a queued steer when there is no stage left to give it to" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        pollers.first.on_complete.call("research done")
+        wait_until { pipeline_state.current("WC-42")&.[](:pane_index) == 1 }
+        sent_before = tmux.sent_keys.size
+
+        expect(send_inject).to eq("ok" => false, "error" => "no_next_stage")
+        expect(tmux.sent_keys.size).to eq(sent_before)
+      end
+    end
+
+    it "answers a request for its own workspace in another case" do
+      run_agent do
+        expect(send_inject("workspace" => "MyApp", "work_item_ref" => "WC-999")).to eq("ok" => false, "error" => "no_active_pipeline")
+      end
+    end
+
+    it "answers every inbound message so a caller never reads a bare EOF" do
+      run_agent do
+        expect(send_inject("workspace" => "api")).to eq("ok" => false, "error" => "wrong_workspace")
+        expect(send_inject("type" => "nonsense")).to eq("ok" => false, "error" => "unknown_type")
+
+        reply = UNIXSocket.open(agent_socket_path) do |s|
+          s.puts("garbage")
+          JSON.parse(s.gets)
+        end
+        expect(reply).to eq("ok" => false, "error" => "malformed_message")
+      end
+    end
+
+    it "refuses a steer for a work item it has never seen" do
+      run_agent do
+        expect(send_inject("work_item_ref" => "WC-999")).to eq("ok" => false, "error" => "no_active_pipeline")
+        expect(tmux.sent_keys).to be_empty
+        expect(tmux.sent_key_names).to be_empty
+      end
+    end
+  end
+
+  describe "surviving a restart" do
+    let(:state_path) { File.join(tmpdir, "pipeline.json") }
+    let(:pipeline_state) do
+      Workspace::PipelineState.new(pipeline_config: pipeline_config, state_path: state_path)
+    end
+
+    def write_pipeline_config
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+    end
+
+    # What the previous agent process would have left on disk mid-stage.
+    def write_persisted_state(pane_index: 1, **extra)
+      File.write(state_path, JSON.pretty_generate(
+        "WC-42" => {
+          work_item_ref: "WC-42", workspace_name: "myapp",
+          dispatch_id: "d-7a1", pane_index: pane_index, phase: "implementer"
+        }.merge(extra)
+      ))
+    end
+
+    it "re-arms the watch with the stage's persisted token so a sentinel printed while it was down still counts" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1, sentinel_token: "persisted-tok")
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        expect(pollers.map(&:token)).to eq(["persisted-tok"])
+      end
+    end
+
+    it "keeps the stage's persisted deadline rather than starting a new one" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1, sentinel_token: "persisted-tok", deadline_at: "2026-09-27T11:00:00.000Z")
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        expect(pollers.first.deadline).to eq(Time.utc(2026, 9, 27, 11, 0, 0))
+      end
+    end
+
+    it "watches for a tokenless sentinel when the state predates tokens" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        expect(pollers.map(&:token)).to eq([nil])
+        expect(pollers.first.deadline).to be_nil
+        expect(pollers.first.pane).to eq(1)
+      end
+    end
+
+    it "re-registers with its in-flight work when the coordinator restarted under it" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        send_command = {
+          "type" => "command", "workspace" => "myapp", "work_item_ref" => "WC-42",
+          "dispatch_id" => "d-7a1", "body" => "/build add OAuth support"
+        }
+        UNIXSocket.open(agent_socket_path) { |s| s.puts(send_command.to_json) }
+        wait_until { pollers.any? }
+
+        # The coordinator answering with an epoch we have not seen is the agent's
+        # only signal that it is talking to a different process than it registered with.
+        coordinator.reply = {"ok" => true, "epoch" => "wc-epoch-2"}
+        agent.report_progress("WC-42", "still working")
+
+        wait_until { coordinator.registrations.size >= 2 }
+        expect(coordinator.registrations.last).to include("type" => "register", "name" => "myapp")
+        expect(coordinator.registrations.last["in_flight"]).to include(
+          hash_including("work_item_ref" => "WC-42", "dispatch_id" => "d-7a1")
+        )
+        expect(pollers.first).not_to be_stopped
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 0)
+      end
+    end
+
+    it "re-registers with pipeline: true when the workspace has a pipeline" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        coordinator.reply = {"ok" => true, "epoch" => "wc-epoch-2"}
+        agent.report_progress("WC-42", "still working")
+
+        wait_until { coordinator.registrations.size >= 2 }
+        expect(coordinator.registrations.size).to eq(2)
+        expect(coordinator.registrations.last).to include("pipeline" => true)
+      end
+    end
+
+    it "re-registers with pipeline: false when the workspace has no pipeline" do
+      coordinator.start
+      # no pipeline config written
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        coordinator.reply = {"ok" => true, "epoch" => "wc-epoch-2"}
+        agent.report_progress("WC-42", "still working")
+
+        wait_until { coordinator.registrations.size >= 2 }
+        expect(coordinator.registrations.size).to eq(2)
+        expect(coordinator.registrations.last).to include("pipeline" => false)
+      end
+    end
+
+    it "picks work back up from disk and re-attaches to the pane that survived" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 1, 2]
+
+      run_agent do
+        expect(coordinator.last_registration["in_flight"]).to include(
+          hash_including("work_item_ref" => "WC-42", "dispatch_id" => "d-7a1", "phase" => "implementer")
+        )
+        expect(pollers.map(&:pane)).to eq([1])
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 1)
+      end
+    end
+
+    it "names only the deadline when a recovered stage times out, since its budget is not persisted" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1, sentinel_token: "persisted-tok", deadline_at: "2026-09-27T12:30:00.000Z")
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        wait_until { pollers.any? }
+        pollers.first.on_timeout.call
+
+        wait_until { coordinator.status_messages.any? { |m| m["type"] == "error" } }
+        expect(coordinator.status_messages.last).to include(
+          "message" => "timed out (deadline 2026-09-27T12:30:00Z): no WORKSPACE_DONE:persisted-tok line"
+        )
+      end
+    end
+
+    it "treats a work item as lost when tmux cannot say whether its pane is there" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      allow(tmux).to receive(:panes).and_raise(Workspace::Error, "tmux server not running")
+
+      run_agent do
+        expect(coordinator.last_registration["in_flight"]).to be_empty
+        expect(pipeline_state.in_flight_refs).not_to include("WC-42")
+      end
+    end
+
+    it "drops work whose pane did not survive rather than pretending it is running" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 2]
+
+      run_agent do
+        expect(coordinator.last_registration["in_flight"]).to be_empty
+        expect(pipeline_state.in_flight_refs).not_to include("WC-42")
+        expect(pollers).to be_empty
+        expect(error_output.string).to include("WC-42 lost its pane (1)")
+        expect(JSON.parse(File.read(state_path))).to be_empty
       end
     end
   end
