@@ -1061,4 +1061,296 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
   end
+
+  describe "waking workflow runs" do
+    include_context "waking workflow runs"
+
+    it "tells the nudger when the main agent's turn ends in a pane, after the monitor has the event" do
+      run_agent do
+        expect(send_event("stop")).to eq("ok" => true)
+
+        # This daemon did not see the turn begin, so it names no start: the end counts, as it always did.
+        expect(nudger.turns).to eq([["myapp", "%5", nil, nil]])
+        expect(recorded_events).to eq(["stop"])
+      end
+    end
+
+    it "passes the Stop's background tasks to the nudger" do
+      run_agent do
+        send_event("stop", background_tasks: [{"id" => "b1a2c3d4e", "type" => "shell"}])
+
+        expect(nudger.turns).to eq([["myapp", "%5", nil, [{"id" => "b1a2c3d4e", "type" => "shell"}]]])
+      end
+    end
+
+    it "tells the nudger when the turn that ended began: the pane's last prompt, whatever other panes and sub-agents did" do
+      run_agent do
+        send_event("user_prompt")
+        send_event("user_prompt", pane_id: "%6")
+        send_event("user_prompt", agent_id: "sub-1")
+        send_event("stop")
+        send_event("stop")
+
+        expect(nudger.turns).to eq([["myapp", "%5", now, nil], ["myapp", "%5", now, nil]])
+      end
+    end
+
+    it "forgets when a turn began once the pane's session ends, or a new one starts (a /clear)" do
+      run_agent do
+        %w[session_end session_start].each do |event|
+          send_event("user_prompt")
+          send_event(event)
+          send_event("stop")
+        end
+
+        expect(nudger.turns).to eq([["myapp", "%5", nil, nil]] * 2)
+      end
+    end
+
+    it "does not wake the nudger for a turn that failed" do
+      run_agent do
+        send_event("user_prompt")
+        send_event("turn_failed", error: "rate_limit")
+
+        expect(nudger.turns).to eq([])
+        expect(recorded_events).to eq(%w[user_prompt turn_failed])
+      end
+    end
+
+    it "says nothing for a sub-agent's stop, or for any other event" do
+      run_agent do
+        send_event("stop", agent_id: "sub-1")
+        send_event("subagent_stop")
+        send_event("user_prompt")
+        send_event("session_start")
+
+        expect(nudger.turns).to eq([])
+        expect(recorded_events.size).to eq(4)
+      end
+    end
+
+    context "with an agent recovery desk" do
+      let(:desk_events) { [] }
+      let(:scans) { [] }
+      let(:built) { [] }
+      let(:queue_built) { [] }
+      let(:monitor) do
+        QuietSessionMonitor.new(events: recorded_events)
+      end
+      let(:recovery_desk) do
+        events = desk_events
+        scan_log = scans
+        Class.new do
+          attr_accessor :holds, :raises
+
+          define_method(:session_event) { |message| events << message["event"] }
+          define_method(:scan) do
+            scan_log << :recovery
+            raise "recovery broke" if raises
+          end
+          define_method(:holding?) { |_pane_id| holds }
+        end.new
+      end
+      let(:queue_desk) do
+        scan_log = scans
+        raising = -> { @queue_raises }
+        Class.new do
+          define_method(:session_event) { |_message| }
+          define_method(:scan) do
+            scan_log << :queue
+            raise "queue broke" if raising.call
+          end
+        end.new
+      end
+      let(:factory) { ->(**args) { built << args && recovery_desk } }
+
+      subject(:agent) do
+        build_agentd(
+          config: config, restart_registry: restart_registry, tmux: tmux, work_coordinator_client: client,
+          pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+          epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+          sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+          clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+          workflow_nudger: nudger,
+          prompt_queue_desk_factory: ->(**args) { queue_built << args && queue_desk },
+          agent_recovery_desk_factory: factory, output: output, error_output: error_output
+        )
+      end
+
+      it "hands the desk the workspace, the monitor and the claim calls" do
+        run_agent do
+          expect(built.first).to include(workspace: "myapp", session_monitor: monitor)
+          expect(built.first[:delivery_lock]).to be_a(Mutex)
+          expect(built.first[:rebind_queue]).to respond_to(:call)
+        end
+      end
+
+      it "passes every hook event to the desk, and the queue desk's recovering check reads the desk's holding?" do
+        run_agent do
+          send_event("turn_failed", error: "rate_limit")
+          recovery_desk.holds = true
+
+          expect(desk_events).to eq(["turn_failed"])
+          expect(queue_built.first[:recovering].call("%5")).to be(true)
+          recovery_desk.holds = nil
+          expect(queue_built.first[:recovering].call("%5")).to be(false)
+        end
+      end
+
+      it "answers false to the recovering check with no desk" do
+        queue = []
+        no_desk = build_agentd(
+          config: config, tmux: tmux, work_coordinator_client: client,
+          pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+          epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+          clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+          prompt_queue_desk_factory: ->(**args) { queue << args && queue_desk },
+          agent_recovery_desk_factory: ->(**) {}, output: output, error_output: error_output
+        )
+        thread = Thread.new do
+          no_desk.call(name: "myapp")
+        ensure
+          output.announce
+        end
+        output.wait_ready
+
+        expect(queue.first[:recovering].call("%5")).to be(false)
+        expect(send_event("stop")).to eq("ok" => true)
+      ensure
+        signal_trapper.handlers["TERM"]&.call
+        thread&.join(2)
+      end
+
+      it "ends a bound step on the typed message's stop and not on its turn_failed" do
+        run_agent do
+          send_event("user_prompt")
+          send_event("stop")
+          expect(nudger.turns).to eq([["myapp", "%5", now, nil]])
+
+          send_event("user_prompt")
+          send_event("turn_failed", error: "server_error")
+          expect(nudger.turns.size).to eq(1)
+          expect(desk_events).to eq(%w[user_prompt stop user_prompt turn_failed])
+        end
+      end
+
+      it "runs both desks on a scan, and one raising does not stop the other" do
+        run_agent do
+          monitor.scan_now
+          expect(scans).to eq(%i[queue recovery])
+
+          scans.clear
+          recovery_desk.raises = true
+          monitor.scan_now
+          expect(scans).to eq(%i[queue recovery])
+
+          scans.clear
+          recovery_desk.raises = false
+          @queue_raises = true
+          monitor.scan_now
+          expect(scans).to eq(%i[queue recovery])
+        end
+      end
+
+      it "registers the claiming thread, so shutting down kills an attempt worker" do
+        run_agent do
+          claim = built.first[:claim_restart]
+          token = nil
+          worker = Thread.new do
+            token = claim.call("%5")
+            sleep
+          end
+          wait_until { token }
+
+          expect(token).to equal(worker)
+          expect(built.first[:restarting].call("%5")).to be(true)
+          expect(claim.call("%5")).to be_nil
+
+          signal_trapper.handlers["TERM"].call
+          worker.join(2)
+
+          expect(worker.alive?).to be(false)
+        end
+      end
+
+      it "refuses a claim once the daemon is shutting down, so no attempt escapes the shutdown sweep" do
+        run_agent do
+          claim = built.first[:claim_restart]
+          signal_trapper.handlers["TERM"].call
+
+          expect(Thread.new { claim.call("%5") }.value).to be_nil
+          expect(built.first[:restarting].call("%5")).to be(false)
+        end
+      end
+
+      it "releases only the claim it made" do
+        run_agent do
+          claim, release = built.first.values_at(:claim_restart, :release_restart)
+          token = Thread.new { claim.call("%5") }.value
+          release.call("%5", Object.new)
+          expect(built.first[:restarting].call("%5")).to be(true)
+          release.call("%5", token)
+          expect(built.first[:restarting].call("%5")).to be(false)
+        end
+      end
+
+      describe "the claim's real path" do
+        def in_thread(&block) = Thread.new(&block).value
+
+        it "refuses a free pane while shutting down, and writes nothing" do
+          run_agent do
+            claim = built.first[:claim_restart]
+            signal_trapper.handlers["TERM"].call
+
+            expect(in_thread { claim.call("%5") }).to be_nil
+            expect(restart_registry.held?("%5")).to be(false)
+          end
+        end
+
+        it "refuses a pane another claim holds, and leaves that claim alone" do
+          run_agent do
+            claim = built.first[:claim_restart]
+            restart_registry.claim_pending("%5")
+            expect(in_thread { claim.call("%5") }).to be_nil
+            expect(restart_registry.held?("%5")).to be(true)
+
+            held = restart_registry.claim_for_queue("%6")
+            expect(in_thread { claim.call("%6") }).to be_nil
+            restart_registry.release("%6", Object.new)
+            expect(restart_registry.held?("%6")).to be(true)
+            restart_registry.release("%6", held)
+            expect(restart_registry.held?("%6")).to be(false)
+          end
+        end
+
+        it "releases by the token's identity, so an old token can't end a newer claim" do
+          run_agent do
+            claim, release = built.first.values_at(:claim_restart, :release_restart)
+            first = Thread.new { claim.call("%5") }.tap(&:join)
+            old = first.value
+            release.call("%5", old)
+            expect(restart_registry.held?("%5")).to be(false)
+
+            newer = in_thread { claim.call("%5") }
+            release.call("%5", old)
+            expect(restart_registry.held?("%5")).to be(true)
+            expect(newer).not_to equal(old)
+
+            release.call("%5", newer)
+            expect(restart_registry.held?("%5")).to be(false)
+          end
+        end
+      end
+
+      it "rebinds the queue through the prompt queue store" do
+        store = instance_double(Workspace::PromptQueueStore, rebind_agent: nil)
+        allow(Workspace::PromptQueueStore).to receive(:new).with(path: config.prompt_queue_path("myapp")).and_return(store)
+
+        run_agent do
+          built.first[:rebind_queue].call("%5", 4242)
+          expect(store).to have_received(:rebind_agent).with("%5", agent_pid: 4242)
+        end
+      end
+    end
+  end
 end
