@@ -65,12 +65,16 @@ module Workspace
     # @param main_agent [Workspace::MainAgent, nil] says which agent a config's pane runs; nil skips the stale pane check
     # @param file_backup [Workspace::FileBackup, nil] copies a config aside before `--fix` rewrites it; nil builds one
     # @param skills [Workspace::Commands::Skills, nil] reads and repairs the skill links of each harness found; nil skips that check
+    # @param library [Workspace::Library, nil] resolves the tmuxinator template set a new config renders from; nil skips the `templates` check
+    # @param template_validator [Workspace::TemplateValidator, nil] checks that set; nil reports it unchecked
+    # @param template_status [Workspace::TemplateStatus, nil] says where each config stands against that set; nil skips the `template-current` rows
+    # @param template_apply [Workspace::TemplateApply, nil] what `--fix` re-renders stale configs with (without `--force`); nil fixes none
     # @param run_health [Workspace::WorkflowRunHealth, nil] reads orphaned workflow runs and leaked run locks; nil skips that check
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     # @param env [Hash] the environment; a non-empty NO_COLOR turns color off
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, run_health: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -92,6 +96,10 @@ module Workspace
       @event_log = event_log
       @skills = skills
       @run_health = run_health
+      @library = library
+      @template_validator = template_validator
+      @template_status = template_status
+      @template_apply = template_apply
       @skills_fixed = []
       @skills_notes = []
       @file_backup = file_backup || FileBackup.new(output: output)
@@ -133,14 +141,18 @@ module Workspace
       @rows = []
       @skills_fixed = []
       @skills_notes = []
+      # Templates first: a re-render writes the agent pane too, so the pane check below finds it
+      # already right and one --fix writes a config once.
+      templates_fixed = fix ? fix_templates : 0
       stale = stale_agent_panes
       fixed = fix ? fix_agent_panes(stale) : []
       skills_fixed = fix ? fix_skills : 0
-      apply_fixes(fixed.size + skills_fixed) if fix
+      apply_fixes(fixed.size + skills_fixed + templates_fixed) if fix
       mode = @launch_mode.resolve(headless)
 
       dependency_checks.each { |entry| run_dependency_check(entry, mode) }
       check_templates
+      check_template_current
       check_duplicate_window_ids
       check_promote_snapshots
       check_session_monitoring
@@ -161,7 +173,7 @@ module Workspace
       checks = result[:rows].map do |row|
         {"id" => row[:id], "ok" => row[:status] != "fail", "status" => row[:status],
          "message" => row[:message], "fix" => row[:fix], "fix_command" => row[:fix_command],
-         "project" => row[:project]}
+         "project" => row[:project]}.merge(row[:state] ? {"state" => row[:state], "approx" => row[:approx] || false} : {})
       end
       counts = Hash.new(0)
       checks.each { |check| counts[check["status"]] += 1 }
@@ -188,9 +200,11 @@ module Workspace
     # @param fix_command [String, nil] the fix as a command to run, when it is one
     # @param hints [Array<String>] lines printed after the row, instead of the fix line
     # @param project [String, nil] the project the row is about
-    def add_row(id, status, message, fix: nil, fix_label: "fix", fix_command: nil, hints: nil, project: nil)
+    # @param state [String, nil] a `template-current` row's config state (`current`, `stale`, `modified`, `untracked`); nil for other rows
+    # @param approx [Boolean, nil] whether that config's render record was adopted without an exact render
+    def add_row(id, status, message, fix: nil, fix_label: "fix", fix_command: nil, hints: nil, project: nil, state: nil, approx: nil)
       hints ||= fix ? ["#{fix_label}: #{fix}"] : []
-      @rows << {id: id, status: status, message: message, hints: hints, fix: fix, fix_command: fix_command, project: project}
+      @rows << {id: id, status: status, message: message, hints: hints, fix: fix, fix_command: fix_command, project: project, state: state, approx: approx}
     end
 
     def dependency_checks
@@ -233,15 +247,113 @@ module Workspace
       end
     end
 
+    # The tmuxinator template set a new config renders from now, for each kind: one `ok` row naming it when
+    # both files resolve and validate (warnings from the validator make it a `warn`), a `fail` row for a set
+    # that can't be resolved or has errors. A kind that still renders from an edited copy `workspace init`
+    # once installed (`legacy`) is a `warn` pointing at `workspace template import`. Skipped without a library.
     def check_templates
-      templates = ["workspace.project-template.yml", "workspace.project-worktree-template.yml"]
-      missing = templates.reject { |t| File.exist?(File.join(@config.tmuxinator_dir, t)) }
-      if missing.empty?
-        add_row("templates", "ok", "templates installed")
-      else
-        add_row("templates", "fail", "templates (missing: #{missing.join(", ")})",
-          fix: "run 'workspace init' to install them", fix_command: "workspace init")
+      return unless @library
+      workspace = @project_detector.detect(@working_dir)
+      picks = {}
+      failure = nil
+      %i[project worktree].each do |kind|
+        picks[kind] = @library.tmuxinator_template(kind, workspace: workspace)
+      rescue Workspace::Error => e
+        failure ||= "templates (#{kind}: #{e.message})"
       end
+      if failure
+        add_row("templates", "fail", failure, fix: "run 'workspace template list' to see the sets, then 'workspace config set tmuxinator.template NAME'")
+        return
+      end
+      problems = picks.flat_map { |kind, pick| @template_validator ? @template_validator.call_file(kind, pick["path"]) : [] }
+      errors = problems.select { |p| p.severity == "error" }
+      names = picks.values.map { |pick| pick["name"] }.uniq
+      label = "tmuxinator template set: #{names.join(" and ")} (#{workspace ? "this workspace" : "global"})"
+      legacy = picks.select { |_, pick| pick["name"] == Library::LEGACY_TEMPLATE }.keys
+      if errors.any?
+        add_row("templates", "fail", "#{label}: #{errors.first}", hints: errors.map { |p| p.to_s } + ["fix: run 'workspace template validate' for the details"], fix: "run 'workspace template validate' for the details")
+      elsif legacy.any?
+        add_row("templates", "warn", "#{label}: new tmuxinator configs still use your edited copy from `workspace init`",
+          fix: "run 'workspace template import' to keep it as a template set", fix_command: "workspace template import")
+      elsif problems.any?
+        add_row("templates", "warn", "#{label}: #{problems.first}", hints: problems.map(&:to_s))
+      else
+        add_row("templates", "ok", label)
+      end
+    end
+
+    REASON_TEXT = {
+      "template_switched" => "another template set is selected now",
+      "template_changed" => "its template changed",
+      "agent_changed" => "the agent settings changed",
+      "template_unavailable" => "its template can't be read",
+      "render_failed" => "its template can't be filled in"
+    }.freeze
+    private_constant :REASON_TEXT
+
+    # The `template-current` rows, from {TemplateStatus}: a `warn` for each config a render would change and
+    # that nobody edited (stale), an `ok` row for each edited by hand (left alone, never an issue), one `warn`
+    # summary for the configs with no render record (pointing at `template adopt`), and one `ok` row counting
+    # the current ones. Skipped without a status reader or any config.
+    def check_template_current
+      rows = template_rows
+      return if rows.nil? || rows.empty?
+      by_state = rows.group_by(&:state)
+      (by_state["stale"] || []).each do |row|
+        why = row.reasons.filter_map { |reason| REASON_TEXT[reason] }.join(", ")
+        add_row("template-current", "warn", "#{row.workspace}: tmuxinator config is behind its template#{" (#{why})" unless why.empty?}",
+          fix: "run 'workspace doctor --fix' or 'workspace template apply #{row.workspace}'", fix_command: "workspace doctor --fix", project: row.workspace, state: row.state, approx: row.approx)
+      end
+      (by_state["modified"] || []).each do |row|
+        what = row.approx ? "adopted without an exact render, so it may hold hand edits" : "edited by hand since it was rendered"
+        add_row("template-current", "ok", "#{row.workspace}: tmuxinator config #{what}; left alone",
+          fix: "run 'workspace template apply --diff #{row.workspace}' to compare, '--force' to overwrite", project: row.workspace, state: row.state, approx: row.approx)
+      end
+      untracked = by_state["untracked"] || []
+      if untracked.any?
+        shown = untracked.first(5).map(&:workspace).join(", ")
+        shown += ", ..." if untracked.size > 5
+        add_row("template-current", "warn", "#{untracked.size} tmuxinator config(s) have no render record, so doctor can't tell if they are current (#{shown})",
+          fix: "run 'workspace template adopt --all' to start tracking them", fix_command: "workspace template adopt --all", state: "untracked", approx: false)
+      end
+      current = (by_state["current"] || []).size
+      add_row("template-current", "ok", "#{current} tmuxinator config(s) match their template", state: "current", approx: false) if current.positive?
+    end
+
+    # @return [Array<TemplateStatus::Row>, nil] nil when no status reader is wired or the read failed (a warning row says so)
+    def template_rows
+      return unless @template_status && @project_config
+      @template_status.call(@project_config.available_projects)
+    rescue Workspace::Error, SystemCallError => e
+      add_row("template-current", "warn", "tmuxinator configs not compared with their template: #{e.message}")
+      nil
+    end
+
+    # `--fix` for stale configs: `template apply` without `--force`, so a config edited by hand, one adopted
+    # approximately and one with no render record are left alone. It backs up first (one batch) and takes each
+    # workspace's startup lock. Run before the agent pane fix: a re-render writes the pane too.
+    #
+    # @return [Integer] how many configs were re-rendered
+    def fix_templates
+      return 0 unless @template_apply
+      stale = (template_rows || []).select { |row| row.state == "stale" }.map(&:workspace)
+      return 0 if stale.empty?
+      result = @template_apply.call(stale)
+      applied = result.rows.select { |row| row["outcome"] == "applied" }
+      applied.each do |row|
+        message = "#{row["workspace"]}: tmuxinator config re-rendered from its template"
+        message += " (backup batch: #{result.backup})" if result.backup
+        message += "; #{row["message"]}" if row["message"]
+        @output.puts "--fix: #{message}"
+        add_row("template-current", "ok", message, project: row["workspace"], state: "current", approx: false)
+      end
+      result.rows.select { |row| row["outcome"] == "failed" }.each do |row|
+        add_row("fix", "fail", "--fix: #{row["workspace"]}'s tmuxinator config not re-rendered: #{row["message"]}")
+      end
+      applied.size
+    rescue Workspace::Error, SystemCallError => e
+      add_row("fix", "fail", "--fix: tmuxinator configs not re-rendered: #{e.message}")
+      0
     end
 
     # `--fix` is limited to one thing today: routing Claude's statusLine

@@ -968,7 +968,7 @@ RSpec.describe Workspace::Doctor do
 
       row = result[:rows].find { |r| r[:id] == "state-window-ids" }
       expect(row).to include(status: "fail", fix: "run 'workspace stop --all' then 'workspace launch' for affected projects")
-      expect(result[:rows].map { |r| r[:id] }).to include("ruby", "git", "templates")
+      expect(result[:rows].map { |r| r[:id] }).to include("ruby", "git")
       expect(result[:rows].find { |r| r[:id] == "iterm2" }[:status]).to eq("skipped")
       expect(result[:issues]).to eq(result[:rows].count { |r| r[:status] == "fail" })
       expect(output.string).to eq("")

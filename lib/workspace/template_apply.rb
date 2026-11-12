@@ -107,7 +107,7 @@ module Workspace
       record_only = found.text == found.rendered
       write(name, batch, found, record_only) unless dry_run
       running = !record_only && running?(name)
-      message = if record_only then "render record only: the config already holds this text"
+      message = if record_only then "already up to date; only its render record was updated"
       elsif running then "running: relaunch to take effect"
       end
       with_diff(row(name, dry_run ? "would_apply" : "applied", nil, message, base.merge("running" => running, "record_only" => record_only)), found, diff)

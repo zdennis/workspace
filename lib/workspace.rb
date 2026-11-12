@@ -1139,7 +1139,11 @@ module Workspace
       plan_command: plan_command, plan_dispatch: plan_dispatch_command, workspace_at: workspace_at, locks: held_locks, event_log: event_log, env: env,
       output: output, error_output: error_output
     )
-    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), output: output, env: env)
+    template_apply = TemplateApply.new(status: template_status, writer: tmuxinator_config_writer,
+      backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer), locks: name_migration,
+      project_config: project_config, tmux: tmux, differ: TextDiff.new,
+      retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output))
+    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, library: library, template_validator: template_validator, template_status: template_status, template_apply: template_apply, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), output: output, env: env)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
     )
@@ -1300,10 +1304,7 @@ module Workspace
       status: template_status, template_in_use: template_in_use,
       backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer),
       adopt: TemplateAdopt.new(library: library, project_config: project_config, writer: tmuxinator_config_writer, main_agent: main_agent, locks: name_migration),
-      apply: TemplateApply.new(status: template_status, writer: tmuxinator_config_writer,
-        backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer), locks: name_migration,
-        project_config: project_config, tmux: tmux, differ: TextDiff.new,
-        retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output)),
+      apply: template_apply,
       output: output, error_output: error_output)
     template_backups_command = Commands::TemplateBackups.new(backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer),
       selection: template_selection, locks: name_migration, project_config: project_config, writer: tmuxinator_config_writer,

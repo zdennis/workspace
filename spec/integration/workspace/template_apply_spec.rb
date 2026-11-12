@@ -113,7 +113,7 @@ RSpec.describe Workspace::TemplateApply do
 
     row = apply.call(["app"]).rows.first
 
-    expect(row).to include("outcome" => "applied", "record_only" => true, "running" => false, "message" => "render record only: the config already holds this text")
+    expect(row).to include("outcome" => "applied", "record_only" => true, "running" => false, "message" => "already up to date; only its render record was updated")
     expect(File.mtime(path("app"))).to eq(Time.at(1_000_000))
     expect(writer.record("app")).to have_attributes(template: "team", rendered_sha: sha("app v2\n"))
   end
