@@ -2898,10 +2898,9 @@ module Workspace
     # an operator reaches for when things look wrong is not the one that dies.
     def read_pipeline_state(project)
       state_path = @config.pipeline_state_path(project)
-      return {} unless File.exist?(state_path)
-      entries = JSON.parse(File.read(state_path))
-      entries.is_a?(Hash) ? entries : {}
-    rescue JSON::ParserError, SystemCallError
+      entries = PipelineState.read(state_path)
+      return entries if entries
+
       @error_output.puts "Could not read #{project}'s pipeline state at #{state_path}; treating it as empty"
       {}
     end
@@ -2924,7 +2923,7 @@ module Workspace
         end
 
         state_path = @config.pipeline_state_path(project)
-        File.unlink(state_path) if File.exist?(state_path)
+        PipelineState.reset(state_path)
         @output.puts "Cleared pipeline state for #{project}"
         {results: json ? [action_row(project, "reset")] : [], warnings: [PIPELINE_DEPRECATION]}
       end

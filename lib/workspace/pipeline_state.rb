@@ -7,6 +7,27 @@ module Workspace
   # Tracks in-flight pipeline state per work item, optionally persisting it so an
   # agent that is restarted can pick up work its panes are still running.
   class PipelineState
+    # Reads a persisted state file as the raw JSON entries (string keys), for
+    # a command that reports on it without starting an agent.
+    #
+    # @param state_path [String] the file an agent persists to
+    # @return [Hash, nil] the entries ({} when there is no file), or nil when the file cannot be read
+    def self.read(state_path)
+      return {} unless File.exist?(state_path)
+      entries = JSON.parse(File.read(state_path))
+      entries.is_a?(Hash) ? entries : {}
+    rescue JSON::ParserError, SystemCallError
+      nil
+    end
+
+    # Deletes a persisted state file, if there is one.
+    #
+    # @param state_path [String] the file an agent persists to
+    # @return [void]
+    def self.reset(state_path)
+      File.unlink(state_path) if File.exist?(state_path)
+    end
+
     # @param pipeline_config [Workspace::PipelineConfig] per-project pipeline configuration
     # @param state_path [String, nil] file to persist entries to, or nil to stay in memory
     def initialize(pipeline_config:, state_path: nil)

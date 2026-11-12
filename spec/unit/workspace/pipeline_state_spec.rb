@@ -20,6 +20,68 @@ RSpec.describe Workspace::PipelineState do
     state.start(work_item_ref: "WC-42", workspace_name: "myapp", dispatch_id: "d-1")
   end
 
+  describe ".read" do
+    around do |example|
+      Dir.mktmpdir do |dir|
+        @dir = dir
+        example.run
+      end
+    end
+
+    let(:path) { File.join(@dir, "pipeline.json") }
+
+    it "returns an empty Hash when there is no file" do
+      expect(described_class.read(path)).to eq({})
+    end
+
+    it "returns the raw string-keyed entries" do
+      File.write(path, JSON.generate("WC-1" => {"work_item_ref" => "WC-1"}))
+
+      expect(described_class.read(path)).to eq("WC-1" => {"work_item_ref" => "WC-1"})
+    end
+
+    it "returns an empty Hash when the file holds something other than an object" do
+      File.write(path, "[1]")
+
+      expect(described_class.read(path)).to eq({})
+    end
+
+    it "returns nil when the file is not JSON" do
+      File.write(path, "{not json")
+
+      expect(described_class.read(path)).to be_nil
+    end
+
+    it "returns nil when the path cannot be read" do
+      Dir.mkdir(path)
+
+      expect(described_class.read(path)).to be_nil
+    end
+  end
+
+  describe ".reset" do
+    around do |example|
+      Dir.mktmpdir do |dir|
+        @dir = dir
+        example.run
+      end
+    end
+
+    let(:path) { File.join(@dir, "pipeline.json") }
+
+    it "deletes the file" do
+      File.write(path, "{}")
+
+      described_class.reset(path)
+
+      expect(File.exist?(path)).to be(false)
+    end
+
+    it "does nothing when there is no file" do
+      expect { described_class.reset(path) }.not_to raise_error
+    end
+  end
+
   describe "#advance" do
     it "moves a tracked item onto the given stage" do
       start!
