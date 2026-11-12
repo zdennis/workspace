@@ -243,18 +243,10 @@ RSpec.describe Workspace::RecoveryOutcomes do
     end
   end
 
-  describe "#finish of a restart attempt" do
-    let(:t0) { now[0] - 3600 }
-
+  shared_context "an attempt's end" do
     let(:part) do
       described_class.new(workspace: "api", store: store, facts: facts, inbox: -> { inbox }, runner: runner, event_log: event_log,
         clock: BlockClock.new { now[0] }, logger: Workspace::Logger.new(output: log, enabled: true))
-    end
-
-    def restart_attempt(number: 2)
-      Workspace::RecoveryAttemptRunner::Attempt.new(pane_id: "%5", session_id: sid, number: number, mode: "restart", pid: 20,
-        started: "Mon", message: format(Workspace::RecoveryAttempts::RESUMED_MESSAGE, error: "server_error"),
-        resume_only: false, opened_at: now[0])
     end
 
     def events = event_log.lines
@@ -274,6 +266,18 @@ RSpec.describe Workspace::RecoveryOutcomes do
       expect(entry).to include("phase" => "gave_up", "give_up_reason" => reason)
       expect(inbox.items.size).to eq(items)
       expect(events.reverse.find { |type, _, _| type == "agent_recovery_gave_up" }[2]).to include("reason" => reason)
+    end
+  end
+
+  describe "#finish of a restart attempt" do
+    include_context "an attempt's end"
+
+    let(:t0) { now[0] - 3600 }
+
+    def restart_attempt(number: 2)
+      Workspace::RecoveryAttemptRunner::Attempt.new(pane_id: "%5", session_id: sid, number: number, mode: "restart", pid: 20,
+        started: "Mon", message: format(Workspace::RecoveryAttempts::RESUMED_MESSAGE, error: "server_error"),
+        resume_only: false, opened_at: now[0])
     end
 
     it "keeps user text out of the event lines" do
@@ -467,6 +471,93 @@ RSpec.describe Workspace::RecoveryOutcomes do
         run_to("not_ready")
 
         expect(lines).to eq([])
+      end
+
+      it "gives up at the last attempt from a restart, and its line says restart" do
+        agents.clear
+        opened(attempts: 12)
+        run_to("not_ready", number: 12)
+
+        expect_gave_up("attempts_exhausted")
+        expect(lines.map { |line| line.values_at("mode", "outcome") }).to eq([%w[restart not_ready]])
+      end
+    end
+  end
+
+  describe "#finish of a typed attempt" do
+    include_context "an attempt's end"
+
+    def typed_attempt
+      Workspace::RecoveryAttemptRunner::Attempt.new(pane_id: "%5", session_id: sid, number: 1, mode: "typed", pid: 20,
+        started: "Mon", message: format(Workspace::RecoveryAttempts::TYPED_MESSAGE, error: "server_error"),
+        resume_only: false, opened_at: now[0])
+    end
+
+    def opened(**fields) = store.put("%5", attempting(attempts: 1, draft_text: typed_attempt.message, **fields))
+
+    it "keeps user text out of the event lines" do
+      opened(prompt_seen: true)
+      part.finish(typed_attempt, "typed")
+
+      expect(events).not_to be_empty
+      expect(events.to_s).not_to include("Continue where")
+    end
+
+    it "a non-retryable failure hook with the agent gone stays not_retryable" do
+      agents.clear
+      opened(failed_during_attempt: true, error: "billing_error")
+      part.finish(typed_attempt, "no_response")
+
+      expect_gave_up("not_retryable")
+    end
+
+    it "a process that never answers leaves stopped alone" do
+      opened
+      part.finish(typed_attempt, "no_response")
+
+      expect(entry).to include("stopped" => false, "agent_pid" => 20)
+    end
+
+    it "gives up at the last attempt from a typed one, and its line says typed" do
+      opened
+      described_class.new(workspace: "api", store: store, facts: facts, inbox: -> { inbox }, runner: runner, event_log: event_log,
+        max_attempts: 1, clock: BlockClock.new { now[0] }).finish(typed_attempt, "no_response")
+
+      expect_gave_up("attempts_exhausted")
+      expect(lines.map { |line| line.values_at("mode", "outcome") }).to eq([%w[typed no_response]])
+    end
+
+    describe "step 6's hooks, for each outcome" do
+      agent = {pid: 21, started: "Mon Oct 26 11:00:00 2026"}
+
+      def run_to(outcome, agent: nil) = part.finish(typed_attempt, outcome, agent: agent)
+
+      %w[typed no_response claim_lost pane_not_clear not_typed not_submitted person_resumed fresh_agent].each do |outcome|
+        found = (outcome == "person_resumed") ? agent : nil
+
+        it "honours a stop during #{outcome}" do
+          opened(turn_completed: true)
+          run_to(outcome, agent: found)
+
+          expect(entry).to be_nil
+          expect(outcomes).to eq([outcome])
+        end
+
+        it "honours a retryable failure during #{outcome}" do
+          opened(failed_during_attempt: true, error: "overloaded")
+          run_to(outcome, agent: found)
+
+          expect(entry).to include("phase" => "waiting", "attempts" => 1, "error" => "overloaded")
+          expect(entry).not_to include("failed_during_attempt")
+        end
+
+        it "gives up on a non-retryable error during #{outcome}" do
+          opened(failed_during_attempt: true, error: "billing_error")
+          run_to(outcome, agent: found)
+
+          expect_gave_up("not_retryable")
+          expect(entry["attempts"]).to eq(1)
+        end
       end
     end
   end

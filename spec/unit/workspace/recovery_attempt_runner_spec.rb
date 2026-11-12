@@ -133,6 +133,39 @@ RSpec.describe Workspace::RecoveryAttemptRunner do
       expect(runner.typed(attempt)).to eq(["not_typed"])
       expect(calls).to include([:prompt_after?, "%5", t0 - 1])
     end
+
+    describe "the prompt wait" do
+      it "waits 30 seconds for the prompt, and a late one still counts" do
+        waited = 0
+        on_sleep[0] = -> { set(prompt_seen: true) if (waited += 1) == described_class::PROMPT_WAIT }
+        outcomes = runner.typed(attempt).first(1)
+
+        expect(outcomes).to eq(["typed"])
+      end
+
+      it "stops waiting at 30 seconds" do
+        typed_at = nil
+        allow(typer).to receive(:type).and_wrap_original do |original, **args|
+          typed_at = now[0]
+          original.call(**args)
+        end
+        outcomes = runner.typed(attempt).first(1)
+        ended_at = now[0]
+
+        expect(outcomes).to eq(["no_response"])
+        expect(ended_at - typed_at).to eq(described_class::PROMPT_WAIT)
+      end
+    end
+
+    describe "a different agent" do
+      it "with the same pid and a new start time is a different agent" do
+        agents.replace([old_agent.merge(started: "Tue")])
+        outcomes = runner.typed(attempt).first(1)
+
+        expect(messages).to eq([])
+        expect(outcomes).to eq(["fresh_agent"])
+      end
+    end
   end
 
   describe "#restart" do

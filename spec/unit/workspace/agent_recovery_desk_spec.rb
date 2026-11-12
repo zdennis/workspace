@@ -3501,16 +3501,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
                               "mode" => "typed", "outcome" => "typed"}])
       end
 
-      it "writes attempting, clearing defer_since, before anything is typed" do
-        due_entry(attempts: 0, defer_since: stamp(t0))
-        seen = nil
-        hooks[:enter] = -> { seen ||= entry }
-        desk.scan
-
-        expect(seen).to include("phase" => "attempting", "attempts" => 1, "prompt_seen" => false, "attempt_session_id" => nil,
-          "defer_since" => nil, "stopped" => false, "draft_text" => message)
-      end
-
       it "stays holding for the length of the attempt" do
         due_entry(attempts: 0)
         held = []
@@ -3521,15 +3511,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         desk.scan
 
         expect(held).to eq([true])
-      end
-
-      it "keeps user text out of the event lines" do
-        due_entry(attempts: 0)
-        agent_answers
-        desk.scan
-
-        expect(events).not_to be_empty
-        expect(events.to_s).not_to include("Continue where")
       end
 
       it "leaves a marker an earlier not_stopped left to expire" do
@@ -3592,14 +3573,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         desk.scan
 
         expect(reads).to eq(3)
-        expect_nothing_counted
-        expect(entry).to include("phase" => "waiting", "attempts" => 0)
-      end
-
-      it "skips the attempt when a restart holds the pane" do
-        refuse_claim[0] = true
-        desk.scan
-
         expect_nothing_counted
         expect(entry).to include("phase" => "waiting", "attempts" => 0)
       end
@@ -3682,62 +3655,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(outcomes).to eq(["typed"])
         expect(entry).to include("phase" => "waiting", "attempts" => 1, "error" => "overloaded", "draft_text" => nil)
       end
-
-      it "waits 30 seconds for the prompt, and a late one still counts" do
-        waited = 0
-        hooks[:enter] = -> { hooks[:sleep] = -> { event("user_prompt") if (waited += 1) == 30 } }
-        desk.scan
-
-        expect(outcomes).to eq(["typed"])
-      end
-
-      it "stops waiting at 30 seconds" do
-        typed_at = ended_at = nil
-        hooks[:enter] = -> { typed_at = now[0] }
-        hooks[:record] = -> { ended_at = now[0] }
-        desk.scan
-
-        expect(outcomes).to eq(["no_response"])
-        expect(ended_at - typed_at).to eq(30)
-      end
-    end
-
-    describe "step 6's hooks, for each outcome" do
-      agent = {pid: 21, started: "Mon Oct 26 11:00:00 2026"}
-
-      def run_to(outcome, agent: nil, &hook)
-        build_desk(stub_attempts: false, steps: Workspace::AgentRecoverySteps.running(typed: lambda { |_attempt|
-          hook.call
-          [outcome, agent]
-        })).scan
-      end
-
-      before { due_entry(attempts: 0) }
-
-      %w[typed no_response claim_lost pane_not_clear not_typed not_submitted person_resumed fresh_agent].each do |outcome|
-        found = (outcome == "person_resumed") ? agent : nil
-
-        it "honours a stop during #{outcome}" do
-          run_to(outcome, agent: found) { event("stop") }
-
-          expect(entry).to be_nil
-          expect(outcomes).to eq([outcome])
-        end
-
-        it "honours a retryable failure during #{outcome}" do
-          run_to(outcome, agent: found) { failed("overloaded") }
-
-          expect(entry).to include("phase" => "waiting", "attempts" => 1, "error" => "overloaded")
-          expect(entry).not_to include("failed_during_attempt")
-        end
-
-        it "gives up on a non-retryable error during #{outcome}" do
-          run_to(outcome, agent: found) { failed("billing_error") }
-
-          expect_gave_up("not_retryable")
-          expect(entry["attempts"]).to eq(1)
-        end
-      end
     end
 
     describe "an attempt that fails" do
@@ -3807,16 +3724,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
 
         expect_gave_up("unconfirmed")
         expect(signals).to eq([])
-      end
-
-      it "a non-retryable failure hook with the agent gone stays not_retryable" do
-        hooks[:enter] = lambda {
-          failed("billing_error")
-          gone!
-        }
-        desk.scan
-
-        expect_gave_up("not_retryable")
       end
 
       [[:refused, {reason: "waiting"}], [:aborted, {}], [:not_landed, {}], [:failed, {}]].each do |typer_outcome, fields|
@@ -3984,12 +3891,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(entry["draft_text"]).to eq(message)
         expect_restart_after("no_response")
       end
-
-      it "a process that never answers leaves stopped alone" do
-        desk.scan
-
-        expect(entry).to include("stopped" => false, "agent_pid" => 20)
-      end
     end
 
     describe "after no_response" do
@@ -4055,14 +3956,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         expect(entry["agent_pid"]).to eq(20)
       end
 
-      it "with the same pid and a new start time is a different agent" do
-        before_typing { processes.find { |process| process[:pid] == 20 }[:lstart] = later }
-        desk.scan
-
-        expect(messages).to eq([])
-        expect(outcomes).to eq(["fresh_agent"])
-      end
-
       it "with our session is a person's resume" do
         before_typing do
           replace_agent
@@ -4097,23 +3990,6 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     end
 
     describe "the attempts running out" do
-      it "gives up at the last attempt from a typed one, and its line says typed" do
-        due_entry(attempts: 0)
-        build_desk(stub_attempts: false, max_attempts: 1).scan
-
-        expect_gave_up("attempts_exhausted")
-        expect(lines.map { |line| line.values_at("mode", "outcome") }).to eq([%w[typed no_response]])
-      end
-
-      it "gives up at the last attempt from a restart, and its line says restart" do
-        due_entry(attempts: 11)
-        hooks[:signal] = -> { agent_exits }
-        desk.scan
-
-        expect_gave_up("attempts_exhausted")
-        expect(lines.map { |line| line.values_at("mode", "outcome") }).to eq([%w[restart not_ready]])
-      end
-
       it "sends one SIGINT per attempt to an agent that answers nothing, and gives up at 12 with one item" do
         due_entry(attempts: 0)
         desk.scan

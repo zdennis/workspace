@@ -242,6 +242,40 @@ RSpec.describe Workspace::RecoveryAttempts do
         expect(spawned).to eq(1)
       end
     end
+
+    describe "a typed attempt" do
+      let(:message) { "An API error stopped your last turn (server_error). Continue where you left off." }
+      let(:verdict) { Workspace::AgentRecoveryDesk::Verdict.new(answer: :go, mode: :typed) }
+      let(:opened) { [] }
+      let(:steps) do
+        Workspace::AgentRecoverySteps.running(typed: lambda { |_attempt|
+          opened << entry
+          ["typed", nil]
+        })
+      end
+
+      def expect_nothing_counted
+        expect(calls.map(&:first)).not_to include(:typed, :finish)
+      end
+
+      it "writes attempting, clearing defer_since, before anything is typed" do
+        store.put("%5", waiting(attempts: 0, defer_since: stamp(now)))
+        attempts.start("%5", :typed, check: check)
+        seen = opened.first
+
+        expect(seen).to include("phase" => "attempting", "attempts" => 1, "prompt_seen" => false, "attempt_session_id" => nil,
+          "defer_since" => nil, "stopped" => false, "draft_text" => message)
+      end
+
+      it "skips the attempt when a restart holds the pane" do
+        store.put("%5", waiting(attempts: 0))
+        claim[0] = nil
+        attempts.start("%5", :typed, check: check)
+
+        expect_nothing_counted
+        expect(entry).to include("phase" => "waiting", "attempts" => 0)
+      end
+    end
   end
 
   describe "#resume_line" do
