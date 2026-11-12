@@ -42,7 +42,7 @@ RSpec.describe Workspace::WorkflowEngine, "golden run files" do
   let(:notes) { instance_double(Workspace::Commands::Notes, info: {"dir" => File.join(@dir, "notes")}) }
   let(:gate_note) { Workspace::WorkflowGateNote.new(notes: notes) }
   let(:engine) do
-    described_class.new(store: store, resources: resources, composer: FakeStepComposer.new, panes: panes,
+    Workspace.build_workflow_engine(store: store, resources: resources, composer: FakeStepComposer.new, panes: panes,
       checker: ->(**) { {exit_code: 0, timed_out: false} }, commands_config: commands_config, lineage: lineage, git: git, guard: guard,
       excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, env_stopper: ->(**) {}, workspace_known: ->(_name) { false },
       event_log: instance_double(Workspace::EventLog, record: nil), task_store: instance_double(Workspace::TaskStore, active_for: {"id" => "t1"}),

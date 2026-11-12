@@ -77,7 +77,7 @@ module Workspace
     def report(run_id, status:, summary: nil, code: nil)
       result = nil
       @change.call(run_id) do |read|
-        stored = read.to_mutable_h
+        stored = WorkflowRun.deep_thaw(read.to_h)
         state = step_state(stored)
         unless %w[running checking].include?(state["state"])
           raise Workspace::Error.new("Step #{stored["current"]} of run #{run_id} is #{state["state"]}, so there is nothing to report on.",
@@ -103,7 +103,7 @@ module Workspace
     # @param background [Array<Hash>] see {#turn_ended}
     # @return [WorkflowRun] the run afterwards
     def evaluate(run, ctx:, turn_started: nil, background: [])
-      work = WorkflowRun.from_h(run).to_mutable_h
+      work = WorkflowRun.deep_thaw(WorkflowRun.from_h(run).to_h)
       judge(work, ctx, turn_started, background)
       WorkflowRun.from_h(work)
     end
@@ -190,7 +190,7 @@ module Workspace
         end
       end
       unless step["status"]
-        run.replace(@progress.pass_step(run, ctx: ctx).to_mutable_h)
+        run.replace(WorkflowRun.deep_thaw(@progress.pass_step(run, ctx: ctx).to_h))
         return
       end
 
@@ -251,7 +251,7 @@ module Workspace
       following = nil
       run = @change.call(run_id) do |read, ctx|
         next if read.parked
-        stored = read.to_mutable_h
+        stored = WorkflowRun.deep_thaw(read.to_h)
         state = step_state(stored)
         attempt = state["attempts"].last
         # The run moved on while the check ran (a resume, a reject): its result decides nothing.
@@ -300,7 +300,7 @@ module Workspace
     end
 
     def fail_step(run, failure, ctx)
-      run.replace(@progress.fail_step(run, failure, ctx: ctx).to_mutable_h)
+      run.replace(WorkflowRun.deep_thaw(@progress.fail_step(run, failure, ctx: ctx).to_h))
     end
 
     def guard_check(run, step)

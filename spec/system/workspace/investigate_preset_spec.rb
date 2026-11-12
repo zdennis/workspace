@@ -140,7 +140,7 @@ RSpec.describe "the investigate preset" do
     let(:lock_namespace) { instance_double(Workspace::LockNamespace) }
     let(:resources) { Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: RunFileLiveness.new(File.join(dir, "runs"))) }
     let(:engine) do
-      Workspace::WorkflowEngine.new(store: store, resources: resources, composer: FakeStepComposer.new, panes: FakeWorkflowPanes.new,
+      Workspace.build_workflow_engine(store: store, resources: resources, composer: FakeStepComposer.new, panes: FakeWorkflowPanes.new,
         checker: ->(**) { {exit_code: 0, timed_out: false} }, commands_config: instance_double(Workspace::CommandsConfig, for_project: {test: "t", lint: nil}),
         lineage: lineage, git: git, guard: Workspace::WorkflowGuard.new, excludes: Workspace::GitExclude.new(git: git),
         gate_note: instance_double(Workspace::WorkflowGateNote, notes_dir_of: nil), env_stopper: ->(**) {}, event_log: instance_double(Workspace::EventLog, record: nil),

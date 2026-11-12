@@ -543,24 +543,6 @@ RSpec.describe Workspace::WorkflowRunStore do
       expect(asked).to eq([["%1", "a"], ["%2", "b"]])
     end
 
-    it "is what the Hash methods read and write through" do
-      create
-      calls = []
-      probe = Class.new(described_class) do
-        define_method(:run) { |id| (calls << :run) && super(id) }
-        define_method(:going) { (calls << :going) && super() }
-        define_method(:finished) { (calls << :finished) && super() }
-        define_method(:change) { |id, **kw, &block| (calls << :change) && super(id, **kw, &block) }
-      end.new(dir: runs_dir, archive_dir: archive_dir)
-
-      probe.find("wr_1")
-      probe.active
-      probe.archived
-      probe.update("wr_1") { |run| run }
-
-      expect(calls).to eq(%i[run going finished change])
-    end
-
     it "stores the run the block returns and returns it" do
       create
 
@@ -581,7 +563,7 @@ RSpec.describe Workspace::WorkflowRunStore do
       expect(File.read(File.join(runs_dir, "wr_1.json"))).to eq(before)
     end
 
-    it "archives a run the block finished, as update does" do
+    it "archives a run the block finished" do
       create
 
       store.change("wr_1") { |run| Workspace::WorkflowRun.from_h(run.to_h.merge("state" => "completed", "ended_at" => "2026-10-04T13:00:01Z")) }
@@ -592,7 +574,7 @@ RSpec.describe Workspace::WorkflowRunStore do
       expect(store.finished.map { |r| r.to_h["id"] }).to eq(["wr_1"])
     end
 
-    it "raises unknown_run and run_not_active as update does, and retries the archive of a finished run still going" do
+    it "raises unknown_run and run_not_active, and retries the archive of a finished run still going" do
       create
       expect { store.change("wr_nope") { |run| run } }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
 

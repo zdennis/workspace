@@ -109,7 +109,7 @@ module Workspace
     # @return [WorkflowRun] the run with its reason history kept; the run given, unchanged, on any error
     def reasons(run:, was_open: nil)
       given = WorkflowRun.from_h(run)
-      run = given.to_mutable_h
+      run = WorkflowRun.deep_thaw(given.to_h)
       current = effective_reason(run)
       at, entry = open_entry(run)
       return given if entry && current && entry["code"] == current["code"] && entry["since"] == current["since"]
@@ -200,7 +200,7 @@ module Workspace
     end
 
     def mutable(attempt)
-      attempt.is_a?(WorkflowRun::Attempt) ? attempt.to_mutable_h : WorkflowRun.deep_thaw(attempt)
+      WorkflowRun.deep_thaw(attempt.is_a?(WorkflowRun::Attempt) ? attempt.to_h : attempt)
     end
 
     def set_by_ending?(reason, attempt)

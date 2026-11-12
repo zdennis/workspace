@@ -7537,7 +7537,7 @@ RSpec.describe Workspace::CLI do
     let(:git) { instance_double(Workspace::Git, worktree_branch: "main", common_dir_from_files: nil) }
     let(:engine) do
       lock_namespace = instance_double(Workspace::LockNamespace, resolve: {key: "ns", display: "app", dir: File.join(@dir, "locks")})
-      Workspace::WorkflowEngine.new(
+      Workspace.build_workflow_engine(
         store: store, panes: panes, composer: FakeStepComposer.new, git: git, guard: Workspace::WorkflowGuard.new, excludes: Workspace::GitExclude.new(git: git),
         gate_note: Workspace::WorkflowGateNote.new(notes: instance_double(Workspace::Commands::Notes)),
         resources: Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: RunFileLiveness.new(runs_dir)),

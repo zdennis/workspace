@@ -15,7 +15,7 @@ RSpec.describe Workspace::WorkflowSimulator do
     end
   end
   let(:max_actions) { described_class::MAX_ACTIONS }
-  let(:simulator) { described_class.new(engine_factory: ->(**parts) { Workspace::WorkflowEngine.new(**parts) }, tmpdir: tmpdir, max_actions: max_actions) }
+  let(:simulator) { described_class.new(engine_factory: ->(**parts) { Workspace.build_workflow_engine(**parts) }, tmpdir: tmpdir, max_actions: max_actions) }
 
   after { FileUtils.rm_rf(base) }
 
@@ -172,7 +172,7 @@ end
 
 RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
   let(:max_actions) { described_class::MAX_ACTIONS }
-  let(:simulator) { described_class.new(engine_factory: ->(**parts) { Workspace::WorkflowEngine.new(**parts) }, max_actions: max_actions) }
+  let(:simulator) { described_class.new(engine_factory: ->(**parts) { Workspace.build_workflow_engine(**parts) }, max_actions: max_actions) }
 
   def definition(text)
     Workspace::WorkflowDefinition.parse(text, id: "demo", source: "file", path: nil)

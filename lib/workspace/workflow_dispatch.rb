@@ -57,7 +57,7 @@ module Workspace
     # @param retry_of [Hash{String=>Object}, nil] the retry's "pane", "identity" and "text", kept by a budget hold
     # @return [WorkflowRun] the run afterwards
     def dispatch(run, ctx:, context: nil, budgeted: true, retry_of: nil)
-      work = WorkflowRun.from_h(run).to_mutable_h
+      work = WorkflowRun.deep_thaw(WorkflowRun.from_h(run).to_h)
       start_attempt(work, ctx: ctx, context: context, budgeted: budgeted, retry_of: retry_of)
       WorkflowRun.from_h(work)
     end
@@ -135,7 +135,7 @@ module Workspace
 
     # The body of {#dispatch}, over a working copy of the run.
     def start_attempt(run, ctx:, context:, budgeted:, retry_of:)
-      run.replace(drop_park(run, "moved_on").to_mutable_h) if run.key?("parked")
+      run.replace(WorkflowRun.deep_thaw(drop_park(run, "moved_on").to_h)) if run.key?("parked")
       step = step_def(run)
       state = step_state(run)
       return hold_for_budget(run, context, retry_of) if budgeted && budget_holds?(run)
@@ -161,7 +161,7 @@ module Workspace
       run["pending_context"] = []
       attempt["prompt_file"], composed = @prompt.write(run, step, attempt["n"], attempt["context"])
       started = @attempt_record.start(run: run, attempt: attempt, composed: composed)
-      run.replace(WorkflowRun.from_h(run).with_attempt(step["id"], started).to_mutable_h)
+      run.replace(WorkflowRun.deep_thaw(WorkflowRun.from_h(run).with_attempt(step["id"], started).to_h))
       state = step_state(run)
       attempt = state["attempts"].last
       @panes.bind(workspace: run["workspace"], pane: pane, run_id: run["id"], step: step["id"], attempt: attempt["n"],
@@ -181,7 +181,7 @@ module Workspace
 
     # The daemon's answer to a typed line, applied to the stored run.
     def settle(run, delivery, kick)
-      work = run.to_mutable_h
+      work = WorkflowRun.deep_thaw(run.to_h)
       state = work["steps"].fetch(delivery["step"])
       attempt = state["attempts"].last
       after = (attempt["n"] == delivery["attempt"]) ? attempt.delete("after_park") : nil

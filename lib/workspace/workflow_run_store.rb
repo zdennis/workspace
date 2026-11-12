@@ -182,44 +182,6 @@ module Workspace
       raise store_error(e)
     end
 
-    # The Hash methods below are wrappers over {#run}, {#going}, {#finished}
-    # and {#change}, kept only for the specs that still read and change runs
-    # as Hashes.
-
-    # @param id [String] a run id
-    # @return [Hash{String=>Object}] the run, going or finished, as a mutable copy
-    # @raise [Workspace::Error] code `unknown_run` when no run has that id
-    def find(id)
-      run(id).to_mutable_h
-    end
-
-    # @return [Array<Hash>] every run that has not finished, oldest first
-    def active
-      going.map(&:to_mutable_h)
-    end
-
-    # @return [Array<Hash>] finished runs, newest first
-    def archived
-      finished.map(&:to_mutable_h)
-    end
-
-    # Changes one run through {#change}, with the run as a Hash the block changes in place.
-    #
-    # @param id [String] a run id
-    # @param nonblocking [Boolean] return nil at once when another process is changing the run
-    # @yieldparam run [Hash{String=>Object}] the stored run, to change in place
-    # @return [Object, nil] what the block returned; nil when `nonblocking` and the run is busy
-    # @raise [Workspace::Error] code `unknown_run`, or `run_not_active` for a finished run
-    def update(id, nonblocking: false)
-      result = nil
-      stored = change(id, nonblocking: nonblocking) do |read|
-        hash = read.to_mutable_h
-        result = yield hash
-        WorkflowRun.from_h(hash)
-      end
-      stored && result
-    end
-
     # Appends one line to a run's history. Never raises: the history is a
     # record, and a run must not stop because it can't be written.
     #

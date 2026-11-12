@@ -52,7 +52,7 @@ module Workspace
     # @raise [Workspace::Error] code `gate_not_waiting`, `stale_revision`, `gate_note_unreadable`, and what +guard+ raises
     def approve(run_id, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
       @change.call(run_id) do |read, ctx|
-        stored = read.to_mutable_h
+        stored = WorkflowRun.deep_thaw(read.to_h)
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
         file = gate_file(stored, note_sha256)
@@ -80,7 +80,7 @@ module Workspace
     # @raise [Workspace::UsageError] when +to+ is not the gated step or one before it
     def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil)
       @change.call(run_id) do |read, ctx|
-        stored = read.to_mutable_h
+        stored = WorkflowRun.deep_thaw(read.to_h)
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
         target = to || stored["current"]
@@ -146,7 +146,7 @@ module Workspace
     def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       unchanged = nil
       run = @change.call(run_id) do |read|
-        stored = read.to_mutable_h
+        stored = WorkflowRun.deep_thaw(read.to_h)
         refuse_resume(stored, from: from)
         if WorkflowTransitions.parked(stored, @clock.call) == :waiting
           unchanged = "a resume is already parked for pane #{park_target(stored)}"
@@ -177,11 +177,11 @@ module Workspace
       run = @change.call(run_id) do |read, ctx|
         parked = read.parked
         next unless parked && parked["id"] == id
-        stored = read.to_mutable_h
+        stored = WorkflowRun.deep_thaw(read.to_h)
         stored.delete("parked")
         resumed = apply_resume(stored, ctx: ctx, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"],
           extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"], budget: parked["retries"].to_i.zero?)
-        stored = resumed.run.to_mutable_h
+        stored = WorkflowRun.deep_thaw(resumed.run.to_h)
         unchanged = resumed.unchanged
         check = ctx.check
         stored["pending_context"] << WorkflowRun.resume_note(parked["note"]) if unchanged && parked["note"]
@@ -208,7 +208,7 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def park_failed(run_id, id, code:, message:)
       @change.call(run_id) do |read|
-        stored = read.to_mutable_h
+        stored = WorkflowRun.deep_thaw(read.to_h)
         next unless stored.dig("parked", "id") == id
         if step_state(stored).dig("gate", "state") == "waiting"
           drop_park(stored, "failed", "error" => code, "message" => message)
@@ -254,7 +254,7 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def cancel(run_id, cause: "cancel")
       @change.call(run_id) do |read|
-        ended = @progress.finish(@attempt_record.abandon(read), "cancelled").to_mutable_h
+        ended = WorkflowRun.deep_thaw(@progress.finish(@attempt_record.abandon(read), "cancelled").to_h)
         ended["cancelled_by"] = cause
         event(ended, "run_cancelled", "cause" => cause)
         WorkflowRun.from_h(ended)
@@ -298,7 +298,7 @@ module Workspace
     # @return [Resumed] the run afterwards, and why nothing was done, or nil
     # @raise [Workspace::Error] as {#resume}
     def apply_resume(run, ctx:, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, budget: true)
-      work = WorkflowRun.from_h(run).to_mutable_h
+      work = WorkflowRun.deep_thaw(WorkflowRun.from_h(run).to_h)
       unchanged = resume_in(work, ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, budget: budget)
       Resumed.new(run: WorkflowRun.from_h(work), unchanged: unchanged)
     end
@@ -355,7 +355,7 @@ module Workspace
       waiting_retry = nil unless waiting_retry.is_a?(Hash) && waiting_retry["to"].is_a?(String)
       if waiting_retry && !from
         event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"], "backoff" => "skipped")
-        stored.replace(@progress.start_retry(stored, waiting_retry, ctx: ctx, proven: !pane.nil?, budgeted: budget).to_mutable_h)
+        stored.replace(WorkflowRun.deep_thaw(@progress.start_retry(stored, waiting_retry, ctx: ctx, proven: !pane.nil?, budgeted: budget).to_h))
         return held_retry_sentence(stored)
       end
       if from
@@ -375,7 +375,7 @@ module Workspace
           evaluate(stored, ctx)
         end
       when "checking" then evaluate(stored, ctx)
-      when "passed" then stored.replace(@progress.advance(stored, ctx: ctx).to_mutable_h)
+      when "passed" then stored.replace(WorkflowRun.deep_thaw(@progress.advance(stored, ctx: ctx).to_h))
       else dispatch(stored, ctx, budgeted: budget)
       end
       nil
@@ -446,7 +446,7 @@ module Workspace
       check_pane(pane, stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
       problem = @progress.retry_pane_problem(stored, waiting, pane: pane, proven: !pane.nil?)
       return nil unless problem
-      stored.replace(@progress.hold_retry(stored, waiting, problem, pane: pane || bound_pane(stored)).to_mutable_h)
+      stored.replace(WorkflowRun.deep_thaw(@progress.hold_retry(stored, waiting, problem, pane: pane || bound_pane(stored)).to_h))
       held_retry_sentence(stored)
     end
 
@@ -521,22 +521,22 @@ module Workspace
 
     # +request+ is what a resume would be given: "from", "note", "pane", "turn_over".
     def store_park(run, request, expires_at:)
-      run.replace(WorkflowRun.from_h(run).with_park(request, id: SecureRandom.hex(8), requested_at: now_iso, expires_at: expires_at, retries: 0).to_mutable_h)
+      run.replace(WorkflowRun.deep_thaw(WorkflowRun.from_h(run).with_park(request, id: SecureRandom.hex(8), requested_at: now_iso, expires_at: expires_at, retries: 0).to_h))
       event(run, "resume_parked", {"step" => run["current"], "pane" => request["pane"] || bound_pane(run), "from" => request["from"],
                                    "has_note" => !request["note"].nil?})
     end
 
     # Takes a park off the run however it ended; see {WorkflowDispatch#drop_park}.
     def drop_park(run, how, extra = {})
-      run.replace(@dispatch.drop_park(run, how, extra).to_mutable_h) if run.key?("parked")
+      run.replace(WorkflowRun.deep_thaw(@dispatch.drop_park(run, how, extra).to_h)) if run.key?("parked")
     end
 
     def dispatch(run, ctx, **options)
-      run.replace(@dispatch.dispatch(run, ctx: ctx, **options).to_mutable_h)
+      run.replace(WorkflowRun.deep_thaw(@dispatch.dispatch(run, ctx: ctx, **options).to_h))
     end
 
     def evaluate(run, ctx)
-      run.replace(@evaluation.evaluate(run, ctx: ctx).to_mutable_h)
+      run.replace(WorkflowRun.deep_thaw(@evaluation.evaluate(run, ctx: ctx).to_h))
     end
 
     def event(run, type, data = {}) = @change.event(run, type, data)

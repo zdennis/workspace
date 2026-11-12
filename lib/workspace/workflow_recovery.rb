@@ -38,7 +38,7 @@ module Workspace
       check = nil
       acted = false
       run = @change.call(run_id, nonblocking: true) do |read, ctx|
-        stored = read.to_mutable_h
+        stored = WorkflowRun.deep_thaw(read.to_h)
         case WorkflowTransitions.wakeable?(stored, @clock.call)
         when :backoff
           acted = true
@@ -143,7 +143,7 @@ module Workspace
     def redeliver(run_id, step:, attempt:)
       outcome = :moved_on
       run = @change.call(run_id, nonblocking: true) do |read, ctx|
-        stored = read.to_mutable_h
+        stored = WorkflowRun.deep_thaw(read.to_h)
         next unless sweep_target?(stored, step, attempt, false)
         info = WorkflowTransitions.redelivery(stored, @clock.call)
         next unless info && info[:state] == :due
@@ -246,7 +246,7 @@ module Workspace
       check = nil
       run = @change.call(run_id, nonblocking: !blocking) do |read, ctx|
         next unless sweep_target?(read.to_h, step, attempt, running)
-        stored = read.to_mutable_h
+        stored = WorkflowRun.deep_thaw(read.to_h)
         outcome = yield stored, ctx
         check = ctx.check
         WorkflowRun.from_h(stored)
@@ -293,7 +293,7 @@ module Workspace
       mark_stall(run, "timed_out", {"elapsed" => elapsed.round, "timeout" => timeout})
       mark_recovery(run, "timed_out", "failed")
       failure = {"cause" => "timeout", "timeout" => timeout, "elapsed" => elapsed.round}.merge(WorkflowTransitions.code_for("step_timed_out", nil))
-      run.replace(@progress.fail_step(run, failure, ctx: ctx).to_mutable_h)
+      run.replace(WorkflowRun.deep_thaw(@progress.fail_step(run, failure, ctx: ctx).to_h))
     end
 
     def sweep_event(run, data)
@@ -308,11 +308,11 @@ module Workspace
       run["steps"].fetch(run["current"])
     end
 
-    def start_retry(run, ctx) = run.replace(@progress.start_retry(run, ctx: ctx).to_mutable_h)
+    def start_retry(run, ctx) = run.replace(WorkflowRun.deep_thaw(@progress.start_retry(run, ctx: ctx).to_h))
 
-    def dispatch(run, ctx, **options) = run.replace(@dispatch.dispatch(run, ctx: ctx, **options).to_mutable_h)
+    def dispatch(run, ctx, **options) = run.replace(WorkflowRun.deep_thaw(@dispatch.dispatch(run, ctx: ctx, **options).to_h))
 
-    def evaluate(run, ctx) = run.replace(@evaluation.evaluate(run, ctx: ctx).to_mutable_h)
+    def evaluate(run, ctx) = run.replace(WorkflowRun.deep_thaw(@evaluation.evaluate(run, ctx: ctx).to_h))
 
     # No turn ended, so the step is neither passed nor checked: the hold only becomes the stop it was hiding,
     # with a `since` of its own.

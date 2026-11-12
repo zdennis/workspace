@@ -34,25 +34,26 @@ RSpec.describe RunFileReads do
 
       before { place(root, text) }
 
-      it "stored_run equals find, mutable and independent" do
+      it "stored_run equals the run file and #run, mutable and independent" do
         run = stored_run(store, id)
-        expect(run).to eq(store.find(id))
+        expect(run).to eq(JSON.parse(text))
+        expect(run).to eq(store.run(id).to_h)
         expect(run).not_to be_frozen
         run["state"] = "changed"
-        expect(stored_run(store, id)).to eq(store.find(id))
+        expect(stored_run(store, id)).to eq(JSON.parse(text))
       end
 
-      it "stored_run refuses an unknown id as find does" do
+      it "stored_run refuses an unknown id as #run does" do
         expect { stored_run(store, "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
-        expect { store.find("wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+        expect { store.run("wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
       end
 
-      it "going_runs equals active and finished_runs equals archived" do
-        expect(going_runs(store)).to eq(store.active)
-        expect(finished_runs(store)).to eq(store.archived)
+      it "going_runs equals #going and finished_runs equals #finished" do
+        expect(going_runs(store)).to eq(store.going.map(&:to_h))
+        expect(finished_runs(store)).to eq(store.finished.map(&:to_h))
       end
 
-      it "edit_run leaves the bytes and answer update does" do
+      it "edit_run leaves the bytes #change does, and answers the block's value" do
         other = File.join(root, "other")
         other_store = build_store(other)
         place(other, text)
@@ -62,16 +63,21 @@ RSpec.describe RunFileReads do
         end
         if Workspace::WorkflowRunStore::TERMINAL_STATES.include?(JSON.parse(text)["state"])
           expect { edit_run(store, id, &block) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
-          expect { other_store.update(id, &block) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
+          expect { other_store.change(id) { |run| run } }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
         else
-          expect(edit_run(store, id, &block)).to eq(other_store.update(id, &block))
+          expect(edit_run(store, id, &block)).to eq(JSON.parse(text)["state"])
+          other_store.change(id) do |run|
+            hash = Workspace::WorkflowRun.deep_thaw(run.to_h)
+            block.call(hash)
+            Workspace::WorkflowRun.from_h(hash)
+          end
           expect(File.binread(File.join(root, "runs", "#{id}.json"))).to eq(File.binread(File.join(other, "runs", "#{id}.json")))
         end
       end
     end
   end
 
-  it "lists many runs in the order the Hash methods do" do
+  it "lists many runs in the order #going and #finished do" do
     store = build_store(root)
     fixture_paths.each_with_index do |path, i|
       hash = JSON.parse(File.read(path))
@@ -79,18 +85,18 @@ RSpec.describe RunFileReads do
       hash["ended_at"] = "2026-01-01T00:01:%02dZ" % (i * 7 % 60) if hash["ended_at"]
       place(root, JSON.generate(hash), id: "wr_#{File.basename(path, ".json")}")
     end
-    expect(going_runs(store)).to eq(store.active)
-    expect(finished_runs(store)).to eq(store.archived)
+    expect(going_runs(store)).to eq(store.going.map(&:to_h))
+    expect(finished_runs(store)).to eq(store.finished.map(&:to_h))
     expect(going_runs(store)).not_to be_empty
     expect(finished_runs(store)).not_to be_empty
   end
 
-  it "edit_run returns nil for a busy run when nonblocking, as update does" do
+  it "edit_run returns nil for a busy run when nonblocking, as #change does" do
     store = build_store(root)
     place(root, File.read(fixture_paths.find { |p| JSON.parse(File.read(p))["state"] == "running" }))
     Workspace::FileLock.new(File.join(root, "runs", "wr_simulated.lock")).hold do
       expect(edit_run(store, "wr_simulated", nonblocking: true) { 1 }).to be_nil
-      expect(store.update("wr_simulated", nonblocking: true) { 1 }).to be_nil
+      expect(store.change("wr_simulated", nonblocking: true) { nil }).to be_nil
     end
   end
 end

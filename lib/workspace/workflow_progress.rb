@@ -110,7 +110,7 @@ module Workspace
 
     # A working copy of the run for the block to change, returned as a new run.
     def over(run)
-      work = WorkflowRun.from_h(run).to_mutable_h
+      work = WorkflowRun.deep_thaw(WorkflowRun.from_h(run).to_h)
       yield work
       WorkflowRun.from_h(work)
     end
@@ -145,7 +145,7 @@ module Workspace
     end
 
     def end_run(run, state)
-      run.replace(@dispatch.drop_park(run, "ended").to_mutable_h) if run.key?("parked")
+      run.replace(WorkflowRun.deep_thaw(@dispatch.drop_park(run, "ended").to_h)) if run.key?("parked")
       run.delete("backoff")
       run.delete("budget_hold")
       @dispatch.release(run)
@@ -233,11 +233,11 @@ module Workspace
       step = step_def(run)
       step_state(run)["attempts"][-1] = ended
       finished = @attempt_record.finish(run: run, step: step, attempt: ended)
-      run.replace(WorkflowRun.from_h(run).with_attempt(step["id"], finished).to_mutable_h)
+      run.replace(WorkflowRun.deep_thaw(WorkflowRun.from_h(run).with_attempt(step["id"], finished).to_h))
     end
 
     def dispatch(run, ctx, options)
-      run.replace(@dispatch.dispatch(run, ctx: ctx, **options).to_mutable_h)
+      run.replace(WorkflowRun.deep_thaw(@dispatch.dispatch(run, ctx: ctx, **options).to_h))
     end
 
     def event(run, type, data = {}) = @change.event(run, type, data)

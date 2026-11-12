@@ -77,7 +77,7 @@ RSpec.describe "the shipped workflow presets" do
         lock_namespace = instance_double(Workspace::LockNamespace)
         allow(lock_namespace).to receive(:resolve).and_return(key: "ns", display: "app", dir: File.join(dir, "locks"))
         store = Workspace::WorkflowRunStore.new(dir: File.join(dir, "runs"), archive_dir: File.join(dir, "archive"))
-        engine = Workspace::WorkflowEngine.new(store: store,
+        engine = Workspace.build_workflow_engine(store: store,
           resources: Workspace::RunResources.new(lock_namespace: lock_namespace, lock_holder: RunFileLiveness.new(File.join(dir, "runs"))),
           composer: FakeStepComposer.new, panes: FakeWorkflowPanes.new, checker: ->(**) { {exit_code: 0, timed_out: false} },
           commands_config: instance_double(Workspace::CommandsConfig, for_project: {test: "t", lint: nil}),

@@ -317,7 +317,7 @@ module Workspace
       end
 
       def finish(run:, step:, attempt:)
-        finished = __getobj__.finish(run: run, step: step, attempt: attempt).to_mutable_h
+        finished = WorkflowRun.deep_thaw(__getobj__.finish(run: run, step: step, attempt: attempt).to_h)
         finished["usage"] = {"input_tokens" => 0, "output_tokens" => @tokens.fetch([run["current"], finished["n"]], 0)}
         WorkflowRun::Attempt.from_h(finished)
       end

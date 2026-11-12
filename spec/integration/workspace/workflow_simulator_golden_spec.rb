@@ -16,7 +16,7 @@ RSpec.describe Workspace::WorkflowSimulator, "golden transcripts of the presets"
       FileUtils.rm_rf(dir)
     end
   end
-  let(:simulator) { described_class.new(engine_factory: ->(**parts) { Workspace::WorkflowEngine.new(**parts) }, tmpdir: tmpdir) }
+  let(:simulator) { described_class.new(engine_factory: ->(**parts) { Workspace.build_workflow_engine(**parts) }, tmpdir: tmpdir) }
   let(:fixtures) { File.join(PROJECT_ROOT, "spec", "fixtures", "workflow_simulator_golden") }
 
   after { FileUtils.rm_rf(base) }

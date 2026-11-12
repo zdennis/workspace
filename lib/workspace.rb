@@ -467,6 +467,61 @@ require_relative "workspace/commands/run_and_report"
 require_relative "workspace/cli"
 
 module Workspace
+  # Builds the workflow engine and its phases over one shared {WorkflowRunChange}. `build_cli` and
+  # the simulator's `engine_factory` call it, and so do the specs that drive a whole engine.
+  #
+  # @param store [Workspace::WorkflowRunStore]
+  # @param resources [Workspace::RunResources] holds each step's `uses:` for the run
+  # @param composer [Workspace::InstructionComposer] builds a step's instructions
+  # @param panes [Workspace::WorkflowPanes] binds, finds and types into the run's pane
+  # @param checker [Workspace::WorkflowCheck] runs a step's `status:` command
+  # @param commands_config [Workspace::CommandsConfig] the project's `commands.test`/`commands.lint`
+  # @param lineage [Workspace::WorkspaceLineage] names a checkout's parent project
+  # @param git [Workspace::Git] reads the checkout's branch
+  # @param guard [Workspace::WorkflowGuard] records a run's base commit and checks a guarded step against it
+  # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
+  # @param env_stopper [#call, nil] stops the dev environment a run left running under a lock it
+  #   gave up (`run_id:`, `worktree:`), so nobody queues behind an environment no step uses
+  # @param event_log [Workspace::EventLog, nil] gets `workflow_changed` and the run's lock events
+  # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
+  # @param task_store [Workspace::TaskStore, nil] names the workspace's task in the run
+  # @param attempt_record [Workspace::WorkflowAttemptRecord, nil] records what each attempt started from and ended with
+  #   (default: one reading HEAD through `guard`)
+  # @param require_check [Workspace::WorkflowRequire, nil] checks a step's `require:` proofs
+  #   (default: one over `guard` and `gate_note`)
+  # @param log_tail [Workspace::WorkflowLogTail, nil] reads the end of a failed check's log for `on_fail`'s `log_tail`
+  #   (default: a new one)
+  # @param alerts [Workspace::WorkflowAlerts, nil] tells a person of a gate, a failure, a stall or a finish through `alerts.notify`
+  #   (default: none)
+  # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
+  # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
+  # @param clock [#call] returns the current Time
+  # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
+  # @return [Workspace::WorkflowEngine]
+  def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
+    env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
+    attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
+    require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
+      commands_config: commands_config, checker: checker)
+    prompt = WorkflowPrompt.new(composer: composer, git: git, excludes: excludes, prompt_writer: prompt_writer)
+    # The change types a step's line through Dispatch, which is built after it.
+    dispatch = nil
+    change = WorkflowRunChange.new(store: store, attempt_record: attempt_record, deliver: ->(run_id, delivery) { dispatch.deliver(run_id, delivery) },
+      alerts: alerts, event_log: event_log)
+    dispatch = WorkflowDispatch.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
+      guard: guard, env_stopper: env_stopper, event_log: event_log, clock: clock)
+    progress = WorkflowProgress.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes,
+      log_tail: log_tail || WorkflowLogTail.new, clock: clock)
+    evaluation = WorkflowEvaluation.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
+      guard: guard, commands_config: commands_config, inbox_for: inbox_for, clock: clock)
+    starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
+      lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
+    decisions = WorkflowDecisions.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: clock)
+    recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, clock: clock)
+    WorkflowEngine.new(starter: starter, evaluation: evaluation, decisions: decisions, recovery: recovery)
+  end
+
   # Assembles the full dependency graph and returns a ready-to-run CLI instance.
   #
   # @param output [IO] output stream for user-facing messages
@@ -674,7 +729,7 @@ module Workspace
       lineage: lineage, error_output: error_output)
     # Taken under a run's lock, so the inbox's flock is inside it. Nothing takes them the other way round.
     workflow_inbox_for = ->(workspace) { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) }
-    workflow_engine = WorkflowEngine.new(
+    workflow_engine = build_workflow_engine(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
       composer: instruction_composer,
@@ -740,7 +795,7 @@ module Workspace
       stats: WorkflowStats.new(store: workflow_store, loader: workflow_run_loader),
       compare: WorkflowCompare.new(loader: workflow_run_loader),
       step_check: WorkflowStepCheck.new(engine: workflow_engine, checker: workflow_checker),
-      simulator: WorkflowSimulator.new(engine_factory: ->(**parts) { WorkflowEngine.new(**parts) }),
+      simulator: WorkflowSimulator.new(engine_factory: ->(**parts) { build_workflow_engine(**parts) }),
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,
