@@ -147,6 +147,7 @@ module Workspace
     # A config that exists keeps its mode; a new one gets the umask's, as `File.write` gives.
     def write_config(name, text)
       path = @config.config_path_for(name)
+      FileUtils.mkdir_p(File.dirname(path))
       mode = begin
         File.stat(path).mode & 0o7777
       rescue Errno::ENOENT

@@ -37,6 +37,16 @@ RSpec.describe Workspace::TmuxinatorConfigWriter do
       )
     end
 
+    it "makes the tmuxinator directory when a fresh home has none" do
+      fresh = File.join(tmpdir, "fresh", ".config", "tmuxinator")
+      allow(config).to receive(:config_path_for) { |name| File.join(fresh, "workspace.#{name}.yml") }
+
+      write
+
+      expect(File.read(File.join(fresh, "workspace.myapp.yml"))).to eq("name: myapp\n")
+      expect(sidecar).to include("rendered_sha" => Digest::SHA256.hexdigest("name: myapp\n"))
+    end
+
     it "gives a new config the mode File.write gives under the umask" do
       control = File.join(tmpdir, "control")
       File.write(control, "x")
