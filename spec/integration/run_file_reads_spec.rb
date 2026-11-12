@@ -67,7 +67,7 @@ RSpec.describe RunFileReads do
         else
           expect(edit_run(store, id, &block)).to eq(JSON.parse(text)["state"])
           other_store.change(id) do |run|
-            hash = Workspace::WorkflowRun.deep_thaw(run.to_h)
+            hash = run.thawed
             block.call(hash)
             Workspace::WorkflowRun.from_h(hash)
           end

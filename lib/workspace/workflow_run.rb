@@ -57,6 +57,9 @@ module Workspace
       end
     end
 
+    # @return [Hash{String=>Object}] an unfrozen deep copy of {#to_h}, for code that still changes a run Hash in place
+    def thawed = self.class.deep_thaw(to_h)
+
     # @return [Hash{String=>Step}] each step by id, in the run's order; empty when the run has no steps
     attr_reader :steps
 
@@ -83,12 +86,13 @@ module Workspace
     # @return [WorkflowRun] this run with +attempt+ in place of the step's attempt with the same n, or appended
     #   when the step has none with that n (a retry's new attempt)
     def with_attempt(step_id, attempt)
-      hash = self.class.deep_thaw(to_h)
+      hash = thawed
       steps = hash["steps"].is_a?(Hash) ? hash["steps"] : (hash["steps"] = {})
       state = steps[step_id].is_a?(Hash) ? steps[step_id] : (steps[step_id] = {})
       list = state["attempts"].is_a?(Array) ? state["attempts"] : (state["attempts"] = [])
       index = list.index { |each| each.is_a?(Hash) && each["n"] == attempt.n }
-      index ? list[index] = self.class.deep_thaw(attempt.to_h) : list << self.class.deep_thaw(attempt.to_h)
+      copy = attempt.thawed
+      index ? list[index] = copy : list << copy
       self.class.new(hash)
     end
 
@@ -99,7 +103,7 @@ module Workspace
 
     # @return [WorkflowRun] this run with no park; a parked note moves to the pending context ({.resume_note})
     def drop_park
-      hash = self.class.deep_thaw(to_h)
+      hash = thawed
       note = (parked = hash.delete("parked")).is_a?(Hash) ? parked["note"] : nil
       hash["pending_context"] << self.class.resume_note(note) if note
       self.class.new(hash)
@@ -209,6 +213,9 @@ module Workspace
 
       # @return [Hash{String=>Object}] the frozen Hash this attempt holds
       attr_reader :to_h
+
+      # @return [Hash{String=>Object}] an unfrozen deep copy of {#to_h}
+      def thawed = WorkflowRun.deep_thaw(to_h)
 
       # @param hash [Hash{String=>Object}, nil]
       def initialize(hash)

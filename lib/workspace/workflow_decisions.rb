@@ -42,7 +42,6 @@ module Workspace
     # instructions. Every check runs under the run's lock, in this order: the gate is waiting (at +step+ and
     # +attempt+ when given), +guard+, then the note. A refusal leaves the run file as it was.
     #
-    # @param run_id [String]
     # @param note [String, nil] added to the next step's instructions
     # @param step [String, nil] the gated step the caller saw; refused when the run is elsewhere
     # @param attempt [Integer, nil] that step's attempt the caller saw (needs +step+)
@@ -52,7 +51,7 @@ module Workspace
     # @raise [Workspace::Error] code `gate_not_waiting`, `stale_revision`, `gate_note_unreadable`, and what +guard+ raises
     def approve(run_id, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
       @change.call(run_id) do |read, ctx|
-        stored = WorkflowRun.deep_thaw(read.to_h)
+        stored = read.thawed
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
         file = gate_file(stored, note_sha256)
@@ -67,20 +66,19 @@ module Workspace
 
     # Turns a gate down: the gated step, or an earlier one, runs again with the note.
     #
-    # @param run_id [String]
     # @param note [String] why, added to that step's instructions
     # @param to [String, nil] the step to run again; nil for the gated step
     # @param step [String, nil] the gated step the caller saw; refused when the run is elsewhere
     # @param attempt [Integer, nil] that step's attempt the caller saw (needs +step+)
     # @param guard [#call, nil] called with the stored run after the step checks; raises to refuse
-    # @param extra_attempts [Integer, nil] added to the run's attempt allowance (see {#resume})
-    # @param extra_tokens [Integer, nil] added to the run's token budget (see {#resume})
+    # @param extra_attempts [Integer, nil] see {#resume}
+    # @param extra_tokens [Integer, nil] see {#resume}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `gate_not_waiting`, `attempts_spent`, `budget_spent`, and what +guard+ raises
     # @raise [Workspace::UsageError] when +to+ is not the gated step or one before it
     def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil)
       @change.call(run_id) do |read, ctx|
-        stored = WorkflowRun.deep_thaw(read.to_h)
+        stored = read.thawed
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
         target = to || stored["current"]
@@ -104,19 +102,15 @@ module Workspace
     # moves the run to another pane when its own is gone. A step an agent is working on, and a check that is
     # still running, are left alone. A resume that acts takes over from a parked one; one that does nothing leaves it.
     #
-    # @param run_id [String]
     # @param from [String, nil] start again at this step instead
     # @param note [String, nil] added to the next attempt's instructions
     # @param pane [String, nil] the pane to use from now on (when the old one is gone)
-    # @param turn_over [Hash{String=>Object}, nil] "step" and "attempt": the pane's agent was seen to have ended
-    #   its turn on that attempt, so the step, if the run is still on that attempt and it reads `running`, is decided now
-    # @param extra_attempts [Integer, nil] raises the run's attempt allowance by this much, kept in the run and
-    #   recorded as `attempts_extended`; applied only when the resume starts an attempt
-    # @param extra_tokens [Integer, nil] raises the run's token budget by this much, kept in the run and recorded
-    #   as `budget_extended`; applied only when the resume starts an attempt
+    # @param turn_over [Hash{String=>Object}, nil] "step" and "attempt" the pane's agent was seen to end its turn
+    #   on; a `running` step still on that attempt is decided now
+    # @param extra_attempts [Integer, nil] added to the attempt allowance (`attempts_extended`) when an attempt starts
+    # @param extra_tokens [Integer, nil] added to the token budget (`budget_extended`) when an attempt starts
     # @return [Resumed] the run afterwards, and why nothing was done when it did nothing
-    # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` or `budget_spent` when the resume would
-    #   start an attempt the run has no allowance left for
+    # @raise [Workspace::Error] see {#refuse_resume}; `attempts_spent` or `budget_spent` for an attempt not covered
     def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       check = nil
       unchanged = nil
@@ -133,20 +127,16 @@ module Workspace
     # run already has stays, and {#release_park} carries it out. A live park stays as it is, so repeating the call
     # can't extend the wait; one past its limit is replaced.
     #
-    # @param run_id [String]
-    # @param from [String, nil] see {#resume}
-    # @param note [String, nil] see {#resume}; stored in the run, never in an event
-    # @param pane [String, nil] see {#resume}
-    # @param turn_over [Hash{String=>Object}, nil] see {#resume}
-    # @param extra_attempts [Integer, nil] see {#resume}; applied when the park is released
-    # @param extra_tokens [Integer, nil] see {#resume}; applied when the park is released
+    # The arguments are {#resume}'s: the note is stored in the run, never in an event, and +extra_attempts+ and
+    # +extra_tokens+ are applied when the park is released.
+    #
     # @return [Resumed] the run afterwards, and why nothing was stored when nothing was
     # @raise [Workspace::Error] see {#refuse_resume}; code `pane_has_run` for a +pane+ another run has;
     #   `attempts_spent` or `budget_spent` as {#resume}
     def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
       unchanged = nil
       run = @change.call(run_id) do |read|
-        stored = WorkflowRun.deep_thaw(read.to_h)
+        stored = read.thawed
         refuse_resume(stored, from: from)
         if WorkflowTransitions.parked(stored, @clock.call) == :waiting
           unchanged = "a resume is already parked for pane #{park_target(stored)}"
@@ -167,7 +157,6 @@ module Workspace
     # Carries out a parked resume, in one change with taking it off the run. A park typed again after a busy pane
     # (`retries` above 0) is not held to the allowance and budget a second time: its attempt was counted then.
     #
-    # @param run_id [String]
     # @param id [String] the park's id; any other changes nothing
     # @return [Resumed] the run afterwards, and why the resume did nothing (its note kept for the next attempt), or nil
     # @raise [Workspace::Error] see {#resume}; the run stays parked
@@ -177,11 +166,11 @@ module Workspace
       run = @change.call(run_id) do |read, ctx|
         parked = read.parked
         next unless parked && parked["id"] == id
-        stored = WorkflowRun.deep_thaw(read.to_h)
+        stored = read.thawed
         stored.delete("parked")
         resumed = apply_resume(stored, ctx: ctx, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"],
           extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"], budget: parked["retries"].to_i.zero?)
-        stored = WorkflowRun.deep_thaw(resumed.run.to_h)
+        stored = resumed.run.thawed
         unchanged = resumed.unchanged
         check = ctx.check
         stored["pending_context"] << WorkflowRun.resume_note(parked["note"]) if unchanged && parked["note"]
@@ -195,20 +184,17 @@ module Workspace
       Resumed.new(run: check ? @evaluation.finish_check(run_id, check) : run, unchanged: unchanged)
     end
 
-    # Ends a park that can't be released, and leaves the run waiting for a person. The step and what it holds stay,
-    # so a `running` step keeps its attempt and a later resume decides it. A lock the run queued for is given up,
-    # since the run would no longer use it. A run waiting at a gate keeps its gate reason, so approve and reject stay
-    # open; the failure is in the `resume_parked_ended` event.
+    # Ends a park that can't be released; the run waits for a person. The step and what it holds stay (a `running`
+    # step keeps its attempt for a later resume); a lock the run queued for is given up. A run at a gate keeps its
+    # gate reason, so approve and reject stay open; the failure is in the `resume_parked_ended` event.
     #
-    # @param run_id [String]
     # @param id [String] the park's id; any other changes nothing
-    # @param code [String] why, stored as the reason's `error`
-    # @param message [String]
+    # @param code [String] why, stored as the reason's `error`, with +message+
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def park_failed(run_id, id, code:, message:)
       @change.call(run_id) do |read|
-        stored = WorkflowRun.deep_thaw(read.to_h)
+        stored = read.thawed
         next unless stored.dig("parked", "id") == id
         if step_state(stored).dig("gate", "state") == "waiting"
           drop_park(stored, "failed", "error" => code, "message" => message)
@@ -227,8 +213,7 @@ module Workspace
       end
     end
 
-    # What {#resume} refuses, checked without changing anything, so a caller can refuse before it starts a daemon
-    # or picks a pane.
+    # What {#resume} refuses, checked without changing anything, so a caller can refuse before it starts a daemon.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] a stored run that has not finished
     # @param from [String, nil] the step a resume would start again at
@@ -248,25 +233,22 @@ module Workspace
 
     # Ends a run: closes its open attempt, gives up its resources and frees its pane.
     #
-    # @param run_id [String]
     # @param cause [String] who ended it: "cancel", or "kill" when its workspace was killed
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def cancel(run_id, cause: "cancel")
       @change.call(run_id) do |read|
-        ended = WorkflowRun.deep_thaw(@progress.finish(@attempt_record.abandon(read), "cancelled").to_h)
+        ended = @progress.finish(@attempt_record.abandon(read), "cancelled").thawed
         ended["cancelled_by"] = cause
         event(ended, "run_cancelled", "cause" => cause)
         WorkflowRun.from_h(ended)
       end
     end
 
-    # Ends every run of a workspace that was killed, so none of them goes on holding a lock for a checkout that
-    # is gone. Never raises: a run whose file is malformed is reported, and the others are still ended.
+    # Ends every run of a workspace that was killed, so none goes on holding a lock for a checkout that is gone.
+    # Never raises: a run whose file is malformed is reported, and the others are still ended.
     #
-    # @param workspace [String]
-    # @return [Hash{String=>Array<String>}] "cancelled", the ids of the runs ended, and "failed", the ids of the
-    #   runs that could not be
+    # @return [Hash{String=>Array<String>}] "cancelled", the ids of the runs ended, and "failed", the ones that could not be
     def workspace_killed(workspace)
       result = {"cancelled" => [], "failed" => []}
       @store.going.select { |run| run.workspace == workspace }.each do |run|
@@ -282,36 +264,21 @@ module Workspace
 
     private
 
-    # The body of {#resume}, inside a change the caller holds (a released park is one). Refusals come first, so a
-    # refused resume leaves the run and its pane as they were. A check to run outside the lock is registered on +ctx+.
-    #
-    # @param run [WorkflowRun, Hash{String=>Object}] the stored run; left as it is
-    # @param ctx [Workspace::WorkflowRunChange::Context] the change's context
-    # @param from [String, nil] see {#resume}
-    # @param note [String, nil] see {#resume}
-    # @param pane [String, nil] see {#resume}
-    # @param turn_over [Hash{String=>Object}, nil] see {#resume}
-    # @param extra_attempts [Integer, nil] see {#resume}
-    # @param extra_tokens [Integer, nil] see {#resume}
-    # @param budget [Boolean] false for a parked resume typed again after a busy pane: its attempt was counted then,
-    #   so the allowance and budget are not asked again
-    # @return [Resumed] the run afterwards, and why nothing was done, or nil
-    # @raise [Workspace::Error] as {#resume}
+    # Puts the phase answer +changed+ (a WorkflowRun) into the run Hash being changed in place.
+    def adopt(run, changed) = run.replace(changed.thawed)
+
+    # The body of {#resume} (arguments as there), inside a change the caller holds (a released park is one), over a
+    # copy of +run+. Refusals come first, so a refused resume leaves the run and its pane as they were; a check to run
+    # outside the lock is registered on +ctx+. +budget+ is false for a parked resume typed again after a busy pane:
+    # its attempt was counted then. Answers a {Resumed}.
     def apply_resume(run, ctx:, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, budget: true)
-      work = WorkflowRun.deep_thaw(WorkflowRun.from_h(run).to_h)
+      work = WorkflowRun.from_h(run).thawed
       unchanged = resume_in(work, ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, budget: budget)
       Resumed.new(run: WorkflowRun.from_h(work), unchanged: unchanged)
     end
 
-    # Refuses an attempt the run has no allowance left for: `attempts_spent` when +extra_attempts+ does not cover
-    # the overrun, then `budget_spent` when the token budget is used up and +extra_tokens+ does not cover it.
-    # Changes nothing.
-    #
-    # @param run [WorkflowRun, Hash{String=>Object}]
-    # @param extra_attempts [Integer, nil]
-    # @param extra_tokens [Integer, nil]
-    # @return [void]
-    # @raise [Workspace::Error] code `attempts_spent` or `budget_spent`
+    # Refuses an attempt the run has no allowance left for (`attempts_spent`, then `budget_spent`) unless the extras
+    # cover the overrun. Changes nothing.
     def refuse_budget(run, extra_attempts:, extra_tokens:)
       run = WorkflowRun.from_h(run).to_h
       refuse_spent(run, extra_attempts)
@@ -355,7 +322,7 @@ module Workspace
       waiting_retry = nil unless waiting_retry.is_a?(Hash) && waiting_retry["to"].is_a?(String)
       if waiting_retry && !from
         event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"], "backoff" => "skipped")
-        stored.replace(WorkflowRun.deep_thaw(@progress.start_retry(stored, waiting_retry, ctx: ctx, proven: !pane.nil?, budgeted: budget).to_h))
+        adopt(stored, @progress.start_retry(stored, waiting_retry, ctx: ctx, proven: !pane.nil?, budgeted: budget))
         return held_retry_sentence(stored)
       end
       if from
@@ -375,7 +342,7 @@ module Workspace
           evaluate(stored, ctx)
         end
       when "checking" then evaluate(stored, ctx)
-      when "passed" then stored.replace(WorkflowRun.deep_thaw(@progress.advance(stored, ctx: ctx).to_h))
+      when "passed" then adopt(stored, @progress.advance(stored, ctx: ctx))
       else dispatch(stored, ctx, budgeted: budget)
       end
       nil
@@ -387,8 +354,7 @@ module Workspace
       run["pending_context"].delete_at(index) if index
     end
 
-    # Refuses with `attempts_spent` when the allowance is used up and +extra+ does not cover the overrun: the
-    # attempt about to start must fit, so +extra+ must be at least made minus allowed plus one.
+    # Refuses with `attempts_spent` when the allowance is used up and +extra+ is under made minus allowed plus one.
     def refuse_spent(run, extra)
       made = WorkflowTransitions.attempts_made(run)
       allowed = WorkflowTransitions.attempt_allowance(run)
@@ -398,8 +364,7 @@ module Workspace
         code: "attempts_spent", details: {"run_id" => run["id"], "attempts" => made, "max_attempts" => allowed, "step" => run["current"], "needed" => needed})
     end
 
-    # The budget step of a person's resume or reject: refused before anything changes; +extra+ is added to the
-    # run and recorded when the action goes on.
+    # The attempt step of a person's resume or reject: refused before anything changes, else +extra+ added and recorded.
     def spend_attempts(run, extra, needed: true)
       return unless needed
       refuse_spent(run, extra)
@@ -408,8 +373,7 @@ module Workspace
       event(run, "attempts_extended", "extra" => extra, "extra_attempts" => run["extra_attempts"], "max_attempts" => WorkflowTransitions.attempt_allowance(run))
     end
 
-    # Refuses with `budget_spent` when the token budget is used up and +extra+ does not cover the overrun (the least
-    # is used minus the allowance plus one). A run without a budget is never refused.
+    # Refuses with `budget_spent` when the token budget is used up and +extra+ does not cover the overrun. A run without a budget is never refused.
     def refuse_over_budget(run, extra)
       reading = WorkflowBudget.reading(run, live: false)
       return unless reading && reading["spent"]
@@ -427,8 +391,7 @@ module Workspace
       event(run, "budget_extended", "extra" => extra, "extra_tokens" => run["extra_tokens"], "allowance" => WorkflowBudget.reading(run, live: false)["allowance"])
     end
 
-    # A run held by its budget types into the pane it had when the attempt would have started. As for a retry's wait,
-    # that pane must still be the run's (a person's +pane+ is the proof); nothing is written, so a refusal costs nothing.
+    # A run held by its budget types into the pane it had then, which must still be the run's (a person's +pane+ is the proof). Writes nothing.
     def held_budget_pane(stored, pane)
       hold = stored["budget_hold"]
       check_pane(pane, stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
@@ -436,9 +399,8 @@ module Workspace
       problem && problem[:message].sub(/\.\z/, "")
     end
 
-    # The read-only decision of a resume over a retry's wait: the sentence saying why the retry can't start in the
-    # pane it would use (an explicit +pane+ counts as proven), after recording the hold once; nil when it can start
-    # or the run waits out no (readable) backoff.
+    # Why a retry's wait can't start in the pane it would use (an explicit +pane+ is proven), after recording the
+    # hold once; nil when it can start or the run waits out no (readable) backoff.
     def held_by_pane(stored, pane, from)
       return held_budget_pane(stored, pane) if stored["budget_hold"].is_a?(Hash)
       waiting = stored["backoff"]
@@ -446,7 +408,7 @@ module Workspace
       check_pane(pane, stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
       problem = @progress.retry_pane_problem(stored, waiting, pane: pane, proven: !pane.nil?)
       return nil unless problem
-      stored.replace(WorkflowRun.deep_thaw(@progress.hold_retry(stored, waiting, problem, pane: pane || bound_pane(stored)).to_h))
+      adopt(stored, @progress.hold_retry(stored, waiting, problem, pane: pane || bound_pane(stored)))
       held_retry_sentence(stored)
     end
 
@@ -456,9 +418,7 @@ module Workspace
       run.dig("reason", "details", "message").to_s.sub(/\.\z/, "")
     end
 
-    def last_failure(run)
-      "The last attempt of this step failed: #{WorkflowTransitions.failure_text(run["reason"]["details"])}."
-    end
+    def last_failure(run) = "The last attempt of this step failed: #{WorkflowTransitions.failure_text(run["reason"]["details"])}."
 
     # Why {#resume} does nothing for the step as it stands; nil when it acts.
     def left_alone(run, state, pane, turn_over) = WorkflowTransitions.left_alone(run, state, pane, turn_over, @clock.call, -> { bound_pane(run) })
@@ -472,8 +432,7 @@ module Workspace
     # +run_id+ is the run asking, which a park of its own can't refuse; see {WorkflowDispatch#check_pane}.
     def check_pane(pane, run_id) = @dispatch.check_pane(pane, run_id: run_id)
 
-    # The waiting gate of the run's step; with +step+ (and +attempt+), only when the
-    # run is at that step (and attempt), so a stale button can't pass a later gate.
+    # The waiting gate of the run's step; with +step+ (and +attempt+), only when the run is there, so a stale button can't pass a later gate.
     def waiting_gate(run, step: nil, attempt: nil)
       state = step_state(run)
       gate = state["gate"]
@@ -493,8 +452,7 @@ module Workspace
                   "expected_step" => step, "expected_attempt" => attempt})
     end
 
-    # The note the approval is of, as {"path", "sha256"}: hashed once here, compared with
-    # what the caller read when it says, and recorded as read.
+    # The note the approval is of, as {"path", "sha256"}: hashed once, compared with what the caller read, recorded as read.
     def gate_file(run, note_sha256)
       found = @gate_note.find(run)
       if note_sha256
@@ -511,50 +469,27 @@ module Workspace
     end
 
     # A gate event carries the person's note only when one was given.
-    def with_note(data, note)
-      note.to_s.strip.empty? ? data : data.merge("note" => note)
-    end
-
-    def park_target(run)
-      run["parked"]["pane"] || bound_pane(run)
-    end
+    def with_note(data, note) = note.to_s.strip.empty? ? data : data.merge("note" => note)
+    def park_target(run) = run["parked"]["pane"] || bound_pane(run)
 
     # +request+ is what a resume would be given: "from", "note", "pane", "turn_over".
     def store_park(run, request, expires_at:)
-      run.replace(WorkflowRun.deep_thaw(WorkflowRun.from_h(run).with_park(request, id: SecureRandom.hex(8), requested_at: now_iso, expires_at: expires_at, retries: 0).to_h))
+      adopt(run, WorkflowRun.from_h(run).with_park(request, id: SecureRandom.hex(8), requested_at: now_iso, expires_at: expires_at, retries: 0))
       event(run, "resume_parked", {"step" => run["current"], "pane" => request["pane"] || bound_pane(run), "from" => request["from"],
                                    "has_note" => !request["note"].nil?})
     end
 
     # Takes a park off the run however it ended; see {WorkflowDispatch#drop_park}.
     def drop_park(run, how, extra = {})
-      run.replace(WorkflowRun.deep_thaw(@dispatch.drop_park(run, how, extra).to_h)) if run.key?("parked")
+      adopt(run, @dispatch.drop_park(run, how, extra)) if run.key?("parked")
     end
 
-    def dispatch(run, ctx, **options)
-      run.replace(WorkflowRun.deep_thaw(@dispatch.dispatch(run, ctx: ctx, **options).to_h))
-    end
-
-    def evaluate(run, ctx)
-      run.replace(WorkflowRun.deep_thaw(@evaluation.evaluate(run, ctx: ctx).to_h))
-    end
-
+    def dispatch(run, ctx, **options) = adopt(run, @dispatch.dispatch(run, ctx: ctx, **options))
+    def evaluate(run, ctx) = adopt(run, @evaluation.evaluate(run, ctx: ctx))
     def event(run, type, data = {}) = @change.event(run, type, data)
-
-    def bound_pane(run)
-      @panes.pane_of(run["id"]) || run["pane"]
-    end
-
-    def step_ids(run)
-      run["definition"]["steps"].map { |step| step["id"] }
-    end
-
-    def step_state(run)
-      run["steps"].fetch(run["current"])
-    end
-
-    def now_iso
-      @clock.call.utc.iso8601
-    end
+    def bound_pane(run) = @panes.pane_of(run["id"]) || run["pane"]
+    def step_ids(run) = run["definition"]["steps"].map { |step| step["id"] }
+    def step_state(run) = run["steps"].fetch(run["current"])
+    def now_iso = @clock.call.utc.iso8601
   end
 end

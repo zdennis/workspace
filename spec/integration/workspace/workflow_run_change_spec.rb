@@ -37,7 +37,7 @@ RSpec.describe Workspace::WorkflowRunChange do
 
   # The run with the change +edit+ makes to a working copy of it, as a block returns it.
   def edited(run)
-    work = Workspace::WorkflowRun.deep_thaw(run.to_h)
+    work = run.thawed
     yield work
     Workspace::WorkflowRun.from_h(work)
   end
@@ -79,7 +79,7 @@ RSpec.describe Workspace::WorkflowRunChange do
     it "refuses a block that returns something other than a run, and writes nothing" do
       before = File.read(File.join(@dir, "runs", "#{run_id}.json"))
 
-      expect { change.call(run_id) { |run, _ctx| Workspace::WorkflowRun.deep_thaw(run.to_h) } }.to raise_error(TypeError, /returned Hash/)
+      expect { change.call(run_id) { |run, _ctx| run.thawed } }.to raise_error(TypeError, /returned Hash/)
       expect(File.read(File.join(@dir, "runs", "#{run_id}.json"))).to eq(before)
     end
 

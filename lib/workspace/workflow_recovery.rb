@@ -38,7 +38,7 @@ module Workspace
       check = nil
       acted = false
       run = @change.call(run_id, nonblocking: true) do |read, ctx|
-        stored = WorkflowRun.deep_thaw(read.to_h)
+        stored = read.thawed
         case WorkflowTransitions.wakeable?(stored, @clock.call)
         when :backoff
           acted = true
@@ -143,7 +143,7 @@ module Workspace
     def redeliver(run_id, step:, attempt:)
       outcome = :moved_on
       run = @change.call(run_id, nonblocking: true) do |read, ctx|
-        stored = WorkflowRun.deep_thaw(read.to_h)
+        stored = read.thawed
         next unless sweep_target?(stored, step, attempt, false)
         info = WorkflowTransitions.redelivery(stored, @clock.call)
         next unless info && info[:state] == :due
@@ -236,6 +236,9 @@ module Workspace
 
     private
 
+    # Puts the phase answer +changed+ (a WorkflowRun) into the run Hash being changed in place.
+    def adopt(run, changed) = run.replace(changed.thawed)
+
     # One change the sweep makes under the run's lock. The block returns the outcome (a check it registers on its
     # context is run after the lock is given up), and is run only for the step and attempt the sweep saw (and,
     # with +running+, only while that step reads `running` with no park and no line still on its way, and no
@@ -246,7 +249,7 @@ module Workspace
       check = nil
       run = @change.call(run_id, nonblocking: !blocking) do |read, ctx|
         next unless sweep_target?(read.to_h, step, attempt, running)
-        stored = WorkflowRun.deep_thaw(read.to_h)
+        stored = read.thawed
         outcome = yield stored, ctx
         check = ctx.check
         WorkflowRun.from_h(stored)
@@ -293,7 +296,7 @@ module Workspace
       mark_stall(run, "timed_out", {"elapsed" => elapsed.round, "timeout" => timeout})
       mark_recovery(run, "timed_out", "failed")
       failure = {"cause" => "timeout", "timeout" => timeout, "elapsed" => elapsed.round}.merge(WorkflowTransitions.code_for("step_timed_out", nil))
-      run.replace(WorkflowRun.deep_thaw(@progress.fail_step(run, failure, ctx: ctx).to_h))
+      adopt(run, @progress.fail_step(run, failure, ctx: ctx))
     end
 
     def sweep_event(run, data)
@@ -308,11 +311,11 @@ module Workspace
       run["steps"].fetch(run["current"])
     end
 
-    def start_retry(run, ctx) = run.replace(WorkflowRun.deep_thaw(@progress.start_retry(run, ctx: ctx).to_h))
+    def start_retry(run, ctx) = adopt(run, @progress.start_retry(run, ctx: ctx))
 
-    def dispatch(run, ctx, **options) = run.replace(WorkflowRun.deep_thaw(@dispatch.dispatch(run, ctx: ctx, **options).to_h))
+    def dispatch(run, ctx, **options) = adopt(run, @dispatch.dispatch(run, ctx: ctx, **options))
 
-    def evaluate(run, ctx) = run.replace(WorkflowRun.deep_thaw(@evaluation.evaluate(run, ctx: ctx).to_h))
+    def evaluate(run, ctx) = adopt(run, @evaluation.evaluate(run, ctx: ctx))
 
     # No turn ended, so the step is neither passed nor checked: the hold only becomes the stop it was hiding,
     # with a `since` of its own.
