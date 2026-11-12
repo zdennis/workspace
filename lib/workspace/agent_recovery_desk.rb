@@ -173,7 +173,7 @@ module Workspace
     private_constant :GIVE_UP_BODIES
 
     # @param panes [Workspace::PaneFactory] builds the pane to read, press a key in and type into; the pane list
-    #   is read only to look a pane up ({#pane_detail})
+    #   is read only to look a pane up ({RecoveryFacts#pane_detail})
     # @param workspace [String] the workspace the daemon serves; events and items go under it
     # @param session_name [String] the workspace's tmux session
     # @param session_monitor [Workspace::SessionMonitor] pane facts
@@ -204,22 +204,25 @@ module Workspace
     # @param steps [Workspace::AgentRecoverySteps] picks the runner of steps 2 to 5 for each kind of attempt
     # @param max_attempts [Integer] attempts after which the desk gives up
     # @param logger [Workspace::Logger] debug logger
+    # @param facts [Workspace::RecoveryFacts] makes each read {#check} and the attempts make (default one over
+    #   +panes+, +process_tree+, +stopper+, +detector+, +ledger+, +transcript+, +session_monitor+, +prompt_typer+,
+    #   +clock+, +sleeper+ and +logger+)
     def initialize(panes:, workspace:, session_name:, session_monitor:, store:, transcript:, stopper:, detector:,
       process_tree:, ledger:, resume_command:, prompt_typer:, readiness:, marker:, inbox:, delivery_lock:, event_log: nil,
       restarting: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
       release_restart: ->(_pane_id, _token) {}, rebind_queue: ->(_pane_id, _agent_pid) {}, clock: Time,
       sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) }, steps: AgentRecoverySteps.new, max_attempts: AgentRecoveryStore::MAX_ATTEMPTS,
-      logger: Workspace::Logger.new)
+      logger: Workspace::Logger.new,
+      facts: RecoveryFacts.new(panes: panes, process_tree: process_tree, stopper: stopper, detector: detector, ledger: ledger,
+        transcript: transcript, session_monitor: session_monitor, prompt_typer: prompt_typer, clock: clock, sleeper: sleeper,
+        logger: logger))
       @panes = panes
       @workspace = workspace
       @session_name = session_name
       @session_monitor = session_monitor
       @store = store
-      @transcript = transcript
       @stopper = stopper
       @detector = detector
-      @process_tree = process_tree
-      @ledger = ledger
       @resume_command = resume_command
       @prompt_typer = prompt_typer
       @readiness = readiness
@@ -237,6 +240,7 @@ module Workspace
       @steps = steps
       @max_attempts = max_attempts
       @logger = logger
+      @facts = facts
       @queue = []
       @queue_guard = Mutex.new
       @draining = false
@@ -292,13 +296,13 @@ module Workspace
     #   with one capture so the delivery lock isn't held across that wait
     # @return [Verdict]
     def check(pane_id, entry, screen: nil)
-      detail = pane_detail(pane_id)
+      detail = @facts.pane_detail(pane_id)
       return verdict(:defer) unless detail.is_a?(Hash)
-      tree = read_tree
-      return verdict(:defer) unless tree
+      reading = @facts.agent(detail)
+      return verdict(:defer) unless reading
 
-      agent = @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
-      agent ? check_live(pane_id, entry, detail, tree, agent, screen) : check_gone(pane_id, entry, detail, tree, screen)
+      agent = reading.found
+      agent ? check_live(pane_id, entry, detail, reading.tree, agent, screen) : check_gone(pane_id, entry, detail, reading.tree, screen)
     end
 
     private
@@ -658,12 +662,12 @@ module Workspace
     #
     # @return [Hash, nil] the entry as it now stands; nil when it was cleared
     def settle(pane_id, entry)
-      failed = parse_time(entry["failed_at"])
+      failed = RecoveryVerdicts.time_of(entry["failed_at"])
       return entry unless failed && @clock.now - failed >= SETTLE
 
       found = {}
       unless entry["last_turn_uuid"]
-        record = @transcript.last_turn_record(entry["transcript_path"])
+        record = @facts.transcript_error(entry)
         if record && !record["api_error"]
           clear(pane_id, entry)
           return nil
@@ -672,7 +676,7 @@ module Workspace
       end
       live = live_agent(pane_id) unless entry["agent_pid"]
       unless entry["cwd"]
-        opened = open_record(pane_id)
+        opened = @facts.ledger_session(pane_id)
         if opened.is_a?(Hash)
           if opened["session_id"] != entry["session_id"]
             clear(pane_id, entry)
@@ -692,7 +696,7 @@ module Workspace
 
     def attempt_if_due(pane_id, entry)
       return unless entry["phase"] == "waiting"
-      due = parse_time(entry["next_attempt_at"])
+      due = RecoveryVerdicts.time_of(entry["next_attempt_at"])
       return unless due && @clock.now >= due && !@restarting.call(pane_id)
 
       answer = safe_check(pane_id, entry)
@@ -770,7 +774,7 @@ module Workspace
       seen = @store.get(pane_id)
       return nil unless seen && seen["phase"] == "waiting"
 
-      quiet = still_screen(pane_id)
+      quiet = @facts.still_screen(pane_id)
       return refuse(pane_id, seen, verdict(:defer)) unless quiet
 
       opened = @delivery_lock.synchronize { opening.call(pane_id, seen, quiet) }
@@ -789,7 +793,7 @@ module Workspace
 
       refused = failure_refusal(pane_id, seen)
       return refused if refused
-      detail = pane_detail(pane_id)
+      detail = @facts.pane_detail(pane_id)
       return verdict(:defer) unless detail.is_a?(Hash)
 
       attempt = mark_attempting(pane_id, seen, answer, "stopped" => true, "last_signal_at" => stamp)
@@ -811,7 +815,7 @@ module Workspace
     def failure_refusal(pane_id, seen)
       unconfirmed = confirmed_error(pane_id, seen)
       return verdict(unconfirmed) if unconfirmed
-      verdict(:defer) if prompt_since_failure?(pane_id, seen)
+      verdict(:defer) if @facts.prompt_since_failure?(pane_id, seen)
     end
 
     # Writes `attempting`. `defer_since` goes here and nowhere earlier, so a
@@ -949,14 +953,13 @@ module Workspace
     #   stopped), +:other+ with the agent, +:clear+ (a shell holding the
     #   terminal), or +:none+ when the pane is neither or can't be read
     def pane_look(attempt)
-      detail = pane_detail(attempt.pane_id)
-      tree = detail.is_a?(Hash) ? read_tree : nil
-      return [:none] unless tree
+      detail = @facts.pane_detail(attempt.pane_id)
+      reading = detail.is_a?(Hash) ? @facts.agent(detail) : nil
+      return [:none] unless reading
 
-      agent = @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
+      agent = reading.found
       return ours?(agent, attempt) ? [:same, agent, detail[:pid]] : [:other, agent] if agent
-      clear = @stopper.pane_clear?(pane_pid: detail[:pid], command: detail[:command], detector: @detector, tree: tree)
-      clear ? [:clear] : [:none]
+      @facts.pane_clear?(detail, reading.tree) ? [:clear] : [:none]
     end
 
     def ours?(agent, attempt)
@@ -1011,7 +1014,7 @@ module Workspace
 
     # A tree that can't be read counts as held.
     def session_held?(session_id)
-      tree = read_tree
+      tree = @facts.tree
       tree.nil? || @stopper.session_held?(session_id: session_id, tree: tree)
     end
 
@@ -1082,7 +1085,7 @@ module Workspace
     def type_once(attempt)
       pane_id = attempt.pane_id
       typed = @prompt_typer.type(session_name: @session_name, target: pane_id, pane_id: pane_id, text: attempt.message,
-        before_paste: -> { !prompt_after?(pane_id, attempt.opened_at) }, before_enter: -> { typing_refusal(attempt).nil? })
+        before_paste: -> { !@facts.prompt_after?(pane_id, attempt.opened_at) }, before_enter: -> { typing_refusal(attempt).nil? })
       case typed.outcome
       when :submitted then "submitted"
       when :not_submitted then press_enter(attempt) ? "submitted" : "not_submitted"
@@ -1219,8 +1222,8 @@ module Workspace
     # @return [Hash, nil, Symbol] the agent in the pane, nil when there is none
     #   or the pane is gone, or :unread when tmux or the process table can't be read
     def last_read(pane_id)
-      detail = pane_detail(pane_id)
-      tree = read_tree
+      detail = @facts.pane_detail(pane_id)
+      tree = @facts.tree
       return :unread if detail == :unknown || tree.nil?
       detail && @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
     end
@@ -1229,7 +1232,7 @@ module Workspace
       gave_up = false
       stored = @store.update(pane_id) do |entry|
         next unless same_wait?(entry, seen)
-        since = parse_time(entry["defer_since"])
+        since = RecoveryVerdicts.time_of(entry["defer_since"])
         if since.nil?
           entry["defer_since"] = stamp
         elsif @clock.now - since >= DEFER_LIMIT
@@ -1326,13 +1329,13 @@ module Workspace
     # agent still resumes; {#check_gone} refuses if the ledger shows a new agent
     # came and went, and defers on a closed pane until the defer limit ends it.
     def reconcile(pane_id)
-      detail = pane_detail(pane_id)
+      detail = @facts.pane_detail(pane_id)
       return if detail == :unknown
-      tree = read_tree
+      tree = @facts.tree
       return unless tree
 
       agent = detail && @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
-      opened = detail && open_record(pane_id)
+      opened = detail && @facts.ledger_session(pane_id)
       return if opened == :unreadable
 
       open_session = opened&.fetch("session_id")
@@ -1400,29 +1403,27 @@ module Workspace
         return verdict(signalled_lately?(entry) ? :defer : :clear)
       end
       return verdict(:clear) if started_since_signal?(entry)
-      return verdict(:never) unless File.file?(entry["transcript_path"].to_s)
+      return verdict(:never) unless @facts.transcript_file?(entry)
 
       command = resume_line(entry)
       return verdict(:defer) unless RecoveryVerdicts.resumable?(command, entry)
-      clear = @stopper.pane_clear?(pane_pid: detail[:pid], command: detail[:command], detector: @detector, tree: tree)
+      clear = @facts.pane_clear?(detail, tree)
       return verdict(:defer) if !clear || @stopper.session_held?(session_id: entry["session_id"], tree: tree)
-      return verdict(:defer) unless still_screen(pane_id, screen)
+      return verdict(:defer) unless @facts.still_screen(pane_id, screen)
       verdict(:go, mode: :resume_only, command: command)
     end
 
-    # The ledger is written by the hook, not the daemon, so it knows of a new
-    # agent whose SessionStart came while the daemon was down. A ledger that
-    # can't be read raises, which {#safe_check} answers with `:defer`.
+    # A ledger that can't be read raises, which {#safe_check} answers with `:defer`.
     def started_since_signal?(entry)
-      RecoveryVerdicts.started_since_signal?(entry, @ledger.last_start_at(entry["session_id"]))
+      RecoveryVerdicts.started_since_signal?(entry, @facts.ledger_start(entry))
     end
 
     # What may clear comes first, so an agent at work is deferred and never
     # read as a transcript that moved on.
     def check_live(pane_id, entry, detail, tree, agent, screen)
       return verdict(:defer) if entry["stopped"] == true
-      return verdict(:defer) unless @stopper.foreground?(pid: agent[:pid], pane_pid: detail[:pid])
-      return verdict(:defer) if held_off?(pane_id, entry, screen)
+      return verdict(:defer) unless @facts.foreground?(agent, detail)
+      return verdict(:defer) if @facts.held_off?(pane_id, entry, screen)
 
       unless entry["agent_pid"]
         @store.update(pane_id) { |current| store_agent(current, agent) if same_wait?(current, entry) }
@@ -1448,75 +1449,21 @@ module Workspace
       entry.merge("agent_flags" => agent[:flags])
     end
 
-    def held_off?(pane_id, entry, screen)
-      !input_free?(pane_id, entry) || prompt_since_failure?(pane_id, entry) || subagents_running?(pane_id, entry) ||
-        screen_busy?(pane_id, screen)
-    end
-
     # @return [Symbol, nil] +:defer+ or +:clear+ unless the transcript and the
     #   ledger both still show the stored failure of the stored session
     def confirmed_error(pane_id, entry)
-      answer = RecoveryVerdicts.transcript_verdict(@transcript.last_turn_record(entry["transcript_path"]), entry)
+      answer = RecoveryVerdicts.transcript_verdict(@facts.transcript_error(entry), entry)
       return answer if answer
-      RecoveryVerdicts.session_verdict(open_record(pane_id), entry)
+      RecoveryVerdicts.session_verdict(@facts.ledger_session(pane_id), entry)
     end
 
     def restart_verdict(pane_id, entry, detail, tree, agent)
-      pane = @panes.for(pane_id)
-      start_command = pane.is_a?(Symbol) ? :gone : pane.start_command
-      answer = RecoveryVerdicts.start_command_verdict(start_command)
+      answer = RecoveryVerdicts.start_command_verdict(@facts.start_command(pane_id))
       return verdict(answer) if answer
       return verdict(:never) unless @stopper.restartable?(pid: agent[:pid], pane_pid: detail[:pid], tree: tree)
 
       command = resume_line(entry)
       command ? verdict(:go, mode: :restart, command: command) : verdict(:defer)
-    end
-
-    # A draft that is our own message doesn't count: the next attempt may stop
-    # that agent with our text in its input line.
-    def input_free?(pane_id, entry)
-      draft = entry["draft_text"]
-      return true if draft.is_a?(String) && @prompt_typer.check(pane_id, exact: draft).nil?
-      @prompt_typer.check(pane_id).nil?
-    end
-
-    # The monitor records a prompt when its hook arrives, ahead of this desk's
-    # queue, so a prompt just submitted can't get a signal while its event waits.
-    def prompt_since_failure?(pane_id, entry)
-      failed = parse_time(entry["failed_at"])
-      failed.nil? || prompt_after?(pane_id, failed)
-    end
-
-    # @return [Boolean] whether the monitor holds a prompt later than +time+;
-    #   true when it has no facts for the pane
-    def prompt_after?(pane_id, time)
-      RecoveryVerdicts.prompt_after?(@session_monitor.delivery_facts(pane_id), time)
-    end
-
-    def subagents_running?(pane_id, entry)
-      running = @session_monitor.running_subagents(pane_id)
-      return true if running.nil?
-      return false unless running.positive?
-      RecoveryVerdicts.subagents_recent?(entry, @clock.now)
-    end
-
-    def screen_busy?(pane_id, quiet)
-      RecoveryVerdicts.screen_busy?(still_screen(pane_id, quiet))
-    end
-
-    # @param quiet [String, nil] a screen that already stood still, compared
-    #   with one capture in place of the wait
-    # @return [String, nil] the screen, when it stayed unchanged for {QUIET_FOR}
-    def still_screen(pane_id, quiet = nil)
-      before = quiet || screen_of(pane_id)
-      return nil unless before
-      @sleeper.call(QUIET_FOR) unless quiet
-      (screen_of(pane_id) == before) ? before : nil
-    end
-
-    def screen_of(pane_id)
-      pane = @panes.for(pane_id)
-      pane.is_a?(Symbol) ? nil : pane.capture
     end
 
     # The flags are the pane's own agent's, stored with its pid. The config's
@@ -1527,50 +1474,16 @@ module Workspace
       @resume_command.call(workspace: @workspace, cwd: entry["cwd"], session_id: entry["session_id"], flags: entry["agent_flags"])
     end
 
+    # The clock is read only for a signal time that parses.
     def signalled_lately?(entry)
-      signalled = parse_time(entry["last_signal_at"])
-      !signalled.nil? && RecoveryVerdicts.signalled_lately?(entry, @clock.now)
+      signalled = RecoveryVerdicts.time_of(entry["last_signal_at"])
+      !signalled.nil? && RecoveryVerdicts.signalled_lately?(signalled, @clock.now)
     end
 
     def live_agent(pane_id)
-      detail = pane_detail(pane_id)
+      detail = @facts.pane_detail(pane_id)
       return nil unless detail.is_a?(Hash)
-      tree = read_tree
-      tree && @stopper.find_agent(pane_pid: detail[:pid], detector: @detector, tree: tree)
-    end
-
-    # @return [ProcessTree::Snapshot, nil] nil when the table can't be read,
-    #   which isn't the same as no agent
-    def read_tree
-      @process_tree.snapshot
-    rescue Workspace::Error => e
-      @logger.debug { "agent recovery: #{e.message}" }
-      nil
-    end
-
-    # @return [Hash, nil, Symbol] the open session's entry, nil when none is
-    #   open, or :unreadable when the ledger or the tmux server can't be read
-    def open_record(pane_id)
-      pane = @panes.for(pane_id)
-      server = pane.is_a?(Symbol) ? nil : pane.server_pid
-      return :unreadable if server.to_s.empty?
-      @ledger.read_open_record(pane_id: pane_id, tmux_server: server)
-    rescue SystemCallError => e
-      @logger.debug { "agent recovery: ledger not readable (#{e.class}: #{e.message})" }
-      :unreadable
-    end
-
-    # The pane's details, nil when the session doesn't have it, or :unknown
-    # when tmux listed no pane at all and doesn't say the session is gone: a
-    # failed tmux call must not read as the pane being gone.
-    def pane_detail(pane_id)
-      pane = @panes.call(pane_id)
-      return nil if pane == :gone
-      if pane == :unlisted
-        gone = @panes.for(pane_id)
-        return (gone.is_a?(Symbol) || gone.session_gone?) ? nil : :unknown
-      end
-      pane.details
+      @facts.agent(detail)&.found
     end
 
     def verdict(answer, mode: nil, command: nil)
@@ -1579,12 +1492,6 @@ module Workspace
 
     def stamp(time = @clock.now)
       AgentRecoveryStore.stamp(time)
-    end
-
-    def parse_time(value)
-      Time.iso8601(value.to_s)
-    rescue ArgumentError
-      nil
     end
 
     def record(type, data)

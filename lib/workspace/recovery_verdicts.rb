@@ -18,13 +18,12 @@ module Workspace
 
     module_function
 
-    # @param entry [Hash] the stored entry
+    # @param signalled [Time] our last signal, the entry's +last_signal_at+ through {.time_of}
     # @param now [Time]
-    # @return [Boolean] whether our last signal is recent enough that its
+    # @return [Boolean] whether that signal is recent enough that its
     #   SessionEnd may still be on the way
-    def signalled_lately?(entry, now)
-      signalled = time_of(entry["last_signal_at"])
-      !signalled.nil? && now - signalled < AgentRecoveryStore::SIGNAL_HOLD
+    def signalled_lately?(signalled, now)
+      now - signalled < AgentRecoveryStore::SIGNAL_HOLD
     end
 
     # @param entry [Hash]

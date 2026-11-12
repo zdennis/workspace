@@ -273,4 +273,39 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::AgentdRouter, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+  describe RecordingProcessTree do
+    it "accepts every call ProcessTree accepts" do
+      expect(FakeContract.problems(described_class, Workspace::ProcessTree, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryStopper do
+    it "accepts every call AgentStopper accepts" do
+      expect(FakeContract.problems(described_class, Workspace::AgentStopper, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryLedger do
+    it "accepts every call SessionLedger accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SessionLedger, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingTurnTranscript do
+    it "accepts every call TranscriptSummary accepts" do
+      expect(FakeContract.problems(described_class, Workspace::TranscriptSummary, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryMonitor do
+    it "accepts every call SessionMonitor accepts" do
+      expect(FakeContract.problems(described_class, Workspace::SessionMonitor, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingInputCheck do
+    it "accepts every call PromptTyper accepts" do
+      expect(FakeContract.problems(described_class, Workspace::PromptTyper, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end

@@ -6,12 +6,10 @@ RSpec.describe Workspace::RecoveryVerdicts do
 
   def iso(time) = time.utc.iso8601
 
-  it ".signalled_lately? holds within SIGNAL_HOLD of a signal that parses" do
+  it ".signalled_lately? holds within SIGNAL_HOLD of the signal" do
     hold = Workspace::AgentRecoveryStore::SIGNAL_HOLD
-    expect(described_class.signalled_lately?({"last_signal_at" => iso(now - hold + 1)}, now)).to be(true)
-    expect(described_class.signalled_lately?({"last_signal_at" => iso(now - hold)}, now)).to be(false)
-    expect(described_class.signalled_lately?({}, now)).to be(false)
-    expect(described_class.signalled_lately?({"last_signal_at" => "soon"}, now)).to be(false)
+    expect(described_class.signalled_lately?(now - hold + 1, now)).to be(true)
+    expect(described_class.signalled_lately?(now - hold, now)).to be(false)
   end
 
   it ".started_since_signal? is true only for a start after the signal, both known" do
