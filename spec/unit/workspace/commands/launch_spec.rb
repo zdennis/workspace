@@ -953,7 +953,7 @@ RSpec.describe Workspace::Commands::Launch, "agent pane refresh" do
       launch
 
       expect(File.read(path)).to eq(changed.sub("claude --continue || claude", "claude-dev --continue || claude-dev"))
-      expect(writer.current?("proj1")).to be(true)
+      expect(writer.current?("proj1")).to be(false) # the file was edited before the patch, so it stays modified
     end
 
     it "writes the config alone when it has no render record" do
