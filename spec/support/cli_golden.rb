@@ -46,7 +46,7 @@ module HelpExamplesSpec
     "spine", "spine show", "spine init", "spine set", "spine check", "spine verify", "spine start", "spine goal",
     "spine goal set",
     "start", "status", "statusline", "step", "step done", "step status", "stop",
-    "template", "template list", "template show", "template path", "template variables", "template render", "template validate", "template diff",
+    "template", "template list", "template show", "template path", "template variables", "template render", "template validate", "template diff", "template new", "template edit", "template use",
     "ticket", "ticket show", "ticket list", "tile", "tmux", "tmux show",
     "ui", "ui open", "ui open task", "ui open notes", "ui open inbox", "ui status",
     "wait-until-content", "whereis",

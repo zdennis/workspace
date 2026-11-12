@@ -220,6 +220,8 @@ module Workspace
       "unknown_library_entry" => "No library entry has that name in the scopes searched.",
       "ambiguous_library_entry" => "A bare library name matches more than one kind.",
       "invalid_template" => "A tmuxinator template set has an error (library add/update of a template, template validate). details.ref, details.problems (each {severity, code, kind, message}).",
+      "template_exists" => "template new: a tmuxinator template of that name is already in the library scope. details.template, details.scope, details.path.",
+      "template_builtin_readonly" => "template edit: the tmuxinator template is built in and can't be edited; copy it with template new. details.template, details.path.",
       "invalid_recipe" => "A library recipe has a field that isn't allowed (library add/update, start --recipe). details.ref, details.problems.",
       "recipe_workflow_conflict" => "start --recipe named a workflow recipe and a flag that run cannot use. details.ref, details.workflow, details.flags.",
       "library_entry_exists" => "library add would replace an entry with different content; pass --force.",

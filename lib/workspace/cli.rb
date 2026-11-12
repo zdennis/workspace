@@ -90,11 +90,7 @@ module Workspace
     # @param groups_command [Workspace::Commands::Groups, nil] pre-built `projects group` command
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
     # @param liveness [#call, nil] maps project names to true, false, or nil
-    # @param env [#[]] the environment `config edit` reads $VISUAL and $EDITOR from
-    # @param editor_launcher [#call, nil] runs an editor given its argv array (no shell) and returns
-    #   true when it exited 0; defaults to `system`
-    # @param interactive [#call, nil] says whether stdin and stdout are both terminals (`config edit` opens
-    #   no editor otherwise); defaults to a check of $stdin and $stdout
+    # @param env [#[]] the environment each run reads (the editor, for `config edit`, comes from it)
     #   (alive, dead, can't tell) for `list --liveness` and `status`; nil
     #   reports every project as unknown
     # @param window_liveness [#call, nil] maps project names to true, false, or
@@ -107,7 +103,7 @@ module Workspace
     # @param names [CLI::Names] the workspace-name and working-directory helpers, shared with the families
     # @param launcher [CLI::Launcher] what every launching verb shares
     # @param families [Hash{Symbol=>#call}] the family parser of each {ROUTES} key, called with the verb, its arguments and the {Invocation}
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -188,8 +184,6 @@ module Workspace
       @window_liveness = window_liveness || ->(entries) { entries.to_h { |name, _| [name, nil] } }
       @liveness = liveness || ->(names) { names.to_h { |name| [name, nil] } }
       @env = env
-      @editor_launcher = editor_launcher || ->(argv) { system(*argv) }
-      @interactive = interactive || -> { $stdin.tty? && $stdout.tty? }
       @common = common
       @names = names
       @launcher = launcher
@@ -4012,29 +4006,9 @@ module Workspace
         if json
           {results: [action_row(result.workspace, "ready", global: result.layer == "global", scope: result.scope, layer: result.layer, file: result.path, created: result.created)]}
         else
-          open_in_editor(result.path)
+          @common.open_in_editor(@invocation, result.path)
           nil
         end
-      end
-    end
-
-    # Runs $VISUAL or $EDITOR on +path+ without a shell. With neither set (blank counts as unset),
-    # under --no-input, or when stdin or stdout is not a terminal, prints the path and opens nothing.
-    def open_in_editor(path)
-      command = [@env["VISUAL"], @env["EDITOR"]].find { |value| !value.to_s.strip.empty? }
-      if command.nil? || (@input.respond_to?(:no_input?) && @input.no_input?) || !@interactive.call
-        @output.puts path
-        return
-      end
-      begin
-        argv = Shellwords.split(command)
-      rescue ArgumentError => e
-        raise Error.new("$EDITOR is not a valid command (#{e.message}). Edit #{path} directly.", code: "editor_failed", details: {path: path})
-      end
-      return @output.puts(path) if argv.empty?
-
-      unless @editor_launcher.call(argv + [path])
-        raise Error.new("Could not run the editor '#{argv.first}'. The file is at #{path}", code: "editor_failed", details: {path: path, editor: argv.first})
       end
     end
 

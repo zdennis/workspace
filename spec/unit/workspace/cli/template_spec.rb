@@ -1,11 +1,12 @@
 require "spec_helper"
 require "stringio"
+require "json"
 
 RSpec.describe Workspace::CLI::Template do
   let(:out) { StringIO.new }
   let(:err) { StringIO.new }
   let(:detector) { RecordingProjectDetector.new("/src/app" => "app") }
-  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true, validate: true, diff: nil) }
+  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true, validate: true, diff: nil, new: {}, edit: {"outcome" => "edited"}, use: {}) }
 
   def family(command = template_command)
     names = Workspace::CLI::Names.new(project_config: CLITestHelpers::FakeProjectConfig.new, project_detector: detector,
@@ -135,5 +136,51 @@ RSpec.describe Workspace::CLI::Template do
     run("--help")
     expect(out.string).to include("Usage: workspace template list", "Subcommands:")
     expect(template_command).not_to have_received(:show)
+  end
+  describe "new, edit and use" do
+    it "makes a copy for the detected workspace, from --from, in --scope" do
+      run("new", "team", "--from", "base", "--scope", "project")
+
+      expect(template_command).to have_received(:new).with(name: "team", from: "base", scope: "project", workspace: "app", cwd: "/src/app")
+    end
+
+    it "selects a set for a kind and scope" do
+      run("use", "team", "--kind", "worktree", "--scope", "global")
+
+      expect(template_command).to have_received(:use).with(name: "team", scope: "global", kind: "worktree", workspace: "app", cwd: "/src/app")
+    end
+
+    it "needs a NAME for new and use, and refuses a second one" do
+      expect { run("new") }.to raise_error(Workspace::UsageError, /'template new' needs a tmuxinator template NAME/)
+      expect { run("use") }.to raise_error(Workspace::UsageError, /'template use' needs/)
+      expect { run("use", "a", "b") }.to raise_error(Workspace::UsageError, /Unexpected argument: b/)
+    end
+
+    it "refuses the flags the verb does not take" do
+      expect { run("new", "team", "--kind", "project") }.to raise_error(Workspace::UsageError, /--kind does not apply to 'template new'/)
+      expect { run("edit", "team", "--scope", "global") }.to raise_error(Workspace::UsageError, /--scope does not apply to 'template edit'/)
+      expect { run("use", "team", "--from", "x") }.to raise_error(Workspace::UsageError, /--from does not apply to 'template use'/)
+    end
+
+    it "prints the action document under --json" do
+      allow(template_command).to receive(:use).and_return({"workspace" => nil, "outcome" => "selected", "template" => "team"})
+
+      run("use", "team", "--json")
+
+      doc = JSON.parse(out.string)
+      expect(doc).to include("ok" => true, "action" => "template use", "status" => "ok")
+      expect(doc["results"]).to eq([{"workspace" => nil, "outcome" => "selected", "template" => "team"}])
+    end
+
+    it "gives edit an opener unless --json, and exits 1 when a file has an error" do
+      allow(template_command).to receive(:edit).and_return({"outcome" => "failed"})
+
+      expect { run("edit", "team") }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(template_command).to have_received(:edit).with(set: "team", kind: nil, workspace: "app", opener: an_instance_of(Proc))
+
+      allow(template_command).to receive(:edit).and_return({"outcome" => "edited"})
+      run("edit", "--kind", "project", "--json")
+      expect(template_command).to have_received(:edit).with(set: nil, kind: "project", workspace: "app", opener: nil)
+    end
   end
 end

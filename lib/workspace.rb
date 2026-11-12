@@ -775,6 +775,7 @@ module Workspace
   # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
   # @param launchctl [#call, nil] runs `launchctl` for the sweep schedule: takes an argument array, answers `[output, exit_code]` (nil code: could not run); nil runs the real one
   # @param exit_handler [#exit, nil] receives the process exit; nil uses Kernel (specs pass a recorder)
+  # @param editor_launcher [#call, nil] runs the editor of `config edit` and `template edit` given its argv array (no shell), answering true when it exited 0; nil runs `system`
   # @param tmux [Workspace::Tmux, nil] the tmux adapter every collaborator shares; nil builds the real one
   # @param task_store [Workspace::TaskStore, nil] the task store `start`, `finish`, `kill` and `rename` share; nil builds the one over the state directory
   # @param skill_source [Workspace::SkillSource, nil] where skill links and the sweep schedule's program come from; nil builds one over the installation directory
@@ -782,7 +783,7 @@ module Workspace
   # @param osascript [#call, nil] runs the AppleScript `ITerm` and `WindowManager` send: `(script)` answering an `OsascriptRunner::Result`; nil runs the real `osascript`
   # @param ui_osascript [#call, nil] runs the JXA script of `ui status`, the same way; nil runs the real `osascript -l JavaScript`
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil, osascript: nil, ui_osascript: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, editor_launcher: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil, osascript: nil, ui_osascript: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -1264,7 +1265,7 @@ module Workspace
       project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) }, error_output: error_output,
       writer: tmuxinator_config_writer)
 
-    common = CLI::Common.new
+    common = CLI::Common.new(input: input, editor_launcher: editor_launcher)
     working_dir = Dir.pwd
     names = CLI::Names.new(project_config: project_config, project_detector: project_detector, lineage: lineage, working_dir: working_dir, workspace_name: workspace_name)
     launcher = CLI::Launcher.new(project_config: project_config, launch_command: launch_command, launch_mode: launch_mode, state: state, project_settings: project_settings,
@@ -1282,7 +1283,7 @@ module Workspace
       project_detector: project_detector, common: common, names: names, working_dir: working_dir)
     pipeline_family = CLI::Pipeline.new(config: config, agent_client: agent_client, common: common, names: names)
     template_command = Commands::Template.new(library: library, project_config: project_config, writer: tmuxinator_config_writer,
-      template_validator: template_validator, differ: TextDiff.new, output: output, error_output: error_output)
+      template_validator: template_validator, differ: TextDiff.new, config_command: config_command, output: output, error_output: error_output)
     template_family = CLI::Template.new(template_command: template_command, common: common, names: names, working_dir: working_dir)
     plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,
       spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,

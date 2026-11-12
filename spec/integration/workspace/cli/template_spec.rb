@@ -29,9 +29,10 @@ RSpec.describe Workspace::CLI do
   end
   let(:writer) { instance_double(Workspace::TmuxinatorConfigWriter, record: nil) }
   let(:detector) { instance_double(Workspace::ProjectDetector, detect: "app") }
+  let(:validator) { Workspace::TemplateValidator.new(project_config: project_config) }
   let(:built) do
     build_test_cli(template_command: Workspace::Commands::Template.new(library: library, project_config: project_config, writer: writer,
-      template_validator: Workspace::TemplateValidator.new(project_config: project_config), differ: ->(*, **) { "" }, output: output, error_output: error_output),
+      template_validator: validator, differ: ->(*, **) { "" }, output: output, error_output: error_output),
       project_detector: detector,
       output: output, error_output: error_output, working_dir: File.join(@dir, "src"))
   end
@@ -212,6 +213,104 @@ RSpec.describe Workspace::CLI do
       expect(exit_status { cli.run(["template"]) }).to be_nil
 
       expect(output.string).to include("Usage: workspace template list", "Subcommands:", "Examples:")
+    end
+  end
+  describe "template new, edit and use" do
+    let(:validator) { instance_double(Workspace::TemplateValidator, call_set: Workspace::TemplateValidator::Result.new(errors: [], warnings: []), call_file: []) }
+    let(:editor_runs) { [] }
+    let(:config_command) { instance_double(Workspace::Commands::Config) }
+    let(:editor_env) { {"EDITOR" => "vi"} }
+    let(:gate) { Workspace::OutputGate.new(output) }
+    let(:built) do
+      build_test_cli(template_command: Workspace::Commands::Template.new(library: library, project_config: project_config, writer: writer,
+        template_validator: validator, differ: ->(*, **) { "" }, config_command: config_command, output: gate, error_output: error_output),
+        project_detector: detector, env: editor_env, editor_launcher: ->(argv) { editor_runs << argv },
+        output: gate, error_output: error_output, working_dir: File.join(@dir, "src"))
+    end
+
+    it "copies the built-in default into the global library, ready to edit and select" do
+      cli.run(["template", "new", "mine"])
+
+      path = File.join(@dir, "library/global/template/mine")
+      expect(File.read(File.join(path, "project.yml"))).to eq("default project\n")
+      expect(output.string).to eq("Created the tmuxinator template 'mine' from 'default' at #{path}. Edit it with: workspace template edit mine\n")
+      expect(Dir.glob("*", base: File.join(@dir, "builtin/template/default")).sort).to eq(%w[README.md project.yml worktree.yml])
+    end
+
+    it "refuses an existing name with template_exists, as a document under --json, leaving the set as it was" do
+      expect(exit_status { cli.run(["template", "new", "team", "--json"]) }).to eq(1)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "template_exists", "details" => hash_including("template" => "team", "scope" => "global"))
+      expect(File.read(File.join(@dir, "library/global/template/team/project.yml"))).to eq("team project\n")
+    end
+
+    it "prints the created row as an action document" do
+      cli.run(["template", "new", "mine", "--from", "team", "--json"])
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => true, "action" => "template new", "status" => "ok")
+      expect(doc["results"].first).to include("outcome" => "created", "template" => "mine", "scope" => "global", "from" => "team")
+    end
+
+    it "opens both files of the template in $EDITOR, then reports them valid" do
+      cli.run(["template", "edit", "team"])
+
+      expect(editor_runs).to eq([["vi", *%w[project worktree].map { |kind| "#{@dir}/library/global/template/team/#{kind}.yml" }]])
+      expect(output.string).to include("team: #{@dir}/library/global/template/team/project.yml: valid")
+    end
+
+    it "prints the paths and says nothing was opened when no editor is set" do
+      editor_env.clear
+
+      cli.run(["template", "edit", "team", "--kind", "worktree"])
+
+      expect(editor_runs).to eq([])
+      expect(error_output.string).to include("Nothing was opened: set $VISUAL or $EDITOR")
+      expect(output.string).to start_with("#{@dir}/library/global/template/team/worktree.yml\n")
+    end
+
+    it "exits 1 with the problems when the edited file has an error" do
+      allow(validator).to receive(:call_file).with(:project, anything).and_return(
+        [Workspace::TemplateValidator::Problem.new(severity: "error", code: "missing_placeholder", kind: :project, message: "{{PROJECT_NAME}} is required and does not appear.")]
+      )
+
+      expect(exit_status { cli.run(["template", "edit", "team", "--kind", "project"]) }).to eq(1)
+      expect(output.string).to include("Error: {{PROJECT_NAME}} is required")
+    end
+
+    it "refuses a built-in template and opens nothing" do
+      expect(exit_status { cli.run(["template", "edit", "default", "--json"]) }).to eq(1)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "template_builtin_readonly")
+      expect(editor_runs).to eq([])
+    end
+
+    it "checks the files under --json without opening an editor" do
+      cli.run(["template", "edit", "team", "--json"])
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("action" => "template edit", "status" => "ok")
+      expect(doc["results"].first).to include("outcome" => "edited", "template" => "team")
+      expect(editor_runs).to eq([])
+    end
+
+    it "selects a set through config set after checking its name" do
+      result = Workspace::Commands::Config::Result.new(key: "tmuxinator.template", workspace: "app", layer: "project", path: "/cfg/app.yml")
+      allow(config_command).to receive(:set).and_return(result)
+
+      cli.run(["template", "use", "team", "--scope", "project", "--json"])
+
+      expect(config_command).to have_received(:set).with("tmuxinator.template", "team", project: "app", scope: "project", cwd: File.join(@dir, "src"))
+      expect(JSON.parse(output.string)["results"].first).to include("outcome" => "selected", "key" => "tmuxinator.template", "layer" => "project")
+    end
+
+    it "does not set the key for a name no template has" do
+      allow(config_command).to receive(:set)
+
+      expect(exit_status { cli.run(["template", "use", "nope", "--json"]) }).to eq(1)
+
+      expect(JSON.parse(output.string)).to include("code" => "unknown_template")
+      expect(config_command).not_to have_received(:set)
     end
   end
 end

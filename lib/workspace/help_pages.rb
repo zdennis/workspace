@@ -1634,13 +1634,34 @@ module Workspace
       }
     }.freeze
 
-    TEMPLATE_SCOPE_TEXT = "list: only this scope, global, project or builtin (default: all of them)"
-    TEMPLATE_KIND_TEXT = "show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)"
+    TEMPLATE_SCOPE_TEXT = "list: only this scope, global, project or builtin (default: all of them); new and use: global or project (new: default global; use: the layer `config set` picks, global outside a workspace)"
+    TEMPLATE_KIND_TEXT = "show, path, variables, validate, diff and edit: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's); use: worktree sets tmuxinator.worktree_template (default: tmuxinator.template)"
     TEMPLATE_NAME_TEXT = "Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"
+    TEMPLATE_FROM_TEXT = "new: the tmuxinator template to copy (default: default)"
     TEMPLATE_AGAINST_TEXT = "diff: the tmuxinator template to compare with (default: default)"
     TEMPLATE_FILE_TEXT = "validate and render: use this tmuxinator template file, saved or not, instead of a set"
     TEMPLATE_SAMPLE_TEXT = "render: fill with each placeholder's sample value instead of a workspace's"
     TEMPLATE_DIFF_TEXT = "render: print a unified diff against the workspace's current config instead of the text"
+
+    # What each flag means on one verb's page, so a page lists only what its verb does with it.
+    TEMPLATE_PAGE_TEXT = {
+      scope_list: "Only this scope, global, project or builtin (default: all of them)",
+      scope_new: "Where to make it: global (default) or project (the project's own library)",
+      scope_use: "The config layer to set, global or project (default: the layer `config set` picks, global outside a workspace)",
+      kind_both: "Only this kind, project or worktree (default: both)",
+      kind_render: "The kind to fill, project or worktree (default: the workspace's)",
+      kind_use: "worktree sets tmuxinator.worktree_template instead (default: project, tmuxinator.template)",
+      name_set: "Workspace whose settings choose the set (default: detected from the current directory, else the global settings)",
+      name_record: "Workspace whose settings choose the set and whose render record fills it (default: detected from the current directory, else the global settings)",
+      name_new: "Workspace whose project's templates NAME is looked up in and, with --scope project, made in (default: detected from the current directory)",
+      name_use: "Workspace whose layer is written with --scope project (default: detected from the current directory)",
+      file_validate: "Check this tmuxinator template file, saved or not, instead of a set",
+      file_render: "Fill this tmuxinator template file, saved or not, instead of a set",
+      from: "The tmuxinator template to copy (default: default)",
+      against: "The tmuxinator template to compare with (default: default)",
+      sample: "Fill with each placeholder's sample value instead of a workspace's",
+      diff: "Print a unified diff against the workspace's current config instead of the text"
+    }.freeze
 
     TEMPLATE = {
       "list" => {
@@ -1653,8 +1674,8 @@ module Workspace
           "workspace sees them (project over global over the default). An edited copy `workspace init` installed",
           "in ~/.config/tmuxinator/ still wins while neither key is set, and shows as `legacy`. Reads only."
         ],
-        options: [["--scope SCOPE", TEMPLATE_SCOPE_TEXT],
-          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        options: [["--scope SCOPE", TEMPLATE_PAGE_TEXT[:scope_list]],
+          name_opt(TEMPLATE_PAGE_TEXT[:name_set]), JSON_OPT],
         examples: [
           ["workspace template list", "see which tmuxinator template a new project config and a new worktree config would use"],
           ["workspace template list --scope global", "only the tmuxinator templates you added for every project"],
@@ -1670,8 +1691,8 @@ module Workspace
           "workspace. With --kind, prints that one file as it is, so it can be piped or saved; without, both files,",
           "each under a `==> path <==` line; a script should pass --kind to get the file raw. Reads only."
         ],
-        options: [["--kind KIND", TEMPLATE_KIND_TEXT],
-          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        options: [["--kind KIND", TEMPLATE_PAGE_TEXT[:kind_both]],
+          name_opt(TEMPLATE_PAGE_TEXT[:name_set]), JSON_OPT],
         examples: [
           ["workspace template show --kind worktree", "read the layout a new worktree config is rendered from"],
           ["workspace template show team", "both files of the tmuxinator template team"],
@@ -1687,8 +1708,8 @@ module Workspace
           "workspace. Prints one file path per line (project.yml, then worktree.yml), or one with --kind, so",
           "\"$(workspace template path --kind project)\" works. Fails when a file is missing. Reads only."
         ],
-        options: [["--kind KIND", TEMPLATE_KIND_TEXT],
-          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        options: [["--kind KIND", TEMPLATE_PAGE_TEXT[:kind_both]],
+          name_opt(TEMPLATE_PAGE_TEXT[:name_set]), JSON_OPT],
         examples: [
           ["workspace template path --kind project", "the file a new project config is rendered from"],
           ["workspace template path team", "where the files of the tmuxinator template team are"],
@@ -1703,8 +1724,8 @@ module Workspace
           "hold it, and what it means. With --name, adds what that workspace's config holds, from its render record;",
           "a config with no record shows (no record). Reads only."
         ],
-        options: [["--kind KIND", TEMPLATE_KIND_TEXT],
-          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        options: [["--kind KIND", TEMPLATE_PAGE_TEXT[:kind_both]],
+          name_opt(TEMPLATE_PAGE_TEXT[:name_record]), JSON_OPT],
         examples: [
           ["workspace template variables", "the placeholders you can use in a tmuxinator template"],
           ["workspace template variables --kind worktree", "only the ones a worktree tmuxinator template is filled with"],
@@ -1724,9 +1745,9 @@ module Workspace
           "The text goes out as it is to a pipe, escaped on a terminal; --diff prints the difference from the",
           "workspace's current config instead."
         ],
-        options: [["--kind KIND", TEMPLATE_KIND_TEXT], ["--file FILE", TEMPLATE_FILE_TEXT],
-          ["--sample", TEMPLATE_SAMPLE_TEXT], ["--diff", TEMPLATE_DIFF_TEXT],
-          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        options: [["--kind KIND", TEMPLATE_PAGE_TEXT[:kind_render]], ["--file FILE", TEMPLATE_PAGE_TEXT[:file_render]],
+          ["--sample", TEMPLATE_PAGE_TEXT[:sample]], ["--diff", TEMPLATE_PAGE_TEXT[:diff]],
+          name_opt(TEMPLATE_PAGE_TEXT[:name_record]), JSON_OPT],
         examples: [
           ["workspace template render --sample", "see what the selected project tmuxinator template makes, with made-up values"],
           ["workspace template render --file ./worktree.yml --kind worktree --sample", "try a tmuxinator template you are still editing"],
@@ -1744,8 +1765,8 @@ module Workspace
           "sample values is a tmuxinator config. Problems are listed per file; the exit status is 1 when one is an",
           "error and 0 for warnings alone. Reads only."
         ],
-        options: [["--kind KIND", TEMPLATE_KIND_TEXT], ["--file FILE", TEMPLATE_FILE_TEXT],
-          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        options: [["--kind KIND", TEMPLATE_PAGE_TEXT[:kind_both]], ["--file FILE", TEMPLATE_PAGE_TEXT[:file_validate]],
+          name_opt(TEMPLATE_PAGE_TEXT[:name_set]), JSON_OPT],
         examples: [
           ["workspace template validate team", "check both files of the tmuxinator template team"],
           ["workspace template validate --file ./worktree.yml", "check a file you are still editing"],
@@ -1761,12 +1782,64 @@ module Workspace
           "workspace) against the same file of --against (default: the built-in default), so you can see what a copy",
           "changed. Prints nothing but a note on stderr when they are the same. Reads only."
         ],
-        options: [["--against NAME", TEMPLATE_AGAINST_TEXT], ["--kind KIND", TEMPLATE_KIND_TEXT],
-          name_opt(TEMPLATE_NAME_TEXT), JSON_OPT],
+        options: [["--against NAME", TEMPLATE_PAGE_TEXT[:against]], ["--kind KIND", TEMPLATE_PAGE_TEXT[:kind_both]],
+          name_opt(TEMPLATE_PAGE_TEXT[:name_set]), JSON_OPT],
         examples: [
           ["workspace template diff team", "what the tmuxinator template team changed from the default"],
           ["workspace template diff team --against old-team --kind worktree", "only the worktree file, against another template"],
           ["workspace template diff --json", "for a script: each file's diff and whether it changed"]
+        ]
+      },
+      "new" => {
+        usage: ["template new NAME [--from NAME] [--scope SCOPE] [--name WORKSPACE] [--json]"],
+        summary: "Copy a tmuxinator template into a new one you can edit",
+        about: [
+          "Makes the tmuxinator template NAME (lowercase letters, digits and hyphens) in your library as a copy of --from",
+          "(default: the built-in default), so it can be changed with `template edit`. It goes to the global library, or",
+          "with --scope project to the project's own. The source is checked first and nothing is written when it has an",
+          "error; an existing NAME is refused. New configs do not render from it until `template use`."
+        ],
+        options: [["--from NAME", TEMPLATE_PAGE_TEXT[:from]], ["--scope SCOPE", TEMPLATE_PAGE_TEXT[:scope_new]],
+          name_opt(TEMPLATE_PAGE_TEXT[:name_new]), JSON_OPT],
+        examples: [
+          ["workspace template new team", "start your own copy of the built-in default tmuxinator template"],
+          ["workspace template new team-api --from team --scope project", "copy team for this project only"],
+          ["workspace template new team --json", "for a script: the new template's scope, path and any warnings"]
+        ]
+      },
+      "edit" => {
+        usage: ["template edit [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],
+        summary: "Open a tmuxinator template in your editor, then check it",
+        about: [
+          "Opens the files of the tmuxinator template NAME (default: the one each kind selects for the workspace) in",
+          "$VISUAL or $EDITOR, or only the --kind file, then checks them as `template validate` does; the exit status is",
+          "1 when a file has an error. The built-in templates ship with workspace and are refused: copy one with",
+          "`template new`. With no editor set, under --no-input, or without a terminal, prints the paths and opens",
+          "nothing. --json opens no editor: it checks the files as they are."
+        ],
+        options: [["--kind KIND", TEMPLATE_PAGE_TEXT[:kind_both]],
+          name_opt(TEMPLATE_PAGE_TEXT[:name_set]), JSON_OPT],
+        examples: [
+          ["workspace template edit team", "change both files of the tmuxinator template team"],
+          ["workspace template edit team --kind worktree", "only its worktree file"],
+          ["workspace template edit --json", "for a script: check the selected template's files and report any problems"]
+        ]
+      },
+      "use" => {
+        usage: ["template use NAME [--kind KIND] [--scope SCOPE] [--name WORKSPACE] [--json]"],
+        summary: "Select the tmuxinator template new configs render from",
+        about: [
+          "Sets tmuxinator.template to NAME (with --kind worktree, tmuxinator.worktree_template), after checking that",
+          "a tmuxinator template of that name exists; it is `config set` with the name checked first. --scope picks the",
+          "layer (global or project); without it the layer `config set` would pick, which is global outside a",
+          "workspace. Configs that already exist are not changed."
+        ],
+        options: [["--kind KIND", TEMPLATE_PAGE_TEXT[:kind_use]], ["--scope SCOPE", TEMPLATE_PAGE_TEXT[:scope_use]],
+          name_opt(TEMPLATE_PAGE_TEXT[:name_use]), JSON_OPT],
+        examples: [
+          ["workspace template use team", "render new project and worktree configs from team"],
+          ["workspace template use team --kind worktree --scope project", "only new worktree configs of this project"],
+          ["workspace template use team --json", "for a script: the key set and the layer it was written to"]
         ]
       }
     }.freeze

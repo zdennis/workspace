@@ -7,7 +7,8 @@ module Workspace
     # rendered from, which of them each kind selects, and where their files are. A set is a
     # `template` library entry (a directory holding `project.yml` and `worktree.yml`); the choice
     # is the `tmuxinator.template` and `tmuxinator.worktree_template` keys, resolved by
-    # {Workspace::Library#tmuxinator_template}. Everything here reads; nothing is written.
+    # {Workspace::Library#tmuxinator_template}. `list`, `show`, `path`, `variables`, `render`, `validate` and `diff`
+    # read; `new`, `edit` and `use` change a set or the key that selects one.
     class Template
       # Bumped whenever a `--json` payload's shape changes in a backward-incompatible way.
       JSON_SCHEMA_VERSION = 1
@@ -23,9 +24,11 @@ module Workspace
       # @param writer [Workspace::TmuxinatorConfigWriter] reads a workspace's render record
       # @param template_validator [Workspace::TemplateValidator] checks the file `render` fills
       # @param differ [#call] `(old, new, old_label:, new_label:)` to a unified diff, empty when the same (a {TextDiff})
+      # @param config_command [Workspace::Commands::Config, nil] `use` sets the key through it; nil refuses `use`
       # @param output [IO] output stream
       # @param error_output [IO] where `render`'s problems go in text mode
-      def initialize(library:, project_config:, writer:, template_validator:, differ:, output: $stdout, error_output: $stderr)
+      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, output: $stdout, error_output: $stderr)
+        @config_command = config_command
         @library = library
         @project_config = project_config
         @writer = writer
@@ -227,7 +230,105 @@ module Workspace
         end
       end
 
+      # Copies a tmuxinator template set into a new set of the global or project library, so it can be edited.
+      # The source is checked first; nothing is written when it has an error.
+      #
+      # @param name [String] the new set's name: lowercase letters, digits and hyphens
+      # @param from [String, nil] the set to copy; nil is `default`
+      # @param scope [String, nil] `global` (the default) or `project`
+      # @param workspace [String, nil] the workspace whose project's sets `from` is looked up in
+      # @param cwd [String, nil] where the command runs, for the project scope
+      # @return [Hash] the action row: `template`, `scope`, `path`, `from` and the files' `warnings`
+      # @raise [Workspace::UsageError] for a bad name, or the built-in scope
+      # @raise [Workspace::Error] `template_exists`, `unknown_template`, `invalid_template`
+      def new(name:, from: nil, scope: nil, workspace: nil, cwd: nil)
+        raise UsageError, "'#{name}' is not a valid tmuxinator template name: lowercase letters, digits and hyphens, e.g. team." unless name.to_s.match?(IdPatterns::LIBRARY_NAME)
+        raise UsageError, "'#{name}' is reserved for the edited copy `workspace init` installed. Pick another name." if name == Workspace::Library::LEGACY_TEMPLATE
+        raise UsageError, "Unknown scope: #{scope}. One of global, project." unless [nil, "global", "project"].include?(scope)
+
+        project = (WorkspaceName.project_of(workspace) if workspace && scope == "project")
+        store = @library.write_store(scope: scope, project: project, cwd: cwd)
+        source = @library.tmuxinator_set(from || "default", workspace: workspace)
+        if store.find("template", name)
+          raise Error.new("A tmuxinator template '#{name}' already exists in the #{store.scope} library (#{store.path_for("template", name)}). Edit it with: workspace template edit #{name}",
+            code: "template_exists", details: {"template" => name, "scope" => store.scope, "path" => store.path_for("template", name)})
+        end
+        checked = @template_validator.call_set(source["path"])
+        unless checked.valid?
+          raise Error.new("The tmuxinator template #{source["ref"]} is not valid: #{checked.errors.map(&:to_s).join("; ")}",
+            code: "invalid_template", details: {"ref" => source["ref"], "problems" => checked.errors.map(&:to_h)})
+        end
+        shadowed = shadowed_scopes(store, name, project, cwd)
+        store.copy_tree("template", name, source["path"])
+        path = store.path_for("template", name)
+        @output.puts "Created the tmuxinator template '#{name}' from '#{source["name"]}' at #{path}. Edit it with: workspace template edit #{name}"
+        {"workspace" => nil, "outcome" => "created", "reason" => nil, "message" => nil, "template" => name, "scope" => store.scope,
+         "path" => path, "from" => source["name"], "warnings" => checked.warnings.map(&:to_h) + shadowed}
+      end
+
+      # Opens the files of a tmuxinator template set in the editor, then checks them. A built-in set is read-only.
+      #
+      # @param set [String, nil] a set name; nil is the set each kind selects
+      # @param kind [String, nil] `project` or `worktree`; nil is both files
+      # @param workspace [String, nil] the workspace whose settings choose the set
+      # @param opener [#call, nil] given the file paths, opens them in the editor; nil opens nothing (`--json`)
+      # @return [Hash] the action row: `template`, `files` (each with `kind`, `path` and `problems`), outcome
+      #   `edited`, or `failed` (reason `invalid_template`) when a file has an error
+      # @raise [Workspace::UsageError] for a kind other than {KINDS}
+      # @raise [Workspace::Error] `template_builtin_readonly`, `unknown_template`, `library_source_missing`, `editor_failed`
+      def edit(set: nil, kind: nil, workspace: nil, opener: nil)
+        targets = targets(set, kind, workspace)
+        builtin = targets.find { |target| target["scope"] == "builtin" }
+        if builtin
+          raise Error.new("The tmuxinator template '#{builtin["template"]}' ships with workspace and can't be edited. Make a copy with: workspace template new NAME --from #{builtin["template"]}",
+            code: "template_builtin_readonly", details: {"template" => builtin["template"], "path" => builtin["path"]})
+        end
+
+        opener&.call(targets.map { |target| target["path"] })
+        files = targets.map do |target|
+          target.slice("kind", "template", "path").merge("problems" => @template_validator.call_file(target["kind"].to_sym, target["path"]).map(&:to_h))
+        end
+        print_validation(files)
+        failed = files.any? { |file| file["problems"].any? { |p| p["severity"] == "error" } }
+        {"workspace" => nil, "outcome" => failed ? "failed" : "edited", "reason" => failed ? "invalid_template" : nil,
+         "message" => failed ? "A tmuxinator template file has an error." : nil, "template" => targets.map { |t| t["template"] }.uniq.join(", "), "files" => files}
+      end
+
+      # Makes new tmuxinator configs render from a set: `config set tmuxinator.template NAME` (or `tmuxinator.worktree_template`
+      # with +kind+ `worktree`), after checking the set exists.
+      #
+      # @param name [String] the set's name
+      # @param scope [String, nil] `global` or `project`; nil is the config layer `config set` picks (global outside a workspace)
+      # @param kind [String, nil] `worktree` sets `tmuxinator.worktree_template`; nil or `project` sets `tmuxinator.template`
+      # @param workspace [String, nil] the workspace whose layer is written for the project scope
+      # @return [Hash] the action row: `template`, `key`, `layer` and `file`
+      # @raise [Workspace::UsageError] for a kind other than {KINDS}, or a missing config command
+      # @raise [Workspace::Error] `unknown_template`, and `config set`'s own errors
+      def use(name:, scope: nil, kind: nil, workspace: nil, cwd: nil)
+        raise Error, "template use is not available: no config command was wired" unless @config_command
+
+        kind = kinds_for(kind).then { |kinds| (kinds.size == 1) ? kinds.first : :project }
+        @library.tmuxinator_set(name, workspace: workspace)
+        key = (kind == :worktree) ? "tmuxinator.worktree_template" : "tmuxinator.template"
+        scope ||= "global" if workspace.nil?
+        result = @config_command.set(key, name, project: workspace, scope: scope, cwd: cwd || Dir.pwd)
+        @output.puts "New tmuxinator configs now render from '#{name}'; existing configs are unchanged until `workspace template apply`."
+        {"workspace" => result.workspace, "outcome" => "selected", "reason" => nil, "message" => nil, "template" => name, "key" => key,
+         "layer" => result.layer, "file" => result.path}
+      end
+
       private
+
+      # A warning (also on stderr) for each lower-scope set of the same name that the new one now hides.
+      def shadowed_scopes(store, name, project, cwd)
+        stores = @library.stores(project: project, cwd: cwd)
+        rank = stores.index { |other| other.scope == store.scope && other.project == store.project } || -1
+        stores.drop(rank + 1).select { |other| other.find("template", name) }.map do |other|
+          message = "The new tmuxinator template '#{name}' hides the #{other.scope} one of the same name (#{other.path_for("template", name)}); configs that used that one now render from this copy."
+          @error_output.puts "Warning: #{message}"
+          {"severity" => "warning", "code" => "shadows_template", "kind" => nil, "scope" => other.scope, "message" => message}
+        end
+      end
 
       # The inputs `render --name` fills with, which `variables --name` shows: the record's, with the agent command
       # worked out from the current agent settings (the recorded one is the pane text written then). Left out when

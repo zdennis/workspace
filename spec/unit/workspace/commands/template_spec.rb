@@ -16,11 +16,12 @@ RSpec.describe Workspace::Commands::Template do
   let(:library) { instance_double(Workspace::Library) }
   let(:project_config) { instance_double(Workspace::ProjectConfig, render: "rendered\n", config_path_for: File.join(@dir, "app.yml")) }
   let(:writer) { instance_double(Workspace::TmuxinatorConfigWriter, record: nil) }
-  let(:validator) { instance_double(Workspace::TemplateValidator, call_file: []) }
+  let(:validator) { instance_double(Workspace::TemplateValidator, call_file: [], call_set: Workspace::TemplateValidator::Result.new(errors: [], warnings: [])) }
+  let(:config_command) { instance_double(Workspace::Commands::Config) }
   let(:differ) { ->(old, new, old_label:, new_label:) { "--- #{old_label}\n+++ #{new_label}\n-#{old}+#{new}" } }
   subject(:command) do
     described_class.new(library: library, project_config: project_config, writer: writer, template_validator: validator, differ: differ,
-      output: out, error_output: err)
+      config_command: config_command, output: out, error_output: err)
   end
 
   def set_dir(name)
@@ -528,6 +529,170 @@ RSpec.describe Workspace::Commands::Template do
       expect(doc).to include("ok" => true, "against" => "default", "changed" => true)
       expect(doc["files"].first).to include("kind" => "project", "template" => "team", "changed" => true, "path" => File.join(@dir, "team", "project.yml"),
         "against_path" => File.join(@dir, "default", "project.yml"))
+    end
+  end
+  describe "#new" do
+    let(:store) { Workspace::LibraryStore.new(dir: File.join(@dir, "global"), scope: "global") }
+
+    before do
+      allow(library).to receive(:write_store).and_return(store)
+      allow(library).to receive(:stores).and_return([store])
+      allow(library).to receive(:tmuxinator_set).with("default", workspace: "app").and_return("name" => "default", "ref" => "template/default", "scope" => "builtin", "path" => set_dir("default"))
+    end
+
+    it "copies the default set into the library scope and says where it is" do
+      row = command.new(name: "team", workspace: "app")
+
+      path = File.join(@dir, "global", "template", "team")
+      expect(File.read(File.join(path, "project.yml"))).to eq("default project\n")
+      expect(File.read(File.join(path, "worktree.yml"))).to eq("default worktree\n")
+      expect(row).to include("outcome" => "created", "template" => "team", "scope" => "global", "path" => path, "from" => "default", "warnings" => [])
+      expect(out.string).to include("Created the tmuxinator template 'team' from 'default' at #{path}")
+    end
+
+    it "copies --from another set, and writes to the scope and project asked for" do
+      allow(library).to receive(:tmuxinator_set).with("base", workspace: "api.worktree-x").and_return("name" => "base", "ref" => "template/base", "path" => set_dir("base"))
+
+      command.new(name: "mine", from: "base", scope: "project", workspace: "api.worktree-x", cwd: "/src/api")
+
+      expect(library).to have_received(:write_store).with(scope: "project", project: "api", cwd: "/src/api")
+      expect(File.read(File.join(@dir, "global", "template", "mine", "project.yml"))).to eq("base project\n")
+    end
+
+    it "warns, on stderr and in the row, when the new set hides one of the same name in a lower scope" do
+      builtin = Workspace::LibraryStore.new(dir: File.join(@dir, "builtin"), scope: "builtin")
+      builtin.copy_tree("template", "team", set_dir("shipped"))
+      allow(library).to receive(:stores).and_return([store, builtin])
+
+      row = command.new(name: "team", workspace: "app")
+
+      expect(row["warnings"]).to include(hash_including("code" => "shadows_template", "scope" => "builtin"))
+      expect(err.string).to include("Warning: The new tmuxinator template 'team' hides the builtin one of the same name")
+    end
+
+    it "does not warn when only a different name exists below" do
+      builtin = Workspace::LibraryStore.new(dir: File.join(@dir, "builtin"), scope: "builtin")
+      builtin.copy_tree("template", "other", set_dir("shipped"))
+      allow(library).to receive(:stores).and_return([store, builtin])
+
+      expect(command.new(name: "team", workspace: "app")["warnings"]).to eq([])
+      expect(err.string).to eq("")
+    end
+
+    it "refuses a name already in that scope, leaving it as it is" do
+      store.copy_tree("template", "team", set_dir("old"))
+
+      expect { command.new(name: "team", workspace: "app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("template_exists")
+        expect(e.details).to include("template" => "team", "scope" => "global")
+      }
+      expect(File.read(File.join(@dir, "global", "template", "team", "project.yml"))).to eq("old project\n")
+    end
+
+    it "writes nothing when the source has an error" do
+      error = Workspace::TemplateValidator::Problem.new(severity: "error", code: "x", kind: :project, message: "broken")
+      allow(validator).to receive(:call_set).and_return(Workspace::TemplateValidator::Result.new(errors: [error], warnings: []))
+
+      expect { command.new(name: "team", workspace: "app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_template") }
+      expect(File.exist?(File.join(@dir, "global", "template", "team"))).to be(false)
+    end
+
+    it "refuses a bad name, the reserved name and an unknown scope" do
+      expect { command.new(name: "Team") }.to raise_error(Workspace::UsageError, /not a valid tmuxinator template name/)
+      expect { command.new(name: "legacy") }.to raise_error(Workspace::UsageError, /reserved/)
+      expect { command.new(name: "team", scope: "builtin") }.to raise_error(Workspace::UsageError, /One of global, project/)
+    end
+  end
+
+  describe "#edit" do
+    def selected(name, scope)
+      %i[project worktree].each do |kind|
+        allow(library).to receive(:tmuxinator_template).with(kind, workspace: "app").and_return(
+          "name" => name, "scope" => scope, "source" => "global", "path" => File.join(set_dir(name), "#{kind}.yml")
+        )
+      end
+    end
+
+    it "opens both files of the selected set, then checks them" do
+      selected("team", "global")
+      opened = []
+
+      row = command.edit(workspace: "app", opener: ->(paths) { opened << paths })
+
+      expect(opened).to eq([[File.join(@dir, "team", "project.yml"), File.join(@dir, "team", "worktree.yml")]])
+      expect(row).to include("outcome" => "edited", "reason" => nil, "template" => "team")
+      expect(row["files"].map { |f| f.values_at("kind", "problems") }).to eq([["project", []], ["worktree", []]])
+      expect(out.string).to include("project.yml: valid", "worktree.yml: valid")
+    end
+
+    it "opens one file of a named set with --kind" do
+      allow(library).to receive(:tmuxinator_set).with("team", workspace: "app").and_return("name" => "team", "scope" => "global", "path" => set_dir("team"))
+      opened = []
+
+      command.edit(set: "team", kind: "worktree", workspace: "app", opener: ->(paths) { opened << paths })
+
+      expect(opened).to eq([[File.join(@dir, "team", "worktree.yml")]])
+    end
+
+    it "is failed, with the problems, when a file has an error after the edit" do
+      selected("team", "global")
+      allow(validator).to receive(:call_file).with(:worktree, anything).and_return([Workspace::TemplateValidator::Problem.new(severity: "error", code: "x", kind: :worktree, message: "broken")])
+
+      row = command.edit(workspace: "app")
+
+      expect(row).to include("outcome" => "failed", "reason" => "invalid_template")
+      expect(out.string).to include("Error: broken")
+    end
+
+    it "refuses a built-in set before opening anything" do
+      selected("default", "builtin")
+      opened = []
+
+      expect { command.edit(workspace: "app", opener: ->(paths) { opened << paths }) }.to raise_error(Workspace::Error, /template new NAME --from default/) { |e|
+        expect(e.code).to eq("template_builtin_readonly")
+      }
+      expect(opened).to eq([])
+    end
+  end
+
+  describe "#use" do
+    let(:result) { Workspace::Commands::Config::Result.new(key: "tmuxinator.template", workspace: "app", layer: "project", path: "/cfg/app.yml") }
+
+    before do
+      allow(library).to receive(:tmuxinator_set).and_return("name" => "team")
+      allow(config_command).to receive(:set).and_return(result)
+    end
+
+    it "checks the name, then sets tmuxinator.template through config set" do
+      row = command.use(name: "team", scope: "project", workspace: "app", cwd: "/src/app")
+
+      expect(library).to have_received(:tmuxinator_set).with("team", workspace: "app")
+      expect(config_command).to have_received(:set).with("tmuxinator.template", "team", project: "app", scope: "project", cwd: "/src/app")
+      expect(row).to include("outcome" => "selected", "template" => "team", "key" => "tmuxinator.template", "layer" => "project", "file" => "/cfg/app.yml")
+      expect(out.string).to eq("New tmuxinator configs now render from 'team'; existing configs are unchanged until `workspace template apply`.\n")
+    end
+
+    it "sets tmuxinator.worktree_template for --kind worktree" do
+      command.use(name: "team", kind: "worktree", scope: "global", workspace: "app")
+
+      expect(config_command).to have_received(:set).with("tmuxinator.worktree_template", "team", hash_including(scope: "global"))
+    end
+
+    it "writes the global file outside a workspace" do
+      command.use(name: "team")
+
+      expect(config_command).to have_received(:set).with("tmuxinator.template", "team", hash_including(project: nil, scope: "global"))
+    end
+
+    it "sets nothing for an unknown set" do
+      allow(library).to receive(:tmuxinator_set).and_raise(Workspace::Error.new("No tmuxinator template 'nope'.", code: "unknown_template"))
+
+      expect { command.use(name: "nope", workspace: "app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_template") }
+      expect(config_command).not_to have_received(:set)
+    end
+
+    it "refuses an unknown kind" do
+      expect { command.use(name: "team", kind: "both") }.to raise_error(Workspace::UsageError, /Unknown kind/)
     end
   end
 end

@@ -8,6 +8,9 @@ Usage: workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]
        workspace template render [NAME | --file FILE] [--kind KIND] [--name WORKSPACE | --sample] [--diff] [--json]
        workspace template validate [NAME | --file FILE] [--kind KIND] [--name WORKSPACE] [--json]
        workspace template diff [NAME] [--against NAME] [--kind KIND] [--name WORKSPACE] [--json]
+       workspace template new NAME [--from NAME] [--scope SCOPE] [--name WORKSPACE] [--json]
+       workspace template edit [NAME] [--kind KIND] [--name WORKSPACE] [--json]
+       workspace template use NAME [--kind KIND] [--scope SCOPE] [--name WORKSPACE] [--json]
 
 A tmuxinator template is a set of tmuxinator layout files (project.yml for a standard project,
 worktree.yml for a git worktree) that new tmuxinator configs are rendered from. Sets are
@@ -21,10 +24,14 @@ Subcommands:
   render     Fill a tmuxinator template and print the result, writing nothing
   validate   Check a tmuxinator template before using it, writing nothing
   diff       Show how a tmuxinator template differs from another
+  new        Copy a tmuxinator template into a new one you can edit
+  edit       Open a tmuxinator template in your editor, then check it
+  use        Select the tmuxinator template new configs render from
 Run `workspace template VERB --help` for a verb's options.
 
-        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them)
-        --kind KIND                  show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)
+        --from NAME                  new: the tmuxinator template to copy (default: default)
+        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them); new and use: global or project (new: default global; use: the layer `config set` picks, global outside a workspace)
+        --kind KIND                  show, path, variables, validate, diff and edit: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's); use: worktree sets tmuxinator.worktree_template (default: tmuxinator.template)
         --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)
         --file FILE                  validate and render: use this tmuxinator template file, saved or not, instead of a set
         --against NAME               diff: the tmuxinator template to compare with (default: default)
@@ -40,13 +47,16 @@ Examples:
   workspace template variables --name api.worktree-login    # the placeholders and what that config holds
   workspace template render --sample    # fill the tmuxinator template with sample values, writing nothing
   workspace template validate team    # check the tmuxinator template team before using it
+  workspace template new team --from default    # start your own copy of the default tmuxinator template
+  workspace template edit team    # change it in $EDITOR, then check it
+  workspace template use team    # make new tmuxinator configs render from it
   workspace template diff team    # how the tmuxinator template team differs from the default
 --- stderr
 --- end
 ### workspace template --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]","workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template variables [--kind KIND] [--name WORKSPACE] [--json]","workspace template render [NAME | --file FILE] [--kind KIND] [--name WORKSPACE | --sample] [--diff] [--json]","workspace template validate [NAME | --file FILE] [--kind KIND] [--name WORKSPACE] [--json]","workspace template diff [NAME] [--against NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"A tmuxinator template is a set of tmuxinator layout files (project.yml for a standard project,\nworktree.yml for a git worktree) that new tmuxinator configs are rendered from. Sets are\n`template` entries of the library; `tmuxinator.template` and `tmuxinator.worktree_template` choose one.","options":[],"examples":[{"command":"workspace template list","scenario":"every tmuxinator template, and which one a new config of each kind uses"},{"command":"workspace template show --kind worktree","scenario":"the worktree layout a new worktree config is rendered from"},{"command":"workspace template path team","scenario":"where the files of the tmuxinator template team are"},{"command":"workspace template variables --name api.worktree-login","scenario":"the placeholders and what that config holds"},{"command":"workspace template render --sample","scenario":"fill the tmuxinator template with sample values, writing nothing"},{"command":"workspace template validate team","scenario":"check the tmuxinator template team before using it"},{"command":"workspace template diff team","scenario":"how the tmuxinator template team differs from the default"}],"sections":[{"heading":"Subcommands","text":"list       List the tmuxinator templates and which one each kind of new config uses\n  show       Print the files of a tmuxinator template\n  path       Print where the files of a tmuxinator template are\n  variables  List the placeholders a tmuxinator template may hold\n  render     Fill a tmuxinator template and print the result, writing nothing\n  validate   Check a tmuxinator template before using it, writing nothing\n  diff       Show how a tmuxinator template differs from another\nRun `workspace template VERB --help` for a verb's options.\n\n        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them)\n        --kind KIND                  show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)\n        --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)\n        --file FILE                  validate and render: use this tmuxinator template file, saved or not, instead of a set\n        --against NAME               diff: the tmuxinator template to compare with (default: default)\n        --sample                     render: fill with each placeholder's sample value instead of a workspace's\n        --diff                       render: print a unified diff against the workspace's current config instead of the text\n        --json                       Print one JSON document\n    -h, --help                       Show this help"}]}
+{"usage":["workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]","workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template variables [--kind KIND] [--name WORKSPACE] [--json]","workspace template render [NAME | --file FILE] [--kind KIND] [--name WORKSPACE | --sample] [--diff] [--json]","workspace template validate [NAME | --file FILE] [--kind KIND] [--name WORKSPACE] [--json]","workspace template diff [NAME] [--against NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template new NAME [--from NAME] [--scope SCOPE] [--name WORKSPACE] [--json]","workspace template edit [NAME] [--kind KIND] [--name WORKSPACE] [--json]","workspace template use NAME [--kind KIND] [--scope SCOPE] [--name WORKSPACE] [--json]"],"description":"A tmuxinator template is a set of tmuxinator layout files (project.yml for a standard project,\nworktree.yml for a git worktree) that new tmuxinator configs are rendered from. Sets are\n`template` entries of the library; `tmuxinator.template` and `tmuxinator.worktree_template` choose one.","options":[],"examples":[{"command":"workspace template list","scenario":"every tmuxinator template, and which one a new config of each kind uses"},{"command":"workspace template show --kind worktree","scenario":"the worktree layout a new worktree config is rendered from"},{"command":"workspace template path team","scenario":"where the files of the tmuxinator template team are"},{"command":"workspace template variables --name api.worktree-login","scenario":"the placeholders and what that config holds"},{"command":"workspace template render --sample","scenario":"fill the tmuxinator template with sample values, writing nothing"},{"command":"workspace template validate team","scenario":"check the tmuxinator template team before using it"},{"command":"workspace template new team --from default","scenario":"start your own copy of the default tmuxinator template"},{"command":"workspace template edit team","scenario":"change it in $EDITOR, then check it"},{"command":"workspace template use team","scenario":"make new tmuxinator configs render from it"},{"command":"workspace template diff team","scenario":"how the tmuxinator template team differs from the default"}],"sections":[{"heading":"Subcommands","text":"list       List the tmuxinator templates and which one each kind of new config uses\n  show       Print the files of a tmuxinator template\n  path       Print where the files of a tmuxinator template are\n  variables  List the placeholders a tmuxinator template may hold\n  render     Fill a tmuxinator template and print the result, writing nothing\n  validate   Check a tmuxinator template before using it, writing nothing\n  diff       Show how a tmuxinator template differs from another\n  new        Copy a tmuxinator template into a new one you can edit\n  edit       Open a tmuxinator template in your editor, then check it\n  use        Select the tmuxinator template new configs render from\nRun `workspace template VERB --help` for a verb's options.\n\n        --from NAME                  new: the tmuxinator template to copy (default: default)\n        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them); new and use: global or project (new: default global; use: the layer `config set` picks, global outside a workspace)\n        --kind KIND                  show, path, variables, validate, diff and edit: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's); use: worktree sets tmuxinator.worktree_template (default: tmuxinator.template)\n        --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)\n        --file FILE                  validate and render: use this tmuxinator template file, saved or not, instead of a set\n        --against NAME               diff: the tmuxinator template to compare with (default: default)\n        --sample                     render: fill with each placeholder's sample value instead of a workspace's\n        --diff                       render: print a unified diff against the workspace's current config instead of the text\n        --json                       Print one JSON document\n    -h, --help                       Show this help"}]}
 --- stderr
 --- end
 ### workspace template list --help
@@ -63,8 +73,8 @@ workspace sees them (project over global over the default). An edited copy `work
 in ~/.config/tmuxinator/ still wins while neither key is set, and shows as `legacy`. Reads only.
 
 Options:
-    --scope SCOPE                list: only this scope, global, project or builtin (default: all of them)
-    --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)
+    --scope SCOPE                Only this scope, global, project or builtin (default: all of them)
+    --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
     --json                       Print one JSON document
     -h, --help                   Show this help
 
@@ -78,7 +88,7 @@ Examples:
 ### workspace template list --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]"],"description":"List the tmuxinator templates and which one each kind of new config uses.\n\nA tmuxinator template is a set of layout files (project.yml, worktree.yml) that new tmuxinator configs\nare rendered from; each is a `template` entry of the library (built-in, global or the project's own).\nEach row says which kinds select it, from tmuxinator.template and tmuxinator.worktree_template as that\nworkspace sees them (project over global over the default). An edited copy `workspace init` installed\nin ~/.config/tmuxinator/ still wins while neither key is set, and shows as `legacy`. Reads only.","options":[{"flags":"--scope SCOPE","description":"list: only this scope, global, project or builtin (default: all of them)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template list","scenario":"see which tmuxinator template a new project config and a new worktree config would use"},{"command":"workspace template list --scope global","scenario":"only the tmuxinator templates you added for every project"},{"command":"workspace template list --name api.worktree-login","scenario":"which one a config for that workspace would use, with its own settings"},{"command":"workspace template list --json","scenario":"for a script: each tmuxinator template with the kinds that select it"}]}
+{"usage":["workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]"],"description":"List the tmuxinator templates and which one each kind of new config uses.\n\nA tmuxinator template is a set of layout files (project.yml, worktree.yml) that new tmuxinator configs\nare rendered from; each is a `template` entry of the library (built-in, global or the project's own).\nEach row says which kinds select it, from tmuxinator.template and tmuxinator.worktree_template as that\nworkspace sees them (project over global over the default). An edited copy `workspace init` installed\nin ~/.config/tmuxinator/ still wins while neither key is set, and shows as `legacy`. Reads only.","options":[{"flags":"--scope SCOPE","description":"Only this scope, global, project or builtin (default: all of them)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template list","scenario":"see which tmuxinator template a new project config and a new worktree config would use"},{"command":"workspace template list --scope global","scenario":"only the tmuxinator templates you added for every project"},{"command":"workspace template list --name api.worktree-login","scenario":"which one a config for that workspace would use, with its own settings"},{"command":"workspace template list --json","scenario":"for a script: each tmuxinator template with the kinds that select it"}]}
 --- stderr
 --- end
 ### workspace template show --help
@@ -93,8 +103,8 @@ workspace. With --kind, prints that one file as it is, so it can be piped or sav
 each under a `==> path <==` line; a script should pass --kind to get the file raw. Reads only.
 
 Options:
-    --kind KIND                  show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)
-    --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)
+    --kind KIND                  Only this kind, project or worktree (default: both)
+    --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
     --json                       Print one JSON document
     -h, --help                   Show this help
 
@@ -108,7 +118,7 @@ Examples:
 ### workspace template show --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Print the files of a tmuxinator template.\n\nNAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the\nworkspace. With --kind, prints that one file as it is, so it can be piped or saved; without, both files,\neach under a `==> path <==` line; a script should pass --kind to get the file raw. Reads only.","options":[{"flags":"--kind KIND","description":"show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template show --kind worktree","scenario":"read the layout a new worktree config is rendered from"},{"command":"workspace template show team","scenario":"both files of the tmuxinator template team"},{"command":"workspace template show default --kind project > project.yml","scenario":"start your own copy from the built-in project layout"},{"command":"workspace template show --json","scenario":"for a script: each tmuxinator template file with its path, sha256 and text"}]}
+{"usage":["workspace template show [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Print the files of a tmuxinator template.\n\nNAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the\nworkspace. With --kind, prints that one file as it is, so it can be piped or saved; without, both files,\neach under a `==> path <==` line; a script should pass --kind to get the file raw. Reads only.","options":[{"flags":"--kind KIND","description":"Only this kind, project or worktree (default: both)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template show --kind worktree","scenario":"read the layout a new worktree config is rendered from"},{"command":"workspace template show team","scenario":"both files of the tmuxinator template team"},{"command":"workspace template show default --kind project > project.yml","scenario":"start your own copy from the built-in project layout"},{"command":"workspace template show --json","scenario":"for a script: each tmuxinator template file with its path, sha256 and text"}]}
 --- stderr
 --- end
 ### workspace template path --help
@@ -123,8 +133,8 @@ workspace. Prints one file path per line (project.yml, then worktree.yml), or on
 "$(workspace template path --kind project)" works. Fails when a file is missing. Reads only.
 
 Options:
-    --kind KIND                  show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)
-    --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)
+    --kind KIND                  Only this kind, project or worktree (default: both)
+    --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
     --json                       Print one JSON document
     -h, --help                   Show this help
 
@@ -137,7 +147,7 @@ Examples:
 ### workspace template path --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Print where the files of a tmuxinator template are.\n\nNAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the\nworkspace. Prints one file path per line (project.yml, then worktree.yml), or one with --kind, so\n\"$(workspace template path --kind project)\" works. Fails when a file is missing. Reads only.","options":[{"flags":"--kind KIND","description":"show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template path --kind project","scenario":"the file a new project config is rendered from"},{"command":"workspace template path team","scenario":"where the files of the tmuxinator template team are"},{"command":"workspace template path --json","scenario":"for a script: each tmuxinator template file's kind, set, scope and path"}]}
+{"usage":["workspace template path [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Print where the files of a tmuxinator template are.\n\nNAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the\nworkspace. Prints one file path per line (project.yml, then worktree.yml), or one with --kind, so\n\"$(workspace template path --kind project)\" works. Fails when a file is missing. Reads only.","options":[{"flags":"--kind KIND","description":"Only this kind, project or worktree (default: both)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template path --kind project","scenario":"the file a new project config is rendered from"},{"command":"workspace template path team","scenario":"where the files of the tmuxinator template team are"},{"command":"workspace template path --json","scenario":"for a script: each tmuxinator template file's kind, set, scope and path"}]}
 --- stderr
 --- end
 ### workspace template variables --help
@@ -152,8 +162,8 @@ hold it, and what it means. With --name, adds what that workspace's config holds
 a config with no record shows (no record). Reads only.
 
 Options:
-    --kind KIND                  show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)
-    --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)
+    --kind KIND                  Only this kind, project or worktree (default: both)
+    --name NAME                  Workspace whose settings choose the set and whose render record fills it (default: detected from the current directory, else the global settings)
     --json                       Print one JSON document
     -h, --help                   Show this help
 
@@ -167,7 +177,7 @@ Examples:
 ### workspace template variables --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace template variables [--kind KIND] [--name WORKSPACE] [--json]"],"description":"List the placeholders a tmuxinator template may hold.\n\nEach row is a {{PLACEHOLDER}}, the kinds of config it is filled for, the kinds of tmuxinator template that must\nhold it, and what it means. With --name, adds what that workspace's config holds, from its render record;\na config with no record shows (no record). Reads only.","options":[{"flags":"--kind KIND","description":"show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template variables","scenario":"the placeholders you can use in a tmuxinator template"},{"command":"workspace template variables --kind worktree","scenario":"only the ones a worktree tmuxinator template is filled with"},{"command":"workspace template variables --name api.worktree-login","scenario":"what each placeholder holds in that workspace's config"},{"command":"workspace template variables --json","scenario":"for a script: each placeholder with its kinds, requirement and sample"}]}
+{"usage":["workspace template variables [--kind KIND] [--name WORKSPACE] [--json]"],"description":"List the placeholders a tmuxinator template may hold.\n\nEach row is a {{PLACEHOLDER}}, the kinds of config it is filled for, the kinds of tmuxinator template that must\nhold it, and what it means. With --name, adds what that workspace's config holds, from its render record;\na config with no record shows (no record). Reads only.","options":[{"flags":"--kind KIND","description":"Only this kind, project or worktree (default: both)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set and whose render record fills it (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template variables","scenario":"the placeholders you can use in a tmuxinator template"},{"command":"workspace template variables --kind worktree","scenario":"only the ones a worktree tmuxinator template is filled with"},{"command":"workspace template variables --name api.worktree-login","scenario":"what each placeholder holds in that workspace's config"},{"command":"workspace template variables --json","scenario":"for a script: each placeholder with its kinds, requirement and sample"}]}
 --- stderr
 --- end
 ### workspace template render --help
@@ -186,11 +196,11 @@ The text goes out as it is to a pipe, escaped on a terminal; --diff prints the d
 workspace's current config instead.
 
 Options:
-    --kind KIND                  show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)
-    --file FILE                  validate and render: use this tmuxinator template file, saved or not, instead of a set
-    --sample                     render: fill with each placeholder's sample value instead of a workspace's
-    --diff                       render: print a unified diff against the workspace's current config instead of the text
-    --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)
+    --kind KIND                  The kind to fill, project or worktree (default: the workspace's)
+    --file FILE                  Fill this tmuxinator template file, saved or not, instead of a set
+    --sample                     Fill with each placeholder's sample value instead of a workspace's
+    --diff                       Print a unified diff against the workspace's current config instead of the text
+    --name NAME                  Workspace whose settings choose the set and whose render record fills it (default: detected from the current directory, else the global settings)
     --json                       Print one JSON document
     -h, --help                   Show this help
 
@@ -204,7 +214,7 @@ Examples:
 ### workspace template render --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace template render [NAME | --file FILE] [--kind KIND] [--name WORKSPACE | --sample] [--diff] [--json]"],"description":"Fill a tmuxinator template and print the result, writing nothing.\n\nFills the tmuxinator template NAME (default: the one the kind selects) the way a new config is filled: from\nthe render record of --name (default: the workspace detected from the current directory) with its current\nagent settings, or from sample values with --sample. --file fills a file you have not saved as a set yet.\nThe file is checked first; problems go to stderr (the document's warnings with --json). When one is an\nerror the text is still shown as far as it can be filled, and the exit status is 1. Writes no file.\nThe text goes out as it is to a pipe, escaped on a terminal; --diff prints the difference from the\nworkspace's current config instead.","options":[{"flags":"--kind KIND","description":"show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)"},{"flags":"--file FILE","description":"validate and render: use this tmuxinator template file, saved or not, instead of a set"},{"flags":"--sample","description":"render: fill with each placeholder's sample value instead of a workspace's"},{"flags":"--diff","description":"render: print a unified diff against the workspace's current config instead of the text"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template render --sample","scenario":"see what the selected project tmuxinator template makes, with made-up values"},{"command":"workspace template render --file ./worktree.yml --kind worktree --sample","scenario":"try a tmuxinator template you are still editing"},{"command":"workspace template render team --name api.worktree-login --diff","scenario":"what switching that config to the team tmuxinator template would change"},{"command":"workspace template render --name api --json","scenario":"for a script: the filled text, its inputs and any problems"}]}
+{"usage":["workspace template render [NAME | --file FILE] [--kind KIND] [--name WORKSPACE | --sample] [--diff] [--json]"],"description":"Fill a tmuxinator template and print the result, writing nothing.\n\nFills the tmuxinator template NAME (default: the one the kind selects) the way a new config is filled: from\nthe render record of --name (default: the workspace detected from the current directory) with its current\nagent settings, or from sample values with --sample. --file fills a file you have not saved as a set yet.\nThe file is checked first; problems go to stderr (the document's warnings with --json). When one is an\nerror the text is still shown as far as it can be filled, and the exit status is 1. Writes no file.\nThe text goes out as it is to a pipe, escaped on a terminal; --diff prints the difference from the\nworkspace's current config instead.","options":[{"flags":"--kind KIND","description":"The kind to fill, project or worktree (default: the workspace's)"},{"flags":"--file FILE","description":"Fill this tmuxinator template file, saved or not, instead of a set"},{"flags":"--sample","description":"Fill with each placeholder's sample value instead of a workspace's"},{"flags":"--diff","description":"Print a unified diff against the workspace's current config instead of the text"},{"flags":"--name NAME","description":"Workspace whose settings choose the set and whose render record fills it (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template render --sample","scenario":"see what the selected project tmuxinator template makes, with made-up values"},{"command":"workspace template render --file ./worktree.yml --kind worktree --sample","scenario":"try a tmuxinator template you are still editing"},{"command":"workspace template render team --name api.worktree-login --diff","scenario":"what switching that config to the team tmuxinator template would change"},{"command":"workspace template render --name api --json","scenario":"for a script: the filled text, its inputs and any problems"}]}
 --- stderr
 --- end
 ### workspace template validate --help
@@ -221,9 +231,9 @@ sample values is a tmuxinator config. Problems are listed per file; the exit sta
 error and 0 for warnings alone. Reads only.
 
 Options:
-    --kind KIND                  show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)
-    --file FILE                  validate and render: use this tmuxinator template file, saved or not, instead of a set
-    --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)
+    --kind KIND                  Only this kind, project or worktree (default: both)
+    --file FILE                  Check this tmuxinator template file, saved or not, instead of a set
+    --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
     --json                       Print one JSON document
     -h, --help                   Show this help
 
@@ -237,7 +247,7 @@ Examples:
 ### workspace template validate --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace template validate [NAME | --file FILE] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Check a tmuxinator template before using it, writing nothing.\n\nNAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the\nworkspace. --file checks one file you have not saved as a set yet (its kind is project unless the file is\nnamed worktree.yml or --kind says). Checks the placeholders, the agent pane, and that a trial fill with\nsample values is a tmuxinator config. Problems are listed per file; the exit status is 1 when one is an\nerror and 0 for warnings alone. Reads only.","options":[{"flags":"--kind KIND","description":"show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)"},{"flags":"--file FILE","description":"validate and render: use this tmuxinator template file, saved or not, instead of a set"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template validate team","scenario":"check both files of the tmuxinator template team"},{"command":"workspace template validate --file ./worktree.yml","scenario":"check a file you are still editing"},{"command":"workspace template validate --kind project","scenario":"check the project file a new config would be rendered from"},{"command":"workspace template validate team --json","scenario":"for a script: each file's problems, and ok false when one is an error"}]}
+{"usage":["workspace template validate [NAME | --file FILE] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Check a tmuxinator template before using it, writing nothing.\n\nNAME is a tmuxinator template (see `template list`); without it, the one each kind selects for the\nworkspace. --file checks one file you have not saved as a set yet (its kind is project unless the file is\nnamed worktree.yml or --kind says). Checks the placeholders, the agent pane, and that a trial fill with\nsample values is a tmuxinator config. Problems are listed per file; the exit status is 1 when one is an\nerror and 0 for warnings alone. Reads only.","options":[{"flags":"--kind KIND","description":"Only this kind, project or worktree (default: both)"},{"flags":"--file FILE","description":"Check this tmuxinator template file, saved or not, instead of a set"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template validate team","scenario":"check both files of the tmuxinator template team"},{"command":"workspace template validate --file ./worktree.yml","scenario":"check a file you are still editing"},{"command":"workspace template validate --kind project","scenario":"check the project file a new config would be rendered from"},{"command":"workspace template validate team --json","scenario":"for a script: each file's problems, and ok false when one is an error"}]}
 --- stderr
 --- end
 ### workspace template diff --help
@@ -252,9 +262,9 @@ workspace) against the same file of --against (default: the built-in default), s
 changed. Prints nothing but a note on stderr when they are the same. Reads only.
 
 Options:
-    --against NAME               diff: the tmuxinator template to compare with (default: default)
-    --kind KIND                  show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)
-    --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)
+    --against NAME               The tmuxinator template to compare with (default: default)
+    --kind KIND                  Only this kind, project or worktree (default: both)
+    --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
     --json                       Print one JSON document
     -h, --help                   Show this help
 
@@ -267,7 +277,100 @@ Examples:
 ### workspace template diff --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace template diff [NAME] [--against NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Show how a tmuxinator template differs from another.\n\nA unified diff of each file of the tmuxinator template NAME (default: the one each kind selects for the\nworkspace) against the same file of --against (default: the built-in default), so you can see what a copy\nchanged. Prints nothing but a note on stderr when they are the same. Reads only.","options":[{"flags":"--against NAME","description":"diff: the tmuxinator template to compare with (default: default)"},{"flags":"--kind KIND","description":"show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template diff team","scenario":"what the tmuxinator template team changed from the default"},{"command":"workspace template diff team --against old-team --kind worktree","scenario":"only the worktree file, against another template"},{"command":"workspace template diff --json","scenario":"for a script: each file's diff and whether it changed"}]}
+{"usage":["workspace template diff [NAME] [--against NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Show how a tmuxinator template differs from another.\n\nA unified diff of each file of the tmuxinator template NAME (default: the one each kind selects for the\nworkspace) against the same file of --against (default: the built-in default), so you can see what a copy\nchanged. Prints nothing but a note on stderr when they are the same. Reads only.","options":[{"flags":"--against NAME","description":"The tmuxinator template to compare with (default: default)"},{"flags":"--kind KIND","description":"Only this kind, project or worktree (default: both)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template diff team","scenario":"what the tmuxinator template team changed from the default"},{"command":"workspace template diff team --against old-team --kind worktree","scenario":"only the worktree file, against another template"},{"command":"workspace template diff --json","scenario":"for a script: each file's diff and whether it changed"}]}
+--- stderr
+--- end
+### workspace template new --help
+--- exit 0
+--- stdout
+Usage: workspace template new NAME [--from NAME] [--scope SCOPE] [--name WORKSPACE] [--json]
+
+Copy a tmuxinator template into a new one you can edit.
+
+Makes the tmuxinator template NAME (lowercase letters, digits and hyphens) in your library as a copy of --from
+(default: the built-in default), so it can be changed with `template edit`. It goes to the global library, or
+with --scope project to the project's own. The source is checked first and nothing is written when it has an
+error; an existing NAME is refused. New configs do not render from it until `template use`.
+
+Options:
+    --from NAME                  The tmuxinator template to copy (default: default)
+    --scope SCOPE                Where to make it: global (default) or project (the project's own library)
+    --name NAME                  Workspace whose project's templates NAME is looked up in and, with --scope project, made in (default: detected from the current directory)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace template new team    # start your own copy of the built-in default tmuxinator template
+  workspace template new team-api --from team --scope project    # copy team for this project only
+  workspace template new team --json    # for a script: the new template's scope, path and any warnings
+--- stderr
+--- end
+### workspace template new --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace template new NAME [--from NAME] [--scope SCOPE] [--name WORKSPACE] [--json]"],"description":"Copy a tmuxinator template into a new one you can edit.\n\nMakes the tmuxinator template NAME (lowercase letters, digits and hyphens) in your library as a copy of --from\n(default: the built-in default), so it can be changed with `template edit`. It goes to the global library, or\nwith --scope project to the project's own. The source is checked first and nothing is written when it has an\nerror; an existing NAME is refused. New configs do not render from it until `template use`.","options":[{"flags":"--from NAME","description":"The tmuxinator template to copy (default: default)"},{"flags":"--scope SCOPE","description":"Where to make it: global (default) or project (the project's own library)"},{"flags":"--name NAME","description":"Workspace whose project's templates NAME is looked up in and, with --scope project, made in (default: detected from the current directory)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template new team","scenario":"start your own copy of the built-in default tmuxinator template"},{"command":"workspace template new team-api --from team --scope project","scenario":"copy team for this project only"},{"command":"workspace template new team --json","scenario":"for a script: the new template's scope, path and any warnings"}]}
+--- stderr
+--- end
+### workspace template edit --help
+--- exit 0
+--- stdout
+Usage: workspace template edit [NAME] [--kind KIND] [--name WORKSPACE] [--json]
+
+Open a tmuxinator template in your editor, then check it.
+
+Opens the files of the tmuxinator template NAME (default: the one each kind selects for the workspace) in
+$VISUAL or $EDITOR, or only the --kind file, then checks them as `template validate` does; the exit status is
+1 when a file has an error. The built-in templates ship with workspace and are refused: copy one with
+`template new`. With no editor set, under --no-input, or without a terminal, prints the paths and opens
+nothing. --json opens no editor: it checks the files as they are.
+
+Options:
+    --kind KIND                  Only this kind, project or worktree (default: both)
+    --name NAME                  Workspace whose settings choose the set (default: detected from the current directory, else the global settings)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace template edit team    # change both files of the tmuxinator template team
+  workspace template edit team --kind worktree    # only its worktree file
+  workspace template edit --json    # for a script: check the selected template's files and report any problems
+--- stderr
+--- end
+### workspace template edit --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace template edit [NAME] [--kind KIND] [--name WORKSPACE] [--json]"],"description":"Open a tmuxinator template in your editor, then check it.\n\nOpens the files of the tmuxinator template NAME (default: the one each kind selects for the workspace) in\n$VISUAL or $EDITOR, or only the --kind file, then checks them as `template validate` does; the exit status is\n1 when a file has an error. The built-in templates ship with workspace and are refused: copy one with\n`template new`. With no editor set, under --no-input, or without a terminal, prints the paths and opens\nnothing. --json opens no editor: it checks the files as they are.","options":[{"flags":"--kind KIND","description":"Only this kind, project or worktree (default: both)"},{"flags":"--name NAME","description":"Workspace whose settings choose the set (default: detected from the current directory, else the global settings)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template edit team","scenario":"change both files of the tmuxinator template team"},{"command":"workspace template edit team --kind worktree","scenario":"only its worktree file"},{"command":"workspace template edit --json","scenario":"for a script: check the selected template's files and report any problems"}]}
+--- stderr
+--- end
+### workspace template use --help
+--- exit 0
+--- stdout
+Usage: workspace template use NAME [--kind KIND] [--scope SCOPE] [--name WORKSPACE] [--json]
+
+Select the tmuxinator template new configs render from.
+
+Sets tmuxinator.template to NAME (with --kind worktree, tmuxinator.worktree_template), after checking that
+a tmuxinator template of that name exists; it is `config set` with the name checked first. --scope picks the
+layer (global or project); without it the layer `config set` would pick, which is global outside a
+workspace. Configs that already exist are not changed.
+
+Options:
+    --kind KIND                  worktree sets tmuxinator.worktree_template instead (default: project, tmuxinator.template)
+    --scope SCOPE                The config layer to set, global or project (default: the layer `config set` picks, global outside a workspace)
+    --name NAME                  Workspace whose layer is written with --scope project (default: detected from the current directory)
+    --json                       Print one JSON document
+    -h, --help                   Show this help
+
+Examples:
+  workspace template use team    # render new project and worktree configs from team
+  workspace template use team --kind worktree --scope project    # only new worktree configs of this project
+  workspace template use team --json    # for a script: the key set and the layer it was written to
+--- stderr
+--- end
+### workspace template use --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace template use NAME [--kind KIND] [--scope SCOPE] [--name WORKSPACE] [--json]"],"description":"Select the tmuxinator template new configs render from.\n\nSets tmuxinator.template to NAME (with --kind worktree, tmuxinator.worktree_template), after checking that\na tmuxinator template of that name exists; it is `config set` with the name checked first. --scope picks the\nlayer (global or project); without it the layer `config set` would pick, which is global outside a\nworkspace. Configs that already exist are not changed.","options":[{"flags":"--kind KIND","description":"worktree sets tmuxinator.worktree_template instead (default: project, tmuxinator.template)"},{"flags":"--scope SCOPE","description":"The config layer to set, global or project (default: the layer `config set` picks, global outside a workspace)"},{"flags":"--name NAME","description":"Workspace whose layer is written with --scope project (default: detected from the current directory)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace template use team","scenario":"render new project and worktree configs from team"},{"command":"workspace template use team --kind worktree --scope project","scenario":"only new worktree configs of this project"},{"command":"workspace template use team --json","scenario":"for a script: the key set and the layer it was written to"}]}
 --- stderr
 --- end
 ### workspace template --bogus
@@ -292,6 +395,9 @@ Usage: workspace template list [--scope SCOPE] [--name WORKSPACE] [--json]
        workspace template render [NAME | --file FILE] [--kind KIND] [--name WORKSPACE | --sample] [--diff] [--json]
        workspace template validate [NAME | --file FILE] [--kind KIND] [--name WORKSPACE] [--json]
        workspace template diff [NAME] [--against NAME] [--kind KIND] [--name WORKSPACE] [--json]
+       workspace template new NAME [--from NAME] [--scope SCOPE] [--name WORKSPACE] [--json]
+       workspace template edit [NAME] [--kind KIND] [--name WORKSPACE] [--json]
+       workspace template use NAME [--kind KIND] [--scope SCOPE] [--name WORKSPACE] [--json]
 
 A tmuxinator template is a set of tmuxinator layout files (project.yml for a standard project,
 worktree.yml for a git worktree) that new tmuxinator configs are rendered from. Sets are
@@ -305,10 +411,14 @@ Subcommands:
   render     Fill a tmuxinator template and print the result, writing nothing
   validate   Check a tmuxinator template before using it, writing nothing
   diff       Show how a tmuxinator template differs from another
+  new        Copy a tmuxinator template into a new one you can edit
+  edit       Open a tmuxinator template in your editor, then check it
+  use        Select the tmuxinator template new configs render from
 Run `workspace template VERB --help` for a verb's options.
 
-        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them)
-        --kind KIND                  show, path, variables, validate and diff: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's)
+        --from NAME                  new: the tmuxinator template to copy (default: default)
+        --scope SCOPE                list: only this scope, global, project or builtin (default: all of them); new and use: global or project (new: default global; use: the layer `config set` picks, global outside a workspace)
+        --kind KIND                  show, path, variables, validate, diff and edit: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's); use: worktree sets tmuxinator.worktree_template (default: tmuxinator.template)
         --name NAME                  Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)
         --file FILE                  validate and render: use this tmuxinator template file, saved or not, instead of a set
         --against NAME               diff: the tmuxinator template to compare with (default: default)
@@ -324,6 +434,9 @@ Examples:
   workspace template variables --name api.worktree-login    # the placeholders and what that config holds
   workspace template render --sample    # fill the tmuxinator template with sample values, writing nothing
   workspace template validate team    # check the tmuxinator template team before using it
+  workspace template new team --from default    # start your own copy of the default tmuxinator template
+  workspace template edit team    # change it in $EDITOR, then check it
+  workspace template use team    # make new tmuxinator configs render from it
   workspace template diff team    # how the tmuxinator template team differs from the default
 --- stderr
 --- end

@@ -152,4 +152,49 @@ RSpec.describe Workspace::CLI::Common do
       expect { common.parse_duration_option("--poll", "0", positive: true) }.to raise_error(Workspace::UsageError, /\A--poll: /)
     end
   end
+  describe "#open_in_editor" do
+    def build(env: {"EDITOR" => "vi"}, input: StringIO.new, interactive: -> { true }, launcher: ->(argv) { (@launched ||= []) << argv })
+      @launched = []
+      [described_class.new(input: input, editor_launcher: launcher, interactive: interactive),
+        Workspace::CLI::Invocation.new(output: out, error_output: err, exit_handler: FakeExitHandler, help_asked: false, quiet: false, env: env)]
+    end
+
+    it "runs $VISUAL ahead of $EDITOR as an argv array with every path, so no shell sees them" do
+      editor, run = build(env: {"VISUAL" => "code --wait", "EDITOR" => "vi"})
+
+      result = editor.open_in_editor(run, "/a b; rm -rf $HOME/project.yml", "/a b; rm -rf $HOME/worktree.yml")
+
+      expect(@launched).to eq([["code", "--wait", "/a b; rm -rf $HOME/project.yml", "/a b; rm -rf $HOME/worktree.yml"]])
+      expect(result).to be(true)
+    end
+
+    it "falls back to $EDITOR when $VISUAL is blank" do
+      editor, run = build(env: {"VISUAL" => " ", "EDITOR" => "nano"})
+
+      editor.open_in_editor(run, "/f.yml")
+
+      expect(@launched).to eq([["nano", "/f.yml"]])
+    end
+
+    it "prints each path and opens nothing with no editor, off a terminal, or under --no-input" do
+      no_editor, run = build(env: {})
+      no_terminal, run_two = build(interactive: -> { false })
+      no_input, run_three = build(input: Workspace::PromptInput.new(StringIO.new, no_input: true))
+
+      results = [no_editor.open_in_editor(run, "/a.yml", "/b.yml"), no_terminal.open_in_editor(run_two, "/c.yml"), no_input.open_in_editor(run_three, "/d.yml")]
+
+      expect(results).to eq([false, false, false])
+
+      expect(out.string).to eq("/a.yml\n/b.yml\n/c.yml\n/d.yml\n")
+      expect(@launched).to eq([])
+    end
+
+    it "raises editor_failed for an unbalanced quote and for an editor that fails" do
+      editor, run = build(env: {"EDITOR" => 'vim "x'})
+      expect { editor.open_in_editor(run, "/f.yml") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("editor_failed") }
+
+      failing, run_two = build(launcher: ->(_argv) { false })
+      expect { failing.open_in_editor(run_two, "/f.yml") }.to raise_error(Workspace::Error, /Could not run the editor 'vi'.*\/f.yml/) { |e| expect(e.details).to eq(path: "/f.yml", editor: "vi") }
+    end
+  end
 end

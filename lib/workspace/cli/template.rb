@@ -6,7 +6,7 @@ module Workspace
     # the parsed values to {Commands::Template}. It writes and exits only through the
     # {Invocation} it is given.
     class Template
-      # The flags each `template` verb takes.
+      # The flags each `template` verb takes. (`--name` on `new` and `use` is the workspace whose settings or project the verb works in.)
       SUBCOMMANDS = {
         "list" => %i[scope name json],
         "show" => %i[kind name json],
@@ -14,7 +14,10 @@ module Workspace
         "variables" => %i[kind name json],
         "render" => %i[kind name sample diff file json],
         "validate" => %i[kind name file json],
-        "diff" => %i[kind name against json]
+        "diff" => %i[kind name against json],
+        "new" => %i[name from scope json],
+        "edit" => %i[kind name json],
+        "use" => %i[kind name scope json]
       }.freeze
 
       # @param template_command [Workspace::Commands::Template, nil] `template` verbs; nil refuses `template`
@@ -51,6 +54,7 @@ module Workspace
         options[:given].uniq.each do |key|
           raise UsageError, "--#{key} does not apply to 'template #{subcommand}'. Run 'workspace template --help'." unless SUBCOMMANDS[subcommand].include?(key)
         end
+        raise UsageError, "'template #{subcommand}' needs a tmuxinator template NAME. Run 'workspace template #{subcommand} --help'." if %w[new use].include?(subcommand) && args.empty?
         raise UsageError, "Unexpected argument: #{args[%w[list variables].include?(subcommand) ? 0 : 1]}. Run 'workspace template --help'." if args.size > (%w[list variables].include?(subcommand) ? 0 : 1)
         raise Error, "template is not available: no template command was wired" unless @template_command
 
@@ -66,10 +70,33 @@ module Workspace
           ok = @template_command.validate(set: args.first, file: options[:file], kind: options[:kind], workspace: workspace, json: json)
           invocation.exit_handler.exit(1) unless ok
         when "diff" then @template_command.diff(set: args.first, against: options[:against], kind: options[:kind], workspace: workspace, json: json)
+        when "new" then change(invocation, "template new", json) { @template_command.new(name: args.first, from: options[:from], scope: options[:scope], workspace: workspace, cwd: @working_dir) }
+        when "edit" then edit(args.first, options, workspace, invocation)
+        when "use" then change(invocation, "template use", json) { @template_command.use(name: args.first, scope: options[:scope], kind: options[:kind], workspace: workspace, cwd: @working_dir) }
         end
       end
 
       private
+
+      # Runs a verb that changes something and reports its row, as an action document under --json.
+      def change(invocation, action, json)
+        @common.run_action(invocation, action, json: json) do
+          row = yield
+          {results: [row], exit_code: 0}
+        end
+      end
+
+      # `edit` opens the editor on each file unless --json is given (a script edits the files itself), then checks them.
+      def edit(set, options, workspace, invocation)
+        opener = options[:json] ? nil : lambda do |paths|
+          next if @common.open_in_editor(invocation, *paths)
+          invocation.error_output.puts "Nothing was opened: set $VISUAL or $EDITOR (and run from a terminal) to edit these files from here."
+        end
+        @common.run_action(invocation, "template edit", json: options[:json] || false) do
+          row = @template_command.edit(set: set, kind: options[:kind], workspace: workspace, opener: opener)
+          {results: [row], exit_code: (row["outcome"] == "failed") ? 1 : 0}
+        end
+      end
 
       # `render` fills from the named workspace, else the current one, unless --sample asks for sample values.
       def render(set, options, workspace, invocation)
@@ -91,6 +118,7 @@ module Workspace
           HelpPages.overview_verbs(HelpPages::TEMPLATE).each { |line| opts.separator line }
           opts.separator "Run `workspace template VERB --help` for a verb's options."
           opts.separator ""
+          opts.on("--from NAME", HelpPages::TEMPLATE_FROM_TEXT) { |v| take(options, :from, v) }
           opts.on("--scope SCOPE", HelpPages::TEMPLATE_SCOPE_TEXT) { |v| take(options, :scope, v) }
           opts.on("--kind KIND", HelpPages::TEMPLATE_KIND_TEXT) { |v| take(options, :kind, v) }
           opts.on("--name NAME", HelpPages::TEMPLATE_NAME_TEXT) { |v| take(options, :name, v) }
@@ -108,6 +136,9 @@ module Workspace
           opts.separator "  workspace template variables --name api.worktree-login    # the placeholders and what that config holds"
           opts.separator "  workspace template render --sample    # fill the tmuxinator template with sample values, writing nothing"
           opts.separator "  workspace template validate team    # check the tmuxinator template team before using it"
+          opts.separator "  workspace template new team --from default    # start your own copy of the default tmuxinator template"
+          opts.separator "  workspace template edit team    # change it in $EDITOR, then check it"
+          opts.separator "  workspace template use team    # make new tmuxinator configs render from it"
           opts.separator "  workspace template diff team    # how the tmuxinator template team differs from the default"
         end
       end

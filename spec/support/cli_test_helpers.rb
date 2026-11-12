@@ -5,7 +5,7 @@ module CLITestHelpers
   # The named overrides only Workspace.build_cli takes.
   BUILD_CLI_OVERRIDES = %i[launchctl tmux task_store skill_source workflow_source_runner osascript ui_osascript].freeze
   # The keywords Workspace.build_cli and Workspace::CLI.new both take.
-  STREAM_KEYWORDS = %i[output error_output input env logger exit_handler].freeze
+  STREAM_KEYWORDS = %i[output error_output input env logger exit_handler editor_launcher].freeze
   # The commands .cli_parts gives the CLI::Agent family instead of Workspace::CLI.new.
   AGENT_FAMILY_KEYWORDS = %i[agent_command ensure_agent_command daemon_command sessions_command review_command agent_status_command agent_executables_command].freeze
   # The commands .cli_parts gives the CLI::AgentRun family instead of Workspace::CLI.new.
@@ -42,7 +42,7 @@ module CLITestHelpers
   # CLI::Workflow, as build_cli wires them, and the template family's (TEMPLATE_FAMILY_KEYWORDS) to CLI::Template;
   # CLI::Common, CLI::Launcher and the AgentMessageClient the agent-run and pipeline families
   # share (unless given as +agent_client:+) are built over the same keywords.
-  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_client: nil, status_scope: nil, **keywords)
+  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_client: nil, status_scope: nil, editor_launcher: nil, interactive: nil, **keywords)
     agent_commands = AGENT_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
     agent_run_commands = AGENT_RUN_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
     pipeline_keywords = PIPELINE_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }.compact
@@ -52,7 +52,7 @@ module CLITestHelpers
     keywords[:working_dir] ||= Dir.pwd
     keywords[:launch_mode] ||= Workspace::LaunchMode.new(project_settings: keywords[:project_settings])
     keywords[:input] ||= $stdin
-    common = Workspace::CLI::Common.new
+    common = Workspace::CLI::Common.new(input: keywords[:input], editor_launcher: editor_launcher, interactive: interactive)
     names = Workspace::CLI::Names.new(project_config: keywords[:project_config], project_detector: keywords[:project_detector], lineage: lineage,
       working_dir: keywords[:working_dir], workspace_name: keywords[:workspace_name])
     launcher = Workspace::CLI::Launcher.new(project_config: keywords[:project_config], launch_command: keywords[:launch_command], launch_mode: keywords[:launch_mode],
@@ -1411,7 +1411,9 @@ module CLITestHelpers
         working_dir: overrides[:working_dir] || Dir.tmpdir,
         sleeper: ->(_) {},
         launch_mode: CLITestHelpers.launch_mode(headless: false),
-        env: {},
+        env: overrides.fetch(:env, {}),
+        editor_launcher: overrides[:editor_launcher],
+        interactive: -> { true },
         **unused
       )
       [cli, output, error_output]
