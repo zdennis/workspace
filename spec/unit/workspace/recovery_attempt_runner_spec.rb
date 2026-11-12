@@ -145,10 +145,7 @@ RSpec.describe Workspace::RecoveryAttemptRunner do
 
       it "stops waiting at 30 seconds" do
         typed_at = nil
-        allow(typer).to receive(:type).and_wrap_original do |original, **args|
-          typed_at = now[0]
-          original.call(**args)
-        end
+        typer_options[:on_type] = -> { typed_at = now[0] }
         outcomes = runner.typed(attempt).first(1)
         ended_at = now[0]
 
@@ -318,12 +315,9 @@ RSpec.describe Workspace::RecoveryAttemptRunner do
 
     describe "step 4" do
       it "waits on the pane alone, then rescans it" do
-        allow(readiness).to receive(:wait).and_call_original
-        allow(monitor).to receive(:rescan_pane).and_call_original
         runner.restart(attempt)
 
-        expect(readiness).to have_received(:wait).with("api", deadline: 60, only_pane: "%5", detector: anything)
-        expect(monitor).to have_received(:rescan_pane).with("%5").at_least(:once)
+        expect(calls).to include([:wait, "api", 60, "%5"], [:rescan_pane, "%5"])
       end
     end
 

@@ -102,14 +102,17 @@ class RecordingAttemptTyper
 
   # @param outcomes [Array<Hash>] PromptTyper::Result fields for each +type+, in order
   # @param refusal [Hash, nil] what +check+ answers; nil means the input line holds what was pasted
-  def initialize(outcomes: [{outcome: :submitted}], refusal: nil, calls: [])
+  # @param on_type [#call, nil] called at each +type+, for a spec that stamps the clock then
+  def initialize(outcomes: [{outcome: :submitted}], refusal: nil, calls: [], on_type: nil)
     @outcomes = outcomes.dup
     @refusal = refusal
     @calls = calls
+    @on_type = on_type
   end
 
   def type(session_name:, target:, pane_id:, text:, before_paste: nil, before_enter: nil)
     @calls << [:type, pane_id, text]
+    @on_type&.call
     return Workspace::PromptTyper::Result.new(outcome: :aborted) if before_paste && !before_paste.call
     fields = (@outcomes.size > 1) ? @outcomes.shift : @outcomes.first
     Workspace::PromptTyper::Result.new(**fields)
