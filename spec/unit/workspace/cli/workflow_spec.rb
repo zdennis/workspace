@@ -261,4 +261,352 @@ RSpec.describe Workspace::CLI::Workflow do
       expect { described_class.inputs(["=1"]) }.to raise_error(Workspace::UsageError, "--input takes KEY=VALUE, got \"=1\".")
     end
   end
+
+  # The argv CLI#run hands this family, with the first word as the verb, over the same fake
+  # commands and workspace as the CLI-level examples in spec/integration/workspace/cli/workflow_spec.rb.
+  describe "argv as CLI#run routes it" do
+    def stub_env(vars)
+      @saved_env ||= {}
+      vars.each do |key, value|
+        @saved_env[key] = ENV[key] unless @saved_env.key?(key)
+        value.nil? ? ENV.delete(key) : ENV[key] = value
+      end
+    end
+
+    after do
+      (@saved_env || {}).each { |key, value| value.nil? ? ENV.delete(key) : ENV[key] = value }
+    end
+
+    let(:project_config) { CLITestHelpers::FakeProjectConfig.new("api" => "/work/api") }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:input) { StringIO.new }
+    let(:output) { out }
+    let(:error_output) { err }
+    let(:cli) do
+      names = Workspace::CLI::Names.new(project_config: project_config, project_detector: detector, lineage: CLITestHelpers::FakeLineage.new, working_dir: "/some/dir")
+      parser = described_class.new(workflow_command: workflow_command, workflow_start_command: start_command, workflow_project: nil,
+        status_scope: status_scope, config: config, project_config: project_config, project_detector: detector, git: git,
+        launch_mode: CLITestHelpers.launch_mode(headless: false), common: Workspace::CLI::Common.new, names: names, input: input, working_dir: "/some/dir")
+      Struct.new(:parser, :invocation) { def run(argv) = parser.call(argv.first, argv.drop(1), invocation) }.new(parser, invocation)
+    end
+
+    before { stub_env("TMUX_PANE" => nil) }
+
+    it "hands workflow check the --name workspace's checkout" do
+      cli.run(["workflow", "check", "rpiv", "verify", "--name", "api", "--artifacts", "fixture"])
+
+      expect(workflow_command.calls).to eq([[:check, {id: "rpiv", step: "verify", worktree: "/work/api", artifacts: "/some/dir/fixture", json: false, project: nil}]])
+    end
+
+    it "shows every definition, or one" do
+      cli.run(["workflow", "show"])
+      cli.run(["workflow", "show", "rpiv", "--json"])
+
+      expect(workflow_command.calls).to eq([[:show, {id: nil, json: false, source: false, project: nil}], [:show, {id: "rpiv", json: true, source: false, project: nil}]])
+    end
+
+    it "passes --source to show" do
+      cli.run(["workflow", "show", "rpiv", "--source", "--json"])
+      expect(workflow_command.calls).to eq([[:show, {id: "rpiv", json: true, source: true, project: nil}]])
+    end
+
+    context "start" do
+      it "passes the ID, REF and flags to workflow start" do
+        cli.run(["workflow", "start", "rpiv", "PROJ-1", "--branch", "b", "--slug", "--base", "main", "--input", "task=x", "--note", "n", "--agent-kind", "codex", "--prompt-timeout", "2m", "--no-headless", "--dry-run"])
+
+        expect(start_command.calls).to eq([{id: "rpiv", ref: "PROJ-1", positional: nil, prompt: nil, branch: "b", slug: true, inputs: {"task" => "x"}, note: "n", base: "main",
+                                            headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true, force: false, route: false}])
+      end
+
+      it "takes --prompt with no REF, and headless from the launch mode" do
+        cli.run(["workflow", "start", "rpiv", "--prompt", "add a script"])
+
+        expect(start_command.calls.first).to include(id: nil, ref: nil, positional: "rpiv", prompt: "add a script", slug: false, headless: false, dry_run: false)
+      end
+
+      it "passes a lone argument as positional, for WorkflowStart to settle" do
+        cli.run(["workflow", "start", "PROJ-1"])
+
+        expect(start_command.calls.first).to include(id: nil, ref: nil, positional: "PROJ-1")
+      end
+
+      it "takes --prompt alone, with no id" do
+        cli.run(["workflow", "start", "--prompt", "add a script"])
+
+        expect(start_command.calls.first).to include(id: nil, ref: nil, positional: nil, prompt: "add a script")
+      end
+
+      it "gives a JSON error for a missing REF under --json" do
+        expect { cli.run(["workflow", "start", "--json"]) }.to raise_error(FakeSystemExit)
+
+        expect(JSON.parse(output.string)).to include("ok" => false)
+        expect(start_command.calls).to be_empty
+      end
+
+      it "writes one document for --dry-run --json" do
+        start_command.row = {"workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would start.", "branch" => "add-a-script"}
+
+        cli.run(["workflow", "start", "rpiv", "--prompt", "add a script", "--dry-run", "--json"])
+
+        doc = JSON.parse(output.string)
+        expect(doc).to include("ok" => true, "action" => "workflow start", "status" => "dry_run")
+        expect(doc["results"]).to eq([start_command.row])
+      end
+
+      it "escapes control characters in a printed warning" do
+        start_command.row = start_command.row.merge("warnings" => ["Could not read X: \e[31mred\e[0m\rgone"])
+        cli.run(["workflow", "start", "rpiv", "x"])
+
+        expect(error_output.string).to include('Warning: Could not read X: \e[31mred\e[0m\rgone')
+        expect(error_output.string).not_to include("\e")
+      end
+
+      it "passes --force on, and prints the row's warnings on stderr in text mode only" do
+        start_command.row = start_command.row.merge("warnings" => ["rpiv applies to jira, not branch. Continuing because of --force."])
+        cli.run(["workflow", "start", "rpiv", "x", "--force"])
+        expect(start_command.calls.last).to include(force: true)
+        expect(error_output.string).to include("Warning: rpiv applies to jira, not branch. Continuing because of --force.")
+
+        error_output.truncate(0)
+        error_output.rewind
+        cli.run(["workflow", "start", "rpiv", "x", "--force", "--json"])
+        expect(error_output.string).not_to include("warning:")
+        expect(JSON.parse(output.string.lines.last)["results"].first["warnings"]).not_to be_empty
+      end
+    end
+
+    it "parses add ID PATH, with --dry-run, as an action document" do
+      workflow_command.row = {"workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would add workflow ship at /g/ship.yml.",
+                              "workflow" => "ship", "path" => "/g/ship.yml", "sha256" => "abc"}
+
+      expect { cli.run(["workflow", "add", "ship", "draft.yml", "--dry-run", "--json"]) }.not_to raise_error
+      cli.run(["workflow", "add", "--dry-run", "ship", "-"])
+
+      expect(workflow_command.calls).to eq([[:add, {id: "ship", path: "draft.yml", dry_run: true, project: nil}], [:add, {id: "ship", path: "-", dry_run: true, project: nil}]])
+      doc = JSON.parse(output.string.lines.first)
+      expect(doc).to include("ok" => true, "action" => "workflow add", "status" => "dry_run")
+      expect(doc["results"]).to eq([workflow_command.row])
+    end
+
+    it "parses update ID PATH --if-sha256 SHA, with --dry-run, as an action document" do
+      workflow_command.row = {"workspace" => nil, "outcome" => "dry_run", "reason" => nil, "message" => "Would update workflow ship at /g/ship.yml.",
+                              "workflow" => "ship", "path" => "/g/ship.yml", "sha256" => "abc"}
+
+      cli.run(["workflow", "update", "ship", "draft.yml", "--if-sha256", "abc123", "--dry-run", "--json"])
+      cli.run(["workflow", "update", "--if-sha256", "abc123", "ship", "-"])
+
+      expect(workflow_command.calls).to eq([[:update, {id: "ship", path: "draft.yml", if_sha256: "abc123", dry_run: true, project: nil}],
+        [:update, {id: "ship", path: "-", if_sha256: "abc123", dry_run: false, project: nil}]])
+      doc = JSON.parse(output.string.lines.first)
+      expect(doc).to include("ok" => true, "action" => "workflow update", "status" => "dry_run")
+    end
+
+    it "parses remove ID with --yes or --dry-run as an action document, and prints the help" do
+      workflow_command.row = {"workspace" => nil, "outcome" => "removed", "reason" => nil, "message" => "Removed workflow ship at /g/ship.yml.", "workflow" => "ship", "path" => "/g/ship.yml"}
+
+      cli.run(["workflow", "remove", "ship", "--yes", "--json"])
+      cli.run(["workflow", "remove", "ship", "--dry-run"])
+
+      expect(workflow_command.calls.select { |call| call.first == :remove }).to eq([[:remove, {id: "ship", yes: true, dry_run: false, project: nil}], [:remove, {id: "ship", yes: nil, dry_run: true, project: nil}]])
+      expect(JSON.parse(output.string.lines.first)).to include("ok" => true, "action" => "workflow remove")
+      output.truncate(0)
+      cli.run(["workflow", "--help"])
+      expect(output.string).to include("workspace workflow remove ID [--yes] [--dry-run] [--json]", "remove: check and delete nothing", "--yes")
+    end
+
+    it "answers a declined prompt as status cancelled and exit 0" do
+      workflow_command.row = nil
+      expect { cli.run(["workflow", "remove", "ship"]) }.not_to raise_error
+      expect(workflow_command.calls.last).to eq([:remove, {id: "ship", yes: nil, dry_run: false, project: nil}])
+    end
+
+    it "treats --json without --yes or --dry-run as a usage error that never prompts" do
+      expect { cli.run(["workflow", "remove", "ship", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(workflow_command.calls.map(&:first)).not_to include(:remove)
+    end
+
+    it "reads a run's events, with --since" do
+      cli.run(["workflow", "events", "wr_1"])
+      cli.run(["workflow", "events", "wr_1", "--since", "40", "--json"])
+
+      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: false}], [:events, {run: "wr_1", since: 40, json: true}]])
+    end
+
+    it "lists a run's attempts, of one step" do
+      cli.run(["workflow", "attempts", "wr_1", "--attempt-of", "plan", "--json"])
+
+      expect(workflow_command.calls).to eq([[:attempts, {run: "wr_1", step: "plan", json: true}]])
+    end
+
+    it "lists a run's files" do
+      cli.run(["workflow", "files", "wr_1", "--json"])
+
+      expect(workflow_command.calls).to eq([[:files, {run: "wr_1", json: true}]])
+    end
+
+    it "validates a PATH or stdin, with --id" do
+      cli.run(["workflow", "validate", "a.yml", "--json"])
+      cli.run(["workflow", "validate", "-", "--id", "ship"])
+
+      expect(workflow_command.calls).to eq([[:validate, {path: "a.yml", id: nil, json: true, project: nil}], [:validate, {path: "-", id: "ship", json: false, project: nil}]])
+    end
+
+    it "starts a run in the detected workspace, from its working directory" do
+      cli.run(["workflow", "run", "rpiv", "--input", "task=PROJ-1 export=pdf", "--input", "spec=", "--note", "Keep it small."])
+
+      expect(workflow_command.calls).to eq([[:run, {id: "rpiv", workspace: "detected-ws", worktree: "/some/dir",
+                                                    inputs: {"task" => "PROJ-1 export=pdf", "spec" => ""}, pane: nil, note: "Keep it small.", dry_run: false, caller_pane: ENV["TMUX_PANE"], project: nil, fill_from_branch: false}]])
+    end
+
+    it "fills from the branch only for a checkout it resolved: the --name target's, not the working directory" do
+      cli.run(["workflow", "run", "rpiv", "--name", "api"])
+
+      expect(workflow_command.calls.first.last).to include(worktree: "/work/api", fill_from_branch: true)
+    end
+
+    it "starts a run in a named workspace from its root, in a named pane, or only checks with --dry-run" do
+      cli.run(["workflow", "run", "rpiv", "--name", "api", "--pane", "0.1", "--dry-run"])
+
+      expect(workflow_command.calls.first.last).to include(workspace: "api", worktree: "/work/api", pane: "0.1", dry_run: true)
+    end
+
+    it "uses the detected workspace's root, not the subdirectory the command was run in" do
+      allow(detector).to receive(:detect).and_return("api")
+
+      cli.run(["workflow", "run", "rpiv"])
+
+      expect(workflow_command.calls.first.last).to include(workspace: "api", worktree: "/work/api")
+    end
+
+    it "prints one action document under --json, with the run in its row" do
+      cli.run(["workflow", "--json", "run", "rpiv"])
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => true, "action" => "workflow run", "status" => "ok", "summary" => {"started" => 1})
+      expect(doc["results"]).to eq([workflow_command.row])
+    end
+
+    it "reports a dry run as dry_run" do
+      workflow_command.row = {"workspace" => "api", "outcome" => "dry_run", "workflow" => "rpiv", "step" => "research", "pane" => "%5"}
+
+      cli.run(["workflow", "run", "rpiv", "--dry-run", "--json"])
+
+      expect(JSON.parse(output.string)).to include("status" => "dry_run", "results" => [workflow_command.row])
+    end
+
+    it "exits 1 when the step could not be started, with the run still in the document" do
+      workflow_command.row = workflow_command.row.merge("outcome" => "failed", "reason" => "pane_gone", "message" => "no pane %5")
+
+      expect { cli.run(["workflow", "run", "rpiv", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("ok" => true, "status" => "failed")
+
+      expect { cli.run(["workflow", "resume", "wr_1"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "lists --needs-me on the status help page" do
+      cli.run(["workflow", "status", "--help"])
+      expect(output.string).to include("workflow status --needs-me [--name WORKSPACE | --project [NAME]] [--json]")
+    end
+
+    it "resumes, cancels and rejects a run by id" do
+      cli.run(["workflow", "resume", "wr_1", "--from", "implement", "--note", "Fixed the fixture.", "--pane", "%8"])
+      cli.run(["workflow", "cancel", "wr_1"])
+      cli.run(["workflow", "reject", "wr_1", "--note", "Too big.", "--to", "research"])
+
+      expect(workflow_command.calls).to eq([
+        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", extra_attempts: nil, extra_tokens: nil, caller_pane: nil}],
+        [:cancel, {run: "wr_1"}],
+        [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: nil}]
+      ])
+    end
+
+    it "tells the command which pane a resume was run from, and exits 0 for one that changed nothing" do
+      stub_env("TMUX_PANE" => "%5")
+      workflow_command.row = workflow_command.row.merge("outcome" => "unchanged", "message" => "Nothing was done: an agent is working on step plan.")
+
+      cli.run(["workflow", "resume", "wr_1", "--json"])
+
+      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: "%5"}]])
+      expect(JSON.parse(output.string)).to include("ok" => true, "status" => "ok", "summary" => {"unchanged" => 1})
+    end
+
+    it "approves a gate, telling the command which pane it was run from" do
+      cli.run(["workflow", "approve", "wr_1", "--note", "Go."])
+      stub_env("TMUX_PANE" => "%5")
+      cli.run(["workflow", "approve", "wr_1"])
+
+      expect(workflow_command.calls.map(&:last)).to eq([{run: "wr_1", note: "Go.", step: nil, attempt: nil, note_sha256: nil, caller_pane: nil},
+        {run: "wr_1", note: nil, step: nil, attempt: nil, note_sha256: nil, caller_pane: "%5"}])
+    end
+
+    it "passes the step, attempt and note hash a client saw to approve and reject, in either form and with the run after --" do
+      sha = "0123456789abcdef" * 4
+      stub_env("TMUX_PANE" => "%5")
+      cli.run(["workflow", "approve", "--step=triage", "--attempt=2", "--note-sha256=#{sha}", "--json", "--", "wr_1"])
+      cli.run(["workflow", "reject", "wr_1", "--step", "triage", "--attempt", "2", "--note", "Redo F3.", "--to", "triage"])
+      cli.run(["workflow", "approve", "wr_1", "--step", "triage"])
+
+      expect(workflow_command.calls).to eq([
+        [:approve, {run: "wr_1", note: nil, step: "triage", attempt: 2, note_sha256: sha, caller_pane: "%5"}],
+        [:reject, {run: "wr_1", note: "Redo F3.", to: "triage", step: "triage", attempt: 2, extra_attempts: nil, extra_tokens: nil, caller_pane: "%5"}],
+        [:approve, {run: "wr_1", note: nil, step: "triage", attempt: nil, note_sha256: nil, caller_pane: "%5"}]
+      ])
+    end
+
+    it "runs the daemon's advance: a turn that ended in a pane, or the timer's look" do
+      cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5"])
+      cli.run(["workflow", "advance", "wr_1"])
+      cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z", "--stopped-at", "2026-10-04T12:30:00.500Z"])
+
+      expect(workflow_command.calls.map(&:last)).to eq([
+        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: nil, stopped_at: nil, background: [], caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: [], caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000),
+         stopped_at: Time.utc(2026, 10, 4, 12, 30, 0, 500_000), background: [], caller_pane: ENV["TMUX_PANE"]}
+      ])
+      expect(output.string).to eq("")
+    end
+
+    it "parses each --background-task on its first colon" do
+      cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--background-task", "MCP task:k12345678", "--background-task", "shell:b-1"])
+
+      expect(workflow_command.calls.last.last[:background]).to eq([{"id" => "k12345678", "type" => "MCP task"}, {"id" => "b-1", "type" => "shell"}])
+    end
+
+    it "refuses a note or an input that is not valid text before the command is called, as one usage document under --json" do
+      cut = (+"caf\xC3").force_encoding("UTF-8")
+      [["workflow", "approve", "wr_1", "--note", cut], ["workflow", "reject", "wr_1", "--note", cut], ["workflow", "resume", "wr_1", "--note", cut],
+        ["workflow", "run", "rpiv", "--note", cut], ["workflow", "run", "rpiv", "--input", "task=#{cut}"]].each do |argv|
+        output.truncate(0)
+        output.rewind
+        output.rewind
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        flag = argv.include?("--input") ? "--input" : "--note"
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage",
+          "error" => "#{flag} holds bytes that are not valid UTF-8 text (was it cut in the middle of a character?).")
+      end
+      expect(error_output.string).to eq("")
+      expect(workflow_command.calls).to be_empty
+    end
+
+    describe "with no UTF-8 locale, where Ruby tags every argument binary" do
+      it "still refuses a note cut in the middle of a character, before the command is called" do
+        expect { cli.run(["workflow", "approve", "wr_1", "--note", "caf\xC3".b.freeze, "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage",
+          "error" => "--note holds bytes that are not valid UTF-8 text (was it cut in the middle of a character?).")
+        expect(workflow_command.calls).to be_empty
+      end
+
+      it "hands the command a valid non-ASCII input and note as UTF-8 text, which a definition's text can be joined with" do
+        cli.run(["workflow", "run", "rpiv", "--input", "task=café".b.freeze, "--note", "naïve".b.freeze])
+
+        given = workflow_command.calls.first.last
+        expect(given[:inputs]).to eq("task" => "café")
+        expect([given[:inputs]["task"].encoding, given[:note].encoding]).to eq([Encoding::UTF_8, Encoding::UTF_8])
+        expect(Workspace::WorkflowDefinition.render("Café: {{inputs.task}}", "inputs.task" => given[:inputs]["task"])).to eq("Café: café")
+      end
+    end
+  end
 end
