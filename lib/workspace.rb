@@ -459,6 +459,7 @@ require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
 require_relative "workspace/pipeline_state"
 require_relative "workspace/sentinel_poller"
+require_relative "workspace/agentd_parts"
 require_relative "workspace/commands/agent"
 require_relative "workspace/run_result"
 require_relative "workspace/run_result_cleaner"
@@ -520,6 +521,133 @@ module Workspace
       attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: clock)
     recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, clock: clock)
     WorkflowEngine.new(starter: starter, evaluation: evaluation, decisions: decisions, recovery: recovery)
+  end
+
+  # Builds the agent daemon's per-workspace builder. `build_cli` gives it to {Commands::Agent}, and the
+  # daemon specs build theirs through it. The builder only constructs; {Commands::Agent#call} starts the parts.
+  #
+  # @param tmux [Workspace::Tmux] the tmux adapter the desks' panes read and type through
+  # @param config [Workspace::Config] path configuration (the prompt queue file)
+  # @param session_monitor_factory [#call] given the workspace name, builds its {Workspace::SessionMonitor}
+  # @param event_log [Workspace::EventLog, nil] gets the desks' and the handoff watcher's events
+  # @param context_reader [Workspace::ContextReader, nil] reads a pane's context use for the default {Workspace::AgentRestart}
+  # @param agent_restart_factory [#call, nil] builds the {Workspace::AgentRestart} that runs one `restart_agent`
+  #   message; nil builds the real one
+  # @param handoff_typer [Workspace::PromptTyper, Symbol, nil] what the default handoff watcher types through:
+  #   +:prompt_typer+ (the default) a {Workspace::PromptTyper} over the workspace's panes and monitor, nil none
+  # @param transcript_summary [Workspace::TranscriptSummary] says whether the main agent wrote anything after its Stop
+  # @param idle_prompt_check [Workspace::IdlePromptCheck] reads a pane's input box
+  # @param pane_bindings [Workspace::PaneBindings, nil] says which run a pane is bound to; a restart for a run
+  #   stops typing once that changes
+  # @param plan_paused_for [#call, nil] given the workspace name, whether its plan is paused, as the default
+  #   handoff watcher's +plan_paused+; nil: never paused
+  # @param hook_event_log_factory [#call, nil] given the workspace name, builds the {Workspace::HookEventLog}
+  #   each forwarded hook event is written to; nil writes none
+  # @param plan_progress_watcher_factory [#call, nil] given the workspace name, builds the
+  #   {Workspace::PlanProgressWatcher} that records `plan_progress`; nil watches nothing
+  # @param spine_watcher_factory [#call, nil] given the workspace name, builds the
+  #   {Workspace::SpineWatcher} that records `spine_changed` for edits made by hand; nil watches nothing
+  # @param spine_owner_report_factory [#call, nil] given the workspace name, builds the
+  #   {Workspace::SpineOwnerReport} that records `spine_changed` with `change: "owner_finished"` when
+  #   a stage owner's turn ends (Stop hook) or its stage is set completed; nil reports nothing
+  # @param agent_recovery_desk_factory [#call, nil] given the workspace, its tmux session, the session
+  #   monitor, the delivery lock, the event log, a pane-restarting check, the calls that claim and
+  #   release a pane (the claim registers the calling thread) and +rebind_queue+ (pane id, agent pid),
+  #   builds the {Workspace::AgentRecoveryDesk}, or answers nil when recovery is off or the workspace's
+  #   agent isn't Claude Code; nil (the default) never builds one
+  # @param agent_status_desk_factory [#call, nil] given the workspace, its tmux session, the session
+  #   monitor, the hook event log, the delivery lock and a pane-restarting check, builds the
+  #   {Workspace::AgentStatusDesk} that answers `status_request` and `status_post`; nil builds the real one
+  # @param prompt_queue_desk_factory [#call, nil] given the workspace, its tmux session, the session
+  #   monitor, the delivery lock, a pane-restarting check, the calls that claim and release a
+  #   pane for a restart and a pane-recovering check, builds the {Workspace::PromptQueueDesk} that
+  #   answers `prompt_send` and delivers queued prompts; nil builds the real one
+  # @param handoff_watcher_factory [#call, nil] given the keywords workspace, session_name, session_monitor,
+  #   delivery_lock, restarting and event_log, builds the {Workspace::HandoffWatcher} that follows up on a
+  #   stalled handoff and takes `handoff_watch`; nil builds the real one
+  # @param restart_runner_factory [#call, nil] given the session monitor, builds the {Workspace::RestartRunner};
+  #   nil builds the real one
+  # @param logger [Workspace::Logger] debug logger
+  # @param error_output [IO] where a restart worker's failure is written
+  # @return [Proc] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+ (the
+  #   {Workspace::RestartRegistry}), +pipeline_ref:+ (pane index to the work item on it) and +recovering:+
+  #   (pane id to whether a recovery holds it), the frozen {Workspace::AgentdParts}
+  def self.build_agentd_parts(tmux:, config:, session_monitor_factory:, event_log: nil, context_reader: nil, agent_restart_factory: nil,
+    handoff_typer: :prompt_typer, transcript_summary: TranscriptSummary.new, idle_prompt_check: IdlePromptCheck.new, pane_bindings: nil,
+    plan_paused_for: nil, hook_event_log_factory: nil, plan_progress_watcher_factory: nil, spine_watcher_factory: nil,
+    spine_owner_report_factory: nil, agent_recovery_desk_factory: nil, agent_status_desk_factory: nil, prompt_queue_desk_factory: nil,
+    handoff_watcher_factory: nil, restart_runner_factory: nil, logger: Workspace::Logger.new, error_output: $stderr)
+    agent_restart_factory ||= ->(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:,
+      delivery_facts: ->(_pane_id) {}, **proof) do
+      AgentRestart.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), context_reader: context_reader, session_name: session_name,
+        delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, agent_pid: agent_pid, pane_kind: pane_kind,
+        delivery_facts: delivery_facts, logger: logger, **proof)
+    end
+    agent_status_desk_factory ||= lambda do |workspace:, session_name:, session_monitor:, hook_event_log:, delivery_lock:, restarting:|
+      AgentStatusDesk.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), workspace: workspace, session_name: session_name, session_monitor: session_monitor,
+        hook_event_log: hook_event_log, delivery_lock: delivery_lock, restarting: restarting, logger: logger)
+    end
+    prompt_queue_desk_factory ||= ->(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:,
+      claim_restart:, release_restart:, recovering: ->(_pane_id) { false }) do
+      PromptQueueDesk.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), workspace: workspace, session_name: session_name, session_monitor: session_monitor,
+        store: PromptQueueStore.new(path: config.prompt_queue_path(workspace)), delivery_lock: delivery_lock,
+        restarting: restarting, claim_restart: claim_restart, release_restart: release_restart,
+        recovering: recovering, event_log: event_log, logger: logger)
+    end
+    handoff_watcher_factory ||= lambda do |workspace:, session_name:, session_monitor:, delivery_lock:, restarting:, event_log:|
+      typer = if handoff_typer == :prompt_typer
+        PromptTyper.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_monitor: session_monitor, logger: logger)
+      else
+        handoff_typer
+      end
+      paused = plan_paused_for ? {plan_paused: plan_paused_for.call(workspace)} : {}
+      HandoffWatcher.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor,
+        typer: typer, delivery_lock: delivery_lock, restarting: restarting, event_log: event_log, logger: logger, **paused)
+    end
+
+    lambda do |workspace:, session_name:, delivery_lock:, registry:, pipeline_ref:, recovering:|
+      hook_event_log = hook_event_log_factory&.call(workspace)
+      monitor = session_monitor_factory.call(workspace)
+      restart_runner = if restart_runner_factory
+        restart_runner_factory.call(monitor)
+      else
+        RestartRunner.new(restart_factory: agent_restart_factory, registry: registry, panes: PaneFactory.new(tmux: tmux, session_name: session_name),
+          session_name: session_name, delivery_lock: delivery_lock, pipeline_ref: pipeline_ref,
+          monitor: monitor, idle_prompt_check: idle_prompt_check,
+          transcript_summary: transcript_summary, pane_bindings: pane_bindings,
+          error_output: error_output, logger: logger)
+      end
+      plan_progress_watcher = plan_progress_watcher_factory&.call(workspace)
+      spine_owner_report = spine_owner_report_factory&.call(workspace)
+      spine_watcher = spine_watcher_factory&.call(workspace)
+      restarting = ->(pane_id) { registry.held?(pane_id) }
+      status_desk = agent_status_desk_factory.call(workspace: workspace, session_name: session_name,
+        session_monitor: monitor, hook_event_log: hook_event_log, delivery_lock: delivery_lock, restarting: restarting)
+      # A --clear-first delivery holds the pane in the registry from its clear
+      # until its text is typed, so restart_agent and status requests keep out.
+      queue_desk = prompt_queue_desk_factory.call(workspace: workspace, session_name: session_name,
+        session_monitor: monitor, delivery_lock: delivery_lock, restarting: restarting,
+        claim_restart: ->(pane_id) { registry.claim_for_queue(pane_id) },
+        release_restart: ->(pane_id, token) { registry.release(pane_id, token) },
+        recovering: recovering)
+      # The recovery desk claims a pane through RestartRegistry#claim_for_recovery on the attempt's own
+      # thread, so RestartRegistry#stop_all can kill an attempt; the claim is refused while any claim holds
+      # the pane or the daemon is shutting down, and a release matches by the token the claim returned.
+      queue_path = config.prompt_queue_path(workspace) if agent_recovery_desk_factory
+      recovery_desk = agent_recovery_desk_factory&.call(workspace: workspace, session_name: session_name,
+        session_monitor: monitor, delivery_lock: delivery_lock, event_log: event_log,
+        restarting: restarting,
+        claim_restart: ->(pane_id) { registry.claim_for_recovery(pane_id) },
+        release_restart: ->(pane_id, token) { registry.release(pane_id, token) },
+        rebind_queue: ->(pane_id, agent_pid) { PromptQueueStore.new(path: queue_path).rebind_agent(pane_id, agent_pid: agent_pid) })
+      # A recovery can hold a quiet pane whose agent is stopped, so a follow-up waits for it as for a restart.
+      handoff_watcher = handoff_watcher_factory.call(workspace: workspace, session_name: session_name,
+        session_monitor: monitor, delivery_lock: delivery_lock, event_log: event_log,
+        restarting: ->(pane_id) { restarting.call(pane_id) || recovering.call(pane_id) })
+      AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner,
+        plan_progress_watcher: plan_progress_watcher, spine_owner_report: spine_owner_report, spine_watcher: spine_watcher,
+        status_desk: status_desk, queue_desk: queue_desk, recovery_desk: recovery_desk, handoff_watcher: handoff_watcher).freeze
+    end
   end
 
   # Assembles the full dependency graph and returns a ready-to-run CLI instance.
@@ -952,6 +1080,25 @@ module Workspace
       agent_commands: agent_commands, alert_config: alert_config, agentd_config: agentd_config,
       lock_reaper: lock_reaper, ps_timeout: ps_timeout, event_log: event_log, context_reader: context_reader,
       label_reader: TranscriptLabel.new, task_store: task_store, scan_slots: scan_slots)
+    notes_dir_of = ->(ws) { notes_command.info(name: ws)["dir"] }
+    agentd_parts = build_agentd_parts(
+      tmux: tmux,
+      config: config,
+      session_monitor_factory: session_monitor_builder,
+      event_log: event_log,
+      context_reader: context_reader,
+      agent_recovery_desk_factory: agent_recovery_desk_factory,
+      transcript_summary: TranscriptSummary.new,
+      idle_prompt_check: IdlePromptCheck.new,
+      pane_bindings: pane_bindings,
+      plan_paused_for: ->(workspace) { PlanPaused.new(workspace: workspace, dir_resolver: notes_dir_of) },
+      plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
+      spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: notes_dir_of, event_log: event_log, logger: logger) },
+      spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: notes_dir_of, event_log: event_log, logger: logger) },
+      hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
+      logger: logger,
+      error_output: error_output
+    )
     agent_command = Commands::Agent.new(
       config: config,
       tmux: tmux,
@@ -959,25 +1106,12 @@ module Workspace
       agent_commands: agent_commands,
       work_coordinator_client: work_coordinator_client,
       pipeline_config: pipeline_config,
-      session_monitor_factory: session_monitor_builder,
+      parts: agentd_parts,
       event_log: event_log,
       context_reader: context_reader,
       workflow_nudger: workflow_nudger,
       name_migration: name_migration,
-      agent_recovery_desk_factory: agent_recovery_desk_factory,
       restart_registry: RestartRegistry.new,
-      transcript_summary: TranscriptSummary.new,
-      idle_prompt_check: IdlePromptCheck.new,
-      pane_bindings: pane_bindings,
-      plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
-      spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
-      handoff_watcher_factory: ->(workspace:, session_monitor:, session_name:, **rest) {
-        HandoffWatcher.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor, logger: logger,
-          plan_paused: PlanPaused.new(workspace: workspace, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }),
-          typer: PromptTyper.new(panes: PaneFactory.new(tmux: tmux, session_name: session_name), session_monitor: session_monitor, logger: logger), **rest)
-      },
-      spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
-      hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
       logger: logger,
       output: output,
       error_output: error_output

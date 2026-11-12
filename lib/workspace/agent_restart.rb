@@ -123,7 +123,7 @@ module Workspace
       wall_clock: -> { Time.now },
       sleeper: ->(seconds) { sleep(seconds) },
       quiet_timeout: QUIET_TIMEOUT, quiet_for: QUIET_FOR, poll_interval: POLL_INTERVAL,
-      turn_over_for: TURN_OVER_FOR, prompt_confirm_timeout: PROMPT_CONFIRM_TIMEOUT, prompt_settle: PROMPT_SETTLE, reply_timeout: WorkflowPanes::REPLY_TIMEOUT,
+      turn_over_for: TURN_OVER_FOR, prompt_confirm_timeout: PROMPT_CONFIRM_TIMEOUT, prompt_settle: PROMPT_SETTLE, reply_timeout: AgentProtocol::RESTART_REPLY_TIMEOUT,
       logger: Workspace::Logger.new)
       @panes = panes
       @context_reader = context_reader

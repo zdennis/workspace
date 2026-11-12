@@ -37,8 +37,10 @@ module Workspace
       # @param signal_trapper [#trap] receives SIGTERM/SIGINT handler registration
       # @param sentinel_poller_factory [#call] builds a poller for a session/pane/token
       # @param token_generator [#call] returns a fresh completion token for one stage dispatch
+      # @param parts [#call] given +workspace:+, +session_name:+, +delivery_lock:+, +registry:+, +pipeline_ref:+
+      #   and +recovering:+, builds the {Workspace::AgentdParts} of the workspace served, none of them started
+      #   ({Workspace.build_agentd_parts} returns it)
       # @param clock [#call] returns the current Time, for stage deadlines
-      # @param session_monitor_factory [#call] builds the session monitor for a workspace name
       # @param retry_backoff [Float] seconds to wait between status report retries
       # @param event_log [Workspace::EventLog, nil] records dispatches, stage
       #   completions and failures, and (through the session monitor) each agent
@@ -48,39 +50,8 @@ module Workspace
       #   `restart_agent`; nil omits context fields and refuses restarts
       # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes a workflow run when a turn ends in
       #   its pane, and on a timer; nil leaves workflow runs alone
-      # @param agent_restart_factory [#call] builds the {Workspace::AgentRestart}
-      #   that runs one `restart_agent` message
-      # @param transcript_summary [Workspace::TranscriptSummary] says whether the main
-      #   agent wrote anything after its Stop
-      # @param idle_prompt_check [Workspace::IdlePromptCheck] reads a pane's input box
-      # @param pane_bindings [Workspace::PaneBindings, nil] says which run a pane is
-      #   bound to; a restart for a run stops typing once that changes
-      # @param hook_event_log_factory [#call, nil] given the workspace name, builds the
-      #   {Workspace::HookEventLog} each forwarded hook event is written to; nil writes none
-      # @param agent_status_desk_factory [#call, nil] given the workspace, its tmux session, the session
-      #   monitor, the hook event log, the delivery lock and a pane-restarting check, builds the
-      #   {Workspace::AgentStatusDesk} that answers `status_request` and `status_post`; nil builds the default one
-      # @param prompt_queue_desk_factory [#call, nil] given the workspace, its tmux session, the session
-      #   monitor, the delivery lock, a pane-restarting check, the calls that claim and release a
-      #   pane for a restart and a pane-recovering check, builds the {Workspace::PromptQueueDesk} that
-      #   answers `prompt_send` and delivers queued prompts; nil builds the default one
-      # @param agent_recovery_desk_factory [#call, nil] given the workspace, its tmux session, the session
-      #   monitor, the delivery lock, the event log, a pane-restarting check, the calls that claim and
-      #   release a pane (the claim registers the calling thread) and +rebind_queue+ (pane id, agent pid),
-      #   builds the {Workspace::AgentRecoveryDesk}, or answers nil when recovery is off or the workspace's
-      #   agent isn't Claude Code; nil (the default) never builds one
-      # @param handoff_watcher_factory [#call, nil] given the keywords workspace, session_name, session_monitor,
-      #   delivery_lock, restarting and event_log, builds the {Workspace::HandoffWatcher} that follows up on a
-      #   stalled handoff and takes `handoff_watch`; nil builds the default one (its plan is never paused)
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
       #   to lowercase before the socket is claimed; nil renames nothing
-      # @param plan_progress_watcher_factory [#call, nil] given the workspace name, builds the
-      #   {Workspace::PlanProgressWatcher} that records `plan_progress`; nil watches nothing
-      # @param spine_watcher_factory [#call, nil] given the workspace name, builds the
-      #   {Workspace::SpineWatcher} that records `spine_changed` for edits made by hand; nil watches nothing
-      # @param spine_owner_report_factory [#call, nil] given the workspace name, builds the
-      #   {Workspace::SpineOwnerReport} that records `spine_changed` with `change: "owner_finished"` when
-      #   a stage owner's turn ends (Stop hook) or its stage is set completed; nil reports nothing
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
@@ -88,13 +59,11 @@ module Workspace
       #   once when the session monitor starts; nil knows only the providers' executables
       # @param restart_registry [Workspace::RestartRegistry] the panes being restarted; one is
       #   built by default
-      # @param restart_runner_factory [#call, nil] given the session monitor, builds the
-      #   {Workspace::RestartRunner} once, when the first restart needs it; nil builds the real one
       # @param current_name [String, nil] the workspace served before {#call} starts, so {#handle}
       #   works without it; +call+ sets it from its +name+
       # @param socket_poll_interval [Numeric] seconds between the socket watcher's passes
       # @param workflow_tick_passes [Integer] the watcher ticks the workflow nudger every this many passes
-      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, session_monitor_factory:, agent_labels: nil, agent_commands: nil, pipeline_state: nil,
+      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, parts:, agent_labels: nil, agent_commands: nil, pipeline_state: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
         sentinel_poller_factory: nil,
@@ -104,22 +73,9 @@ module Workspace
         event_log: nil,
         context_reader: nil,
         workflow_nudger: nil,
-        agent_restart_factory: nil,
-        transcript_summary: TranscriptSummary.new,
-        idle_prompt_check: IdlePromptCheck.new,
-        pane_bindings: nil,
-        hook_event_log_factory: nil,
-        agent_status_desk_factory: nil,
-        prompt_queue_desk_factory: nil,
-        agent_recovery_desk_factory: nil,
         restart_registry: RestartRegistry.new,
-        restart_runner_factory: nil,
         current_name: nil,
-        handoff_watcher_factory: nil,
         name_migration: nil,
-        plan_progress_watcher_factory: nil,
-        spine_watcher_factory: nil,
-        spine_owner_report_factory: nil,
         socket_poll_interval: SOCKET_POLL_INTERVAL,
         workflow_tick_passes: WORKFLOW_TICK_PASSES,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
@@ -139,26 +95,13 @@ module Workspace
         @sentinel_poller_factory = sentinel_poller_factory || method(:build_sentinel_poller)
         @token_generator = token_generator
         @clock = clock
-        @session_monitor_factory = session_monitor_factory
+        @parts = parts
         @session_monitor = nil
         @context_reader = context_reader
         @workflow_nudger = workflow_nudger
-        @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
-        @transcript_summary = transcript_summary
-        @idle_prompt_check = idle_prompt_check
-        @pane_bindings = pane_bindings
-        @hook_event_log_factory = hook_event_log_factory
-        @plan_progress_watcher_factory = plan_progress_watcher_factory
-        @spine_watcher_factory = spine_watcher_factory
-        @spine_owner_report_factory = spine_owner_report_factory
-        @agent_status_desk_factory = agent_status_desk_factory || method(:build_agent_status_desk)
-        @prompt_queue_desk_factory = prompt_queue_desk_factory || method(:build_prompt_queue_desk)
-        @agent_recovery_desk_factory = agent_recovery_desk_factory
         @agent_recovery_desk = nil
-        @handoff_watcher_factory = handoff_watcher_factory || method(:build_handoff_watcher)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = restart_registry
-        @restart_runner_factory = restart_runner_factory || method(:build_restart_runner)
         @restart_runner = nil
         # When the main agent's current turn began, by pane id, for the workflow nudger.
         @turn_starts = {}
@@ -228,37 +171,26 @@ module Workspace
         @server = UNIXServer.new(socket_path)
         install_signal_handlers
 
-        @hook_event_log = @hook_event_log_factory&.call(name)
-        @session_monitor = @session_monitor_factory.call(name)
         # Built here, before any worker thread can ask for it.
-        @restart_runner = @restart_runner_factory.call(@session_monitor)
+        parts = @parts.call(workspace: name, session_name: @tmux_session, delivery_lock: @delivery_lock,
+          registry: @restarts, pipeline_ref: method(:pipeline_ref_on),
+          recovering: ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false })
+        @hook_event_log = parts.hook_event_log
+        @session_monitor = parts.monitor
+        @restart_runner = parts.restart_runner
         @session_monitor.start
-        @plan_progress_watcher = @plan_progress_watcher_factory&.call(name)
+        @plan_progress_watcher = parts.plan_progress_watcher
         @plan_progress_watcher&.start
-        @spine_owner_report = @spine_owner_report_factory&.call(name)
-        @spine_watcher = @spine_watcher_factory&.call(name)
+        @spine_owner_report = parts.spine_owner_report
+        @spine_watcher = parts.spine_watcher
         @spine_watcher.owner_report = @spine_owner_report if @spine_watcher.respond_to?(:owner_report=)
         @spine_watcher&.start
-        restarting = ->(pane_id) { @restarts.held?(pane_id) }
-        recovering = ->(pane_id) { @agent_recovery_desk&.holding?(pane_id) || false }
-        @agent_status_desk = @agent_status_desk_factory.call(workspace: name, session_name: @tmux_session,
-          session_monitor: @session_monitor, hook_event_log: @hook_event_log, delivery_lock: @delivery_lock,
-          restarting: restarting)
-        # A --clear-first delivery holds the pane in @restarts from its clear
-        # until its text is typed, so restart_agent and status requests keep out.
-        @prompt_queue_desk = @prompt_queue_desk_factory.call(workspace: name, session_name: @tmux_session,
-          session_monitor: @session_monitor, delivery_lock: @delivery_lock, restarting: restarting,
-          claim_restart: ->(pane_id) { @restarts.claim_for_queue(pane_id) },
-          release_restart: ->(pane_id, token) { @restarts.release(pane_id, token) },
-          recovering: recovering)
-        @agent_recovery_desk = build_agent_recovery_desk(name, restarting)
+        @agent_status_desk = parts.status_desk
+        @prompt_queue_desk = parts.queue_desk
+        @agent_recovery_desk = parts.recovery_desk
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
         @session_monitor.on_scan = -> { scan_desks } if @session_monitor.respond_to?(:on_scan=)
-
-        # A recovery can hold a quiet pane whose agent is stopped, so a follow-up waits for it as for a restart.
-        @handoff_watcher = @handoff_watcher_factory.call(workspace: name, session_name: @tmux_session,
-          session_monitor: @session_monitor, delivery_lock: @delivery_lock, event_log: @event_log,
-          restarting: ->(pane_id) { restarting.call(pane_id) || recovering.call(pane_id) })
+        @handoff_watcher = parts.handoff_watcher
 
         @output.puts "workspace agent '#{name}' ready"
         log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
@@ -631,7 +563,7 @@ module Workspace
           wait = message["wait"] == true
           reply_to(client, started) unless wait
           @restarts.start_worker(pane_id) do
-            restart_runner.run(started, message["prompt"], message["force"] == true,
+            @restart_runner.run(started, message["prompt"], message["force"] == true,
               timeout, wait ? client : nil, run_id: message["run_id"])
           end
           spawned = true
@@ -776,30 +708,11 @@ module Workspace
         @tmux_session = @tmux.session_name_for(name)
       end
 
-      def restart_runner
-        @restart_runner ||= @restart_runner_factory.call(@session_monitor)
-      end
-
       # Stops new recovery claims and marks the daemon as going down; takes no lock,
       # so the signal handler may call it.
       def begin_shutdown
         @shutting_down = true
         @restarts.shut_down!
-      end
-
-      def build_restart_runner(session_monitor)
-        RestartRunner.new(restart_factory: @agent_restart_factory, registry: @restarts, panes: PaneFactory.new(tmux: @tmux, session_name: @tmux_session),
-          session_name: @tmux_session, delivery_lock: @delivery_lock, pipeline_ref: method(:pipeline_ref_on),
-          monitor: session_monitor, idle_prompt_check: @idle_prompt_check,
-          transcript_summary: @transcript_summary, pane_bindings: @pane_bindings,
-          error_output: @error_output, logger: @logger)
-      end
-
-      def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:,
-        delivery_facts: ->(_pane_id) {}, **proof)
-        AgentRestart.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), context_reader: @context_reader, session_name: session_name,
-          delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, agent_pid: agent_pid, pane_kind: pane_kind,
-          delivery_facts: delivery_facts, logger: @logger, **proof)
       end
 
       def urgent_steer_reply(ref, entry, body)
@@ -1263,48 +1176,11 @@ module Workspace
         end
       end
 
-      def build_agent_status_desk(workspace:, session_name:, session_monitor:, hook_event_log:, delivery_lock:, restarting:)
-        AgentStatusDesk.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), workspace: workspace, session_name: session_name, session_monitor: session_monitor,
-          hook_event_log: hook_event_log, delivery_lock: delivery_lock, restarting: restarting, logger: @logger)
-      end
-
       # Shows a hook event to the handoff watcher. A failure there is logged and costs the monitor nothing.
       def notify_handoff_watcher(message)
         @handoff_watcher&.session_event(message)
       rescue => e
         @logger.debug { "handoff watcher: #{e.class}: #{e.message}" }
-      end
-
-      def build_handoff_watcher(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:, event_log:)
-        HandoffWatcher.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor,
-          typer: PromptTyper.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), session_monitor: session_monitor, logger: @logger),
-          delivery_lock: delivery_lock, restarting: restarting, event_log: event_log, logger: @logger)
-      end
-
-      def build_prompt_queue_desk(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:,
-        claim_restart:, release_restart:, recovering: ->(_pane_id) { false })
-        PromptQueueDesk.new(panes: PaneFactory.new(tmux: @tmux, session_name: session_name), workspace: workspace, session_name: session_name, session_monitor: session_monitor,
-          store: PromptQueueStore.new(path: @config.prompt_queue_path(workspace)), delivery_lock: delivery_lock,
-          restarting: restarting, claim_restart: claim_restart, release_restart: release_restart,
-          recovering: recovering, event_log: @event_log, logger: @logger)
-      end
-
-      # Asks the injected factory for the recovery desk. The desk claims a pane
-      # through {RestartRegistry#claim_for_recovery} on the attempt's own thread,
-      # so {RestartRegistry#stop_all} can kill an attempt; the claim is refused
-      # while any claim holds the pane or the daemon is shutting down, and a
-      # release matches by the token the claim returned.
-      #
-      # @return [Workspace::AgentRecoveryDesk, nil] nil with no factory, with recovery off, or for another agent
-      def build_agent_recovery_desk(workspace, restarting)
-        return nil unless @agent_recovery_desk_factory
-        queue_path = @config.prompt_queue_path(workspace)
-        @agent_recovery_desk_factory.call(workspace: workspace, session_name: @tmux_session,
-          session_monitor: @session_monitor, delivery_lock: @delivery_lock, event_log: @event_log,
-          restarting: restarting,
-          claim_restart: ->(pane_id) { @restarts.claim_for_recovery(pane_id) },
-          release_restart: ->(pane_id, token) { @restarts.release(pane_id, token) },
-          rebind_queue: ->(pane_id, agent_pid) { PromptQueueStore.new(path: queue_path).rebind_agent(pane_id, agent_pid: agent_pid) })
       end
 
       # The session monitor's after-scan call: both desks run, and one that

@@ -120,7 +120,7 @@ RSpec.describe Workspace::Commands::Agent do
   let(:workflow_tick_passes) { described_class::WORKFLOW_TICK_PASSES }
 
   subject(:agent) do
-    described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+    build_agentd(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
 
       config: config,
       restart_registry: restart_registry,
@@ -1372,7 +1372,7 @@ RSpec.describe Workspace::Commands::Agent do
       coordinator.start
       write_pipeline_config
 
-      unwired = described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+      unwired = build_agentd(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
 
         config: config, tmux: tmux, work_coordinator_client: client,
         pipeline_config: pipeline_config,
@@ -1462,7 +1462,7 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     subject(:agent) do
-      described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+      build_agentd(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
         config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
         pipeline_state: pipeline_state, signal_trapper: signal_trapper, name_migration: name_migration, output: output, error_output: error_output)
     end
@@ -1557,7 +1557,7 @@ RSpec.describe Workspace::Commands::Agent do
       builder = Workspace::SessionMonitorBuilder.new(tmux: tmux, logger: Workspace::Logger.new, error_output: error_output,
         alert_config: alert_config, agentd_config: agentd_config, lock_reaper: lock_reaper, ps_timeout: 5,
         scan_slots: Workspace::ScanSlotLimiter.new(dir: File.join(tmpdir, "slots")))
-      configured = described_class.new(
+      configured = build_agentd(
         config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
         pipeline_state: pipeline_state, signal_trapper: signal_trapper, session_monitor_factory: builder,
         output: output, error_output: error_output
@@ -1581,7 +1581,7 @@ RSpec.describe Workspace::Commands::Agent do
   describe "#handle, before the daemon has started" do
     let(:coordinator_client) { instance_double(Workspace::WorkCoordinatorClient, report_status: {"ok" => true}) }
     let(:served) do
-      described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+      build_agentd(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
         config: config, tmux: tmux, work_coordinator_client: coordinator_client,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state, current_name: "myapp",
         token_generator: token_generator, clock: -> { now }, retry_backoff: 0,
@@ -1790,7 +1790,7 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     subject(:agent) do
-      described_class.new(
+      build_agentd(
         config: config, tmux: tmux, work_coordinator_client: client,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state,
         epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -1875,7 +1875,7 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     subject(:agent) do
-      described_class.new(
+      build_agentd(
         config: config, tmux: tmux, work_coordinator_client: client,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state,
         epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -1935,7 +1935,7 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     subject(:agent) do
-      described_class.new(
+      build_agentd(
         config: config, tmux: tmux, work_coordinator_client: client,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state,
         epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2056,7 +2056,7 @@ RSpec.describe Workspace::Commands::Agent do
       let(:factory) { ->(**args) { built << args && recovery_desk } }
 
       subject(:agent) do
-        described_class.new(
+        build_agentd(
           config: config, restart_registry: restart_registry, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2090,7 +2090,7 @@ RSpec.describe Workspace::Commands::Agent do
 
       it "answers false to the recovering check with no desk" do
         queue = []
-        no_desk = described_class.new(
+        no_desk = build_agentd(
           config: config, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2252,7 +2252,7 @@ RSpec.describe Workspace::Commands::Agent do
       end
 
       subject(:agent) do
-        described_class.new(
+        build_agentd(
           config: config, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2281,7 +2281,7 @@ RSpec.describe Workspace::Commands::Agent do
       let(:built_for) { [] }
 
       subject(:agent) do
-        described_class.new(
+        build_agentd(
           config: config, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2316,7 +2316,7 @@ RSpec.describe Workspace::Commands::Agent do
       let(:built_for) { [] }
 
       subject(:agent) do
-        described_class.new(
+        build_agentd(
           config: config, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2346,7 +2346,7 @@ RSpec.describe Workspace::Commands::Agent do
       let(:built_for) { [] }
 
       subject(:agent) do
-        described_class.new(
+        build_agentd(
           config: config, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2399,7 +2399,7 @@ RSpec.describe Workspace::Commands::Agent do
       let(:built) { [] }
 
       subject(:agent) do
-        described_class.new(
+        build_agentd(
           config: config, restart_registry: restart_registry, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2527,17 +2527,13 @@ RSpec.describe Workspace::Commands::Agent do
         end
 
         subject(:agent) do
-          described_class.new(
+          build_agentd(
             config: config, tmux: tmux, work_coordinator_client: client,
             pipeline_config: pipeline_config, pipeline_state: pipeline_state,
             epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
             sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
             clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { real_monitor },
-            handoff_watcher_factory: ->(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:, event_log:) {
-              Workspace::HandoffWatcher.new(panes: Workspace::PaneFactory.new(tmux: tmux, session_name: session_name), session_name: session_name, workspace: workspace, session_monitor: session_monitor,
-                typer: nil, delivery_lock: delivery_lock, restarting: restarting)
-            },
-            output: output, error_output: error_output
+            handoff_typer: nil, output: output, error_output: error_output
           )
         end
 
@@ -2606,7 +2602,7 @@ RSpec.describe Workspace::Commands::Agent do
       end
 
       subject(:agent) do
-        described_class.new(
+        build_agentd(
           config: config, restart_registry: restart_registry, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2691,7 +2687,7 @@ RSpec.describe Workspace::Commands::Agent do
       end
 
       subject(:agent) do
-        described_class.new(
+        build_agentd(
           config: config, restart_registry: restart_registry, tmux: tmux, work_coordinator_client: client,
           pipeline_config: pipeline_config, pipeline_state: pipeline_state,
           epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2795,7 +2791,7 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     it "serves hook events as before with no nudger wired" do
-      plain = described_class.new(
+      plain = build_agentd(
         config: config, tmux: tmux, work_coordinator_client: client,
         pipeline_config: pipeline_config, pipeline_state: pipeline_state,
         epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
@@ -2830,7 +2826,7 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     def build_agent(agent_commands)
-      described_class.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+      build_agentd(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
         config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
         pipeline_state: pipeline_state, agent_labels: labels, agent_commands: agent_commands, current_name: "myapp",
         output: output, error_output: error_output)

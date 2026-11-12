@@ -132,7 +132,7 @@ RSpec.describe "agent-run restart adversarial CLI behavior" do
     output = ReadyAnnouncingOutput.new
     error_output = StringIO.new
 
-    agent = Workspace::Commands::Agent.new(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
+    agent = build_agentd(config: config, tmux: tmux, work_coordinator_client: coordinator_client,
       pipeline_config: pipeline_config, signal_trapper: signal_trapper,
       session_monitor_factory: ->(_name) { monitor }, context_reader: context_reader,
       agent_restart_factory: ->(**kwargs) { restart.build(**kwargs) }, output: output, error_output: error_output)

@@ -101,7 +101,7 @@ RSpec.describe "Pipeline reliability adversarial concurrency" do
   end
 
   def build_agent(client:, pipeline_state:, factory: fake_factory, **extra)
-    Workspace::Commands::Agent.new(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
+    build_agentd(session_monitor_factory: default_session_monitor_builder(tmux: tmux, error_output: error_output),
 
       config: config, tmux: tmux, work_coordinator_client: client,
       pipeline_config: pipeline_config, pipeline_state: pipeline_state,
