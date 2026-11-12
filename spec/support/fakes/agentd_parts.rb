@@ -399,3 +399,29 @@ class RecordingHookDesk
     nil
   end
 end
+
+# Fake of Workspace::AgentdRouter, the socket server's peer: +handle+ records each message and answers
+# +answer+ (or raises +fail_with+), and +reply+ records each reply and writes nothing.
+class RecordingRouter
+  CONTROL_METHODS = %i[calls replies].freeze
+
+  attr_reader :calls, :replies
+
+  def initialize(answer: nil, fail_with: nil)
+    @answer = answer
+    @fail_with = fail_with
+    @calls = []
+    @replies = []
+  end
+
+  def handle(message, client = nil)
+    @calls << [:handle, message, client]
+    raise @fail_with if @fail_with
+    @answer
+  end
+
+  def reply(client, payload)
+    @replies << [client, payload]
+    nil
+  end
+end

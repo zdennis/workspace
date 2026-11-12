@@ -267,4 +267,10 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::AgentRecoveryDesk, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingRouter do
+    it "accepts every call AgentdRouter accepts" do
+      expect(FakeContract.problems(described_class, Workspace::AgentdRouter, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end

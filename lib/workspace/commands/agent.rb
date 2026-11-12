@@ -1,7 +1,6 @@
 require "socket"
 require "json"
 require "securerandom"
-require "shellwords"
 
 module Workspace
   module Commands
@@ -9,12 +8,13 @@ module Workspace
     # registers with the work-coordinator, binds its own Unix socket, and
     # serves commands until terminated.
     class Agent
-      # How often the socket watcher checks that the agent's socket file is still there.
-      SOCKET_POLL_INTERVAL = 5
+      # How often the socket watcher checks that the agent's socket file is still there
+      # ({AgentdSocketServer::POLL_INTERVAL}).
+      SOCKET_POLL_INTERVAL = AgentdSocketServer::POLL_INTERVAL
 
       # How many socket watcher passes go by between looks at the workspace's
-      # workflow runs (one waiting for a lock is woken to ask for it again).
-      WORKFLOW_TICK_PASSES = 3
+      # workflow runs (one waiting for a lock is woken to ask for it again; {AgentdSocketServer::TICK_PASSES}).
+      WORKFLOW_TICK_PASSES = AgentdSocketServer::TICK_PASSES
 
       # Longest confirm wait a restart_agent message may ask for, in seconds ({AgentdRestartDesk::MAX_TIMEOUT}).
       MAX_RESTART_TIMEOUT = AgentdRestartDesk::MAX_TIMEOUT
@@ -56,8 +56,6 @@ module Workspace
         socket_poll_interval: SOCKET_POLL_INTERVAL,
         workflow_tick_passes: WORKFLOW_TICK_PASSES,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
-        @socket_poll_interval = socket_poll_interval
-        @workflow_tick_passes = workflow_tick_passes
         @name_migration = name_migration
         @config = config
         @tmux = tmux
@@ -76,9 +74,9 @@ module Workspace
         @restart_desk = nil
         @pipeline_desk = nil
         @event_log = event_log
-        @shutting_down = false
-        @shutdown_signal = Queue.new
-        @server = nil
+        # Bound through this class's UNIXServer, which the TERM handler's spec replaces.
+        @socket_server = AgentdSocketServer.new(bind: ->(path) { UNIXServer.new(path) }, poll_interval: socket_poll_interval,
+          tick_passes: workflow_tick_passes, logger: logger, output: output, error_output: error_output)
         # Deliveries to panes take turns under this lock, taken before any
         # desk's own state lock and never inside it. A delivery can take
         # seconds to check, so it keeps a work item from moving between
@@ -87,6 +85,7 @@ module Workspace
         @logger = logger
         @output = output
         @error_output = error_output
+        @router = route_for(nil)
         return unless current_name
 
         serve_workspace(current_name)
@@ -116,7 +115,7 @@ module Workspace
         @pipeline_config.stages_for(name)
         @pipeline_config.literal_sentinel_warnings(name).each { |warning| @error_output.puts "Warning: #{warning}" }
 
-        return false unless claim_socket(name, socket_path, force: force)
+        return false unless @socket_server.claim(name, socket_path, force: force)
 
         build_pipeline_desk unless @pipeline_desk
         @pipeline_desk.recover_in_flight
@@ -125,7 +124,7 @@ module Workspace
         registered = @pipeline_desk.register(socket: socket_path, epoch: epoch, wc_socket: wc_socket)
         @error_output.puts "workspace agent: work-coordinator unavailable; will keep retrying in the background" unless registered
 
-        @server = UNIXServer.new(socket_path)
+        @socket_server.listen(socket_path)
         install_signal_handlers
 
         # Built here, before any worker thread can ask for it.
@@ -149,13 +148,14 @@ module Workspace
         @output.puts "workspace agent '#{name}' ready"
         log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
         @daemon_started = true
-        watcher = start_socket_watcher(socket_path, needs_registration: !registered)
-        serve
+        watcher = @socket_server.watch(socket_path, needs_registration: !registered,
+          on_tick: -> { @workflow_nudger&.tick(@current_name) }, re_register: -> { @pipeline_desk.re_register })
+        @socket_server.serve(@router)
 
         true
       ensure
         begin_shutdown
-        @shutdown_signal << :stop
+        @socket_server.wake
         @session_monitor&.stop
         @plan_progress_watcher&.stop
         @spine_watcher&.stop
@@ -163,42 +163,9 @@ module Workspace
         @restarts.stop_all
         watcher&.join(1)
         watcher&.kill
-        shutdown(socket_path) if @server
+        shutdown(socket_path) if @socket_server.listening?
         log_activity("daemon_stopped", "workspace" => name, "daemon" => "agent", "pid" => Process.pid) if @daemon_started
         @daemon_started = false
-      end
-
-      # Accepts and dispatches one JSON message per connection until the server
-      # closes. Reads +@server+ on every pass so a socket the watcher rebound
-      # takes over without the loop restarting.
-      #
-      # @return [void]
-      def serve
-        loop do
-          break if @shutting_down
-          client = @server.accept
-          # A restart_agent caller that waits for the outcome gets its reply
-          # from the worker thread, which then owns (and closes) the socket.
-          handed_off = false
-          begin
-            line = client.gets
-            handed_off = dispatch(JSON.parse(line), client) == :handed_off if line
-          rescue JSON::ParserError => e
-            @logger.debug { "malformed message dropped: #{e.message}" }
-            reply_to(client, AgentProtocol.error(AgentProtocol::MALFORMED_MESSAGE))
-          rescue => e
-            # One bad pane or a wedged tmux must cost us this connection, not
-            # the agent and every pipeline running under it.
-            @error_output.puts "workspace agent: dropped a message: #{e.message}"
-            reply_to(client, AgentProtocol.error(AgentProtocol::INTERNAL_ERROR))
-          ensure
-            client.close unless handed_off
-          end
-        rescue IOError, Errno::EBADF
-          # Either we are on our way out, or the watcher swapped the server out
-          # from under the accept — in which case we go round on the new one.
-          break if @shutting_down
-        end
       end
 
       # Routes one parsed socket message as the accept loop does, answering on
@@ -209,7 +176,7 @@ module Workspace
       # @param client [#puts, #close, nil] the connection to answer on
       # @return [Symbol, nil] +:handed_off+ when a worker thread now owns +client+
       def handle(message, client = nil)
-        dispatch(message, client)
+        @router.handle(message, client)
       end
 
       # Reports something noteworthy that happened while a stage is running
@@ -247,48 +214,44 @@ module Workspace
         @pipeline_desk = build_parts(pipeline_only: true).pipeline_desk
       end
 
-      # Routes a parsed message, ignoring anything addressed to another workspace.
-      def dispatch(message, client = nil)
-        @logger.debug { "received: #{JSON.pretty_generate(message)}" }
+      # The router of +name+'s messages, over this daemon's handlers.
+      def route_for(name)
+        AgentdRouter.new(workspace: name, handlers: handlers, logger: @logger)
+      end
 
-        if AgentProtocol.type_of(message) == AgentProtocol::COORDINATOR_RESTART
-          @logger.debug { "coordinator_restart received, entering unavailable window" }
-          @pipeline_desk&.coordinator_restarting
-          return
-        end
-
-        workspace = message["workspace"]
-        if !WorkspaceName.same?(workspace, @current_name)
-          @logger.debug { "dropped message for workspace '#{workspace}' (I am '#{@current_name}')" }
-          return reply_to(client, AgentProtocol.error(AgentProtocol::WRONG_WORKSPACE))
-        end
-
-        # Every inbound connection ends in one JSON line, so a caller can always
-        # read a reply and tell an answer apart from a dead agent.
-        case AgentProtocol.type_of(message)
-        when AgentProtocol::COMMAND
-          reply_to(client, @pipeline_desk.command(message, claude_pane: -> { claude_pane_target }))
-        when AgentProtocol::INJECT then reply_to(client, @pipeline_desk.inject(message))
-        when AgentProtocol::RESTART_AGENT
-          # Before #call has built the parts there is no desk, and no context reader to confirm a /clear with.
-          @restart_desk ? @restart_desk.handle(message, client) : reply_to(client, AgentdRestartDesk.refusal_before_start(message))
-        when AgentProtocol::SESSION_EVENT
-          # Before #call has built the parts there is no fan-out, and nothing to show the event to.
-          @hook_fanout&.session_event(message)
-          reply_to(client, AgentProtocol.ok)
-        when AgentProtocol::HANDOFF_WATCH then reply_to(client, handle_handoff_watch(message))
-        when AgentProtocol::STATUS_REQUEST then handle_status_request(message, client)
-        when AgentProtocol::PROMPT_SEND then handle_prompt_send(message, client)
-        when AgentProtocol::PROMPT_INTERRUPT_SEND then handle_prompt_send(message, client, :interrupt_send)
-        when AgentProtocol::STATUS_POST then reply_to(client, @agent_status_desk.post(message))
-        when AgentProtocol::SESSIONS
-          reply_to(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
-        when AgentProtocol::VERSION_REQUEST
-          reply_to(client, AgentProtocol.ok(version: Workspace::VERSION))
-        else
-          @logger.debug { "unknown message type: #{message["type"]}" }
-          reply_to(client, AgentProtocol.error(AgentProtocol::UNKNOWN_TYPE))
-        end
+      # Each message type's handler: it answers on the client through the router, or hands the client off.
+      def handlers
+        {
+          AgentProtocol::COORDINATOR_RESTART => ->(_message, _client) do
+            @logger.debug { "coordinator_restart received, entering unavailable window" }
+            @pipeline_desk&.coordinator_restarting
+            nil
+          end,
+          # Every inbound connection ends in one JSON line, so a caller can always
+          # read a reply and tell an answer apart from a dead agent.
+          AgentProtocol::COMMAND => ->(message, client) do
+            @router.reply(client, @pipeline_desk.command(message, claude_pane: -> { claude_pane_target }))
+          end,
+          AgentProtocol::INJECT => ->(message, client) { @router.reply(client, @pipeline_desk.inject(message)) },
+          AgentProtocol::RESTART_AGENT => ->(message, client) do
+            # Before #call has built the parts there is no desk, and no context reader to confirm a /clear with.
+            @restart_desk ? @restart_desk.handle(message, client) : @router.reply(client, AgentdRestartDesk.refusal_before_start(message))
+          end,
+          AgentProtocol::SESSION_EVENT => ->(message, client) do
+            # Before #call has built the parts there is no fan-out, and nothing to show the event to.
+            @hook_fanout&.session_event(message)
+            @router.reply(client, AgentProtocol.ok)
+          end,
+          AgentProtocol::HANDOFF_WATCH => ->(message, client) { @router.reply(client, handle_handoff_watch(message)) },
+          AgentProtocol::STATUS_REQUEST => ->(message, client) { handle_status_request(message, client) },
+          AgentProtocol::PROMPT_SEND => ->(message, client) { handle_prompt_send(message, client) },
+          AgentProtocol::PROMPT_INTERRUPT_SEND => ->(message, client) { handle_prompt_send(message, client, :interrupt_send) },
+          AgentProtocol::STATUS_POST => ->(message, client) { @router.reply(client, @agent_status_desk.post(message)) },
+          AgentProtocol::SESSIONS => ->(_message, client) do
+            @router.reply(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
+          end,
+          AgentProtocol::VERSION_REQUEST => ->(_message, client) { @router.reply(client, AgentProtocol.ok(version: Workspace::VERSION)) }
+        }
       end
 
       # Answers a status request from a worker thread, which owns +client+:
@@ -303,7 +266,7 @@ module Workspace
           rescue => e
             AgentProtocol.error(AgentProtocol::INTERNAL_ERROR, e.message)
           end
-          reply_to(client, reply)
+          @router.reply(client, reply)
         ensure
           begin
             client&.close
@@ -375,7 +338,7 @@ module Workspace
             code = e.is_a?(Workspace::Error) ? e.code : "internal_error"
             AgentProtocol.error(code, e.message)
           end
-          reply_to(client, reply)
+          @router.reply(client, reply)
         ensure
           begin
             client&.close
@@ -392,23 +355,14 @@ module Workspace
         @pipeline_desk = nil unless name == @current_name
         @current_name = name
         @tmux_session = @tmux.session_name_for(name)
+        @router = route_for(name)
       end
 
       # Stops new recovery claims and marks the daemon as going down; takes no lock,
       # so the signal handler may call it.
       def begin_shutdown
-        @shutting_down = true
+        @socket_server.shut_down!
         @restarts.shut_down!
-      end
-
-      # Answers on the connection the message arrived on. A fire-and-forget
-      # sender that has already hung up is not an error worth reporting.
-      def reply_to(client, payload)
-        client&.puts(payload.to_json)
-        nil
-      rescue SystemCallError, IOError => e
-        @logger.debug { "no one was listening for the reply: #{e.message}" }
-        nil
       end
 
       # Returns the tmux pane target for the Claude Code pane in the current workspace.
@@ -426,47 +380,6 @@ module Workspace
         @event_log&.record(type: type, project: @current_name, data: data)
       end
 
-      # Watches for the agent's socket file going missing — macOS sweeps old
-      # /tmp entries, and another agent start for this workspace unlinks it.
-      # The listening fd survives that, so the agent looks healthy while no
-      # caller can reach it; rebinding and re-registering is what actually
-      # restores it.
-      def start_socket_watcher(socket_path, needs_registration: false)
-        Thread.new do
-          passes = 0
-          loop do
-            # Woken by shutdown rather than slept through, so a terminating
-            # agent does not wait out a whole poll interval to exit.
-            @shutdown_signal.pop(timeout: @socket_poll_interval)
-            break if @shutting_down
-
-            passes += 1
-            @workflow_nudger&.tick(@current_name) if (passes % @workflow_tick_passes).zero?
-
-            unless File.socket?(socket_path)
-              @logger.debug { "agent socket at #{socket_path} has disappeared; rebinding" }
-              begin
-                old_server = @server
-                @server = UNIXServer.new(socket_path)
-                begin
-                  old_server.close
-                rescue IOError, SystemCallError
-                  nil
-                end
-                needs_registration = true
-              rescue => e
-                @error_output.puts "workspace agent: could not rebind its socket: #{e.message}"
-              end
-            end
-
-            # Retry re_register each cycle until it succeeds — if it failed
-            # after a rebind (e.g. coordinator was also down), the coordinator
-            # has no record of our socket and will never dispatch work to us.
-            needs_registration = !@pipeline_desk.re_register if needs_registration
-          end
-        end
-      end
-
       # Renames a mixed-case workspace to lowercase when no daemon answers for it,
       # under the startup lock. A lock held elsewhere is an `agentd --ensure`
       # that renamed it before starting this daemon, so it is left alone. With
@@ -482,78 +395,22 @@ module Workspace
         result.name
       end
 
-      # Returns true when the socket path is free to bind (cleaning up a stale
-      # socket if needed), false when another agent is already answering.
-      # When +force+ is true and an agent is running, kills it and waits for
-      # the socket to be released before returning.
-      def claim_socket(name, socket_path, force: false)
-        UNIXSocket.open(socket_path) { |s| s.close }
-        # A live agent is answering. Force-kill it if requested.
-        return kill_existing_agent(name, socket_path) if force
-
-        @error_output.puts "workspace agent '#{name}' is already running"
-        false
-      rescue Errno::ECONNREFUSED
-        @logger.debug { "removing stale socket #{socket_path}" }
-        File.unlink(socket_path)
-        true
-      rescue Errno::ENOENT
-        true
-      end
-
-      # Finds the PID listening on +socket_path+, sends SIGTERM, and waits up
-      # to 5 seconds for it to exit. Returns true when the socket is gone,
-      # false when the process did not exit in time.
-      def kill_existing_agent(name, socket_path)
-        pid = lsof_pid(socket_path)
-        if pid
-          @output.puts "Stopping existing workspace agent '#{name}' (PID #{pid})..."
-          Process.kill("TERM", pid)
-        else
-          @logger.debug { "force: no PID found for #{socket_path}; removing socket directly" }
-        end
-
-        deadline = Time.now + 5
-        loop do
-          break unless File.socket?(socket_path)
-          if Time.now > deadline
-            @error_output.puts "workspace agent '#{name}': timed out waiting for previous agent to exit"
-            return false
-          end
-          sleep 0.1
-        end
-        true
-      rescue Errno::ESRCH
-        # Process was already gone; socket may still be there — remove it.
-        File.unlink(socket_path) if File.socket?(socket_path)
-        true
-      end
-
-      # Returns the PID of the process listening on the given Unix socket path,
-      # or nil when none is found (requires lsof).
-      def lsof_pid(socket_path)
-        output = `lsof -t #{socket_path.shellescape} 2>/dev/null`.strip
-        pid = output.to_i
-        (pid > 0) ? pid : nil
-      end
-
       def install_signal_handlers
         %w[TERM INT].each do |signal|
           @signal_trapper.trap(signal) do
             begin_shutdown
             # IO#close cannot run in trap context (Ruby raises ThreadError), so the
             # unblocking close runs on its own thread: the accept loop then reads
-            # IOError and @shutting_down, and the ensure block tears the rest down.
+            # IOError and the server's shut_down!, and the ensure block tears the rest down.
             # A TERM before the server exists closes nothing.
-            Thread.new { @server&.close }
+            Thread.new { @socket_server.close }
           end
         end
       end
 
       def shutdown(socket_path)
         @pipeline_desk.stop_watches
-        @server.close unless @server.closed?
-        File.unlink(socket_path) if File.socket?(socket_path)
+        @socket_server.close_and_remove(socket_path)
         @pipeline_desk.deregister
       rescue Workspace::Error => e
         @logger.debug { "deregister failed: #{e.message}" }
