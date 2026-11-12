@@ -47,18 +47,42 @@ module Workspace
         raise Workspace::Error, "Template not found: #{@config.project_template_path}. Run `workspace init` first to install the templates."
       end
 
-      template = File.read(@config.project_template_path)
-      content = template
-        .gsub("{{PROJECT_NAME}}", name)
-        .gsub("{{WORKSPACE_NAME}}", name)
-        .gsub("{{PROJECT_ROOT}}", root)
-        .gsub("{{DISPLAY_NAME}}", banner_text(name))
-        .gsub("{{CONFIG_PATH}}", config_path)
-
-      content = with_agent_kind(content, default_kind(name), name, strict: false)
+      content = render(:project, {
+        project_name: name, workspace_name: name, project_root: root,
+        display_name: banner_text(name), config_path: config_path,
+        agent_kind: default_kind(name)
+      }, File.read(@config.project_template_path))
       File.write(config_path, content)
       @output.puts "Created config: #{config_path}"
       name
+    end
+
+    # Fills a tmuxinator template: no file is read or written (a warning may go to the output stream).
+    #
+    # @param kind [Symbol] `:project` or `:worktree`; a worktree is strict about the agent pane
+    # @param inputs [Hash] the placeholder values by lowercase symbol (`project_name`, `workspace_name`,
+    #   `project_root`, `display_name`, `config_path`, `tmux_session_name`, `worktree_path`,
+    #   `worktree_branch`), plus `task_id` (nil drops the `{{PRE_WINDOW}}` line) and `agent_kind`
+    #   (an {AgentProvider} key; the workspace its config layers read is `workspace_name`)
+    # @param template_text [String]
+    # @return [String] the config text
+    # @raise [Workspace::Error] for a worktree and an agent kind the template has no pane to swap for
+    def render(kind, inputs, template_text)
+      content = template_text.dup
+      {
+        "TMUX_SESSION_NAME" => :tmux_session_name, "WORKSPACE_NAME" => :workspace_name,
+        "WORKTREE_PATH" => :worktree_path, "PROJECT_NAME" => :project_name,
+        "WORKTREE_BRANCH" => :worktree_branch, "PROJECT_ROOT" => :project_root,
+        "DISPLAY_NAME" => :display_name, "CONFIG_PATH" => :config_path
+      }.each do |placeholder, key|
+        value = inputs[key]
+        content = content.gsub("{{#{placeholder}}}") { value } if value
+      end
+      if kind == :worktree
+        task_id = inputs[:task_id]
+        content = content.sub(/^\{\{PRE_WINDOW\}\}\n/) { task_id ? "pre_window: export WORKSPACE_TASK=#{task_id}\n" : "" }
+      end
+      with_agent_kind(content, inputs[:agent_kind], inputs[:workspace_name], strict: kind == :worktree)
     end
 
     # @param project_name [String] parent project name
@@ -93,18 +117,12 @@ module Workspace
         raise Workspace::Error, "Worktree template not found: #{@config.worktree_template_path}"
       end
 
-      template = File.read(@config.worktree_template_path)
-      content = template
-        .gsub("{{TMUX_SESSION_NAME}}", tmux_session_name)
-        .gsub("{{WORKSPACE_NAME}}", config_name)
-        .gsub("{{WORKTREE_PATH}}", worktree_path)
-        .gsub("{{PROJECT_NAME}}", project_name)
-        .gsub("{{WORKTREE_BRANCH}}", branch_name)
-        .gsub("{{DISPLAY_NAME}}", banner_text("#{project_name}/#{worktree_name}"))
-        .gsub("{{CONFIG_PATH}}", config_path)
-        .sub(/^\{\{PRE_WINDOW\}\}\n/, task_id ? "pre_window: export WORKSPACE_TASK=#{task_id}\n" : "")
-
-      content = with_agent_kind(content, agent_kind || default_kind(config_name), config_name)
+      content = render(:worktree, {
+        tmux_session_name: tmux_session_name, workspace_name: config_name, worktree_path: worktree_path,
+        project_name: project_name, worktree_branch: branch_name,
+        display_name: banner_text("#{project_name}/#{worktree_name}"), config_path: config_path,
+        task_id: task_id, agent_kind: agent_kind || default_kind(config_name)
+      }, File.read(@config.worktree_template_path))
       File.write(config_path, content)
       @output.puts "Created config: #{config_path}" unless quiet
       config_name

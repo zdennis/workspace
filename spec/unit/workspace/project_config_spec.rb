@@ -967,5 +967,60 @@ RSpec.describe Workspace::ProjectConfig do
       expect(File.read(path)).to eq("keep\n")
       expect(File.read(worktree_path)).to eq("keep\n")
     end
+
+    describe "#render" do
+      let(:project_text) { File.read(config.project_template_path) }
+      let(:worktree_text) { File.read(config.worktree_template_path) }
+      let(:worktree_inputs) do
+        {
+          tmux_session_name: "myapp-wt-proj-123", workspace_name: "myapp.worktree-proj-123",
+          worktree_path: "/src/myapp/.worktrees/PROJ-123", project_name: "myapp", worktree_branch: "PROJ-123",
+          display_name: "myapp PROJ 123", config_path: File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml"),
+          task_id: nil, agent_kind: "claude"
+        }
+      end
+
+      it "gives the project fixture bytes and writes nothing" do
+        text = pc.render(:project, {
+          project_name: "myapp", workspace_name: "myapp", project_root: "/src/my app",
+          display_name: "myapp", config_path: File.join(tmpdir, "workspace.myapp.yml"), agent_kind: "claude"
+        }, project_text)
+
+        expect(text).to eq(fixture("project.yml"))
+        expect(Dir.children(tmpdir)).to be_empty
+      end
+
+      it "gives the worktree fixture bytes with and without a task id, and for codex" do
+        expect(pc.render(:worktree, worktree_inputs, worktree_text)).to eq(fixture("worktree.yml"))
+        expect(pc.render(:worktree, worktree_inputs.merge(task_id: "t_abc123"), worktree_text)).to eq(fixture("worktree-with-task.yml"))
+        expect(pc.render(:worktree, worktree_inputs.merge(agent_kind: "codex"), worktree_text)).to eq(fixture("worktree-codex.yml"))
+        expect(Dir.children(tmpdir)).to be_empty
+      end
+
+      it "raises for a worktree whose template has no pane to swap for the agent kind" do
+        text = worktree_text.lines.grep_v(/claude|codex/).join
+
+        expect { pc.render(:worktree, worktree_inputs.merge(agent_kind: "codex"), text) }
+          .to raise_error(Workspace::Error, /no Claude Code pane to swap for codex/)
+      end
+
+      it "puts a project_root with a backslash in literally" do
+        text = pc.render(:project, {
+          project_name: "myapp", workspace_name: "myapp", project_root: '/src/a\\1b',
+          display_name: "myapp", config_path: "/c.yml", agent_kind: "claude"
+        }, project_text)
+
+        expect(text).to include('/src/a\\1b')
+      end
+
+      it "ignores task_id for a project" do
+        inputs = {
+          project_name: "myapp", workspace_name: "myapp", project_root: "/src/my app",
+          display_name: "myapp", config_path: File.join(tmpdir, "workspace.myapp.yml"), agent_kind: "claude"
+        }
+
+        expect(pc.render(:project, inputs.merge(task_id: "t_abc123"), project_text)).to eq(pc.render(:project, inputs, project_text))
+      end
+    end
   end
 end
