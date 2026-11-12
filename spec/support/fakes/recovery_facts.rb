@@ -26,7 +26,8 @@ class RecordingProcessTree
   end
 end
 
-# Fake of the Workspace::AgentStopper reads: the agent under a pane pid, and the process-group answers.
+# Fake of the Workspace::AgentStopper reads: the agent under a pane pid, the process-group answers, and whether a
+# process holds a session.
 class RecordingRecoveryStopper
   CONTROL_METHODS = %i[calls].freeze
 
@@ -35,10 +36,12 @@ class RecordingRecoveryStopper
   # @param agents [Hash{Integer=>Hash}] pane pid to the agent found under it
   # @param foreground [Boolean] what +foreground?+ answers
   # @param clear [Boolean] what +pane_clear?+ answers
-  def initialize(agents: {}, foreground: true, clear: true, calls: [])
+  # @param held [Boolean] what +session_held?+ answers
+  def initialize(agents: {}, foreground: true, clear: true, held: false, calls: [])
     @agents = agents
     @foreground = foreground
     @clear = clear
+    @held = held
     @calls = calls
   end
 
@@ -55,6 +58,11 @@ class RecordingRecoveryStopper
   def pane_clear?(pane_pid:, command:, detector:, tree:)
     @calls << [:pane_clear?, pane_pid, command, tree]
     @clear
+  end
+
+  def session_held?(session_id:, tree:)
+    @calls << [:session_held?, session_id, tree]
+    @held
   end
 end
 

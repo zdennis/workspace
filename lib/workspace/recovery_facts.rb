@@ -119,6 +119,16 @@ module Workspace
       (screen_of(pane_id) == before) ? before : nil
     end
 
+    # Reads the process table, then whether a process in it still holds the
+    # session. A table that can't be read counts as held.
+    #
+    # @param session_id [String]
+    # @return [Boolean]
+    def session_held?(session_id)
+      snapshot = tree
+      snapshot.nil? || @stopper.session_held?(session_id: session_id, tree: snapshot)
+    end
+
     # @param detail [Hash] the pane's details
     # @param tree [ProcessTree::Snapshot]
     # @return [Boolean] whether the pane is at a shell prompt that holds the terminal, with no agent under it

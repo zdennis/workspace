@@ -97,6 +97,26 @@ RSpec.describe Workspace::RecoveryFacts do
     expect(calls).to eq([[:pane_clear?, 77, "zsh", :tree]])
   end
 
+  describe "#session_held?" do
+    it "reads the process table, then asks the stopper whether a process holds the session" do
+      held = facts(stopper: RecordingRecoveryStopper.new(held: true, calls: calls))
+
+      expect(held.session_held?("s1")).to be(true)
+      expect(calls).to eq([[:snapshot], [:session_held?, "s1", :tree]])
+    end
+
+    it "answers false when no process holds it" do
+      expect(facts.session_held?("s1")).to be(false)
+    end
+
+    it "counts a process table that can't be read as held, and asks nothing more" do
+      broken = facts(process_tree: RecordingProcessTree.new(error: Workspace::Error.new("no ps"), calls: calls))
+
+      expect(broken.session_held?("s1")).to be(true)
+      expect(calls).to eq([[:snapshot]])
+    end
+  end
+
   describe "#held_off?" do
     it "reads the input line, the prompt, the sub-agents and then the screen twice across the wait" do
       expect(facts.held_off?("%3", entry, nil)).to be(false)
