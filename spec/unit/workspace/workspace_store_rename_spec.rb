@@ -208,8 +208,8 @@ RSpec.describe Workspace::WorkspaceStoreRename do
 
     before do
       FileUtils.mkdir_p(config.tmuxinator_dir)
-      FileUtils.cp(File.join(templates, "project.yml"), config.project_template_path)
-      FileUtils.cp(File.join(templates, "worktree.yml"), config.worktree_template_path)
+      FileUtils.mkdir_p(File.join(config.builtin_library_dir, "template"))
+      FileUtils.cp_r(templates, File.join(config.builtin_library_dir, "template"))
       FileUtils.rm_f(config.config_path_for(old))
     end
 

@@ -44,16 +44,6 @@ module Workspace
       File.join(workspace_dir, "lib", "library", "template", "default")
     end
 
-    # @return [String] path to the installed project template
-    def project_template_path
-      File.join(tmuxinator_dir, "workspace.project-template.yml")
-    end
-
-    # @return [String] path to the installed worktree project template
-    def worktree_template_path
-      File.join(tmuxinator_dir, "workspace.project-worktree-template.yml")
-    end
-
     # @return [String] path to the workspace config directory
     def workspace_config_dir
       File.expand_path("~/.config/workspace")

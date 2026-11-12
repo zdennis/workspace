@@ -179,6 +179,7 @@ require_relative "workspace/pane_locator"
 require_relative "workspace/pane_bindings"
 require_relative "workspace/library_store"
 require_relative "workspace/recipe_file"
+require_relative "workspace/legacy_tmuxinator_templates"
 require_relative "workspace/library"
 require_relative "workspace/library_install_dirs"
 require_relative "workspace/library_installer"
@@ -797,8 +798,10 @@ module Workspace
     git = Git.new(output: output, input: input, logger: logger)
     agent_commands = AgentCommands.new(config_resolver: config_resolver)
     tmuxinator_config_writer = TmuxinatorConfigWriter.new(config: config)
+    library = nil # built below over project_config, which resolves its tmuxinator templates through it
+    # The `-> { library }` lambda is nil until Library.new below: ProjectConfig must not call it while it is constructed.
     project_config = ProjectConfig.new(config: config, git: git, output: output, agent_commands: agent_commands,
-      writer: tmuxinator_config_writer)
+      writer: tmuxinator_config_writer, library: -> { library })
     window_positions = WindowPositions.new(dir: config.state_dir, logger: logger)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, width_percent: -> { project_settings.load_global.dig("launch", "window_width_percent") }, output: output, error_output: error_output, logger: logger)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
@@ -824,7 +827,8 @@ module Workspace
     main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new(rev_parse: git.method(:path_of))
-    library = Library.new(config: config, lineage: lineage, project_config: project_config)
+    library = Library.new(config: config, lineage: lineage, project_config: project_config,
+      template_config: TmuxinatorTemplateConfig.new(config_resolver: config_resolver))
     library_installer = LibraryInstaller.new(git: git, dirs: LibraryInstallDirs.new(config_resolver: config_resolver))
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
       git_exclude: GitExclude.new(git: git), output: output)

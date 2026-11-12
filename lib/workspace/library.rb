@@ -11,10 +11,14 @@ module Workspace
     # @param config [Workspace::Config] for {Config#library_dir}
     # @param lineage [Workspace::WorkspaceLineage] names the project of a directory
     # @param project_config [Workspace::ProjectConfig] knows which workspaces exist
-    def initialize(config:, lineage:, project_config:)
+    # @param template_config [Workspace::TmuxinatorTemplateConfig, nil] names the tmuxinator template
+    #   set a workspace renders from; nil means none is set anywhere, so every workspace gets `default`
+    def initialize(config:, lineage:, project_config:, template_config: nil)
       @config = config
       @lineage = lineage
       @project_config = project_config
+      @template_config = template_config
+      @legacy_edited = {}
     end
 
     # The stores to search, in lookup order. With no `scope`, the project of
@@ -209,17 +213,59 @@ module Workspace
       stores = stores(cwd: expand(cwd))
       unless name.to_s.match?(IdPatterns::LIBRARY_NAME)
         raise Error.new("'#{name.to_s[0, 60]}' is not a spine template name: lowercase letters, digits and hyphens.",
-          code: "unknown_template", details: {"template" => name.to_s[0, 60]})
+          code: "unknown_template", details: {"template" => name.to_s[0, 60], "kind" => "spine"})
       end
       entry = begin
         resolve("spine/#{name}", stores)
       rescue Error => e
         raise unless e.code == "unknown_library_entry"
         raise Error.new("No spine template '#{name}'. List them with: workspace library list --kind spine",
-          code: "unknown_template", details: {"template" => name, "scopes" => e.details["scopes"]})
+          code: "unknown_template", details: {"template" => name, "kind" => "spine", "scopes" => e.details["scopes"]})
       end
       raise source_missing(entry) unless entry["readable"]
       entry.slice("ref", "name", "scope", "path", "files")
+    end
+
+    # The name {#tmuxinator_template} answers for an installed copy it renders from.
+    LEGACY_TEMPLATE = "legacy"
+
+    # The tmuxinator template a new config of +kind+ is rendered from: the `template` library set
+    # `tmuxinator.template` (or `tmuxinator.worktree_template`) names, looked up in the project of
+    # +workspace+, then global, then built-in, and that set's `project.yml` or `worktree.yml`.
+    # With the key unset at every layer, a copy `workspace init` installed in `~/.config/tmuxinator/`
+    # that was edited ({LegacyTmuxinatorTemplates.edited?}) wins over the built-in `default`, so an
+    # edit made before sets existed keeps working. Whether each kind's copy is edited is read once
+    # per instance, so once per process.
+    #
+    # @param kind [Symbol] `:project` or `:worktree`
+    # @param workspace [String, nil] the workspace the config is for (it need not exist yet); its
+    #   project's store is searched when that project is a known workspace
+    # @return [Hash] "ref", "name" (`legacy` for an edited installed copy), "scope" (`project`,
+    #   `global`, `builtin` or `legacy`), "source" (where the name came from: `worktree`, `project`,
+    #   `global`, `default` or `legacy`) and "path" (the file of +kind+)
+    # @raise [Workspace::Error] code `unknown_template` (details `template`, `kind` `tmuxinator`,
+    #   `scopes`, `source`) when no set has the name, or `library_source_missing` when the set has
+    #   no readable file of +kind+
+    # @raise [Workspace::ConfigParseError] if a config file that is read can't be parsed
+    def tmuxinator_template(kind, workspace:)
+      chosen = @template_config ? @template_config.name(kind, workspace: workspace) : {"name" => "default", "source" => "default"}
+      if chosen["source"] == "default" && legacy_edited?(kind)
+        return {"ref" => LEGACY_TEMPLATE, "name" => LEGACY_TEMPLATE, "scope" => LEGACY_TEMPLATE, "source" => LEGACY_TEMPLATE,
+                "path" => LegacyTmuxinatorTemplates.path(kind, @config.tmuxinator_dir)}
+      end
+      name = chosen["name"]
+      entry = begin
+        resolve("template/#{name}", template_stores(workspace))
+      rescue Error => e
+        raise unless e.code == "unknown_library_entry"
+        raise Error.new("No tmuxinator template '#{name}' (from #{chosen["source"]}). List them with: workspace library list --kind template",
+          code: "unknown_template",
+          details: {"template" => name, "kind" => "tmuxinator", "scopes" => e.details["scopes"], "source" => chosen["source"]})
+      end
+      path = File.join(entry["path"], "#{kind}.yml")
+      file = entry.merge("ref" => "#{entry["ref"]}/#{kind}.yml", "path" => path)
+      raise source_missing(file) unless File.file?(path) && File.readable?(path)
+      entry.slice("ref", "name", "scope").merge("source" => chosen["source"], "path" => path)
     end
 
     # The text sent to the agent when it starts: one line pointing at the
@@ -324,6 +370,18 @@ module Workspace
     end
 
     private
+
+    # The project store of +workspace+'s project when that is a known workspace, then global, then built-in.
+    def template_stores(workspace)
+      project = workspace && WorkspaceName.project_of(workspace)
+      project = nil unless project && @project_config.exists?(project)
+      [project && project_store(project), global_store, builtin_store].compact
+    end
+
+    def legacy_edited?(kind)
+      return @legacy_edited[kind] if @legacy_edited.key?(kind)
+      @legacy_edited[kind] = LegacyTmuxinatorTemplates.edited?(kind, LegacyTmuxinatorTemplates.path(kind, @config.tmuxinator_dir))
+    end
 
     # One play or a list of them, as a list.
     def list_of(plays)

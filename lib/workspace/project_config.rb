@@ -16,9 +16,14 @@ module Workspace
     #   writes each agent's bare executable
     # @param writer [Workspace::TmuxinatorConfigWriter, nil] writes each new config and its render record;
     #   nil builds one over +config+
-    def initialize(config:, git:, output: $stdout, agent_commands: nil, writer: nil)
+    # @param library [#call, nil] answers the {Workspace::Library} that resolves each tmuxinator
+    #   template ({Library#tmuxinator_template}); a callable, since the Library reads this object to
+    #   know which workspaces exist. nil builds a Library over +config+ and this object, with no
+    #   template set configured
+    def initialize(config:, git:, output: $stdout, agent_commands: nil, writer: nil, library: nil)
       @config = config
       @writer = writer || TmuxinatorConfigWriter.new(config: config)
+      @library = library
       @agent_commands = agent_commands
       @output = output
       @git = git
@@ -41,7 +46,8 @@ module Workspace
     # @param name [String] project name
     # @param root [String] project root directory
     # @return [String] the project name
-    # @raise [Workspace::Error] if the template is missing
+    # @raise [Workspace::Error] code `unknown_template` or `library_source_missing` when the
+    #   tmuxinator template can't be resolved (see {Library#tmuxinator_template})
     # @raise [Workspace::Error] code `workspace_name_case_conflict` (see {#settle_new_name})
     def create(name, root)
       name = settle_new_name(name, root)
@@ -51,15 +57,11 @@ module Workspace
         return name
       end
 
-      unless File.exist?(@config.project_template_path)
-        raise Workspace::Error, "Template not found: #{@config.project_template_path}. Run `workspace init` first to install the templates."
-      end
-
       write_new(name, :project, {
         project_name: name, workspace_name: name, project_root: root,
         display_name: banner_text(name), config_path: config_path,
         agent_kind: default_kind(name)
-      }, File.read(@config.project_template_path))
+      }, tmuxinator_template(:project, name))
       @output.puts "Created config: #{config_path}"
       name
     end
@@ -122,7 +124,8 @@ module Workspace
     # @param agent_kind [String, nil] an {AgentProvider} key; nil uses `agent.kind` (resolved for the new
     #   worktree workspace, so the project and global layers apply)
     # @return [String] the config name
-    # @raise [Workspace::Error] if the worktree template is missing
+    # @raise [Workspace::Error] code `unknown_template` or `library_source_missing` when the
+    #   tmuxinator template can't be resolved (see {Library#tmuxinator_template})
     def create_worktree(project_name, worktree_name, worktree_path, branch_name, quiet: false, task_id: nil, agent_kind: nil)
       project_name = WorkspaceName.normalize(project_name)
       tmux_session_name = worktree_session_name(project_name, worktree_name)
@@ -134,16 +137,12 @@ module Workspace
         return config_name
       end
 
-      unless File.exist?(@config.worktree_template_path)
-        raise Workspace::Error, "Worktree template not found: #{@config.worktree_template_path}"
-      end
-
       write_new(config_name, :worktree, {
         tmux_session_name: tmux_session_name, workspace_name: config_name, worktree_path: worktree_path,
         project_name: project_name, worktree_branch: branch_name,
         display_name: banner_text("#{project_name}/#{worktree_name}"), config_path: config_path,
         task_id: task_id, agent_kind: agent_kind || default_kind(config_name)
-      }, File.read(@config.worktree_template_path))
+      }, tmuxinator_template(:worktree, config_name))
       @output.puts "Created config: #{config_path}" unless quiet
       config_name
     end
@@ -245,31 +244,33 @@ module Workspace
       projects.find { |other| other == name } || projects.find { |other| WorkspaceName.same?(other, name) }
     end
 
-    # Refuses an agent kind the installed worktree template cannot take, so `start` fails before it
+    # Refuses an agent kind the resolved worktree template cannot take, so `start` fails before it
     # creates anything.
     #
     # @param kind [String] an {AgentProvider} key
-    # @param workspace [String, nil] the workspace whose configured Claude Code command the template may run
-    # @raise [Workspace::Error] code `template_outdated` when the template has no Claude Code pane to swap
+    # @param workspace [String, nil] the workspace whose configured Claude Code command the template may
+    #   run, and whose layers pick the template
+    # @raise [Workspace::Error] code `template_outdated` when the template has no Claude Code pane to swap,
+    #   or `unknown_template`/`library_source_missing` when it can't be resolved
     def check_agent_kind!(kind, workspace = nil)
-      return if kind == "claude" || !File.exist?(@config.worktree_template_path)
-      return if template_claude_line(workspace)
+      return if kind == "claude"
+      return if template_claude_line(workspace, tmuxinator_template(:worktree, workspace))
       raise Workspace::Error.new("The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it.",
         code: "template_outdated", details: {"kind" => kind})
     end
 
-    # The pane command a new config runs for an agent kind: for `claude` the installed worktree
+    # The pane command a new config runs for an agent kind: for `claude` the resolved worktree
     # template's Claude Code pane with `claude` swapped for the configured command in each half of its
     # `||` chain, else the configured command (the agent's executable when none is set).
     #
     # @param kind [String] an {AgentProvider} key
     # @param workspace [String, nil] the workspace whose config layers pick the command; nil, or no
     #   {AgentCommands} wired, means the agent's executable
-    # @return [String, nil] nil for `claude` when the template has no Claude Code pane, or for an unknown kind
+    # @return [String, nil] nil for `claude` when the template has no Claude Code pane or can't be
+    #   resolved, or for an unknown kind
     def agent_pane_command(kind, workspace = nil)
       return unless AgentProvider.find(kind)
       return configured_command(kind, workspace) unless kind == "claude"
-      return unless File.exist?(@config.worktree_template_path)
       line = template_claude_line(workspace)
       line && pane_value(kind, workspace, line)
     end
@@ -375,10 +376,22 @@ module Workspace
     # Renders and writes a new config with its render record. Beside the render inputs the record keeps
     # `agent_command`, the agent pane text the render wrote (nil when it found no agent pane), since the
     # render reads the configured command from the config layers rather than from +inputs+.
-    def write_new(name, kind, inputs, template_text)
+    # The record's `template` is the resolved set's name (`legacy` for an edited installed copy).
+    def write_new(name, kind, inputs, template)
+      template_text = File.read(template["path"])
       content = render(kind, inputs, template_text)
-      @writer.write(name, content, kind: kind, template: "default", template_sha: Digest::SHA256.hexdigest(template_text),
+      @writer.write(name, content, kind: kind, template: template["name"], template_sha: Digest::SHA256.hexdigest(template_text),
         inputs: inputs.merge(agent_command: agent_pane_text(content, name)))
+    end
+
+    # @return [Hash] see {Library#tmuxinator_template}
+    def tmuxinator_template(kind, workspace)
+      library.tmuxinator_template(kind, workspace: workspace)
+    end
+
+    # The fallback Library has no lineage: the tmuxinator template lookup never reads it.
+    def library
+      @library ? @library.call : (@own_library ||= Library.new(config: @config, lineage: nil, project_config: self))
     end
 
     # @return [Array<String, nil>] the programs of the one pane line that differs between two contents:
@@ -456,10 +469,15 @@ module Workspace
     # whose `||` chain runs a program of {#claude_names} in any half (unlike {#agent_pane_text?}, which
     # reads the first half only). With no workspace (or no {AgentCommands}) those names are the bare
     # executable, so `claude-dev --continue || claude` is found through its second half.
-    # A template whose pane items include `{{AGENT_COMMAND}}` answers {DEFAULT_CLAUDE_PANE}.
-    def template_claude_line(workspace)
-      return unless File.exist?(@config.worktree_template_path)
-      lines = File.readlines(@config.worktree_template_path)
+    # A template whose pane items include `{{AGENT_COMMAND}}` answers {DEFAULT_CLAUDE_PANE}. The template
+    # is +template+, else the worktree template resolved for +workspace+; nil when that can't be
+    # resolved or read.
+    def template_claude_line(workspace, template = nil)
+      lines = begin
+        File.readlines((template || tmuxinator_template(:worktree, workspace))["path"])
+      rescue Workspace::Error, SystemCallError
+        return
+      end
       start = lines.index { |line| line.match?(/\A\s*(- )?panes:/) }
       return unless start
       texts = lines[start..].filter_map { |line| pane_item(line)&.at(1)&.strip }

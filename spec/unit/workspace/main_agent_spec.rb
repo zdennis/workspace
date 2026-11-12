@@ -148,7 +148,7 @@ RSpec.describe Workspace::MainAgent do
     end
     subject(:main_agent) { described_class.new(project_config: project_config, agent_commands: agent_commands) }
     let(:project_config) do
-      config = double("config", worktree_template_path: File.join(Dir.tmpdir, "no-such-template.yml"))
+      config = double("config", tmuxinator_dir: File.join(Dir.tmpdir, "no-such-dir"), library_dir: File.join(Dir.tmpdir, "no-such-dir"), builtin_library_dir: File.join(Dir.tmpdir, "no-such-dir"))
       Workspace::ProjectConfig.new(config: config, git: nil, output: StringIO.new, agent_commands: agent_commands)
     end
 
@@ -236,7 +236,7 @@ RSpec.describe Workspace::MainAgent do
     end
     subject(:main_agent) { described_class.new(project_config: project_config, agent_commands: agent_commands) }
     let(:project_config) do
-      config = double("config", worktree_template_path: File.join(Dir.tmpdir, "no-such-template.yml"))
+      config = double("config", tmuxinator_dir: File.join(Dir.tmpdir, "no-such-dir"), library_dir: File.join(Dir.tmpdir, "no-such-dir"), builtin_library_dir: File.join(Dir.tmpdir, "no-such-dir"))
       Workspace::ProjectConfig.new(config: config, git: nil, output: StringIO.new, agent_commands: agent_commands)
     end
 
@@ -278,7 +278,7 @@ RSpec.describe Workspace::MainAgent do
     subject(:main_agent) { described_class.new(project_config: real_project_config, agent_commands: agent_commands) }
 
     before do
-      allow(config).to receive(:worktree_template_path).and_return(File.join(PROJECT_ROOT, "lib", "library", "template", "default", "worktree.yml"))
+      allow(config).to receive_messages(builtin_library_dir: File.join(PROJECT_ROOT, "lib", "library"), library_dir: File.join(Dir.tmpdir, "no-such-dir"), tmuxinator_dir: File.join(Dir.tmpdir, "no-such-dir"))
       allow(config).to receive(:config_path_for) { |name| File.join(@dir, "workspace.#{name}.yml") }
     end
 
