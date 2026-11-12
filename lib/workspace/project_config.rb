@@ -1,3 +1,4 @@
+require "digest"
 require "shellwords"
 require "yaml"
 
@@ -9,8 +10,11 @@ module Workspace
     # @param output [IO] output stream for user-facing messages
     # @param agent_commands [Workspace::AgentCommands, nil] the configured agent kind and commands; nil
     #   writes each agent's bare executable
-    def initialize(config:, git:, output: $stdout, agent_commands: nil)
+    # @param writer [Workspace::TmuxinatorConfigWriter, nil] writes each new config and its render record;
+    #   nil builds one over +config+
+    def initialize(config:, git:, output: $stdout, agent_commands: nil, writer: nil)
       @config = config
+      @writer = writer || TmuxinatorConfigWriter.new(config: config)
       @agent_commands = agent_commands
       @output = output
       @git = git
@@ -47,12 +51,11 @@ module Workspace
         raise Workspace::Error, "Template not found: #{@config.project_template_path}. Run `workspace init` first to install the templates."
       end
 
-      content = render(:project, {
+      write_new(name, :project, {
         project_name: name, workspace_name: name, project_root: root,
         display_name: banner_text(name), config_path: config_path,
         agent_kind: default_kind(name)
       }, File.read(@config.project_template_path))
-      File.write(config_path, content)
       @output.puts "Created config: #{config_path}"
       name
     end
@@ -117,13 +120,12 @@ module Workspace
         raise Workspace::Error, "Worktree template not found: #{@config.worktree_template_path}"
       end
 
-      content = render(:worktree, {
+      write_new(config_name, :worktree, {
         tmux_session_name: tmux_session_name, workspace_name: config_name, worktree_path: worktree_path,
         project_name: project_name, worktree_branch: branch_name,
         display_name: banner_text("#{project_name}/#{worktree_name}"), config_path: config_path,
         task_id: task_id, agent_kind: agent_kind || default_kind(config_name)
       }, File.read(@config.worktree_template_path))
-      File.write(config_path, content)
       @output.puts "Created config: #{config_path}" unless quiet
       config_name
     end
@@ -342,6 +344,24 @@ module Workspace
     end
 
     private
+
+    # Renders and writes a new config with its render record. Beside the render inputs the record keeps
+    # `agent_command`, the agent pane text the render wrote (nil when it found no agent pane), since the
+    # render reads the configured command from the config layers rather than from +inputs+.
+    def write_new(name, kind, inputs, template_text)
+      content = render(kind, inputs, template_text)
+      @writer.write(name, content, kind: kind, template: "default", template_sha: Digest::SHA256.hexdigest(template_text),
+        inputs: inputs.merge(agent_command: agent_pane_text(content, name)))
+    end
+
+    def agent_pane_text(content, workspace)
+      names = agent_program_names(workspace)
+      content.lines.each do |line|
+        item = pane_item(line)
+        return item[1] if item && agent_pane_text?(item[1], names)
+      end
+      nil
+    end
 
     # @return [Array<String, nil>] the programs of the one pane line that differs between two contents:
     #   the first `||` half whose program changed, else the first half

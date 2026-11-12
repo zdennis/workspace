@@ -36,6 +36,7 @@ module T5StartConcurrencyFakes
 
     def config_path_for(name) = File.join(@dir, "workspace.#{name}.yml")
     def tmuxinator_dir = @dir
+    def render_state_dir = File.join(@dir, ".render")
 
     def worktree_template_path
       File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-worktree-template.yml")

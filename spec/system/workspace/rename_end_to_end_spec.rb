@@ -93,8 +93,9 @@ RSpec.describe "workspace rename, end to end" do
   # Files under the temp HOME that still name the old workspace, minus the logs a rename leaves as history,
   # git's own files (its worktree id stays when a worktree moves) and empty lock files, which are never removed.
   def stale_files
+    # Rename does not move the render record yet (the tmuxinator templates plan, T5), so it is left out here.
     history = [/\.workspace-events\.jsonl\z/, /locks\.jsonl\z/, %r{/\.workflows/(archive|evidence)/}, %r{/\.tasks/archive/}, %r{/\.workspace-runs/},
-      /ledger\.jsonl\z/, /\.workspace-state\.json\.bak\z/, %r{/\.git(/|\z)}, /\.lock\z/]
+      /ledger\.jsonl\z/, /\.workspace-state\.json\.bak\z/, %r{/\.git(/|\z)}, /\.lock\z/, %r{/\.render/}]
     Dir.glob(File.join(home, "**", "*"), File::FNM_DOTMATCH).select { |path| File.file?(path) }.reject { |path| history.any? { |re| path.match?(re) } }
       .select { |path| [old, old_session, "feat-a"].any? { |needle| path.include?(needle) || File.binread(path).include?(needle) } }
   end

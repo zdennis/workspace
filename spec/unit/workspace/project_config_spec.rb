@@ -10,6 +10,7 @@ RSpec.describe Workspace::ProjectConfig do
   before do
     allow(config).to receive(:tmuxinator_dir).and_return(tmpdir)
     allow(config).to receive(:config_path_for) { |name| File.join(tmpdir, "workspace.#{name}.yml") }
+    allow(config).to receive(:render_state_dir).and_return(File.join(tmpdir, ".render"))
   end
 
   after { FileUtils.remove_entry(tmpdir) }
@@ -955,6 +956,36 @@ RSpec.describe Workspace::ProjectConfig do
       expect(File.stat(File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml")).mode).to eq(expected)
     end
 
+    it "leaves a render record beside each new config, and the record renders the same text again" do
+      writer = Workspace::TmuxinatorConfigWriter.new(config: config)
+      settings.replace("agent" => {"commands" => {"claude" => "claude-dev"}})
+      pc.create("myapp", "/src/my app")
+      pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123", task_id: "t_abc123")
+
+      project = writer.record("myapp")
+      worktree = writer.record("myapp.worktree-proj-123")
+      expect(project.kind).to eq(:project)
+      expect(project.template).to eq("default")
+      expect(project.template_sha).to eq(Digest::SHA256.hexdigest(File.read(config.project_template_path)))
+      expect(worktree.template_sha).to eq(Digest::SHA256.hexdigest(File.read(config.worktree_template_path)))
+      expect(worktree.inputs).to include(workspace_name: "myapp.worktree-proj-123", worktree_branch: "PROJ-123",
+        task_id: "t_abc123", agent_kind: "claude",
+        agent_command: "claude-dev --dangerously-skip-permissions --continue || claude-dev --dangerously-skip-permissions")
+      expect(writer.current?("myapp")).to be(true)
+      expect(writer.current?("myapp.worktree-proj-123")).to be(true)
+      expect(pc.render(project.kind, project.inputs, File.read(config.project_template_path))).to eq(written("myapp"))
+      expect(pc.render(worktree.kind, worktree.inputs, File.read(config.worktree_template_path))).to eq(written("myapp.worktree-proj-123"))
+    end
+
+    it "records a nil task id and the codex pane" do
+      writer = Workspace::TmuxinatorConfigWriter.new(config: config)
+      pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123", agent_kind: "codex")
+
+      inputs = writer.record("myapp.worktree-proj-123").inputs
+      expect(inputs).to include(task_id: nil, agent_kind: "codex", agent_command: "codex")
+      expect(pc.render(:worktree, inputs, File.read(config.worktree_template_path))).to eq(fixture("worktree-codex.yml"))
+    end
+
     it "writes nothing when the config already exists" do
       path = File.join(tmpdir, "workspace.myapp.yml")
       worktree_path = File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml")
@@ -966,6 +997,7 @@ RSpec.describe Workspace::ProjectConfig do
 
       expect(File.read(path)).to eq("keep\n")
       expect(File.read(worktree_path)).to eq("keep\n")
+      expect(File.exist?(File.join(tmpdir, ".render"))).to be(false)
     end
 
     describe "#render" do

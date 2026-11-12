@@ -284,6 +284,14 @@ module Workspace
       File.join(state_dir, ".events")
     end
 
+    # Dotted, like {#task_dir}, so no workspace name can produce it. Holds one render record per
+    # tmuxinator config (see {TmuxinatorConfigWriter}).
+    #
+    # @return [String] path to the directory of render records
+    def render_state_dir
+      File.join(state_dir, ".render")
+    end
+
     # Dotted, like {#task_dir}, so no workspace name can produce it. Holds one journal per rename under way.
     #
     # @return [String] path to the directory of rename journals

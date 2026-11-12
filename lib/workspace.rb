@@ -189,6 +189,7 @@ require_relative "workspace/notes_config"
 require_relative "workspace/spine_config"
 require_relative "workspace/main_agent"
 require_relative "workspace/instruction_composer"
+require_relative "workspace/tmuxinator_config_writer"
 require_relative "workspace/project_config"
 require_relative "workspace/protected_branch"
 require_relative "workspace/osascript_runner"
@@ -792,7 +793,9 @@ module Workspace
     window_manager = WindowManager.new(config: config, logger: logger, osascript: osascript)
     git = Git.new(output: output, input: input, logger: logger)
     agent_commands = AgentCommands.new(config_resolver: config_resolver)
-    project_config = ProjectConfig.new(config: config, git: git, output: output, agent_commands: agent_commands)
+    tmuxinator_config_writer = TmuxinatorConfigWriter.new(config: config)
+    project_config = ProjectConfig.new(config: config, git: git, output: output, agent_commands: agent_commands,
+      writer: tmuxinator_config_writer)
     window_positions = WindowPositions.new(dir: config.state_dir, logger: logger)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, width_percent: -> { project_settings.load_global.dig("launch", "window_width_percent") }, output: output, error_output: error_output, logger: logger)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
