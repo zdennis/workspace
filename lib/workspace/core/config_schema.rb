@@ -643,9 +643,9 @@ module Workspace
         doc: "`true` or `false`: whether `start` installs workspace's hooks into Codex's user-level `$CODEX_HOME/hooks.json` (default `true`). `false` leaves that file alone, `doctor` reports the hooks as turned off by config, and Codex panes read as `hook_mode: \"scrape\"`; `init`, `doctor --fix` and `hooks uninstall` are unaffected. See [`start`](README.start.md)"),
       # tmuxinator.backups.* bound the batches of tmuxinator config copies `template apply`, `restore` and `template backup` keep.
       Key.new(name: "tmuxinator.backups.keep", scope: :global, type: :integer, settable: true, examples: ["20", "50"], default: 20, min: 1, parser: POSITIVE_INTEGER,
-        doc: "How many tmuxinator config backup batches (made by `template apply`, `template restore` and `template backup`) are kept (default `20`); pruning never drops the newest batch holding a workspace"),
+        doc: "How many tmuxinator config backup batches (made by `template apply`, `template restore`, `template backup` and `template import`) are kept (default `20`); pruning never drops the newest batch holding a workspace or a template set `template import` replaced"),
       Key.new(name: "tmuxinator.backups.max_age", scope: :global, type: :duration, settable: true, examples: ["720h", "48h"], parser: POSITIVE_DURATION,
-        doc: "How old a tmuxinator config backup batch may get before pruning removes it (a duration; unset: batches are only limited by `tmuxinator.backups.keep`); pruning never drops the newest batch holding a workspace"),
+        doc: "How old a tmuxinator config backup batch may get before pruning removes it (a duration; unset: batches are only limited by `tmuxinator.backups.keep`); pruning never drops the newest batch holding a workspace or a template set `template import` replaced"),
       Key.new(name: "hooks", scope: :global, type: :mapping, sensitive: true, resolve: :none, settable: false, doc: "Global hooks applied to all projects"),
       Key.new(name: "layouts", scope: :global, type: :mapping, resolve: :merge, settable: false, doc: "Default tmux pane layouts"),
       Key.new(name: "event_log_compact_threshold", scope: :global, type: :text, settable: false,

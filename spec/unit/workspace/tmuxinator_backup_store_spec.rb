@@ -278,6 +278,22 @@ RSpec.describe Workspace::TmuxinatorBackupStore do
       expect(store.list.map { |m| m["id"] }).to include(only_a.id)
     end
 
+    it "keeps the newest batch holding a template set an import replaced, past keep and max_age" do
+      allow(clock).to receive(:now).and_return(now)
+      set_dir = File.join(tmpdir, "lib", "mine")
+      FileUtils.mkdir_p(set_dir)
+      File.write(File.join(set_dir, "project.yml"), "name: x\n")
+      import = store.open(reason: "import")
+      store.add_set(import, name: "mine", scope: "global", path: set_dir)
+      3.times { |i| batch_at(now + i + 1, %w[a]) }
+      allow(clock).to receive(:now).and_return(now + 365 * 86_400)
+
+      removed = store.prune(keep: 1, max_age: 86_400)
+
+      expect(removed).not_to include(import.id)
+      expect(store.list.map { |m| m["id"] }).to include(import.id)
+    end
+
     it "removes batches older than max_age but not newer ones" do
       old = batch_at(now, %w[a])
       fresh = batch_at(now + 3 * 86_400, %w[a])

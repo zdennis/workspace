@@ -224,8 +224,9 @@ module Workspace
       path if File.file?(path)
     end
 
-    # Removes the batches past the limits. A workspace's newest batch is never removed, so its last backup
-    # outlives both limits; a batch whose `created_at` can't be read is never removed by +max_age+. An id-shaped
+    # Removes the batches past the limits. A workspace's newest batch, and the newest batch holding a template
+    # set an import replaced, are never removed, so the last backup of each outlives both limits; a batch whose
+    # `created_at` can't be read is never removed by +max_age+. An id-shaped
     # directory with no readable manifest, more than an hour old (an `open` that died), is swept too.
     #
     # @param keep [Integer, nil] how many of the newest batches stay; nil sets no count limit
@@ -234,7 +235,10 @@ module Workspace
     def prune(keep: nil, max_age: nil)
       batches = list
       newest_for = {}
-      batches.each { |manifest| manifest["entries"].each { |entry| newest_for[entry["name"]] ||= manifest["id"] } }
+      batches.each do |manifest|
+        manifest["entries"].each { |entry| newest_for[[:workspace, entry["name"]]] ||= manifest["id"] }
+        manifest["sets"].each { |set| newest_for[[:set, set["scope"], set["project"], set["name"]]] ||= manifest["id"] }
+      end
       protected_ids = newest_for.values.uniq
       cutoff = max_age && (@clock.now.utc - max_age)
       removed = []
