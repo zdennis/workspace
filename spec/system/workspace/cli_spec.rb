@@ -7084,6 +7084,7 @@ RSpec.describe Workspace::CLI do
           Class.new do
             define_method(:tmuxinator_dir) { dir }
             define_method(:config_path_for) { |name| File.join(dir, "workspace.#{name}.yml") }
+            define_method(:render_state_dir) { File.join(dir, ".render") }
           end.new
         end
         let(:removed_worktrees) { [] }
