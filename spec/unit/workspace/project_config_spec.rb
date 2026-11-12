@@ -895,4 +895,77 @@ RSpec.describe Workspace::ProjectConfig do
       expect(pc.existing_name("other")).to be_nil
     end
   end
+
+  describe "rendered output of the shipped tmuxinator templates" do
+    let(:fixtures) { File.join(PROJECT_ROOT, "spec", "fixtures", "tmuxinator_render") }
+    let(:settings) { {} }
+    let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: settings, load: {}) }
+    let(:agent_commands) { Workspace::AgentCommands.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
+    subject(:pc) { described_class.new(config: config, output: output, git: git, agent_commands: agent_commands) }
+
+    before do
+      allow(config).to receive(:project_template_path).and_return(File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-template.yml"))
+      allow(config).to receive(:worktree_template_path).and_return(File.join(PROJECT_ROOT, "lib", "templates", "workspace.project-worktree-template.yml"))
+    end
+
+    def fixture(name) = File.read(File.join(fixtures, name)).gsub("$TMPDIR", tmpdir)
+
+    def written(name) = File.read(File.join(tmpdir, "workspace.#{name}.yml"))
+
+    it "renders a project config" do
+      pc.create("myapp", "/src/my app")
+
+      expect(written("myapp")).to eq(fixture("project.yml"))
+    end
+
+    it "renders a worktree config with no task id and claude" do
+      pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123")
+
+      expect(written("myapp.worktree-proj-123")).to eq(fixture("worktree.yml"))
+    end
+
+    it "renders a worktree config with a task id" do
+      pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123", task_id: "t_abc123")
+
+      expect(written("myapp.worktree-proj-123")).to eq(fixture("worktree-with-task.yml"))
+    end
+
+    it "renders a worktree config for a configured claude program" do
+      settings.replace("agent" => {"commands" => {"claude" => "claude-dev"}})
+
+      pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123")
+
+      expect(written("myapp.worktree-proj-123")).to eq(fixture("worktree-claude-dev.yml"))
+    end
+
+    it "renders a worktree config for codex" do
+      pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123", agent_kind: "codex")
+
+      expect(written("myapp.worktree-proj-123")).to eq(fixture("worktree-codex.yml"))
+    end
+
+    it "writes files with the mode File.write gives under the current umask" do
+      control = File.join(tmpdir, "control")
+      File.write(control, "x")
+      pc.create("myapp", "/src/myapp")
+      pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123")
+
+      expected = File.stat(control).mode
+      expect(File.stat(File.join(tmpdir, "workspace.myapp.yml")).mode).to eq(expected)
+      expect(File.stat(File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml")).mode).to eq(expected)
+    end
+
+    it "writes nothing when the config already exists" do
+      path = File.join(tmpdir, "workspace.myapp.yml")
+      worktree_path = File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml")
+      File.write(path, "keep\n")
+      File.write(worktree_path, "keep\n")
+
+      pc.create("myapp", "/src/myapp")
+      pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123")
+
+      expect(File.read(path)).to eq("keep\n")
+      expect(File.read(worktree_path)).to eq("keep\n")
+    end
+  end
 end
