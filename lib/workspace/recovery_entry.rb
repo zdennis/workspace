@@ -4,10 +4,104 @@ module Workspace
   # scheduled, and the checks those writes share. Each write changes the entry
   # Hash it is given, in place, inside the caller's {AgentRecoveryStore#update},
   # and reads nothing but the entry and, where it says so, the clock.
-  # {RecoveryIntake}, {RecoveryConfirmer} and {AgentRecoveryDesk} write through
+  # {RecoveryIntake}, {RecoveryConfirmer} and {RecoveryOutcomes} write through
   # these, so an entry is written one way whichever part writes it.
   module RecoveryEntry
+    # The `error` kinds that go on the attempt schedule; any other gives up at once.
+    RETRYABLE_ERRORS = %w[server_error overloaded rate_limit unknown].freeze
+
     module_function
+
+    # Applies one failed turn to an entry, inside the caller's {AgentRecoveryStore#update}.
+    #
+    # @param entry [Hash] the pane's entry, changed in place
+    # @param session_id [String] the session that failed
+    # @param error [String, nil] the error kind
+    # @param transcript_path [String, nil] the hook's transcript path
+    # @param live [Hash, nil] {AgentStopper#find_agent}'s answer, read before the update
+    # @param max_attempts [Integer] attempts after which a failure gives up
+    # @param clock [#now]
+    # @return [Boolean] whether this gave up, which the caller reports after the update
+    def apply_failure(entry, session_id, error, transcript_path, live, max_attempts:, clock:)
+      same = entry["session_id"] == session_id
+      if entry["phase"] == "attempting"
+        if same
+          entry["failed_during_attempt"] = true
+          entry["error"] = error
+        end
+        return false
+      end
+
+      unless RETRYABLE_ERRORS.include?(error)
+        return false if same && entry["phase"] == "gave_up" && entry["give_up_reason"] != "not_retryable"
+        entry.clear unless same
+        fill(entry, session_id, error, transcript_path)
+        give_up(entry, "not_retryable")
+        return true
+      end
+
+      return false unless transcript_path.is_a?(String) && !transcript_path.empty?
+      entry.clear unless same
+      if entry["phase"] == "gave_up"
+        return false unless reopens?(entry, live)
+        entry["stopped"] = false
+        entry["last_signal_at"] = nil
+        entry["give_up_reason"] = nil
+        entry["item_open"] = true
+        entry["item_error"] = entry["error"]
+      end
+      fill(entry, session_id, error, transcript_path)
+      schedule_failure(entry, live, max_attempts: max_attempts, clock: clock)
+    end
+
+    # Whether a stopped entry's agent has been replaced. The stopped process
+    # itself doesn't count: after a signal that didn't stop it, its late hooks
+    # must not end the recovery, and a pid that was never read proves nothing.
+    #
+    # @param entry [Hash]
+    # @param live [Hash, nil] the agent read
+    # @return [Boolean]
+    def agent_came_back?(entry, live)
+      entry["stopped"] == true && %w[waiting watching].include?(entry["phase"]) && other_agent?(entry, live)
+    end
+
+    # A pid that was never read proves nothing.
+    #
+    # @param entry [Hash]
+    # @param live [Hash, nil] the agent read
+    # @return [Boolean] whether the agent read is another process than the stored one
+    def other_agent?(entry, live)
+      return false unless live && !entry["agent_pid"].nil?
+      !RecoveryVerdicts.same_process?(entry, live)
+    end
+
+    # A retryable failure can follow a give-up that said nothing about the API
+    # any more. An `unconfirmed` one needs a live agent: someone resumed the
+    # session, and with no agent the failure is a late line from one that left.
+    # The count is kept, so {AgentRecoveryStore::MAX_ATTEMPTS} still ends it.
+    def reopens?(entry, live)
+      entry["give_up_reason"] == "not_retryable" || (entry["give_up_reason"] == "unconfirmed" && !live.nil?)
+    end
+
+    def fill(entry, session_id, error, transcript_path)
+      entry["session_id"] = session_id
+      entry["error"] = error
+      entry["transcript_path"] = transcript_path || entry["transcript_path"]
+      entry["attempts"] = entry["attempts"].to_i
+      entry["stopped"] = entry["stopped"] == true
+    end
+
+    # @return [Boolean] whether this gave up
+    def schedule_failure(entry, live, max_attempts:, clock:)
+      return true if schedule_next(entry, max_attempts: max_attempts, clock: clock)
+
+      entry["failed_at"] = AgentRecoveryStore.stamp(clock.now)
+      entry["draft_text"] = nil
+      entry["stopped"] = false if agent_came_back?(entry, live)
+      store_agent(entry, live) if live || entry["stopped"] != true
+      false
+    end
+    private_class_method :reopens?, :fill, :schedule_failure
 
     # `agent_flags` describes the stored agent. A read of the same process
     # replaces them, and one that gave nil keeps them; any other process, or a

@@ -26,8 +26,8 @@ class RecordingProcessTree
   end
 end
 
-# Fake of the Workspace::AgentStopper reads: the agent under a pane pid, the process-group answers, and whether a
-# process holds a session.
+# Fake of Workspace::AgentStopper: the agent under a pane pid, the process-group answers, whether a process holds a
+# session, whether a shell runs the agent, and the SIGINT's answer.
 class RecordingRecoveryStopper
   CONTROL_METHODS = %i[calls].freeze
 
@@ -37,11 +37,15 @@ class RecordingRecoveryStopper
   # @param foreground [Boolean] what +foreground?+ answers
   # @param clear [Boolean] what +pane_clear?+ answers
   # @param held [Boolean] what +session_held?+ answers
-  def initialize(agents: {}, foreground: true, clear: true, held: false, calls: [])
+  # @param restartable [Boolean] what +restartable?+ answers
+  # @param stopped [Symbol, Exception] what +stop+ answers, or raises
+  def initialize(agents: {}, foreground: true, clear: true, held: false, restartable: true, stopped: :signalled, calls: [])
     @agents = agents
     @foreground = foreground
     @clear = clear
     @held = held
+    @restartable = restartable
+    @stopped = stopped
     @calls = calls
   end
 
@@ -63,6 +67,17 @@ class RecordingRecoveryStopper
   def session_held?(session_id:, tree:)
     @calls << [:session_held?, session_id, tree]
     @held
+  end
+
+  def restartable?(pid:, pane_pid:, tree:)
+    @calls << [:restartable?, pid, pane_pid, tree]
+    @restartable
+  end
+
+  def stop(pid:, started:, pane_pid:)
+    @calls << [:stop, pid, pane_pid]
+    raise @stopped if @stopped.is_a?(Exception)
+    @stopped
   end
 end
 

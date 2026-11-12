@@ -59,14 +59,21 @@ class RecordingConfirmerFacts
   end
 end
 
-# Fake of Workspace::RecoveryStopMarker#clear.
+# Fake of Workspace::RecoveryStopMarker#mark and #clear.
 class RecordingStopMarker
   CONTROL_METHODS = %i[calls].freeze
 
   attr_reader :calls
 
-  def initialize(calls: [])
+  # @param marks [Boolean] what +mark+ answers
+  def initialize(marks: true, calls: [])
+    @marks = marks
     @calls = calls
+  end
+
+  def mark(session_id)
+    @calls << [:mark, session_id]
+    @marks
   end
 
   def clear(session_id)

@@ -166,30 +166,6 @@ RSpec.describe Workspace::RecoveryIntake do
     end
   end
 
-  describe "#apply_failure" do
-    it "only marks an attempt's entry, for the attempt's end to take" do
-      entry = waiting(phase: "attempting")
-
-      expect(desk_intake.apply_failure(entry, sid, "overloaded", "/t/session.jsonl", agent)).to be(false)
-      expect(entry).to include("phase" => "attempting", "failed_during_attempt" => true, "error" => "overloaded")
-    end
-
-    it "reopens an unconfirmed give-up for a live agent, keeping the count" do
-      entry = waiting(phase: "gave_up", give_up_reason: "unconfirmed", attempts: 2)
-
-      expect(desk_intake.apply_failure(entry, sid, "server_error", "/t/session.jsonl", agent)).to be(false)
-      expect(entry).to include("phase" => "waiting", "attempts" => 2, "give_up_reason" => nil, "item_open" => true,
-        "next_attempt_at" => stamp(now + 240))
-    end
-
-    it "leaves an unconfirmed give-up alone with no agent" do
-      entry = waiting(phase: "gave_up", give_up_reason: "unconfirmed")
-
-      expect(desk_intake.apply_failure(entry, sid, "server_error", "/t/session.jsonl", nil)).to be(false)
-      expect(entry).to include("phase" => "gave_up")
-    end
-  end
-
   describe "a finished turn" do
     it "deletes the entry and resolves its item" do
       store.put("%5", waiting(phase: "watching"))

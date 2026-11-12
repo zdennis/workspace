@@ -1,11 +1,11 @@
 module Workspace
   # Steps 2 to 5 of a recovery attempt, run on the attempt's own thread inside
-  # the claim the {AgentRecoveryDesk} took: {#restart} waits for the stopped
+  # the claim {RecoveryAttempts} took: {#restart} waits for the stopped
   # agent to leave, types the resume command, waits for the agent and types the
   # message; {#typed} types the message at the live prompt and waits for the
-  # `user_prompt` hook that answers it. Step 1, which opens the attempt, and
-  # step 6, which ends it, stay the desk's; {AgentRecoverySteps} picks whether
-  # these runners or fixed ones run between them.
+  # `user_prompt` hook that answers it. Step 1, which opens the attempt, is
+  # {RecoveryAttempts}', and step 6, which ends it, {RecoveryOutcomes#finish};
+  # {AgentRecoverySteps} picks whether these runners or fixed ones run between them.
   #
   # Nothing is typed unless the claim still holds and the pane still has the
   # attempt's agent holding the terminal, read again under the delivery lock

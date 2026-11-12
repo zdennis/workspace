@@ -117,6 +117,18 @@ RSpec.describe Workspace::RecoveryFacts do
     end
   end
 
+  it "#session_held_in? asks the stopper about the table given, reading none" do
+    held = facts(stopper: RecordingRecoveryStopper.new(held: true, calls: calls))
+
+    expect(held.session_held_in?("s1", :given)).to be(true)
+    expect(calls).to eq([[:session_held?, "s1", :given]])
+  end
+
+  it "#restartable? asks with the agent's pid, the pane's pid and the table given" do
+    expect(facts.restartable?({pid: 90}, row, :given)).to be(true)
+    expect(calls).to eq([[:restartable?, 90, 77, :given]])
+  end
+
   describe "#held_off?" do
     it "reads the input line, the prompt, the sub-agents and then the screen twice across the wait" do
       expect(facts.held_off?("%3", entry, nil)).to be(false)

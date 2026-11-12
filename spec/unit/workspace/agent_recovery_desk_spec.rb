@@ -111,7 +111,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       hooks[:deliver]&.call if text.include?("--resume")
       hooks[:enter]&.call if text.empty?
     }
-    described_class.new(panes: panes, workspace: "api", session_name: "api", session_monitor: monitor, store: store,
+    Workspace::AgentRecoveryDeskFactory.assemble(panes: panes, workspace: "api", session_name: "api", session_monitor: monitor, store: store,
       transcript: transcript, stopper: stopper, detector: Workspace::AgentDetector.new,
       process_tree: process_tree, ledger: ledger, resume_command: resume_command, prompt_typer: typer,
       readiness: readiness, marker: marker, inbox: -> { inbox }, event_log: event_log, delivery_lock: delivery_lock,
@@ -209,7 +209,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
   end
 
   describe "the typed messages" do
-    [described_class::TYPED_MESSAGE, described_class::RESUMED_MESSAGE].each do |template|
+    [Workspace::RecoveryAttempts::TYPED_MESSAGE, Workspace::RecoveryAttempts::RESUMED_MESSAGE].each do |template|
       it "hold nothing a shell expands or runs: #{template[0, 30]}" do
         expect(format(template, error: "server_error")).not_to match(/[`$;&|<>\\'"\n]/)
       end
@@ -220,7 +220,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
     it "does no store or process call on the caller's thread, and works the queue in order" do
       blocks = []
       worker_store = spy("store")
-      worker_desk = described_class.new(panes: panes, workspace: "api", session_name: "api", session_monitor: monitor, store: worker_store,
+      worker_desk = Workspace::AgentRecoveryDeskFactory.assemble(panes: panes, workspace: "api", session_name: "api", session_monitor: monitor, store: worker_store,
         transcript: nil, stopper: spy("stopper"), detector: nil, process_tree: spy("tree"), ledger: nil, resume_command: nil,
         prompt_typer: nil, readiness: nil, marker: nil, inbox: nil, delivery_lock: Mutex.new, clock: clock,
         spawn: ->(&block) { blocks << block })
@@ -245,7 +245,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
       allow(logger).to receive(:debug).and_raise(RuntimeError, "log closed")
       failing = FailingStore.new(store)
       failing.fail_next_update("disk gone")
-      worker_desk = described_class.new(panes: panes, workspace: "api", session_name: "api", session_monitor: monitor, store: failing,
+      worker_desk = Workspace::AgentRecoveryDeskFactory.assemble(panes: panes, workspace: "api", session_name: "api", session_monitor: monitor, store: failing,
         transcript: Workspace::TranscriptSummary.new, stopper: stopper, detector: Workspace::AgentDetector.new, process_tree: process_tree,
         ledger: ledger, resume_command: resume_command, prompt_typer: typer, readiness: nil, marker: marker, inbox: -> { inbox },
         delivery_lock: Mutex.new, clock: clock, logger: logger,
@@ -1294,7 +1294,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         now[0] = Time.iso8601(entry["next_attempt_at"]) + 1
         desk.scan
         expect(entry).to include("phase" => "waiting")
-        now[0] += described_class::DEFER_LIMIT
+        now[0] += Workspace::RecoveryOutcomes::DEFER_LIMIT
         desk.scan
       end
 
@@ -1330,7 +1330,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         due_entry(attempts: 3, stopped: true)
         closed!
         desk.scan
-        now[0] += described_class::DEFER_LIMIT
+        now[0] += Workspace::RecoveryOutcomes::DEFER_LIMIT
         desk.scan
 
         expect(inbox.list.first["body"]).to include("Nothing was stopped or typed in those 30 minutes")
@@ -2222,7 +2222,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         desk.scan
 
         expect(outcomes).to eq(["no_response"])
-        expect(sleeps.count(described_class::POLL_INTERVAL)).to be >= described_class::PROMPT_WAIT
+        expect(sleeps.count(Workspace::RecoveryAttemptRunner::POLL_INTERVAL)).to be >= Workspace::RecoveryAttemptRunner::PROMPT_WAIT
         expect(entry).to include("stopped" => false, "agent_pid" => 21, "last_signal_at" => nil,
           "draft_text" => a_string_matching(message))
         expect_rescheduled(2)
@@ -2283,7 +2283,7 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         desk.scan
 
         expect(outcomes).to eq(["resumed"])
-        expect(sleeps.count(described_class::POLL_INTERVAL)).to be < described_class::PROMPT_WAIT
+        expect(sleeps.count(Workspace::RecoveryAttemptRunner::POLL_INTERVAL)).to be < Workspace::RecoveryAttemptRunner::PROMPT_WAIT
         expect(entry).to include("phase" => "watching", "draft_text" => nil)
       end
 
@@ -3662,8 +3662,8 @@ RSpec.describe Workspace::AgentRecoveryDesk do
         end
         desk.scan
 
-        expect(typer).to have_received(:type).exactly(described_class::TYPE_TRIES).times
-        expect(reads.count(21)).to eq(described_class::TYPE_TRIES)
+        expect(typer).to have_received(:type).exactly(Workspace::RecoveryAttemptRunner::TYPE_TRIES).times
+        expect(reads.count(21)).to eq(Workspace::RecoveryAttemptRunner::TYPE_TRIES)
       end
 
       it "stops trying when the terminal is lost between tries, typing nothing more" do

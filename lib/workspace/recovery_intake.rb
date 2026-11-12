@@ -10,9 +10,6 @@ module Workspace
   # A give-up and a resolved item are reported through the callables it is
   # given, after the {AgentRecoveryStore#update} that decided them.
   class RecoveryIntake
-    # The `error` kinds that go on the attempt schedule; any other gives up at once.
-    RETRYABLE_ERRORS = %w[server_error overloaded rate_limit unknown].freeze
-
     HANDLED_EVENTS = %w[turn_failed stop user_prompt tool_start tool_use subagent_start session_start session_end].freeze
     private_constant :HANDLED_EVENTS
 
@@ -60,46 +57,6 @@ module Workspace
       end
       start_worker if start
       nil
-    end
-
-    # Applies one failed turn to an entry, inside the caller's {AgentRecoveryStore#update}.
-    #
-    # @param entry [Hash] the pane's entry, changed in place
-    # @param session_id [String] the session that failed
-    # @param error [String, nil] the error kind
-    # @param transcript_path [String, nil] the hook's transcript path
-    # @param live [Hash, nil] {AgentStopper#find_agent}'s answer, read before the update
-    # @return [Boolean] whether this gave up, which the caller reports after the update
-    def apply_failure(entry, session_id, error, transcript_path, live)
-      same = entry["session_id"] == session_id
-      if entry["phase"] == "attempting"
-        if same
-          entry["failed_during_attempt"] = true
-          entry["error"] = error
-        end
-        return false
-      end
-
-      unless RETRYABLE_ERRORS.include?(error)
-        return false if same && entry["phase"] == "gave_up" && entry["give_up_reason"] != "not_retryable"
-        entry.clear unless same
-        fill(entry, session_id, error, transcript_path)
-        RecoveryEntry.give_up(entry, "not_retryable")
-        return true
-      end
-
-      return false unless transcript_path.is_a?(String) && !transcript_path.empty?
-      entry.clear unless same
-      if entry["phase"] == "gave_up"
-        return false unless reopens?(entry, live)
-        entry["stopped"] = false
-        entry["last_signal_at"] = nil
-        entry["give_up_reason"] = nil
-        entry["item_open"] = true
-        entry["item_error"] = entry["error"]
-      end
-      fill(entry, session_id, error, transcript_path)
-      schedule(entry, live)
     end
 
     private
@@ -163,52 +120,13 @@ module Workspace
       pane_id = message["pane_id"]
       live = @facts.live_agent(pane_id)
       seen = @store.get(pane_id)
-      rebind(pane_id) if seen && seen["session_id"] == session_id && agent_came_back?(seen, live)
+      rebind(pane_id) if seen && seen["session_id"] == session_id && RecoveryEntry.agent_came_back?(seen, live)
       gave_up = false
       stored = @store.update(pane_id) do |entry|
-        gave_up = apply_failure(entry, session_id, message["error"], message["transcript_path"], live)
+        gave_up = RecoveryEntry.apply_failure(entry, session_id, message["error"], message["transcript_path"], live,
+          max_attempts: @max_attempts, clock: @clock)
       end
       @report_give_up.call(pane_id, stored) if gave_up
-    end
-
-    # A retryable failure can follow a give-up that said nothing about the API
-    # any more. An `unconfirmed` one needs a live agent: someone resumed the
-    # session, and with no agent the failure is a late line from one that left.
-    # The count is kept, so {AgentRecoveryStore::MAX_ATTEMPTS} still ends it.
-    def reopens?(entry, live)
-      entry["give_up_reason"] == "not_retryable" || (entry["give_up_reason"] == "unconfirmed" && !live.nil?)
-    end
-
-    def fill(entry, session_id, error, transcript_path)
-      entry["session_id"] = session_id
-      entry["error"] = error
-      entry["transcript_path"] = transcript_path || entry["transcript_path"]
-      entry["attempts"] = entry["attempts"].to_i
-      entry["stopped"] = entry["stopped"] == true
-    end
-
-    # @return [Boolean] whether this gave up
-    def schedule(entry, live)
-      return true if RecoveryEntry.schedule_next(entry, max_attempts: @max_attempts, clock: @clock)
-
-      entry["failed_at"] = stamp
-      entry["draft_text"] = nil
-      entry["stopped"] = false if agent_came_back?(entry, live)
-      RecoveryEntry.store_agent(entry, live) if live || entry["stopped"] != true
-      false
-    end
-
-    # Whether a stopped entry's agent has been replaced. The stopped process
-    # itself doesn't count: after a signal that didn't stop it, its late hooks
-    # must not end the recovery, and a pid that was never read proves nothing.
-    def agent_came_back?(entry, live)
-      entry["stopped"] == true && %w[waiting watching].include?(entry["phase"]) && other_agent?(entry, live)
-    end
-
-    # A pid that was never read proves nothing.
-    def other_agent?(entry, live)
-      return false unless live && !entry["agent_pid"].nil?
-      !RecoveryVerdicts.same_process?(entry, live)
     end
 
     def turn_completed(message)
@@ -232,13 +150,13 @@ module Workspace
       same = seen && seen["session_id"] == message["session_id"]
       live = @facts.live_agent(pane_id) if same && seen["stopped"] == true && %w[waiting watching].include?(seen["phase"])
       # Before the write that may end the hold, so no prune sees the old pid.
-      rebind(pane_id) if same && agent_came_back?(seen, live)
+      rebind(pane_id) if same && RecoveryEntry.agent_came_back?(seen, live)
       @store.update(pane_id) do |entry|
         next if entry.empty? || entry["session_id"] != message["session_id"]
         if entry["phase"] == "attempting"
           entry["prompt_seen"] = true if message["event"] == "user_prompt"
         elsif %w[waiting watching].include?(entry["phase"])
-          if agent_came_back?(entry, live)
+          if RecoveryEntry.agent_came_back?(entry, live)
             entry["stopped"] = false
             RecoveryEntry.store_agent(entry, live)
           end
@@ -290,7 +208,7 @@ module Workspace
     # attempts a blank pid proves it too: a `turn_failed` from a gone agent or a
     # failed `ps` can blank the stored one, and any agent here must not be signalled.
     def someone_resumed?(entry, live)
-      return true if entry["stopped"] == true || other_agent?(entry, live)
+      return true if entry["stopped"] == true || RecoveryEntry.other_agent?(entry, live)
       !live.nil? && entry["agent_pid"].nil? && entry["attempts"].to_i.positive?
     end
 

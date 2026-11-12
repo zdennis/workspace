@@ -236,7 +236,7 @@ RSpec.describe "tmux calls of the pane desks" do
       end
     end
     let(:desk) do
-      described_class.new(panes: factory, workspace: "api", session_name: "api", session_monitor: desk_monitor, store: store,
+      Workspace::AgentRecoveryDeskFactory.assemble(panes: factory, workspace: "api", session_name: "api", session_monitor: desk_monitor, store: store,
         transcript: Workspace::TranscriptSummary.new, stopper: Workspace::AgentStopper.new(process_tree: process_tree, group_reader: ->(_pid) { [10, 10] }),
         detector: Workspace::AgentDetector.new, process_tree: process_tree, ledger: ledger,
         resume_command: Workspace::AgentResumeCommand.new(tmuxinator_report: report),

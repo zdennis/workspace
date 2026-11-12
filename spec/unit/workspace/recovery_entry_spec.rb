@@ -24,6 +24,41 @@ RSpec.describe Workspace::RecoveryEntry do
     end
   end
 
+  describe ".apply_failure" do
+    let(:sid) { "11111111-1111-4111-8111-111111111111" }
+    let(:agent) { {pid: 20, started: "Mon", flags: ["--model", "opus"]} }
+
+    def apply_failure(*args) = described_class.apply_failure(*args, max_attempts: 3, clock: clock)
+
+    def waiting(**fields)
+      {"session_id" => sid, "transcript_path" => "/t/session.jsonl", "error" => "server_error", "attempts" => 1,
+       "phase" => "waiting", "stopped" => false, "failed_at" => stamp(now - 60), "next_attempt_at" => stamp(now + 60),
+       "agent_pid" => 20, "agent_started" => "Mon"}.merge(fields.transform_keys(&:to_s))
+    end
+
+    it "only marks an attempt's entry, for the attempt's end to take" do
+      entry = waiting(phase: "attempting")
+
+      expect(apply_failure(entry, sid, "overloaded", "/t/session.jsonl", agent)).to be(false)
+      expect(entry).to include("phase" => "attempting", "failed_during_attempt" => true, "error" => "overloaded")
+    end
+
+    it "reopens an unconfirmed give-up for a live agent, keeping the count" do
+      entry = waiting(phase: "gave_up", give_up_reason: "unconfirmed", attempts: 2)
+
+      expect(apply_failure(entry, sid, "server_error", "/t/session.jsonl", agent)).to be(false)
+      expect(entry).to include("phase" => "waiting", "attempts" => 2, "give_up_reason" => nil, "item_open" => true,
+        "next_attempt_at" => stamp(now + 240))
+    end
+
+    it "leaves an unconfirmed give-up alone with no agent" do
+      entry = waiting(phase: "gave_up", give_up_reason: "unconfirmed")
+
+      expect(apply_failure(entry, sid, "server_error", "/t/session.jsonl", nil)).to be(false)
+      expect(entry).to include("phase" => "gave_up")
+    end
+  end
+
   describe ".give_up" do
     it "ends the wait with the reason" do
       entry = {"phase" => "waiting", "next_attempt_at" => "x", "defer_since" => "y"}

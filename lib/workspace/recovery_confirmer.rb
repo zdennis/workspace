@@ -164,7 +164,7 @@ module Workspace
         RecoveryEntry.give_up(entry, "fresh_conversation")
         return true
       end
-      if failed && !RecoveryIntake::RETRYABLE_ERRORS.include?(entry["error"])
+      if failed && !RecoveryEntry::RETRYABLE_ERRORS.include?(entry["error"])
         RecoveryEntry.give_up(entry, "not_retryable")
         return true
       end

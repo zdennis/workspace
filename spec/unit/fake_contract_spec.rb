@@ -356,4 +356,28 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::PromptTyper, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+
+  describe RecordingRecoveryInbox do
+    it "accepts every call InboxStore accepts" do
+      expect(FakeContract.problems(described_class, Workspace::InboxStore, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingStepRunner do
+    it "accepts every call RecoveryAttemptRunner accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryAttemptRunner, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRecoveryOutcomes do
+    it "accepts every call RecoveryOutcomes accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryOutcomes, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingOpeningFacts do
+    it "accepts every call RecoveryFacts accepts" do
+      expect(FakeContract.problems(described_class, Workspace::RecoveryFacts, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
 end

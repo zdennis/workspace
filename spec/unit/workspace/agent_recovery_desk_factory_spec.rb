@@ -13,17 +13,11 @@ RSpec.describe Workspace::AgentRecoveryDeskFactory do
     end
   end
   let(:built) { [] }
-  let(:desk_class) do
-    record = built
-    recording_desk_class = Class.new do
-      def initialize(record) = @record = record
-
-      def new(**kwargs)
-        @record << kwargs
-        :desk
-      end
-    end
-    recording_desk_class.new(record)
+  let(:assembler) do
+    ->(**kwargs) {
+      built << kwargs
+      :desk
+    }
   end
   let(:session_monitor) { instance_double(Workspace::SessionMonitor) }
   let(:claim) { ->(_pane_id) {} }
@@ -40,7 +34,7 @@ RSpec.describe Workspace::AgentRecoveryDeskFactory do
       agent_commands: agent_commands, process_tree: instance_double(Workspace::ProcessTree),
       ledger: instance_double(Workspace::SessionLedger), resume_command: instance_double(Workspace::AgentResumeCommand),
       readiness: instance_double(Workspace::AgentReadiness), marker: instance_double(Workspace::RecoveryStopMarker),
-      logger: Workspace::Logger.new, error_output: StringIO.new, desk_class: desk_class, **overrides)
+      logger: Workspace::Logger.new, error_output: StringIO.new, assembler: assembler, **overrides)
   end
 
   it "builds a desk for a Claude Code workspace with recovery on" do

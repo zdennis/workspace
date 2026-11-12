@@ -9,7 +9,7 @@ module Workspace
   class RecoveryFacts
     # The process table and the agent found in it, nil when the pane has none.
     # The table goes on to the checks that read it again ({#pane_clear?},
-    # {AgentStopper#session_held?}, {AgentStopper#restartable?}).
+    # {#session_held_in?}, {#restartable?}).
     Agent = Struct.new(:found, :tree, keyword_init: true)
 
     # @param panes [Workspace::PaneFactory] lists a pane to look it up, builds one to read
@@ -127,6 +127,21 @@ module Workspace
     def session_held?(session_id)
       snapshot = tree
       snapshot.nil? || @stopper.session_held?(session_id: session_id, tree: snapshot)
+    end
+
+    # @param session_id [String]
+    # @param tree [ProcessTree::Snapshot] a table already read
+    # @return [Boolean] whether a process in the table holds the session
+    def session_held_in?(session_id, tree)
+      @stopper.session_held?(session_id: session_id, tree: tree)
+    end
+
+    # @param agent [Hash] the agent found (+:pid+)
+    # @param detail [Hash] the pane's details
+    # @param tree [ProcessTree::Snapshot] a table already read
+    # @return [Boolean] whether a shell runs the agent, so a resume line can take its place
+    def restartable?(agent, detail, tree)
+      @stopper.restartable?(pid: agent[:pid], pane_pid: detail[:pid], tree: tree)
     end
 
     # @param detail [Hash] the pane's details
