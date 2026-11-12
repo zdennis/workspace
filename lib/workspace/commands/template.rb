@@ -1,4 +1,7 @@
 require "digest"
+require "find"
+require "tmpdir"
+require "fileutils"
 require "json"
 
 module Workspace
@@ -29,14 +32,18 @@ module Workspace
       # @param status [Workspace::TemplateStatus, nil] classifies each one; nil refuses `status`
       # @param apply [Workspace::TemplateApply, nil] re-renders the selected configs; nil refuses `apply`
       # @param adopt [Workspace::TemplateAdopt, nil] builds render records for configs that have none; nil refuses `adopt` (and `variables` shows no recovered values)
+      # @param backups [Workspace::TmuxinatorBackupStore, nil] `import` copies a set it replaces into a batch of its own; nil refuses replacing one
+      # @param template_in_use [Workspace::TemplateInUse, nil] `import` refuses to replace a set a key selects; nil checks nothing
       # @param output [IO] output stream
       # @param error_output [IO] where `render`'s problems go in text mode
-      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, selection: nil, status: nil, apply: nil, adopt: nil, output: $stdout, error_output: $stderr)
+      def initialize(library:, project_config:, writer:, template_validator:, differ:, config_command: nil, selection: nil, status: nil, apply: nil, adopt: nil, backups: nil, template_in_use: nil, output: $stdout, error_output: $stderr)
         @config_command = config_command
         @selection = selection
         @status = status
         @apply = apply
         @adopt = adopt
+        @backups = backups
+        @template_in_use = template_in_use
         @library = library
         @project_config = project_config
         @writer = writer
@@ -416,6 +423,90 @@ module Workspace
          "layer" => result.layer, "file" => result.path}
       end
 
+      # Copies every tmuxinator template set of a library scope into +dir+, one folder per set (regular files only, no dotfiles),
+      # and writes `templates.json` there: the workspace version and the sha256 of every file of every set folder in +dir+. The
+      # file is for people to read; `import` does not check it. The `legacy` set is not exported.
+      #
+      # @param dir [String] the directory to write into; made when missing; never the library or inside it
+      # @param scope [String, nil] `global` (default) or `project`
+      # @param force [Boolean] replace a set's folder already in +dir+
+      # @param workspace [String, nil] the workspace whose project `--scope project` exports
+      # @param cwd [String, nil] where the command runs, for the project scope
+      # @return [Hash] the action row: `scope`, `dir`, `templates` (each `template`, `path`, `files`: relative path to sha256), `warnings`
+      # @raise [Workspace::UsageError] for a scope other than global or project, or a +dir+ in the library
+      # @raise [Workspace::Error] `template_exists` when a set's folder is already in +dir+ and not +force+
+      def export(dir:, scope: nil, force: false, workspace: nil, cwd: nil)
+        raise UsageError, "Unknown scope: #{scope}. One of global, project." unless [nil, "global", "project"].include?(scope)
+
+        store = @library.write_store(scope: scope, project: (WorkspaceName.project_of(workspace) if workspace && scope == "project"), cwd: cwd)
+        target = File.expand_path(dir, cwd || Dir.pwd)
+        refuse_library_dir!(target, cwd)
+        entries = store.entries(kind: "template").select { |entry| entry["readable"] != false }
+        skipped, entries = entries.partition { |entry| entry["name"] == Workspace::Library::LEGACY_TEMPLATE }
+        warnings = skipped.map do |entry|
+          message = "The tmuxinator template '#{entry["name"]}' is the edited copy `workspace init` installed, so it is not exported: an exported folder imports back under its own names. Import it with template import after selecting it."
+          @error_output.puts "Warning: #{message}"
+          {"severity" => "warning", "code" => "legacy_not_exported", "kind" => nil, "scope" => store.scope, "message" => message}
+        end
+        if entries.empty?
+          @output.puts "No tmuxinator templates in the #{store.scope} library to export."
+          return {"workspace" => nil, "outcome" => "nothing_to_export", "reason" => nil, "message" => nil, "scope" => store.scope, "dir" => target, "templates" => [], "warnings" => warnings}
+        end
+        entries.each do |entry|
+          dest = File.join(target, entry["name"])
+          next unless File.exist?(dest) && !force
+          raise Error.new("#{dest} already exists. Pass --force to replace it.", code: "template_exists",
+            details: {"template" => entry["name"], "scope" => store.scope, "path" => dest}, retry_with: {"flags" => ["--force"], "destructive" => true})
+        end
+        FileUtils.mkdir_p(target)
+        exported = entries.map { |entry| export_set(entry, File.join(target, entry["name"])) }
+        write_manifest(target)
+        @output.puts "Exported #{count(exported.size, "tmuxinator template")} to #{target}."
+        {"workspace" => nil, "outcome" => "exported", "reason" => nil, "message" => nil, "scope" => store.scope, "dir" => target, "templates" => exported, "warnings" => warnings}
+      end
+
+      # Puts the tmuxinator template sets found at +path+ into the library: a folder holding project.yml and worktree.yml is one
+      # set (named after the folder), a folder of such folders (what {#export} writes) is each of them. Dotfiles are left out
+      # and a folder holding a symbolic link is refused. Every set is checked first and nothing is written when one is invalid or
+      # refused. A set that already exists with other content is copied into a backup batch (reason `import`, put back by
+      # `template restore`) and replaced, and a set it adds is recorded in the batch so a restore removes it again, unless a key selects it and not +force+; a new set that hides a lower scope's is warned about.
+      #
+      # @param path [String] a set's folder, or an exported folder of sets
+      # @param scope [String, nil] `global` (default) or `project`
+      # @param force [Boolean] replace a set a key selects, or add a `default` that hides the built-in one
+      # @param workspace [String, nil] the workspace whose project `--scope project` writes to
+      # @param cwd [String, nil] where the command runs
+      # @return [Hash] the action row: `scope`, `backup` (the batch id, or nil), `templates` (each `template`, `outcome` `added`, `replaced` or `unchanged`, `scope`, `path`, `warnings`)
+      # @raise [Workspace::UsageError] for a bad scope or set name
+      # @raise [Workspace::Error] `library_source_missing`, `invalid_template` (a problem, or a symbolic link), `template_in_use`
+      def import(path:, scope: nil, force: false, workspace: nil, cwd: nil)
+        raise UsageError, "Unknown scope: #{scope}. One of global, project." unless [nil, "global", "project"].include?(scope)
+
+        source = File.expand_path(path, cwd || Dir.pwd)
+        store = @library.write_store(scope: scope, project: (WorkspaceName.project_of(workspace) if workspace && scope == "project"), cwd: cwd)
+        Dir.mktmpdir("template-import") do |stage|
+          plan = import_sources(source).map { |name, dir| import_plan(store, name, dir, stage, force) }
+          batch = nil
+          written = plan.reject { |item| item["outcome"] == "unchanged" }
+          unless written.empty?
+            raise Error, "template import can't record what it changes: no backup store was wired" unless @backups
+            batch = @backups.open(reason: "import")
+            written.each { |item| @backups.add_set(batch, name: item["template"], scope: store.scope, project: store.project, path: item["path"]) }
+          end
+          plan.each do |item|
+            next if item["outcome"] == "unchanged"
+            store.copy_tree("template", item["template"], item["staged"])
+            @backups.finish_set(batch, name: item["template"], scope: store.scope, project: store.project, sha_after: LibraryStore.tree_sha(item["path"])) if batch
+            item["warnings"] += shadowed_scopes(store, item["template"], store.project, cwd)
+          end
+          plan.each { |item| @output.puts "#{item["outcome"].capitalize} #{item["template"]} (#{item["path"]})" }
+          @output.puts "Backed up what was replaced as #{batch.id}; put it back with `workspace template restore #{batch.id}`." if batch
+          changed = plan.count { |item| item["outcome"] != "unchanged" }
+          {"workspace" => nil, "outcome" => changed.zero? ? "unchanged" : "imported", "reason" => nil, "message" => nil, "scope" => store.scope,
+           "backup" => batch&.id, "templates" => plan.map { |item| item.except("staged") }}
+        end
+      end
+
       private
 
       # A warning (also on stderr) for each lower-scope set of the same name that the new one now hides.
@@ -439,6 +530,110 @@ module Workspace
       STATUS_REASONS = {"template_switched" => "another tmuxinator template is selected now", "template_changed" => "the tmuxinator template changed", "agent_changed" => "the agent settings changed",
                         "template_unavailable" => "its tmuxinator template can't be read", "render_failed" => "it can't be rendered with today's agent settings"}.freeze
       private_constant :STATUS_REASONS
+
+      def export_set(entry, dest)
+        tmp = "#{dest}.#{Process.pid}.tmp"
+        FileUtils.rm_rf(tmp)
+        root = File.realpath(entry["path"])
+        files = entry["files"].to_h do |rel|
+          FileUtils.mkdir_p(File.dirname(File.join(tmp, rel)))
+          FileUtils.cp(File.join(root, rel), File.join(tmp, rel))
+          [rel, Digest::SHA256.file(File.join(tmp, rel)).hexdigest]
+        end
+        FileUtils.rm_rf(dest)
+        File.rename(tmp, dest)
+        {"template" => entry["name"], "path" => dest, "files" => files}
+      ensure
+        FileUtils.rm_rf(tmp) if tmp
+      end
+
+      # `templates.json` lists the set folders that are in +target+ now, whatever put them there.
+      def write_manifest(target, version: Workspace::VERSION)
+        sets = Dir.children(target).sort.reject { |child| child.start_with?(".") }.filter_map do |child|
+          dir = File.join(target, child)
+          next unless File.directory?(dir) && !File.symlink?(dir) && %w[project.yml worktree.yml].any? { |file| File.file?(File.join(dir, file)) }
+          root = File.realpath(dir)
+          [child, {"files" => LibraryStore.files_of(dir).to_h { |rel| [rel, Digest::SHA256.file(File.join(root, rel)).hexdigest] }}]
+        end
+        document = {"schema" => 1, "workspace_version" => version, "templates" => sets.to_h}
+        AtomicFile.write(File.join(target, "templates.json"), JSON.pretty_generate(document) + "\n", perm: 0o644)
+      end
+
+      # An export into the library would be read back as library entries, and a later import would copy it over itself.
+      def refuse_library_dir!(target, cwd)
+        real = real_path(target)
+        (@library.stores(cwd: cwd).map(&:dir) + [@library.root]).each do |library_dir|
+          root = real_path(library_dir)
+          next unless real == root || real.start_with?(root + File::SEPARATOR)
+          raise UsageError, "#{target} is the library (#{root}) or inside it. Export to a folder outside it."
+        end
+      end
+
+      # The path with its nearest existing parent's links resolved.
+      def real_path(path)
+        tail = []
+        current = File.expand_path(path)
+        until File.exist?(current) || current == File.dirname(current)
+          tail.unshift(File.basename(current))
+          current = File.dirname(current)
+        end
+        File.join(File.realpath(current), *tail)
+      end
+
+      # The `[name, folder]` pairs at +source+.
+      def import_sources(source)
+        unless File.exist?(source)
+          raise Error.new("Nothing at #{source} to import.", code: "library_source_missing", details: {"path" => source})
+        end
+        raise Error.new("#{source} is a file; import takes a folder.", code: "library_source_missing", details: {"path" => source}) unless File.directory?(source)
+
+        if %w[project.yml worktree.yml].any? { |file| File.file?(File.join(source, file)) }
+          [[File.basename(source), source]]
+        else
+          sets = Dir.children(source).sort.reject { |child| child.start_with?(".") }.select { |child| File.directory?(File.join(source, child)) }
+          if sets.empty?
+            raise Error.new("#{source} holds no tmuxinator template sets: expected project.yml and worktree.yml, or folders that hold them.",
+              code: "library_source_missing", details: {"path" => source})
+          end
+          sets.map { |child| [child, File.join(source, child)] }
+        end
+      end
+
+      # What importing one set would do, after checking its name, links and files and the keys that select what it replaces.
+      # The files are staged first (regular non-dot files), so what is checked and compared is what would be written.
+      def import_plan(store, name, dir, stage, force)
+        raise UsageError, "'#{name}' is not a valid tmuxinator template name: lowercase letters, digits and hyphens, e.g. team." unless name.match?(IdPatterns::LIBRARY_NAME)
+        raise UsageError, "'#{name}' is reserved for the edited copy `workspace init` installed. Rename the folder." if name == Workspace::Library::LEGACY_TEMPLATE
+        links = [dir, *Find.find(dir).to_a].select { |entry| File.symlink?(entry) }
+        unless links.empty?
+          problems = links.map { |link| {"severity" => "error", "code" => "symlink", "kind" => nil, "message" => "#{link} is a symbolic link; a template set is plain files"} }
+          raise Error.new("The tmuxinator template #{name} is not valid: #{problems.map { |p| p["message"] }.join("; ")}",
+            code: "invalid_template", details: {"ref" => "template/#{name}", "problems" => problems})
+        end
+        staged = File.join(stage, name)
+        FileUtils.mkdir_p(staged)
+        LibraryStore.files_of(dir).each do |rel|
+          FileUtils.mkdir_p(File.dirname(File.join(staged, rel)))
+          FileUtils.cp(File.join(dir, rel), File.join(staged, rel))
+        end
+        checked = @template_validator.call_set(staged)
+        unless checked.valid?
+          raise Error.new("The tmuxinator template #{name} is not valid: #{checked.errors.map(&:to_s).join("; ")}",
+            code: "invalid_template", details: {"ref" => "template/#{name}", "problems" => checked.errors.map(&:to_h)})
+        end
+        existing = store.path_for("template", name)
+        outcome = if store.find("template", name).nil? then "added"
+        elsif File.directory?(existing) && LibraryStore.tree_sha(existing) == LibraryStore.tree_sha(staged) then "unchanged"
+        else
+          "replaced"
+        end
+        if @template_in_use && !force && outcome != "unchanged"
+          @template_in_use.check_default!(name, store)
+          @template_in_use.check!(name, store, verb: "replace") if outcome == "replaced"
+        end
+        {"template" => name, "outcome" => outcome, "scope" => store.scope, "path" => existing, "staged" => staged,
+         "warnings" => checked.warnings.map(&:to_h)}
+      end
 
       def print_status(rows)
         if rows.empty?

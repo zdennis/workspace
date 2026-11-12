@@ -192,6 +192,7 @@ require_relative "workspace/notes_config"
 require_relative "workspace/spine_config"
 require_relative "workspace/tmuxinator_template_config"
 require_relative "workspace/template_validator"
+require_relative "workspace/template_in_use"
 require_relative "workspace/text_diff"
 require_relative "workspace/main_agent"
 require_relative "workspace/instruction_composer"
@@ -843,6 +844,7 @@ module Workspace
     library = Library.new(config: config, lineage: lineage, project_config: project_config,
       template_config: TmuxinatorTemplateConfig.new(config_resolver: config_resolver))
     template_validator = TemplateValidator.new(project_config: project_config)
+    template_in_use = TemplateInUse.new(template_config: TmuxinatorTemplateConfig.new(config_resolver: config_resolver), project_config: project_config)
     library_installer = LibraryInstaller.new(git: git, dirs: LibraryInstallDirs.new(config_resolver: config_resolver))
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
       git_exclude: GitExclude.new(git: git), output: output)
@@ -976,7 +978,7 @@ module Workspace
     ui_command = Commands::Ui.new(output: output, notes: notes_command, app_probe: ui_app_probe)
     workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
     library_command = Commands::Library.new(library: library, output: output, input: input, event_log: event_log,
-      installer: library_installer, checkout: workspace_checkout, template_validator: template_validator)
+      installer: library_installer, checkout: workspace_checkout, template_validator: template_validator, template_in_use: template_in_use)
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
     workflow_evidence = WorkflowEvidence.new(dir: config.workflow_evidence_dir)
@@ -1295,7 +1297,8 @@ module Workspace
     template_command = Commands::Template.new(library: library, project_config: project_config, writer: tmuxinator_config_writer,
       template_validator: template_validator, differ: TextDiff.new, config_command: config_command,
       selection: template_selection,
-      status: template_status,
+      status: template_status, template_in_use: template_in_use,
+      backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer),
       adopt: TemplateAdopt.new(library: library, project_config: project_config, writer: tmuxinator_config_writer, main_agent: main_agent, locks: name_migration),
       apply: TemplateApply.new(status: template_status, writer: tmuxinator_config_writer,
         backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer), locks: name_migration,
@@ -1304,7 +1307,7 @@ module Workspace
       output: output, error_output: error_output)
     template_backups_command = Commands::TemplateBackups.new(backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer),
       selection: template_selection, locks: name_migration, project_config: project_config, writer: tmuxinator_config_writer,
-      retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output), output: output)
+      retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output), library: library, template_in_use: template_in_use, output: output)
     template_family = CLI::Template.new(template_command: template_command, backups_command: template_backups_command, common: common, names: names, working_dir: working_dir)
     plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,
       spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,

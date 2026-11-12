@@ -55,6 +55,11 @@ module Workspace
       (scope == "project") ? project_store(project || require_project(cwd)) : global_store
     end
 
+    # @return [String] the directory holding the global store and the projects' stores
+    def root
+      @config.library_dir
+    end
+
     # @return [Workspace::LibraryStore]
     def global_store
       LibraryStore.new(dir: File.join(@config.library_dir, "global"), scope: "global")

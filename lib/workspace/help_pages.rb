@@ -1133,19 +1133,21 @@ module Workspace
         ]
       },
       "remove" => {
-        usage: ["library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]"],
+        usage: ["library remove REF [--yes] [--force] [--project [NAME]] [--dry-run] [--json]"],
         summary: "Delete a library entry or its link",
         about: [
           "Deletes the entry or its link from the global store, or the project's with --project, for real; the",
           "source file is never touched. It asks first on a terminal. With --json it never asks, so pass --yes",
-          "or --dry-run."
+          "or --dry-run. A tmuxinator template that a tmuxinator.template or tmuxinator.worktree_template key",
+          "selects is refused (template_in_use) unless --force, which removes it and warns which keys still name it."
         ],
-        options: [["--yes", "Don't ask"], LIBRARY_PROJECT, LIBRARY_DRY_RUN, JSON_OPT],
+        options: [["--yes", "Don't ask"], ["--force", "Remove a tmuxinator template a config key still selects"], LIBRARY_PROJECT, LIBRARY_DRY_RUN, JSON_OPT],
         examples: [
           ["workspace library remove prompt/kickoff", "delete a global entry, answering the question on the terminal"],
           ["workspace library remove prompt/kickoff --dry-run", "see what would go before anything does"],
           ["workspace library remove play/playbook --yes", "delete a linked play without being asked, as a script must; the note it linked stays"],
-          ["workspace library remove kickoff --project --yes", "delete the project's copy and let the global one show through again"]
+          ["workspace library remove kickoff --project --yes", "delete the project's copy and let the global one show through again"],
+          ["workspace library remove template/team --yes --force", "delete a tmuxinator template even though new configs are set to render from it"]
         ]
       },
       "install" => {
@@ -1645,7 +1647,7 @@ module Workspace
     TEMPLATE_PROJECT_TEXT = "status, apply and adopt: every workspace of a project (NAME, or the project of the current workspace)"
     TEMPLATE_DIFF_TEXT = "render: print a unified diff against the workspace's current config instead of the text; apply: also show what each config would change by"
     TEMPLATE_DRY_RUN_TEXT = "apply and adopt: say what would happen to each config, writing nothing (apply: and taking no backup)"
-    TEMPLATE_FORCE_TEXT = "apply: also overwrite configs edited since they were rendered (after a backup); restore: also put back over files changed since the batch wrote them (after a backup)"
+    TEMPLATE_FORCE_TEXT = "apply: also overwrite configs edited since they were rendered (after a backup); restore: also put back over files changed since the batch wrote them (after a backup); export: replace a set's folder already in DIR; import: also replace a set a template key selects (after a backup)"
     TEMPLATE_ROLLBACK_TEXT = "apply: on the first workspace that fails, put back every config the batch wrote and stop"
 
     # What each flag means on one verb's page, so a page lists only what its verb does with it.
@@ -1673,6 +1675,8 @@ module Workspace
       dry_run_adopt: "Say what would happen to each config (would adopt exact or approx, tracked, gone), writing nothing",
       force: "Also overwrite configs edited since they were rendered (a backup is taken first); a config with no render record is still skipped",
       force_restore: "Also put the backup over a config or render record changed since the batch wrote it (a backup of what it replaces is taken first)",
+      force_export: "Replace a set's folder already in DIR",
+      force_import: "Also replace a set that tmuxinator.template or tmuxinator.worktree_template selects (the old copy goes into a backup batch)",
       rollback: "On the first workspace that fails, put back every config and render record the batch wrote, and stop"
     }.freeze
 
@@ -1786,14 +1790,15 @@ module Workspace
         usage: ["template backups list [--json]"],
         summary: "List the backup batches of tmuxinator template renders, newest first",
         about: [
-          "Each batch has an id, the reason it was taken (apply, restore or manual) and the workspaces it holds.",
+          "Each batch has an id, the reason it was taken (apply, restore, import or manual), the workspaces it holds",
+          "and, for an import or a restore of one, the template sets it holds.",
           "Reads only."
         ],
         options: [JSON_OPT],
         examples: [
           ["workspace template backups list", "the batches you can restore"],
           ["workspace template backups list | head -1", "the newest one"],
-          ["workspace template backups list --json", "for a script: each batch's id, created_at, reason and workspaces"]
+          ["workspace template backups list --json", "for a script: each batch's id, created_at, reason, workspaces and templates"]
         ]
       },
       "backups prune" => {
@@ -1812,7 +1817,7 @@ module Workspace
         ]
       },
       "restore" => {
-        usage: ["template restore BACKUP_ID [WORKSPACE...] [--force] [--json]"],
+        usage: ["template restore BACKUP_ID [WORKSPACE|TEMPLATE...] [--force] [--json]"],
         summary: "Put a tmuxinator template backup batch back",
         about: [
           "Puts the batch's configs and render records back as they were when it was taken, all of them or only",
@@ -1822,7 +1827,10 @@ module Workspace
           "files are gone and whose checkout is gone too (renamed or removed) is skipped: gone, but an accidentally",
           "deleted config of a workspace that still has its checkout is put back. A batch of its own is taken first",
           "(`Backup:`), so a restore can be undone by restoring that. A running session keeps its old layout until",
-          "it is relaunched. Exit 3 when some workspaces failed, 1 when all did."
+          "it is relaunched. A batch `template import` took holds the template sets it replaced: they go back into",
+          "the library the same way (a set changed since the import is restore_conflict unless --force, and what",
+          "it replaces is kept in the restore's batch); name a set to put back only it. Exit 3 when some",
+          "workspaces failed, 1 when all did."
         ],
         options: [["--force", TEMPLATE_PAGE_TEXT[:force_restore]], JSON_OPT],
         examples: [
@@ -1989,6 +1997,45 @@ module Workspace
           ["workspace template use team", "render new project and worktree configs from team"],
           ["workspace template use team --kind worktree --scope project", "only new worktree configs of this project"],
           ["workspace template use team --json", "for a script: the key set and the layer it was written to"]
+        ]
+      },
+      "export" => {
+        usage: ["template export DIR [--scope SCOPE] [--force] [--json]"],
+        summary: "Copy your tmuxinator templates into a folder",
+        about: [
+          "Writes each tmuxinator template of the global library (--scope project: the project's) into DIR/NAME/ (plain",
+          "files, no dotfiles), and DIR/templates.json with the workspace version and the sha256 of every file of every",
+          "set folder in DIR. templates.json is for people to read; import does not check it. DIR is made if missing and",
+          "can't be the library or inside it. A set's folder already in DIR is refused (template_exists) unless --force.",
+          "Built-in templates and the `legacy` copy are not exported (a warning names `legacy`). Reads the library only."
+        ],
+        options: [["--scope SCOPE", TEMPLATE_PAGE_TEXT[:scope_new]], name_opt(TEMPLATE_PAGE_TEXT[:name_new]), ["--force", TEMPLATE_PAGE_TEXT[:force_export]], JSON_OPT],
+        examples: [
+          ["workspace template export ~/backup/templates", "copy every global tmuxinator template, with checksums"],
+          ["workspace template export ~/backup/templates --force", "replace the folders of sets exported before"],
+          ["workspace template export ./templates --scope project", "the project's own templates"],
+          ["workspace template export ~/backup/templates --json", "for a script: each set with its files' checksums"]
+        ]
+      },
+      "import" => {
+        usage: ["template import PATH [--scope SCOPE] [--force] [--json]"],
+        summary: "Put tmuxinator templates from a folder into your library",
+        about: [
+          "PATH is one set (a folder holding project.yml and worktree.yml, named after the folder) or a folder of",
+          "them, as `template export` writes. Every set is checked first (as `template validate` does) and nothing is",
+          "written when one is invalid; dotfiles are left out and a folder holding a symbolic link is refused",
+          "(invalid_template). A set that already exists with other content is copied into a backup batch (reason",
+          "import; put back with `template restore`, which also removes the sets the import added) and replaced; the same content is unchanged. Replacing a set that",
+          "tmuxinator.template or tmuxinator.worktree_template selects, or adding one called default (which hides the",
+          "built-in one every unset config renders from), is refused (template_in_use) unless --force. A set that",
+          "hides one of the same name in a lower scope is warned about (shadows_template)."
+        ],
+        options: [["--scope SCOPE", TEMPLATE_PAGE_TEXT[:scope_new]], name_opt(TEMPLATE_PAGE_TEXT[:name_new]), ["--force", TEMPLATE_PAGE_TEXT[:force_import]], JSON_OPT],
+        examples: [
+          ["workspace template import ~/backup/templates", "bring back every set an export wrote"],
+          ["workspace template import ~/Downloads/team", "add one set, named team after its folder"],
+          ["workspace template import ~/backup/templates --force", "also replace sets that new configs render from"],
+          ["workspace template import ~/backup/templates --json", "for a script: each set added, replaced or unchanged, and the backup id"]
         ]
       }
     }.freeze

@@ -11,7 +11,7 @@ module Workspace
 
       # What a write did. `outcome` is "added", "unchanged", "replaced",
       # "updated" or "removed"; `workspace` is the project, or nil for global.
-      Result = Struct.new(:outcome, :workspace, :entry, :message)
+      Result = Struct.new(:outcome, :workspace, :entry, :message, :warnings)
 
       # The message verb for each write outcome: done, and what --dry-run would do.
       VERBS = {
@@ -25,8 +25,10 @@ module Workspace
       # @param event_log [Workspace::EventLog, nil] records `library_changed` after a write that changed the store
       # @param installer [Workspace::LibraryInstaller, nil] copies into and removes from a worktree, for `install` and `uninstall`
       # @param checkout [Workspace::WorkspaceCheckout, nil] finds the worktree `install` and `uninstall` act on
-      def initialize(library:, output: $stdout, input: $stdin, event_log: nil, installer: nil, checkout: nil, template_validator: nil)
+      # @param template_in_use [Workspace::TemplateInUse, nil] `remove` refuses a tmuxinator template a key selects; nil checks nothing
+      def initialize(library:, output: $stdout, input: $stdin, event_log: nil, installer: nil, checkout: nil, template_validator: nil, template_in_use: nil)
         @template_validator = template_validator
+        @template_in_use = template_in_use
         @installer = installer
         @checkout = checkout
         @library = library
@@ -170,12 +172,21 @@ module Workspace
       # @param project [String, nil]
       # @param cwd [String]
       # @param dry_run [Boolean]
+      # @param force [Boolean] remove a tmuxinator template a `tmuxinator.template` key still selects
       # @return [Result, nil] nil when the person declined
-      # @raise [Workspace::Error] code `unknown_library_entry`, `ambiguous_library_entry` or `confirmation_required`
-      def remove(ref, yes: false, scope: nil, project: nil, cwd: Dir.pwd, dry_run: false)
+      # @raise [Workspace::Error] code `unknown_library_entry`, `ambiguous_library_entry`, `confirmation_required` or `template_in_use`
+      def remove(ref, yes: false, scope: nil, project: nil, cwd: Dir.pwd, dry_run: false, force: false)
         store = @library.write_store(scope: scope, project: project, cwd: cwd)
         entry = @library.resolve(ref, [store])
         kind, name = entry.values_at("kind", "name")
+        warning = nil
+        if kind == "template" && @template_in_use
+          if force
+            warning = @template_in_use.warning(name, store)
+          else
+            @template_in_use.check!(name, store, verb: "remove")
+          end
+        end
         unless yes || dry_run
           answer = Prompt.ask(@input, @output, "Remove #{entry["ref"]} from #{scope_label(store)}? [y/N] ", retry_flags: ["--yes"], destructive: true)
           unless answer.to_s.strip.casecmp?("y")
@@ -188,8 +199,9 @@ module Workspace
           record_change(store, kind, name, "remove")
         end
         message = "#{dry_run ? "Would remove" : "Removed"} #{entry["ref"]} from #{scope_label(store)}."
+        message += " Warning: #{warning["message"]}" if warning
         @output.puts message
-        Result.new("removed", store.project, entry, message)
+        Result.new("removed", store.project, entry, message, [warning].compact)
       end
 
       # What `install` and `uninstall` did, as the document `--json` prints.

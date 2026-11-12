@@ -877,4 +877,242 @@ RSpec.describe Workspace::Commands::Template do
       expect { command.use(name: "team", kind: "both") }.to raise_error(Workspace::UsageError, /Unknown kind/)
     end
   end
+
+  describe "#export and #import" do
+    let(:store) { Workspace::LibraryStore.new(dir: File.join(@dir, "global"), scope: "global") }
+    let(:backups) { Workspace::TmuxinatorBackupStore.new(config: instance_double(Workspace::Config, tmuxinator_backups_dir: File.join(@dir, "backups")), writer: writer) }
+    let(:in_use) { instance_double(Workspace::TemplateInUse, check!: nil, check_default!: nil) }
+    subject(:command) do
+      described_class.new(library: library, project_config: project_config, writer: writer, template_validator: validator, differ: differ,
+        backups: backups, template_in_use: in_use, output: out, error_output: err)
+    end
+
+    before do
+      allow(library).to receive(:write_store).and_return(store)
+      allow(library).to receive(:stores).and_return([store])
+      allow(library).to receive(:root).and_return(File.join(@dir, "libroot"))
+    end
+
+    def seed(name, text)
+      src = set_dir("seed-#{name}")
+      File.write(File.join(src, "project.yml"), text)
+      store.copy_tree("template", name, src)
+    end
+
+    describe "#export" do
+      it "writes each user set and templates.json with its shas and the version" do
+        seed("team", "p1\n")
+        dest = File.join(@dir, "out")
+
+        row = command.export(dir: dest)
+
+        expect(File.read(File.join(dest, "team", "project.yml"))).to eq("p1\n")
+        doc = JSON.parse(File.read(File.join(dest, "templates.json")))
+        expect(doc).to include("schema" => 1, "workspace_version" => Workspace::VERSION)
+        expect(doc["templates"]["team"]["files"]["project.yml"]).to eq(Digest::SHA256.hexdigest("p1\n"))
+        expect(row).to include("outcome" => "exported", "dir" => dest, "warnings" => [])
+      end
+
+      it "leaves dotfiles out" do
+        seed("team", "p1\n")
+        File.write(File.join(store.path_for("template", "team"), ".DS_Store"), "x")
+
+        command.export(dir: File.join(@dir, "out"))
+
+        expect(Dir.children(File.join(@dir, "out", "team")).sort).to eq(%w[project.yml worktree.yml])
+      end
+
+      it "refuses a set folder already there unless --force, and then lists only the folders in DIR" do
+        seed("team", "p1\n")
+        dest = File.join(@dir, "out")
+        command.export(dir: dest)
+        seed("other", "o\n")
+
+        expect { command.export(dir: dest) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("template_exists") }
+        File.write(File.join(dest, "team", "project.yml"), "local\n")
+        command.export(dir: dest, force: true)
+        FileUtils.rm_rf(File.join(dest, "other"))
+        command.export(dir: dest, force: true)
+
+        expect(File.read(File.join(dest, "team", "project.yml"))).to eq("p1\n")
+        expect(JSON.parse(File.read(File.join(dest, "templates.json")))["templates"].keys).to eq(%w[other team])
+        FileUtils.rm_rf(File.join(dest, "other"))
+        store.delete("template", "other")
+        command.export(dir: dest, force: true)
+        expect(JSON.parse(File.read(File.join(dest, "templates.json")))["templates"].keys).to eq(%w[team])
+      end
+
+      it "skips the legacy set with a warning, so the folder always imports back" do
+        seed("team", "p1\n")
+        seed("legacy", "l\n")
+
+        row = command.export(dir: File.join(@dir, "out"))
+
+        expect(Dir.children(File.join(@dir, "out")).sort).to eq(%w[team templates.json])
+        expect(row["templates"].map { |t| t["template"] }).to eq(%w[team])
+        expect(row["warnings"].map { |w| w["code"] }).to eq(%w[legacy_not_exported])
+        expect(err.string).to include("Warning:").and include("template import after selecting it")
+        expect { command.import(path: File.join(@dir, "out")) }.not_to raise_error
+      end
+
+      it "refuses a DIR that is the library store or inside it, even through a link" do
+        seed("team", "p1\n")
+        FileUtils.ln_s(File.join(@dir, "global"), File.join(@dir, "alias"))
+
+        [File.join(@dir, "global"), File.join(@dir, "global", "template", "x"), File.join(@dir, "alias", "sub")].each do |dir|
+          expect { command.export(dir: dir) }.to raise_error(Workspace::UsageError, /inside it|is the library/)
+        end
+        expect(Dir.exist?(File.join(@dir, "global", "template", "x"))).to be(false)
+      end
+
+      it "refuses the library root, which holds every store, and anything inside it" do
+        seed("team", "p1\n")
+        FileUtils.mkdir_p(File.join(@dir, "projects"))
+        allow(library).to receive(:root).and_return(File.join(@dir))
+
+        [@dir, File.join(@dir, "projects", "api"), File.join(@dir, "elsewhere")].each do |dir|
+          expect { command.export(dir: dir) }.to raise_error(Workspace::UsageError, /inside it|is the library/)
+        end
+        expect(Dir.exist?(File.join(@dir, "elsewhere"))).to be(false)
+      end
+
+      it "says so and writes nothing when there are no user sets" do
+        row = command.export(dir: File.join(@dir, "out"))
+
+        expect(row["outcome"]).to eq("nothing_to_export")
+        expect(Dir.exist?(File.join(@dir, "out"))).to be(false)
+      end
+    end
+
+    describe "#import" do
+      it "adds the sets of an exported folder, and reports unchanged on a second run" do
+        seed("team", "p1\n")
+        command.export(dir: File.join(@dir, "out"))
+        FileUtils.rm_rf(File.join(@dir, "global"))
+
+        row = command.import(path: File.join(@dir, "out"))
+        again = command.import(path: File.join(@dir, "out"))
+
+        expect(row).to include("outcome" => "imported")
+        expect(row["backup"]).to match(/\A\d{8}T/)
+        expect(row["templates"].map { |t| [t["template"], t["outcome"]] }).to eq([["team", "added"]])
+        expect(File.read(File.join(@dir, "global/template/team/project.yml"))).to eq("p1\n")
+        expect(again["outcome"]).to eq("unchanged")
+      end
+
+      it "takes one set folder and names it after the folder" do
+        command.import(path: set_dir("mine"))
+
+        expect(File.read(File.join(@dir, "global/template/mine/project.yml"))).to eq("mine project\n")
+      end
+
+      it "ignores dotfiles, so they neither get copied nor make a set differ" do
+        src = set_dir("mine")
+        File.write(File.join(src, ".DS_Store"), "x")
+        FileUtils.mkdir_p(File.join(src, ".git"))
+        File.write(File.join(src, ".git", "HEAD"), "x")
+
+        command.import(path: src)
+        File.write(File.join(@dir, "global/template/mine/.DS_Store"), "y")
+
+        expect(Dir.children(File.join(@dir, "global/template/mine")).sort).to eq(%w[.DS_Store project.yml worktree.yml])
+        expect(command.import(path: src)["outcome"]).to eq("unchanged")
+      end
+
+      it "refuses a set holding a symbolic link, writing nothing" do
+        src = set_dir("mine")
+        File.write(File.join(@dir, "secret"), "s")
+        FileUtils.ln_s(File.join(@dir, "secret"), File.join(src, "notes.txt"))
+
+        expect { command.import(path: src) }.to raise_error(Workspace::Error) { |e|
+          expect([e.code, e.details["ref"], e.details["problems"].first["code"]]).to eq(["invalid_template", "template/mine", "symlink"])
+        }
+        expect(Dir.exist?(File.join(@dir, "global/template"))).to be(false)
+      end
+
+      it "refuses a set folder that is itself a link" do
+        real = set_dir("real")
+        FileUtils.mkdir_p(File.join(@dir, "bundle"))
+        FileUtils.ln_s(real, File.join(@dir, "bundle", "linked"))
+
+        expect { command.import(path: File.join(@dir, "bundle")) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_template") }
+      end
+
+      it "backs up a set it replaces into a batch of reason import, with the set's files and shas" do
+        seed("team", "old\n")
+
+        row = command.import(path: set_dir("team"))
+
+        expect(File.read(File.join(@dir, "global/template/team/project.yml"))).to eq("team project\n")
+        manifest = JSON.parse(File.read(File.join(@dir, "backups", row["backup"], "manifest.json")))
+        expect(manifest["reason"]).to eq("import")
+        expect(manifest["sets"]).to match([include("name" => "team", "scope" => "global", "project" => nil,
+          "sha_before" => String, "sha_after" => Workspace::LibraryStore.tree_sha(File.join(@dir, "global/template/team")))])
+        expect(File.read(File.join(@dir, "backups", row["backup"], "templates/global/team/project.yml"))).to eq("old\n")
+      end
+
+      it "asks the in-use guard before replacing, and --force skips it" do
+        seed("team", "old\n")
+        guard = Workspace::Error.new("in use", code: "template_in_use")
+        allow(in_use).to receive(:check!).and_raise(guard)
+
+        expect { command.import(path: set_dir("team")) }.to raise_error(guard)
+        expect(File.read(File.join(@dir, "global/template/team/project.yml"))).to eq("old\n")
+        expect(command.import(path: set_dir("team"), force: true)["outcome"]).to eq("imported")
+      end
+
+      it "asks about a default set hiding the built-in one, and --force skips it" do
+        guard = Workspace::Error.new("hides", code: "template_in_use")
+        allow(in_use).to receive(:check_default!).and_raise(guard)
+
+        expect { command.import(path: set_dir("default")) }.to raise_error(guard)
+        expect(Dir.exist?(File.join(@dir, "global/template"))).to be(false)
+        expect(command.import(path: set_dir("default"), force: true)["outcome"]).to eq("imported")
+      end
+
+      it "does not ask the guard for an unchanged set" do
+        command.import(path: set_dir("fresh"))
+        command.import(path: set_dir("fresh"))
+
+        expect(in_use).not_to have_received(:check!)
+        expect(in_use).to have_received(:check_default!).once
+      end
+
+      it "warns, on stderr and in the row, when a new set hides a lower scope's" do
+        builtin = Workspace::LibraryStore.new(dir: File.join(@dir, "builtin"), scope: "builtin")
+        builtin.copy_tree("template", "mine", set_dir("shipped"))
+        allow(library).to receive(:stores).and_return([store, builtin])
+
+        row = command.import(path: set_dir("mine"))
+
+        expect(row["templates"].first["warnings"].map { |w| w["code"] }).to eq(%w[shadows_template])
+        expect(err.string).to include("hides the builtin one")
+      end
+
+      it "writes nothing when one set is invalid" do
+        root = File.join(@dir, "bundle")
+        FileUtils.mkdir_p(root)
+        FileUtils.cp_r(set_dir("a-good"), root)
+        FileUtils.cp_r(set_dir("b-bad"), root)
+        bad = Workspace::TemplateValidator::Problem.new(severity: "error", code: "x", kind: :project, message: "broken")
+        allow(validator).to receive(:call_set) { |dir| Workspace::TemplateValidator::Result.new(errors: dir.end_with?("b-bad") ? [bad] : [], warnings: []) }
+
+        expect { command.import(path: root) }.to raise_error(Workspace::Error) { |e| expect([e.code, e.details["ref"]]).to eq(["invalid_template", "template/b-bad"]) }
+        expect(Dir.exist?(File.join(@dir, "global/template"))).to be(false)
+      end
+
+      it "refuses a missing path, a file, an empty folder and the reserved name" do
+        expect { command.import(path: File.join(@dir, "none")) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+        File.write(File.join(@dir, "f"), "x")
+        expect { command.import(path: File.join(@dir, "f")) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+        FileUtils.mkdir_p(File.join(@dir, "empty"))
+        expect { command.import(path: File.join(@dir, "empty")) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+        expect { command.import(path: set_dir("legacy")) }.to raise_error(Workspace::UsageError, /reserved/)
+      end
+
+      it "refuses an unknown scope" do
+        expect { command.import(path: set_dir("x"), scope: "builtin") }.to raise_error(Workspace::UsageError, /Unknown scope/)
+      end
+    end
+  end
 end

@@ -3277,7 +3277,7 @@ module Workspace
           end
         end
         library_action("library remove", options) do
-          @library_command.remove(ref, yes: options[:yes], dry_run: options[:dry_run], **where)
+          @library_command.remove(ref, yes: options[:yes], dry_run: options[:dry_run], force: options[:force], **where)
         end
       end
     rescue OptionParser::ParseError, UsageError => e
@@ -3298,7 +3298,7 @@ module Workspace
         result = yield
         next {exit_code: 0, results: [], status: "cancelled"} unless result
         row = action_row(result.workspace, result.outcome, message: result.message, entry: result.entry)
-        {exit_code: 0, results: [row], status: options[:dry_run] ? "dry_run" : nil}
+        {exit_code: 0, results: [row], status: options[:dry_run] ? "dry_run" : nil, warnings: result.respond_to?(:warnings) ? result.warnings.to_a : []}
       end
     end
 

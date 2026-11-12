@@ -22,8 +22,12 @@ module Workspace
       # @param project_config [Workspace::ProjectConfig] finds a config and its path
       # @param retention [Workspace::TmuxinatorBackupConfig] `keep` and `max_age`, for `prune` and the prune after a batch
       # @param writer [Workspace::TmuxinatorConfigWriter] puts files back by its mode rules
+      # @param library [Workspace::Library, nil] finds the store a backed-up template set goes back to; nil refuses to restore one
+      # @param template_in_use [Workspace::TemplateInUse, nil] `restore` refuses to remove a set a key selects; nil checks nothing
       # @param output [IO] output stream
-      def initialize(backups:, selection:, locks:, project_config:, retention:, writer:, output: $stdout)
+      def initialize(backups:, selection:, locks:, project_config:, retention:, writer:, library: nil, template_in_use: nil, output: $stdout)
+        @template_in_use = template_in_use
+        @library = library
         @backups = backups
         @selection = selection
         @locks = locks
@@ -75,7 +79,11 @@ module Workspace
         elsif rows.empty?
           @output.puts "No tmuxinator backups."
         else
-          rows.each { |r| @output.puts "#{r["id"]}  #{r["reason"].to_s.ljust(7)}  #{r["workspaces"].length} workspace#{"s" unless r["workspaces"].length == 1}" }
+          rows.each do |r|
+            line = "#{r["id"]}  #{r["reason"].to_s.ljust(7)}  #{r["workspaces"].length} workspace#{"s" unless r["workspaces"].length == 1}"
+            line += ", templates: #{r["templates"].map { |t| TerminalText.escape(t) }.join(", ")}" if r["templates"].any?
+            @output.puts line
+          end
         end
       end
 
@@ -90,19 +98,22 @@ module Workspace
         {results: rows, status: "ok", exit_code: 0, extra: {"kept" => @backups.list.length}}
       end
 
-      # Puts a batch's configs and render records back.
+      # Puts a batch's configs, render records and template sets back. A set goes back through the library's own temp-and-rename
+      # write after the set it replaces is copied into the restore's batch; one changed since the batch wrote it is refused
+      # (`restore_conflict`) unless +force+.
       #
       # @param id [String] the batch id
-      # @param names [Array<String>] only these workspaces of the batch; none is all of them
+      # @param names [Array<String>] only these workspaces or template sets of the batch; none is all of them
       # @param force [Boolean] also put back over a file changed since the batch wrote it
       # @param json [Boolean] print nothing; the caller prints the action document
       # @return [Hash] `results`, `status`, `exit_code`, `warnings` and `extra` (`backup`: the batch taken first, `restored_from`)
       # @raise [Workspace::Error] `backup_not_found`, `unknown_workspace` for a name the batch has no entry for, or a batch that can't be made
       def restore(id:, names: [], force: false, json: false)
         manifest = @backups.find(id)
-        entries = entries_for(manifest, names)
+        entries, sets = entries_for(manifest, names)
         batch = open_batch("restore")
         rows = entries.map { |entry| locked(entry["name"]) { restore_one(manifest, entry, batch, force) } }
+        rows += sets.map { |set| restore_set(manifest, set, batch, force) }
         warnings = []
         kept = close(batch, warnings)
         unless json
@@ -114,12 +125,67 @@ module Workspace
 
       private
 
+      # The workspace entries and the template sets +names+ pick out of a batch (a name no entry and no set has is unknown).
       def entries_for(manifest, names)
-        return manifest["entries"] if names.empty?
-        names.uniq.map do |name|
-          manifest["entries"].find { |entry| entry["name"] == name } ||
-            raise(Error.new("The backup #{manifest["id"]} has no workspace '#{name}'.", code: "unknown_workspace", details: {"name" => name, "id" => manifest["id"]}))
+        return [manifest["entries"], manifest["sets"]] if names.empty?
+        found = names.uniq.map do |name|
+          entry = manifest["entries"].find { |listed| listed["name"] == name }
+          set = manifest["sets"].find { |listed| listed["name"] == name } unless entry
+          entry || set ||
+            raise(Error.new("The backup #{manifest["id"]} has no workspace or template '#{name}'.", code: "unknown_workspace", details: {"name" => name, "id" => manifest["id"]}))
         end
+        found.partition { |item| manifest["entries"].include?(item) }
+      end
+
+      # One template set of an import batch: put back when the library's copy is as the batch left it (or as it was), else
+      # refused as changed since, unless +force+. What it replaces goes into the restore's own batch first.
+      def restore_set(manifest, set, batch, force)
+        name = set["name"]
+        label = {"template" => name, "scope" => set["scope"]}
+        raise Error, "template restore can't put a template set back: no library was wired" unless @library
+        store = @library.write_store(scope: set["scope"], project: set["project"], cwd: Dir.pwd)
+        path = store.path_for("template", name)
+        now = File.directory?(path) ? LibraryStore.tree_sha(path) : nil
+        before = set["sha_before"]
+        return set_row(label, "unchanged", nil, "already as the backup has it") if now == before
+        if !force && !now.nil? && now != set["sha_after"]
+          return set_failed(label, "restore_conflict", "it changed since the backup was written; --force puts the backup over it (after a backup)")
+        end
+        return remove_set(set, store, path, batch, force, label) if before.nil?
+        copy = @backups.set_copy_path(manifest, set)
+        return set_failed(label, "backup_incomplete", "the backup holds no copy of this set") unless copy
+        @backups.add_set(batch, name: name, scope: set["scope"], project: set["project"], path: path)
+        begin
+          store.copy_tree("template", name, copy)
+        ensure
+          @backups.finish_set(batch, name: name, scope: set["scope"], project: set["project"], sha_after: File.directory?(path) ? LibraryStore.tree_sha(path) : nil)
+        end
+        set_row(label, "restored", nil, nil)
+      rescue Error => e
+        set_failed(label, e.code || "error", e.message)
+      rescue SystemCallError, IOError => e
+        set_failed(label, "error", e.message)
+      end
+
+      # A set the import added (no `sha_before`) goes away again, unless a key selects it and not +force+.
+      def remove_set(set, store, path, batch, force, label)
+        name = set["name"]
+        @template_in_use&.check!(name, store, verb: "remove") unless force
+        @backups.add_set(batch, name: name, scope: set["scope"], project: set["project"], path: path)
+        begin
+          store.delete("template", name)
+        ensure
+          @backups.finish_set(batch, name: name, scope: set["scope"], project: set["project"], sha_after: File.directory?(path) ? LibraryStore.tree_sha(path) : nil)
+        end
+        set_row(label, "restored", nil, "removed: the import had added it")
+      end
+
+      def set_row(label, outcome, reason, message)
+        {"workspace" => nil, "outcome" => outcome, "reason" => reason, "message" => message, "code" => nil}.merge(label)
+      end
+
+      def set_failed(label, code, message)
+        set_row(label, "failed", code, message).merge("code" => code)
       end
 
       # One workspace, read and written inside its lock. Both copies and both current files are read into memory
@@ -226,7 +292,7 @@ module Workspace
 
       def batch_row(manifest)
         {"id" => manifest["id"], "created_at" => manifest["created_at"], "reason" => manifest["reason"],
-         "workspaces" => manifest["entries"].map { |entry| entry["name"] }}
+         "workspaces" => manifest["entries"].map { |entry| entry["name"] }, "templates" => manifest["sets"].map { |set| set["name"] }}
       end
 
       def row(name, outcome, reason, message, extra = {})
@@ -238,7 +304,7 @@ module Workspace
       end
 
       def puts_row(row)
-        line = "#{TerminalText.escape(row["workspace"])}: #{row["outcome"].tr("_", " ")}"
+        line = "#{row["template"] ? "template " + TerminalText.escape(row["template"]) : TerminalText.escape(row["workspace"])}: #{row["outcome"].tr("_", " ")}"
         line += ": #{row["reason"]}" if row["reason"]
         line += " (#{TerminalText.escape(row["message"])})" if row["message"]
         @output.puts line

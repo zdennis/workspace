@@ -6,7 +6,7 @@ RSpec.describe Workspace::CLI::Template do
   let(:out) { StringIO.new }
   let(:err) { StringIO.new }
   let(:detector) { RecordingProjectDetector.new("/src/app" => "app") }
-  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true, validate: true, diff: nil, status: nil, apply: {results: [], exit_code: 0}, new: {}, edit: {"outcome" => "edited"}, use: {}) }
+  let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true, validate: true, diff: nil, status: nil, apply: {results: [], exit_code: 0}, new: {}, export: {}, import: {}, edit: {"outcome" => "edited"}, use: {}) }
 
   def family(command = template_command)
     names = Workspace::CLI::Names.new(project_config: CLITestHelpers::FakeProjectConfig.new, project_detector: detector,
@@ -190,6 +190,34 @@ RSpec.describe Workspace::CLI::Template do
     it "refuses the flags only apply takes on other verbs, and apply's unused ones" do
       expect { run("status", "--force") }.to raise_error(Workspace::UsageError, /--force does not apply to 'template status'/)
       expect { run("apply", "--name", "app") }.to raise_error(Workspace::UsageError, /--name does not apply to 'template apply'/)
+    end
+  end
+
+  describe "export and import" do
+    it "hands the directory, scope and --force to export" do
+      run("export", "~/out", "--scope", "project", "--force")
+
+      expect(template_command).to have_received(:export).with(dir: "~/out", scope: "project", force: true, workspace: "app", cwd: "/src/app")
+    end
+
+    it "hands the path to import, force false by default" do
+      run("import", "~/in")
+
+      expect(template_command).to have_received(:import).with(path: "~/in", scope: nil, force: false, workspace: "app", cwd: "/src/app")
+    end
+
+    it "needs a DIR or PATH, and refuses flags they do not take" do
+      expect { run("export") }.to raise_error(Workspace::UsageError, /'template export' needs a DIR/)
+      expect { run("import") }.to raise_error(Workspace::UsageError, /'template import' needs a PATH/)
+      expect { run("import", "x", "--kind", "project") }.to raise_error(Workspace::UsageError, /--kind does not apply to 'template import'/)
+    end
+
+    it "prints the action document under --json" do
+      allow(template_command).to receive(:import).and_return({"workspace" => nil, "outcome" => "imported"})
+
+      run("import", "x", "--json")
+
+      expect(JSON.parse(out.string)).to include("ok" => true, "action" => "template import")
     end
   end
 

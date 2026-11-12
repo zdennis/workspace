@@ -384,3 +384,114 @@ RSpec.describe Workspace::Commands::TemplateBackups do
     end
   end
 end
+
+# A template import's backup batch put back by `template restore`, over real library stores and a real backup store.
+RSpec.describe Workspace::Commands::TemplateBackups, "template sets" do
+  around do |example|
+    Dir.mktmpdir("template-sets") do |dir|
+      @dir = dir
+      example.run
+    end
+  end
+
+  let(:config) do
+    instance_double(Workspace::Config, render_state_dir: File.join(@dir, "state", ".render"), tmuxinator_backups_dir: File.join(@dir, "backups")).tap do |c|
+      allow(c).to receive(:config_path_for) { |name| File.join(@dir, "tmuxinator", "workspace.#{name}.yml") }
+    end
+  end
+  let(:writer) { Workspace::TmuxinatorConfigWriter.new(config: config) }
+  let(:backups) { Workspace::TmuxinatorBackupStore.new(config: config, writer: writer) }
+  let(:store) { Workspace::LibraryStore.new(dir: File.join(@dir, "global"), scope: "global") }
+  let(:library) { instance_double(Workspace::Library, write_store: store, stores: [store]) }
+  let(:validator) { instance_double(Workspace::TemplateValidator, call_set: Workspace::TemplateValidator::Result.new(errors: [], warnings: [])) }
+  let(:out) { StringIO.new }
+  let(:template) do
+    Workspace::Commands::Template.new(library: library, project_config: instance_double(Workspace::ProjectConfig), writer: writer, template_validator: validator,
+      differ: ->(*, **) { "" }, backups: backups, output: out, error_output: StringIO.new)
+  end
+  let(:retention) { instance_double(Workspace::TmuxinatorBackupConfig, keep: 20, max_age: nil) }
+  subject(:command) do
+    described_class.new(backups: backups, selection: nil, locks: nil, project_config: nil, retention: retention, writer: writer, library: library, output: out)
+  end
+
+  def set_folder(name, text)
+    File.join(@dir, "src-#{text.hash.abs}", name).tap do |dir|
+      FileUtils.mkdir_p(dir)
+      File.write(File.join(dir, "project.yml"), text)
+      File.write(File.join(dir, "worktree.yml"), "w\n")
+    end
+  end
+
+  def team = File.join(@dir, "global/template/team/project.yml")
+
+  it "puts the replaced set back, taking its own batch of the set it replaces, and shows the set in the list" do
+    template.import(path: set_folder("team", "v1\n"))
+    id = template.import(path: set_folder("team", "v2\n"))["backup"]
+
+    result = command.restore(id: id)
+
+    expect(File.read(team)).to eq("v1\n")
+    expect(result[:results].map { |r| [r["template"], r["outcome"]] }).to eq([["team", "restored"]])
+    expect(result[:extra]["backup"]).not_to be_nil
+    out.truncate(0)
+    command.list
+    expect(out.string).to include("#{id}  import").and include("templates: team")
+    command.restore(id: result[:extra]["backup"])
+    expect(File.read(team)).to eq("v2\n")
+  end
+
+  it "refuses a set changed since the import unless --force, and says unchanged when already as it was" do
+    template.import(path: set_folder("team", "v1\n"))
+    id = template.import(path: set_folder("team", "v2\n"))["backup"]
+    File.write(team, "edited\n")
+
+    row = command.restore(id: id)[:results].first
+    expect(row).to include("outcome" => "failed", "code" => "restore_conflict")
+    expect(File.read(team)).to eq("edited\n")
+
+    expect(command.restore(id: id, force: true)[:results].first["outcome"]).to eq("restored")
+    expect(File.read(team)).to eq("v1\n")
+    expect(command.restore(id: id)[:results].first["outcome"]).to eq("unchanged")
+  end
+
+  it "restores a named set only, and refuses a name the batch lacks" do
+    template.import(path: set_folder("team", "v1\n"))
+    id = template.import(path: set_folder("team", "v2\n"))["backup"]
+
+    expect(command.restore(id: id, names: ["team"])[:results].map { |r| r["outcome"] }).to eq(["restored"])
+    expect { command.restore(id: id, names: ["nope"]) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workspace") }
+  end
+
+  it "removes a set the import added, refusing a changed or selected one unless --force" do
+    id = template.import(path: set_folder("fresh", "n\n"))["backup"]
+    fresh = File.join(@dir, "global/template/fresh")
+    expect(id).not_to be_nil
+
+    File.write(File.join(fresh, "project.yml"), "edited\n")
+    expect(command.restore(id: id)[:results].first).to include("outcome" => "failed", "code" => "restore_conflict")
+    expect(Dir.exist?(fresh)).to be(true)
+
+    in_use = instance_double(Workspace::TemplateInUse)
+    allow(in_use).to receive(:check!).and_raise(Workspace::Error.new("in use", code: "template_in_use"))
+    guarded = described_class.new(backups: backups, selection: nil, locks: nil, project_config: nil, retention: retention, writer: writer, library: library, template_in_use: in_use, output: out)
+    File.write(File.join(fresh, "project.yml"), "n\n")
+    expect(guarded.restore(id: id)[:results].first["code"]).to eq("template_in_use")
+
+    result = guarded.restore(id: id, force: true)
+    expect(result[:results].first["outcome"]).to eq("restored")
+    expect(Dir.exist?(fresh)).to be(false)
+    expect(command.restore(id: id)[:results].first["outcome"]).to eq("unchanged")
+
+    command.restore(id: result[:extra]["backup"])
+    expect(File.read(File.join(fresh, "project.yml"))).to eq("n\n")
+  end
+
+  it "puts the set back after it was deleted" do
+    template.import(path: set_folder("team", "v1\n"))
+    id = template.import(path: set_folder("team", "v2\n"))["backup"]
+    FileUtils.rm_rf(File.join(@dir, "global/template/team"))
+
+    expect(command.restore(id: id)[:results].first["outcome"]).to eq("restored")
+    expect(File.read(team)).to eq("v1\n")
+  end
+end

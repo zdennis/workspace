@@ -1,3 +1,4 @@
+require "digest"
 require "fileutils"
 require "time"
 
@@ -147,6 +148,28 @@ module Workspace
       Dir.glob("**/*", File::FNM_DOTMATCH, base: root).sort
         .select { |rel| File.file?(File.join(root, rel)) }
         .to_h { |rel| [rel, File.binread(File.join(root, rel))] }
+    end
+
+    # The regular files of a template folder by relative path, sorted; a link and any name starting with a dot
+    # (`.DS_Store`, `.git`) are left out, so what is exported, imported and compared is the same set of files.
+    #
+    # @param path [String]
+    # @return [Array<String>]
+    def self.files_of(path)
+      root = File.realpath(path)
+      Dir.glob("**/*", base: root).sort.select do |rel|
+        full = File.join(root, rel)
+        File.file?(full) && !File.symlink?(full)
+      end
+    end
+
+    # A digest of {.files_of} and what each holds, to tell whether two template folders are the same.
+    #
+    # @param path [String]
+    # @return [String] sha256
+    def self.tree_sha(path)
+      root = File.realpath(path)
+      Digest::SHA256.hexdigest(files_of(path).map { |rel| "#{rel}\0#{Digest::SHA256.file(File.join(root, rel)).hexdigest}\n" }.join)
     end
 
     # Removes a file, a symlink (never its target) or a directory tree.

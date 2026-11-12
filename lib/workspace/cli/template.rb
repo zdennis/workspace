@@ -24,7 +24,9 @@ module Workspace
         "diff" => %i[kind name against json],
         "new" => %i[name from scope json],
         "edit" => %i[kind name json],
-        "use" => %i[kind name scope json]
+        "use" => %i[kind name scope json],
+        "export" => %i[scope name force json],
+        "import" => %i[scope name force json]
       }.freeze
 
       # @param template_command [Workspace::Commands::Template, nil] `template` verbs; nil refuses `template`
@@ -67,6 +69,8 @@ module Workspace
           raise UsageError, "--#{key} does not apply to 'template #{subcommand}'. Run 'workspace template --help'." unless SUBCOMMANDS[subcommand].include?(key)
         end
         raise UsageError, "'template #{subcommand}' needs a tmuxinator template NAME. Run 'workspace template #{subcommand} --help'." if %w[new use].include?(subcommand) && args.empty?
+        raise UsageError, "'template export' needs a DIR to write into. Run 'workspace template export --help'." if subcommand == "export" && args.empty?
+        raise UsageError, "'template import' needs a PATH to read (a template folder, or a folder of them). Run 'workspace template import --help'." if subcommand == "import" && args.empty?
         raise UsageError, "'template restore' needs a backup ID (see 'workspace template backups list'). Run 'workspace template restore --help'." if subcommand == "restore" && args.empty?
         limit = {"list" => 0, "variables" => 0, "status" => nil, "apply" => nil, "adopt" => nil, "backup" => nil, "restore" => nil, "backups list" => 0, "backups prune" => 0}.fetch(subcommand, 1)
         raise UsageError, "Unexpected argument: #{args[limit]}. Run 'workspace template --help'." if limit && args.size > limit
@@ -94,6 +98,8 @@ module Workspace
         when "diff" then @template_command.diff(set: args.first, against: options[:against], kind: options[:kind], workspace: workspace, json: json)
         when "new" then change(invocation, "template new", json) { @template_command.new(name: args.first, from: options[:from], scope: options[:scope], workspace: workspace, cwd: @working_dir) }
         when "edit" then edit(args.first, options, workspace, invocation)
+        when "export" then change(invocation, "template export", json) { @template_command.export(dir: args.first, scope: options[:scope], force: options[:force] || false, workspace: workspace, cwd: @working_dir) }
+        when "import" then change(invocation, "template import", json) { @template_command.import(path: args.first, scope: options[:scope], force: options[:force] || false, workspace: workspace, cwd: @working_dir) }
         when "use" then change(invocation, "template use", json) { @template_command.use(name: args.first, scope: options[:scope], kind: options[:kind], workspace: workspace, cwd: @working_dir) }
         end
       end

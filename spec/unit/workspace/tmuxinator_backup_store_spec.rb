@@ -50,7 +50,7 @@ RSpec.describe Workspace::TmuxinatorBackupStore do
       expect(batch.id).to eq("20261112T100000000000Z-aaaaaa")
       expect(manifest(batch)).to eq({
         "schema" => 1, "id" => batch.id, "created_at" => "2026-11-12T10:00:00.000000Z", "reason" => "apply",
-        "templates" => {"project.yml" => "abc"}, "entries" => []
+        "templates" => {"project.yml" => "abc"}, "entries" => [], "sets" => []
       })
     end
   end

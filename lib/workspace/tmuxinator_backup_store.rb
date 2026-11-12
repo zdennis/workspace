@@ -36,7 +36,7 @@ module Workspace
 
     # Makes a batch directory and its manifest, with no entries.
     #
-    # @param reason [String] `apply`, `restore` or `manual`
+    # @param reason [String] `apply`, `restore`, `import` or `manual`
     # @param templates [Hash{String => String}] the sha256 of each template text in play, by file name
     # @return [Batch]
     # @raise [SystemCallError] when the directory or manifest can't be written, or a free id can't be found
@@ -56,7 +56,7 @@ module Workspace
       batch = Batch.new(id: id, dir: dir)
       write_manifest(batch, {
         "schema" => SCHEMA, "id" => id, "created_at" => now.iso8601(6), "reason" => reason,
-        "templates" => templates, "entries" => []
+        "templates" => templates, "entries" => [], "sets" => []
       })
       batch
     end
@@ -87,6 +87,66 @@ module Workspace
       manifest["entries"] += [entry]
       write_manifest(batch, manifest)
       entry
+    end
+
+    # Copies a tmuxinator template set into the batch (under `templates/NAME`, regular non-dot files only) and lists it
+    # under the manifest's `sets` before the set is replaced. A set already in the batch keeps its first entry.
+    #
+    # @param batch [Batch]
+    # @param name [String] the set's name (a plain file name)
+    # @param scope [String] the library scope it is in, `global` or `project`
+    # @param project [String, nil] the project of a `project` scope
+    # @param path [String] the set's folder now; one that does not exist is listed as a set the batch created
+    # @return [Hash] the entry: `name`, `scope`, `project`, `sha_before` (nil when there was no set)
+    # @raise [ArgumentError] when +name+ is not a plain file name
+    # @raise [SystemCallError] when a copy or the manifest write fails; nothing is listed then
+    def add_set(batch, name:, scope:, path:, project: nil)
+      plain_name!(name)
+      manifest = read_manifest(batch.dir)
+      existing = manifest["sets"].find { |set| set["name"] == name && set["scope"] == scope && set["project"] == project }
+      return existing if existing
+      sha = nil
+      if File.directory?(path)
+        dest = File.join(batch.dir, "templates", scope, project.to_s, name)
+        FileUtils.rm_rf(dest)
+        root = File.realpath(path)
+        LibraryStore.files_of(path).each do |rel|
+          FileUtils.mkdir_p(File.dirname(File.join(dest, rel)))
+          FileUtils.cp(File.join(root, rel), File.join(dest, rel))
+        end
+        FileUtils.mkdir_p(dest)
+        sha = LibraryStore.tree_sha(dest)
+      end
+      entry = {"name" => name, "scope" => scope, "project" => project, "sha_before" => sha}
+      manifest["sets"] += [entry]
+      write_manifest(batch, manifest)
+      entry
+    end
+
+    # Records what a set is after the batch wrote it, so a restore can tell an edit made since.
+    #
+    # @param batch [Batch]
+    # @param name [String]
+    # @param scope [String]
+    # @param project [String, nil]
+    # @param sha_after [String, nil] {LibraryStore.tree_sha} of the set as written; nil for one the batch deleted
+    # @return [Hash, nil] the entry
+    def finish_set(batch, name:, scope:, sha_after:, project: nil)
+      manifest = read_manifest(batch.dir)
+      entry = manifest["sets"].find { |set| set["name"] == name && set["scope"] == scope && set["project"] == project }
+      return unless entry
+      entry["sha_after"] = sha_after
+      write_manifest(batch, manifest)
+      entry
+    end
+
+    # @param manifest [Hash] from {#find} or {#list}
+    # @param set [Hash] one of its `sets`
+    # @return [String, nil] the folder holding the batch's copy of the set, nil when it held none
+    def set_copy_path(manifest, set)
+      plain_name!(set["name"])
+      path = File.join(@config.tmuxinator_backups_dir, manifest["id"], "templates", set["scope"].to_s, set["project"].to_s, set["name"])
+      path if File.directory?(path)
     end
 
     # Records what a workspace's files are after the batch wrote them, so a restore can tell an edit made
@@ -126,7 +186,7 @@ module Workspace
     # @return [Boolean] whether it was removed
     def discard_if_empty(batch)
       manifest = read_manifest(batch.dir)
-      return false unless manifest && manifest["entries"].empty?
+      return false unless manifest && manifest["entries"].empty? && manifest["sets"].empty?
       FileUtils.rm_rf(batch.dir)
       true
     end
@@ -232,7 +292,9 @@ module Workspace
 
     def read_manifest(dir)
       data = JSON.parse(File.read(File.join(dir, "manifest.json")))
-      data if data.is_a?(Hash) && data["schema"] == SCHEMA && data["entries"].is_a?(Array) && data["entries"].all?(Hash) && data["id"].is_a?(String)
+      return unless data.is_a?(Hash) && data["schema"] == SCHEMA && data["entries"].is_a?(Array) && data["entries"].all?(Hash) && data["id"].is_a?(String)
+      data["sets"] = [] unless data["sets"].is_a?(Array) && data["sets"].all?(Hash)
+      data
     rescue SystemCallError, IOError, JSON::ParserError
       nil
     end

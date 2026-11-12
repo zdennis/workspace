@@ -631,6 +631,49 @@ RSpec.describe Workspace::Commands::Library do
       end
     end
 
+    describe "remove while a key selects the set" do
+      let(:in_use) { instance_double(Workspace::TemplateInUse) }
+      subject(:command) { described_class.new(library: library, output: output, input: input, template_in_use: in_use) }
+      let(:selected) do
+        Workspace::Error.new("in use", code: "template_in_use", details: {"template" => "team"})
+      end
+
+      before { command.add(kind: "template", path: template_set, name: "team", cwd: cwd) }
+
+      it "refuses, deleting nothing, even for --dry-run" do
+        allow(in_use).to receive(:check!).and_raise(selected)
+
+        expect { command.remove("template/team", yes: true, cwd: cwd) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("template_in_use") }
+        expect { command.remove("template/team", dry_run: true, cwd: cwd) }.to raise_error(Workspace::Error)
+        expect(Dir.exist?(File.join(@dir, "library/global/template/team"))).to be(true)
+      end
+
+      it "removes with --force without asking" do
+        allow(in_use).to receive(:check!).and_raise(selected)
+        allow(in_use).to receive(:warning).and_return(nil)
+
+        expect(command.remove("template/team", yes: true, force: true, cwd: cwd).outcome).to eq("removed")
+        expect(Dir.exist?(File.join(@dir, "library/global/template/team"))).to be(false)
+      end
+
+      it "warns which keys still name the set when --force removes it" do
+        allow(in_use).to receive(:warning).and_return({"code" => "template_in_use", "message" => "1 setting still name the tmuxinator template 'team' (global project via global)", "keys" => [{"workspace" => nil}]})
+
+        result = command.remove("template/team", yes: true, force: true, cwd: cwd)
+
+        expect(result.message).to include("Warning: 1 setting still name")
+        expect(result.warnings).to match([include("code" => "template_in_use", "keys" => [{"workspace" => nil}])])
+        expect(output.string).to include("Warning: 1 setting still name")
+      end
+
+      it "does not ask about other kinds" do
+        allow(in_use).to receive(:check!).and_raise(selected)
+        command.add(kind: "prompt", body: "x", name: "hello", cwd: cwd)
+
+        expect(command.remove("prompt/hello", yes: true, cwd: cwd).outcome).to eq("removed")
+      end
+    end
+
     it "refuses a folder missing worktree.yml or project.yml, a file, a missing path and stdin" do
       %w[worktree.yml project.yml].each do |missing|
         files = {"project.yml" => "p\n", "worktree.yml" => "w\n"}.reject { |k, _| k == missing }
