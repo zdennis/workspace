@@ -2112,6 +2112,64 @@
       ]
     },
     {
+      "key": "tmuxinator.backups.keep",
+      "scope": "global",
+      "type": "integer",
+      "value": null,
+      "masked": false,
+      "default": 20,
+      "effective": 20,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "How many tmuxinator config backup batches (made by `template apply`, `template restore` and `template backup`) are kept (default `20`); pruning never drops the newest batch holding a workspace",
+      "problems": [],
+      "min": 1
+    },
+    {
+      "key": "tmuxinator.backups.max_age",
+      "scope": "global",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "How old a tmuxinator config backup batch may get before pruning removes it (a duration; unset: batches are only limited by `tmuxinator.backups.keep`); pruning never drops the newest batch holding a workspace",
+      "problems": [],
+      "unit": "seconds"
+    },
+    {
       "key": "hooks",
       "scope": "global",
       "type": "mapping",

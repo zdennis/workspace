@@ -50,6 +50,8 @@ module Workspace
       "group_not_supported" => "projects stop, kill, show or members was given a group: id; groups are not acted on as a whole (projects group show reads one). details.id.",
       "no_render_record" => "template render --name WS: the workspace has no render record, so there are no inputs to fill a tmuxinator template with (use --sample). details.name.",
       "unknown_template" => "spine init was given a template name no spine library entry has, or tmuxinator.template/tmuxinator.worktree_template names no template library set. details.template, details.kind (spine or tmuxinator), details.scopes, details.source.",
+      "backup_not_found" => "No tmuxinator backup batch has that id (template backups list shows them). details.id.",
+      "backup_symlink" => "A tmuxinator config or its render record is a symbolic link, which a backup batch cannot restore as a link, so it was not copied. details.path.",
       "no_plan" => "The workspace has no IMPLEMENTATION_PLAN.md in its notes directory. `go --here TEXT` found a run going whose plan step has not written it (details.run_id, details.step).",
       "plan_exists" => "plan init would replace a plan that is already there; pass --force.",
       "plan_done" => "plan start or pause was run on a plan that is done (status: done, or nothing left to do), or `go --here TEXT` found a plan marked done under a run still going (details.run_id, details.step).",

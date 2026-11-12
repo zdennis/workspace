@@ -282,6 +282,14 @@ module Workspace
       File.join(state_dir, ".render")
     end
 
+    # Holds one directory per batch of tmuxinator config backups, each with its `manifest.json`. `backups`
+    # is not a workspace-name-shaped directory of its own, so no workspace's state directory collides with it.
+    #
+    # @return [String] path to the directory of tmuxinator backup batches
+    def tmuxinator_backups_dir
+      File.join(state_dir, "backups", "tmuxinator")
+    end
+
     # Dotted, like {#task_dir}, so no workspace name can produce it. Holds one journal per rename under way.
     #
     # @return [String] path to the directory of rename journals
