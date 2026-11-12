@@ -186,6 +186,19 @@ RSpec.describe Workspace::RecoveryAttemptRunner do
       expect(runner.restart(attempt)).to eq(["fresh_agent"])
       expect(rebound).to be_empty
     end
+
+    it "registers no binding" do
+      expect(Workspace::PaneBindings).not_to receive(:new)
+      on_sleep[0] = -> { set(prompt_seen: true) if store.get("%5")["draft_text"] }
+      runner.restart(attempt)
+    end
+
+    it "doesn't take a prompt the worker read before typing for the answer" do
+      set(prompt_seen: true)
+      outcomes = runner.restart(attempt).first(1)
+
+      expect(outcomes).to eq(["no_response"])
+    end
   end
 
   describe "#rebind" do

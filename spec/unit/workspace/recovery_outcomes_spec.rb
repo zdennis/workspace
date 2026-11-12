@@ -242,4 +242,124 @@ RSpec.describe Workspace::RecoveryOutcomes do
       expect(outcomes.take_back(attempt, waiting(last_signal_at: stamp(now[0] - 5)), :defer)).to eq(:defer)
     end
   end
+
+  describe "#finish of a restart attempt" do
+    let(:t0) { now[0] - 3600 }
+
+    let(:part) do
+      described_class.new(workspace: "api", store: store, facts: facts, inbox: -> { inbox }, runner: runner, event_log: event_log,
+        clock: BlockClock.new { now[0] }, logger: Workspace::Logger.new(output: log, enabled: true))
+    end
+
+    def restart_attempt(number: 2)
+      Workspace::RecoveryAttemptRunner::Attempt.new(pane_id: "%5", session_id: sid, number: number, mode: "restart", pid: 20,
+        started: "Mon", message: format(Workspace::RecoveryAttempts::RESUMED_MESSAGE, error: "server_error"),
+        resume_only: false, opened_at: now[0])
+    end
+
+    def events = event_log.lines
+
+    def lines = events.select { |type, _, _| type == "agent_recovery_attempt" }.map(&:last)
+
+    # The outcome each attempt line names, so the part under test is +part+ here.
+    def outcomes = lines.map { |line| line["outcome"] }
+
+    def expect_rescheduled(attempts)
+      expect(entry).to include("phase" => "waiting", "attempts" => attempts, "last_turn_uuid" => nil, "defer_since" => nil,
+        "next_attempt_at" => stamp(now[0] + Workspace::AgentRecoveryStore.wait_before(attempts + 1)))
+      expect(entry).not_to include("attempt_session_id", "prompt_seen")
+    end
+
+    def expect_gave_up(reason, items: 1)
+      expect(entry).to include("phase" => "gave_up", "give_up_reason" => reason)
+      expect(inbox.items.size).to eq(items)
+      expect(events.reverse.find { |type, _, _| type == "agent_recovery_gave_up" }[2]).to include("reason" => reason)
+    end
+
+    it "keeps user text out of the event lines" do
+      store.put("%5", attempting(prompt_seen: true))
+      part.finish(restart_attempt, "resumed")
+
+      expect(events.to_s).not_to include("Continue where")
+    end
+
+    it "keeps the draft of the attempt before while that agent won't stop" do
+      store.put("%5", attempting(draft_text: "ours"))
+      part.finish(restart_attempt, "not_stopped")
+
+      expect(outcomes).to eq(["not_stopped"])
+      expect(entry["draft_text"]).to eq("ours")
+    end
+
+    it "takes a stop in the wait ahead of no_response" do
+      store.put("%5", attempting(turn_completed: true))
+      part.finish(restart_attempt, "no_response")
+
+      expect(entry).to be_nil
+      expect(outcomes).to eq(["no_response"])
+    end
+
+    it "takes a failed turn in the wait ahead of no_response" do
+      store.put("%5", attempting(failed_during_attempt: true, error: "overloaded"))
+      part.finish(restart_attempt, "no_response")
+
+      expect(entry).to include("phase" => "waiting", "attempts" => 2, "error" => "overloaded")
+      expect(entry).not_to include("failed_during_attempt")
+    end
+
+    it "stays resumed, and resolves, when a Stop came before the pane emptied" do
+      agents.clear
+      store.put("%5", attempting(turn_completed: true, prompt_seen: true))
+      part.finish(restart_attempt, "resumed")
+
+      expect(outcomes).to eq(["resumed"])
+      expect(entry).to be_nil
+    end
+
+    it "gives up when the pane reads as gone at step 6, with stopped false" do
+      details.clear
+      store.put("%5", attempting(prompt_seen: true))
+      part.finish(restart_attempt, "resumed")
+
+      expect(outcomes).to eq(["agent_left"])
+      expect(entry["stopped"]).to be(false)
+      expect_gave_up("unconfirmed")
+    end
+
+    it "stays resumed, and watches, when the last read fails" do
+      store.put("%5", attempting(prompt_seen: true))
+      described_class.new(workspace: "api", store: store, facts: RecordingConfirmerFacts.new(details: details, agents: agents,
+        tree: nil, calls: calls), inbox: -> { inbox }, runner: runner, event_log: event_log, clock: BlockClock.new { now[0] })
+        .finish(restart_attempt, "resumed")
+
+      expect(outcomes).to eq(["resumed"])
+      expect(entry["phase"]).to eq("watching")
+    end
+
+    it "gives up unconfirmed at 12 on agent_left, going round no more" do
+      agents.clear
+      store.put("%5", attempting(attempts: 12, prompt_seen: true))
+      part.finish(restart_attempt(number: 12), "resumed")
+
+      expect(outcomes).to eq(["agent_left"])
+      expect_gave_up("unconfirmed")
+      expect(entry["attempts"]).to eq(12)
+    end
+
+    it "reaches step 6 with a stop right after it" do
+      store.put("%5", attempting(attempt_session_id: sid, turn_completed: true))
+      part.finish(restart_attempt, "resumed")
+
+      expect(entry).to be_nil
+      expect(outcomes).to eq(["resumed"])
+    end
+
+    it "reaches step 6 with a turn_failed right after it" do
+      store.put("%5", attempting(attempt_session_id: sid, failed_during_attempt: true, failed_at: stamp(t0)))
+      part.finish(restart_attempt, "resumed")
+
+      expect_rescheduled(2)
+      expect(entry["failed_at"]).not_to eq(stamp(t0))
+    end
+  end
 end

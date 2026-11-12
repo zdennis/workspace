@@ -177,6 +177,20 @@ RSpec.describe Workspace::RecoveryAttempts do
       expect(calls.map(&:first)).not_to include(:clear_marker, :finish)
       expect(calls.last).to eq([:release, "%5", :token])
     end
+
+    it "opens with prompt_seen false, a restart and a resume_only alike" do
+      store.put("%5", waiting(prompt_seen: true))
+      seen = {}
+      attempts.start("%5", :restart, check: check)
+      seen[:restart] = entry["prompt_seen"]
+      expect(seen[:restart]).to be(false)
+
+      store.put("%5", waiting(attempts: 2, stopped: true, prompt_seen: true))
+      resume_only = Workspace::AgentRecoveryDesk::Verdict.new(answer: :go, mode: :resume_only, command: "claude --resume #{sid}")
+      attempts.start("%5", :restart, check: ->(*_args, **_opts) { resume_only })
+      seen[:resume_only] = entry["prompt_seen"]
+      expect(seen[:resume_only]).to be(false)
+    end
   end
 
   describe "#resume_line" do
