@@ -1061,6 +1061,20 @@ RSpec.describe Workspace::ProjectConfig do
         expect(Dir.children(tmpdir)).to be_empty
       end
 
+      it "raises when a required input is nil and the template holds its placeholder" do
+        expect { pc.render(:worktree, worktree_inputs.merge(worktree_path: nil), worktree_text) }
+          .to raise_error(Workspace::Error, /no value for WORKTREE_PATH/)
+      end
+
+      it "raises for a project template with no project_root" do
+        inputs = {project_name: "myapp", workspace_name: "myapp", project_root: nil, display_name: "myapp", config_path: "/x.yml", agent_kind: "claude"}
+        expect { pc.render(:project, inputs, project_text) }.to raise_error(Workspace::Error, /no value for PROJECT_ROOT/)
+      end
+
+      it "leaves an optional nil input alone" do
+        expect(pc.render(:worktree, worktree_inputs.merge(task_id: nil), worktree_text)).to eq(fixture("worktree.yml"))
+      end
+
       it "raises for a worktree whose template has no pane to swap for the agent kind" do
         text = worktree_text.lines.grep_v(/claude|codex/).join
 

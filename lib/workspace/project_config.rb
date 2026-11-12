@@ -69,17 +69,18 @@ module Workspace
     #   (an {AgentProvider} key; the workspace its config layers read is `workspace_name`)
     # @param template_text [String]
     # @return [String] the config text
-    # @raise [Workspace::Error] for a worktree and an agent kind the template has no pane to swap for
+    # @raise [Workspace::Error] for a worktree and an agent kind the template has no pane to swap for, or a
+    #   required input (see {TemplateVariables}) that is nil while the template holds its placeholder
     def render(kind, inputs, template_text)
       content = template_text.dup
-      {
-        "TMUX_SESSION_NAME" => :tmux_session_name, "WORKSPACE_NAME" => :workspace_name,
-        "WORKTREE_PATH" => :worktree_path, "PROJECT_NAME" => :project_name,
-        "WORKTREE_BRANCH" => :worktree_branch, "PROJECT_ROOT" => :project_root,
-        "DISPLAY_NAME" => :display_name, "CONFIG_PATH" => :config_path
-      }.each do |placeholder, key|
-        value = inputs[key]
-        content = content.gsub("{{#{placeholder}}}") { value } if value
+      TemplateVariables::ROWS.each do |row|
+        next unless row.fill == :value
+        value = inputs[row.input]
+        if value
+          content = content.gsub("{{#{row.name}}}") { value }
+        elsif row.required[kind] && content.include?("{{#{row.name}}}")
+          raise Workspace::Error, "Cannot render the #{kind} template: no value for #{row.name}"
+        end
       end
       if kind == :worktree
         task_id = inputs[:task_id]
