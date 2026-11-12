@@ -272,7 +272,7 @@ module Workspace
       now = @clock.now
       @lock.synchronize do
         pane = @panes[pane_id]
-        pane && state_of(pane, now - (pane[:last_activity_at] || now))
+        pane && PaneStates.state_of(pane, now - (pane[:last_activity_at] || now), @idle_after)
       end
     end
 
@@ -327,7 +327,7 @@ module Workspace
         next unless pane
         next "waiting" unless pane[:waits].empty?
         next "idle" if pane[:turn_ended]
-        state_of(pane, now - (pane[:last_activity_at] || now))
+        PaneStates.state_of(pane, now - (pane[:last_activity_at] || now), @idle_after)
       end
     end
 
@@ -343,7 +343,7 @@ module Workspace
     def main_turn_evidence(pane_id)
       @lock.synchronize do
         pane = @panes[pane_id]
-        missing = pane ? main_turn_missing(pane) : "pane_unknown"
+        missing = pane ? PaneStates.main_turn_missing(pane) : "pane_unknown"
         missing ? {missing: missing} : {since: pane[:main_stopped_at], transcript_path: pane[:transcript_path]}
       end
     end
@@ -377,7 +377,7 @@ module Workspace
     # @return [Time, nil]
     def fresh_since(pane_id)
       now = @clock.now
-      @lock.synchronize { (pane = @panes[pane_id]) && fresh_since_of(pane, now) }
+      @lock.synchronize { (pane = @panes[pane_id]) && PaneStates.fresh_since(pane, now, @idle_after) }
     end
 
     # What a queued-prompt delivery checks a pane against.
@@ -396,7 +396,7 @@ module Workspace
         pane = @panes[pane_id]
         next unless pane && pane[:pid]
         {kind: pane[:kind], pane_pid: pane[:pid], agent_pid: pane[:agent_pid], session_id: pane[:session_id],
-         state: reported_state(pane, now - (pane[:last_activity_at] || now)), fresh_since: fresh_since_of(pane, now),
+         state: PaneStates.reported_state(pane, now - (pane[:last_activity_at] || now), @idle_after), fresh_since: PaneStates.fresh_since(pane, now, @idle_after),
          last_user_prompt_at: pane[:last_user_prompt_at], hooks: pane[:hook_kind] == pane[:kind],
          last_session_start: pane[:last_session_start]&.dup}
       end
@@ -504,25 +504,6 @@ module Workspace
       end
     end
 
-    def fresh_since_of(pane, now)
-      return nil if NOT_AGENTS.include?(pane[:kind]) || !pane[:waits].empty?
-      state = reported_state(pane, now - (pane[:last_activity_at] || now))
-      return nil unless %w[done idle].include?(state)
-      return pane[:own_quiet_at] if pane[:restored_ready]
-      return pane[:done][:since] if state == "done"
-      pane[:last_activity_at] && pane[:last_activity_at] + @idle_after
-    end
-
-    def main_turn_missing(pane)
-      return "not_claude" unless pane[:kind] == "claude"
-      return "no_hooks" unless pane[:hook_kind] == "claude"
-      return "no_stop_seen" unless pane[:main_stopped_at]
-      return PaneEvents::MAIN_ACTIVITY.fetch(pane[:main_active_event]) if pane[:main_active_at]
-      return "turn_failed" if pane[:turn_failed]
-      return "waiting" unless pane[:waits].empty?
-      "open_tool" unless pane[:open_tools].to_h.empty?
-    end
-
     # The body of {#scan}, run under a machine-wide scan slot when a limiter
     # is injected.
     def perform_scan
@@ -557,18 +538,11 @@ module Workspace
         # a transcript read per agent pane, which a burst of requests would
         # otherwise multiply into a process storm.
         @panes.each_value { |pane| refresh_caches(pane, now) }
-        closed.values.filter_map { |pane| gone_change(pane, "closed", now) } +
-          @panes.values.filter_map { |pane| state_change(pane, now) }
+        closed.values.filter_map { |pane| PaneStates.gone_change(pane, "closed", now) } +
+          @panes.values.filter_map { |pane| PaneStates.state_change(pane, now, @idle_after) }
       end
       record_changes(changes)
     end
-
-    NOT_AGENTS = ["shell", "unknown"].freeze
-    private_constant :NOT_AGENTS
-
-    # Logged states that mean the pane no longer has an agent.
-    GONE_STATES = ["closed", "exited"].freeze
-    private_constant :GONE_STATES
 
     # Each pane's last logged state, keyed on pane id, along with each
     # pane's last idle alert and last waiting alert per agent. Read once, on
@@ -590,7 +564,7 @@ module Workspace
     def restore_state(pane, detail)
       logged = @history.delete(detail[:id])
       alerts = @alert_history.delete(detail[:id]) || {}
-      return unless logged["pane_pid"] == detail[:pid] && !GONE_STATES.include?(logged["state"])
+      return unless logged["pane_pid"] == detail[:pid] && !PaneStates::GONE_STATES.include?(logged["state"])
       since = Time.iso8601(logged["since"].to_s)
       pane[:logged_state] = logged["state"]
       pane[:state_since] = since
@@ -667,40 +641,6 @@ module Workspace
       @event_log.record(type: EventLog::AGENT_ALERT, project: @project, data: data)
     end
 
-    # The change to record when an agent pane's state differs from the one
-    # last recorded, or nil. Keeps the pane's record up to date as it goes.
-    def state_change(pane, now)
-      return nil if pane[:kind] == "unknown"
-      return gone_change(pane, "exited", now) if pane[:kind] == "shell"
-      state = reported_state(pane, now - (pane[:last_activity_at] || now))
-      return nil if state == pane[:logged_state]
-      mark_state(pane, state, since_for(pane, state, now))
-    end
-
-    def gone_change(pane, state, now)
-      return nil if pane[:logged_state].nil? || GONE_STATES.include?(pane[:logged_state])
-      mark_state(pane, state, now)
-    end
-
-    def mark_state(pane, state, since)
-      pane[:logged_state] = state
-      pane[:state_since] = since
-      {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "index" => pane[:index],
-       "kind" => pane[:kind], "state" => state, "since" => since.utc.iso8601(3),
-       "stop_reason" => pane[:done] && pane[:done][:stop_reason]}.compact
-    end
-
-    # When the pane entered +state+: a wait from when it was raised, idle from
-    # when the output had been quiet long enough, working from its last change.
-    def since_for(pane, state, now)
-      case state
-      when "done" then pane[:done][:since]
-      when "waiting" then oldest_wait(pane)[:since]
-      when "idle" then pane[:last_activity_at] + @idle_after
-      else pane[:last_activity_at] || now
-      end
-    end
-
     # Written outside the monitor's lock, so a slow disk never holds up hook
     # events or `sessions`. EventLog#record doesn't raise on a failed write.
     def record_changes(changes)
@@ -715,7 +655,7 @@ module Workspace
     #   and value that mark it, the alert's environment, and the event to log
     #   once it is sent
     def due_alerts(pane, now)
-      return [] if NOT_AGENTS.include?(pane[:kind])
+      return [] if PaneStates::NOT_AGENTS.include?(pane[:kind])
 
       unless pane[:waits].empty?
         return pane[:waits].reject { |_, wait| wait[:alerted] }.map do |agent_id, wait|
@@ -918,30 +858,12 @@ module Workspace
       screen
     end
 
-    # The pane reports its longest wait, so the time shown is how long a
-    # person has been keeping some agent in it waiting.
-    def oldest_wait(pane)
-      pane[:waits].values.min_by { |wait| wait[:since] }
-    end
-
-    # What `sessions` reports. A finished turn is "done" whatever the screen
-    # or a late idle notification says; {#restart_state} and {#pane_state}
-    # keep going by activity and waits.
-    def reported_state(pane, idle_for)
-      pane[:done] ? "done" : state_of(pane, idle_for)
-    end
-
-    def state_of(pane, idle_for)
-      return "waiting" unless pane[:waits].empty?
-      (idle_for < @idle_after) ? "working" : "idle"
-    end
-
     def present(pane, now, task = nil)
       idle_for = now - (pane[:last_activity_at] || now)
-      wait = oldest_wait(pane)
+      wait = PaneStates.oldest_wait(pane)
       waiting_since = wait&.dig(:since)
-      state = reported_state(pane, idle_for)
-      state_since = (state == pane[:logged_state]) ? pane[:state_since] : since_for(pane, state, now)
+      state = PaneStates.reported_state(pane, idle_for, @idle_after)
+      state_since = (state == pane[:logged_state]) ? pane[:state_since] : PaneStates.since_for(pane, state, now, @idle_after)
       result = {
         "pane_id" => pane[:pane_id],
         "index" => pane[:index],
@@ -951,8 +873,8 @@ module Workspace
         "cwd" => pane[:cwd],
         "state" => state,
         "state_since" => state_since&.utc&.iso8601,
-        "activity_state" => state_of(pane, idle_for),
-        "main_turn_over_since" => main_turn_missing(pane) ? nil : pane[:main_stopped_at].utc.iso8601(3),
+        "activity_state" => PaneStates.state_of(pane, idle_for, @idle_after),
+        "main_turn_over_since" => PaneStates.main_turn_missing(pane) ? nil : pane[:main_stopped_at].utc.iso8601(3),
         "transcript_path" => pane[:transcript_path],
         "open_tools" => pane[:open_tools].to_h.values.map { |tool| tool[:tool] },
         "idle_seconds" => idle_for.round,
