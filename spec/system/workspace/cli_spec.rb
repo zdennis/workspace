@@ -66,7 +66,7 @@ RSpec.describe Workspace::CLI do
     agent_command = overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new
     ask_command = overrides[:ask_command] || CLITestHelpers::FakeAskCommand.new
 
-    cli = Workspace::CLI.new(
+    cli = CLITestHelpers.build_cli(
       config: config,
       state: state,
       project_config: project_config,

@@ -484,6 +484,9 @@ require_relative "workspace/run_result"
 require_relative "workspace/run_result_cleaner"
 require_relative "workspace/run_result_store"
 require_relative "workspace/commands/run_and_report"
+require_relative "workspace/cli/invocation"
+require_relative "workspace/cli/common"
+require_relative "workspace/cli/names"
 require_relative "workspace/cli"
 
 module Workspace

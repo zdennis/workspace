@@ -56,7 +56,7 @@ RSpec.describe "workspace start adversarial CLI specs" do
     parent_command = CLITestHelpers::FakeParentCommand.new
     agent_command = CLITestHelpers::FakeAgentCommand.new
 
-    cli = Workspace::CLI.new(lineage: LineageSupport.lineage,
+    cli = CLITestHelpers.build_cli(lineage: LineageSupport.lineage,
       config: config,
       state: state,
       project_config: project_config,

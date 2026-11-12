@@ -2,6 +2,27 @@ require "stringio"
 require "tmpdir"
 
 module CLITestHelpers
+  # The named overrides only Workspace.build_cli takes.
+  BUILD_CLI_OVERRIDES = %i[launchctl tmux task_store skill_source workflow_source_runner osascript ui_osascript].freeze
+  # The keywords Workspace.build_cli and Workspace::CLI.new both take.
+  STREAM_KEYWORDS = %i[output error_output input env logger exit_handler].freeze
+
+  # The one way a spec builds a CLI, so a change to the CLI's keywords touches this builder and
+  # not every spec. Given only the streams and Workspace.build_cli's named overrides
+  # (osascript:, ui_osascript:, workflow_source_runner:, tmux:, ...), it builds the production
+  # graph through Workspace.build_cli, forwarding each. Given any other keyword (+lineage:+, a
+  # command, ...), it builds Workspace::CLI.new with exactly the keywords given. A
+  # Workspace.build_cli override beside a Workspace::CLI.new keyword is an ArgumentError, since
+  # one of them would be dropped.
+  def self.build_cli(**keywords)
+    return Workspace.build_cli(**keywords) if (keywords.keys - STREAM_KEYWORDS - BUILD_CLI_OVERRIDES).empty?
+
+    overrides = keywords.keys & BUILD_CLI_OVERRIDES
+    raise ArgumentError, "Workspace::CLI.new does not take #{overrides.join(", ")}" if overrides.any?
+
+    Workspace::CLI.new(**keywords)
+  end
+
   # A LaunchMode whose automatic choice is fixed, so specs never depend on the
   # machine (platform, osascript, CI) or on a real ~/.config.
   def self.launch_mode(headless:, global: {})
@@ -357,20 +378,28 @@ module CLITestHelpers
   end
 
   class FakeClaudeCommand
+    CONTROL_METHODS = [].freeze
+
     def deactivate(_projects) = {}
     def reactivate(_projects) = {}
   end
 
   class FakeRepairCommand
+    CONTROL_METHODS = [].freeze
+
     def call = []
     def set_window_id(_project, _wid) = nil
   end
 
   class FakeUpdatePaneCommand
+    CONTROL_METHODS = [].freeze
+
     def call(project:, command:, pane_index:) = nil
   end
 
   class FakeRunCommand
+    CONTROL_METHODS = %i[calls raise_on_call returning].freeze
+
     attr_reader :calls
 
     def initialize
@@ -394,6 +423,8 @@ module CLITestHelpers
   end
 
   class FakeRunAndReportCommand
+    CONTROL_METHODS = %i[calls stub_result].freeze
+
     attr_reader :calls
 
     def initialize
@@ -416,6 +447,8 @@ module CLITestHelpers
   end
 
   class FakeCaptureCommand
+    CONTROL_METHODS = %i[calls].freeze
+
     attr_reader :calls
 
     def initialize
@@ -428,6 +461,8 @@ module CLITestHelpers
   end
 
   class FakeWaitUntilContentCommand
+    CONTROL_METHODS = %i[calls next_status next_status=].freeze
+
     attr_reader :calls
     attr_accessor :next_status
 
@@ -475,6 +510,8 @@ module CLITestHelpers
   end
 
   class FakeAgentCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -507,6 +544,8 @@ module CLITestHelpers
   end
 
   class FakeLockCommand
+    CONTROL_METHODS = %i[calls result result= working_dirs].freeze
+
     attr_reader :calls, :working_dirs
     attr_accessor :result
 
@@ -547,6 +586,8 @@ module CLITestHelpers
   end
 
   class FakeDevCommand
+    CONTROL_METHODS = %i[calls result result= up_error up_error= working_dirs].freeze
+
     attr_reader :calls, :working_dirs
     attr_accessor :result, :up_error
 
@@ -601,6 +642,8 @@ module CLITestHelpers
   end
 
   class FakeGroupsCommand
+    CONTROL_METHODS = %i[calls].freeze
+
     attr_reader :calls
 
     def initialize
@@ -629,6 +672,8 @@ module CLITestHelpers
   end
 
   class FakeProjectsCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -642,18 +687,20 @@ module CLITestHelpers
       @result
     end
 
-    def show(name: nil, json: false, agents: true, git: true, timeout: nil)
+    def show(name: nil, json: false, agents: true, git: true, timeout: nil, cwd: nil)
       @calls << {show: name, json: json, agents: agents, git: git, timeout: timeout}
       @result
     end
 
-    def members(name: nil, path: false, all: false, json: false, timeout: nil)
+    def members(name: nil, path: false, all: false, json: false, timeout: nil, cwd: nil)
       @calls << {members: name, path: path, all: all, json: json, timeout: timeout}
       @result
     end
   end
 
   class FakeSnapshotCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -669,6 +716,8 @@ module CLITestHelpers
   end
 
   class FakeDaemonCommand
+    CONTROL_METHODS = %i[calls error error= restart_all_results restart_all_results= restart_result restart_result= result result=].freeze
+
     attr_reader :calls
     attr_accessor :result, :restart_result, :restart_all_results, :error
 
@@ -711,6 +760,8 @@ module CLITestHelpers
   end
 
   class FakeUiCommand
+    CONTROL_METHODS = %i[calls error error= result result= status_doc status_doc=].freeze
+
     attr_reader :calls
     attr_accessor :result, :error
 
@@ -743,6 +794,8 @@ module CLITestHelpers
   end
 
   class FakeBindingCommand
+    CONTROL_METHODS = %i[calls error error=].freeze
+
     attr_reader :calls
     attr_accessor :error
 
@@ -774,6 +827,8 @@ module CLITestHelpers
   # Records each library verb with its keyword arguments; writes return a
   # Commands::Library::Result like the real command, reads print a line.
   class FakeLibraryCommand
+    CONTROL_METHODS = %i[calls error error= result result=].freeze
+
     attr_reader :calls
     attr_accessor :error, :result
 
@@ -811,6 +866,8 @@ module CLITestHelpers
   end
 
   class FakeInstructionsCommand
+    CONTROL_METHODS = %i[calls error error=].freeze
+
     attr_reader :calls
     attr_accessor :error
 
@@ -826,6 +883,8 @@ module CLITestHelpers
 
   # Records each `workflow`/`step` call; mutations return the row the real command returns.
   class FakeWorkflowCommand
+    CONTROL_METHODS = %i[calls error error= row row= status_result status_result=].freeze
+
     attr_reader :calls
     attr_accessor :error, :row, :status_result
 
@@ -834,7 +893,7 @@ module CLITestHelpers
       @row = {"workspace" => "app", "outcome" => "started", "reason" => nil, "message" => nil, "run" => {"id" => "wr_1", "state" => "running"}}
     end
 
-    %i[show list validate install status events files attempts advance step_status].each do |name|
+    %i[show validate status events files attempts advance step_status].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error
@@ -842,11 +901,21 @@ module CLITestHelpers
       end
     end
 
-    # Answers nil when the prompt was declined, like the real uninstall does.
-    def uninstall(**kw)
-      @calls << [:uninstall, kw]
+    def list(json: false, project: nil)
+      @calls << [:list, {json: json, project: project}]
       raise @error if @error
-      (kw[:yes] || kw[:dry_run]) ? @row : nil
+    end
+
+    def install(source: nil)
+      @calls << [:install, {source: source}]
+      raise @error if @error
+    end
+
+    # Answers nil when the prompt was declined, like the real uninstall does.
+    def uninstall(yes: false, dry_run: false, json: false)
+      @calls << [:uninstall, {yes: yes, dry_run: dry_run, json: json}]
+      raise @error if @error
+      (yes || dry_run) ? @row : nil
     end
 
     def check(**kw)
@@ -870,6 +939,8 @@ module CLITestHelpers
 
   # Records each `workflow start` call and answers with a canned row.
   class FakeWorkflowStartCommand
+    CONTROL_METHODS = %i[calls error error= row row=].freeze
+
     attr_reader :calls
     attr_accessor :error, :row
 
@@ -887,6 +958,8 @@ module CLITestHelpers
 
   # Records each `go` call and answers with a canned row.
   class FakeGoCommand
+    CONTROL_METHODS = %i[calls error error= row row=].freeze
+
     attr_reader :calls
     attr_accessor :error, :row
 
@@ -903,6 +976,8 @@ module CLITestHelpers
   end
 
   class FakeReviewCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -916,13 +991,15 @@ module CLITestHelpers
       @result
     end
 
-    def list(project: nil, json: false)
+    def list(project: nil, json: false, cwd: nil)
       @calls << {list: project, json: json}
       @result
     end
   end
 
   class FakeProjectActionsCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -931,7 +1008,7 @@ module CLITestHelpers
       @result = {exit_code: 0}
     end
 
-    def stop(name: nil, dry_run: false, json: false)
+    def stop(name: nil, dry_run: false, json: false, cwd: nil)
       @calls << {stop: name, dry_run: dry_run, json: json}
       @result
     end
@@ -943,6 +1020,8 @@ module CLITestHelpers
   end
 
   class FakeParentCommand
+    CONTROL_METHODS = %i[calls result result=].freeze
+
     attr_reader :calls
     attr_accessor :result
 
@@ -958,6 +1037,8 @@ module CLITestHelpers
   end
 
   class FakeCapabilitiesCommand
+    CONTROL_METHODS = %i[calls].freeze
+
     attr_reader :calls
 
     def initialize
@@ -970,6 +1051,8 @@ module CLITestHelpers
   end
 
   class FakeAskCommand
+    CONTROL_METHODS = %i[calls].freeze
+
     attr_reader :calls
 
     def initialize(result: {exit_code: 0})
@@ -1004,6 +1087,8 @@ module CLITestHelpers
   end
 
   class FakeConfigCommand
+    CONTROL_METHODS = %i[calls handlers].freeze
+
     # +handlers+ maps an action (:set, :unset, :edit) to a callable that answers it instead
     # of the canned result; it gets the same arguments as the action.
     attr_reader :calls, :handlers
@@ -1054,6 +1139,8 @@ module CLITestHelpers
   end
 
   class FakeStatuslineCommand
+    CONTROL_METHODS = %i[calls].freeze
+
     attr_reader :calls
 
     def initialize(result: {exit_code: 0})

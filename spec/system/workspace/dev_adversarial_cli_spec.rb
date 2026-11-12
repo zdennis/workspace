@@ -127,7 +127,7 @@ RSpec.describe "PR2 adversarial findings" do
       no_workspaces = Object.new
       def no_workspaces.existing_name(_name) = nil
 
-      Workspace::CLI.new(lineage: LineageSupport.lineage,
+      CLITestHelpers.build_cli(lineage: LineageSupport.lineage,
         config: placeholder, state: placeholder, project_config: no_workspaces, git: placeholder,
         window_manager: placeholder, doctor: placeholder, project_settings: project_settings,
         hook_runner: placeholder, project_detector: placeholder, launch_command: placeholder,

@@ -53,7 +53,7 @@ RSpec.describe "workspace ask adversarial findings" do
     parent_command = CLITestHelpers::FakeParentCommand.new
     agent_command = CLITestHelpers::FakeAgentCommand.new
 
-    Workspace::CLI.new(lineage: LineageSupport.lineage,
+    CLITestHelpers.build_cli(lineage: LineageSupport.lineage,
       config: config, state: state, project_config: project_config, git: git, window_manager: window_manager,
       doctor: doctor, project_settings: project_settings, hook_runner: hook_runner, project_detector: project_detector,
       launch_command: launch_command, kill_command: kill_command, finish_command: finish_command, start_command: start_command,

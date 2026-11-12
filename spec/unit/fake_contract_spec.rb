@@ -380,4 +380,46 @@ RSpec.describe "fake contracts" do
       expect(FakeContract.problems(described_class, Workspace::RecoveryFacts, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
+  describe "the CLI's fake commands" do
+    {
+      CLITestHelpers::FakeAgentCommand => Workspace::Commands::Agent,
+      CLITestHelpers::FakeAskCommand => Workspace::Commands::Ask,
+      CLITestHelpers::FakeBindingCommand => Workspace::Commands::Binding,
+      CLITestHelpers::FakeCapabilitiesCommand => Workspace::Commands::Capabilities,
+      CLITestHelpers::FakeCaptureCommand => Workspace::Commands::Capture,
+      CLITestHelpers::FakeClaudeCommand => Workspace::Commands::Claude,
+      CLITestHelpers::FakeConfigCommand => Workspace::Commands::Config,
+      CLITestHelpers::FakeDaemonCommand => Workspace::Commands::Daemon,
+      CLITestHelpers::FakeDevCommand => Workspace::Commands::Dev,
+      CLITestHelpers::FakeGoCommand => Workspace::Commands::Go,
+      CLITestHelpers::FakeGroupsCommand => Workspace::Commands::Groups,
+      CLITestHelpers::FakeInstructionsCommand => Workspace::Commands::Instructions,
+      CLITestHelpers::FakeLibraryCommand => Workspace::Commands::Library,
+      CLITestHelpers::FakeLockCommand => Workspace::Commands::Lock,
+      CLITestHelpers::FakeParentCommand => Workspace::Commands::Parent,
+      CLITestHelpers::FakeProjectActionsCommand => Workspace::Commands::ProjectActions,
+      CLITestHelpers::FakeProjectsCommand => Workspace::Commands::Projects,
+      CLITestHelpers::FakeRepairCommand => Workspace::Commands::Repair,
+      CLITestHelpers::FakeReviewCommand => Workspace::Commands::Review,
+      CLITestHelpers::FakeRunAndReportCommand => Workspace::Commands::RunAndReport,
+      CLITestHelpers::FakeRunCommand => Workspace::Commands::Run,
+      CLITestHelpers::FakeSnapshotCommand => Workspace::Commands::Snapshot,
+      CLITestHelpers::FakeStatuslineCommand => Workspace::Commands::Statusline,
+      CLITestHelpers::FakeUiCommand => Workspace::Commands::Ui,
+      CLITestHelpers::FakeUpdatePaneCommand => Workspace::Commands::UpdatePaneCommand,
+      CLITestHelpers::FakeWaitUntilContentCommand => Workspace::Commands::WaitUntilContent,
+      CLITestHelpers::FakeWorkflowCommand => Workspace::Commands::Workflow,
+      CLITestHelpers::FakeWorkflowStartCommand => Workspace::Commands::WorkflowStart
+    }.each do |fake, real|
+      it "holds #{fake.name.delete_prefix("CLITestHelpers::")} to every call #{real.name.delete_prefix("Workspace::")} accepts" do
+        expect(FakeContract.problems(fake, real, control: fake::CONTROL_METHODS)).to be_empty
+      end
+    end
+
+    it "gives the workflow fake list, install and uninstall by their own keywords" do
+      keywords = ->(name) { CLITestHelpers::FakeWorkflowCommand.instance_method(name).parameters.map(&:last) }
+      expect([keywords.call(:list), keywords.call(:install), keywords.call(:uninstall)])
+        .to eq([%i[json project], %i[source], %i[yes dry_run json]])
+    end
+  end
 end

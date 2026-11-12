@@ -1,0 +1,125 @@
+require "spec_helper"
+require "stringio"
+require "json"
+
+RSpec.describe Workspace::CLI::Common do
+  subject(:common) { described_class.new }
+
+  let(:out) { StringIO.new }
+  let(:err) { StringIO.new }
+  let(:invocation) do
+    Workspace::CLI::Invocation.new(output: out, error_output: err, exit_handler: FakeExitHandler, help_asked: false, quiet: false, env: {})
+  end
+
+  def exit_status
+    yield
+    nil
+  rescue FakeSystemExit => e
+    e.status
+  end
+
+  describe "#run_action" do
+    it "leaves text alone without --json and exits with the block's non-zero code" do
+      status = exit_status do
+        common.run_action(invocation, "stop", json: false) do
+          out.puts("stopped app")
+          {exit_code: 2}
+        end
+      end
+
+      expect(status).to eq(2)
+      expect(out.string).to eq("stopped app\n")
+    end
+
+    it "does not exit without --json when the block answers 0 or nil" do
+      expect(exit_status { common.run_action(invocation, "stop", json: false) { {exit_code: 0} } }).to be_nil
+      expect(exit_status { common.run_action(invocation, "stop", json: false) { nil } }).to be_nil
+    end
+
+    it "prints one action document with --json and sends the command's text to stderr" do
+      gate = Workspace::OutputGate.new(out)
+      run = invocation.with(output: gate)
+      status = exit_status do
+        common.run_action(run, "stop", json: true) do
+          gate.puts("stopping app")
+          {results: [common.action_row("app", "stopped")], warnings: ["careful"]}
+        end
+      end
+
+      doc = JSON.parse(out.string)
+      expect(status).to be_nil
+      expect(doc).to include("ok" => true, "action" => "stop", "status" => "ok", "warnings" => ["careful"])
+      expect(doc["results"]).to eq([{"workspace" => "app", "outcome" => "stopped", "reason" => nil, "message" => nil}])
+      expect(err.string).to eq("stopping app\n")
+    end
+
+    it "exits 3 for a partial result and with the block's code for a failed one" do
+      partial = [common.action_row("a", "stopped"), common.action_row("b", "failed")]
+      expect(exit_status { common.run_action(invocation, "stop", json: true) { {results: partial} } }).to eq(3)
+      expect(exit_status { common.run_action(invocation, "stop", json: true) { {results: [common.action_row("a", "stopped")], exit_code: 4} } }).to eq(4)
+    end
+  end
+
+  describe "#exit_code_row" do
+    it "answers the ok outcome on 0, else a failed row carrying the code" do
+      expect(common.exit_code_row("app", "released", 0, lock: "edit"))
+        .to eq({"workspace" => "app", "outcome" => "released", "reason" => nil, "message" => nil, "lock" => "edit"})
+      expect(common.exit_code_row("app", "released", 2))
+        .to eq({"workspace" => "app", "outcome" => "failed", "reason" => "exit_code", "message" => "Exited 2; the details are on stderr.", "exit_code" => 2})
+    end
+  end
+
+  describe "#emit_json_error and #emit_json_usage_error" do
+    it "print the error document to the invocation's output and exit 1" do
+      error = Workspace::Error.new("no such run", code: "unknown_run")
+      expect(exit_status { common.emit_json_error(invocation, 1, error) }).to eq(1)
+      expect(JSON.parse(out.string)).to include("ok" => false, "error" => "no such run", "code" => "unknown_run")
+
+      out.truncate(0)
+      out.rewind
+      expect(exit_status { common.emit_json_usage_error(invocation, 1, "bad option") }).to eq(1)
+      expect(JSON.parse(out.string)).to include("ok" => false, "error" => "bad option", "code" => "usage")
+    end
+  end
+
+  describe "#help_requested?" do
+    it "counts --help and -h only before a bare --" do
+      expect(common.help_requested?(["status", "--help"])).to be(true)
+      expect(common.help_requested?(["status", "-h"])).to be(true)
+      expect(common.help_requested?(["status", "--", "--help"])).to be(false)
+    end
+
+    it "reads the word after a flag that takes a value as that value" do
+      page = Workspace::HelpPages::WORKFLOW.fetch("approve")
+      expect(common.help_requested?(["approve", "--note", "--help"], page)).to be(false)
+    end
+  end
+
+  describe "#verb_help_shown?" do
+    it "prints the verb's page to the invocation's output when help is asked for" do
+      expect(common.verb_help_shown?(invocation, Workspace::HelpPages::LOCK, ["acquire", "--help"])).to be(true)
+      expect(out.string).to include("Usage: workspace lock acquire")
+    end
+
+    it "is false and prints nothing without a request" do
+      expect(common.verb_help_shown?(invocation, Workspace::HelpPages::LOCK, ["acquire"])).to be(false)
+      expect(out.string).to eq("")
+    end
+  end
+
+  describe "#json_requested?" do
+    it "is true for the flag already parsed or --json still among the arguments" do
+      expect(common.json_requested?(true, [])).to be(true)
+      expect(common.json_requested?(false, ["--bogus", "--json"])).to be(true)
+      expect(common.json_requested?(false, ["--bogus"])).to be(false)
+    end
+  end
+
+  describe "#parse_duration_option" do
+    it "answers seconds and turns a bad value into a usage error naming the flag" do
+      expect(common.parse_duration_option("--poll", "5m")).to eq(300)
+      expect { common.parse_duration_option("--poll", "soon") }.to raise_error(Workspace::UsageError, /\A--poll: /)
+      expect { common.parse_duration_option("--poll", "0", positive: true) }.to raise_error(Workspace::UsageError, /\A--poll: /)
+    end
+  end
+end

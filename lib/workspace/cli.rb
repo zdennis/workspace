@@ -141,7 +141,6 @@ module Workspace
       @hook_runner = hook_runner
       @project_detector = project_detector
       @status_scope = status_scope
-      @lineage = lineage
       @workspace_name = workspace_name
       @sessions_command = sessions_command
       @session_event_command = session_event_command
@@ -236,6 +235,8 @@ module Workspace
       @env = env
       @editor_launcher = editor_launcher || ->(argv) { system(*argv) }
       @interactive = interactive || -> { $stdin.tty? && $stdout.tty? }
+      @common = Common.new
+      @names = Names.new(project_config: project_config, project_detector: project_detector, lineage: lineage, working_dir: working_dir, workspace_name: workspace_name)
     end
 
     # Parses the subcommand from argv and dispatches to the appropriate method.
@@ -246,8 +247,8 @@ module Workspace
       args = argv.dup
       @logger.enable! if args.delete("--debug")
       @input.no_input! if take_no_input_flag!(args) && @input.respond_to?(:no_input!)
-      @name_help_asked = help_before_separator?(args)
-      @name_quiet = json_flag?(args)
+      @invocation = Invocation.new(output: @output, error_output: @error_output, exit_handler: @exit_handler,
+        help_asked: help_before_separator?(args), quiet: json_flag?(args), env: @env)
       settle_name_flags!(args)
       plain = HelpJson.strip(args)
       return run_help_json(plain) if plain
@@ -465,7 +466,7 @@ module Workspace
       buffer = StringIO.new
       errors = StringIO.new
       status = 0
-      saved = [$stdout, @error_output, @exit_handler]
+      saved = [$stdout, @error_output, @exit_handler, @invocation]
       begin
         $stdout = buffer
         @error_output = errors
@@ -474,7 +475,7 @@ module Workspace
       rescue HelpJson::Exit, SystemExit => e
         status = e.status
       ensure
-        $stdout, @error_output, @exit_handler = saved
+        $stdout, @error_output, @exit_handler, @invocation = saved
       end
       if status.zero?
         @output.puts JSON.generate(HelpJson.document(buffer.string))
@@ -549,25 +550,8 @@ module Workspace
       end
     end
 
-    # The one place a typed workspace name is settled. Answers the on-disk name, or nil
-    # when the name matches nothing. A short name (a worktree suffix) resolves through
-    # WorkspaceName#for_input, and one stderr line says which workspace it reached, unless
-    # `--json` is given. While help is asked for, only the exact name (ignoring case)
-    # counts, so help never fails on an ambiguous name. A CLI built with no WorkspaceName
-    # asks the project config.
-    #
-    # @param name [String, nil]
-    # @return [String, nil]
-    # @raise [Workspace::Error] `ambiguous_workspace` when several workspaces share the suffix
-    def given_name(name)
-      return @project_config.existing_name(name) unless @workspace_name
-
-      found = @name_help_asked ? @workspace_name.match(name) : @workspace_name.for_input(name)
-      if found && !WorkspaceName.same?(found, name) && !@name_quiet
-        @error_output.puts TerminalText.escape("Workspace '#{name}' is #{found}.")
-      end
-      found
-    end
+    # See {Names#given_name}.
+    def given_name(name) = @names.given_name(@invocation, name)
 
     # @param argv [Array<String>]
     # @return [Boolean] whether `--help` or `-h` appears before a bare `--`
@@ -575,76 +559,23 @@ module Workspace
       argv.take_while { |arg| arg != "--" }.any? { |arg| arg == "--help" || arg == "-h" }
     end
 
-    # @param name [String, nil] a workspace or project name as given
-    # @return [String, nil] the on-disk name of the config it matches ignoring case, else the name as given
-    def settle_name(name)
-      (@workspace_name && name) ? (given_name(name) || name) : name
-    end
+    # See {Names#settle_name}.
+    def settle_name(name) = @names.settle_name(@invocation, name)
 
-    # Takes the first positional off +args+ as the workspace when a workspace of that name has a
-    # config (ignoring case); otherwise leaves +args+ alone so the caller's own parsing and usage
-    # error apply.
-    #
-    # @param args [Array<String>] positionals, modified in place
-    # @return [String, nil] the workspace's on-disk name, or the current value (nil) when the first is not one
-    def take_known_workspace!(args)
-      known = given_name(args.first)
-      args.shift if known
-      known
-    end
+    # See {Names#take_known_workspace!}.
+    def take_known_workspace!(args) = @names.take_known_workspace!(@invocation, args)
 
-    # The one workspace a command was given, by `--name` or by position.
-    #
-    # @param name_opt [String, nil] value of `--name`
-    # @param positional [String, nil] the positional workspace argument
-    # @return [String, nil] the name, or nil when neither was given
-    # @raise [Workspace::UsageError] when both are given and differ
-    def pick_workspace_name(name_opt, positional)
-      positional = settle_name(positional)
-      if positional && name_opt && positional != name_opt
-        raise UsageError, "Give the workspace once: '#{positional}' and --name #{name_opt} differ."
-      end
+    # See {Names#pick_workspace_name}.
+    def pick_workspace_name(name_opt, positional) = @names.pick_workspace_name(@invocation, name_opt, positional)
 
-      name_opt || positional
-    end
+    # See {Names#require_known_workspace!}.
+    def require_known_workspace!(name) = @names.require_known_workspace!(name)
 
-    # @raise [Workspace::Error] code `unknown_workspace` when no config exists for +name+ (ignoring case)
-    def require_known_workspace!(name)
-      return if @project_config.existing_name(name)
+    # See {Names#working_dir_for}.
+    def working_dir_for(name) = @names.working_dir_for(name)
 
-      raise Error.new("Unknown workspace '#{name}': it has no config. See `workspace list`, or create one with `workspace add PATH` (`workspace add .` for this directory).",
-        code: "unknown_workspace", details: {"name" => name})
-    end
-
-    # The directory a per-workspace command acts from: the named workspace's
-    # root for `--name`, else the detected working directory.
-    #
-    # @param name [String, nil] value of `--name`
-    # @return [String]
-    # @raise [Workspace::Error] code `unknown_workspace` when no such workspace exists
-    def working_dir_for(name)
-      return @working_dir unless name
-
-      root = @project_config.project_root_for(name)
-      raise Error.new("Unknown workspace '#{name}'", code: "unknown_workspace", details: {"name" => name}) unless root
-
-      File.expand_path(root)
-    end
-
-    # The directory a `dev` subcommand acts from: the named workspace's root, else the working
-    # directory when it is in a workspace (one the detector finds, or the checkout of a configured
-    # workspace, so a stopped main checkout works).
-    #
-    # @param name [String, nil] the WS argument or `--name`
-    # @return [String]
-    # @raise [Workspace::Error] code `unknown_workspace` for a name with no config, `not_in_workspace` outside any workspace
-    def dev_working_dir(name)
-      return working_dir_for(name) if name
-      return @working_dir if workspace_here
-
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass the workspace name. A lock left by a checkout that is no longer a workspace can be released with `workspace lock clear`.",
-        code: "not_in_workspace", details: {"path" => @working_dir})
-    end
+    # See {Names#dev_working_dir}.
+    def dev_working_dir(name) = @names.dev_working_dir(name)
 
     # Whether `--json` or `--json-envelope` appears as its own argument before a bare `--`.
     #
@@ -1258,45 +1189,14 @@ module Workspace
       end
     end
 
-    # The one workspace a lifecycle command (`kill`, `finish`, `remove`, `dir`) was given: the
-    # positional or `--name` (they must agree), settled to its on-disk spelling, else nil.
-    #
-    # @param args [Array<String>] the positionals left after parsing
-    # @param name [String, nil] value of `--name`
-    # @param command [String] the subcommand, for the usage message
-    # @return [String, nil]
-    # @raise [Workspace::UsageError] for more than one positional, or a positional and `--name` that differ
-    def single_workspace_arg(args, name, command)
-      raise UsageError, "workspace #{command} takes one workspace; got: #{args.join(" ")}. Run 'workspace #{command} --help'." if args.size > 1
-      pick_workspace_name(name, args.first)
-    end
+    # See {Names#single_workspace_arg}.
+    def single_workspace_arg(args, name, command) = @names.single_workspace_arg(@invocation, args, name, command)
 
-    # @param name [String, nil] the workspace given, if any
-    # @return [String] +name+, else the workspace the working directory is in
-    # @raise [Workspace::Error] code `not_in_workspace` when neither gives one
-    def current_workspace!(name)
-      name ||= workspace_here
-      return name if name
+    # See {Names#current_workspace!}.
+    def current_workspace!(name) = @names.current_workspace!(name)
 
-      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir})
-    end
-
-    # The workspace the working directory is in: the detector's answer (a marker or a running
-    # workspace), else the directory's lineage name when a workspace of that name is configured,
-    # so a stopped main checkout counts too.
-    #
-    # @return [String, nil]
-    def workspace_here
-      @project_detector.detect(@working_dir) || main_checkout_workspace
-    end
-
-    # The configured workspace named like the main checkout the working directory is in; a linked
-    # worktree or a directory outside git never resolves to one.
-    def main_checkout_workspace
-      lineage = @lineage.resolve(cwd: @working_dir)
-      return nil unless lineage.git_common_dir && !lineage.is_worktree
-      @project_config.existing_name(lineage.name)
-    end
+    # See {Names#workspace_here}.
+    def workspace_here = @names.workspace_here
 
     def cmd_kill(args)
       force = false
@@ -3029,138 +2929,35 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
-    # Parses a duration option such as `--poll` or `--max-wait` (e.g. "9m", "5s", or
-    # a plain number of seconds), raising a usage error instead of a
-    # backtrace on unparsable input.
-    #
-    # @param flag [String] option name, for the error message
-    # @param value [String] raw option value
-    # @param positive [Boolean] require the duration be greater than 0
-    # @return [Numeric] seconds
-    def parse_duration_option(flag, value, positive: false)
-      positive ? Workspace::Duration.parse_positive(value) : Workspace::Duration.parse(value)
-    rescue ArgumentError => e
-      raise UsageError, "#{flag}: #{e.message}"
-    end
+    # See {Common#parse_duration_option}.
+    def parse_duration_option(flag, value, positive: false) = @common.parse_duration_option(flag, value, positive: positive)
 
     # Schema version of the action documents the mutating commands print with `--json`.
-    ACTION_JSON_SCHEMA_VERSION = 1
+    ACTION_JSON_SCHEMA_VERSION = Common::ACTION_JSON_SCHEMA_VERSION
 
-    # Runs a mutating command's work and reports it. Without `--json` the
-    # command's text is untouched and a non-zero `exit_code` from the block
-    # exits. With it, the text goes to stderr, stdout gets one action document
-    # ({JsonEnvelope.action}), and the exit code follows its `status`: 0, 3 for
-    # partial, and for failed the block's own non-zero code (else 1). A raised
-    # {Workspace::Error} still becomes the error envelope in the rescue funnel.
-    #
-    # @param action [String] the verb in the document, e.g. "stop"
-    # @param json [Boolean] whether `--json` was given
-    # @yieldreturn [Hash, nil] `:exit_code`; with `json` also `:results` (rows
-    #   with an `"outcome"`), and optionally `:warnings`, `:extra` and `:status`
-    #   (else derived from the rows); build rows only when `json`, as text mode ignores them
-    # @return [void]
-    def run_action(action, json:)
-      unless json
-        outcome = yield
-        code = outcome && outcome[:exit_code]
-        @exit_handler.exit(code) if code && !code.zero?
-        return
-      end
+    # See {Common#run_action}.
+    def run_action(action, json:, &block) = @common.run_action(@invocation, action, json: json, &block)
 
-      outcome = divert_output { yield }
-      results = outcome.fetch(:results)
-      code = outcome[:exit_code]
-      status = outcome[:status] || JsonEnvelope.action_status(results)
-      status = "failed" if status == "ok" && code && !code.zero?
-      @output.puts JSON.generate(JsonEnvelope.action(ACTION_JSON_SCHEMA_VERSION, action,
-        results: results, status: status, warnings: outcome[:warnings] || [], extra: outcome[:extra] || {}))
-      exit_code = JsonEnvelope::ACTION_EXIT_CODES.fetch(status)
-      exit_code = code if exit_code == 1 && code && !code.zero?
-      @exit_handler.exit(exit_code) unless exit_code.zero?
-    end
+    # See {Common#divert_output}.
+    def divert_output(&block) = @common.divert_output(@invocation, &block)
 
-    # Sends what collaborators print to stderr while the block runs, so stdout
-    # stays free for one JSON document. A plain stream (a test double) is left alone.
-    def divert_output(&block)
-      return yield unless @output.respond_to?(:divert_to)
-      @output.divert_to(@error_output, &block)
-    end
+    # See {Common#action_row}.
+    def action_row(workspace, outcome, reason: nil, message: nil, **extra) = @common.action_row(workspace, outcome, reason: reason, message: message, **extra)
 
-    # One row of an action document's `results`.
-    #
-    # @param workspace [String, nil]
-    # @param outcome [String] e.g. "stopped", "failed"
-    # @param reason [String, nil] a short machine-readable cause
-    # @param message [String, nil] what a person would read
-    # @param extra [Hash] more keys for the row
-    # @return [Hash]
-    def action_row(workspace, outcome, reason: nil, message: nil, **extra)
-      {"workspace" => workspace, "outcome" => outcome, "reason" => reason, "message" => message}.merge(extra.transform_keys(&:to_s))
-    end
+    # See {Common#emit_json_error}.
+    def emit_json_error(schema_version, error, message: nil) = @common.emit_json_error(@invocation, schema_version, error, message: message)
 
-    # Emits a caught failure as the `--json` error envelope (code, details and
-    # retry from the exception) to stdout and exits 1.
-    #
-    # @param schema_version [Integer] the command's JSON schema version
-    # @param error [Exception] the failure
-    # @param message [String, nil] replaces the exception's message (e.g. its first line)
-    def emit_json_error(schema_version, error, message: nil)
-      @output.puts JSON.generate(JsonEnvelope.from_exception(schema_version, error, message: message))
-      @exit_handler.exit(1)
-    end
+    # See {Common#emit_json_usage_error}.
+    def emit_json_usage_error(schema_version, message) = @common.emit_json_usage_error(@invocation, schema_version, message)
 
-    # Emits the documented `--json` error contract (see docs/README.lock.md,
-    # docs/README.dev.md) to stdout and exits, for usage/validation errors
-    # raised before a command's own `status_json` branch is reached (e.g. bad
-    # option, extra argument, invalid lock name).
-    #
-    # @param schema_version [Integer] the command's JSON schema version
-    # @param message [String] error message (single line; not the full help text)
-    def emit_json_usage_error(schema_version, message)
-      @output.puts JSON.generate(JsonEnvelope.error(schema_version, message, code: "usage"))
-      @exit_handler.exit(1)
-    end
+    # See {Common#help_requested?}.
+    def help_requested?(args, page = nil) = @common.help_requested?(args, page)
 
-    # Whether +args+ ask for help, so a verb shows its page before it parses or acts.
-    # Only the words before a `--` count, and with a +page+ the word after a flag
-    # that takes a value is that value, so `--note --help` stays literal.
-    def help_requested?(args, page = nil)
-      value_flags = page ? HelpPages.value_flags(page) : []
-      skip = false
-      args.each do |arg|
-        break if arg == "--"
-        if skip
-          skip = false
-        elsif ["--help", "-h"].include?(arg)
-          return true
-        else
-          skip = value_flags.include?(arg)
-        end
-      end
-      false
-    end
+    # See {Common#verb_help_shown?}.
+    def verb_help_shown?(table, args) = @common.verb_help_shown?(@invocation, table, args)
 
-    # Prints the page of the verb that leads +args+ when help is asked for, before
-    # anything is parsed or acted on. False when there is no verb or no request,
-    # so the bare command keeps its overview.
-    def verb_help_shown?(table, args)
-      _key, page = HelpPages.lookup(table, args)
-      return false unless page && help_requested?(args, page)
-
-      @output.puts HelpPages.render(page)
-      true
-    end
-
-    # Whether --json was requested, even when the parse error happened before
-    # OptionParser reached the --json flag (e.g. an unknown option listed
-    # first). The JSON error contract must not depend on flag order.
-    #
-    # @param json [Boolean] the flag as set by OptionParser so far
-    # @param args [Array<String>] the raw, unparsed argv for this subcommand
-    # @return [Boolean]
-    def json_requested?(json, args)
-      json || args.include?("--json")
-    end
+    # See {Common#json_requested?}.
+    def json_requested?(json, args) = @common.json_requested?(json, args)
 
     def cmd_lock_release(args)
       workspace = nil
@@ -3183,12 +2980,8 @@ module Workspace
       end
     end
 
-    # One `results` row for a command that reports only an exit code: `ok_outcome`
-    # on 0, else `failed` with the code (the details went to stderr).
-    def exit_code_row(workspace, ok_outcome, code, **extra)
-      return action_row(workspace, ok_outcome, **extra) if code.zero?
-      action_row(workspace, "failed", reason: "exit_code", message: "Exited #{code}; the details are on stderr.", exit_code: code, **extra)
-    end
+    # See {Common#exit_code_row}.
+    def exit_code_row(workspace, ok_outcome, code, **extra) = @common.exit_code_row(workspace, ok_outcome, code, **extra)
 
     def cmd_lock_status(args)
       workspace = nil
