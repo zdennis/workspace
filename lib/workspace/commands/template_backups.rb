@@ -106,7 +106,8 @@ module Workspace
       # @param names [Array<String>] only these workspaces or template sets of the batch; none is all of them
       # @param force [Boolean] also put back over a file changed since the batch wrote it
       # @param json [Boolean] print nothing; the caller prints the action document
-      # @return [Hash] `results`, `status`, `exit_code`, `warnings` and `extra` (`backup`: the batch taken first, `restored_from`)
+      # @return [Hash] `results` (a `restored` workspace row's `config_rewritten` says whether the config's bytes changed), `status`,
+      #   `exit_code`, `warnings` and `extra` (`backup`: the batch taken first, `restored_from`)
       # @raise [Workspace::Error] `backup_not_found`, `unknown_workspace` for a name the batch has no entry for, or a batch that can't be made
       def restore(id:, names: [], force: false, json: false)
         manifest = @backups.find(id)
@@ -230,7 +231,7 @@ module Workspace
         ensure
           @backups.finish(batch, name: name, sha_after: @files.sha(config_path), record_sha_after: @files.sha(record_path))
         end
-        row(name, "restored", nil, nil, "files" => %w[config record])
+        row(name, "restored", nil, nil, "files" => %w[config record], "config_rewritten" => !config_before.nil? && config_now != config_before)
       rescue Error => e
         failed(name, e.code || "error", e.message)
       rescue SystemCallError, IOError => e

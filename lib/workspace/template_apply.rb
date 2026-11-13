@@ -148,7 +148,7 @@ module Workspace
     end
 
     def running?(name)
-      @tmux.session_exists?(@tmux.session_name_for(name), project: name)
+      @tmux.session_exists?(Tmux.stored_session_name(@tmux.session_name_for(name)), project: name)
     rescue Error, SystemCallError
       false
     end

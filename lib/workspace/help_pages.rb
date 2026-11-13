@@ -1649,6 +1649,7 @@ module Workspace
     TEMPLATE_DRY_RUN_TEXT = "apply and adopt: say what would happen to each config, writing nothing (apply: and taking no backup)"
     TEMPLATE_FORCE_TEXT = "apply: also overwrite configs edited since they were rendered (after a backup); restore: also put back over files changed since the batch wrote them (after a backup); export: replace a set's folder already in DIR; import: also replace a set a template key selects (after a backup)"
     TEMPLATE_ROLLBACK_TEXT = "apply: on the first workspace that fails, put back every config the batch wrote and stop"
+    TEMPLATE_RELAUNCH_TEXT = "apply and restore: then stop each running workspace whose tmuxinator config was rewritten and launch it again, never the current one"
 
     # What each flag means on one verb's page, so a page lists only what its verb does with it.
     TEMPLATE_PAGE_TEXT = {
@@ -1677,7 +1678,8 @@ module Workspace
       force_restore: "Also put the backup over a config or render record changed since the batch wrote it (a backup of what it replaces is taken first)",
       force_export: "Replace a set's folder already in DIR",
       force_import: "Also replace a set that tmuxinator.template or tmuxinator.worktree_template selects (the old copy goes into a backup batch)",
-      rollback: "On the first workspace that fails, put back every config and render record the batch wrote, and stop"
+      rollback: "On the first workspace that fails, put back every config and render record the batch wrote, and stop",
+      relaunch: "Then stop and launch again each running workspace whose tmuxinator config was rewritten (never the current workspace)"
     }.freeze
 
     TEMPLATE = {
@@ -1722,7 +1724,7 @@ module Workspace
         ]
       },
       "apply" => {
-        usage: ["template apply [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--json]"],
+        usage: ["template apply [WORKSPACE...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--relaunch] [--json]"],
         summary: "Re-render tmuxinator configs from the tmuxinator template each one selects today",
         about: [
           "Renders each workspace's tmuxinator config again from its render record, with the tmuxinator template it",
@@ -1730,19 +1732,22 @@ module Workspace
           "record is copied into one backup batch before it is written (`Backup:` names it). A config edited since it",
           "was rendered is skipped (skipped: modified) unless --force; one with no render record is skipped",
           "(skipped: untracked; `template adopt` builds one) even with --force. A record adopted without an exact",
-          "render is skipped like an edited one (skipped: approx). A running session keeps its old layout until it is relaunched.",
+          "render is skipped like an edited one (skipped: approx). A running session keeps its old layout until it is",
+          "relaunched; --relaunch does that once the configs are written (a relaunch that fails makes the exit 3).",
           "Each workspace waits for its startup lock; one renamed or removed meanwhile is skipped: gone. A workspace",
           "that fails does not stop the others: exit 3 when some failed, 1 when all did. Name the workspaces, or give",
           "--all or --project; with none of them, the workspace of the current directory."
         ],
         options: [["--all", TEMPLATE_PAGE_TEXT[:all]], ["--project [NAME]", TEMPLATE_PAGE_TEXT[:project]],
           ["--dry-run", TEMPLATE_PAGE_TEXT[:dry_run]], ["--diff", TEMPLATE_PAGE_TEXT[:apply_diff]],
-          ["--force", TEMPLATE_PAGE_TEXT[:force]], ["--rollback-all-on-error", TEMPLATE_PAGE_TEXT[:rollback]], JSON_OPT],
+          ["--force", TEMPLATE_PAGE_TEXT[:force]], ["--rollback-all-on-error", TEMPLATE_PAGE_TEXT[:rollback]],
+          ["--relaunch", TEMPLATE_PAGE_TEXT[:relaunch]], JSON_OPT],
         examples: [
           ["workspace template apply --all --dry-run --diff", "what re-rendering every tmuxinator config would change, writing nothing"],
           ["workspace template apply --all", "re-render every tmuxinator config that is stale, keeping hand-edited ones"],
           ["workspace template apply api --force", "re-render api's config even though it was edited by hand"],
           ["workspace template apply --project api --rollback-all-on-error", "all of the project api, or none if one fails"],
+          ["workspace template apply --all --relaunch", "re-render every stale tmuxinator config and relaunch the running workspaces"],
           ["workspace template apply --all --json", "for a script: one row per workspace with its outcome"]
         ]
       },
@@ -1817,7 +1822,7 @@ module Workspace
         ]
       },
       "restore" => {
-        usage: ["template restore BACKUP_ID [WORKSPACE|TEMPLATE...] [--force] [--json]"],
+        usage: ["template restore BACKUP_ID [WORKSPACE|TEMPLATE...] [--force] [--relaunch] [--json]"],
         summary: "Put a tmuxinator template backup batch back",
         about: [
           "Puts the batch's configs and render records back as they were when it was taken, all of them or only",
@@ -1827,16 +1832,17 @@ module Workspace
           "files are gone and whose checkout is gone too (renamed or removed) is skipped: gone, but an accidentally",
           "deleted config of a workspace that still has its checkout is put back. A batch of its own is taken first",
           "(`Backup:`), so a restore can be undone by restoring that. A running session keeps its old layout until",
-          "it is relaunched. A batch `template import` took holds the template sets it replaced: they go back into",
-          "the library the same way (a set changed since the import is restore_conflict unless --force, and what",
-          "it replaces is kept in the restore's batch); name a set to put back only it. Exit 3 when some",
-          "workspaces failed, 1 when all did."
+          "it is relaunched; --relaunch does that once the files are back. A batch `template import` took holds",
+          "the template sets it replaced: they go back into the library the same way (a set changed since the",
+          "import is restore_conflict unless --force, and what it replaces is kept in the restore's batch); name a",
+          "set to put back only it. Exit 3 when some workspaces failed or a relaunch did, 1 when all failed."
         ],
-        options: [["--force", TEMPLATE_PAGE_TEXT[:force_restore]], JSON_OPT],
+        options: [["--force", TEMPLATE_PAGE_TEXT[:force_restore]], ["--relaunch", TEMPLATE_PAGE_TEXT[:relaunch]], JSON_OPT],
         examples: [
           ["workspace template restore 20261112T101500123456Z-a1b2c3 api", "just api"],
           ["workspace template restore 20261112T101500123456Z-a1b2c3", "put the whole batch back"],
           ["workspace template restore 20261112T101500123456Z-a1b2c3 api --force", "just api, over edits made since"],
+          ["workspace template restore 20261112T101500123456Z-a1b2c3 api --relaunch", "just api, then relaunch it if it is running"],
           ["workspace template restore 20261112T101500123456Z-a1b2c3 --json", "for a script: one row per workspace"]
         ]
       },

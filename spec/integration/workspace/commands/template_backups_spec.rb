@@ -187,6 +187,18 @@ RSpec.describe Workspace::Commands::TemplateBackups do
       expect(File.read(path("a"))).to eq("a v2\n")
     end
 
+    it "says whether the config's bytes changed, so --relaunch can leave a record-only restore alone" do
+      batch = apply_batch("a", before: "a v1\n", after: "a v2\n")
+      expect(command.restore(id: batch)[:results].first).to include("outcome" => "restored", "config_rewritten" => true)
+
+      other = apply_batch("b", before: "b v1\n", after: "b v2\n")
+      File.write(path("b"), "b v1\n")
+      expect(command.restore(id: other)[:results].first).to include("outcome" => "restored", "config_rewritten" => false)
+
+      created = apply_batch("new", before: nil, after: "new v1\n")
+      expect(command.restore(id: created)[:results].first).to include("outcome" => "restored", "config_rewritten" => false)
+    end
+
     it "deletes a config and record the batch created" do
       batch = apply_batch("new", before: nil, after: "new v1\n")
 

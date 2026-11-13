@@ -2,6 +2,7 @@ require "open3"
 require "securerandom"
 require "shellwords"
 require "tmpdir"
+require "yaml"
 
 module Workspace
   # Manages tmux session operations for the workspace CLI.
@@ -483,14 +484,32 @@ module Workspace
     # discovers which workspace it is reporting for without being told.
     #
     # @param pane_id [String] a tmux pane id (e.g. "%23")
-    # @return [String, nil] the session name, or nil if the pane is gone
-    def session_name_for_pane(pane_id)
-      stdout, _, status = Open3.capture3(
-        "tmux", "display-message", "-p", "-t", pane_id, "\#{session_name}"
-      )
-      return nil unless status.success?
+    # @param project [String, nil] ask the tmux server on that project's custom socket (`tmux_options: -L ...`), if it has one
+    # @return [String, nil] the session name, or nil if the pane is gone or tmux did not answer within +command_timeout+
+    def session_name_for_pane(pane_id, project: nil)
+      stdout, ok = run_bounded(*(project && socket_arguments(project)), "display-message", "-p", "-t", pane_id, "\#{session_name}")
+      return nil unless ok
       name = stdout.strip
       name.empty? ? nil : name
+    rescue Workspace::Error, SystemCallError
+      nil
+    end
+
+    # The session of the tmux client a command runs in: the session whose id `$TMUX` names, asked of the server it
+    # names (`display-message -t '$N'`; with no target tmux would answer for the most recently used client instead).
+    #
+    # @param tmux_env [String] the value of `$TMUX` (`socket_path,pid,session_id`)
+    # @return [String, nil] the session name, or nil when `$TMUX` is malformed, tmux can't say or tmux did not answer
+    #   within +command_timeout+
+    def client_session_name(tmux_env)
+      socket, _pid, id = tmux_env.to_s.split(",", 3)
+      return nil if socket.nil? || socket.empty? || !id.to_s.match?(/\A\d+\z/)
+      stdout, ok = run_bounded("-S", socket, "display-message", "-p", "-t", "$#{id}", "\#{session_name}", env: {"TMUX" => tmux_env})
+      return nil unless ok
+      name = stdout.strip
+      name.empty? ? nil : name
+    rescue Workspace::Error, SystemCallError
+      nil
     end
 
     # Records a user option on a session (`set-option -t SESSION @name value`).
@@ -907,17 +926,37 @@ module Workspace
     end
 
     # @param config_name [String] tmuxinator config file name (without .yml)
-    # @return [String] the tmux session name from the config file
+    # @return [String] the tmux session name from the config file: the YAML value of its top-level `name:` line (quotes and
+    #   a trailing comment dropped), else the line's text after `name:` when that line is not YAML on its own
     def session_name_for(config_name)
       config_path = @config.config_path_for(config_name)
       return config_name unless File.exist?(config_path)
       File.foreach(config_path) do |line|
-        return line.split(/\s+/, 2).last.strip if line.match?(/^name:\s/)
+        return name_line_value(line) if line.match?(/^name:\s/)
       end
       config_name
     end
 
+    # The name tmux keeps for a session asked for as +name+: tmux turns each `.` and `:` into `_`
+    # (a config `name: foo.js` runs as session `foo_js`).
+    #
+    # @param name [String]
+    # @return [String]
+    def self.stored_session_name(name)
+      name.tr(".:", "_")
+    end
+
     private
+
+    # The value of a `name: ...` line read as YAML, else (an ERB tag, an unbalanced quote) the text after the key.
+    def name_line_value(line)
+      value = YAML.safe_load(line)
+      value = value["name"] if value.is_a?(Hash)
+      return value.to_s if value.is_a?(String) || value.is_a?(Numeric)
+      line.split(/\s+/, 2).last.strip
+    rescue Psych::Exception
+      line.split(/\s+/, 2).last.strip
+    end
 
     # Runs capture-pane against any tmux target ("my-session:0.2" or a pane
     # id like "%19"), shared by {#capture_pane} and {#capture_pane_by_id}.
@@ -977,12 +1016,13 @@ module Workspace
     # would otherwise block the caller forever. Only the tmux client is
     # signalled; a server it starts daemonizes into its own session.
     #
+    # @param env [Hash, nil] variables set for the tmux client (`TMUX` for {#client_session_name})
     # @return [Array(String, Boolean)] stdout (empty unless +capture+) and
     #   whether tmux exited successfully
-    def run_bounded(*args, capture: true, stderr_sink: nil)
+    def run_bounded(*args, capture: true, stderr_sink: nil, env: nil)
       reader, writer = IO.pipe if capture
       err_reader, err_writer = IO.pipe if stderr_sink
-      pid = Process.spawn("tmux", *args, in: File::NULL, out: writer || File::NULL, err: err_writer || File::NULL)
+      pid = Process.spawn(*[env].compact, "tmux", *args, in: File::NULL, out: writer || File::NULL, err: err_writer || File::NULL)
       writer&.close
       err_writer&.close
       stdout = Thread.new { reader.read } if capture

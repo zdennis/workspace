@@ -53,6 +53,13 @@ RSpec.describe Workspace::ErrorCodes do
     expect(codes - described_class::REGISTRY.keys).to eq([])
   end
 
+  it "registers every relaunch code and warning code template apply and restore give" do
+    source = File.read(File.join(root, "lib/workspace/cli/template.rb")) + File.read(File.join(root, "lib/workspace/cli/relauncher.rb"))
+    codes = source.scan(/"(relaunch_[a-z_]+)"/).flatten.uniq - ["relaunch_code"] # the row field, not a code
+    expect(codes).to include("relaunch_stop_failed", "relaunch_launch_failed", "relaunch_failed", "relaunch_skipped", "relaunch_stop_warning", "relaunch_own_workspace", "relaunch_not_active", "relaunch_own_workspace_unknown")
+    expect(codes - described_class::REGISTRY.keys).to eq([])
+  end
+
   it "documents every registered code in docs/README.json.md" do
     doc = File.read(File.join(root, "docs/README.json.md"))
     missing = described_class::REGISTRY.keys.reject { |code| doc.include?("`#{code}`") }
