@@ -231,7 +231,7 @@ RSpec.describe Workspace::WorkspaceStoreRename do
       expect(outcome.failed).to eq([])
       text = File.read(config.config_path_for("proj.worktree-feat-2"))
       expect(text).to include("name: proj-wt-feat-2\n", "root: #{new_root}\n", "-t '=proj-wt-feat-2:' @workspace proj.worktree-feat-2 ",
-        "workspace-proj-wt-feat-2:", "2;workspace-proj-wt-feat-2\\a", 'ascii-banner "proj feat 2"', "Worktree — feat-2-branch (proj)")
+        "workspace-proj-wt-feat-2:", "2;workspace-proj-wt-feat-2\\a", 'ascii-banner "proj feat 2"', '|| echo "proj feat 2"', "Worktree — feat-2-branch (proj)")
       expect(text.lines.first).to eq("# #{config.config_path_for("proj.worktree-feat-2")}\n")
       expect(text).not_to match(/proj-wt-feat(?!-2)/)
       expect(text).not_to include("proj.worktree-feat ", "#{checkout}\n", "feat-branch (")
@@ -257,7 +257,7 @@ RSpec.describe Workspace::WorkspaceStoreRename do
       store(old: old, new: new, session: "proj-wt-feat", new_session: "proj-wt-other").call
 
       text = File.read(config.config_path_for(new))
-      expect(text).to include("root: #{checkout}\n", 'ascii-banner "proj feat"', "Worktree — feat-branch (proj)")
+      expect(text).to include("root: #{checkout}\n", 'ascii-banner "proj feat"', '|| echo "proj feat"', "Worktree — feat-branch (proj)")
       expect(text).not_to include("proj-wt-feat")
     end
 

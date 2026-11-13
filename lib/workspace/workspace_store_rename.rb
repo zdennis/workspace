@@ -60,7 +60,7 @@ module Workspace
     # @param root [String, nil] the config's new `root:`; nil keeps the line as it is
     # @param branch [String, nil] the branch the worktree template's banner line names now
     # @param new_branch [String, nil] the branch it gets; nil keeps that line as it is
-    # @param display [String, nil] the banner text (`ascii-banner "..."`) now
+    # @param display [String, nil] the banner text (`ascii-banner "..."` and its `|| echo "..."` fallback) now
     # @param new_display [String, nil] the banner text it gets; nil keeps the banner as it is
     # @param retry_hint [String] what the held-back config warning says about trying again
     # @param writer [Workspace::TmuxinatorConfigWriter, nil] carries the config's render record; nil builds one over +config+
@@ -212,7 +212,7 @@ module Workspace
         line = line.gsub(/(-t\s+['"]?=?)#{session}(?=:)|(?<![\w.-])(workspace-)#{session}(?![\w.-])/) { "#{$1 || $2}#{new_session}" }
           .gsub(/(@workspace\s+)#{name}(?![\w.-])/) { "#{$1}#{new}" }
           .sub(/(echo 'Ready to work on )#{name}(?=')/) { "#{$1}#{new}" }
-        line = line.sub(/(ascii-banner ")#{Regexp.escape(@display)}(?=")/) { "#{$1}#{@new_display}" } if @display && @new_display
+        line = line.gsub(/(ascii-banner "|\|\| echo ")#{Regexp.escape(@display)}(?=")/) { "#{$1}#{@new_display}" } if @display && @new_display
         line = line.sub(/(Worktree — )#{Regexp.escape(@branch)}(?= \()/) { "#{$1}#{@new_branch}" } if @branch && @new_branch
         line
       end.join
