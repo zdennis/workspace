@@ -35,5 +35,5 @@ invalid option: --bogus
 --- exit 1
 --- stdout
 --- stderr
-Error: Not inside a workspace project directory. Run 'workspace list --all' to see available projects.
+Error: Not inside a workspace project directory. Run 'workspace list --all' to see available workspaces.
 --- end

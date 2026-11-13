@@ -3438,7 +3438,18 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["relaunch", "--json", "ghost"]) }.to raise_error(FakeSystemExit)
 
-      expect(JSON.parse(output.string)).to include("code" => "unknown_workspace")
+      expect(JSON.parse(output.string)).to include("code" => "unknown_workspace", "error" => a_string_including("to see available workspaces"))
+      expect(stop).not_to have_received(:call)
+    end
+
+    it "prints the workspace list hint on stderr for an unknown workspace without --json" do
+      stop = instance_double(Workspace::Commands::Stop, call: [], warnings: [])
+      pc = CLITestHelpers::FakeProjectConfig.new("api" => "/x/api")
+      cli, _, error_output = build_test_cli(project_config: pc, state: relaunch_state("api"), stop_command: stop)
+
+      expect { cli.run(["relaunch", "ghost"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("Unknown workspace 'ghost'. Run 'workspace list --all' to see available workspaces.")
       expect(stop).not_to have_received(:call)
     end
 

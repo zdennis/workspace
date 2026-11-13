@@ -5,12 +5,11 @@ Usage: workspace relaunch [--name WS | --all] [--json] [workspace1] [workspace2]
 
 Stop active workspaces and relaunch them.
 With no workspace named, relaunches the workspace the current directory is in.
-Before this changed, bare `relaunch` relaunched every active workspace; pass --all for that.
 Outside any workspace, name one or pass --all.
 A workspace that isn't active is refused before anything stops (workspace_not_active).
 
         --name NAME                  Workspace to relaunch; positional names may be given too
-        --all                        Relaunch every active workspace (what bare relaunch used to do)
+        --all                        Relaunch every active workspace
         --json                       Print one action document (see docs/README.json.md) instead of progress text;
                                      the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did
 
@@ -25,7 +24,7 @@ Examples:
 ### workspace relaunch --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace relaunch [--name WS | --all] [--json] [workspace1] [workspace2] ..."],"description":"Stop active workspaces and relaunch them.\nWith no workspace named, relaunches the workspace the current directory is in.\nBefore this changed, bare `relaunch` relaunched every active workspace; pass --all for that.\nOutside any workspace, name one or pass --all.\nA workspace that isn't active is refused before anything stops (workspace_not_active).\n\n        --name NAME                  Workspace to relaunch; positional names may be given too\n        --all                        Relaunch every active workspace (what bare relaunch used to do)\n        --json                       Print one action document (see docs/README.json.md) instead of progress text;\n                                     the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did","options":[],"examples":[{"command":"workspace relaunch","scenario":"stop the workspace you are in and relaunch it"},{"command":"workspace relaunch --all","scenario":"stop every active project and relaunch it (headless ones stay headless)"},{"command":"workspace relaunch my-notes billing","scenario":"relaunch two projects"},{"command":"workspace relaunch --all --json","scenario":"a script relaunching everything and checking the result"},{"command":"workspace relaunch --all --json 2>/dev/null","scenario":"keep the progress text out of the way when piping the document"}]}
+{"usage":["workspace relaunch [--name WS | --all] [--json] [workspace1] [workspace2] ..."],"description":"Stop active workspaces and relaunch them.\nWith no workspace named, relaunches the workspace the current directory is in.\nOutside any workspace, name one or pass --all.\nA workspace that isn't active is refused before anything stops (workspace_not_active).\n\n        --name NAME                  Workspace to relaunch; positional names may be given too\n        --all                        Relaunch every active workspace\n        --json                       Print one action document (see docs/README.json.md) instead of progress text;\n                                     the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did","options":[],"examples":[{"command":"workspace relaunch","scenario":"stop the workspace you are in and relaunch it"},{"command":"workspace relaunch --all","scenario":"stop every active project and relaunch it (headless ones stay headless)"},{"command":"workspace relaunch my-notes billing","scenario":"relaunch two projects"},{"command":"workspace relaunch --all --json","scenario":"a script relaunching everything and checking the result"},{"command":"workspace relaunch --all --json 2>/dev/null","scenario":"keep the progress text out of the way when piping the document"}]}
 --- stderr
 --- end
 ### workspace relaunch --bogus

@@ -10,7 +10,7 @@ workspace relaunch [--name WS | --all] [--json] [workspace ...]
 
 ## Details
 
-Stops the selected workspaces and then relaunches them. **Changed:** bare `workspace relaunch` used to relaunch every active workspace; it now acts on the workspace the current directory is in. Use `--all` for the old behaviour.
+Stops the selected workspaces and then relaunches them. With no name it acts on the workspace the current directory is in; `--all` relaunches every active workspace (what bare `workspace relaunch` did in earlier versions).
 
 - No name: the workspace the current directory is in; outside any workspace, `not_in_workspace`.
 - `--name WS` or positional names: those workspaces (both may be given together).

@@ -3594,12 +3594,11 @@ module Workspace
         opts.separator ""
         opts.separator "Stop active workspaces and relaunch them."
         opts.separator "With no workspace named, relaunches the workspace the current directory is in."
-        opts.separator "Before this changed, bare `relaunch` relaunched every active workspace; pass --all for that."
         opts.separator "Outside any workspace, name one or pass --all."
         opts.separator "A workspace that isn't active is refused before anything stops (workspace_not_active)."
         opts.separator ""
         opts.on("--name NAME", "Workspace to relaunch; positional names may be given too") { |v| name = v }
-        opts.on("--all", "Relaunch every active workspace (what bare relaunch used to do)") { all = true }
+        opts.on("--all", "Relaunch every active workspace") { all = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
           "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") { json = true }
         opts.separator ""
@@ -3631,7 +3630,7 @@ module Workspace
       else
         names.each do |n|
           next if @project_config.project_root_for(n)
-          raise Error.new("Unknown workspace '#{n}'", code: "unknown_workspace", details: {"name" => n})
+          raise Error.new("Unknown workspace '#{n}'. Run 'workspace list --all' to see available workspaces.", code: "unknown_workspace", details: {"name" => n})
         end
         inactive = names - @state.keys
         if inactive.any?
@@ -4485,7 +4484,7 @@ module Workspace
 
       project = @project_detector.detect(@working_dir)
       unless project
-        raise Workspace::Error, "Not inside a workspace project directory. Run 'workspace list --all' to see available projects."
+        raise Workspace::Error, "Not inside a workspace project directory. Run 'workspace list --all' to see available workspaces."
       end
 
       @output.puts project
