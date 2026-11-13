@@ -768,6 +768,15 @@ RSpec.describe Workspace::WorkflowPanes do
     end
   end
 
+  describe "#session_live?" do
+    it "asks tmux for the session name it stored" do
+      allow(tmux).to receive(:session_name_for).with("foo.js").and_return("foo_js")
+      allow(tmux).to receive(:session_exists?).with("foo_js").and_return(true)
+
+      expect(panes.session_live?("foo.js")).to be(true)
+    end
+  end
+
   describe "#pane_gone?" do
     it "says whether tmux still knows the pane" do
       expect(panes.pane_gone?("%5")).to be(false)

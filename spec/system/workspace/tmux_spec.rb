@@ -32,6 +32,46 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.sessions).to eq(%w[alpha beta])
     end
 
+    it "asks the server $TMUX names for the current client's session" do
+      args_file = File.join(tmpdir, "args")
+      fake_tmux(%(echo "$TMUX $*" > '#{args_file}'; echo foo_js))
+
+      expect(tmux.client_session_name("/tmp/tmux-501/default,123,4")).to eq("foo_js")
+      expect(File.read(args_file).strip).to eq("/tmp/tmux-501/default,123,4 -S /tmp/tmux-501/default display-message -p -t $4 \#{session_name}")
+    end
+
+    it "answers no client session when tmux fails" do
+      fake_tmux("exit 1")
+
+      expect(tmux.client_session_name("/tmp/tmux-501/default,123,4")).to be_nil
+    end
+
+    it "answers nil for the client's session and a pane's session when tmux doesn't answer, stopping it" do
+      pid_file = File.join(tmpdir, "tmux.pid")
+      fake_tmux("echo $$ > '#{pid_file}'\nexec sleep 30")
+
+      expect(tmux.client_session_name("/tmp/tmux-501/default,123,4")).to be_nil
+      expect { Process.kill(0, File.read(pid_file).to_i) }.to raise_error(Errno::ESRCH)
+      expect(tmux.session_name_for_pane("%3")).to be_nil
+    end
+
+    it "names a pane's session through the bounded call" do
+      fake_tmux(%(echo "$*" > '#{File.join(tmpdir, "args")}'; echo ws-app))
+
+      expect(tmux.session_name_for_pane("%3")).to eq("ws-app")
+      expect(File.read(File.join(tmpdir, "args")).strip).to eq("display-message -p -t %3 \#{session_name}")
+    end
+
+    it "answers no client session for a malformed $TMUX, asking tmux nothing" do
+      args_file = File.join(tmpdir, "args")
+      fake_tmux(%(echo "$*" > '#{args_file}'; echo foo_js))
+
+      ["", "/tmp/tmux-501/default", "/tmp/tmux-501/default,123", "/tmp/tmux-501/default,123,", "/tmp/tmux-501/default,123,x4", ",123,4"].each do |value|
+        expect(tmux.client_session_name(value)).to be_nil
+      end
+      expect(File.exist?(args_file)).to be false
+    end
+
     it "treats a tmux that exits nonzero (no server) as no sessions" do
       fake_tmux("echo 'no server running' >&2; exit 1")
       expect(tmux.sessions).to eq([])

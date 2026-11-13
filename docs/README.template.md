@@ -16,12 +16,12 @@ workspace template new NAME [--from NAME] [--scope SCOPE] [--name WS] [--json]
 workspace template edit [NAME] [--kind KIND] [--name WS] [--json]
 workspace template use NAME [--kind KIND] [--scope SCOPE] [--name WS] [--json]
 workspace template status [WS...] [--all | --project [NAME]] [--json]
-workspace template apply [WS...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--json]
+workspace template apply [WS...] [--all | --project [NAME]] [--dry-run] [--diff] [--force] [--rollback-all-on-error] [--relaunch] [--json]
 workspace template adopt [WS...] [--all | --project [NAME]] [--dry-run] [--json]
 workspace template backup [WS...] [--all | --project [NAME]] [--json]
 workspace template backups list [--json]
 workspace template backups prune [--json]
-workspace template restore BACKUP_ID [WS|TEMPLATE...] [--force] [--json]
+workspace template restore BACKUP_ID [WS|TEMPLATE...] [--force] [--relaunch] [--json]
 workspace template export DIR [--scope SCOPE] [--force] [--json]
 workspace template import [PATH] [--scope SCOPE] [--force] [--json]
 ```
@@ -46,7 +46,7 @@ workspace template apply --all --dry-run --diff
 workspace template apply --all
 ```
 
-A running session keeps its old layout until you relaunch it. Every config `apply` writes is copied into a backup batch first, and `workspace template restore ID` puts the batch back.
+A running session keeps its old layout until it is relaunched: `workspace template apply --all --relaunch` stops each running workspace whose config it rewrote and launches it again (never the one you run it from, which it names for you to relaunch by hand; nothing after `--rollback-all-on-error` rolled back), and `template restore ID --relaunch` does the same for the workspaces whose config it puts back. Every config `apply` writes is copied into a backup batch first, and `workspace template restore ID` puts the batch back.
 
 ## Sets and how one is chosen
 
@@ -133,6 +133,7 @@ Because `rename` rewrites the config's text in place, the next `apply` after a `
 - A workspace renamed or removed while `apply` waited for its lock is `skipped: gone`, and nothing is written for it.
 - When another set renders exactly the same text, only the render record is rewritten (`already up to date; only its render record was updated`).
 - `--rollback-all-on-error` stops at the first workspace that fails and puts back everything the batch wrote, deleting a config or record the batch created.
+- `--relaunch` then stops each workspace whose session was running and whose config was rewritten, and launches it again, so the session takes the new layout. The workspace you run it from (the one of the current directory, and the one whose tmux session holds `$TMUX_PANE`, or, when that pane can't be placed or is unset, is the session `$TMUX` names) is never relaunched (`relaunch_own_workspace`; the warning names `workspace relaunch NAME` to run from outside it). A session still up after the stop is not launched (`relaunch_stop_failed`). A session that is up but not tracked as active is left alone (`not_active`; stop and launch it by hand). Nothing is relaunched after `--rollback-all-on-error` rolled back. Under `--dry-run` each such row says `would_relaunch` and nothing stops. `template restore --relaunch` does the same for the workspaces whose config bytes it put back (not one where only the render record changed).
 
 Each workspace waits for its startup lock, the one `rename` and `launch` hold, so a workspace is never written while it is being renamed or started. `remove`, `kill` and `prune` take the same lock, so a removed config is not written back. A lock file that cannot be opened is `workspace_locked` for that workspace, and the others go on. A workspace that fails does not stop the others.
 
@@ -140,7 +141,7 @@ Skipping is not a failure: a run that skips every edited or untracked config exi
 
 ### Exit codes
 
-`template` follows the exit codes every other verb uses ([`--json` documents](README.json.md)): a usage error, an error envelope or a failed action exits 1, and success 0. `apply`, `restore`, `adopt` and `backup` handle several workspaces, so they add one: `partial` (exit 3) when some workspaces failed and others did not, and `failed` (exit 1) when all did or `--rollback-all-on-error` rolled the batch back. `validate` and `edit` exit 1 when a file has an error.
+`template` follows the exit codes every other verb uses ([`--json` documents](README.json.md)): a usage error, an error envelope or a failed action exits 1, and success 0. `apply`, `restore`, `adopt` and `backup` handle several workspaces, so they add one: `partial` (exit 3) when some workspaces failed and others did not, and `failed` (exit 1) when all did or `--rollback-all-on-error` rolled the batch back. Under `--relaunch`, a workspace that was not relaunched also makes the run `partial` (exit 3). `validate` and `edit` exit 1 when a file has an error.
 
 ## Configs with no render record
 

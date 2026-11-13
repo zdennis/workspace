@@ -1085,24 +1085,27 @@ RSpec.describe Workspace::ProjectConfig do
       end
 
       [
-        ["the placeholder templates", :placeholder_templates],
-        ["the legacy templates, through the literal-line path", :legacy]
-      ].each do |label, dir|
+        ["the placeholder templates", :placeholder_templates, nil],
+        # The legacy copies keep the layout the shipped set had then.
+        ["the legacy templates, through the literal-line path", :legacy, "legacy"]
+      ].each do |label, dir, pinned_dir|
         context "with #{label}" do
           before { use_templates(send(dir)) }
 
+          define_method(:pinned) { |name| fixture([pinned_dir, name].compact.join("/")) }
+
           it "renders the four pinned files" do
             pc.create("myapp", "/src/my app")
-            expect(written("myapp")).to eq(fixture("project.yml"))
+            expect(written("myapp")).to eq(pinned("project.yml"))
             pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123")
-            expect(written("myapp.worktree-proj-123")).to eq(fixture("worktree.yml"))
+            expect(written("myapp.worktree-proj-123")).to eq(pinned("worktree.yml"))
             File.delete(File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml"))
             pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123", agent_kind: "codex")
-            expect(written("myapp.worktree-proj-123")).to eq(fixture("worktree-codex.yml"))
+            expect(written("myapp.worktree-proj-123")).to eq(pinned("worktree-codex.yml"))
             File.delete(File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml"))
             settings.replace("agent" => {"commands" => {"claude" => "claude-dev"}})
             pc.create_worktree("myapp", "PROJ-123", "/src/myapp/.worktrees/PROJ-123", "PROJ-123")
-            expect(written("myapp.worktree-proj-123")).to eq(fixture("worktree-claude-dev.yml"))
+            expect(written("myapp.worktree-proj-123")).to eq(pinned("worktree-claude-dev.yml"))
           end
 
           it "quotes a shell-unsafe configured command as rewrite_agent_pane does" do
@@ -1111,7 +1114,7 @@ RSpec.describe Workspace::ProjectConfig do
 
             text = written("myapp.worktree-proj-123")
             expect(text).to include(%(- "my cl: #x --dangerously-skip-permissions --continue || my cl: #x --dangerously-skip-permissions"))
-            expect(text).to eq(pc.rewrite_agent_pane(fixture("worktree.yml"), "claude", "myapp.worktree-proj-123"))
+            expect(text).to eq(pc.rewrite_agent_pane(pinned("worktree.yml"), "claude", "myapp.worktree-proj-123"))
           end
 
           it "pins spawn_command" do

@@ -55,12 +55,12 @@ module Workspace
     # @param project_catalog_factory [#call] builds a fresh {Workspace::ProjectCatalog}, for the project inbox file
     # @param old [String] the workspace's current name
     # @param new [String] the name it gets
-    # @param session [String] the tmux session name now
-    # @param new_session [String] the tmux session name it gets
+    # @param session [String] the tmux session name now, as the config writes it (raw; tmux's `.` and `:` rule is applied where tmux is asked)
+    # @param new_session [String] the tmux session name it gets, as the config will write it (raw)
     # @param root [String, nil] the config's new `root:`; nil keeps the line as it is
     # @param branch [String, nil] the branch the worktree template's banner line names now
     # @param new_branch [String, nil] the branch it gets; nil keeps that line as it is
-    # @param display [String, nil] the banner text (`ascii-banner "..."`) now
+    # @param display [String, nil] the banner text (`ascii-banner "..."` and its `|| echo "..."` fallback) now
     # @param new_display [String, nil] the banner text it gets; nil keeps the banner as it is
     # @param retry_hint [String] what the held-back config warning says about trying again
     # @param writer [Workspace::TmuxinatorConfigWriter, nil] carries the config's render record; nil builds one over +config+
@@ -128,10 +128,12 @@ module Workspace
     def rename_session
       session = @session
       new_session = @new_session
-      return nil if session == new_session
-      return nil unless @tmux.session_exists?(session, project: @old)
-      raise Conflict, "a tmux session named #{new_session} already exists" if @tmux.session_exists?(new_session, project: @old)
-      raise Workspace::Error, "tmux rename-session failed" unless @tmux.rename_session(session, new_session, project: @old)
+      stored = Tmux.stored_session_name(session)
+      new_stored = Tmux.stored_session_name(new_session)
+      return nil if stored == new_stored
+      return nil unless @tmux.session_exists?(stored, project: @old)
+      raise Conflict, "a tmux session named #{new_session} already exists" if @tmux.session_exists?(new_stored, project: @old)
+      raise Workspace::Error, "tmux rename-session failed" unless @tmux.rename_session(stored, new_session, project: @old)
 
       [session, new_session]
     end
@@ -212,7 +214,7 @@ module Workspace
         line = line.gsub(/(-t\s+['"]?=?)#{session}(?=:)|(?<![\w.-])(workspace-)#{session}(?![\w.-])/) { "#{$1 || $2}#{new_session}" }
           .gsub(/(@workspace\s+)#{name}(?![\w.-])/) { "#{$1}#{new}" }
           .sub(/(echo 'Ready to work on )#{name}(?=')/) { "#{$1}#{new}" }
-        line = line.sub(/(ascii-banner ")#{Regexp.escape(@display)}(?=")/) { "#{$1}#{@new_display}" } if @display && @new_display
+        line = line.gsub(/(ascii-banner "|\|\| echo ")#{Regexp.escape(@display)}(?=")/) { "#{$1}#{@new_display}" } if @display && @new_display
         line = line.sub(/(Worktree — )#{Regexp.escape(@branch)}(?= \()/) { "#{$1}#{@new_branch}" } if @branch && @new_branch
         line
       end.join

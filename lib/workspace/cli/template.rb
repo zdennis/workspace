@@ -10,12 +10,12 @@ module Workspace
       SUBCOMMANDS = {
         "list" => %i[scope name json],
         "status" => %i[all project json],
-        "apply" => %i[all project dry_run diff force rollback json],
+        "apply" => %i[all project dry_run diff force rollback relaunch json],
         "adopt" => %i[all project dry_run json],
         "backup" => %i[all project json],
         "backups list" => %i[json],
         "backups prune" => %i[json],
-        "restore" => %i[force json],
+        "restore" => %i[force relaunch json],
         "show" => %i[kind name json],
         "path" => %i[kind name json],
         "variables" => %i[kind name json],
@@ -29,14 +29,19 @@ module Workspace
         "import" => %i[scope name force json]
       }.freeze
 
+      # The `relaunch_code` values a failed relaunch row can carry; any other launcher reason is `relaunch_launch_failed`.
+      RELAUNCH_CODES = %w[relaunch_stop_failed relaunch_launch_failed].freeze
+
       # @param template_command [Workspace::Commands::Template, nil] `template` verbs; nil refuses `template`
       # @param backups_command [Workspace::Commands::TemplateBackups, nil] `backup`, `backups` and `restore`; nil refuses them
+      # @param relauncher [CLI::Relauncher] stops and launches again the running workspaces `apply --relaunch` and `restore --relaunch` rewrote
       # @param common [CLI::Common] the output, exit and help helpers
       # @param names [CLI::Names] finds the workspace of the working directory
       # @param working_dir [String] the directory the CLI runs from
-      def initialize(template_command:, common:, names:, working_dir:, backups_command: nil)
+      def initialize(template_command:, relauncher:, common:, names:, working_dir:, backups_command: nil)
         @template_command = template_command
         @backups_command = backups_command
+        @relauncher = relauncher
         @common = common
         @names = names
         @working_dir = working_dir
@@ -86,7 +91,7 @@ module Workspace
         when "backup" then backup(args.dup, options, invocation)
         when "backups list" then @backups_command.list(json: json)
         when "backups prune" then run(invocation, "template backups prune", json) { @backups_command.prune(json: json) }
-        when "restore" then run(invocation, "template restore", json) { @backups_command.restore(id: args.first, names: args.drop(1), force: options[:force] || false, json: json) }
+        when "restore" then restore(args.dup, options, invocation)
         when "show" then @template_command.show(set: args.first, kind: options[:kind], workspace: workspace, json: json)
         when "path" then @template_command.path(set: args.first, kind: options[:kind], workspace: workspace, json: json)
         when "variables" then @template_command.variables(kind: options[:kind], workspace: options[:name] ? workspace : nil, json: json)
@@ -113,18 +118,144 @@ module Workspace
         end
       end
 
-      # `apply` reports one row per workspace, as an action document under --json.
+      # `apply` reports one row per workspace, as an action document under --json; with --relaunch each
+      # running workspace it rewrote is relaunched after its lock is given up.
       def apply(names, options, invocation)
         json = options[:json] || false
+        dry_run = options[:dry_run] || false
         @common.run_action(invocation, "template apply", json: json) do
-          @template_command.apply(names: names, all: options[:all] || false, project: options[:project], cwd: @working_dir,
-            dry_run: options[:dry_run] || false, diff: options[:diff] || false, force: options[:force] || false,
+          outcome = @template_command.apply(names: names, all: options[:all] || false, project: options[:project], cwd: @working_dir,
+            dry_run: dry_run, diff: options[:diff] || false, force: options[:force] || false,
             rollback: options[:rollback] || false, json: json)
+          next outcome unless options[:relaunch]
+          next skip_relaunch(outcome, invocation, json: json) if (outcome[:extra] || {})["rolled_back"]
+          rewritten = ->(row) { row["outcome"] == (dry_run ? "would_apply" : "applied") && !row["record_only"] }
+          relaunch(outcome, invocation, json: json, dry_run: dry_run, rewritten: rewritten, running: ->(row) { row["running"] })
         end
       end
 
-      def run(invocation, action, json, &block)
-        @common.run_action(invocation, action, json: json, &block)
+      # `restore` reports one row per workspace and template set; with --relaunch each running workspace whose config it
+      # put back is relaunched.
+      def restore(args, options, invocation)
+        json = options[:json] || false
+        @common.run_action(invocation, "template restore", json: json) do
+          outcome = @backups_command.restore(id: args.first, names: args.drop(1), force: options[:force] || false, json: json)
+          next outcome unless options[:relaunch]
+          rewritten = ->(row) { row["workspace"] && row["outcome"] == "restored" && row["config_rewritten"] }
+          relaunch(outcome, invocation, json: json, dry_run: false, rewritten: rewritten, running: ->(row) { @relauncher.running?(row["workspace"]) })
+        end
+      end
+
+      # After a roll back nothing is relaunched: each row that was written for a running session says so.
+      def skip_relaunch(outcome, invocation, json:)
+        outcome[:results].each do |row|
+          next unless %w[applied rolled_back].include?(row["outcome"]) && row["running"] && !row["record_only"]
+          row.merge!("relaunch" => "skipped", "relaunch_code" => "relaunch_skipped")
+        end
+        warning = {"code" => "relaunch_skipped", "message" => "Nothing was relaunched: the batch was rolled back."}
+        invocation.error_output.puts "Warning: #{warning["message"]}" unless json
+        outcome.merge(warnings: Array(outcome[:warnings]) + [warning], extra: (outcome[:extra] || {}).merge("relaunched" => []))
+      end
+
+      # Relaunches the workspaces of the rows +rewritten+ picks whose session +running+ says is up and the state file lists
+      # as active, never the caller's own, and marks each such row's `relaunch`. Answers the outcome with the rows,
+      # status, warnings and `extra` updated.
+      def relaunch(outcome, invocation, json:, dry_run:, rewritten:, running:)
+        rows = outcome[:results]
+        warnings = Array(outcome[:warnings]).dup
+        notes = []
+        own = nil
+        tally = {asked: 0, answered: 0}
+        targets = []
+        rows.select(&rewritten).each do |row|
+          name = row["workspace"]
+          key = @relauncher.active_name(name)
+          if !running.call(row)
+            row["relaunch"] = "not_running"
+          elsif (own ||= own_workspace(invocation, tally)).call(name)
+            row["relaunch"] = "skipped"
+            row["relaunch_code"] = "relaunch_own_workspace"
+            notes << {"code" => "relaunch_own_workspace", "workspace" => name,
+                      "message" => "#{name} is the workspace this command runs in, so it was not relaunched; run `workspace relaunch #{name}` from outside it."}
+          elsif key.nil?
+            row["relaunch"] = "not_active"
+            notes << {"code" => "relaunch_not_active", "workspace" => name,
+                      "message" => "#{name}'s tmux session is up but not tracked as active, so it was not relaunched; run `workspace stop #{name}` and `workspace launch #{name}` by hand."}
+          else
+            row["relaunch"] = "would_relaunch"
+            targets << [row, key]
+          end
+        end
+        notes = pane_unplaced(invocation, tally) + notes
+        warnings.concat(notes)
+        notes.each { |note| invocation.error_output.puts "Warning: #{note["message"]}" } unless json
+        names = targets.map(&:last).uniq
+        return outcome.merge(warnings: warnings, extra: (outcome[:extra] || {}).merge("would_relaunch" => names)) if dry_run
+
+        answers, stop_warnings = relaunch_names(invocation, names)
+        warnings.concat(stop_warnings.map { |line| {"code" => "relaunch_stop_warning", "message" => line.to_s} })
+        failed = false
+        targets.each do |row, key|
+          answer = answers[key] || {"outcome" => "failed", "reason" => nil}
+          next row["relaunch"] = "relaunched" if answer["outcome"] == "relaunched"
+          failed = true
+          code = RELAUNCH_CODES.include?(answer["reason"]) ? answer["reason"] : "relaunch_launch_failed"
+          row["relaunch"] = "failed"
+          row["relaunch_code"] = code
+          why = [answer["reason"] || code, answer["message"]].compact.join(": ")
+          warnings << {"code" => "relaunch_failed", "workspace" => row["workspace"], "message" => "#{row["workspace"]} was not relaunched (#{why})."}
+        end
+        print_relaunches(invocation, targets.map(&:first)) unless json
+
+        status = outcome[:status] || JsonEnvelope.action_status(rows)
+        status = "partial" if failed && status == "ok"
+        outcome.merge(results: rows, status: status, exit_code: JsonEnvelope::ACTION_EXIT_CODES.fetch(status), warnings: warnings,
+          extra: (outcome[:extra] || {}).merge("relaunched" => names.select { |key| answers.dig(key, "outcome") == "relaunched" }))
+      end
+
+      # Relaunches +names+, launching only those whose session is gone after the stop, and answers each name's launcher
+      # row by name and what the stop command warned about.
+      def relaunch_names(invocation, names)
+        return [{}, []] if names.empty?
+        result = @relauncher.call(invocation, names, only_stopped: true)
+        [result[:results].to_h { |row| [row["workspace"], row] }, Array(result[:warnings])]
+      rescue Workspace::Error => e
+        [names.to_h { |name| [name, {"workspace" => name, "outcome" => "failed", "reason" => nil, "message" => e.message}] }, []]
+      end
+
+      # {Relauncher#own_workspace} over the workspace of the working directory: a match skips it.
+      # +tally+ counts the pane lookups and the ones tmux answered.
+      def own_workspace(invocation, tally)
+        here = begin
+          @names.workspace_here
+        rescue Workspace::Error
+          nil
+        end
+        @relauncher.own_workspace(invocation.env, here, tally)
+      end
+
+      # The warning for a `$TMUX_PANE` that tmux placed for none of the workspaces asked about, or a `$TMUX` client whose
+      # session tmux could not name.
+      def pane_unplaced(invocation, tally)
+        return [] unless tally[:asked].positive? && tally[:answered].zero?
+        pane = invocation.env["TMUX_PANE"]
+        if pane.nil? || pane.empty?
+          return [{"code" => "relaunch_own_workspace_unknown", "pane" => nil,
+                   "message" => "tmux could not say which session this command's tmux client is in, so the workspace this command runs in was told by the working directory alone."}]
+        end
+        client = invocation.env["TMUX"].to_s.empty? ? "" : " (nor which session this command's tmux client is in)"
+        [{"code" => "relaunch_own_workspace_unknown", "pane" => pane,
+          "message" => "tmux could not say which session pane #{pane} is in#{client}, so the workspace this command runs in was told by the working directory alone."}]
+      end
+
+      def print_relaunches(invocation, rows)
+        rows.each do |row|
+          name = TerminalText.escape(row["workspace"])
+          case row["relaunch"]
+          when "relaunched" then invocation.output.puts "#{name}: relaunched"
+          when "failed" then invocation.output.puts "#{name}: relaunch failed: #{row["relaunch_code"]}"
+          end
+        end
       end
 
       # `backup` reports one row per workspace, as an action document under --json.
@@ -187,6 +318,7 @@ module Workspace
           opts.on("--dry-run", HelpPages::TEMPLATE_DRY_RUN_TEXT) { take(options, :dry_run, true) }
           opts.on("--force", HelpPages::TEMPLATE_FORCE_TEXT) { take(options, :force, true) }
           opts.on("--rollback-all-on-error", HelpPages::TEMPLATE_ROLLBACK_TEXT) { take(options, :rollback, true) }
+          opts.on("--relaunch", HelpPages::TEMPLATE_RELAUNCH_TEXT) { take(options, :relaunch, true) }
           opts.on("--all", HelpPages::TEMPLATE_ALL_TEXT) { take(options, :all, true) }
           opts.on("--project [NAME]", HelpPages::TEMPLATE_PROJECT_TEXT) { |v| take(options, :project, v || true) }
           opts.on("--json", "Print one JSON document") { take(options, :json, true) }

@@ -165,6 +165,7 @@ require_relative "workspace/git"
 require_relative "workspace/which"
 require_relative "workspace/skill_harnesses"
 require_relative "workspace/skill_source"
+require_relative "workspace/detached_spawn"
 require_relative "workspace/skills_state"
 require_relative "workspace/skill_links"
 require_relative "workspace/agent_command_check"
@@ -506,6 +507,7 @@ require_relative "workspace/cli/invocation"
 require_relative "workspace/cli/common"
 require_relative "workspace/cli/names"
 require_relative "workspace/cli/launcher"
+require_relative "workspace/cli/relauncher"
 require_relative "workspace/cli/workflow"
 require_relative "workspace/cli/agent"
 require_relative "workspace/cli/agent_run"
@@ -784,6 +786,7 @@ module Workspace
   # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
   # @param launchctl [#call, nil] runs `launchctl` for the sweep schedule: takes an argument array, answers `[output, exit_code]` (nil code: could not run); nil runs the real one
   # @param exit_handler [#exit, nil] receives the process exit; nil uses Kernel (specs pass a recorder)
+  # @param sleeper [#call, nil] sleeps the given seconds (`relaunch`'s pause between stop and launch); nil builds one over `sleep`
   # @param editor_launcher [#call, nil] runs the editor of `config edit` and `template edit` given its argv array (no shell), answering true when it exited 0; nil runs `system`
   # @param tmux [Workspace::Tmux, nil] the tmux adapter every collaborator shares; nil builds the real one
   # @param task_store [Workspace::TaskStore, nil] the task store `start`, `finish`, `kill` and `rename` share; nil builds the one over the state directory
@@ -791,8 +794,9 @@ module Workspace
   # @param workflow_source_runner [#call, nil] runs the `gh` calls of `workflow install`: `(argv, chdir:, timeout:)` answering `[stdout, stderr, success]`; nil runs the real one
   # @param osascript [#call, nil] runs the AppleScript `ITerm` and `WindowManager` send: `(script)` answering an `OsascriptRunner::Result`; nil runs the real `osascript`
   # @param ui_osascript [#call, nil] runs the JXA script of `ui status`, the same way; nil runs the real `osascript -l JavaScript`
+  # @param detacher [Workspace::DetachedSpawn, nil] starts the background run of a `relaunch` that includes the caller's own workspace; nil builds the real one
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, editor_launcher: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil, osascript: nil, ui_osascript: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil, launchctl: nil, exit_handler: nil, editor_launcher: nil, tmux: nil, task_store: nil, skill_source: nil, workflow_source_runner: nil, osascript: nil, ui_osascript: nil, sleeper: nil, detacher: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
     output = OutputGate.new(output)
@@ -1285,6 +1289,9 @@ module Workspace
     names = CLI::Names.new(project_config: project_config, project_detector: project_detector, lineage: lineage, working_dir: working_dir, workspace_name: workspace_name)
     launcher = CLI::Launcher.new(project_config: project_config, launch_command: launch_command, launch_mode: launch_mode, state: state, project_settings: project_settings,
       hook_runner: hook_runner, common: common, working_dir: working_dir, library: library, instruction_composer: instruction_composer, name_migration: name_migration)
+    relauncher = CLI::Relauncher.new(stop_command: stop_command, hook_runner: hook_runner, launcher: launcher, state: state, sleeper: sleeper || ->(seconds) { sleep(seconds) }, tmux: tmux,
+      detacher: detacher || DetachedSpawn.new, program: [RbConfig.ruby, File.join(SkillSource.stable_dir(config.workspace_dir), "bin", "workspace")], log_dir: config.relaunch_log_dir,
+      processes: lock_holder)
     workflow_family = CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: workflow_start_command, workflow_project: workflow_project,
       status_scope: status_scope, config: config, project_config: project_config, project_detector: project_detector, git: git, launch_mode: launch_mode,
       common: common, names: names, input: input, working_dir: working_dir)
@@ -1309,7 +1316,7 @@ module Workspace
     template_backups_command = Commands::TemplateBackups.new(backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer),
       selection: template_selection, locks: name_migration, project_config: project_config, writer: tmuxinator_config_writer,
       retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output), library: library, template_in_use: template_in_use, output: output)
-    template_family = CLI::Template.new(template_command: template_command, backups_command: template_backups_command, common: common, names: names, working_dir: working_dir)
+    template_family = CLI::Template.new(template_command: template_command, backups_command: template_backups_command, relauncher: relauncher, common: common, names: names, working_dir: working_dir)
     plan_spine_family = CLI::PlanSpine.new(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command,
       spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,
       status_scope: status_scope, project_detector: project_detector, launcher: launcher, common: common, names: names, working_dir: working_dir)
@@ -1318,6 +1325,7 @@ module Workspace
       common: common,
       names: names,
       launcher: launcher,
+      relauncher: relauncher,
       families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family, template: template_family},
       working_dir: working_dir,
       config: config,

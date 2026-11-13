@@ -6,10 +6,6 @@ tmux_options: -CC
 attach: false
 {{PRE_WINDOW}}
 
-on_project_start: |
-  tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.0 -y 15%
-  tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.2 -y 35%
-
 startup_pane: 2
 
 windows:
@@ -18,10 +14,9 @@ windows:
       panes:
         - |
           tmux set-option -t '={{TMUX_SESSION_NAME}}:' @workspace {{WORKSPACE_NAME}} || true
-          printf '\033]2;workspace-{{TMUX_SESSION_NAME}}\a' &&
-          tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.0 -y 15% &&
-          tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.2 -y 35% &&
-          ascii-banner "{{DISPLAY_NAME}}" --rainbow --random -W --center --minimal
+          printf '\033]2;workspace-{{TMUX_SESSION_NAME}}\a'
+          tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.0 -y 15% || true
+          tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.2 -y 35% || true
+          command -v ascii-banner >/dev/null && ascii-banner "{{DISPLAY_NAME}}" --rainbow --random -W --center --minimal || echo "{{DISPLAY_NAME}}"
         - {{AGENT_COMMAND}}
         - echo 'Worktree — {{WORKTREE_BRANCH}} ({{PROJECT_NAME}})'
-        - workspace agentd --debug

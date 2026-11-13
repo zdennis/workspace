@@ -16,6 +16,21 @@ module Workspace
     #   @return [String] "homebrew" or "checkout"
     Source = Struct.new(:root, :kind)
 
+    # The installation directory a program started now should run from: the Homebrew `opt`
+    # keg's libexec when +workspace_dir+ is inside a Cellar keg and that `opt` directory exists
+    # (`brew upgrade` re-points it, while the versioned keg goes away), else +workspace_dir+.
+    # No worktree check; `relaunch`'s background run is its caller.
+    #
+    # @param workspace_dir [String]
+    # @return [String]
+    def self.stable_dir(workspace_dir)
+      brew = CELLAR.match(File.realpath(workspace_dir))
+      opt = brew && "#{brew[1]}/opt/#{brew[2]}/libexec"
+      (opt && File.directory?(opt)) ? opt : workspace_dir
+    rescue SystemCallError
+      workspace_dir
+    end
+
     # @param workspace_dir [String] the installation directory (`Config#workspace_dir`)
     def initialize(workspace_dir:)
       @workspace_dir = workspace_dir

@@ -154,6 +154,9 @@ RSpec.describe Workspace::CLI do
       working_dir: working_dir,
       clock: overrides[:clock] || -> { Time.now },
       sleeper: overrides[:sleeper] || ->(_) {},
+      relauncher_detacher: overrides[:relauncher_detacher],
+      relauncher_log_dir: overrides[:relauncher_log_dir],
+      relauncher_tmux: overrides[:relauncher_tmux],
       launch_mode: overrides[:launch_mode] || CLITestHelpers.launch_mode(headless: false),
       liveness: overrides[:liveness] || ->(names) { names.to_h { |name| [name, true] } },
       window_liveness: overrides[:window_liveness],
@@ -1873,7 +1876,7 @@ RSpec.describe Workspace::CLI do
       allow(window_manager).to receive(:iterm_windows).and_return({123 => "workspace-proj1"})
       cli, = build_test_cli(state: state, tmux: tmux, iterm: CLITestHelpers::FakeITerm.new, window_manager: window_manager, instruction_composer: composer)
 
-      cli.run(["relaunch"])
+      cli.run(["relaunch", "--all"])
 
       expect(composer).not_to have_received(:compose_start)
     end
@@ -3337,7 +3340,7 @@ RSpec.describe Workspace::CLI do
   describe "#run with relaunch" do
     it "exits 1 when no active projects" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["relaunch"]) }.to raise_error(FakeSystemExit) { |e|
+      expect { cli.run(["relaunch", "--all"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("No active workspace projects to relaunch")
@@ -3360,11 +3363,165 @@ RSpec.describe Workspace::CLI do
       slept = []
       cli, output, _ = build_test_cli(state: state, tmux: tmux, iterm: iterm, window_manager: window_manager, sleeper: ->(seconds) { slept << seconds })
 
-      cli.run(["relaunch"])
+      cli.run(["relaunch", "--all"])
 
       expect(slept).to eq([2])
       expect(output.string).to include("Will relaunch: proj1, proj2")
       expect(output.string).to include("Stopped 2 project(s): proj1, proj2")
+    end
+
+    def relaunch_pc(*names)
+      CLITestHelpers::FakeProjectConfig.new(names.to_h { |n| [n, "/x/#{n}"] })
+    end
+
+    def relaunch_state(*names)
+      CLITestHelpers::FakeState.new.tap { |st| names.each { |n| st[n] = {"unique_id" => "uid-#{n}"} } }
+    end
+
+    it "hands the relaunch of the workspace whose tmux session holds $TMUX_PANE to a background run when none is named" do
+      Dir.mktmpdir do |root|
+        spawned = []
+        detacher = ->(argv, log_path:, env:) { spawned << [argv, log_path, env] && 99 }
+        logs = File.join(root, "logs")
+        pc = CLITestHelpers::FakeProjectConfig.new("api" => root, "web" => "/elsewhere/web")
+        stop = instance_double(Workspace::Commands::Stop, call: ["api"], warnings: [])
+        cli, output, _ = build_test_cli(project_config: pc, state: relaunch_state("api", "web"), working_dir: root, stop_command: stop, relauncher_detacher: detacher,
+          relauncher_log_dir: logs, relauncher_tmux: FakeTmux.new(pane_sessions: {"%5" => "api"}), env: {"TMUX_PANE" => "%5"})
+
+        cli.run(["relaunch"])
+
+        log = File.join(logs, "20260102T030405Z-4242.log")
+        expect(spawned).to eq([[[RbConfig.ruby, File.join(PROJECT_ROOT, "bin", "workspace"), "relaunch", "--", "api"], log, {"WORKSPACE_RELAUNCH_DETACHED" => "1"}]])
+        expect(output.string).to include("Relaunching api in the background", "Log: #{log}", "exited N")
+        expect(stop).not_to have_received(:call)
+      end
+    end
+
+    it "relaunches the working directory's workspace in the foreground when tmux does not place the command in its session" do
+      Dir.mktmpdir do |root|
+        detacher = ->(*, **) { raise "detached" }
+        pc = CLITestHelpers::FakeProjectConfig.new("api" => root, "web" => "/elsewhere/web")
+        stop = instance_double(Workspace::Commands::Stop, call: ["api"], warnings: [])
+        cli, output, _ = build_test_cli(project_config: pc, state: relaunch_state("api", "web"), working_dir: root, stop_command: stop, relauncher_detacher: detacher)
+
+        cli.run(["relaunch"])
+
+        expect(output.string).to include("Will relaunch: api\n")
+        expect(stop).to have_received(:call).with(["api"])
+      end
+    end
+
+    it "relaunches only the workspace the working directory is in when none is named, in the background run" do
+      Dir.mktmpdir do |root|
+        state = relaunch_state("api", "web")
+        pc = CLITestHelpers::FakeProjectConfig.new("api" => root, "web" => "/elsewhere/web")
+        stop = instance_double(Workspace::Commands::Stop, call: ["api"], warnings: [])
+        cli, output, _ = build_test_cli(project_config: pc, state: state, working_dir: root, stop_command: stop, env: {"WORKSPACE_RELAUNCH_DETACHED" => "1"})
+
+        cli.run(["relaunch"])
+
+        expect(output.string).to include("Will relaunch: api\n")
+        expect(stop).to have_received(:call).with(["api"])
+      end
+    end
+
+    it "relaunches the workspace named by --name" do
+      state = relaunch_state("api", "web")
+      pc = relaunch_pc("api", "web")
+      stop = instance_double(Workspace::Commands::Stop, call: ["web"], warnings: [])
+      cli, output, _ = build_test_cli(project_config: pc, state: state, stop_command: stop)
+
+      cli.run(["relaunch", "--name", "web"])
+
+      expect(output.string).to include("Will relaunch: web\n")
+      expect(stop).to have_received(:call).with(["web"])
+    end
+
+    it "relaunches the workspaces named positionally" do
+      state = relaunch_state("api", "web", "docs")
+      pc = relaunch_pc("api", "web", "docs")
+      stop = instance_double(Workspace::Commands::Stop, call: ["api", "web"], warnings: [])
+      cli, output, _ = build_test_cli(project_config: pc, state: state, stop_command: stop)
+
+      cli.run(["relaunch", "api", "web"])
+
+      expect(output.string).to include("Will relaunch: api, web\n")
+      expect(stop).to have_received(:call).with(["api", "web"])
+    end
+
+    it "relaunches every active workspace with --all" do
+      state = relaunch_state("api", "web")
+      stop = instance_double(Workspace::Commands::Stop, call: ["api", "web"], warnings: [])
+      cli, output, _ = build_test_cli(state: state, stop_command: stop)
+
+      cli.run(["relaunch", "--all"])
+
+      expect(output.string).to include("Will relaunch: api, web\n")
+    end
+
+    it "refuses --all beside a name or --name" do
+      [["--all", "api"], ["--all", "--name", "api"]].each do |flags|
+        cli, _, error_output = build_test_cli(state: relaunch_state("api"))
+        expect { cli.run(["relaunch", *flags]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("--all relaunches every active workspace")
+      end
+    end
+
+    it "refuses a workspace with no config as unknown_workspace before checking it is active" do
+      stop = instance_double(Workspace::Commands::Stop, call: [], warnings: [])
+      pc = CLITestHelpers::FakeProjectConfig.new("api" => "/x/api")
+      cli, output, _ = build_test_cli(project_config: pc, state: relaunch_state("api"), stop_command: stop)
+
+      expect { cli.run(["relaunch", "--json", "ghost"]) }.to raise_error(FakeSystemExit)
+
+      expect(JSON.parse(output.string)).to include("code" => "unknown_workspace", "error" => a_string_including("to see available workspaces"))
+      expect(stop).not_to have_received(:call)
+    end
+
+    it "prints the workspace list hint on stderr for an unknown workspace without --json" do
+      stop = instance_double(Workspace::Commands::Stop, call: [], warnings: [])
+      pc = CLITestHelpers::FakeProjectConfig.new("api" => "/x/api")
+      cli, _, error_output = build_test_cli(project_config: pc, state: relaunch_state("api"), stop_command: stop)
+
+      expect { cli.run(["relaunch", "ghost"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("Unknown workspace 'ghost'. Run 'workspace list --all' to see available workspaces.")
+      expect(stop).not_to have_received(:call)
+    end
+
+    it "refuses with not_in_workspace outside any workspace with no name and no --all" do
+      stop = instance_double(Workspace::Commands::Stop, call: [], warnings: [])
+      cli, output, _ = build_test_cli(state: relaunch_state("api"), stop_command: stop)
+
+      expect { cli.run(["relaunch", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace")
+      expect(stop).not_to have_received(:call)
+    end
+
+    it "refuses a workspace that is not active before anything stops" do
+      stop = instance_double(Workspace::Commands::Stop, call: [], warnings: [])
+      cli, output, _ = build_test_cli(project_config: relaunch_pc("api", "ghost"), state: relaunch_state("api"), stop_command: stop)
+
+      expect { cli.run(["relaunch", "--json", "api", "ghost"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "workspace_not_active")
+      expect(stop).not_to have_received(:call)
+    end
+
+    it "keeps a headless workspace headless when it is the one relaunched" do
+      state = CLITestHelpers::FakeState.new
+      state["api"] = {"unique_id" => "uid1"}
+      state["bg"] = {"headless" => true}
+      pc = relaunch_pc("api", "bg")
+      launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+      stop = instance_double(Workspace::Commands::Stop, call: ["bg"], warnings: [])
+      cli, = build_test_cli(project_config: pc, state: state, launch_command: launch_command, stop_command: stop)
+
+      cli.run(["relaunch", "bg"])
+
+      expect(launch_command).to have_received(:call).once
+      expect(launch_command).to have_received(:call).with(["bg"], reattach: false, prompts: {}, headless: true)
     end
   end
 
@@ -7684,7 +7841,7 @@ RSpec.describe Workspace::CLI do
       state["proj2"] = {"headless" => true}
       cli, = build_test_cli(state: state, launch_command: launch_command, stop_command: double("stop", call: [], warnings: []))
 
-      cli.run(["relaunch"])
+      cli.run(["relaunch", "--all"])
 
       expect(launch_command).to have_received(:call).with(["proj1"], reattach: false, prompts: {})
       expect(launch_command).to have_received(:call).with(["proj2"], reattach: false, prompts: {}, headless: true)
@@ -7701,7 +7858,7 @@ RSpec.describe Workspace::CLI do
 
       cli, = build_test_cli(state: state, launch_command: launch_command, stop_command: double("stop", call: [], warnings: []))
 
-      expect { cli.run(["relaunch"]) }.to raise_error(FakeSystemExit) { |e|
+      expect { cli.run(["relaunch", "--all"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
 
@@ -8950,7 +9107,7 @@ RSpec.describe Workspace::CLI do
         state["api"] = {"iterm_window_id" => 1}
         cli, raw, err = action_cli(state: state, &launching(state))
 
-        cli.run(["relaunch", "--json"])
+        cli.run(["relaunch", "--all", "--json"])
 
         doc = parse_one(raw)
         expect(doc).to include("action" => "relaunch", "status" => "ok", "summary" => {"relaunched" => 1})
@@ -8960,7 +9117,7 @@ RSpec.describe Workspace::CLI do
       it "answers with the error envelope when nothing is active" do
         cli, raw, err = action_cli
 
-        expect(exit_status { cli.run(["relaunch", "--json"]) }).to eq(1)
+        expect(exit_status { cli.run(["relaunch", "--all", "--json"]) }).to eq(1)
 
         expect(parse_one(raw)).to include("ok" => false, "error" => "No active workspace projects to relaunch.")
         expect(err.string).to eq("")
@@ -10068,6 +10225,15 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to eq("Workspace 'fix-login' is a.worktree-fix-login.\nWorkspace 'FIX-login' is a.worktree-fix-login.\n")
     end
 
+    it "settles relaunch --name SHORT to the full name" do
+      state["a.worktree-fix-login"] = {"unique_id" => "uid"}
+      allow(stop_command).to receive(:call).and_raise(Workspace::Error, "stopped here")
+
+      expect { cli.run(["relaunch", "--name", "fix-login"]) }.to raise_error(FakeSystemExit)
+
+      expect(stop_command).to have_received(:call).with(["a.worktree-fix-login"])
+    end
+
     it "prints no note for the full name" do
       cli.run(["stop", "--name", "a.worktree-fix-login"])
 
@@ -10341,7 +10507,7 @@ RSpec.describe Workspace::CLI do
       state["foo"] = {}
       state["a.worktree-foo"] = {}
 
-      cli.run(["relaunch"])
+      cli.run(["relaunch", "--all"])
 
       expect(launch_command).to have_received(:call).with(array_including("foo"), anything)
     end

@@ -155,7 +155,7 @@ module Workspace
       branch = current_branch(checkout, workspace)
       old_branch = (resume && old_branch) || branch
       check_names(old_branch, new, dir, path, resume)
-      session = recorded["session"] || @tmux.session_name_for(workspace)
+      session = recorded["session"] || @tmux.config_session_name(workspace)
       check_state(workspace, session, checkout)
 
       new_workspace = recorded["new_workspace"] || @project_config.settle_worktree_name(project, dir, new_path)
@@ -254,7 +254,7 @@ module Workspace
         raise refusal("rename_locked_worktree", "The worktree at #{checkout} is locked (git worktree lock), and git won't move it. Run `#{unlock}` first.", "path" => checkout, "fix" => unlock)
       end
       stop = "workspace stop #{Shellwords.escape(workspace)}"
-      if @tmux.session_exists?(session)
+      if @tmux.session_exists?(Tmux.stored_session_name(session))
         raise refusal("workspace_running", "The tmux session of '#{workspace}' is running. Run `#{stop}` first.", "workspace" => workspace, "session" => session, "reason" => "session", "fix" => stop)
       end
       if @config.agent_running?(workspace)
@@ -312,7 +312,7 @@ module Workspace
         files = leftovers(workspace, new_workspace, resume)
         taken.concat(files.keys)
       end
-      taken << "session" if new_session != session && @tmux.session_exists?(new_session)
+      taken << "session" if Tmux.stored_session_name(new_session) != Tmux.stored_session_name(session) && @tmux.session_exists?(Tmux.stored_session_name(new_session))
       return if taken.empty?
       if files&.any?
         details["paths"] = files

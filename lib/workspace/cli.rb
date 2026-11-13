@@ -98,12 +98,12 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    # @param sleeper [#call] sleeps the given seconds, injected for fast tests
     # @param common [CLI::Common] the output, exit and help helpers, shared with the families
     # @param names [CLI::Names] the workspace-name and working-directory helpers, shared with the families
     # @param launcher [CLI::Launcher] what every launching verb shares
+    # @param relauncher [CLI::Relauncher] stops and relaunches workspaces for `relaunch`
     # @param families [Hash{Symbol=>#call}] the family parser of each {ROUTES} key, called with the verb, its arguments and the {Invocation}
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, relauncher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, ticket_command: nil, skills_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -179,7 +179,6 @@ module Workspace
       @error_output = error_output
       @input = input
       @working_dir = working_dir
-      @sleeper = sleeper
       @launch_mode = launch_mode || LaunchMode.new(project_settings: project_settings)
       @window_liveness = window_liveness || ->(entries) { entries.to_h { |name, _| [name, nil] } }
       @liveness = liveness || ->(names) { names.to_h { |name| [name, nil] } }
@@ -187,6 +186,7 @@ module Workspace
       @common = common
       @names = names
       @launcher = launcher
+      @relauncher = relauncher
       @families = families
     end
 
@@ -573,7 +573,7 @@ module Workspace
           push            Push a workspace's branch to origin, forcing with a lease only after a rebase
           reactivate      Reactivate Claude in a project's tmux pane
           rebase          Rebase a workspace's branch onto the default branch (--onto local|update|remote|upstream)
-          relaunch        Stop and relaunch all active workspace projects
+          relaunch        Stop and relaunch this workspace (or named ones, or --all)
           remove          Forget a stopped project: delete its generated config and state (default: the current one; your files stay)
           repair          Rebuild state from live iTerm windows
           rename          Rename a stopped worktree workspace: branch, directory, name and session
@@ -3586,53 +3586,104 @@ module Workspace
     end
 
     def cmd_relaunch(args)
+      # Read once and deleted from the process environment before anything runs, so the tmux
+      # server and panes the background run launches never inherit it.
+      env = @invocation.env
+      background_run = env[CLI::Relauncher::DETACHED_ENV] == "1"
+      env.delete(CLI::Relauncher::DETACHED_ENV) unless env.frozen?
+      ENV.delete(CLI::Relauncher::DETACHED_ENV)
       json = false
+      all = false
+      name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace relaunch [--json]"
+        opts.banner = "Usage: workspace relaunch [--name WS | --all] [--json] [workspace1] [workspace2] ..."
         opts.separator ""
-        opts.separator "Stop all active workspace projects and relaunch them."
+        opts.separator "Stop active workspaces and relaunch them."
+        opts.separator "With no workspace named, relaunches the workspace the current directory is in."
+        opts.separator "Outside any workspace, name one or pass --all."
+        opts.separator "A workspace that isn't active is refused before anything stops (workspace_not_active)."
+        opts.separator "When the workspaces include the one whose tmux session this command runs in ($TMUX_PANE"
+        opts.separator "or $TMUX), the relaunch goes on in the background, outside that session, and this command"
+        opts.separator "returns at once; its window closes when the stop reaches it. The log is under"
+        opts.separator "~/.local/state/workspace/.relaunch/; its last line, [time] exited N, is the result."
+        opts.separator "A workspace a background relaunch is still relaunching is refused (relaunch_in_progress)."
         opts.separator ""
+        opts.on("--name NAME", "Workspace to relaunch; positional names may be given too") { |v| name = v }
+        opts.on("--all", "Relaunch every active workspace") { all = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
           "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace relaunch    # stop every active project and relaunch it (headless ones stay headless)"
-        opts.separator "  workspace relaunch --json    # a script relaunching everything and checking the result"
-        opts.separator "  workspace relaunch --json 2>/dev/null    # keep the progress text out of the way when piping the document"
+        opts.separator "  workspace relaunch    # stop the workspace you are in and relaunch it"
+        opts.separator "  workspace relaunch --all    # stop every active project and relaunch it (headless ones stay headless)"
+        opts.separator "  workspace relaunch my-notes billing    # relaunch two projects"
+        opts.separator "  workspace relaunch --all --json    # a script relaunching everything and checking the result"
+        opts.separator "  workspace relaunch --all --json 2>/dev/null    # keep the progress text out of the way when piping the document"
       end
       parser.parse!(args)
 
-      @state.load
-      if @state.empty?
-        raise Error, "No active workspace projects to relaunch." if json
-        @error_output.puts "No active workspace projects to relaunch."
-        @exit_handler.exit(1)
+      names = (args.map { |arg| settle_name(arg) } + [name].compact.map { |n| settle_name(n) }).uniq
+      raise UsageError, "--all relaunches every active workspace; don't also name one.\n\n#{parser.help}" if all && names.any?
+      unless all || names.any?
+        detected = @project_detector.detect(@working_dir)
+        raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace, name one (--name WS), or pass --all.", code: "not_in_workspace", details: {"path" => @working_dir}) unless detected
+        names = [detected]
       end
 
+      @state.load
+      if all
+        if @state.empty?
+          raise Error, "No active workspace projects to relaunch." if json
+          @error_output.puts "No active workspace projects to relaunch."
+          @exit_handler.exit(1)
+        end
+        names = @state.keys.dup
+      else
+        names.each do |n|
+          next if @project_config.project_root_for(n)
+          raise Error.new("Unknown workspace '#{n}'. Run 'workspace list --all' to see available workspaces.", code: "unknown_workspace", details: {"name" => n})
+        end
+        inactive = names - @state.keys
+        if inactive.any?
+          raise Error.new("Workspace#{"s" if inactive.size > 1} #{inactive.join(", ")} #{(inactive.size > 1) ? "aren't" : "isn't"} active, so there is nothing to relaunch. Start #{(inactive.size > 1) ? "them" : "it"} with `workspace launch #{inactive.join(" ")}`.",
+            code: "workspace_not_active", details: {"names" => inactive})
+        end
+      end
+
+      if background_run
+        @relauncher.refuse_in_progress!(names, except_own: true)
+        begin
+          return run_action("relaunch", json: json) do
+            @relauncher.call(@invocation, names).slice(:exit_code, :results)
+          end
+        ensure
+          @relauncher.release(names)
+        end
+      end
+
+      if relaunch_includes_caller?(names)
+        detached = @relauncher.detach(names)
+        return run_action("relaunch", json: json) do
+          @invocation.output.puts "Relaunching #{names.join(", ")} in the background: stopping the workspace this command runs in closes this window and its tmux session."
+          @invocation.output.puts "Log: #{detached[:log]} (its last line, [time] exited N, is the result)"
+          rows = names.map { |n| {"workspace" => n, "outcome" => "relaunch_scheduled", "message" => "relaunching in the background (pid #{detached[:pid]})"} }
+          {exit_code: 0, results: rows, extra: {"log" => detached[:log], "pid" => detached[:pid]}}
+        end
+      end
+
+      @relauncher.refuse_in_progress!(names)
       run_action("relaunch", json: json) do
-        relaunch_active_projects(json)
+        @relauncher.call(@invocation, names).slice(:exit_code, :results)
       end
     end
 
-    def relaunch_active_projects(json)
-      projects = @state.keys.dup
-      headless, windowed = projects.partition { |p| @state.dig(p, "headless") }
-      @output.puts "Will relaunch: #{projects.join(", ")}"
-
-      cmd_stop(["--all"])
-
-      @sleeper.call(2)
-
-      # Each project comes back the way it was launched: headless ones stay
-      # headless. Both batches are attempted even if the windowed batch
-      # fails, so a windowed failure never silently drops the headless
-      # relaunch; the combined exit code reflects either failure.
-      launches = []
-      launches << @launcher.launch(@invocation, windowed.dup) if windowed.any?
-      launches << @launcher.launch(@invocation, headless.dup, headless: true) if headless.any?
-      failed = launches.any? { |l| l[:exit_code] && !l[:exit_code].zero? }
-      rows = json ? launches.flat_map { |l| @launcher.rows(l[:projects], l[:result], ok_outcome: "relaunched") } : []
-      {exit_code: failed ? 1 : 0, results: rows}
+    # Whether one of +names+ is the workspace whose tmux session this command runs in, whose stop
+    # would hang up this process before the launch: by `$TMUX_PANE` or `$TMUX` alone
+    # ({Relauncher#own_workspace}). A working directory inside a workspace, outside its tmux session,
+    # is not hung up by the stop, so it does not count.
+    def relaunch_includes_caller?(names)
+      own = @relauncher.own_workspace(@invocation.env, nil)
+      names.any? { |n| own.call(n) }
     end
 
     def cmd_restore(args)
@@ -4455,7 +4506,7 @@ module Workspace
 
       project = @project_detector.detect(@working_dir)
       unless project
-        raise Workspace::Error, "Not inside a workspace project directory. Run 'workspace list --all' to see available projects."
+        raise Workspace::Error, "Not inside a workspace project directory. Run 'workspace list --all' to see available workspaces."
       end
 
       @output.puts project

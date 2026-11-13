@@ -139,6 +139,14 @@ RSpec.describe Workspace::TemplateApply do
     expect(outcomes(apply.call(["app"]))).to eq("app" => ["skipped", "gone"])
   end
 
+  it "finds a running session under the name tmux stores" do
+    rendered("app")
+    allow(tmux).to receive(:session_name_for).with("app").and_return("foo_js")
+    allow(tmux).to receive(:session_exists?).with("foo_js", project: "app").and_return(true)
+
+    expect(apply.call(["app"]).rows.first).to include("outcome" => "applied", "running" => true)
+  end
+
   it "says a running session needs a relaunch" do
     rendered("app")
     allow(tmux).to receive(:session_exists?).with("app", project: "app").and_return(true)

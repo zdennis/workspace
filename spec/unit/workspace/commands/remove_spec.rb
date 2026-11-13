@@ -125,6 +125,13 @@ RSpec.describe Workspace::Commands::Remove do
     expect(File.exist?(config_path)).to be true
   end
 
+  it "refuses when the session tmux stored for a dotted name is up" do
+    allow(tmux).to receive(:session_name_for).with("app").and_return("foo_js")
+    allow(tmux).to receive(:session_exists?).with("foo_js", project: "app").and_return(true)
+
+    expect { command.call("app", yes: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("session_running") }
+  end
+
   it "counts a session under the lowercase name as running for a mixed-case name" do
     allow(state).to receive(:[]).with("App").and_return({"unique_id" => "x"})
     allow(tmux).to receive(:session_name_for).with("App").and_return("App")

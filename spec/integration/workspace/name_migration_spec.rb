@@ -120,6 +120,20 @@ RSpec.describe Workspace::NameMigration do
     expect(result.renamed).to include({"what" => "tmux_session", "from" => "Notes", "to" => "notes"})
   end
 
+  it "renames the session tmux stored for a dotted, mixed-case name and rewrites the raw name: line" do
+    write(config.config_path_for("Dev.Notes"), tmuxinator_yml("Dev.Notes", "Dev.Notes", root))
+    state.load
+    state["Dev.Notes"] = {"iterm_window_id" => 7}
+    state.save
+    live_sessions << "Dev_Notes"
+
+    result = migration.call("Dev.Notes")
+
+    expect(tmux).to have_received(:rename_session).with("Dev_Notes", "dev.notes", project: "Dev.Notes")
+    expect(result.renamed).to include({"what" => "tmux_session", "from" => "Dev.Notes", "to" => "dev.notes"})
+    expect(File.read(config.config_path_for("dev.notes"))).to include("name: dev.notes\n")
+  end
+
   it "writes one workspace_renamed event-log line" do
     mixed_case_workspace
 

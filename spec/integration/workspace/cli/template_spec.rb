@@ -245,7 +245,44 @@ RSpec.describe Workspace::CLI do
     it "shows its help page" do
       cli.run(["template", "apply", "--help"])
 
-      expect(output.string).to include("Usage: workspace template apply [WORKSPACE...]", "--rollback-all-on-error")
+      expect(output.string).to include("Usage: workspace template apply [WORKSPACE...]", "--rollback-all-on-error", "--relaunch")
+    end
+
+    context "with --relaunch" do
+      let(:relauncher) { instance_double(Workspace::CLI::Relauncher) }
+      let(:gate) { Workspace::OutputGate.new(output) }
+      let(:built) do
+        selection = Workspace::TemplateSelection.new(status_scope: status_scope, catalog: catalog, project_config: project_config)
+        build_test_cli(template_command: Workspace::Commands::Template.new(library: library, project_config: project_config, writer: writer,
+          template_validator: validator, differ: ->(*, **) { "" }, selection: selection, apply: applier, output: gate, error_output: error_output),
+          relauncher: relauncher, project_detector: detector, output: gate, error_output: error_output, working_dir: File.join(@dir, "src"))
+      end
+
+      before do
+        rows = [{"workspace" => "api", "outcome" => "applied", "reason" => nil, "message" => nil, "running" => true, "record_only" => false}]
+        allow(applier).to receive(:call).and_return(Workspace::TemplateApply::Result.new(rows: rows, backup: "b-1", rolled_back: false, warnings: []))
+        allow(relauncher).to receive(:active_name) { |name| name }
+        allow(relauncher).to receive(:own_workspace).and_return(->(_name) { false })
+        allow(relauncher).to receive(:call) do |invocation, names, **|
+          invocation.output.puts "Will relaunch: #{names.join(", ")}"
+          {exit_code: 0, results: names.map { |n| {"workspace" => n, "outcome" => "relaunched"} }, warnings: []}
+        end
+      end
+
+      it "keeps stdout to one document while the relaunch prints, its text going to stderr" do
+        cli.run(["template", "apply", "api", "--relaunch", "--json"])
+
+        doc = JSON.parse(output.string)
+        expect(doc).to include("status" => "ok", "relaunched" => %w[api])
+        expect(doc["results"].first).to include("outcome" => "applied", "relaunch" => "relaunched")
+        expect(error_output.string).to include("Will relaunch: api")
+      end
+
+      it "prints the relaunch after the apply in text mode" do
+        cli.run(["template", "apply", "api", "--relaunch"])
+
+        expect(output.string).to match(/api: applied.*Will relaunch: api\napi: relaunched\n/m)
+      end
     end
   end
 
@@ -370,6 +407,12 @@ RSpec.describe Workspace::CLI do
       output.rewind
       cli.run(["template", "path", "--help"])
       expect(output.string).to start_with("Usage: workspace template path [NAME]")
+    end
+
+    it "lists --relaunch on the restore page" do
+      cli.run(["template", "restore", "--help"])
+
+      expect(output.string).to include("Usage: workspace template restore BACKUP_ID", "--relaunch", "then relaunch it if it is running")
     end
 
     it "uses the words tmuxinator template, never bare template, in each page's summary" do

@@ -5,10 +5,6 @@ root: /src/myapp/.worktrees/PROJ-123
 tmux_options: -CC
 attach: false
 
-on_project_start: |
-  tmux resize-pane -t myapp-wt-proj-123:0.0 -y 15%
-  tmux resize-pane -t myapp-wt-proj-123:0.2 -y 35%
-
 startup_pane: 2
 
 windows:
@@ -17,10 +13,9 @@ windows:
       panes:
         - |
           tmux set-option -t '=myapp-wt-proj-123:' @workspace myapp.worktree-proj-123 || true
-          printf '\033]2;workspace-myapp-wt-proj-123\a' &&
-          tmux resize-pane -t myapp-wt-proj-123:0.0 -y 15% &&
-          tmux resize-pane -t myapp-wt-proj-123:0.2 -y 35% &&
-          ascii-banner "myapp PROJ 123" --rainbow --random -W --center --minimal
+          printf '\033]2;workspace-myapp-wt-proj-123\a'
+          tmux resize-pane -t myapp-wt-proj-123:0.0 -y 15% || true
+          tmux resize-pane -t myapp-wt-proj-123:0.2 -y 35% || true
+          command -v ascii-banner >/dev/null && ascii-banner "myapp PROJ 123" --rainbow --random -W --center --minimal || echo "myapp PROJ 123"
         - codex
         - echo 'Worktree — PROJ-123 (myapp)'
-        - workspace agentd --debug

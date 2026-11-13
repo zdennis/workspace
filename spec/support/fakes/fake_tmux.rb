@@ -36,8 +36,13 @@ class FakeTmux
   #   line empties), one without Enter fills the empty input line of the screen shown with the text, and the
   #   outcome is `:submitted` or `:pasted` (unless `statuses` says otherwise)
   # @param captures [Array<String>, nil] the answers of `capture_pane` in turn, the last repeating (default: `captured_output`)
+  # @param pane_sessions [Hash{String=>String}] the session `session_name_for_pane` names for a pane id (nil for one not listed)
+  # @param client_sessions [Hash{String=>String}] the session `client_session_name` names for a `$TMUX` value (nil for one not listed)
   def initialize(sessions: [], sessions_error: nil, session_name: nil, session_names: {}, sockets: {}, details: nil,
-    strict_windows: false, screens: [""], captures: nil, styled_screens: nil, server_pid: "4242", start_commands: [], session_gone: false, typing: false)
+    strict_windows: false, screens: [""], captures: nil, styled_screens: nil, server_pid: "4242", start_commands: [], session_gone: false, typing: false,
+    pane_sessions: {}, client_sessions: {})
+    @pane_sessions = pane_sessions
+    @client_sessions = client_sessions
     @typing = typing
     @blank = screens.first
     @sessions = sessions
@@ -153,7 +158,15 @@ class FakeTmux
 
   def command_for(_project, **_opts) = "tmuxinator start test --attach"
 
-  def session_name_for(config_name) = @session_names.fetch(config_name) { @session_name || config_name }
+  def session_name_for(config_name) = Workspace::Tmux.stored_session_name(config_session_name(config_name))
+
+  def config_session_name(config_name) = @session_names.fetch(config_name) { @session_name || config_name }
+
+  def session_exists?(name, project: nil) = @sessions.include?(name)
+
+  def session_name_for_pane(pane_id, project: nil) = @pane_sessions[pane_id]
+
+  def client_session_name(tmux_env) = @client_sessions[tmux_env]
 
   def reattach_or_start(session, start)
     "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}"
