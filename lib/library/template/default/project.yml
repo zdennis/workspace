@@ -23,4 +23,3 @@ windows:
           ascii-banner "{{DISPLAY_NAME}}" --rainbow --random -W --center --minimal
         - {{AGENT_COMMAND}}
         - echo 'Ready to work on {{PROJECT_NAME}}'
-        - workspace agentd --debug

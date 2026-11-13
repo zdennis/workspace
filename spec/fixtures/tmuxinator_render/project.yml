@@ -23,4 +23,3 @@ windows:
           ascii-banner "myapp" --rainbow --random -W --center --minimal
         - claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions
         - echo 'Ready to work on myapp'
-        - workspace agentd --debug

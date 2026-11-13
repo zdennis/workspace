@@ -23,4 +23,3 @@ windows:
           ascii-banner "myapp PROJ 123" --rainbow --random -W --center --minimal
         - codex
         - echo 'Worktree — PROJ-123 (myapp)'
-        - workspace agentd --debug

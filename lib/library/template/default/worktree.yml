@@ -24,4 +24,3 @@ windows:
           ascii-banner "{{DISPLAY_NAME}}" --rainbow --random -W --center --minimal
         - {{AGENT_COMMAND}}
         - echo 'Worktree — {{WORKTREE_BRANCH}} ({{PROJECT_NAME}})'
-        - workspace agentd --debug

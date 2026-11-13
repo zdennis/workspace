@@ -94,7 +94,7 @@ RSpec.describe Workspace::TemplateValidator do
   end
 
   it "reports a {{ left after the render" do
-    result = check(:worktree, worktree_text { |t| t.sub("workspace agentd --debug", "echo '{{ lowercase }}'") })
+    result = check(:worktree, worktree_text { |t| t.sub("echo 'Worktree", "echo '{{ lowercase }} Worktree") })
 
     expect(codes(result)[0]).to eq(["unresolved_placeholder"])
   end
