@@ -5,10 +5,6 @@ root: /src/my app
 tmux_options: -CC
 attach: false
 
-on_project_start: |
-  tmux resize-pane -t myapp:0.0 -y 15%
-  tmux resize-pane -t myapp:0.2 -y 35%
-
 startup_pane: 2
 
 windows:
@@ -17,9 +13,9 @@ windows:
       panes:
         - |
           tmux set-option -t '=myapp:' @workspace myapp || true
-          printf '\033]2;workspace-myapp\a' &&
-          tmux resize-pane -t myapp:0.0 -y 15% &&
-          tmux resize-pane -t myapp:0.2 -y 35% &&
+          printf '\033]2;workspace-myapp\a'
+          tmux resize-pane -t myapp:0.0 -y 15% || true
+          tmux resize-pane -t myapp:0.2 -y 35% || true
           ascii-banner "myapp" --rainbow --random -W --center --minimal
         - claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions
         - echo 'Ready to work on myapp'

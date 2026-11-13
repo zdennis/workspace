@@ -6,10 +6,6 @@ tmux_options: -CC
 attach: false
 pre_window: export WORKSPACE_TASK=t_abc123
 
-on_project_start: |
-  tmux resize-pane -t myapp-wt-proj-123:0.0 -y 15%
-  tmux resize-pane -t myapp-wt-proj-123:0.2 -y 35%
-
 startup_pane: 2
 
 windows:
@@ -18,9 +14,9 @@ windows:
       panes:
         - |
           tmux set-option -t '=myapp-wt-proj-123:' @workspace myapp.worktree-proj-123 || true
-          printf '\033]2;workspace-myapp-wt-proj-123\a' &&
-          tmux resize-pane -t myapp-wt-proj-123:0.0 -y 15% &&
-          tmux resize-pane -t myapp-wt-proj-123:0.2 -y 35% &&
+          printf '\033]2;workspace-myapp-wt-proj-123\a'
+          tmux resize-pane -t myapp-wt-proj-123:0.0 -y 15% || true
+          tmux resize-pane -t myapp-wt-proj-123:0.2 -y 35% || true
           ascii-banner "myapp PROJ 123" --rainbow --random -W --center --minimal
         - claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions
         - echo 'Worktree — PROJ-123 (myapp)'

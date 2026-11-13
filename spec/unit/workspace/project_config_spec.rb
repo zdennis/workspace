@@ -1085,14 +1085,14 @@ RSpec.describe Workspace::ProjectConfig do
       end
 
       [
-        ["the placeholder templates", :placeholder_templates, ""],
-        # The legacy copies keep the foreground daemon pane the shipped set dropped.
-        ["the legacy templates, through the literal-line path", :legacy, "        - workspace agentd --debug\n"]
-      ].each do |label, dir, tail|
+        ["the placeholder templates", :placeholder_templates, nil],
+        # The legacy copies keep the layout the shipped set had then.
+        ["the legacy templates, through the literal-line path", :legacy, "legacy"]
+      ].each do |label, dir, pinned_dir|
         context "with #{label}" do
           before { use_templates(send(dir)) }
 
-          define_method(:pinned) { |name| fixture(name) + tail }
+          define_method(:pinned) { |name| fixture([pinned_dir, name].compact.join("/")) }
 
           it "renders the four pinned files" do
             pc.create("myapp", "/src/my app")
