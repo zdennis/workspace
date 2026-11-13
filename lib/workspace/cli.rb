@@ -3586,6 +3586,12 @@ module Workspace
     end
 
     def cmd_relaunch(args)
+      # Read once and deleted from the process environment before anything runs, so the tmux
+      # server and panes the background run launches never inherit it.
+      env = @invocation.env
+      background_run = env[CLI::Relauncher::DETACHED_ENV] == "1"
+      env.delete(CLI::Relauncher::DETACHED_ENV) unless env.frozen?
+      ENV.delete(CLI::Relauncher::DETACHED_ENV)
       json = false
       all = false
       name = nil
@@ -3596,6 +3602,11 @@ module Workspace
         opts.separator "With no workspace named, relaunches the workspace the current directory is in."
         opts.separator "Outside any workspace, name one or pass --all."
         opts.separator "A workspace that isn't active is refused before anything stops (workspace_not_active)."
+        opts.separator "When the workspaces include the one whose tmux session this command runs in ($TMUX_PANE"
+        opts.separator "or $TMUX), the relaunch goes on in the background, outside that session, and this command"
+        opts.separator "returns at once; its window closes when the stop reaches it. The log is under"
+        opts.separator "~/.local/state/workspace/.relaunch/; its last line, [time] exited N, is the result."
+        opts.separator "A workspace a background relaunch is still relaunching is refused (relaunch_in_progress)."
         opts.separator ""
         opts.on("--name NAME", "Workspace to relaunch; positional names may be given too") { |v| name = v }
         opts.on("--all", "Relaunch every active workspace") { all = true }
@@ -3639,9 +3650,40 @@ module Workspace
         end
       end
 
+      if background_run
+        @relauncher.refuse_in_progress!(names, except_own: true)
+        begin
+          return run_action("relaunch", json: json) do
+            @relauncher.call(@invocation, names).slice(:exit_code, :results)
+          end
+        ensure
+          @relauncher.release(names)
+        end
+      end
+
+      if relaunch_includes_caller?(names)
+        detached = @relauncher.detach(names)
+        return run_action("relaunch", json: json) do
+          @invocation.output.puts "Relaunching #{names.join(", ")} in the background: stopping the workspace this command runs in closes this window and its tmux session."
+          @invocation.output.puts "Log: #{detached[:log]} (its last line, [time] exited N, is the result)"
+          rows = names.map { |n| {"workspace" => n, "outcome" => "relaunch_scheduled", "message" => "relaunching in the background (pid #{detached[:pid]})"} }
+          {exit_code: 0, results: rows, extra: {"log" => detached[:log], "pid" => detached[:pid]}}
+        end
+      end
+
+      @relauncher.refuse_in_progress!(names)
       run_action("relaunch", json: json) do
         @relauncher.call(@invocation, names).slice(:exit_code, :results)
       end
+    end
+
+    # Whether one of +names+ is the workspace whose tmux session this command runs in, whose stop
+    # would hang up this process before the launch: by `$TMUX_PANE` or `$TMUX` alone
+    # ({Relauncher#own_workspace}). A working directory inside a workspace, outside its tmux session,
+    # is not hung up by the stop, so it does not count.
+    def relaunch_includes_caller?(names)
+      own = @relauncher.own_workspace(@invocation.env, nil)
+      names.any? { |n| own.call(n) }
     end
 
     def cmd_restore(args)

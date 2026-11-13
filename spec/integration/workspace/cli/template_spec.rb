@@ -262,6 +262,7 @@ RSpec.describe Workspace::CLI do
         rows = [{"workspace" => "api", "outcome" => "applied", "reason" => nil, "message" => nil, "running" => true, "record_only" => false}]
         allow(applier).to receive(:call).and_return(Workspace::TemplateApply::Result.new(rows: rows, backup: "b-1", rolled_back: false, warnings: []))
         allow(relauncher).to receive(:active_name) { |name| name }
+        allow(relauncher).to receive(:own_workspace).and_return(->(_name) { false })
         allow(relauncher).to receive(:call) do |invocation, names, **|
           invocation.output.puts "Will relaunch: #{names.join(", ")}"
           {exit_code: 0, results: names.map { |n| {"workspace" => n, "outcome" => "relaunched"} }, warnings: []}

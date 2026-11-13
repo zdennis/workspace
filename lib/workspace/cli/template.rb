@@ -223,35 +223,15 @@ module Workspace
         [names.to_h { |name| [name, {"workspace" => name, "outcome" => "failed", "reason" => nil, "message" => e.message}] }, []]
       end
 
-      # A test of whether a workspace is the one this command runs in: the workspace of the working directory, or one
-      # whose tmux session holds `$TMUX_PANE` (asked of that workspace's own tmux server), or, where `$TMUX_PANE` is unset
-      # or tmux can't place it for that workspace, whose session is that of the tmux client `$TMUX` names (read once). Either match skips it, so a stale
-      # `$TMUX_PANE` can only skip too much. +tally+ counts the pane lookups and the ones tmux answered.
+      # {Relauncher#own_workspace} over the workspace of the working directory: a match skips it.
+      # +tally+ counts the pane lookups and the ones tmux answered.
       def own_workspace(invocation, tally)
         here = begin
           @names.workspace_here
         rescue Workspace::Error
           nil
         end
-        pane = invocation.env["TMUX_PANE"]
-        pane = nil if pane&.empty?
-        client = invocation.env["TMUX"]
-        client = nil if client&.empty?
-        client_session = nil
-        client_read = false
-        lambda do |name|
-          next true if WorkspaceName.same?(name, here)
-          next false unless pane || client
-          answer = pane && @relauncher.pane_in_session?(pane, name)
-          if answer.nil? && client
-            client_session = @relauncher.client_session(client) unless client_read
-            client_read = true
-            answer = client_session && @relauncher.session_of?(client_session, name)
-          end
-          tally[:asked] += 1
-          tally[:answered] += 1 unless answer.nil?
-          answer == true
-        end
+        @relauncher.own_workspace(invocation.env, here, tally)
       end
 
       # The warning for a `$TMUX_PANE` that tmux placed for none of the workspaces asked about, or a `$TMUX` client whose

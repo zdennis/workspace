@@ -203,6 +203,16 @@ module Workspace
       File.join(state_dir, ".spine")
     end
 
+    # Dotted, like {#inbox_dir}, so no workspace name can produce it. Holds one log per
+    # `relaunch` that went on in the background (`<time>-<pid>.log`): what the detached run printed,
+    # a `<name>.pid` record per workspace it is relaunching, its `relaunch.lock`,
+    # and the line its exit added.
+    #
+    # @return [String] path to the directory holding the background relaunch logs
+    def relaunch_log_dir
+      File.join(state_dir, ".relaunch")
+    end
+
     # @param kind [String] `"workspace"`, `"project"` or `"global"`
     # @param key [String, nil] the workspace name; for a project the realpath of
     #   its git common dir (or its name when it has none); unused for global

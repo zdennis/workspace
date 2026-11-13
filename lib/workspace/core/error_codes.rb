@@ -12,6 +12,8 @@ module Workspace
       "workspace_name_case_conflict" => "A new workspace's name differs only in case from the name of an existing workspace with a different directory. details.name, details.existing, details.existing_root.",
       "not_in_workspace" => "No workspace could be detected from the working directory.",
       "workspace_not_active" => "relaunch: a workspace, named or detected from the working directory, isn't active, so nothing is stopped. details.names.",
+      "relaunch_detach_failed" => "relaunch: the workspaces included the one whose tmux session the command runs in, and the background run that was to relaunch them could not be started (its program missing or not executable, its log not made, or Ruby not spawned); nothing was stopped. details.log, and details.program for a missing program.",
+      "relaunch_in_progress" => "relaunch: a background relaunch of one of the workspaces is still running, so nothing was stopped or started. details.names, details.pid (the background run), details.log.",
       "no_daemon" => "No agent daemon is running for the workspace.",
       "connection_failed" => "The agent daemon's socket refused or dropped the connection. From agent-run send --when-idle, details.maybe_delivered: true means the daemon had the prompt but didn't answer in time; check before resending.",
       "unreadable_reply" => "The agent daemon's reply couldn't be read. details.maybe_delivered: true as for connection_failed.",

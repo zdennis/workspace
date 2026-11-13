@@ -10,7 +10,9 @@ RSpec.describe Workspace::CLI::Template do
   let(:template_command) { instance_double(Workspace::Commands::Template, list: nil, show: nil, path: nil, variables: nil, render: true, validate: true, diff: nil, status: nil, apply: {results: [], exit_code: 0}, new: {}, export: {}, import: {}, edit: {"outcome" => "edited"}, use: {}) }
 
   let(:relauncher) do
-    instance_double(Workspace::CLI::Relauncher, call: {exit_code: 0, results: [], warnings: []}, running?: true).tap do |double|
+    Workspace::CLI::Relauncher.new(stop_command: nil, hook_runner: nil, launcher: nil, state: nil, sleeper: nil, tmux: FakeTmux.new).tap do |double|
+      allow(double).to receive(:call).and_return({exit_code: 0, results: [], warnings: []})
+      allow(double).to receive(:running?).and_return(true)
       allow(double).to receive(:active_name) { |name| name }
       allow(double).to receive(:pane_in_session?).and_return(nil)
       allow(double).to receive(:client_session).and_return(nil)

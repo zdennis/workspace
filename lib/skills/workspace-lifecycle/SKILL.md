@@ -19,7 +19,7 @@ Worktree workspace names look like `<project>.worktree-<branch>`. Pass one with 
 | `prune [--name WS] [--force]` | Every worktree workspace, in all projects, whose PR is closed or merged or whose directory is gone: session, worktree (notes inside it too), config, settings, state. The branch stays. | Prompts, but `--json` skips the prompt. It still skips unsaved work unless `--force`. | Yes |
 | `remove [NAME]` | The tmuxinator config, the project settings and the state entry, each copied aside first. Directory, worktrees and notes stay. | Asks unless `--yes`. Refuses a running session and a worktree project. | Yes |
 | `cleanup [--force]` | State entries whose tmux session or window is gone. | Asks unless `--force`. | Yes |
-| `relaunch` | Stops the current workspace (or the named ones) and launches it again, so its running agent sessions restart. `--all` relaunches every active workspace. | None. | No |
+| `relaunch` | Stops the current workspace (or the named ones) and launches it again, so its running agent sessions restart. `--all` relaunches every active workspace. Run from a pane of a workspace it relaunches, it goes on in the background (its log path printed; the log's last line is the result) and your own pane closes with the session. | None. | No |
 
 Choose by intent. Pause but keep everything: `stop`. Work is pushed and the branch is done: `finish`. Throw the worktree away: `kill`. Many merged PRs: `prune`. Forget a plain project: `stop`, then `remove`. Dead state entries only: `cleanup`.
 

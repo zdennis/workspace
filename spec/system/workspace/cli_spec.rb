@@ -154,6 +154,9 @@ RSpec.describe Workspace::CLI do
       working_dir: working_dir,
       clock: overrides[:clock] || -> { Time.now },
       sleeper: overrides[:sleeper] || ->(_) {},
+      relauncher_detacher: overrides[:relauncher_detacher],
+      relauncher_log_dir: overrides[:relauncher_log_dir],
+      relauncher_tmux: overrides[:relauncher_tmux],
       launch_mode: overrides[:launch_mode] || CLITestHelpers.launch_mode(headless: false),
       liveness: overrides[:liveness] || ->(names) { names.to_h { |name| [name, true] } },
       window_liveness: overrides[:window_liveness],
@@ -3375,12 +3378,45 @@ RSpec.describe Workspace::CLI do
       CLITestHelpers::FakeState.new.tap { |st| names.each { |n| st[n] = {"unique_id" => "uid-#{n}"} } }
     end
 
-    it "relaunches only the workspace the working directory is in when none is named" do
+    it "hands the relaunch of the workspace whose tmux session holds $TMUX_PANE to a background run when none is named" do
+      Dir.mktmpdir do |root|
+        spawned = []
+        detacher = ->(argv, log_path:, env:) { spawned << [argv, log_path, env] && 99 }
+        logs = File.join(root, "logs")
+        pc = CLITestHelpers::FakeProjectConfig.new("api" => root, "web" => "/elsewhere/web")
+        stop = instance_double(Workspace::Commands::Stop, call: ["api"], warnings: [])
+        cli, output, _ = build_test_cli(project_config: pc, state: relaunch_state("api", "web"), working_dir: root, stop_command: stop, relauncher_detacher: detacher,
+          relauncher_log_dir: logs, relauncher_tmux: FakeTmux.new(pane_sessions: {"%5" => "api"}), env: {"TMUX_PANE" => "%5"})
+
+        cli.run(["relaunch"])
+
+        log = File.join(logs, "20260102T030405Z-4242.log")
+        expect(spawned).to eq([[[RbConfig.ruby, File.join(PROJECT_ROOT, "bin", "workspace"), "relaunch", "--", "api"], log, {"WORKSPACE_RELAUNCH_DETACHED" => "1"}]])
+        expect(output.string).to include("Relaunching api in the background", "Log: #{log}", "exited N")
+        expect(stop).not_to have_received(:call)
+      end
+    end
+
+    it "relaunches the working directory's workspace in the foreground when tmux does not place the command in its session" do
+      Dir.mktmpdir do |root|
+        detacher = ->(*, **) { raise "detached" }
+        pc = CLITestHelpers::FakeProjectConfig.new("api" => root, "web" => "/elsewhere/web")
+        stop = instance_double(Workspace::Commands::Stop, call: ["api"], warnings: [])
+        cli, output, _ = build_test_cli(project_config: pc, state: relaunch_state("api", "web"), working_dir: root, stop_command: stop, relauncher_detacher: detacher)
+
+        cli.run(["relaunch"])
+
+        expect(output.string).to include("Will relaunch: api\n")
+        expect(stop).to have_received(:call).with(["api"])
+      end
+    end
+
+    it "relaunches only the workspace the working directory is in when none is named, in the background run" do
       Dir.mktmpdir do |root|
         state = relaunch_state("api", "web")
         pc = CLITestHelpers::FakeProjectConfig.new("api" => root, "web" => "/elsewhere/web")
         stop = instance_double(Workspace::Commands::Stop, call: ["api"], warnings: [])
-        cli, output, _ = build_test_cli(project_config: pc, state: state, working_dir: root, stop_command: stop)
+        cli, output, _ = build_test_cli(project_config: pc, state: state, working_dir: root, stop_command: stop, env: {"WORKSPACE_RELAUNCH_DETACHED" => "1"})
 
         cli.run(["relaunch"])
 
