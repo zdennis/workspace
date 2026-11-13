@@ -31,12 +31,14 @@ module Workspace
 
       # @param template_command [Workspace::Commands::Template, nil] `template` verbs; nil refuses `template`
       # @param backups_command [Workspace::Commands::TemplateBackups, nil] `backup`, `backups` and `restore`; nil refuses them
+      # @param relauncher [CLI::Relauncher, nil] stops and relaunches workspaces; not used yet
       # @param common [CLI::Common] the output, exit and help helpers
       # @param names [CLI::Names] finds the workspace of the working directory
       # @param working_dir [String] the directory the CLI runs from
-      def initialize(template_command:, common:, names:, working_dir:, backups_command: nil)
+      def initialize(template_command:, common:, names:, working_dir:, backups_command: nil, relauncher: nil)
         @template_command = template_command
         @backups_command = backups_command
+        @relauncher = relauncher
         @common = common
         @names = names
         @working_dir = working_dir

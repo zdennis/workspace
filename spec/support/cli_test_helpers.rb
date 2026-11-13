@@ -40,9 +40,9 @@ module CLITestHelpers
   # the pipeline family's (PIPELINE_FAMILY_KEYWORDS) to CLI::Pipeline, and the plan and spine
   # family's (PLAN_SPINE_FAMILY_KEYWORDS) to CLI::PlanSpine, which shares +status_scope:+ with
   # CLI::Workflow, as build_cli wires them, and the template family's (TEMPLATE_FAMILY_KEYWORDS) to CLI::Template;
-  # CLI::Common, CLI::Launcher and the AgentMessageClient the agent-run and pipeline families
+  # CLI::Common, CLI::Launcher, CLI::Relauncher (or the +relauncher:+ given) and the AgentMessageClient the agent-run and pipeline families
   # share (unless given as +agent_client:+) are built over the same keywords.
-  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_client: nil, status_scope: nil, editor_launcher: nil, interactive: nil, **keywords)
+  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_client: nil, status_scope: nil, editor_launcher: nil, interactive: nil, relauncher: nil, **keywords)
     agent_commands = AGENT_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
     agent_run_commands = AGENT_RUN_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
     pipeline_keywords = PIPELINE_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }.compact
@@ -58,6 +58,9 @@ module CLITestHelpers
     launcher = Workspace::CLI::Launcher.new(project_config: keywords[:project_config], launch_command: keywords[:launch_command], launch_mode: keywords[:launch_mode],
       state: keywords[:state], project_settings: keywords[:project_settings], hook_runner: keywords[:hook_runner], common: common, working_dir: keywords[:working_dir],
       library: keywords[:library], instruction_composer: keywords[:instruction_composer], name_migration: keywords[:name_migration])
+    sleeper = keywords.delete(:sleeper) || ->(_seconds) {}
+    relauncher ||= Workspace::CLI::Relauncher.new(stop_command: keywords[:stop_command], hook_runner: keywords[:hook_runner], launcher: launcher,
+      state: keywords[:state], sleeper: sleeper)
     workflow = Workspace::CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: keywords[:workflow_start_command], workflow_project: workflow_project,
       status_scope: status_scope, config: keywords[:config], project_config: keywords[:project_config], project_detector: keywords[:project_detector],
       git: keywords[:git], launch_mode: keywords[:launch_mode], common: common, names: names, input: keywords[:input], working_dir: keywords[:working_dir])
@@ -68,8 +71,8 @@ module CLITestHelpers
     pipeline = Workspace::CLI::Pipeline.new(**pipeline_keywords, config: keywords[:config], agent_client: agent_client, common: common, names: names)
     plan_spine = Workspace::CLI::PlanSpine.new(**plan_spine_commands, status_scope: status_scope, project_detector: keywords[:project_detector], launcher: launcher,
       common: common, names: names, working_dir: keywords[:working_dir])
-    template = Workspace::CLI::Template.new(**template_commands, common: common, names: names, working_dir: keywords[:working_dir])
-    keywords.merge(common: common, names: names, launcher: launcher, families: {workflow: workflow, agent: agent, agent_run: agent_run, pipeline: pipeline, plan_spine: plan_spine, template: template})
+    template = Workspace::CLI::Template.new(**template_commands, relauncher: relauncher, common: common, names: names, working_dir: keywords[:working_dir])
+    keywords.merge(common: common, names: names, launcher: launcher, relauncher: relauncher, families: {workflow: workflow, agent: agent, agent_run: agent_run, pipeline: pipeline, plan_spine: plan_spine, template: template})
   end
 
   # A LaunchMode whose automatic choice is fixed, so specs never depend on the

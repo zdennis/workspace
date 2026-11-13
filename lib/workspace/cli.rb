@@ -98,12 +98,12 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    # @param sleeper [#call] sleeps the given seconds, injected for fast tests
     # @param common [CLI::Common] the output, exit and help helpers, shared with the families
     # @param names [CLI::Names] the workspace-name and working-directory helpers, shared with the families
     # @param launcher [CLI::Launcher] what every launching verb shares
+    # @param relauncher [CLI::Relauncher] stops and relaunches workspaces for `relaunch`
     # @param families [Hash{Symbol=>#call}] the family parser of each {ROUTES} key, called with the verb, its arguments and the {Invocation}
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, ticket_command: nil, skills_command: nil, sleeper: ->(seconds) { sleep(seconds) }, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, session_event_command:, config_command:, statusline_command:, ask_command:, common:, names:, launcher:, relauncher:, families:, hooks_command: nil, name_migration: nil, notes_command: nil, notes_setup: nil, ticket_command: nil, skills_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, pr_feedback_command: nil, promote_command: nil, rename_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_start_command: nil, go_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -179,7 +179,6 @@ module Workspace
       @error_output = error_output
       @input = input
       @working_dir = working_dir
-      @sleeper = sleeper
       @launch_mode = launch_mode || LaunchMode.new(project_settings: project_settings)
       @window_liveness = window_liveness || ->(entries) { entries.to_h { |name, _| [name, nil] } }
       @liveness = liveness || ->(names) { names.to_h { |name| [name, nil] } }
@@ -187,6 +186,7 @@ module Workspace
       @common = common
       @names = names
       @launcher = launcher
+      @relauncher = relauncher
       @families = families
     end
 
@@ -3640,28 +3640,8 @@ module Workspace
       end
 
       run_action("relaunch", json: json) do
-        relaunch_projects(names, json)
+        @relauncher.call(@invocation, names).slice(:exit_code, :results)
       end
-    end
-
-    def relaunch_projects(projects, json)
-      headless, windowed = projects.partition { |p| @state.dig(p, "headless") }
-      @output.puts "Will relaunch: #{projects.join(", ")}"
-
-      cmd_stop(projects.dup)
-
-      @sleeper.call(2)
-
-      # Each project comes back the way it was launched: headless ones stay
-      # headless. Both batches are attempted even if the windowed batch
-      # fails, so a windowed failure never silently drops the headless
-      # relaunch; the combined exit code reflects either failure.
-      launches = []
-      launches << @launcher.launch(@invocation, windowed.dup) if windowed.any?
-      launches << @launcher.launch(@invocation, headless.dup, headless: true) if headless.any?
-      failed = launches.any? { |l| l[:exit_code] && !l[:exit_code].zero? }
-      rows = json ? launches.flat_map { |l| @launcher.rows(l[:projects], l[:result], ok_outcome: "relaunched") } : []
-      {exit_code: failed ? 1 : 0, results: rows}
     end
 
     def cmd_restore(args)
