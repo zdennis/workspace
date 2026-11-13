@@ -573,7 +573,7 @@ module Workspace
           push            Push a workspace's branch to origin, forcing with a lease only after a rebase
           reactivate      Reactivate Claude in a project's tmux pane
           rebase          Rebase a workspace's branch onto the default branch (--onto local|update|remote|upstream)
-          relaunch        Stop and relaunch all active workspace projects
+          relaunch        Stop and relaunch this workspace (or named ones, or --all)
           remove          Forget a stopped project: delete its generated config and state (default: the current one; your files stay)
           repair          Rebuild state from live iTerm windows
           rename          Rename a stopped worktree workspace: branch, directory, name and session
@@ -3587,39 +3587,69 @@ module Workspace
 
     def cmd_relaunch(args)
       json = false
+      all = false
+      name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace relaunch [--json]"
+        opts.banner = "Usage: workspace relaunch [--name WS | --all] [--json] [workspace1] [workspace2] ..."
         opts.separator ""
-        opts.separator "Stop all active workspace projects and relaunch them."
+        opts.separator "Stop active workspaces and relaunch them."
+        opts.separator "With no workspace named, relaunches the workspace the current directory is in."
+        opts.separator "Before this changed, bare `relaunch` relaunched every active workspace; pass --all for that."
+        opts.separator "Outside any workspace, name one or pass --all."
+        opts.separator "A workspace that isn't active is refused before anything stops (workspace_not_active)."
         opts.separator ""
+        opts.on("--name NAME", "Workspace to relaunch; positional names may be given too") { |v| name = v }
+        opts.on("--all", "Relaunch every active workspace (what bare relaunch used to do)") { all = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
           "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace relaunch    # stop every active project and relaunch it (headless ones stay headless)"
-        opts.separator "  workspace relaunch --json    # a script relaunching everything and checking the result"
-        opts.separator "  workspace relaunch --json 2>/dev/null    # keep the progress text out of the way when piping the document"
+        opts.separator "  workspace relaunch    # stop the workspace you are in and relaunch it"
+        opts.separator "  workspace relaunch --all    # stop every active project and relaunch it (headless ones stay headless)"
+        opts.separator "  workspace relaunch my-notes billing    # relaunch two projects"
+        opts.separator "  workspace relaunch --all --json    # a script relaunching everything and checking the result"
+        opts.separator "  workspace relaunch --all --json 2>/dev/null    # keep the progress text out of the way when piping the document"
       end
       parser.parse!(args)
 
+      names = (args.map { |arg| settle_name(arg) } + [name].compact.map { |n| settle_name(n) }).uniq
+      raise UsageError, "--all relaunches every active workspace; don't also name one.\n\n#{parser.help}" if all && names.any?
+      unless all || names.any?
+        detected = @project_detector.detect(@working_dir)
+        raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace, name one (--name WS), or pass --all.", code: "not_in_workspace", details: {"path" => @working_dir}) unless detected
+        names = [detected]
+      end
+
       @state.load
-      if @state.empty?
-        raise Error, "No active workspace projects to relaunch." if json
-        @error_output.puts "No active workspace projects to relaunch."
-        @exit_handler.exit(1)
+      if all
+        if @state.empty?
+          raise Error, "No active workspace projects to relaunch." if json
+          @error_output.puts "No active workspace projects to relaunch."
+          @exit_handler.exit(1)
+        end
+        names = @state.keys.dup
+      else
+        names.each do |n|
+          next if @project_config.project_root_for(n)
+          raise Error.new("Unknown workspace '#{n}'", code: "unknown_workspace", details: {"name" => n})
+        end
+        inactive = names - @state.keys
+        if inactive.any?
+          raise Error.new("Workspace#{"s" if inactive.size > 1} #{inactive.join(", ")} #{(inactive.size > 1) ? "aren't" : "isn't"} active, so there is nothing to relaunch. Start #{(inactive.size > 1) ? "them" : "it"} with `workspace launch #{inactive.join(" ")}`.",
+            code: "workspace_not_active", details: {"names" => inactive})
+        end
       end
 
       run_action("relaunch", json: json) do
-        relaunch_active_projects(json)
+        relaunch_projects(names, json)
       end
     end
 
-    def relaunch_active_projects(json)
-      projects = @state.keys.dup
+    def relaunch_projects(projects, json)
       headless, windowed = projects.partition { |p| @state.dig(p, "headless") }
       @output.puts "Will relaunch: #{projects.join(", ")}"
 
-      cmd_stop(["--all"])
+      cmd_stop(projects.dup)
 
       @sleeper.call(2)
 

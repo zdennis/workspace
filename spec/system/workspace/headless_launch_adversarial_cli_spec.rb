@@ -42,7 +42,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       cli, = build_relaunch_test_cli(state: state, launch_command: launch_command, output: output, error_output: error_output)
 
       begin
-        cli.run(["relaunch"])
+        cli.run(["relaunch", "--all"])
       rescue FakeSystemExit
         nil
       end

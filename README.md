@@ -132,7 +132,7 @@ workspace <subcommand> [options]
 | push | [README](docs/README.rebase.md) | Push a workspace's branch to origin (a `pr-N` checkout to its pull request's head, after checking it with gh); forces with a lease only when a rebase replaced commits the upstream has |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
 | rebase | [README](docs/README.rebase.md) | Rebase a workspace's branch onto the default branch (`--onto local\|update\|remote\|upstream`); a conflict is aborted and reported |
-| relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
+| relaunch | [README](docs/README.relaunch.md) | Stop and relaunch this workspace, named ones, or every active one with `--all` (bare used to mean all) |
 | remove | [README](docs/README.remove.md) | Delete a stopped project (default: the one you are in)'s tmuxinator config, project settings and state entry (never its directory or notes) |
 | rename | [README](docs/README.rename.md) | Give a stopped worktree workspace a new branch, directory, name and session; `--dry-run` previews, a rename that stopped part way is finished by running it again |
 | restore | [README](docs/README.restore.md) | Bring back agent panes after a reboot: launch the workspace you are in (`--all`: every active one), recreate recorded agent panes (hand-split ones too) and resume their sessions with `claude --resume`; `--dry-run` shows the plan and what can't be matched |

@@ -11,6 +11,7 @@ module Workspace
       "ambiguous_workspace" => "A short workspace name matches more than one workspace (the part after .worktree- in two projects). details.name, details.matches (sorted full names); give the full name.",
       "workspace_name_case_conflict" => "A new workspace's name differs only in case from the name of an existing workspace with a different directory. details.name, details.existing, details.existing_root.",
       "not_in_workspace" => "No workspace could be detected from the working directory.",
+      "workspace_not_active" => "relaunch: a workspace, named or detected from the working directory, isn't active, so nothing is stopped. details.names.",
       "no_daemon" => "No agent daemon is running for the workspace.",
       "connection_failed" => "The agent daemon's socket refused or dropped the connection. From agent-run send --when-idle, details.maybe_delivered: true means the daemon had the prompt but didn't answer in time; check before resending.",
       "unreadable_reply" => "The agent daemon's reply couldn't be read. details.maybe_delivered: true as for connection_failed.",
