@@ -4,8 +4,8 @@ module Workspace
   # the checkout's own `lib/skills`; a linked worktree is refused, because its
   # directory goes away with `finish`. Reads files only: no git, no PATH, no HOME.
   class SkillSource
-    # The five skills that ship, the only names the install ever touches.
-    NAMES = %w[workspace workspace-agent-run workspace-inbox workspace-lifecycle workspace-workflow].freeze
+    # The six skills that ship, the only names the install ever touches.
+    NAMES = %w[workspace workspace-agent-run workspace-inbox workspace-lifecycle workspace-template workspace-workflow].freeze
 
     # Matches a Homebrew keg's libexec: prefix, formula.
     CELLAR = %r{\A(.+)/Cellar/([^/]+)/[^/]+/libexec\z}

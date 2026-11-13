@@ -19,6 +19,7 @@ If a row matches, load that skill now, before running anything.
 | Leave something for the person; record a question when running unattended | skill `workspace-inbox` |
 | Start a workflow (`go`, a preset, `workflow start`, `workflow run`), read `workflow status`, any other `workflow` verb; gates stay under Safety | skill `workspace-workflow` |
 | Start, launch (open a project's panes in iTerm), promote, restore, stop, finish, kill, prune, remove, clean up | skill `workspace-lifecycle` |
+| Choose, check or apply tmuxinator template sets (`template list`, `use`, `status`, `apply`, `restore`, `adopt`) | skill `workspace-template` |
 | Anything else | `Everything else`, below |
 
 ## Where am I

@@ -5369,7 +5369,7 @@ module Workspace
       OptionParser.new do |opts|
         opts.banner = HelpPages.overview_usage(HelpPages::SKILLS)
         opts.separator ""
-        opts.separator "Link the five workspace skills that ship with this tool into the skills directory of each"
+        opts.separator "Link the six workspace skills that ship with this tool into the skills directory of each"
         opts.separator "coding agent on your machine, or remove those links. The skills teach an agent to use the"
         opts.separator "`workspace` CLI."
         opts.separator ""

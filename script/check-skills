@@ -8,7 +8,7 @@
 # REPO_ROOT defaults to $WORKSPACE_WORKTREE, else the repository this script is in.
 # DIR defaults to $SKILLS_DIR, else lib/skills in REPO_ROOT.
 #
-# What it checks, per backtick span and code-fence line in the six skill files:
+# What it checks, per backtick span and code-fence line in the seven skill files:
 #   commands  `workspace a b c ...` (and bare `a b ...` when `a` is a subcommand):
 #             each subcommand word against the help of its parent
 #   flags     each --flag against `--help` of the command path, then its parents,
@@ -33,6 +33,7 @@ FILES = %w[
   workspace-agent-run/SKILL.md
   workspace-inbox/SKILL.md
   workspace-lifecycle/SKILL.md
+  workspace-template/SKILL.md
   workspace-workflow/SKILL.md
 ].freeze
 
