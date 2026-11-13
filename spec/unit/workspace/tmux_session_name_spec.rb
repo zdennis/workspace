@@ -17,10 +17,10 @@ RSpec.describe Workspace::Tmux do
     path = File.join(@dir, "ws.yml")
     File.write(path, text)
     allow(config).to receive(:config_path_for).with("ws").and_return(path)
-    tmux.session_name_for("ws")
+    tmux.config_session_name("ws")
   end
 
-  describe "#session_name_for" do
+  describe "#config_session_name" do
     it "reads the name: line as YAML, dropping quotes and a trailing comment" do
       expect(name_from("name: plain\nroot: /tmp\n")).to eq("plain")
       expect(name_from("name: \"quoted\"\n")).to eq("quoted")
@@ -38,7 +38,19 @@ RSpec.describe Workspace::Tmux do
     it "answers the config name with no name: line or no file" do
       expect(name_from("root: /tmp\n")).to eq("ws")
       allow(config).to receive(:config_path_for).with("gone").and_return(File.join(@dir, "gone.yml"))
-      expect(tmux.session_name_for("gone")).to eq("gone")
+      expect(tmux.config_session_name("gone")).to eq("gone")
+    end
+  end
+
+  describe "#session_name_for" do
+    it "answers the name tmux stores: . and : become _" do
+      path = File.join(@dir, "foo.yml")
+      File.write(path, "name: foo.js\n")
+      allow(config).to receive(:config_path_for).with("foo").and_return(path)
+      allow(config).to receive(:config_path_for).with("a.b").and_return(File.join(@dir, "none.yml"))
+
+      expect(tmux.session_name_for("foo")).to eq("foo_js")
+      expect(tmux.session_name_for("a.b")).to eq("a_b")
     end
   end
 

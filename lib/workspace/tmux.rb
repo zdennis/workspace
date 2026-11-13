@@ -926,9 +926,16 @@ module Workspace
     end
 
     # @param config_name [String] tmuxinator config file name (without .yml)
-    # @return [String] the tmux session name from the config file: the YAML value of its top-level `name:` line (quotes and
-    #   a trailing comment dropped), else the line's text after `name:` when that line is not YAML on its own
+    # @return [String] {#config_session_name} with tmux's one renaming rule applied ({.stored_session_name}: `.` and `:`
+    #   become `_`, so `name: foo.js` runs as `foo_js`); no other change tmux might make is modelled
     def session_name_for(config_name)
+      self.class.stored_session_name(config_session_name(config_name))
+    end
+
+    # @param config_name [String] tmuxinator config file name (without .yml)
+    # @return [String] the session name as the config file writes it (not what tmux stores; it keeps `.` and `:`): the YAML value of its top-level `name:` line (quotes and
+    #   a trailing comment dropped), else the line's text after `name:` when that line is not YAML on its own
+    def config_session_name(config_name)
       config_path = @config.config_path_for(config_name)
       return config_name unless File.exist?(config_path)
       File.foreach(config_path) do |line|

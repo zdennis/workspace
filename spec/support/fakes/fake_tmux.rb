@@ -158,7 +158,9 @@ class FakeTmux
 
   def command_for(_project, **_opts) = "tmuxinator start test --attach"
 
-  def session_name_for(config_name) = @session_names.fetch(config_name) { @session_name || config_name }
+  def session_name_for(config_name) = Workspace::Tmux.stored_session_name(config_session_name(config_name))
+
+  def config_session_name(config_name) = @session_names.fetch(config_name) { @session_name || config_name }
 
   def session_exists?(name, project: nil) = @sessions.include?(name)
 

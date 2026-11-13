@@ -40,7 +40,7 @@ module Workspace
       }
       return doc.merge("session" => nil, "windows" => [], "running" => nil, "applies" => "relaunch") unless file.readable?
 
-      session_name = file.data["name"]&.to_s || workspace
+      session_name = Tmux.stored_session_name(file.data["name"]&.to_s || workspace)
       running = running?(session_name)
       live = running ? live_panes(session_name) : []
       doc.merge(

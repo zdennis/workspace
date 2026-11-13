@@ -68,7 +68,7 @@ module Workspace
 
       # Whether +pane_id+ is a pane of the workspace's tmux session, asked of the tmux server the
       # workspace runs on (its custom socket, if its config names one). Both session names are
-      # compared as tmux stores them ({Tmux.stored_session_name}).
+      # compared as tmux stores them (the pane's from tmux, the workspace's through {Tmux#session_name_for}).
       #
       # @param pane_id [String] a pane id such as `$TMUX_PANE`
       # @param name [String] the workspace
@@ -76,7 +76,7 @@ module Workspace
       def pane_in_session?(pane_id, name)
         session = @tmux.session_name_for_pane(pane_id, project: name)
         return nil if session.nil?
-        Tmux.stored_session_name(session) == Tmux.stored_session_name(@tmux.session_name_for(name))
+        Tmux.stored_session_name(session) == @tmux.session_name_for(name)
       rescue Error, SystemCallError
         nil
       end
@@ -97,7 +97,7 @@ module Workspace
       # @param name [String] the workspace
       # @return [Boolean, nil] nil when the workspace's session name can't be read
       def session_of?(session, name)
-        Tmux.stored_session_name(session) == Tmux.stored_session_name(@tmux.session_name_for(name))
+        Tmux.stored_session_name(session) == @tmux.session_name_for(name)
       rescue Error, SystemCallError
         nil
       end
@@ -108,7 +108,7 @@ module Workspace
       # @param name [String]
       # @return [Boolean]
       def running?(name)
-        @tmux.session_exists?(Tmux.stored_session_name(@tmux.session_name_for(name)), project: name)
+        @tmux.session_exists?(@tmux.session_name_for(name), project: name)
       rescue Error, SystemCallError
         true
       end

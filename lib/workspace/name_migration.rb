@@ -182,7 +182,7 @@ module Workspace
 
     def migrate(old, renamed, warnings)
       new = WorkspaceName.normalize(old)
-      session = @tmux.session_name_for(old)
+      session = @tmux.config_session_name(old)
       outcome = WorkspaceStoreRename.new(config: @config, project_config: @project_config, tmux: @tmux, state: @state,
         project_catalog_factory: @project_catalog_factory, old: old, new: new, session: session, new_session: WorkspaceName.normalize(session), writer: @writer).call
       warnings.concat(outcome.warnings)

@@ -18,7 +18,7 @@ RSpec.describe Workspace::RenamePlan do
   let(:roots) { {"api" => repo, workspace => linked} }
   let(:project_config) { instance_double(Workspace::ProjectConfig, existing_name: nil) }
   let(:config) { instance_double(Workspace::Config, agent_running?: false) }
-  let(:tmux) { instance_double(Workspace::Tmux, session_name_for: "api-wt-feat-a", session_exists?: false) }
+  let(:tmux) { instance_double(Workspace::Tmux, config_session_name: "api-wt-feat-a", session_exists?: false) }
   let(:state) { instance_double(Workspace::State, keys: [workspace]) }
   let(:main_notes) { File.join(repo, "tmp", "workspace-notes") }
   let(:notes_dir) { Workspace::NotesDir.new(git: git, home: @dir) }
@@ -99,7 +99,7 @@ RSpec.describe Workspace::RenamePlan do
       FileUtils.mkdir_p(File.dirname(adopted))
       sh("worktree", "add", "-q", "-b", "other", adopted)
       roots["api.worktree-old-name"] = adopted
-      allow(tmux).to receive(:session_name_for).and_return("api-wt-old-name")
+      allow(tmux).to receive(:config_session_name).and_return("api-wt-old-name")
       allow(notes).to receive(:info).and_return({"dir" => File.join(main_notes, "other")})
 
       result = plan.call(workspace: "api.worktree-old-name", new: "newer")
@@ -336,6 +336,20 @@ RSpec.describe Workspace::RenamePlan do
 
       expect { locked.call(workspace: workspace, new: "feat/b") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("rename_in_progress") }
       expect { locked.call(workspace: workspace, new: "other") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("rename_in_progress") }
+    end
+
+    it "looks for the running session under the name tmux stores" do
+      allow(tmux).to receive(:config_session_name).and_return("api.wt.feat-a")
+      allow(tmux).to receive(:session_exists?).with("api_wt_feat-a").and_return(true)
+
+      expect(refusal("workspace_running").details).to include("reason" => "session")
+    end
+
+    it "looks for the target session under the name tmux stores" do
+      allow(project_config).to receive(:worktree_session_name).and_return("api.wt.feat-b")
+      allow(tmux).to receive(:session_exists?).with("api_wt_feat-b").and_return(true)
+
+      expect(refusal("rename_target_taken").details["taken"]).to eq(["session"])
     end
 
     it "refuses a target tmux session that exists" do

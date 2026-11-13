@@ -132,6 +132,19 @@ RSpec.describe Workspace::Commands::Stop do
         expect(tmux).to have_received(:kill_session).with("custom-session", project: "proj1", socket: nil)
       end
 
+      it "kills the session tmux stored for a name with a dot" do
+        state["foo.js"] = {"unique_id" => "uid3", "iterm_window_id" => 300}
+        state.save
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("foo.js").and_return("foo_js")
+        allow(tmux).to receive(:sessions).and_return(["foo_js"])
+        allow(tmux).to receive(:kill_session)
+
+        command.call(["foo.js"])
+
+        expect(tmux).to have_received(:kill_session).with("foo_js", project: "foo.js", socket: nil)
+      end
+
       it "returns killed project names" do
         allow(iterm).to receive(:find_existing_sessions).and_return({})
         allow(tmux).to receive(:session_name_for).and_return("proj1", "proj2")

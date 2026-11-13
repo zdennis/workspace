@@ -40,6 +40,27 @@ RSpec.describe Workspace::WorkspaceStoreRename do
       old: old, new: new, session: "proj-wt-feat", new_session: "proj-wt-other")
   end
 
+  it "renames the session tmux stored for a dotted session name" do
+    live_sessions.replace(["proj_wt-feat"])
+    outcome = described_class.new(config: config, project_config: project_config, tmux: tmux, state: state,
+      project_catalog_factory: -> { Workspace::ProjectCatalog.new(project_config: project_config, git: git) },
+      old: old, new: new, session: "proj.wt-feat", new_session: "proj-wt-other").call
+
+    expect(outcome.renamed.map { |entry| entry["what"] }).to include("tmux_session")
+    expect(live_sessions).to eq(["proj-wt-other"])
+  end
+
+  it "leaves a session alone when only the dots differ from the stored name" do
+    live_sessions.replace(["a_b"])
+    outcome = described_class.new(config: config, project_config: project_config, tmux: tmux, state: state,
+      project_catalog_factory: -> { Workspace::ProjectCatalog.new(project_config: project_config, git: git) },
+      old: old, new: new, session: "a.b", new_session: "a_b").call
+
+    expect(outcome.renamed.map { |entry| entry["what"] }).not_to include("tmux_session")
+    expect(outcome.failed).to eq([])
+    expect(live_sessions).to eq(["a_b"])
+  end
+
   def write(path, text = "")
     FileUtils.mkdir_p(File.dirname(path))
     File.write(path, text)

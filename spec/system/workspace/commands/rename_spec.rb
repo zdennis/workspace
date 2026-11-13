@@ -225,6 +225,18 @@ RSpec.describe Workspace::Commands::Rename do
       expect(result["next"]).to eq("Run `workspace restore #{new}` to resume the conversation; a plain `workspace launch #{new}` starts a new one.")
     end
 
+    it "carries ledger and binding entries recorded under the session name tmux stored for a dotted name" do
+      write_config(old, linked, "api.wt.feat-a", "api feat a", branch: "feat/a")
+      session_ledger.record({"event" => "session_start", "workspace" => old, "pane_slot" => "api_wt_feat-a:0.1", "pane_id" => "%8", "tmux_server" => "1",
+                             "session_id" => "s2", "cwd" => linked})
+      pane_bindings.bind("%8", {"kind" => "play", "id" => "q", "workspace" => old, "session" => "api_wt_feat-a", "pane_slot" => "api_wt_feat-a:0.1"})
+
+      rename
+
+      expect(session_ledger.slots_for(new, "api-wt-feat-b").map { |slot| slot["pane_slot"] }).to include("api-wt-feat-b:0.1")
+      expect(pane_bindings.binding_for("%8")).to include("workspace" => new, "session" => "api-wt-feat-b", "pane_slot" => "api-wt-feat-b:0.1")
+    end
+
     it "writes workspace_renamed with names only" do
       rename
 

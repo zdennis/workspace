@@ -108,6 +108,18 @@ RSpec.describe Workspace::TmuxinatorReport do
     expect(panes[2]["live"]).to be_nil
   end
 
+  it "looks for the session tmux stored for a dotted name and keeps the written name in the document" do
+    write("api", template.sub("name: api", "name: foo.js"))
+    tmux.session_names = ["foo_js"]
+    tmux.panes = [{window: 0, index: 0, id: "%24", start_command: nil}]
+
+    doc = report.show("api")
+
+    expect(doc["running"]).to be true
+    expect(doc["session"]["name"]).to eq("foo.js")
+    expect(doc["windows"].first["panes"].first["live"]).to eq("pane_id" => "%24", "start_command" => nil)
+  end
+
   it "has no live panes when the session isn't running" do
     write("api", template)
     tmux.panes = [{window: 0, index: 0, id: "%24", start_command: nil}]

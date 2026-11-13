@@ -200,7 +200,7 @@ module Workspace
           ["inbox", -> { rescope_inbox(plan) }],
           ["hook_events", -> { move_hook_events(plan) }],
           ["ledger", -> { carry_ledger(plan) }],
-          ["bindings", -> { @pane_bindings.rename_workspace(from: plan.workspace, to: plan.new_workspace, from_session: plan.session, to_session: plan.new_session) }]]
+          ["bindings", -> { @pane_bindings.rename_workspace(from: plan.workspace, to: plan.new_workspace, from_session: Tmux.stored_session_name(plan.session), to_session: Tmux.stored_session_name(plan.new_session)) }]]
       end
 
       def attempt(plan, name, work, signals)
@@ -304,8 +304,8 @@ module Workspace
       end
 
       def carry_ledger(plan)
-        return unless plan.workspace_changes? || plan.session != plan.new_session
-        @session_ledger.carry(from: plan.workspace, to: plan.new_workspace, cwd: plan.new_path, from_session: plan.session, to_session: plan.new_session)
+        return unless plan.workspace_changes? || Tmux.stored_session_name(plan.session) != Tmux.stored_session_name(plan.new_session)
+        @session_ledger.carry(from: plan.workspace, to: plan.new_workspace, cwd: plan.new_path, from_session: Tmux.stored_session_name(plan.session), to_session: Tmux.stored_session_name(plan.new_session))
       end
 
       # A config under the new name is what says the stores are done, so the journal stays without one.
