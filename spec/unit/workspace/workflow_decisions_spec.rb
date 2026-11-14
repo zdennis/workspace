@@ -503,7 +503,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       [{}, {extra_attempts: 2}, {extra_tokens: 100}, {extra_seconds: 60}, {from: "plan"}, {from: "build"}].each do |options|
         [:resume, :park].each do |verb|
-          error = error_for { decisions.public_send(verb, "wr_1", **options) }
+          error = error_for { (verb == :resume) ? decisions.resume("wr_1", **options) : decisions.park("wr_1", **options) }
           expect(error.code).to eq("guard_cannot_pass")
           expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "guard" => "no_commit")
         end

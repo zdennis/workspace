@@ -97,6 +97,8 @@
               "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             }
           ],
+          "ended_at": "2026-10-04T12:00:00Z",
+          "outcome": "cancelled",
           "outputs": [
             {
               "file": "out.md",
