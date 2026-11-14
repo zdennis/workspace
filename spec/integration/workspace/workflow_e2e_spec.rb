@@ -50,13 +50,15 @@ RSpec.describe "a workflow run from start to completed" do
   let(:attempt_record) { UsageAttemptRecord.new(usages: {"implement" => [implement_usage]}, default: routine_usage, guard: guard, clock: clock) }
   let(:hook_dir) { File.join(@dir, "events") }
   let(:rounds) { [] }
+  let(:closed) { [] }
+  let(:review_pane) { "%9" }
   # Stands in for the round's delivery (T28+): it records the round, and the review pane and revision as the runner will.
   let(:round_runner) do
     lambda do |run_id, review|
       rounds << review
       store.change(run_id) do |run|
         hash = run.thawed
-        hash["steps"][hash["current"]]["review"].merge!("pane" => "%9", "delivery" => nil, "revision" => "rev1")
+        hash["steps"][hash["current"]]["review"].merge!("pane" => review_pane, "delivery" => nil, "revision" => "rev1")
         Workspace::WorkflowRun.from_h(hash)
       end
     end
@@ -68,7 +70,7 @@ RSpec.describe "a workflow run from start to completed" do
     Workspace.build_workflow_engine(store: store, resources: resources, composer: FakeStepComposer.new, panes: panes, checker: checker,
       commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
       env_stopper: ->(**) {}, workspace_known: ->(_name) { false }, task_store: instance_double(Workspace::TaskStore, active_for: {"id" => "t1"}),
-      attempt_record: attempt_record, require_check: require_check, review_round: round_runner,
+      attempt_record: attempt_record, require_check: require_check, review_round: round_runner, review_closer: ->(_id, round) { closed << round },
       review_tally: Workspace::WorkflowReviewTally.new(proof: Workspace::ReviewVerdictProof.new(hook_dir: hook_dir)), clock: clock)
   end
 
@@ -97,11 +99,15 @@ RSpec.describe "a workflow run from start to completed" do
   end
 
   # One reviewer's sub-agent writes its verdict in the review pane, and the daemon logs the write with the file's hash.
-  def verdict(reviewer, said, seq:)
-    relative = File.join(".workflow", "wr_1", "reviews", "design.1.r1", "#{reviewer}.md")
+  def verdict(reviewer, said, seq:, dir: nil)
+    # A round the engine opened has its directory already; only a named one (a later round) is made here.
+    named = !dir.nil?
+    dir ||= "design.1.r1"
+    relative = File.join(".workflow", "wr_1", "reviews", dir, "#{reviewer}.md")
     text = (Workspace::WorkflowReviewTally.header_lines(reviewer: reviewer, verdict: said, revision: "rev1") + ["", "Reasons."]).join("\n")
+    FileUtils.mkdir_p(File.dirname(File.join(worktree, relative))) if named
     File.write(File.join(worktree, relative), text)
-    line = {"type" => "tool_finished", "at" => now.first.iso8601(3), "workspace" => workspace, "pane_id" => "%9", "boot_id" => "b", "seq" => seq,
+    line = {"type" => "tool_finished", "at" => now.first.iso8601(3), "workspace" => workspace, "pane_id" => review_pane, "boot_id" => "b", "seq" => seq,
             "tool" => "Write", "tool_use_id" => "toolu_#{seq}", "agent_id" => "agent-#{reviewer}", "path" => relative,
             "sha256" => Digest::SHA256.hexdigest(text), "ok" => true}
     File.write(Workspace::HookEventLog.path_for(hook_dir, workspace), JSON.generate(line) + "\n", mode: "a")
@@ -261,8 +267,6 @@ RSpec.describe "a workflow run from start to completed" do
     def stored = stored_run(store, "wr_1")
 
     def test_db_holder = Workspace::LockStore.new(dir: lock_dir, liveness: liveness).status("test-db").dig("test-db", "holder")
-
-    def review_pane = "%9"
 
     # Research and the plan done, then design reviewed: implement, then verify begun holding test-db.
     # Each verdict's seq is its place in the hook event log (skeptic first, then builder), which the tally checks for gaps.
@@ -638,6 +642,129 @@ RSpec.describe "a workflow run from start to completed" do
       expect(run["steps"]["build"]["attempts"].map { |attempt| attempt["n"] }).to eq([1, 2])
       expect(kick_count).to eq(kicks + 1)
       expect(history).to include("resume_parked", "step_retry_started", "resume_parked_ended")
+    end
+  end
+
+  describe "review combinations" do
+    def stored = stored_run(store, "wr_1")
+
+    def reviewer_bound? = panes.bound.values.any? { |entry| entry[:role] == "reviewer" }
+
+    def design_attempt(n) = stored["steps"]["design"]["attempts"].find { |attempt| attempt["n"] == n }
+
+    # The top-level runner leaves the review pane unbound, as no earlier example asserts on it (an approved round is never closed yet,
+    # so a binding would linger until the run ends). These examples assert on unbinding, so this runner binds the pane as the real one does.
+    let(:round_runner) do
+      lambda do |run_id, review|
+        rounds << review
+        panes.bind(workspace: workspace, pane: review_pane, run_id: run_id, role: "reviewer", step: review["step"])
+        store.change(run_id) do |run|
+          hash = run.thawed
+          hash["steps"][hash["current"]]["review"].merge!("pane" => review_pane, "delivery" => nil, "revision" => "rev1")
+          Workspace::WorkflowRun.from_h(hash)
+        end
+      end
+    end
+
+    it "stops review_incomplete when only the skeptic wrote a verdict, and a resume starts round 2 that both approve" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+
+      run = turn_ended(review_pane)
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "review_incomplete")
+      expect(run["steps"]["design"]["state"]).to eq("reviewing")
+
+      engine.resume("wr_1")
+
+      expect(stored["state"]).to eq("running")
+      expect(stored["reason"]).to be_nil
+      expect(stored["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
+      expect(rounds.last).to eq("step" => "design", "attempt" => 1, "round" => 2)
+      expect(Dir.exist?(File.join(worktree, ".workflow", "wr_1", "reviews", "design.1.r2"))).to be(true)
+
+      verdict("skeptic", "approve", seq: 2, dir: "design.1.r2")
+      verdict("builder", "approve", seq: 3, dir: "design.1.r2")
+      run = turn_ended(review_pane)
+
+      expect(run).to include("state" => "running", "current" => "implement")
+      attempt = run["steps"]["design"]["attempts"].last
+      expect(attempt["outcome"]).to eq("passed")
+      expect(attempt["review_outcome"]).to include("round" => 2, "approvals" => 2, "passed" => true)
+      expect(attempt["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "incomplete"], [2, "approved"]])
+    end
+
+    it "cancels mid-review: the round is recorded cancelled, closed once, and the reviewer unbound" do
+      to_review
+      expect(reviewer_bound?).to be(true)
+
+      run = engine.cancel("wr_1")
+
+      expect(run["state"]).to eq("cancelled")
+      expect(run["steps"]["design"]["attempts"].last["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "cancelled"]])
+      expect(closed).to eq([{"step" => "design", "round" => 1, "pane" => review_pane}])
+      expect(reviewer_bound?).to be(false)
+    end
+
+    it "restarts from design mid-review: the round ends and closes once, and design attempt 2 is reviewed as round 2" do
+      to_review
+
+      engine.resume("wr_1", from: "design")
+
+      expect(closed).to eq([{"step" => "design", "round" => 1, "pane" => review_pane}])
+      expect(reviewer_bound?).to be(false)
+      expect(design_attempt(1)["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "from"]])
+      expect(stored["steps"]["design"]).not_to have_key("review")
+      expect(stored["current"]).to eq("design")
+
+      artifact("design.md")
+      run = turn_ended
+
+      expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
+      expect(rounds.last).to eq("step" => "design", "attempt" => 2, "round" => 2)
+      expect(Dir.exist?(File.join(worktree, ".workflow", "wr_1", "reviews", "design.2.r2"))).to be(true)
+      expect(reviewer_bound?).to be(true)
+      expect(closed.size).to eq(1)
+    end
+
+    it "does not count round 1 skeptic file in round 2: the builder alone leaves it review_incomplete" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      turn_ended(review_pane)
+      engine.resume("wr_1")
+
+      verdict("builder", "approve", seq: 2, dir: "design.1.r2")
+      run = turn_ended(review_pane)
+
+      expect(File.exist?(File.join(worktree, ".workflow", "wr_1", "reviews", "design.1.r1", "skeptic.md"))).to be(true)
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "review_incomplete")
+      expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
+      expect(run["steps"]["design"]["review"]).to include("round" => 2)
+      recorded = design_attempt(1)["rounds"]
+      expect(recorded.map { |round| round.values_at("round", "ended") }).to eq([[1, "incomplete"], [2, "incomplete"]])
+      rows = recorded.last["reviews"].to_h { |row| [row["reviewer"], row] }
+      expect(rows["builder"]).to include("counted" => true, "verdict" => "approve", "problem" => nil)
+      expect(rows["skeptic"]).to include("counted" => false, "verdict" => nil)
+      expect(rows["skeptic"]["path"]).to end_with("design.1.r2/skeptic.md")
+      expect(rows.values.count { |row| row["counted"] }).to eq(1)
+      expect(run["reason"]["details"]["reviews"]).to eq(recorded.last["reviews"])
+      expect(run["reason"]["details"]["problem"]).to match(/skeptic/)
+    end
+
+    it "ignores a late verdict and turn end after a cancel: the run stays cancelled, no round starts, nothing more is closed" do
+      to_review
+      engine.cancel("wr_1")
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+
+      expect { engine.turn_ended("wr_1", pane: review_pane) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
+
+      expect(stored["state"]).to eq("cancelled")
+      expect(rounds.size).to eq(1)
+      expect(closed.size).to eq(1)
+      expect(stored["steps"]["design"]["attempts"].last["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "cancelled"]])
     end
   end
 end
