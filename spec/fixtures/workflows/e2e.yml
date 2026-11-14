@@ -1,0 +1,56 @@
+# The workflow spec/integration/workspace/workflow_e2e_spec.rb drives through a real engine from start
+# to completed: produces files, require proofs a spec can answer without git, a gate, a reviewed step,
+# a status check with an on_fail loop, a step's own max_attempts, and the run's budget and timeout.
+schema_version: 0.1
+id: e2e
+title: End-to-end engine fixture
+description: Five steps that touch each part of a step the engine decides, for the end-to-end spec only.
+
+inputs:
+  task:
+    description: What the run is about.
+    required: true
+
+max_attempts: 20
+budget: {tokens: 1000}
+timeout: 2h
+
+reviewers:
+  skeptic: {prompt: Find what is wrong with the design.}
+  builder: {prompt: Check the design can be built.}
+
+steps:
+  research:
+    prompt: Write {{artifacts}}/research.md about {{inputs.task}}.
+    produces: [research.md]
+    guard: unchanged
+    require:
+      - nonempty: research.md
+
+  plan:
+    prompt: Write {{artifacts}}/plan.md and set the workspace plan active.
+    produces: [plan.md]
+    require:
+      - plan_status: active
+    gate: approve
+
+  design:
+    prompt: Write {{artifacts}}/design.md.
+    produces: [design.md]
+    review:
+      from: [skeptic, builder]
+      need: 2
+      must: [skeptic]
+
+  implement:
+    prompt: Implement {{inputs.task}}, commit, and post the change to the inbox.
+    require:
+      - commits: 1
+      - inbox_item: "e2e:{{run}}"
+
+  verify:
+    prompt: Run the tests.
+    uses: [test-db]
+    status: {command: test, timeout: 5m}
+    on_fail: {goto: implement, max: 1, context: fresh}
+    max_attempts: 2

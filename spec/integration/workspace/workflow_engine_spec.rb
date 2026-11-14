@@ -5107,15 +5107,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
   describe "the token budget" do
     let(:usages) { [] }
-    let(:recorder) do
-      queue = usages
-      Class.new(Workspace::WorkflowAttemptRecord) do
-        define_method(:finish) do |run:, step:, attempt:|
-          done = super(run: run, step: step, attempt: attempt)
-          queue.empty? ? done : Workspace::WorkflowRun::Attempt.from_h(done.to_h.merge("usage" => queue.shift))
-        end
-      end.new(guard: guard)
-    end
+    let(:recorder) { UsageAttemptRecord.new(usages: usages, guard: guard) }
     subject(:engine) { engine_with(attempt_record: recorder) }
 
     let(:two_steps) { definition("budget: {tokens: 1000}\nsteps:\n  a:\n    prompt: A\n    status: bin/check\n  b:\n    prompt: B\n    status: bin/check\n") }
@@ -5893,13 +5885,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     describe "a round start past the token budget or the run's timeout" do
       # The author's attempt ends with +usage+, as its transcript would say.
-      def recorder(usage)
-        Class.new(Workspace::WorkflowAttemptRecord) do
-          define_method(:finish) do |run:, step:, attempt:|
-            Workspace::WorkflowRun::Attempt.from_h(super(run: run, step: step, attempt: attempt).to_h.merge("usage" => usage))
-          end
-        end.new(guard: guard, clock: -> { now.first })
-      end
+      def recorder(usage) = UsageAttemptRecord.new(default: usage, guard: guard, clock: -> { now.first })
 
       def limited_engine(usage: {"input_tokens" => 1200, "output_tokens" => 0})
         build_engine(review_round: round_runner, attempt_record: recorder(usage),

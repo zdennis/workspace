@@ -113,6 +113,24 @@ class RunFileLiveness
   def run_alive?(run_id) = @runs.alive?(run_id)
 end
 
+# The real attempt record, whose ended attempts carry the token usage a spec gives, as a transcript would say.
+class UsageAttemptRecord < Workspace::WorkflowAttemptRecord
+  # @param usages [Array<Hash>, Hash{String=>Array<Hash>}] usages each finish takes in turn, or per step id (taken off the Arrays given)
+  # @param default [Hash, nil] the usage once those run out; nil keeps what the record found (none without a transcript)
+  def initialize(usages: [], default: nil, **rest)
+    super(**rest)
+    @usages = usages
+    @default = default
+  end
+
+  def finish(run:, step:, attempt:)
+    done = super
+    queue = @usages.is_a?(Hash) ? @usages.fetch(step["id"], []) : @usages
+    usage = queue.shift || @default
+    usage ? Workspace::WorkflowRun::Attempt.from_h(done.to_h.merge("usage" => usage)) : done
+  end
+end
+
 # The daemon's side of one connection: reads a line, answers with the next reply.
 class FakeDaemonSocket
   attr_reader :sent
