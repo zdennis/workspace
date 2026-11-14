@@ -62,7 +62,9 @@ module Workspace
   # waiting for its `review.uses` is left to {WorkflowEngine#tick}; a round whose delivery failed (after the
   # backoff an undelivered line waits) or lapsed with its delivering process gone is handed to
   # {WorkflowEngine#tick}, which delivers it again or, its `redeliver` spent, stops it `review_incomplete` (cause
-  # `round_undelivered`); a round still being delivered is left alone; then the round's review pane is read, on
+  # `round_undelivered`), unless its line may have been typed ({WorkflowTransitions.typed_round?}): that one is read
+  # in its review pane as below, and past {WorkflowTransitions.typed_wait_over?} handed to {WorkflowEngine#tick}
+  # (cause `round_maybe_typed`); a round still being delivered is left alone; then the round's review pane is read, on
   # positive evidence only ({WorkflowPanes#review_pane_state}; a tmux that can't be read, or a round that recorded
   # no tmux server, decides neither gone nor restarted, and the daemon's pane row decides the rest): gone (cause `pane_gone`), its agent exited to a shell (cause `agent_gone`),
   # lost with a restarted tmux server (cause `server_restarted`, delivered again in a new window, counted against
@@ -205,6 +207,18 @@ module Workspace
       engine_row(run, outcome, "retried", cause: "retry_backoff", message: message, action: "retry")
     end
 
+    # A round whose line may have been typed, past the short wait: {WorkflowEngine#tick} judges it unless its review
+    # pane shows a reviewer at work (until the review's timeout) or waiting for an answer.
+    def sweep_typed_round(run, what, pass)
+      message = "#{what} may have been typed before its delivery failed or lapsed; its verdicts are read once its review pane is done"
+      return row(run, "dry_run", message: message, cause: "round_maybe_typed", action: "evaluate") if pass[:dry_run]
+      refusal = pass[:allow]&.call(run)
+      return row(run, "nothing", reason: "refused", message: refusal, cause: "round_maybe_typed") if refusal
+      return engine_row(run, :evaluated, "evaluated", cause: "round_maybe_typed", message: message, action: "evaluate") if @engine.tick(run.id)
+      row(run, "nothing", reason: "reviewing", cause: "round_maybe_typed",
+        message: "#{what} may have been typed and its review pane is still at work or waiting for an answer (or another process is changing the run); the next pass looks again")
+    end
+
     # The end of a review round was being judged and its process died before it reported back: not a stall. The
     # judging is handed to {WorkflowEngine#tick}, which runs it once more.
     def sweep_lost_round(run, pass)
@@ -229,9 +243,15 @@ module Workspace
       what = "review round #{round["round"]} of step #{run.current}"
       return row(run, "nothing", reason: "waiting_lock", message: "#{what} waits for a lock its review.uses names; it starts once the lock is free") if run.reason
       now = @clock.call
-      redelivery = WorkflowTransitions.round_redelivery(run.to_h, now, alive: @holder_alive)
+      # A round whose line may have been typed is read in its review pane like a delivered one: its pane, agent and
+      # idle turn decide it, never a delivery again.
+      typed = WorkflowTransitions.typed_round?(round, now, alive: @holder_alive)
+      redelivery = typed ? nil : WorkflowTransitions.round_redelivery(run.to_h, now, alive: @holder_alive)
       return sweep_round_undelivered(run, what, round, redelivery, pass) if redelivery
-      return row(run, "nothing", reason: "delivering", message: "#{what} is still being delivered") if round["delivery"] == "delivering"
+      return row(run, "nothing", reason: "delivering", message: "#{what} is still being delivered") if round["delivery"] == "delivering" && !typed
+      # Past the short wait, the engine's tick decides it from its pane (so a setup with only the sweep, no daemon
+      # timer, decides it too); it still waits for a reviewer at work or a prompt.
+      return sweep_typed_round(run, what, pass) if typed && WorkflowTransitions.typed_wait_over?(run.to_h, round, now)
       return row(run, "nothing", reason: "reviewing", message: "the end of #{what} is being judged") if round["recompute"]
       pane = round["pane"]
       return row(run, "nothing", reason: "reviewing", message: "#{what} is being reviewed") unless pane

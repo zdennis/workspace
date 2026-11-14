@@ -208,8 +208,7 @@ module Workspace
       run = finish_check(run_id, ctx.check) if ctx.check
       return finish_review_end(run_id, ctx.review_end) if ctx.review_end
       review = ctx.review
-      run = @review_round.call(run_id, review) || run if review && @review_round
-      run
+      review ? start_round(run_id, review, run) : run
     end
 
     # Runs what {#evaluate} registered with the run's lock given up, and whatever comes after it: a proof can be
@@ -226,7 +225,7 @@ module Workspace
         run, check, registered = apply_check(run_id, check, run_check(run_id, check))
         review = registered if registered
       end
-      (review && @review_round) ? (@review_round.call(run_id, review) || run) : run
+      review ? start_round(run_id, review, run) : run
     rescue Workspace::Error => e
       # Cancelled while the check ran: there is nothing left to decide.
       raise unless e.code == "run_not_active"
@@ -237,6 +236,61 @@ module Workspace
 
     # Puts the phase answer +changed+ (a WorkflowRun) into the run Hash being changed in place.
     def adopt(run, changed) = run.replace(changed.thawed)
+
+    # Runs the review round a change registered, with the lock given up. A round after a rejected one first has its
+    # revision computed ({WorkflowTransitions.rejected_revision}): the same revision the rejection judged means the
+    # author's retry changed nothing reviewed, and the round stops `review_no_change` ({WorkflowProgress#stop_no_change})
+    # without being delivered or spent; another one is handed to the delivery, which judges that revision. Not for a
+    # rerun of missing reviewers (it carries its round's revision) or a round a person's resume accepted the revision of.
+    def start_round(run_id, review, run)
+      return run unless @review_round
+      checked = review_revision_for(run_id, review)
+      return checked[:run] if checked[:run]
+      pending = checked[:revision] ? review.merge("revision" => checked[:revision]) : review
+      @review_round.call(run_id, pending) || run
+    rescue Workspace::Error => e
+      raise unless e.code == "run_not_active"
+      @store.run(run_id)
+    end
+
+    # @return [Hash{Symbol=>Object}] :run when the round was stopped `review_no_change`, else :revision when one was computed
+    def review_revision_for(run_id, review)
+      return {} if !@review_revision || review["revision"]
+      read = @store.run(run_id)
+      round = read.step(review["step"])&.review
+      return {} unless round.is_a?(Hash) && !round["accept_revision"] && round_wanted?(read, review)
+      rejected = WorkflowTransitions.rejected_revision(read, review["step"])
+      return {} unless rejected
+      step = read.definition["steps"].find { |each| each["id"] == review["step"] }
+      answer = @review_revision.call(run: read, step: step, stop_when: -> { !still_round_wanted?(run_id, review) })
+      # A revision that can't be computed is the delivery's to report; it computes it again.
+      return {} if answer[:problem] || !answer[:revision].is_a?(String)
+      return {revision: answer[:revision]} unless answer[:revision] == rejected["revision"]
+      stopped = false
+      after = @change.call(run_id) do |current|
+        next unless round_wanted?(current, review)
+        stopped = true
+        @progress.stop_no_change(current, revision: answer[:revision], rejected: rejected)
+      end
+      stopped ? {run: after} : {}
+    end
+
+    # The run still waits for the round's delivery: on its step, attempt and round, `reviewing`, the round's mark
+    # `delivering`, no stop, no park, not ended, its end not being judged.
+    def round_wanted?(run, review)
+      run = WorkflowRun.from_h(run)
+      step = run.steps[review["step"]]
+      round = step&.review
+      !run.parked && run.reason.nil? && !WorkflowRunStore::TERMINAL_STATES.include?(run.state) && run.current == review["step"] &&
+        step.state == "reviewing" && step.last_attempt&.n == review["attempt"] && round.is_a?(Hash) && round["round"] == review["round"] &&
+        round["delivery"] == "delivering" && !round["recompute"]
+    end
+
+    def still_round_wanted?(run_id, review)
+      round_wanted?(@store.run(run_id), review)
+    rescue Workspace::Error, SystemCallError
+      true
+    end
 
     # Computes the ended round's revision again with the lock given up, then, under the lock and only while the run
     # still waits for this recompute ({#wanted_round?}), decides the round: a revision that can't be computed stops
@@ -319,7 +373,8 @@ module Workspace
     # Whether a turn's end is the end of the running round's review turn: in the round's own pane, begun no earlier
     # than the round, with the round not stopped and its end not already being judged. In a window cleared for the
     # round (one an earlier round left, `clear_from`), a turn counts when it began at or after the confirmed clear
-    # (`cleared_at`, else `clear_from`): a turn a person had there before ends with the clear and is not the reviewers'.
+    # (`cleared_at`, else, once the line is delivered, `clear_from`): a turn a person had there before ends with the
+    # clear and is not the reviewers', and while the line is still being typed no turn counts.
     # A turn whose start the daemon does not know (it restarted during the round) counts once it stopped at or after
     # the delivery (`delivered_at`); before a delivery is recorded it does not.
     def review_turn?(run, round, pane, turn_started, stopped_at)
@@ -332,7 +387,12 @@ module Workspace
     end
 
     def cleared_turn?(round, turn_started, stopped_at)
-      return turn_started >= Time.iso8601((round["cleared_at"] || round["clear_from"]).to_s) if turn_started
+      if turn_started
+        # Until the line is delivered the clear is not known to have happened: a turn a person had in the window
+        # then, begun after the clear was decided, would otherwise count.
+        from = round["cleared_at"] || (round["delivered_at"] && round["clear_from"])
+        return !from.nil? && turn_started >= Time.iso8601(from.to_s)
+      end
       !round["delivered_at"].nil? && !stopped_at.nil? && stopped_at >= Time.iso8601(round["delivered_at"].to_s)
     rescue ArgumentError
       false

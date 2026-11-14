@@ -1595,6 +1595,7 @@ module Workspace
           round += ", stopped; a resume starts round #{review["next_round"]}" if review["stopped"]
           round += ", held (#{escape.call(review["held"])}); it starts as round #{review["next_round"]}" if review["held"]
         end
+        round += ", running again for #{review["rerun"].map(&escape).join(", ")}" if review["rerun"].is_a?(Array) && !review["rerun"].empty?
         pending = review["pending"].empty? ? "" : ", waiting for #{review["pending"].map(&escape).join(", ")}"
         where = review["pane"] ? ", review pane #{escape.call(review["pane"])}" : ""
         @output.puts "  review: #{round}; #{review["approvals"]} of #{review["need"]} approvals#{pending}#{where}"
@@ -1665,6 +1666,9 @@ module Workspace
         when "retry_backoff"
           "step #{details["step"]} failed; step #{details["to"]} starts again at #{details["until"]} (after #{details["seconds"].to_f.round} seconds), or sooner with a resume"
         when "pane_gone" then "pane #{details["pane"]} of #{details["workspace"]} is not running#{": #{details["message"]}" if details["message"]}"
+        when "review_no_change"
+          "step #{details["step"]}'s review round #{details["round"]} was not delivered: the retry changed nothing the review reads since round #{details["rejected_round"]} rejected it; " \
+            "resume to review it as it is, or resume --from #{details["step"]} to run the step again"
         when *WorkflowTransitions::REVIEW_STOPS then "step #{details["step"]}'s review round #{details["round"]} stopped#{": #{TerminalText.escape(details["problem"].to_s)}" if details["problem"]}"
         else details.to_s
         end

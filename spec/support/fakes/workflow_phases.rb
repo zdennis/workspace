@@ -202,13 +202,14 @@ class RecordingWorkflowPrompt
     File.join(Workspace::WorkflowRun.from_h(run).artifacts_dir, "steps", "#{step["id"]}.#{attempt_number}.prompt.md")
   end
 
-  def review_path(run, step, attempt_number, round)
-    File.join(Workspace::WorkflowRun.from_h(run).artifacts_dir, "steps", "#{step["id"]}.#{attempt_number}.r#{round}.review.md")
+  def review_path(run, step, attempt_number, round, rerun: nil)
+    tag = rerun ? ".rerun#{rerun}" : ""
+    File.join(Workspace::WorkflowRun.from_h(run).artifacts_dir, "steps", "#{step["id"]}.#{attempt_number}.r#{round}#{tag}.review.md")
   end
 
-  def review_text(run, step, attempt_number, round, revision)
-    @calls << [:review_text, Workspace::WorkflowRun.from_h(run), step["id"], attempt_number, round, revision]
-    {"path" => review_path(run, step, attempt_number, round), "text" => "review prompt", "packs" => []}
+  def review_text(run, step, attempt_number, round, revision, only: nil, rerun: nil)
+    @calls << [:review_text, Workspace::WorkflowRun.from_h(run), step["id"], attempt_number, round, revision, {only: only, rerun: rerun}]
+    {"path" => review_path(run, step, attempt_number, round, rerun: only ? rerun : nil), "text" => "review prompt", "packs" => []}
   end
 
   def step_binding(run, step, attempt_number, path)
@@ -334,10 +335,12 @@ class RecordingWorkflowPanes
   # @param no_daemon [Boolean] +require_daemon+ refuses with `no_daemon`
   # @param on_kick [#call, nil] called with +kick+'s keywords before it answers, as when something else happens while
   #   the line is typed
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil)
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {})
     @restarted = restarted
     @no_daemon = no_daemon
     @on_kick = on_kick
+    @turn_over = turn_over
+    @rows = rows
     @reviewing = reviewing
     @bound = bound
     @runs_on = runs_on
@@ -360,6 +363,14 @@ class RecordingWorkflowPanes
   def alive?(run_id) = !@dead.include?(run_id)
 
   def pane_gone?(pane) = @gone.include?(pane)
+
+  # Whether +pane+'s turn is proven over: listed in +turn_over+.
+  def main_turn_over?(_workspace, pane) = @turn_over.include?(pane)
+
+  def daemon_running?(_workspace) = !@no_daemon
+
+  # The daemon's row of +pane+, from +rows+; nil for one it does not list.
+  def pane_row(_workspace, pane) = @rows[pane]
 
   def identity(run_id) = "identity-of-#{run_id}"
 
@@ -542,6 +553,14 @@ class RecordingProgress
     round.merge!("delivery" => "delivering", "redeliveries" => round["redeliveries"].to_i + 1).delete("failure")
     ctx.review({"step" => hash["current"], "round" => round["round"]})
     Workspace::WorkflowRun.from_h(hash)
+  end
+
+  # Stops the run review_no_change with the round named and undelivered, as the real one does.
+  def stop_no_change(run, revision:, rejected:)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << [:stop_no_change, hash["current"], {revision: revision, rejected: rejected}]
+    hash["steps"][hash["current"]]["review"].merge!("delivery" => nil, "no_change" => true, "revision" => revision)
+    Workspace::WorkflowRun.from_h(hash.merge("state" => "waiting", "reason" => {"code" => "review_no_change"}))
   end
 
   def end_round(run, how:, ctx:, close: true)

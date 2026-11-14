@@ -406,5 +406,30 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
 
       expect(result["stopped"]).to include("step" => "design", "reason" => "review_stale")
     end
+
+    it "runs only a missing reviewer again in the same round, writing what reruns gives, and counts the earlier verdict" do
+      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve}, reruns: [{builder: approve}]}]\n")
+
+      expect(result["outcome"]).to eq("completed")
+      expect(types(result)).to include("review_rerun")
+      expect(result["transitions"].find { |each| each["type"] == "simulated_reviewers" && each["rerun"] }).to include("rerun" => 1, "reviews" => {"builder" => "approve"})
+      expect(reviews_of(result)).to eq([["skeptic", "approve", true], ["builder", "approve", true]])
+    end
+
+    it "stops review_incomplete once the reruns the definition's redeliver allows leave a reviewer missing" do
+      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve}, reruns: [{}, {}, {}]}]\n")
+
+      expect(result["stopped"]).to include("reason" => "review_incomplete")
+      expect(types(result).count("review_rerun")).to eq(3)
+    end
+
+    it "stops review_no_change when the retry after a rejection changed nothing the review reads, spending no round" do
+      result = play(reviewed, "steps:\n  design:\n    - {reviews: {skeptic: reject, builder: approve}}\n    - {unchanged: true}\n")
+
+      expect(result).to include("outcome" => "stopped", "stopped" => {"step" => "design", "attempt" => 2, "reason" => "review_no_change"})
+      expect(types(result)).to include("review_no_change")
+      expect(types(result).count("review_started")).to eq(2)
+      expect(types(result).count("simulated_reviewers")).to eq(1)
+    end
   end
 end

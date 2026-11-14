@@ -511,6 +511,20 @@ RSpec.describe Workspace::Commands::Workflow do
       TEXT
     end
 
+    it "says a round an unchanged revision stopped was not delivered, and who a rerun runs again" do
+      round = {"round" => 2, "max_rounds" => 6, "need" => 2, "approvals" => 1, "pending" => ["scribe"], "pane" => "%9", "stopped" => false, "held" => nil, "next_round" => 2,
+               "rerun" => ["scribe"], "reviews" => []}
+      stopped = shown("state" => "waiting", "current" => {"step" => "plan", "attempt" => 2, "state" => "reviewing", "flags" => [], "review" => round,
+                                                          "reason" => reason("review_no_change", {"step" => "plan", "round" => 2, "rejected_round" => 1}, [])})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [stopped], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  review_no_change: step plan's review round 2 was not delivered: the retry changed nothing the review reads since round 1 rejected it; " \
+        "resume to review it as it is, or resume --from plan to run the step again\n")
+      expect(output.string).to include("  review: round 2 of 6, running again for scribe; 1 of 2 approvals, waiting for scribe, review pane %9\n")
+    end
+
     it "says a step that has spent its review rounds starts no further round" do
       round = {"round" => 6, "max_rounds" => 6, "need" => 1, "approvals" => 0, "pending" => [], "pane" => "%9", "stopped" => true, "held" => nil, "next_round" => 7,
                "rounds_spent" => true, "reviews" => []}

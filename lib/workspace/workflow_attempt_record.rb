@@ -222,7 +222,7 @@ module Workspace
     def verdict_copies(run, round, reviews)
       attempt = run.current_step&.last_attempt
       return [] unless @evidence && attempt
-      @evidence.review(run: run, step_id: run.current, attempt: attempt.to_h, round: round["round"], reviews: reviews)
+      @evidence.review(run: run, step_id: run.current, attempt: attempt.to_h, round: round["round"], reviews: reviews, rerun: round["reruns"])
     rescue
       []
     end

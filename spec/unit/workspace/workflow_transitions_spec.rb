@@ -644,4 +644,50 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.failure_text({"exit_code" => 2, "log" => "l"})).to eq("its check exited 2 (log: l)")
     end
   end
+
+  describe ".rejected_revision" do
+    def run_with(*attempts) = {"steps" => {"plan" => {"attempts" => attempts}}}
+
+    it "answers the revision of the step's last decided round when it rejected the step" do
+      run = run_with({"n" => 1, "review_outcome" => {"round" => 1, "passed" => false, "revision" => "rev1"}}, {"n" => 2})
+
+      expect(described_class.rejected_revision(run, "plan")).to eq("revision" => "rev1", "round" => 1, "attempt" => 1)
+    end
+
+    it "answers nil when the last decided round passed, none was decided, or the outcome has no revision (stored before it was kept)" do
+      passed = run_with({"n" => 1, "review_outcome" => {"round" => 1, "passed" => false, "revision" => "rev1"}},
+        {"n" => 2, "review_outcome" => {"round" => 2, "passed" => true, "revision" => "rev2"}}, {"n" => 3})
+
+      expect(described_class.rejected_revision(passed, "plan")).to be_nil
+      expect(described_class.rejected_revision(run_with({"n" => 1}), "plan")).to be_nil
+      expect(described_class.rejected_revision(run_with({"n" => 1, "review_outcome" => {"round" => 1, "passed" => false}}, {"n" => 2}), "plan")).to be_nil
+      expect(described_class.rejected_revision({"steps" => {}}, "plan")).to be_nil
+    end
+  end
+
+  describe ".round_may_have_typed?" do
+    it "is true only for a delivery that got as far as typing and then lapsed, failed after typing, or failed without proof nothing went out" do
+      typed = {"kick_at" => "2026-11-10T11:00:00.000Z"}
+
+      expect(described_class.round_may_have_typed?(typed, :unknown)).to be(true)
+      expect(described_class.round_may_have_typed?(typed.merge("failure" => {"code" => "unreadable_reply"}), :failed)).to be(true)
+      expect(described_class.round_may_have_typed?(typed.merge("failure" => {"code" => "error", "typed" => true}), :failed)).to be(true)
+      expect(described_class.round_may_have_typed?(typed.merge("failure" => {"code" => "pane_busy"}), :failed)).to be(false)
+      expect(described_class.round_may_have_typed?(typed.merge("failure" => {"code" => "not_delivered"}), :failed)).to be(false)
+      expect(described_class.round_may_have_typed?({"failure" => {"code" => "connection_failed"}}, :failed)).to be(false)
+      expect(described_class.round_may_have_typed?(nil, :unknown)).to be(false)
+    end
+  end
+
+  it "leaves a round whose end is being judged to .lost_round?, never a delivery again" do
+    run = {"current" => "plan", "definition" => {"redeliver" => 2},
+           "steps" => {"plan" => {"state" => "reviewing", "review" => {"round" => 1, "delivery" => "failed", "failure" => {"code" => "x", "at" => "2026-11-10T10:00:00Z"},
+                                                                       "recompute" => {"started_at" => "2026-11-10T11:59:00Z", "try" => 1}}}}}
+
+    expect(described_class.round_redelivery(run, Time.utc(2026, 11, 10, 12))).to be_nil
+  end
+
+  it "lists review_no_change among the review stops" do
+    expect(described_class::REVIEW_STOPS).to include("review_no_change")
+  end
 end

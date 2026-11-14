@@ -31,6 +31,11 @@ module Workspace
     # A review round's delivery failures no delivery again can get past: the round goes straight to its stop.
     ROUND_REDELIVER_NEVER = %w[review_custom_socket].freeze
 
+    # A review round's delivery failures after which its line may have reached the review pane: the agent daemon
+    # went away or gave no answer while it typed (an agent daemon restart), or the delivering process was stopped.
+    # A delivery that knows it typed the line says so itself (`failure.typed`).
+    ROUND_MAY_HAVE_TYPED = %w[connection_failed unreadable_reply delivery_interrupted].freeze
+
     # Each guard code in words, for a failure or a warning.
     GUARD_TEXT = {
       "no_commit" => "the checkout had no commit to start from",
@@ -291,6 +296,8 @@ module Workspace
       state = run.dig("steps", run["current"])
       return nil unless state.is_a?(Hash) && state["state"] == "reviewing"
       round = state["review"]
+      # A round whose end is being judged (its revision computed again) is {.lost_round?}'s, not a delivery's.
+      return nil if round.is_a?(Hash) && round["recompute"]
       mark = round_delivery(round, now, alive: alive)
       return nil unless %i[failed unknown].include?(mark)
       retries = round["redeliveries"].is_a?(Integer) ? round["redeliveries"] : 0
@@ -299,6 +306,62 @@ module Workspace
       return info.merge(state: :exhausted, wait: 0) if retries >= limit || ROUND_REDELIVER_NEVER.include?(round.dig("failure", "code"))
       wait = (mark == :failed) ? round_backoff(round, retries, now) : 0
       (wait > 0) ? info.merge(state: :waiting, wait: wait) : info.merge(state: :due, wait: 0)
+    end
+
+    # Whether a round whose delivery failed or lapsed ({.round_delivery}) may have had its line typed: the delivery got
+    # as far as typing it (`kick_at`), and then lapsed with its process gone, failed after typing (`failure.typed`),
+    # or failed in a way that does not prove the line never went out ({ROUND_MAY_HAVE_TYPED}). Its reviewers may
+    # have written their verdicts, so the round is judged before it is delivered again.
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @param mark [Symbol, nil] what {.round_delivery} answered
+    # @return [Boolean]
+    def self.round_may_have_typed?(round, mark)
+      return false unless round.is_a?(Hash) && round["kick_at"]
+      return true if mark == :unknown
+      failure = round["failure"]
+      mark == :failed && failure.is_a?(Hash) && (failure["typed"] == true || ROUND_MAY_HAVE_TYPED.include?(failure["code"]))
+    end
+
+    # {.round_may_have_typed?} over the round's own delivery mark ({.round_delivery}).
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @param now [Time]
+    # @param alive [#call, nil] see {.round_delivery}
+    # @return [Boolean]
+    def self.typed_round?(round, now, alive: nil)
+      round_may_have_typed?(round, round_delivery(round, now, alive: alive))
+    end
+
+    # Whether a round whose line may have been typed has waited long enough for its reviewers that it is judged
+    # whatever its review pane shows: {DELIVERY_WINDOW}, plus the definition's `stall` when set, from its failure
+    # (else from when its line went out, `kick_at`). A time that can't be read has waited long enough.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param round [Hash{String=>Object}] the current step's `review`
+    # @param now [Time]
+    # @return [Boolean]
+    def self.typed_wait_over?(run, round, now)
+      from = round.dig("failure", "at") || round["kick_at"]
+      now - Time.iso8601(from.to_s) >= DELIVERY_WINDOW + WorkflowDefinition.stall(run["definition"]).to_i
+    rescue ArgumentError, TypeError
+      true
+    end
+
+    # Whether a round whose line may have been typed, and whose review pane shows its agent at work, has run past the
+    # review's own `timeout` (stored in seconds; {WorkflowReviewSpec::DEFAULT_TIMEOUT} when the stored review has none)
+    # since its line went out (`kick_at`, else its failure). A time that can't be read has run past it.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param round [Hash{String=>Object}] the current step's `review`
+    # @param now [Time]
+    # @return [Boolean]
+    def self.typed_review_timed_out?(run, round, now)
+      review = WorkflowDefinition.review(run.dig("definition", "steps")&.find { |each| each["id"] == run["current"] })
+      timeout = (review && review["timeout"].is_a?(Numeric)) ? review["timeout"] : WorkflowReviewSpec::DEFAULT_TIMEOUT
+      now - Time.iso8601((round["kick_at"] || round.dig("failure", "at")).to_s) >= timeout
+    rescue ArgumentError, TypeError
+      true
     end
 
     # Seconds left before a failed round's delivery again; a failure time that can't be read waits no longer.
@@ -640,7 +703,24 @@ module Workspace
 
     # The reasons a review round stops the run with, the one list every reader of a stopped round matches against
     # (`review_custom_socket` and the other review codes are errors, not stops).
-    REVIEW_STOPS = %w[review_incomplete review_rejected review_stale review_guard review_tampered review_rounds_spent].freeze
+    REVIEW_STOPS = %w[review_incomplete review_rejected review_stale review_guard review_tampered review_rounds_spent review_no_change].freeze
+
+    # The revision of the step's last decided round when that round rejected the step: the `review_outcome` of the
+    # newest earlier attempt that has one, read only when it did not pass. A round about to judge this revision again
+    # would judge what was rejected unchanged (`review_no_change`). Nil for a step whose last decided round passed,
+    # with none decided, or for an outcome stored before it recorded its revision.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @param step [String] a step id
+    # @return [Hash{String=>Object}, nil] "revision", "round" and "attempt" of that rejected round
+    def self.rejected_revision(run, step)
+      attempts = run.to_h.dig("steps", step, "attempts")
+      return nil unless attempts.is_a?(Array)
+      decided = attempts[0...-1].reverse.find { |attempt| attempt.is_a?(Hash) && attempt["review_outcome"].is_a?(Hash) }
+      outcome = decided && decided["review_outcome"]
+      return nil unless outcome && outcome["passed"] == false && outcome["revision"].is_a?(String) && !outcome["revision"].empty?
+      {"revision" => outcome["revision"], "round" => outcome["round"], "attempt" => decided["n"]}
+    end
 
     # The guard stops `workflow resume --accept-guard` takes: every guard that fails a step. `config_changed` is
     # only ever a warning, so it is not among them.

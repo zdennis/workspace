@@ -65,6 +65,18 @@ module Workspace
         code: "invalid_workflow", details: {"workflow" => definition.to_h["id"], "error" => e.class.name.split("::").last})
     end
 
+    # The revision an attempt's work has: the first attempt's {REVISION}, and a later one's its own, unless the script
+    # says the attempt changed nothing (`unchanged: true`), when it is the attempt before's.
+    #
+    # @param script [WorkflowSimScript]
+    # @param step [String]
+    # @param number [Integer] the attempt
+    # @return [String]
+    def self.revision_of(script, step, number)
+      number -= 1 while number > 1 && script.attempt(step, number)["unchanged"] == true
+      (number <= 1) ? REVISION : "#{REVISION}-#{number}"
+    end
+
     private
 
     def play(definition, script, inputs, dir)
@@ -78,7 +90,7 @@ module Workspace
       FileUtils.mkdir_p(checkout)
       engine = @engine_factory.call(store: store, resources: SimResources.new, composer: SimComposer.new, panes: panes, checker: SimChecker.new(script),
         commands_config: SimCommands.new, lineage: SimLineage.new, git: SimGit.new, guard: guard, excludes: SimExcludes.new, gate_note: SimGateNote.new,
-        attempt_record: records, require_check: SimRequire.new(script), review_round: round_runner(store), review_closer: ->(_run_id, _round) {},
+        attempt_record: records, require_check: SimRequire.new(script), review_round: round_runner(store, script), review_closer: ->(_run_id, _round) {},
         review_tally: WorkflowReviewTally.new(proof: SimVerdictProof.new), review_revision: SimRevision.new(script), clock: clock)
       run = WorkflowRun.from_h(engine.start(definition: definition, workspace: WORKSPACE, worktree: checkout, inputs: inputs, pane: PANE))
       actions, capped = drive(engine, store, run.id, definition.to_h, script, clock, records)
@@ -87,12 +99,16 @@ module Workspace
 
     # Stands in for a round's delivery ({WorkflowReviewRound}): the review window is a pane that is only a name, and the
     # round is delivered at once, recording what the real one records (no window id, prompt file or packs: there are
-    # none) and its `review_delivered` line. When the runner records more, this stub must copy it.
-    def round_runner(store)
+    # none) and its `review_delivered` line, judging the revision the engine handed it (a rerun's, or one compared with
+    # a rejected round's) or else the attempt's ({.revision_of}). When the runner records more, this stub must copy it.
+    def round_runner(store, script)
       lambda do |run_id, review|
         run = store.change(run_id) do |read|
           hash = read.thawed
-          hash["steps"][hash["current"]]["review"].merge!("pane" => REVIEW_PANE, "delivery" => nil, "revision" => REVISION, "packs" => [])
+          revision = review["revision"] || self.class.revision_of(script, review["step"], review["attempt"])
+          round = hash["steps"][hash["current"]]["review"]
+          round.merge!("pane" => REVIEW_PANE, "delivery" => nil, "revision" => revision, "packs" => [], "panes" => (Array(round["panes"]) | [REVIEW_PANE]))
+          round.delete("uncleared")
           WorkflowRun.from_h(hash)
         end
         store.record_event(run_id, "review_delivered", review.slice("step", "attempt", "round").merge("pane" => REVIEW_PANE, "window" => nil, "reused" => false))
@@ -155,20 +171,22 @@ module Workspace
     end
 
     # The round's reviewers write their verdicts, each as its own sub-agent would, and the review pane's turn ends. A reviewer
-    # the script's `reviews:` map leaves out writes nothing.
+    # the script's `reviews:` map leaves out writes nothing; a rerun of the round's missing reviewers writes what the
+    # attempt's `reruns:` list gives for it (its first entry for the first rerun), nothing when it gives none.
     def review(engine, store, run, script, clock)
       id = run.id
       step = run.current
       number = run.step(step).last_attempt.n
       round = run.step(step).review
-      said = script.attempt(step, number).fetch("reviews", {})
+      rerun = round["reruns"].to_i
+      said = rerun.zero? ? script.attempt(step, number).fetch("reviews", {}) : (Array(script.attempt(step, number)["reruns"])[rerun - 1] || {})
       dir = ReviewRoundPath.round_dir(run.artifacts_dir, step, number, round["round"])
       said.each do |reviewer, verdict|
         FileUtils.mkdir_p(dir)
         text = (WorkflowReviewTally.header_lines(reviewer: reviewer, verdict: verdict, revision: round["revision"]) + ["", "Written by workflow simulate."]).join("\n")
         File.write(File.join(dir, "#{reviewer}.md"), text)
       end
-      store.record_event(id, "simulated_reviewers", "step" => step, "attempt" => number, "round" => round["round"], "reviews" => said)
+      store.record_event(id, "simulated_reviewers", {"step" => step, "attempt" => number, "round" => round["round"], "reviews" => said}.merge(rerun.zero? ? {} : {"rerun" => rerun}))
       clock.advance(1)
       engine.turn_ended(id, pane: REVIEW_PANE)
     end
@@ -298,6 +316,19 @@ module Workspace
         false
       end
 
+      # The review pane is only a name: its turn is always over, and it has no row.
+      def main_turn_over?(_workspace, _pane)
+        true
+      end
+
+      def pane_row(_workspace, _pane)
+        nil
+      end
+
+      def daemon_running?(_workspace)
+        true
+      end
+
       def identity(_run_id)
         nil
       end
@@ -345,15 +376,19 @@ module Workspace
       end
     end
 
-    # Answers the revision the round was delivered with, unless the script says the reviewed attempt's work moved meanwhile.
+    # Answers the reviewed attempt's revision ({WorkflowSimulator.revision_of}), unless the script says the attempt's work
+    # moved while its round ran: then a round already delivered reads {CHANGED_REVISION}.
     class SimRevision
       def initialize(script)
         @script = script
       end
 
       def call(run:, step:, stop_when: nil)
-        number = WorkflowRun.from_h(run).step(step["id"]).last_attempt.n
-        {revision: @script.attempt(step["id"], number)["revision_changes"] ? CHANGED_REVISION : REVISION, problem: nil}
+        state = WorkflowRun.from_h(run).step(step["id"])
+        number = state.last_attempt.n
+        delivered = state.review.is_a?(Hash) && state.review["revision"]
+        moved = delivered && @script.attempt(step["id"], number)["revision_changes"]
+        {revision: moved ? CHANGED_REVISION : WorkflowSimulator.revision_of(@script, step["id"], number), problem: nil}
       end
     end
 

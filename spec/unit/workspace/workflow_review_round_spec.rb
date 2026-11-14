@@ -602,12 +602,36 @@ RSpec.describe Workspace::WorkflowReviewRound do
     context "when the last change fails with an error other than run_not_active" do
       let(:change) { RecordingRunChange.new(store.runs, raises: {2 => Errno::EIO.new("runs/wr_1.json")}) }
 
-      it "records the failure and closes the window rather than leaving the round delivering" do
+      it "records the failure, marked typed, keeping the window, its reviewer and the round's pane, so the reviewers' own Stop still decides it" do
         runner.call("wr_1", pending)
 
-        expect(round).to include("delivery" => "failed", "failure" => include("code" => "error", "message" => /runs\/wr_1.json/))
+        expect(round).to include("delivery" => "failed", "failure" => include("code" => "error", "message" => /runs\/wr_1.json/, "typed" => true),
+          "pane" => "%100", "window" => "@100", "delivered_at" => "2026-11-14T12:00:00.000Z")
+        expect(tmux.killed_windows).to be_empty
+        expect(panes.calls.map(&:first)).not_to include(:unbind)
+      end
+    end
+
+    context "when the agent daemon gives no answer as the line is typed (it restarted)" do
+      let(:panes) { RecordingWorkflowPanes.new(kick: {ok: false, code: "connection_failed", message: "gone"}) }
+
+      it "records a typed failure and closes nothing, even in a window that was not cleared" do
+        runner.call("wr_1", pending)
+
+        expect(round).to include("delivery" => "failed", "pane" => "%100", "window" => "@100", "failure" => include("code" => "connection_failed", "typed" => true))
+        expect(tmux.killed_windows).to be_empty
+      end
+    end
+
+    context "when the line is refused before anything is typed" do
+      let(:panes) { RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "busy"}) }
+
+      it "takes the round's pane off and closes a new window, as before" do
+        runner.call("wr_1", pending)
+
+        expect(round).not_to include("pane")
+        expect(round["failure"]).not_to have_key("typed")
         expect(tmux.killed_windows).to eq(["@100"])
-        expect(panes.calls.last).to eq([:unbind, "wr_1", {role: "reviewer", pane: "%100"}])
       end
     end
 
@@ -634,6 +658,60 @@ RSpec.describe Workspace::WorkflowReviewRound do
       expect(tmux.killed_windows).to be_empty
       expect(revision.calls).to be_empty
       expect(round["failure"]).to include("code" => "review_custom_socket", "message" => /not supported for a workspace on its own tmux socket/)
+    end
+  end
+
+  describe "#call for a rerun of a round's missing reviewers" do
+    let(:pending) { {"step" => "plan", "attempt" => 1, "round" => 1, "revision" => "rev0"} }
+
+    before do
+      store.runs["wr_1"] = run_hash(review: {"rerun" => %w[skeptic], "reruns" => 1, "uncleared" => true, "pane" => "%70", "window" => "@7",
+                                             "panes" => %w[%70], "revision" => "rev0"})
+      tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+    end
+
+    it "judges the round's own revision, writes a prompt for the rerun reviewers only, and clears the window the round ran in" do
+      runner.call("wr_1", pending)
+
+      expect(revision.calls).to be_empty
+      expect(prompt.calls.map { |call| call.values_at(4, 5, 6) }).to eq([[1, "rev0", {only: %w[skeptic], rerun: 1}]])
+      expect(opened).to be_empty
+      expect(panes.calls.last).to include(:kick)
+      expect(panes.calls.last.last).to include(fresh: true, text: "Read #{File.join(worktree, ".workflow", "wr_1", "steps", "plan.1.r1.rerun1.review.md")} and follow it.")
+      expect(round).to include("revision" => "rev0", "panes" => %w[%70], "delivery" => nil, "clear_from" => "2026-11-14T12:00:00.000Z")
+      expect(round).not_to include("uncleared")
+    end
+
+    it "keeps the earliest clear of the window across deliveries of the round" do
+      store.runs["wr_1"]["steps"]["plan"]["review"]["clear_from"] = "2026-11-14T11:59:30.000Z"
+
+      runner.call("wr_1", pending)
+
+      expect(round["clear_from"]).to eq("2026-11-14T11:59:30.000Z")
+    end
+  end
+
+  describe "#call recording the pane before the line is typed" do
+    it "adds the pane to the round's panes and marks when the line went out, so a verdict of an earlier delivery's pane still counts" do
+      store.runs["wr_1"] = run_hash(review: {"panes" => %w[%60]})
+
+      runner.call("wr_1", pending)
+
+      expect(round).to include("panes" => %w[%60 %100], "kick_at" => "2026-11-14T12:00:00.000Z")
+    end
+
+    context "when a window being cleared refuses the line and the failure can't be recorded" do
+      let(:panes) { RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "busy"}) }
+      let(:change) { RecordingRunChange.new(store.runs, raises: {2 => Errno::EIO.new("runs/wr_1.json")}) }
+
+      it "leaves the round owing its clear, so the next delivery into the window clears it" do
+        tmux.review_window_list = [{window: "@6", name: "review-plan", review: "wr_1:plan:0", pane: "%60", pid: 60}]
+
+        runner.call("wr_1", pending)
+
+        expect(panes.calls.find { |call| call.first == :kick }.last).to include(fresh: true)
+        expect(round).to include("uncleared" => true, "pane" => "%60")
+      end
     end
   end
 

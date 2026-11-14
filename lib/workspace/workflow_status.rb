@@ -301,16 +301,16 @@ module Workspace
       rows = Array(round["reviews"]).grep(Hash)
       decided = rows.select { |row| row["verdict"] }
       pending = rows.empty? ? Array(round["pending"] || spec["from"]) : spec["from"] - decided.map { |row| row["reviewer"] }
-      # A resume of a stopped round starts the next one; `rounds_spent` says that round is past the cap, so the engine
-      # refuses the resume (`review_rounds_spent`).
-      next_round = if state.review_held? then round["round"]
+      # A resume of a stopped round starts the next one (of a round an unchanged revision stopped, that same round);
+      # `rounds_spent` says that round is past the cap, so the engine refuses the resume (`review_rounds_spent`).
+      next_round = if state.review_held? || round["no_change"] then round["round"]
       elsif state.review_stopped? then round["round"].to_i + 1
       end
       allowance = WorkflowTransitions.review_rounds_allowance(run.to_h, run.current)
       {"review" => {"round" => round["round"], "max_rounds" => allowance, "extra_rounds" => run.to_h.dig("steps", run.current, "extra_rounds").to_i, "need" => spec["need"], "must" => spec["must"],
                     "approvals" => decided.count { |row| row["verdict"] == "approve" }, "pending" => pending,
                     "pane" => round["pane"], "window" => round["window"], "delivery" => round["delivery"], "started_at" => round["started_at"],
-                    "stopped" => state.review_stopped?, "held" => round["held"], "next_round" => next_round,
+                    "stopped" => state.review_stopped?, "held" => round["held"], "next_round" => next_round, "rerun" => (state.review_stopped? ? nil : round["rerun"]),
                     "rounds_spent" => !next_round.nil? && next_round > allowance,
                     "reviews" => rows.map { |row| REVIEW_ROW_KEYS.to_h { |key| [key, row[key]] } }}}
     end
@@ -329,9 +329,20 @@ module Workspace
       round_live?(run) ? run.step(run.current).review["pane"] : nil
     end
 
-    # Whether the current step is `reviewing` with a round under way and the run stores no reason ({WorkflowRun::Step#review_live?}).
+    # Whether the current step is `reviewing` with a round under way and the run stores no reason ({WorkflowRun::Step#review_live?}),
+    # or with a round whose delivery failed or lapsed after its line may have been typed into its review pane
+    # ({WorkflowTransitions.typed_round?}): reviewers may be at work there, and a prompt in it waits for a person.
     def round_live?(run)
-      run.reason.nil? && (run.step(run.current)&.review_live? || false)
+      return false unless run.reason.nil?
+      step = run.step(run.current)
+      return false unless step
+      step.review_live? || typed_round_live?(step)
+    end
+
+    def typed_round_live?(step)
+      round = step.review
+      step.state == "reviewing" && round.is_a?(Hash) && round["pane"].is_a?(String) && !step.review_held? && !step.review_stopped? &&
+        WorkflowTransitions.typed_round?(round, @clock.call)
     end
 
     # A live park, as `current` shows it; never its note.

@@ -5891,7 +5891,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "starts a fresh round on a resume of a stopped one, spending a round and starting no author attempt" do
       engine = reviewed_engine(:incomplete)
-      start_reviewed(engine)
+      start_reviewed(engine, "redeliver: 0\n#{reviewed_yaml}")
       now[0] += 60
       expect(engine.turn_ended("wr_1", pane: "%9")["reason"]["code"]).to eq("review_incomplete")
 
@@ -5947,7 +5947,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
         attempt = run["steps"]["plan"]["attempts"].last
         expect(run["current"]).to eq("build")
-        expect(attempt["review_outcome"]).to eq("round" => 1, "approvals" => 1, "need" => 1, "must" => [], "passed" => true)
+        expect(attempt["review_outcome"]).to eq("round" => 1, "approvals" => 1, "need" => 1, "must" => [], "passed" => true, "revision" => "rev1")
         expect(attempt["reviews"]).to eq([{"reviewer" => "skeptic", "path" => "reviews/plan.1.r1/skeptic.md", "verdict" => "approve", "revision" => "rev1",
                                            "agent_id" => "agent-1", "sha256" => Digest::SHA256.file(File.join(round_dir, "skeptic.md")).hexdigest, "counted" => true, "problem" => nil,
                                            "isolation" => "review_pane"}])
@@ -5955,7 +5955,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "stops review_incomplete for a verdict another pane wrote, never rejecting" do
         engine = tallied_engine
-        start_reviewed(engine)
+        start_reviewed(engine, "redeliver: 0\n#{reviewed_yaml}")
         review_written("approve", pane: "%5")
         now[0] += 60
 
@@ -5964,6 +5964,43 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(run["reason"]).to include("code" => "review_incomplete")
         expect(run["reason"]["details"]["problem"]).to eq("no counted verdict from skeptic (other_pane)")
         expect(run["steps"]["plan"]["state"]).to eq("reviewing")
+      end
+
+      it "runs only the reviewer whose verdict did not count again in the same round, with the round's revision, then stops review_incomplete once redeliver is spent" do
+        engine = tallied_engine
+        start_reviewed(engine, "redeliver: 1\n#{reviewed_yaml}")
+        review_written("approve", pane: "%5")
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        plan = run["steps"]["plan"]
+        expect(run["reason"]).to be_nil
+        expect(plan).to include("state" => "reviewing", "review_rounds" => 1)
+        expect(plan["review"]).to include("round" => 1, "rerun" => ["skeptic"], "reruns" => 1, "redeliveries" => 1, "pending" => ["skeptic"])
+        expect(rounds.last.last).to eq("step" => "plan", "attempt" => 1, "round" => 1, "revision" => "rev1")
+        expect(plan["attempts"].last["rounds"].map { |each| each["ended"] }).to eq(["rerun"])
+
+        now[0] += 60
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        expect(run["reason"]).to include("code" => "review_incomplete")
+        expect(run["steps"]["plan"]["attempts"].last["rounds"].map { |each| each["ended"] }).to eq(%w[rerun incomplete])
+      end
+
+      it "counts a verdict written in the pane of an earlier delivery of the round, which the rerun's new pane does not replace" do
+        engine = tallied_engine
+        start_reviewed(engine)
+        review_written("approve", pane: "%9")
+        edit_run(store, "wr_1") do |hash|
+          hash["steps"]["plan"]["review"].merge!("pane" => "%11", "panes" => ["%9", "%11"])
+        end
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%11")
+
+        expect(run["current"]).to eq("build")
+        expect(run["steps"]["plan"]["attempts"].last["reviews"].first).to include("counted" => true, "problem" => nil)
       end
 
       it "stops review_tampered when the round's directory was there before the round began" do

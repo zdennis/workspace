@@ -102,17 +102,22 @@ module Workspace
       workspace = run.workspace
       step = run.definition["steps"].find { |each| each["id"] == pending["step"] }
       window = nil
+      kicked = false
       begin
         if @tmux.custom_socket_option(workspace)
           return failed(run, pending, nil, CUSTOM_SOCKET, "review rounds are not supported for a workspace on its own tmux socket " \
             "(its tmuxinator config sets socket_name); remove socket_name from #{workspace}'s config, or the review: from step #{pending["step"]}")
         end
         @panes.require_daemon(workspace)
-        answer = @revision.call(run: run, step: step, stop_when: -> { !still_wanted?(run.id, pending) })
+        # A rerun of missing reviewers judges the revision its round already holds (the verdicts kept were written
+        # against it), and a round after a rejection had its revision computed when the engine compared the two.
+        answer = pending["revision"].is_a?(String) ? {revision: pending["revision"]} : @revision.call(run: run, step: step, stop_when: -> { !still_wanted?(run.id, pending) })
         return failed(run, pending, nil, "revision_failed", "the round's revision could not be computed: #{answer[:problem]}") if answer[:problem]
         dir = @round_dirs.ensure_round(run: run, round: pending["round"])
         return failed(run, pending, nil, dir[:code], dir[:problem]) if dir
-        written = @prompt.review_text(run, step, pending["attempt"], pending["round"], answer[:revision])
+        round = run.steps[pending["step"]]&.review || {}
+        rerun = round["rerun"].is_a?(Array) ? {only: round["rerun"], rerun: round["reruns"]} : {}
+        written = @prompt.review_text(run, step, pending["attempt"], pending["round"], answer[:revision], **rerun)
         agent = @main_agent.spawn_command(workspace, AGENT_KIND)
         window = review_window(run, pending, agent)
         return current(run) if window == :left
@@ -127,10 +132,15 @@ module Workspace
         recorded = record_pane(run, pending, window, answer[:revision], written)
         return recorded[:run] unless recorded[:wanted]
         # The reviewers start fresh, each told of its own earlier write-up by `review.previous`.
+        kicked = true
         kick = @panes.kick(workspace: workspace, pane: window[:pane], text: format(WorkflowDispatch::KICK, written["path"]), fresh: window[:fresh], run_id: run.id)
         # A window being cleared that refused the line (a person's turn running, no quiet in time) holds no reviewer of
-        # this round: kept, still to be cleared, for the round's next delivery.
-        return failed(run, pending, window, kick[:code].to_s, kick[:message].to_s, close: !window[:fresh]) unless kick[:ok]
+        # this round: kept, still to be cleared, for the round's next delivery. A failure that does not prove the line
+        # never went out (the daemon gave no answer) may have reviewers at work: typed.
+        unless kick[:ok]
+          typed = WorkflowTransitions::ROUND_MAY_HAVE_TYPED.include?(kick[:code].to_s)
+          return failed(run, pending, window, kick[:code].to_s, kick[:message].to_s, close: !window[:fresh], typed: typed)
+        end
         delivered(run, pending, window, kick)
       rescue Workspace::Error, SystemCallError, EncodingError, IOError => e
         if e.is_a?(Workspace::Error) && e.code == "run_not_active"
@@ -139,15 +149,15 @@ module Workspace
         end
         failed(run, pending, window, e.respond_to?(:code) ? e.code : "error", e.message.lines.first.to_s.scrub.strip)
       rescue SignalException => e
-        interrupted(run, pending, window, e)
+        interrupted(run, pending, window, e, typed: kicked)
       end
     end
 
     # A signal (an interrupt, a TERM) stops the delivery: the round is marked failed, so a resume or the sweep can
     # deliver it again rather than wait on a holder that is gone, and the signal goes on.
-    def interrupted(run, pending, window, signal)
+    def interrupted(run, pending, window, signal, typed: false)
       begin
-        failed(run, pending, window, INTERRUPTED, "the delivering process was stopped by a signal (#{signal.message})")
+        failed(run, pending, window, INTERRUPTED, "the delivering process was stopped by a signal (#{signal.message})", typed: typed)
       rescue => e
         @error_output.puts "Warning: could not record the interrupted review delivery of run #{run.id}: #{e.message}"
       end
@@ -257,12 +267,22 @@ module Workspace
         wanted = true
         hash = read.thawed
         state = hash["steps"][pending["step"]]
-        state["review"].merge!("pane" => window[:pane], "window" => window[:window], "server_pid" => server,
-          "revision" => revision, "prompt" => written["path"], "packs" => written["packs"])
-        # A window being cleared ends the turn a person may have had in it; only a turn begun from now is the round's
-        # (and, once the daemon says, from the confirmed clear, `cleared_at`). A window not cleared has neither.
-        state["review"].delete("cleared_at")
-        window[:fresh] ? state["review"]["clear_from"] = @clock.call.utc.iso8601(3) : state["review"].delete("clear_from")
+        round = state["review"]
+        # The clear an earlier delivery made counts only in the window it cleared.
+        round.delete("clear_from") unless round["window"] == window[:window]
+        round.merge!("pane" => window[:pane], "window" => window[:window], "server_pid" => server,
+          "revision" => revision, "prompt" => written["path"], "packs" => written["packs"], "kick_at" => @clock.call.utc.iso8601(3))
+        # Every pane the round was delivered into: a verdict written in an earlier one still counts.
+        round["panes"] = (Array(round["panes"]) + [window[:pane]]).uniq
+        # A window being cleared ends the turn a person may have had in it; only a turn begun from the clear is the
+        # round's (and, once the daemon says, from the confirmed clear, `cleared_at`). The earliest clear of the round
+        # in that window stands: a line an earlier delivery typed after clearing may be the reviewers' turn. Until the
+        # line is delivered the clear is owed (`uncleared`), so a kick and a write-back that both fail clear next time.
+        round.delete("cleared_at")
+        if window[:fresh]
+          round["clear_from"] ||= @clock.call.utc.iso8601(3)
+          round["uncleared"] = true
+        end
         # The round records its window now; a window an earlier round kept is this one or gone.
         state.delete("review_window")
         WorkflowRun.from_h(hash)
@@ -299,15 +319,19 @@ module Workspace
         abandon(run, window)
         return current(run)
       end
-      failed(run, pending, window, e.respond_to?(:code) ? e.code : "error", e.message.lines.first.to_s.scrub.strip)
+      # The line was typed: the reviewers may be at work, so the round is judged before it is delivered again.
+      failed(run, pending, window, e.respond_to?(:code) ? e.code : "error", e.message.lines.first.to_s.scrub.strip, typed: true)
     end
 
     # A window the failure leaves: closed when the round is still this delivery's (unless +close+ is false, or the
     # window was used again, see {#present_window}: then kept, its id on the round) or the run left the round; kept when another process took the round's delivery over, since that one may have reused it, or
     # when the round went on in it. Its reviewer binding goes only with the window: a binding that stays routes the
     # round's Stop. A failure that can't be recorded closes the window it made, unless the round is another's or went on.
-    def failed(run, pending, window, code, message, close: true)
-      close = false if window && window[:reused]
+    #
+    # A failure after the line may have gone out (+typed+) never closes the window and keeps the round's pane, with a
+    # `delivered_at` of now: reviewers may be at work there, so their own Stop still decides the round.
+    def failed(run, pending, window, code, message, close: true, typed: false)
+      close = false if (window && window[:reused]) || typed
       shut = close
       after = @change.call(run.id) do |read|
         unless wanted?(read, pending)
@@ -318,8 +342,13 @@ module Workspace
         round = hash["steps"][pending["step"]]["review"]
         round["delivery"] = "failed"
         round["failure"] = {"code" => code, "message" => message, "at" => @clock.call.utc.iso8601}
-        # No turn of this delivery's is the round's: a Stop in its pane decides nothing.
-        round.delete("pane")
+        round["failure"]["typed"] = true if typed
+        # No turn of this delivery's is the round's: a Stop in its pane decides nothing. Unless the line may have been typed.
+        if typed && window
+          round["delivered_at"] ||= @clock.call.utc.iso8601(3)
+        else
+          round.delete("pane")
+        end
         # A failure before any window was found leaves the window id an earlier delivery kept, so the sweep never takes it for an orphan.
         if window
           close ? round.delete("window") : round["window"] = window[:window]

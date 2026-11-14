@@ -78,8 +78,12 @@ module Workspace
     # review is a new round. The run stops for a person with `review_rejected` instead, `details.limit` saying why,
     # when the run's `max_attempts` is spent ("run"), else the step's own ("step"), else its `max_rounds` ("rounds"),
     # keeping the retry as the run's `review_retry` for a resume ({WorkflowRejection#retry_for}).
-    # Incomplete: the step stays `reviewing`, the round is marked ended, and the run stops with `review_incomplete`;
-    # its window is kept for the person to look at.
+    # Incomplete: while the round has deliveries left (its `redeliveries` under the definition's `redeliver`) and the
+    # verdicts that did not count each fell short on their own (missing, broken, unproven, a log gap after an agent
+    # daemon restart; not a round problem, {WorkflowReviewTally::ROUND_PROBLEMS}), only those reviewers run again in
+    # the same round and directory (`rerun`), one delivery spent, the counted verdicts kept; the part that ran is
+    # recorded in the attempt's `rounds` (`ended: rerun`). Otherwise the step stays `reviewing`, the round is marked
+    # ended, and the run stops with `review_incomplete`; its window is kept for the person to look at.
     # Stale (what the round judged changed while it ran): as incomplete, but the run stops with `review_stale`; it
     # never loops and starts no further round, and a resume starts a fresh one on the new revision. Guard (the
     # checkout changed under the round, see {WorkflowGuard#round_check}): the same, stopping with `review_guard`.
@@ -92,9 +96,10 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def decide_review(run, tally, ctx:) = over(run) { |work| decide_in(work, tally, ctx) }
 
-    # A person's resume of the step being reviewed. A round that stopped for a person (a stored reason, or a round
-    # already marked ended) is ended ({#end_round}, its window kept for the next round) and a fresh round starts,
-    # which spends one of the step's rounds. A round whose delivery failed or lapsed is delivered again as the same
+    # A person's resume of the step being reviewed. A round stopped `review_no_change` ({#stop_no_change}) is delivered
+    # as the same round, spending it again, with its unchanged revision accepted. A round that stopped for a person (a
+    # stored reason, or a round already marked ended) is ended ({#end_round}, its window kept for the next round) and
+    # a fresh round starts, which spends one of the step's rounds. A round whose delivery failed or lapsed is delivered again as the same
     # round, its redelivery count started again. Never starts an attempt.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on a step being reviewed; left as it is
@@ -114,7 +119,8 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def redeliver_round(run, ctx:, new_server: false)
       over(run) do |work|
-        drop = new_server ? %w[pane window server_pid] : []
+        # The panes of the old server go too: a pane id the new server reuses must prove no verdict.
+        drop = new_server ? %w[pane panes window server_pid] : []
         deliver_again(work, ctx, step_state(work)["review"]["redeliveries"].to_i + 1, drop)
       end
     end
@@ -134,6 +140,19 @@ module Workspace
     # @param close [Boolean] unbind the reviewer and close the window; false keeps both for the next round
     # @return [WorkflowRun] the run afterwards
     def end_round(run, how:, ctx:, close: true) = over(run) { |work| end_round_in(work, how, ctx, close) }
+
+    # Stops a round about to judge the very revision the step's last decided round rejected
+    # ({WorkflowTransitions.rejected_revision}): the author's retry changed nothing reviewed. The round is not spent (the
+    # step's `review_rounds` goes back by one), nothing was delivered, and the run stops for a person with
+    # `review_no_change`; the round stays named on the step (`no_change`, its revision, no delivery) with its directory,
+    # so a resume delivers that same round, accepting the revision ({#restart_review}), and `resume --from` or a cancel
+    # ends it with no record. The window the rejected round kept stays.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on the round being delivered; left as it is
+    # @param revision [String] the revision the round would judge
+    # @param rejected [Hash{String=>Object}] the rejected round ("revision", "round", "attempt")
+    # @return [WorkflowRun] the run afterwards
+    def stop_no_change(run, revision:, rejected:) = over(run) { |work| no_change_in(work, revision, rejected) }
 
     # Starts the step after the current one, or completes the run after the last.
     #
@@ -354,8 +373,12 @@ module Workspace
       reviews = Array(tally[:reviews])
       details = {"step" => run["current"], "attempt" => attempt["n"], "round" => round["round"]}
       outcome = tally[:outcome]
-      event(run, "review_ended", details.merge("outcome" => outcome.to_s))
       decided = {"round" => round["round"], "approvals" => tally[:approvals], "need" => tally[:need], "must" => tally[:must], "passed" => outcome == :approved}
+      # The revision judged, so the next round can tell an author's retry that changed nothing ({#stop_no_change}).
+      decided["revision"] = round["revision"] if round["revision"].is_a?(String)
+      rerun = rerun_names(run, round, tally)
+      return rerun_round(run, ctx, round, reviews, rerun) if rerun
+      event(run, "review_ended", details.merge("outcome" => outcome.to_s))
       # Every round that ends, decided or not, adds one record to the attempt's `rounds`: the one list its usage is read from.
       ended = round.merge("delivery" => nil, "ended_at" => now_iso, "reviews" => reviews)
       attempt = with_round(run, attempt, ended, outcome.to_s)
@@ -388,8 +411,9 @@ module Workspace
         adopt(run, @rejection.start(run, again, rounds: limit, ctx: ctx))
       else
         state["attempts"][-1] = attempt
-        # Marked recorded, so the resume or cancel that ends it later adds no second record.
-        state["review"] = ended.merge("recorded" => true)
+        # Marked recorded, so the resume or cancel that ends it later adds no second record. A stopped round runs no
+        # reviewer again, so it names none as `rerun`.
+        state["review"] = ended.except("rerun").merge("recorded" => true)
         if outcome == :stale
           stop_review(run, "review_stale", details.merge("revision" => tally[:revision], "revision_now" => tally[:revision_now]))
         elsif outcome == :review_guard
@@ -403,6 +427,21 @@ module Workspace
     def restart_in(run, ctx)
       state = step_state(run)
       round = state["review"]
+      # The round the unchanged revision stopped is spent now, judging that revision as the person asked. It is held,
+      # as any round start is, for the token budget, the run's timeout and its `review.uses`: still the same round,
+      # its `no_change` mark kept (its directory is made already), nothing spent, and its release comes back here.
+      if round.is_a?(Hash) && round["no_change"]
+        held = @dispatch.hold_round(run, round: round["round"]) || @dispatch.hold_round_lock(run, round: round["round"], step_state: state["state"])
+        if held
+          run.replace(held.thawed)
+          step_state(run)["review"] = round.merge("delivery" => nil, "held" => run.dig("reason", "code"))
+          return
+        end
+        state["review_rounds"] = round["round"]
+        state["review"] = round.except("no_change", "held").merge("accept_revision" => true)
+        run["reason"] = nil
+        return deliver_again(run, ctx, 0, record: false)
+      end
       # A held round (a budget, timeout or lock hold, `waiting_lock` included) starts through its one start, which asks
       # the lock again; it never counts as a stopped round, so no round is spent on a lock wait.
       if held_round?(round)
@@ -421,11 +460,13 @@ module Workspace
     # The lapsed delivery's time is recorded as a round record of its own (`ended: redelivered`), so its usage
     # is kept, and the round starts its clock again: a delivery mark is judged from `started_at`. The window id a
     # failed delivery kept stays on the round, so the sweep never takes that window for an orphan.
-    def deliver_again(run, ctx, redeliveries, drop = [])
+    def deliver_again(run, ctx, redeliveries, drop = [], record: true)
       state = step_state(run)
       round = state["review"]
-      add_round_record(run, round, "redelivered")
-      state["review"] = round.except("holder", "failure", *drop).merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3), "redeliveries" => redeliveries)
+      add_round_record(run, round, "redelivered") if record
+      # The earlier delivery's own marks go: a turn's end is judged from this delivery's (`clear_from` excepted: a
+      # line an earlier delivery typed into a cleared window may be the reviewers' turn, so its clear still counts).
+      state["review"] = round.except("holder", "failure", "delivered_at", "cleared_at", "kick_at", *drop).merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3), "redeliveries" => redeliveries)
       hold_delivery(state["review"])
       state["review"]["snapshot"] = @guard.round_snapshot(run["worktree"], base: run) if @guard
       run["state"] = "running"
@@ -443,7 +484,8 @@ module Workspace
       return close_review(run, ctx, state["review_window"]) if !round.is_a?(Hash) && close && state["review_window"].is_a?(Hash)
       return unless round.is_a?(Hash)
       attempt = state["attempts"].last
-      held = held_round?(round)
+      # A round an unchanged revision stopped delivered nothing, as a held one: no record, no review_ended.
+      held = held_round?(round) || round["no_change"] == true
       add_round_record(run, round, how) unless round["recorded"] || held
       state.delete("review")
       # A round a tally already ended wrote its `review_ended`.
@@ -463,6 +505,54 @@ module Workspace
       record["reviews"] = round["reviews"] if round["reviews"] && !record.key?("reviews")
       attempt = attempt.merge("rounds" => Array(attempt["rounds"]) + [record])
       copies.empty? ? attempt : attempt.merge("evidence" => Array(attempt["evidence"]) + copies)
+    end
+
+    # The reviewers of an incomplete round to run again in the same round ({WorkflowReviewTally.rerun_names}), while the
+    # round has a delivery left under the definition's `redeliver`; nil when none is run again.
+    def rerun_names(run, round, tally)
+      return nil unless tally[:outcome] == :incomplete && round.is_a?(Hash) && round["round"].is_a?(Integer)
+      return nil unless round["redeliveries"].to_i < WorkflowDefinition.redeliver(run["definition"])
+      names = WorkflowReviewTally.rerun_names(tally[:reviews])
+      names.empty? ? nil : names
+    end
+
+    # Runs only +names+ again in the round, in its directory with its revision: the part that ran is recorded
+    # (`ended: rerun`, with every row it read), the counted rows stay on the round as its `reviews`, one of its
+    # `redeliveries` is spent, and the delivery is registered on +ctx+ with the round's revision, so the verdicts
+    # already written still match it. The window the round ran in is cleared before the line is typed (`uncleared`);
+    # the round's checkout snapshot and its `review.uses` stay as they were.
+    def rerun_round(run, ctx, round, reviews, names)
+      state = step_state(run)
+      attempt = state["attempts"].last
+      details = {"step" => run["current"], "attempt" => attempt["n"], "round" => round["round"]}
+      event(run, "review_ended", details.merge("outcome" => "rerun"))
+      ended = round.merge("delivery" => nil, "ended_at" => now_iso, "reviews" => reviews)
+      state["attempts"][-1] = with_round(run, attempt, ended, "rerun")
+      reruns = round["reruns"].to_i + 1
+      redeliveries = round["redeliveries"].to_i + 1
+      kept = reviews.select { |row| row.is_a?(Hash) && row["counted"] }
+      # The rerun clears the window again, so the clear an earlier delivery made is not this rerun's: its own
+      # `clear_from` is set as its line goes out. A delivery again of the same line ({#deliver_again}) keeps it, since
+      # the line an earlier delivery typed after that clear may be the reviewers' turn.
+      state["review"] = round.except("holder", "failure", "recompute", "delivered_at", "cleared_at", "clear_from", "kick_at", "ended_at", "recorded")
+        .merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3), "redeliveries" => redeliveries, "reruns" => reruns,
+          "rerun" => names, "pending" => names, "reviews" => kept, "uncleared" => true)
+      hold_delivery(state["review"])
+      run["state"] = "running"
+      run["reason"] = nil
+      event(run, "review_rerun", details.merge("reviewers" => names, "rerun" => reruns, "redelivery" => redeliveries))
+      ctx.review(details.merge("revision" => round["revision"]).compact)
+    end
+
+    def no_change_in(run, revision, rejected)
+      state = step_state(run)
+      round = state["review"]
+      details = {"step" => run["current"], "attempt" => state["attempts"].last["n"], "round" => round["round"], "revision" => revision,
+                 "rejected_round" => rejected["round"], "rejected_attempt" => rejected["attempt"]}
+      state["review_rounds"] = [state["review_rounds"].to_i - 1, 0].max
+      state["review"] = round.except("holder").merge("delivery" => nil, "revision" => revision, "no_change" => true)
+      event(run, "review_no_change", details)
+      stop_review(run, "review_no_change", details)
     end
 
     def add_round_record(run, round, how)

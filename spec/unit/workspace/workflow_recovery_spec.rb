@@ -177,6 +177,155 @@ RSpec.describe Workspace::WorkflowRecovery do
         expect(decided[2][:problem]).to eq("the round could not be delivered: its delivery failed (agent_not_ready: not ready), and it was delivered again 2 times, its `redeliver` limit")
       end
 
+      it "judges a round whose line may have been typed before the agent daemon went away, rather than delivering it again whole" do
+        failure = {"code" => "connection_failed", "message" => "daemon gone", "at" => "2026-11-10T11:00:00Z"}
+        stored(reviewing("delivery" => "failed", "failure" => failure, "kick_at" => "2026-11-10T10:59:59.000Z", "pane" => "%9"))
+
+        recovery.tick("wr_1")
+
+        expect(evaluation.calls.first).to eq([:review_ended, "build"])
+        expect(progress.calls).to be_empty
+      end
+
+      it "judges a round whose line may have been typed even once its redeliveries are spent, so a finished review counts" do
+        stored(reviewing("holder" => holder, "kick_at" => "2026-11-10T11:00:01.000Z", "redeliveries" => 2))
+
+        described_class.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation,
+          holder_alive: ->(_found) { false }, clock: -> { now }).tick("wr_1")
+
+        expect(evaluation.calls.first).to eq([:review_ended, "build"])
+        expect(progress.calls).to be_empty
+      end
+
+      describe "with a reader of the review pane" do
+        let(:typed_failure) { {"code" => "connection_failed", "message" => "daemon gone", "at" => "2026-11-10T11:00:00Z", "typed" => true} }
+
+        def with_panes(panes)
+          described_class.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, panes: panes, clock: -> { now })
+        end
+
+        let(:recent_failure) { typed_failure.merge("at" => "2026-11-10T11:59:00Z") }
+
+        it "waits while the review pane's turn is not proven over, so a reviewer still at work is neither judged nor typed into" do
+          stored(reviewing("delivery" => "failed", "failure" => recent_failure, "kick_at" => "2026-11-10T11:58:59.000Z", "pane" => "%9"))
+
+          expect(with_panes(RecordingWorkflowPanes.new).tick("wr_1")).to be_nil
+          expect(evaluation.calls + progress.calls).to be_empty
+        end
+
+        it "judges a round whose review pane shows a shell: its agent exited" do
+          stored(reviewing("delivery" => "failed", "failure" => recent_failure, "kick_at" => "2026-11-10T11:58:59.000Z", "pane" => "%9"))
+          shell = {"kind" => "shell", "idle_seconds" => Workspace::WorkflowPanes::AGENT_GONE_AFTER}
+
+          with_panes(RecordingWorkflowPanes.new(rows: {"%9" => shell})).tick("wr_1")
+
+          expect(evaluation.calls.first).to eq([:review_ended, "build"])
+        end
+
+        it "judges the round anyway once its wait passed the delivery window, whatever the pane shows (a prompt, an unread pane)" do
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T10:59:59.000Z", "pane" => "%9"))
+
+          with_panes(RecordingWorkflowPanes.new).tick("wr_1")
+
+          expect(evaluation.calls.first).to eq([:review_ended, "build"])
+        end
+
+        def claude_row(state, **rest) = {"kind" => "claude", "state" => state, "idle_seconds" => 0}.merge(rest)
+
+        it "waits for a reviewer at work past the short wait, and stops the round review_incomplete once the review's timeout has passed, running no one again" do
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:50:00.000Z", "pane" => "%9"))
+          busy = RecordingWorkflowPanes.new(rows: {"%9" => claude_row("working")})
+
+          expect(with_panes(busy).tick("wr_1")).to be_nil
+          expect(evaluation.calls).to be_empty
+
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:29:59.000Z", "pane" => "%9"))
+          with_panes(busy).tick("wr_1")
+
+          expect(evaluation.calls).to be_empty
+          decided = progress.calls.last
+          expect(decided[0..1]).to eq([:decide_review, "build"])
+          expect(decided[2]).to include(outcome: :incomplete, reviews: [])
+          expect(decided[2][:problem]).to include("still at work when the round's review timeout passed")
+        end
+
+        it "waits for an agent daemon that can't be reached until the review's timeout, then judges the round" do
+          down = RecordingWorkflowPanes.new(no_daemon: true)
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:50:00.000Z", "pane" => "%9"))
+
+          expect(with_panes(down).tick("wr_1")).to be_nil
+
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:29:59.000Z", "pane" => "%9"))
+          with_panes(down).tick("wr_1")
+
+          expect(evaluation.calls.first).to eq([:review_ended, "build"])
+        end
+
+        it "counts running sub-agents in an idle-looking pane as at work" do
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:50:00.000Z", "pane" => "%9"))
+
+          expect(with_panes(RecordingWorkflowPanes.new(rows: {"%9" => claude_row("idle", "subagents" => [{"id" => "a"}])})).tick("wr_1")).to be_nil
+        end
+
+        it "never judges a review pane waiting for an answer by a wait, however long" do
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T09:00:00.000Z", "pane" => "%9"))
+
+          expect(with_panes(RecordingWorkflowPanes.new(rows: {"%9" => claude_row("waiting")})).tick("wr_1")).to be_nil
+          expect(evaluation.calls).to be_empty
+        end
+
+        it "judges a round with no daemon row for its pane once the short wait is over" do
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:50:00.000Z", "pane" => "%9"))
+
+          with_panes(RecordingWorkflowPanes.new).tick("wr_1")
+
+          expect(evaluation.calls.first).to eq([:review_ended, "build"])
+        end
+
+        it "answers nil, having done nothing, while a failed round waits out its backoff" do
+          stored(reviewing("delivery" => "failed", "failure" => {"code" => "agent_not_ready", "message" => "x", "at" => "2026-11-10T11:59:50Z"}))
+
+          expect(with_panes(RecordingWorkflowPanes.new).tick("wr_1")).to be_nil
+        end
+
+        it "waits the definition's stall on top of the delivery window" do
+          at = (now - Workspace::WorkflowTransitions::DELIVERY_WINDOW - 30).utc.iso8601
+          given = reviewing("delivery" => "failed", "failure" => typed_failure.merge("at" => at), "kick_at" => at, "pane" => "%9")
+          given["definition"]["stall"] = 60
+          stored(given)
+
+          expect(with_panes(RecordingWorkflowPanes.new).tick("wr_1")).to be_nil
+        end
+
+        it "judges the round once the review pane's turn is proven over, or the pane is gone" do
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T10:59:59.000Z", "pane" => "%9"))
+          with_panes(RecordingWorkflowPanes.new(turn_over: ["%9"])).tick("wr_1")
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T10:59:59.000Z", "pane" => "%9"))
+          with_panes(RecordingWorkflowPanes.new(gone: ["%9"])).tick("wr_1")
+
+          expect(evaluation.calls.map(&:first).count(:review_ended)).to eq(2)
+          expect(progress.calls).to be_empty
+        end
+      end
+
+      it "delivers again whole a round whose line was not confirmed (not_delivered): only a failure.typed says it went out" do
+        failure = {"code" => "not_delivered", "message" => "no confirmation", "at" => "2026-11-10T11:00:00Z"}
+        stored(reviewing("delivery" => "failed", "failure" => failure, "kick_at" => "2026-11-10T10:59:59.000Z"))
+
+        recovery.tick("wr_1")
+
+        expect(progress.calls).to eq([[:redeliver_round, "build"]])
+      end
+
+      it "delivers again whole a round whose failure proves the line never went out, though it got as far as typing" do
+        failure = {"code" => "pane_busy", "message" => "busy", "at" => "2026-11-10T11:00:00Z"}
+        stored(reviewing("delivery" => "failed", "failure" => failure, "kick_at" => "2026-11-10T10:59:59.000Z"))
+
+        recovery.tick("wr_1")
+
+        expect(progress.calls).to eq([[:redeliver_round, "build"]])
+      end
+
       it "stops a round whose failure no delivery again gets past at once" do
         failure = {"code" => "review_custom_socket", "message" => "own socket", "at" => "2026-11-10T11:00:00Z"}
         stored(reviewing("delivery" => "failed", "failure" => failure))

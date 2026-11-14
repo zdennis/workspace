@@ -1666,6 +1666,45 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(stored_run(store, "wr_1")["reason"]).to include("code" => "review_incomplete")
     end
 
+    it "reads the verdicts of a round whose line may have been typed when its pane then shows a shell, rather than delivering it again" do
+      typed = {"code" => "connection_failed", "message" => "daemon gone", "at" => now.first.utc.iso8601, "typed" => true}
+      review({"delivery" => "failed", "failure" => typed, "kick_at" => now.first.utc.iso8601(3)})
+      panes.rows["%9"] = {"pane_id" => "%9", "kind" => "shell", "state" => "idle", "idle_seconds" => Workspace::WorkflowPanes::AGENT_GONE_AFTER}
+      advance(61)
+
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "evaluated", "cause" => "agent_gone")
+      expect(stored_run(store, "wr_1")["reason"]).to include("code" => "review_incomplete")
+    end
+
+    it "hands a round whose line may have been typed to tick past the short wait, and leaves one whose reviewer is at work" do
+      typed = {"code" => "connection_failed", "message" => "daemon gone", "at" => now.first.utc.iso8601, "typed" => true}
+      review({"delivery" => "failed", "failure" => typed, "kick_at" => now.first.utc.iso8601(3)})
+      review_pane_shows("working", idle_seconds: 0)
+      advance(Workspace::WorkflowTransitions::DELIVERY_WINDOW + Workspace::WorkflowDefinition.stall(stored_run(store, "wr_1")["definition"]).to_i + 1)
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "reviewing", "cause" => "round_maybe_typed")
+      expect(stored_run(store, "wr_1")["reason"]).to be_nil
+
+      panes.rows.delete("%9")
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "evaluated", "cause" => "round_maybe_typed")
+      expect(stored_run(store, "wr_1")["reason"]).to include("code" => "review_incomplete")
+    end
+
+    it "decides a round whose line may have been typed in tick once its pane shows a shell" do
+      typed = {"code" => "connection_failed", "message" => "daemon gone", "at" => now.first.utc.iso8601, "typed" => true}
+      review({"delivery" => "failed", "failure" => typed, "kick_at" => now.first.utc.iso8601(3)})
+      panes.rows["%9"] = {"pane_id" => "%9", "kind" => "shell", "state" => "idle", "idle_seconds" => Workspace::WorkflowPanes::AGENT_GONE_AFTER}
+      advance(61)
+
+      engine.tick("wr_1")
+
+      expect(stored_run(store, "wr_1")["reason"]).to include("code" => "review_incomplete")
+    end
+
     it "waits out the backoff of a round whose delivery failed" do
       review({"delivery" => "failed", "pane" => nil, "failure" => {"code" => "agent_not_ready", "message" => "not ready", "at" => now.first.utc.iso8601}})
 

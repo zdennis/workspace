@@ -722,6 +722,14 @@ RSpec.describe Workspace::InboxDerived do
       expect(read[:rows].map { |r| r["title"] }).to include("Workflow Fix login: step build, its review pane waits for an answer")
     end
 
+    it "gives a review pane's prompt the run's row for a round whose delivery failed after its line may have been typed" do
+      run = reviewing_run(code: "waiting_you", details: {"kind" => "prompt", "role" => "reviewer", "step" => "build", "pane" => "%9"})
+      run["current"]["review"] = {"round" => 1, "delivery" => "failed", "pane" => "%9"}
+      workflow_reply["runs"] = [run]
+
+      expect(read[:rows].map { |r| r["title"] }).to include("Workflow Fix login: step build, its review pane waits for an answer")
+    end
+
     it "escapes a run's text in the title" do
       workflow_reply["runs"] = [reviewing_run(code: "review_incomplete", details: {"step" => "build"}).tap { |run| run["title"] = "bad\e[31m" }]
 

@@ -190,6 +190,21 @@ RSpec.describe Workspace::WorkflowSimScript do
     it "refuses a revision_changes that is not a boolean" do
       expect(problems("steps:\n  design: [{revision_changes: yes please}]\n")).to match([a_string_matching(/revision_changes must be true or false/)])
     end
+
+    it "reads reruns, one verdict map per rerun of the round's missing reviewers, and unchanged" do
+      script = parse("steps:\n  design:\n    - {reviews: {skeptic: approve}, reruns: [{builder: approve}, {}], unchanged: false}\n")
+
+      expect(script.attempt("design", 1)).to include("reruns" => [{"builder" => "approve"}, {}], "unchanged" => false)
+    end
+
+    it "refuses reruns that are not a list of verdict maps, an unknown reviewer in one, and an unchanged that is not a boolean" do
+      expect(problems("steps:\n  design: [{reruns: {builder: approve}}]\n")).to match([a_string_matching(/reruns must be a list, one mapping of reviewers/)])
+      expect(problems("steps:\n  design: [{reruns: [{nobody: approve}]}]\n")).to match([a_string_matching(/reruns\[0\] "nobody": the step has no such reviewer/)])
+      expect(problems("steps:\n  design: [{unchanged: maybe}]\n")).to match([a_string_matching(/unchanged must be true or false/)])
+      expect(problems("steps:\n  build: [{reruns: [], unchanged: true}]\n")).to match([
+        a_string_matching(/reruns is set, and the step has no review:/), a_string_matching(/unchanged is set, and the step has no review:/)
+      ])
+    end
   end
 
   describe "require exec" do

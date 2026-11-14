@@ -293,6 +293,16 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(excludes.calls).to eq([[:add, @dir, "/.workflow/"]])
     end
 
+    it "writes a rerun's prompt for its reviewers only, beside the round's own, saying the other verdicts stand" do
+      answer = prompt.review_text(reviewed_run, reviewed, 1, 2, "abc123", only: %w[builder], rerun: 1)
+
+      expect(answer["path"]).to eq(File.join(artifacts, "steps", "plan.1.r2.rerun1.review.md"))
+      expect(answer["text"]).to include("This round runs again for builder only: its verdict was missing or could not be counted. " \
+        "The verdicts of skeptical, fair in the round's directory stand: do not run those reviewers, and leave their files alone.")
+      expect(answer["text"]).to include("## Reviewer builder (Builder)", "Order: run builder alone")
+      expect(answer["text"]).not_to include("## Reviewer skeptical", "## Reviewer fair")
+    end
+
     it "passes a failed write on" do
       failing = described_class.new(composer: composer, git: git, excludes: excludes, prompt_writer: ->(*, **) { raise Errno::ENOSPC })
 
