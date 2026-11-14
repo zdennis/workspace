@@ -587,7 +587,9 @@ module Workspace
         return document("run" => run, "attempts" => result["attempts"], "unowned_reasons" => result["unowned_reasons"]) if json
         @output.puts "No attempts recorded for #{run}#{" step #{TerminalText.escape(step)}" if step}." if result["attempts"].empty?
         unless result["attempts"].empty?
-          table = [%w[STEP ATTEMPT OUTCOME CODE HEAD DURATION TOKENS]] + result["attempts"].map { |each| attempt_cells(each) }
+          reviewed = result["attempts"].any? { |each| each["review"] }
+          table = [%w[STEP ATTEMPT OUTCOME CODE HEAD DURATION TOKENS] + (reviewed ? %w[REVIEW] : [])] +
+            result["attempts"].map { |each| attempt_cells(each) + (reviewed ? [TerminalText.escape(each["review"] || "-")] : []) }
           widths = table.transpose.map { |column| column.map(&:length).max }
           table.each { |cells| @output.puts cells.each_with_index.map { |cell, index| cell.ljust(widths[index]) }.join("  ").rstrip }
         end
@@ -1573,11 +1575,27 @@ module Workspace
         reason = current["reason"]
         @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
+        describe_review(current["review"]) if current["review"]
         parked = current["parked"]
         @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked
         @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }
+      end
+
+      # The round of a step being reviewed: which round of how many, the verdicts so far, who is still out, and where.
+      # Everything comes from the run file, so each value is escaped for a terminal.
+      def describe_review(review)
+        escape = ->(value) { TerminalText.escape(value.to_s) }
+        round = "round #{review["round"]} of #{review["max_rounds"]}"
+        round += ", stopped; a resume starts round #{review["next_round"]}#{" (past the cap of #{review["max_rounds"]} rounds)" if review["rounds_spent"]}" if review["stopped"]
+        round += ", held (#{escape.call(review["held"])}); it starts as round #{review["next_round"]}" if review["held"]
+        pending = review["pending"].empty? ? "" : ", waiting for #{review["pending"].map(&escape).join(", ")}"
+        where = review["pane"] ? ", review pane #{escape.call(review["pane"])}" : ""
+        @output.puts "  review: #{round}; #{review["approvals"]} of #{review["need"]} approvals#{pending}#{where}"
+        review["reviews"].each do |row|
+          @output.puts "    #{escape.call(row["reviewer"])}: #{escape.call(row["verdict"] || "no verdict#{" (#{row["problem"]})" if row["problem"]}")}#{" [#{escape.call(row["isolation"])}]" if row["isolation"]}"
+        end
       end
 
       # What a person has to supply, shown as an upper-case placeholder where it goes.
@@ -1612,7 +1630,7 @@ module Workspace
         when "waiting_you"
           case details["kind"]
           when "gate" then "step #{details["step"]} passed and waits for approval#{" (#{details["artifacts"].join(", ")})" if details["artifacts"].any?}"
-          when "prompt" then "pane #{details["pane"]} is waiting for an answer#{": #{details["message"]}" if details["message"]}"
+          when "prompt" then "#{"review " if details["role"] == "reviewer"}pane #{details["pane"]} is waiting for an answer#{": #{details["message"]}" if details["message"]}"
           when "ask" then "open question #{details["ask"]}: #{details["question"]}"
           when "delivery" then "step #{details["step"]}'s line was on its way to pane #{details["pane"]} when the process typing it stopped; the agent may not have it"
           else "step #{details["step"]} could not be started (#{details["error"]}): #{details["message"]}"
@@ -1642,6 +1660,7 @@ module Workspace
         when "retry_backoff"
           "step #{details["step"]} failed; step #{details["to"]} starts again at #{details["until"]} (after #{details["seconds"].to_f.round} seconds), or sooner with a resume"
         when "pane_gone" then "pane #{details["pane"]} of #{details["workspace"]} is not running#{": #{details["message"]}" if details["message"]}"
+        when *WorkflowTransitions::REVIEW_STOPS then "step #{details["step"]}'s review round #{details["round"]} stopped#{": #{TerminalText.escape(details["problem"].to_s)}" if details["problem"]}"
         else details.to_s
         end
       end

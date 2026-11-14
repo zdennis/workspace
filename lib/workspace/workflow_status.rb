@@ -181,7 +181,7 @@ module Workspace
     def prefetch_snapshots(stored)
       names = stored.filter_map do |run|
         next if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
-        run.workspace if run.parked || %w[running checking].include?(run.step(run.current)&.state)
+        run.workspace if run.parked || %w[running checking].include?(run.step(run.current)&.state) || review_pane_of(run)
       end.uniq
       clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
       deadline = clock.call + @snapshot_timeout + @list_grace
@@ -207,13 +207,19 @@ module Workspace
       state = run.steps.fetch(run.current)
       finished = WorkflowRunStore::TERMINAL_STATES.include?(run.state)
       pane = finished ? nil : (run.parked&.dig("pane") || @panes.pane_of(run.id) || run.pane)
-      # A reviewing step is not read from the author's pane, whose turn is over; its stored reason is shown.
       working = !finished && %w[running checking].include?(state.state)
-      daemon_warning(run, working, warnings) unless finished
+      # A reviewing step is not read from the author's pane, whose turn is over: while its round is live, the review
+      # pane is read instead. A stopped or held round shows its stored reason.
+      review_pane = finished ? nil : review_pane_of(run)
+      daemon_warning(run, working || (!finished && round_live?(run)), warnings) unless finished
       # What the pane shows matters only while an agent should be working in it, or a parked resume waits on
       # it; a run parked before its first step has no binding for `alive?` to find.
-      shown = ((working && @panes.alive?(run.id)) || (!finished && run.parked)) ? pane_state(run.workspace, pane, warnings) : nil
-      reason = finished ? nil : reason_for(run, working, pane, shown, warnings)
+      shown = if (working && @panes.alive?(run.id)) || (!finished && run.parked)
+        pane_state(run.workspace, pane, warnings)
+      elsif review_pane
+        pane_state(run.workspace, review_pane, warnings)
+      end
+      reason = finished ? nil : reason_for(run, working, pane, shown, warnings, review_pane: review_pane)
       reason = with_gate_file(run, reason, warnings) if reason
       {
         "id" => run.id, "workflow" => run.workflow, "title" => run.title, "workspace" => run.workspace,
@@ -221,9 +227,9 @@ module Workspace
         "created_at" => run.created_at, "started_at" => run.started_at, "ended_at" => run.ended_at,
         "cancelled_by" => run.cancelled_by,
         "current" => {"step" => run.current, "attempt" => state.last_attempt&.n, "state" => state.state,
-                      "reason" => shown_reason(run, reason, pane),
+                      "reason" => shown_reason(run, reason, review_pane || pane),
                       "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state))
-            .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)),
+            .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)).merge(finished ? {} : review_row(run, state)),
         "steps" => run.definition["steps"].map { |step| step_row(step, run.steps.fetch(step["id"]), run) },
         "base_sha" => run.base_sha, "pane" => pane, "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
         "artifacts_dir" => run.artifacts_dir, "events_path" => @store.events_path(run.id),
@@ -282,6 +288,51 @@ module Workspace
                    "actions" => actions(run, {"code" => code, "details" => {}}, pane)}}
     end
 
+    # The review round of a `reviewing` step, as `current.review` shows it (absent for any other step, and for a
+    # reviewing step that stored no round): `round` and `max_rounds`, `need` and `must`, `approvals` and `pending`
+    # (the reviewers with no verdict yet, from the verdict rows a stopped round read), `pane` and `window`, the
+    # `delivery` mark, `started_at`, `stopped` (the round ended without deciding; a resume starts `next_round`),
+    # `held` (the reason that kept a round from starting; `next_round` is then the round its release starts) and
+    # `reviews`, each row with its `isolation`.
+    def review_row(run, state)
+      round = state.review
+      spec = review_spec(run)
+      return {} unless state.state == "reviewing" && round.is_a?(Hash) && spec
+      rows = Array(round["reviews"]).grep(Hash)
+      decided = rows.select { |row| row["verdict"] }
+      pending = rows.empty? ? Array(round["pending"] || spec["from"]) : spec["from"] - decided.map { |row| row["reviewer"] }
+      # A resume of a stopped round starts the next one. The engine does not stop at `max_rounds` yet, so `rounds_spent`
+      # only says the round it would start is past the cap.
+      next_round = if state.review_held? then round["round"]
+      elsif state.review_stopped? then round["round"].to_i + 1
+      end
+      {"review" => {"round" => round["round"], "max_rounds" => spec["max_rounds"], "need" => spec["need"], "must" => spec["must"],
+                    "approvals" => decided.count { |row| row["verdict"] == "approve" }, "pending" => pending,
+                    "pane" => round["pane"], "window" => round["window"], "delivery" => round["delivery"], "started_at" => round["started_at"],
+                    "stopped" => state.review_stopped?, "held" => round["held"], "next_round" => next_round,
+                    "rounds_spent" => !next_round.nil? && next_round > spec["max_rounds"].to_i,
+                    "reviews" => rows.map { |row| REVIEW_ROW_KEYS.to_h { |key| [key, row[key]] } }}}
+    end
+
+    # The keys of a verdict row `current.review.reviews` shows, each null when the stored row lacks it.
+    REVIEW_ROW_KEYS = %w[reviewer verdict revision counted problem isolation].freeze
+
+    # The current step's `review:` settings from the run's stored definition; nil when it has none.
+    def review_spec(run)
+      WorkflowDefinition.review(run.definition["steps"].find { |step| step["id"] == run.current })
+    end
+
+    # The review pane of a round an agent should be working in; nil for any other run and step, and for a round
+    # not delivered yet.
+    def review_pane_of(run)
+      round_live?(run) ? run.step(run.current).review["pane"] : nil
+    end
+
+    # Whether the current step is `reviewing` with a round under way and the run stores no reason ({WorkflowRun::Step#review_live?}).
+    def round_live?(run)
+      run.reason.nil? && (run.step(run.current)&.review_live? || false)
+    end
+
     # A live park, as `current` shows it; never its note.
     def parked_row(run, pane)
       return {} unless live_park?(run)
@@ -301,11 +352,13 @@ module Workspace
 
     # An approved gate's note file, as recorded, and whether its bytes changed since; `gate_note` is the text the person
     # gave to approve or reject (null when none, and for a run stored before it was shown).
+    # A step that was ever reviewed adds `review_rounds`, the rounds it has spent.
     def step_row(step, state, run)
       file = state.gate&.dig("file")
       {"id" => step["id"], "title" => step["title"], "state" => state.state, "attempts" => state.attempts.size,
        "gate" => state.gate&.dig("state"), "gate_note" => state.gate&.dig("note"), "gate_file" => file,
        "note_changed" => file ? WorkflowGateNote.sha256(file["path"]) != file["sha256"] : false}
+        .merge(state.review_rounds ? {"review_rounds" => state.review_rounds} : {})
     end
 
     # A waiting gate's reason names the note to read, hashed now; null when the gate names
@@ -338,12 +391,14 @@ module Workspace
     # The stored reason stands unless an agent should be working: then what
     # the pane shows comes first. A parked run hides it: the resume needs it,
     # and nobody has to act on it.
-    def reason_for(run, working, pane, shown, warnings)
+    def reason_for(run, working, pane, shown, warnings, review_pane: nil)
       case WorkflowEngine.parked(run.to_h, @clock.call)
       when :waiting then return waiting_on_person(run, pane, shown, warnings)
       when :expired then return gate_waiting?(run) ? run.reason : park_timeout(run, pane)
       end
       stored = run.reason
+      # A live round has no stored reason (`round_live?`), so there is nothing to fall back to when the pane shows nothing.
+      return review_prompt(run, review_pane, shown, warnings) if review_pane
       return stored unless working
       unless @panes.alive?(run.id)
         return {"code" => "pane_gone", "since" => stored&.fetch("since", nil) || run.steps.fetch(run.current).last_attempt&.started_at,
@@ -400,6 +455,13 @@ module Workspace
        "details" => {"kind" => "delivery", "step" => run.current, "attempt" => attempt["n"], "pane" => pane, "workspace" => run.workspace}}
     end
 
+    # What a live round's review pane shows: a permission prompt, or an open question asked from that pane, holds the
+    # run (`details.role` `reviewer`). Nothing else is shown; the round's own turn end decides it.
+    def review_prompt(run, review_pane, shown, warnings)
+      reason = waiting_on_person(run, review_pane, shown, warnings)
+      reason&.merge("details" => reason["details"].merge("role" => "reviewer"))
+    end
+
     def waiting_on_person(run, pane, shown, warnings)
       if shown && shown["state"] == "waiting"
         return {"code" => "waiting_you", "since" => shown["waiting_since"],
@@ -446,6 +508,8 @@ module Workspace
       if timeout && started && %w[running checking].include?(state.state) && @clock.call - Time.iso8601(started) > timeout
         flags << "timed_out"
       end
+      flags << "timed_out" if round_timed_out?(run, state)
+      flags << "delivering" if round_live?(run) && WorkflowTransitions.round_delivery(state.review, @clock.call) == :delivering
       delivering = WorkflowEngine.delivery(state.last_attempt&.to_h, @clock.call) == :delivering
       flags << "delivering" if delivering
       flags << "parked" if live_park?(run)
@@ -455,6 +519,16 @@ module Workspace
       end
       flags << "background_work" if run.reason&.dig("code") == "turn_ended_background"
       flags
+    end
+
+    # A live review round past its `review.timeout`, counted from the round's start; nothing is stopped for it.
+    def round_timed_out?(run, state)
+      return false unless round_live?(run)
+      timeout = review_spec(run)&.dig("timeout")
+      started = state.review["started_at"]
+      !!(timeout && started && @clock.call - Time.iso8601(started) > timeout)
+    rescue ArgumentError
+      false
     end
 
     # A pane reads idle for a moment right after a dispatch, before the agent takes the prompt.
@@ -541,6 +615,8 @@ module Workspace
           [resume, from.call(reason.dig("details", "step"))] + accept + [cancel]
         end
       when "stalled", "idle" then [resume, cancel]
+      # A stopped round: a resume starts a fresh round (after a rejection, a new attempt); `--from` runs the step again.
+      when *WorkflowTransitions::REVIEW_STOPS then [resume, from.call(reason.dig("details", "step") || run.current), cancel]
       when "pane_gone" then [action("launch", run.workspace), action("workflow resume", id, needs: with_pane), cancel]
       else [cancel]
       end

@@ -491,6 +491,26 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to include("flag: parked\n  parked: pane %5 until 2026-10-04T14:00:00Z; carried out once that pane's turn ends\n")
     end
 
+    it "prints a step being reviewed: the round, the approvals, who is out and the review pane, escaped" do
+      round = {"round" => 2, "max_rounds" => 6, "need" => 2, "approvals" => 1, "pending" => ["sk\e[31meptic"], "pane" => "%9", "stopped" => true, "held" => nil, "next_round" => 3,
+               "reviews" => [{"reviewer" => "owl", "verdict" => "approve", "isolation" => "review_pane"}, {"reviewer" => "scribe", "verdict" => nil, "problem" => "missing", "isolation" => "review_pane"}]}
+      stopped = shown("state" => "waiting", "current" => {"step" => "plan", "attempt" => 1, "state" => "reviewing", "flags" => [], "review" => round,
+                                                          "reason" => reason("review_incomplete", {"step" => "plan", "round" => 2, "problem" => "a verdict is missing"},
+                                                            [{"action" => "workflow resume", "args" => ["wr_1"], "needs" => []}])})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [stopped], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to eq(<<~TEXT)
+        wr_1  flow  app  waiting  step plan (attempt 1), reviewing
+          review_incomplete: step plan's review round 2 stopped: a verdict is missing
+          review: round 2 of 6, stopped; a resume starts round 3; 1 of 2 approvals, waiting for sk\\e[31meptic, review pane %9
+            owl: approve [review_pane]
+            scribe: no verdict (missing) [review_pane]
+            workspace workflow resume wr_1
+      TEXT
+    end
+
     let(:gate) do
       shown("state" => "waiting", "current" => {"step" => "plan", "attempt" => 1, "state" => "passed", "flags" => ["timed_out"],
                                                 "reason" => reason("waiting_you", {"kind" => "gate", "step" => "plan", "artifacts" => ["/src/app/.workflow/wr_1/plan.md"]},
@@ -2076,6 +2096,19 @@ RSpec.describe Workspace::Commands::Workflow do
         "implement  1        failed   require_commits  4f2a91c>4f2a91c  125s      412000/18300",
         "implement  2        -        -                ->-              -         -"
       ])
+    end
+
+    it "adds a REVIEW column only when an attempt was reviewed" do
+      create_run
+      edit_run(real_store, "wr_2611010900abcd") do |stored|
+        stored["steps"]["implement"]["attempts"][0].merge!("reviews" => [{"reviewer" => "skeptic", "verdict" => "reject"}, {"reviewer" => "owl", "verdict" => "approve"}])
+      end
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string.lines.map(&:rstrip).first).to end_with("TOKENS        REVIEW")
+      expect(output.string.lines[1].rstrip).to end_with("1/2 approve, skeptic reject")
+      expect(output.string.lines[2].rstrip).to end_with("-")
     end
 
     it "prints the documented fields as JSON, with an old attempt's missing keys null" do

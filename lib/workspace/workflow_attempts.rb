@@ -54,7 +54,22 @@ module Workspace
        "packs" => attempt.packs, "outputs" => attempt.outputs, "check" => check,
        "reported" => attempt.reported, "proofs" => attempt.proofs, "usage" => attempt.usage, "evidence" => attempt.evidence, "reasons" => attempt.reasons,
        "warnings" => attempt.warnings, "rounds" => attempt.rounds,
-       "redelivered" => (attempt.redelivered == true) ? true : nil}
+       "redelivered" => (attempt.redelivered == true) ? true : nil,
+       "review" => review_summary(attempt), "review_outcome" => attempt.review_outcome, "reviews" => attempt.reviews}
+    end
+
+    # The verdicts of a reviewed attempt in a line (`2/3 approve, skeptic reject`): the approvals of the verdict rows
+    # it kept, then each reviewer who rejected; nil for an attempt with none. A reviewer that gave no verdict
+    # (a row with `problem`) is counted in the total and named after `no verdict`.
+    def review_summary(attempt)
+      rows = Array(attempt.reviews).grep(Hash)
+      return nil if rows.empty?
+      approved = rows.count { |each| each["verdict"] == "approve" }
+      rejected = rows.select { |each| each["verdict"] == "reject" }.map { |each| "#{each["reviewer"]} reject" }
+      missing = rows.select { |each| each["verdict"].nil? }.map { |each| each["reviewer"] }
+      parts = ["#{approved}/#{rows.size} approve"] + rejected
+      parts << "no verdict: #{missing.join(", ")}" unless missing.empty?
+      parts.join(", ")
     end
   end
 end

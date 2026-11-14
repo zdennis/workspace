@@ -13,7 +13,8 @@ module Workspace
   # - `not_delivered` (and an attempt marked `redelivered`, which is an undelivered one typed again) never
   #   reached the agent, so it did no work: it is counted apart and left out of the pass counts, the median
   #   and the tokens.
-  # - `unfinished` is any other attempt (no outcome yet because it is still going, it was replaced
+  # - `unfinished` is any other attempt (no outcome yet because it is still going, it ended `checks_passed` and
+  #   waits for its review round to rewrite it as `passed` or `failed`, it was replaced
   #   without ending, or a cancel or kill closed it with outcome `cancelled`). It is counted apart and left
   #   out of everything else, its `ended_at` included: it never enters the median.
   #

@@ -542,6 +542,10 @@ module Workspace
       details.is_a?(Hash) && details["cause"] == "guard" && details["guard"] == "no_commit" && run["base_sha"].to_s.empty?
     end
 
+    # The reasons a review round stops the run with, the one list every reader of a stopped round matches against
+    # (`review_custom_socket` and the other review codes are errors, not stops).
+    REVIEW_STOPS = %w[review_incomplete review_rejected review_stale review_guard review_tampered].freeze
+
     # The guard stops `workflow resume --accept-guard` takes: every guard that fails a step. `config_changed` is
     # only ever a warning, so it is not among them.
     ACCEPTABLE_GUARDS = %w[head_moved hooks_changed hidden_changed no_commit operation_in_progress tracked_changed].freeze

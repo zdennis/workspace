@@ -123,4 +123,33 @@ RSpec.describe Workspace::WorkflowNeedsMe do
   it "tolerates a row with no current block" do
     expect(needs_me.rows([{"id" => "wr_1", "state" => "running"}])).to eq([])
   end
+
+  describe "a step being reviewed" do
+    def reviewing(id, reason:)
+      row = run(id, reason: reason)
+      row["current"] = row["current"].merge("step" => "build", "state" => "reviewing")
+      row
+    end
+
+    def resume_from(id) = {"action" => "workflow resume", "args" => [id, "--from", "build"], "needs" => []}
+
+    %w[review_incomplete review_tampered review_stale review_guard review_rejected].each do |code|
+      it "lists a round stopped on #{code}, resume first" do
+        actions = [resume("wr_1"), resume_from("wr_1"), cancel("wr_1")]
+        rows = needs_me.rows([reviewing("wr_1", reason: reason(code, details: {"step" => "build", "round" => 1, "problem" => "missing"}, actions: actions))])
+
+        expect(rows.map { |row| row.slice("code", "step", "next_action") }).to eq([{"code" => code, "step" => "build", "next_action" => resume("wr_1")}])
+      end
+    end
+
+    it "lists a review pane waiting on a permission prompt" do
+      prompt = reason("waiting_you", details: {"kind" => "prompt", "role" => "reviewer", "pane" => "%9"}, actions: [{"action" => "focus", "args" => ["app", "--pane", "%9"], "needs" => []}])
+
+      expect(needs_me.rows([reviewing("wr_1", reason: prompt)]).map { |row| row["kind"] }).to eq(["prompt"])
+    end
+
+    it "leaves out a round that is running, which has no reason" do
+      expect(needs_me.rows([reviewing("wr_1", reason: nil)])).to eq([])
+    end
+  end
 end

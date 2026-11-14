@@ -203,6 +203,7 @@ module Workspace
         reason = current["reason"]
         next unless reason
         next undelivered_row(run, current, reason) if undelivered?(reason)
+        next review_stop_row(run, current, reason) if review_stop?(reason)
         next unless reason["code"] == "waiting_you" && reason.dig("details", "kind") == "gate"
         step = Array(run.steps).find { |each| each["id"] == current["step"] }
         next unless step && step["gate"] == "waiting"
@@ -249,6 +250,20 @@ module Workspace
     # it works out itself has no kind.
     def undelivered?(reason)
       %w[waiting_you pane_gone].include?(reason["code"]) && reason.dig("details", "kind") == "dispatch"
+    end
+
+    # A review round that stopped (`review_incomplete`, `review_rejected`, ...) or whose pane waits on a permission
+    # prompt: review panes are left out of the pane rows, so the run's own row is the one that says so.
+    def review_stop?(reason)
+      WorkflowTransitions::REVIEW_STOPS.include?(reason["code"]) || (reason["code"] == "waiting_you" && reason.dig("details", "kind") == "prompt" && reason.dig("details", "role") == "reviewer")
+    end
+
+    def review_stop_row(run, current, reason)
+      what = (reason["code"] == "waiting_you") ? "its review pane waits for an answer" : "its review stopped (#{TerminalText.escape(reason["code"])})"
+      row(id: "workflow:waiting_you:#{run.id}", kind: "workflow_waiting_you", fingerprint: "#{current["step"]}:#{reason["code"]}:#{reason.dig("details", "round")}:#{reason["since"]}",
+        scope: workspace_scope(run.workspace), title: one_line("Workflow #{TerminalText.escape(run.title || run.workflow)}: step #{TerminalText.escape(current["step"])}, #{what}"),
+        body: nil, since: reason["since"],
+        links: {"run_id" => run.id, "step" => current["step"], "attempt" => current["attempt"]})
     end
 
     def undelivered_row(run, current, reason)

@@ -326,4 +326,14 @@ RSpec.describe Workspace::WorkflowStats do
       expect(result).to include("runs" => 0, "unreadable" => 1)
     end
   end
+
+  it "counts a checks_passed attempt (a reviewed step awaiting its round) as unfinished, leaving it out of the rest" do
+    run = JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/reviewing.json"))).merge("id" => "wr_1", "workflow" => "rpiv")
+    FileUtils.mkdir_p(runs_dir)
+    File.write(File.join(runs_dir, "wr_1.json"), JSON.generate(run))
+
+    build = row(stats.read(workflow: "rpiv"), "build")
+
+    expect(build).to include("attempts" => 0, "passed" => 0, "failed" => 0, "unfinished" => 1, "median_seconds" => nil)
+  end
 end

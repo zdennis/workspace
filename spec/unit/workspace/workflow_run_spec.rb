@@ -339,4 +339,19 @@ RSpec.describe Workspace::WorkflowRun do
       expect(described_class.from_h("parked" => {"id" => "p1"}, "pending_context" => []).drop_park.to_h).to eq("pending_context" => [])
     end
   end
+  describe Workspace::WorkflowRun::Step, "review predicates" do
+    def step(state, review) = described_class.from_h({"state" => state, "review" => review}.compact)
+
+    it "reads a round under way as live, a held one as held and an ended one as stopped" do
+      expect(step("reviewing", {"round" => 1, "delivery" => "delivering"})).to have_attributes(review_live?: true, review_held?: false, review_stopped?: false)
+      expect(step("reviewing", {"round" => 2, "held" => "budget_spent"})).to have_attributes(review_live?: false, review_held?: true, review_stopped?: false)
+      expect(step("reviewing", {"round" => 1, "ended_at" => "t"})).to have_attributes(review_live?: false, review_held?: false, review_stopped?: true)
+    end
+
+    it "does not read a failed delivery, another state or no round as live" do
+      expect(step("reviewing", {"round" => 1, "delivery" => "failed"}).review_live?).to be(false)
+      expect(step("running", {"round" => 1}).review_live?).to be(false)
+      expect(step("reviewing", nil)).to have_attributes(review_live?: false, review_held?: false, review_stopped?: false)
+    end
+  end
 end

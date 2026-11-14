@@ -328,4 +328,27 @@ RSpec.describe Workspace::WorkflowCompare do
     loaded = loader.load(workflow: "rpiv")
     expect(compare.read(workflow: "ignored", by: "definition", loaded: loaded)["runs"]).to eq(1)
   end
+
+  describe "a step being reviewed (spec/fixtures/workflow_runs/reviewing.json)" do
+    def put_reviewing(id, state:, reason: nil)
+      run = JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/reviewing.json"))).merge("id" => id, "workflow" => "rpiv", "state" => state, "reason" => reason)
+      target = (state == "running" || state == "waiting") ? runs_dir : archive_dir
+      FileUtils.mkdir_p(target)
+      File.write(File.join(target, "#{id}.json"), JSON.generate(run))
+    end
+
+    it "leaves a checks_passed attempt out until its round rewrites it: a cancelled run is not a miss" do
+      put_reviewing("wr_1", state: "cancelled")
+
+      row = read["groups"].first
+
+      expect(row).to include("runs" => 1, "settled" => 0, "cancelled" => 1, "first_try" => 0)
+    end
+
+    it "does not call a run waiting on failed_check stuck for a checks_passed attempt alone" do
+      put_reviewing("wr_1", state: "waiting", reason: {"code" => "failed_check"})
+
+      expect(read["groups"].first).to include("running" => 1, "stuck" => 0, "settled" => 0)
+    end
+  end
 end
