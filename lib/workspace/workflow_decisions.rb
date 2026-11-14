@@ -180,6 +180,7 @@ module Workspace
       run = @change.call(run_id) do |read, ctx|
         parked = read.parked
         next unless parked && parked["id"] == id
+        refuse_unrecoverable_guard(read.to_h)
         stored = read.thawed
         stored.delete("parked")
         resumed = apply_resume(stored, ctx: ctx, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"],
@@ -232,10 +233,12 @@ module Workspace
     # @param run [WorkflowRun, Hash{String=>Object}] a stored run that has not finished
     # @param from [String, nil] the step a resume would start again at
     # @return [void]
-    # @raise [Workspace::Error] code `gate_waiting` for a run at a gate when no step is named (approve or reject it)
+    # @raise [Workspace::Error] code `gate_waiting` for a run at a gate when no step is named (approve or reject it);
+    #   code `guard_cannot_pass` for a run stopped on a guard no resume can pass ({WorkflowTransitions.guard_unrecoverable?})
     # @raise [Workspace::UsageError] for a step the workflow doesn't have
     def refuse_resume(run, from: nil)
       run = WorkflowRun.from_h(run).to_h
+      refuse_unrecoverable_guard(run)
       if from
         return if step_ids(run).include?(from)
         raise UsageError, "No step #{from.to_s[0, 60].inspect} in workflow #{run["workflow"]} (#{step_ids(run).join(", ")})."
@@ -458,6 +461,15 @@ module Workspace
     # The hold a resume ends: the token budget's, else the timeout's (both hold the same record).
     def hold_of(run)
       [run["budget_hold"], run["timeout_hold"]].find { |hold| hold.is_a?(Hash) }
+    end
+
+    # A run stopped by `no_commit` with no base_sha compares every guarded step to a nil base, so any attempt, from
+    # any step, fails the same way; only a cancel goes on. Every other guard stop passes again once the checkout is
+    # put back, and resumes normally.
+    def refuse_unrecoverable_guard(run)
+      return unless WorkflowTransitions.guard_unrecoverable?(run)
+      raise Workspace::Error.new("Run #{run["id"]} stopped at #{run["current"]} on the no_commit guard and has no base commit, so no resume can pass it. Run `workflow cancel #{run["id"]}` and start a new run once the branch has a commit.",
+        code: "guard_cannot_pass", details: {"run_id" => run["id"], "step" => run["current"], "guard" => "no_commit"})
     end
 
     # What a spent token budget refuses with, or nil: not spent, or +extra+ covers the overrun (the least is used

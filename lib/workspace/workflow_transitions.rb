@@ -524,6 +524,35 @@ module Workspace
         .compact.merge(code_for(unmet["code"], nil))
     end
 
+    # Whether a run stopped on a guard that no resume can get past: `no_commit` with no `base_sha` recorded at the
+    # run's start (an unborn branch), so every guarded step compares to a nil base. Any other guard stop (a moved
+    # HEAD, changed hooks, hidden files, a `no_commit` with a base) passes again once the checkout is put back.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @return [Boolean]
+    def self.guard_unrecoverable?(run)
+      run = run.to_h
+      reason = run["reason"]
+      return false unless reason.is_a?(Hash) && reason["code"] == "failed_check"
+      details = reason["details"]
+      details.is_a?(Hash) && details["cause"] == "guard" && details["guard"] == "no_commit" && run["base_sha"].to_s.empty?
+    end
+
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run stopped on a guard
+    # @return [String, nil] what to do before a resume can pass, nil for any other stop
+    def self.guard_recovery(run)
+      run = run.to_h
+      details = run.dig("reason", "details")
+      return nil unless run.dig("reason", "code") == "failed_check" && details.is_a?(Hash) && details["cause"] == "guard"
+      return nil if guard_unrecoverable?(run)
+      case details["guard"]
+      when "head_moved" then "Move HEAD back to #{run["base_sha"].to_s[0, 12]} (save any work you want to keep, on a branch, first), then resume."
+      when "hooks_changed" then "Restore the repository's hooks, then resume."
+      when "hidden_changed" then "Clear the assume-unchanged or skip-worktree flags, then resume."
+      when "no_commit" then "Check that the checkout has a commit, then resume."
+      end
+    end
+
     # @param failure [Hash{String=>Object}] a step's recorded failure
     # @return [String] the failure in words
     def self.failure_text(failure)

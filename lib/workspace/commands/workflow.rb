@@ -1568,6 +1568,7 @@ module Workspace
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
         parked = current["parked"]
         @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked
+        @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }
       end

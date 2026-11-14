@@ -347,7 +347,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(run["state"]).to eq("completed")
     end
 
-    it "stops research failed_check with head_moved when the guard says so, and a plain resume only meets the guard again" do
+    it "stops research failed_check with head_moved when the guard says so, and a plain resume runs again once the checkout is restored" do
       start
       allow(guard).to receive(:check).and_return({"code" => "head_moved", "base_sha" => "0" * 40, "head" => "2" * 40})
       artifact("research.md")
@@ -357,15 +357,13 @@ RSpec.describe "a workflow run from start to completed" do
       expect(run["reason"]).to include("code" => "failed_check")
       expect(run["reason"]["details"]).to include("code" => "head_moved", "guard" => "head_moved", "cause" => "guard")
       expect(outcomes(run, "research")).to eq(["failed"])
-      # Pinned current behaviour: a plain resume dispatches again though status offers only cancel for a moved HEAD (a fix follows).
+      # The person puts the checkout back, so the guard passes again.
+      allow(guard).to receive(:check).and_return(nil)
       engine.resume("wr_1")
-      expect(stored).to include("state" => "running", "current" => "research")
       expect(stored["steps"]["research"]["attempts"].size).to eq(2)
       artifact("research.md")
       run = turn_ended
-      expect(run).to include("state" => "waiting", "current" => "research")
-      expect(run["reason"]["details"]).to include("guard" => "head_moved")
-      expect(outcomes(run, "research")).to eq(%w[failed failed])
+      expect(outcomes(run, "research")).to eq(%w[failed passed])
     end
   end
 end

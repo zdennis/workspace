@@ -74,9 +74,6 @@ module Workspace
     # Seconds to wait for the workspace's agent daemon before going on without it.
     SNAPSHOT_TIMEOUT = 1.0
 
-    # The guard codes a resume can't get past.
-    FINAL_GUARDS = %w[no_commit head_moved hooks_changed hidden_changed].freeze
-
     # Seconds after an attempt starts during which an idle pane is not flagged `idle`.
     IDLE_GRACE = 30
 
@@ -224,7 +221,7 @@ module Workspace
         "created_at" => run.created_at, "started_at" => run.started_at, "ended_at" => run.ended_at,
         "cancelled_by" => run.cancelled_by,
         "current" => {"step" => run.current, "attempt" => state.last_attempt&.n, "state" => state.state,
-                      "reason" => reason&.merge("actions" => actions(run, reason, pane)),
+                      "reason" => shown_reason(run, reason, pane),
                       "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state))
             .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)),
         "steps" => run.definition["steps"].map { |step| step_row(step, run.steps.fetch(step["id"]), run) },
@@ -467,6 +464,14 @@ module Workspace
       false
     end
 
+    # The reason as shown: its actions, and for a guard stop a resume can pass, what to put back first.
+    def shown_reason(run, reason, pane)
+      return nil unless reason
+      shown = reason.merge("actions" => actions(run, reason, pane))
+      hint = WorkflowTransitions.guard_recovery(run)
+      hint ? shown.merge("recovery" => hint) : shown
+    end
+
     def actions(run, reason, pane)
       build_actions(run, reason, pane).compact
     end
@@ -525,8 +530,8 @@ module Workspace
       when "retry_backoff" then [resume, cancel]
       when "budget_spent", "run_timed_out" then [resume, cancel]
       when "failed_check"
-        # A moved HEAD or changed hooks can't pass again, and base_sha is never re-recorded: only a new run goes on.
-        if reason.dig("details", "cause") == "guard" && FINAL_GUARDS.include?(reason.dig("details", "guard"))
+        # Only a no_commit with no base_sha can never pass; any other guard stop resumes once the checkout is put back.
+        if WorkflowTransitions.guard_unrecoverable?(run)
           [cancel]
         else
           [resume, from.call(reason.dig("details", "step")), cancel]

@@ -76,7 +76,7 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 |---|---|
 | `waiting_lock` | Nobody; wait. |
 | `waiting_you` | The person for a gate or prompt; for an ask, see workspace-inbox. |
-| `turn_ended_incomplete`, `failed_check` | `workflow resume RUN`. If `actions` lists only `cancel`, a resume can't get past it: tell the person. |
+| `turn_ended_incomplete`, `failed_check` | `workflow resume RUN`. If `actions` lists only `cancel`, a resume can't get past it: tell the person. If `reason.recovery` is set, do that (or tell the person) before resuming. |
 | `pane_gone` | Bring the pane back (`workspace launch NAME`), then `workflow resume RUN`. |
 
 - Flags: `parked` (wait), `delivering` (do not resume). A reason's `actions` says what can be done, not what to do: `workflow resume` is yours, while `approve`, `reject`, `ask answer` and `dev down` wait for the person to ask.

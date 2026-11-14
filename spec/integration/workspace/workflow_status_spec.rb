@@ -682,12 +682,21 @@ RSpec.describe Workspace::WorkflowStatus do
       create(state: "waiting", step_state: "failed", reason: reason, bound: false, base_sha: "abc123")
     end
 
+    it "offers only cancel for no_commit when the run recorded no base commit" do
+      reason = {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "guard", "guard" => "no_commit", "code" => "no_commit"}}
+      create(state: "waiting", step_state: "failed", reason: reason, bound: false, base_sha: nil)
+
+      expect(current["reason"]["actions"]).to eq([action("workflow cancel", "wr_1")])
+      expect(current["reason"]).not_to have_key("recovery")
+    end
+
     %w[no_commit head_moved hooks_changed hidden_changed].each do |code|
-      it "offers only cancel for #{code}, which a resume can't get past" do
+      it "offers resume, resume --from and cancel for #{code}, with what to put back first" do
         failed("cause" => "guard", "guard" => code, "code" => code, "code_source" => "engine")
 
-        expect(current["reason"]["actions"]).to eq([action("workflow cancel", "wr_1")])
-        expect(current["reason"]["details"]).to include("code" => code, "code_source" => "engine", "guard" => code)
+        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan"), action("workflow cancel", "wr_1")])
+        expect(current["reason"]["recovery"]).to match(/then resume/)
+        expect(current["reason"]["recovery"]).to include("abc123") if code == "head_moved"
       end
     end
 

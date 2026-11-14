@@ -493,6 +493,51 @@ RSpec.describe Workspace::WorkflowDecisions do
   end
 
   describe "#refuse_resume" do
+    def guard_stop(guard) = {"code" => "failed_check", "details" => {"cause" => "guard", "guard" => guard, "code" => guard}}
+
+    def no_base(reason) = run_hash(state: "failed", reason: reason).merge("base_sha" => nil)
+
+    it "refuses every form of resume and park after no_commit with no base commit, changing nothing" do
+      before = deep_copy(stored(no_base(guard_stop("no_commit"))))
+
+      [{}, {extra_attempts: 2}, {extra_tokens: 100}, {extra_seconds: 60}, {from: "plan"}, {from: "build"}].each do |options|
+        [:resume, :park].each do |verb|
+          error = error_for { decisions.public_send(verb, "wr_1", **options) }
+          expect(error.code).to eq("guard_cannot_pass")
+          expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "guard" => "no_commit")
+        end
+      end
+      expect(dispatch.calls).to be_empty
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(change.events).to be_empty
+    end
+
+    it "refuses to release a parked resume once the run is stopped that way" do
+      before = deep_copy(stored(no_base(guard_stop("no_commit")).merge("state" => "waiting", "parked" => {"id" => "p1", "retries" => 0, "expires_at" => "2026-11-10T13:00:00Z"})))
+
+      error = error_for { decisions.release_park("wr_1", "p1") }
+
+      expect(error.code).to eq("guard_cannot_pass")
+      expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "guard" => "no_commit")
+      expect(dispatch.calls).to be_empty
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(change.events).to be_empty
+    end
+
+    %w[head_moved hooks_changed hidden_changed no_commit].each do |guard|
+      it "still resumes after #{guard} when the run has a base commit" do
+        stored(run_hash(state: "failed", reason: guard_stop(guard)).merge("base_sha" => "a" * 40))
+
+        expect { decisions.refuse_resume(store.runs["wr_1"]) }.not_to raise_error
+        expect { decisions.refuse_resume(store.runs["wr_1"], from: "plan") }.not_to raise_error
+        expect(decisions.resume("wr_1")).to be_a(described_class::Resumed)
+      end
+    end
+
+    it "still resumes after a plain failed check even with no base commit" do
+      expect { decisions.refuse_resume(no_base(failed_check)) }.not_to raise_error
+    end
+
     it "refuses a run at a gate when no step is named" do
       error = error_for { decisions.refuse_resume(Workspace::WorkflowRun.from_h(run_hash(state: "passed", gate: waiting_gate))) }
 

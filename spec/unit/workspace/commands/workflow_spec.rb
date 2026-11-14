@@ -469,6 +469,18 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to include("warning: config_changed at step plan (attempt 2): the config changed\n")
     end
 
+    it "prints the recovery hint of a guard stop, escaped, before the actions" do
+      stopped = shown("state" => "waiting", "current" => {"step" => "plan", "attempt" => 1, "state" => "failed", "flags" => [],
+                                                          "reason" => {"code" => "failed_check", "details" => {"step" => "plan", "cause" => "guard", "guard" => "head_moved", "code" => "head_moved"},
+                                                                       "recovery" => "Move HEAD back to abc\e[31m123, then resume.", "actions" => [{"action" => "workflow resume", "args" => ["wr_1"], "needs" => []}]}})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [stopped], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  recovery: Move HEAD back to abc\\e[31m123, then resume.\n    workspace workflow resume wr_1\n")
+      expect(output.string).not_to include("\e")
+    end
+
     it "prints where a parked resume waits and until when" do
       parked = shown("state" => "running", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "flags" => ["parked"], "reason" => nil,
                                                          "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"}})
