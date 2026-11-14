@@ -62,6 +62,16 @@ RSpec.describe Workspace::WorkflowRunStore do
     expect(store.run("wr_1").to_h).not_to have_key("note")
   end
 
+  describe "#stamp" do
+    it "is the same for the same runs directory and differs for another, 16 hex digits" do
+      other = described_class.new(dir: File.join(@dir, "elsewhere", "runs"), archive_dir: archive_dir)
+
+      expect(store.stamp).to match(/\A\h{16}\z/)
+      expect(described_class.new(dir: runs_dir, archive_dir: archive_dir).stamp).to eq(store.stamp)
+      expect(other.stamp).not_to eq(store.stamp)
+    end
+  end
+
   describe "#events" do
     def record(*types)
       types.each { |type| store.record_event("wr_1", type, "step" => "plan") }

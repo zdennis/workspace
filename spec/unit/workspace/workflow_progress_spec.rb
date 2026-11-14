@@ -672,6 +672,40 @@ RSpec.describe Workspace::WorkflowProgress do
       end
     end
 
+    describe "#redeliver_round" do
+      it "delivers the round again as the same round, spending one more of its redeliveries and keeping the window a failure kept" do
+        given = reviewing_hash
+        given["steps"]["plan"]["review"].merge!("delivery" => "failed", "redeliveries" => 1, "window" => "@7", "holder" => {"pid" => 1},
+          "failure" => {"code" => "agent_not_ready"})
+        context = ctx
+
+        run = progress.redeliver_round(given, ctx: context)
+
+        state = run.step("plan")
+        expect(state.review_rounds).to eq(1)
+        expect(state.review).to include("round" => 1, "delivery" => "delivering", "window" => "@7", "started_at" => "2026-11-10T12:00:00.000Z", "redeliveries" => 2)
+        expect(state.review).not_to include("failure", "holder")
+        expect(state.last_attempt.to_h["rounds"].map { |each| each["ended"] }).to eq(["redelivered"])
+        expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
+        expect(change.events).to eq([["wr_1", "review_started", {"step" => "plan", "attempt" => 1, "round" => 1, "again" => true, "redelivery" => 2}]])
+        expect(dispatch.calls).to be_empty
+      end
+    end
+
+    describe "#redeliver_round with a new tmux server" do
+      it "drops the round's pane, window and server so a new window opens, and keeps the pane on the redelivered record" do
+        given = reviewing_hash
+        given["steps"]["plan"]["review"].merge!("window" => "@7", "server_pid" => "100")
+
+        run = progress.redeliver_round(given, ctx: ctx, new_server: true)
+
+        state = run.step("plan")
+        expect(state.review).not_to include("pane", "window", "server_pid")
+        expect(state.review).to include("delivery" => "delivering", "redeliveries" => 1)
+        expect(state.last_attempt.to_h["rounds"].last).to include("pane" => "%9", "ended" => "redelivered")
+      end
+    end
+
     describe "the review window" do
       it "unbinds the reviewer and registers the window to close when the round approves, a gate or not" do
         context = ctx

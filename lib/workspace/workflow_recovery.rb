@@ -17,13 +17,16 @@ module Workspace
     # @param dispatch [Workspace::WorkflowDispatch] starts a step again after a lock wait or a failed delivery
     # @param progress [Workspace::WorkflowProgress] starts a retry and fails a step that timed out
     # @param evaluation [Workspace::WorkflowEvaluation] decides a step whose turn ended, and runs its check
+    # @param holder_alive [#call, nil] given a review round's delivery `holder`, whether that process still runs, so a
+    #   lapsed round is delivered again only once its holder is gone (nil takes every holder as alive)
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, dispatch:, progress:, evaluation:, clock: -> { Time.now })
+    def initialize(change:, store:, dispatch:, progress:, evaluation:, holder_alive: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @dispatch = dispatch
       @progress = progress
       @evaluation = evaluation
+      @holder_alive = holder_alive
       @clock = clock
     end
 
@@ -32,7 +35,11 @@ module Workspace
     # {WorkflowTransitions::BACKGROUND_HOLD} becomes a `turn_ended_incomplete` stop, a check that never
     # reported back (its process died) is run again, and so is the end of a review round whose revision was being
     # computed again when its process died ({WorkflowTransitions.lost_round?}; {WorkflowEvaluation#review_ended},
-    # which tries it once more, then stops `review_incomplete`). Does nothing while another process is changing the run.
+    # which tries it once more, then stops `review_incomplete`). A review round whose delivery failed (after its
+    # backoff) or lapsed with its holder gone is delivered again ({WorkflowProgress#redeliver_round}), spending one of
+    # its `redeliveries`; once they are spent (or the failure is one no delivery gets past) the round stops
+    # `review_incomplete` instead. A slow delivery whose holder is alive is left alone. Does nothing while another
+    # process is changing the run.
     #
     # @param run_id [String]
     # @return [WorkflowRun, nil] the run afterwards; nil when nothing was done
@@ -41,7 +48,8 @@ module Workspace
       acted = false
       run = @change.call(run_id, nonblocking: true) do |read, ctx|
         stored = read.thawed
-        case WorkflowTransitions.wakeable?(stored, @clock.call)
+        alive = holder_alive_once
+        case WorkflowTransitions.wakeable?(stored, @clock.call, alive: alive)
         when :backoff
           acted = true
           start_retry(stored, ctx)
@@ -60,6 +68,9 @@ module Workspace
         when :round
           acted = true
           stored.replace(@evaluation.review_ended(stored, ctx: ctx).thawed)
+        when :review
+          acted = true
+          redeliver_round(stored, ctx, alive)
         when :check
           acted = true
           evaluate(stored, ctx)
@@ -174,6 +185,50 @@ module Workspace
       :redelivered
     end
 
+    # Acts on a review round the sweep found stalled in its review pane, as the sweep's act. Does nothing unless the
+    # run is still on that step, attempt and round, `reviewing` with no reason and no park, its round delivered (no
+    # mark), not being judged, and recorded in +pane+, so a turn's end, a resume or a cancel that got there first
+    # stands. A `step_stalled` line (with `round`) is written, then by +cause+:
+    #
+    # - `idle_turn_over`: the review turn ended unseen; the round is decided as a turn's end decides it
+    #   ({WorkflowEvaluation#review_ended})
+    # - `pane_gone` (the review pane closed) or `agent_gone` (its agent exited to a shell): decided the same way, so
+    #   verdicts already written count, and a round they leave short stops `review_incomplete`
+    # - `server_restarted`: the tmux server the pane was on is gone (a new one may reuse the pane id); the round is
+    #   delivered again as {#tick} would ({WorkflowProgress#redeliver_round}, in a new window), or stops
+    #   `review_incomplete` once its `redeliveries` are spent
+    #
+    # @param run_id [String]
+    # @param step [String]
+    # @param attempt [Integer, nil] the reviewed attempt
+    # @param round [Integer]
+    # @param pane [String] the review pane the sweep read
+    # @param cause [String] `idle_turn_over`, `pane_gone`, `agent_gone` or `server_restarted`
+    # @param data [Hash{String=>Object}] more for the `step_stalled` event
+    # @return [Symbol] :evaluated, :stopped (`server_restarted` with `redeliver` spent), :redelivered, :moved_on or :busy
+    def review_stalled(run_id, step:, attempt:, round:, pane:, cause:, data: {})
+      outcome = :moved_on
+      follow = nil
+      run = @change.call(run_id, nonblocking: true) do |read, ctx|
+        stored = read.thawed
+        next unless round_target?(stored, step, attempt, round, pane)
+        @change.event(stored, "step_stalled", {"step" => step, "attempt" => attempt, "round" => round, "pane" => pane, "cause" => cause}.merge(data))
+        outcome = if cause == "server_restarted"
+          server_restarted(stored, ctx, pane)
+        else
+          # Verdicts written before the pane closed or its agent exited still count: the round is tallied as its
+          # turn's end would tally it, and stops `review_incomplete` only when they fall short.
+          adopt(stored, @evaluation.review_ended(stored, ctx: ctx))
+          :evaluated
+        end
+        follow = ctx
+        WorkflowRun.from_h(stored)
+      end
+      return :busy unless run
+      @evaluation.finish_follow_ups(run_id, follow, run)
+      outcome
+    end
+
     # Starts an `on_fail` retry whose backoff is over, as the sweep's act. Does nothing unless the run is still on
     # that step and attempt and {WorkflowTransitions.backoff} says the wait is over, so a resume, a cancel or a
     # tick that got there first stands.
@@ -276,6 +331,59 @@ module Workspace
     end
 
     def sweep_target?(run, step, attempt, running) = WorkflowTransitions.sweep_target?(run, step, attempt, running, @clock.call)
+
+    # {#holder_alive} asked at most once per holder in one tick, so deciding to wake and then what to do reads the
+    # process table once.
+    def holder_alive_once
+      return nil unless @holder_alive
+      seen = {}
+      ->(holder) { seen.fetch(holder) { seen[holder] = @holder_alive.call(holder) } }
+    end
+
+    # The round the sweep read is still the run's, delivered and undecided, in the pane it read.
+    def round_target?(run, step, attempt, round, pane)
+      return false if run["parked"] || run["reason"] || run["current"] != step
+      state = step_state(run)
+      found = state["review"]
+      state["state"] == "reviewing" && state["attempts"].last&.fetch("n", nil) == attempt && found.is_a?(Hash) &&
+        found["round"] == round && found["pane"] == pane && found["delivery"].nil? && !found["recompute"] && found["ended_at"].nil?
+    end
+
+    # A round due to be delivered again ({WorkflowTransitions.round_redelivery}) is delivered; one whose deliveries
+    # again are spent stops `review_incomplete`. A round still waiting out its backoff is left.
+    def redeliver_round(run, ctx, alive)
+      info = WorkflowTransitions.round_redelivery(run, @clock.call, alive: alive)
+      return unless info
+      case info[:state]
+      when :due then adopt(run, @progress.redeliver_round(run, ctx: ctx))
+      when :exhausted then stop_round(run, ctx, undelivered_problem(step_state(run)["review"], info))
+      end
+    end
+
+    # The window went with its server, so the delivery again opens a new one ({WorkflowProgress#redeliver_round}
+    # `new_server`); it counts against `redeliver` as a tick's does.
+    def server_restarted(run, ctx, pane)
+      retries = step_state(run)["review"]["redeliveries"].to_i
+      limit = WorkflowDefinition.redeliver(run["definition"])
+      if retries >= limit
+        stop_round(run, ctx, "the tmux server review pane #{pane} was on was restarted, and the round was delivered again #{retries} time#{"s" unless retries == 1}, its `redeliver` limit")
+        return :stopped
+      end
+      adopt(run, @progress.redeliver_round(run, ctx: ctx, new_server: true))
+      :redelivered
+    end
+
+    def undelivered_problem(round, info)
+      failure = round["failure"]
+      what = failure.is_a?(Hash) ? "its delivery failed (#{failure["code"]}: #{failure["message"]})" : "its delivery lapsed and the process delivering it is gone"
+      return "the round could not be delivered: #{what}, which delivering it again cannot get past" if info[:retries] < info[:limit]
+      "the round could not be delivered: #{what}, and it was delivered again #{info[:retries]} time#{"s" unless info[:retries] == 1}, its `redeliver` limit"
+    end
+
+    # The round stops for a person as an incomplete one does ({WorkflowProgress#decide_review}); its window is kept.
+    def stop_round(run, ctx, problem)
+      adopt(run, @progress.decide_review(run, {outcome: :incomplete, reviews: [], problem: problem}, ctx: ctx))
+    end
 
     def sweep_marks_for(run)
       marks = WorkflowTransitions.sweep_marks(run)

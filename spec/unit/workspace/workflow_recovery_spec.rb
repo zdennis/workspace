@@ -10,8 +10,17 @@ RSpec.describe Workspace::WorkflowRecovery do
   let(:evaluation) { RecordingEvaluation.new(store.runs) }
   let(:clock_at) { [now] }
 
+  let(:holder_alive) { nil }
+
   def recovery
-    described_class.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, clock: -> { clock_at.first })
+    described_class.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, holder_alive: holder_alive, clock: -> { clock_at.first })
+  end
+
+  # A step being reviewed, its round as given over a delivering round 1 that started an hour before +now+.
+  def reviewing(round = {})
+    run_hash(step_state: "reviewing").tap do |hash|
+      hash["steps"]["build"]["review"] = {"round" => 1, "delivery" => "delivering", "started_at" => "2026-11-10T11:00:00Z", "redeliveries" => 0}.merge(round)
+    end
   end
 
   def run_hash(state: "running", step_state: "running", reason: nil, attempt: {}, extra: {})
@@ -117,6 +126,67 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(evaluation.calls).to eq([[:evaluate, "build"], [:review_round, "wr_1", {"round" => 1}]])
     end
 
+    describe "a review round to be delivered again" do
+      let(:holder) { {"pid" => 41, "started" => "Tue Nov 10 11:00:00 2026"} }
+
+      it "delivers a lapsed round again once its holder is gone, counting one redelivery" do
+        alive = []
+        recovery = described_class.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation,
+          holder_alive: ->(found) { alive << found && false }, clock: -> { now })
+        stored(reviewing("holder" => holder))
+
+        run = recovery.tick("wr_1")
+
+        expect(alive).to eq([holder])
+        expect(progress.calls).to eq([[:redeliver_round, "build"]])
+        expect(run.step("build").review).to include("delivery" => "delivering", "redeliveries" => 1)
+        expect(change.reviews).to eq([{"step" => "build", "round" => 1}])
+      end
+
+      context "while the holder of a slow delivery lives" do
+        let(:holder_alive) { ->(_found) { true } }
+
+        it "leaves the round alone" do
+          stored(reviewing("holder" => holder))
+
+          expect(recovery.tick("wr_1")).to be_nil
+          expect(progress.calls).to be_empty
+        end
+      end
+
+      it "delivers a failed round again once its backoff is over, and not before" do
+        failure = {"code" => "agent_not_ready", "message" => "not ready", "at" => "2026-11-10T11:59:30Z"}
+        stored(reviewing("delivery" => "failed", "failure" => failure))
+
+        expect(recovery.tick("wr_1")).to be_nil
+        clock_at.replace([now + 30])
+        recovery.tick("wr_1")
+
+        expect(progress.calls).to eq([[:redeliver_round, "build"]])
+      end
+
+      it "stops the round review_incomplete once its redeliveries reach the definition's redeliver, saying why" do
+        failure = {"code" => "agent_not_ready", "message" => "not ready", "at" => "2026-11-10T11:00:00Z"}
+        stored(reviewing("delivery" => "failed", "failure" => failure, "redeliveries" => 2))
+
+        recovery.tick("wr_1")
+
+        decided = progress.calls.last
+        expect(decided[0..1]).to eq([:decide_review, "build"])
+        expect(decided[2]).to include(outcome: :incomplete, reviews: [])
+        expect(decided[2][:problem]).to eq("the round could not be delivered: its delivery failed (agent_not_ready: not ready), and it was delivered again 2 times, its `redeliver` limit")
+      end
+
+      it "stops a round whose failure no delivery again gets past at once" do
+        failure = {"code" => "review_custom_socket", "message" => "own socket", "at" => "2026-11-10T11:00:00Z"}
+        stored(reviewing("delivery" => "failed", "failure" => failure))
+
+        recovery.tick("wr_1")
+
+        expect(progress.calls.last[2][:problem]).to include("which delivering it again cannot get past")
+      end
+    end
+
     it "answers nil for a run nothing wakes" do
       stored
 
@@ -217,6 +287,66 @@ RSpec.describe Workspace::WorkflowRecovery do
 
       expect(recovery.recover("wr_1", turn_over: {"step" => "build", "attempt" => 1}, cause: "idle_turn_over")).to eq(:moved_on)
       expect(evaluation.calls).to be_empty
+    end
+  end
+
+  describe "#review_stalled" do
+    def delivered(round = {})
+      reviewing({"delivery" => nil, "pane" => "%9", "window" => "@4", "server_pid" => "100"}.merge(round))
+    end
+
+    def stall(cause, **rest)
+      recovery.review_stalled("wr_1", step: "build", attempt: 1, round: 1, pane: "%9", cause: cause, **rest)
+    end
+
+    it "decides a round whose review turn ended unseen as its turn's end would, writing step_stalled with the round" do
+      stored(delivered)
+
+      expect(stall("idle_turn_over", data: {"idle_for" => 1500})).to eq(:evaluated)
+      expect(evaluation.calls).to eq([[:review_ended, "build"], [:review_end, "wr_1", {"step" => "build"}]])
+      expect(event_types).to eq([["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "idle_turn_over", "idle_for" => 1500}]])
+    end
+
+    it "reads the verdicts of a round whose review pane is gone or whose agent exited, as its turn's end would, so those written still count" do
+      %w[pane_gone agent_gone].each do |cause|
+        stored(delivered)
+
+        expect(stall(cause)).to eq(:evaluated)
+      end
+      expect(evaluation.calls.map(&:first)).to eq(%i[review_ended review_end review_ended review_end])
+      expect(progress.calls).to be_empty
+    end
+
+    it "delivers a round lost with a restarted tmux server again in a new window, counting it, and stops it once redeliver is spent" do
+      stored(delivered)
+
+      expect(stall("server_restarted")).to eq(:redelivered)
+      expect(progress.calls).to eq([[:redeliver_round, "build", {new_server: true}]])
+      expect(store.runs["wr_1"]["steps"]["build"]["review"]).not_to include("pane", "window", "server_pid")
+
+      stored(delivered("redeliveries" => 2))
+      expect(stall("server_restarted")).to eq(:stopped)
+      expect(progress.calls.last[2][:problem]).to include("was restarted, and the round was delivered again 2 times")
+    end
+
+    it "changes nothing for a round that moved on: another round, another pane, still delivering, being judged, or stopped" do
+      [delivered("round" => 2), delivered("pane" => "%8"), delivered("delivery" => "delivering"), delivered("recompute" => {"try" => 1}),
+        delivered.merge("reason" => {"code" => "review_incomplete"})].each do |hash|
+        stored(hash)
+        expect(stall("pane_gone")).to eq(:moved_on)
+      end
+      expect(progress.calls).to be_empty
+      expect(change.events).to be_empty
+    end
+
+    context "when another process is changing the run" do
+      let(:busy) { ["wr_1"] }
+
+      it "answers :busy" do
+        stored(delivered)
+
+        expect(stall("pane_gone")).to eq(:busy)
+      end
     end
   end
 

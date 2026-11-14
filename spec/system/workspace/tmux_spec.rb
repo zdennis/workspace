@@ -1183,6 +1183,19 @@ RSpec.describe Workspace::Tmux do
       expect(opened).to eq(pid: 321, pane: "%9", window: "@4")
     end
 
+    it "stamps the window with its run store in the same invocation when a store is given" do
+      allow(Open3).to receive(:capture3).and_return(["321 %9 @4\n", "", ok], ["wr_1:review:1\n", "", ok])
+
+      tmux.open_window("app", name: "review", cwd: "/w/app", command: ["claude"], option: "wr_1:review:1", store: "ab12")
+
+      expect(Open3).to have_received(:capture3).with(
+        "tmux", "new-window", "-d", "-a", "-P", "-F", "\#{pane_pid} \#{pane_id} \#{window_id}", "-t", "=app:{end}",
+        "-n", "review", "-c", "/w/app", "--", "claude",
+        ";", "set-option", "-w", "-t", "=app:{end}", "@workspace-review", "wr_1:review:1",
+        ";", "set-option", "-w", "-t", "=app:{end}", "@workspace-review-store", "ab12"
+      )
+    end
+
     it "sets no mark, and reads none back, when no option is given" do
       allow(Open3).to receive(:capture3).and_return(["321 %9 @4\n", "", ok])
 
@@ -1234,19 +1247,71 @@ RSpec.describe Workspace::Tmux do
     let(:ok) { instance_double(Process::Status, success?: true) }
 
     it "lists only the marked windows, from one list-windows" do
-      allow(Open3).to receive(:capture3).and_return(["@1\tmain\t%3\t300\t\n@2\treview\t%12\t4321\trun:step:1\n", "", ok])
+      allow(Open3).to receive(:capture3).and_return(["@1\tmain\t%3\t300\t\t\n@2\treview\t%12\t4321\t\trun:step:1\n@3\treview\t%13\t43\tab12\trun:step:2\n", "", ok])
 
       windows = tmux.review_windows("app")
 
       expect(Open3).to have_received(:capture3).once.with("tmux", "list-windows", "-t", "=app:", "-F",
-        "\#{window_id}\t\#{window_name}\t\#{pane_id}\t\#{pane_pid}\t\#{#{described_class::REVIEW_OPTION}}")
-      expect(windows).to eq([{window: "@2", name: "review", review: "run:step:1", pane: "%12", pid: 4321}])
+        "\#{window_id}\t\#{window_name}\t\#{pane_id}\t\#{pane_pid}\t\#{#{described_class::REVIEW_STORE_OPTION}}\t\#{#{described_class::REVIEW_OPTION}}")
+      expect(windows).to eq([{window: "@2", name: "review", review: "run:step:1", pane: "%12", pid: 4321, store: nil},
+        {window: "@3", name: "review", review: "run:step:2", pane: "%13", pid: 43, store: "ab12"}])
     end
 
     it "is empty when tmux fails" do
       allow(Open3).to receive(:capture3).and_return(["", "no server", instance_double(Process::Status, success?: false)])
 
       expect(tmux.review_windows("gone")).to eq([])
+    end
+  end
+
+  describe "#server_pid_for_session" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "asks the server that has the session for its pid, and answers nil when none has it" do
+      allow(Open3).to receive(:capture3).and_return(["4242\n", "", instance_double(Process::Status, success?: true)],
+        ["", "can't find session", instance_double(Process::Status, success?: false)])
+
+      expect(tmux.server_pid_for_session("app")).to eq("4242")
+      expect(Open3).to have_received(:capture3).with("tmux", "display-message", "-p", "-t", "=app:", "\#{pid}")
+      expect(tmux.server_pid_for_session("gone")).to be_nil
+    end
+  end
+
+  describe "reads with a timeout" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "goes through TimedProcess for the session's server pid and renumber-windows, and says nil past the limit" do
+      allow(Workspace::TimedProcess).to receive(:run).and_return(["4242\n", "", true])
+
+      expect(tmux.server_pid_for_session("app", timeout: 3)).to eq("4242")
+      expect(Workspace::TimedProcess).to have_received(:run).with(["tmux", "display-message", "-p", "-t", "=app:", "\#{pid}"], chdir: Dir.pwd, timeout: 3)
+
+      allow(Workspace::TimedProcess).to receive(:run).and_raise(Timeout::Error)
+      expect(tmux.renumber_windows?(timeout: 3)).to be_nil
+      expect { tmux.server_pid_for_session("app", timeout: 3) }.to raise_error(Timeout::Error)
+    end
+  end
+
+  describe "#renumber_windows?" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "reads the global renumber-windows option, nil when tmux can't say" do
+      allow(Open3).to receive(:capture3).and_return(["on\n", "", instance_double(Process::Status, success?: true)],
+        ["off\n", "", instance_double(Process::Status, success?: true)], ["", "no server running", instance_double(Process::Status, success?: false)])
+
+      expect(tmux.renumber_windows?).to be(true)
+      expect(Open3).to have_received(:capture3).with("tmux", "show-options", "-g", "-v", "renumber-windows")
+      expect(tmux.renumber_windows?).to be(false)
+      expect(tmux.renumber_windows?).to be_nil
+    end
+
+    it "reads one session's own setting, nil when it sets none" do
+      allow(Open3).to receive(:capture3).and_return(["on\n", "", instance_double(Process::Status, success?: true)],
+        ["\n", "", instance_double(Process::Status, success?: true)])
+
+      expect(tmux.renumber_windows?("app")).to be(true)
+      expect(Open3).to have_received(:capture3).with("tmux", "show-options", "-t", "=app:", "-v", "renumber-windows")
+      expect(tmux.renumber_windows?("app")).to be_nil
     end
   end
 
@@ -1762,10 +1827,10 @@ RSpec.describe Workspace::Tmux do
 
     it "opens a marked review window, finds it, captures it by id and kills it" do
       opened = tmux.open_window(name, name: "review", cwd: "/tmp", command: ["sh", "-c", "echo review-ready; sleep 30"],
-        env: {"WORKSPACE_REVIEW_RUN" => "wr_1"}, option: "wr_1:review:1")
+        env: {"WORKSPACE_REVIEW_RUN" => "wr_1"}, option: "wr_1:review:1", store: "st0re")
 
       expect(opened).to include(pid: a_kind_of(Integer), pane: /\A%\d+\z/, window: /\A@\d+\z/)
-      expect(tmux.review_windows(name)).to eq([{window: opened[:window], name: "review", review: "wr_1:review:1", pane: opened[:pane], pid: opened[:pid]}])
+      expect(tmux.review_windows(name)).to eq([{window: opened[:window], name: "review", review: "wr_1:review:1", pane: opened[:pane], pid: opened[:pid], store: "st0re"}])
       found = tmux.pane_details(name, window: nil).find { |d| d[:id] == opened[:pane] }
       expect(found).to include(window_name: "review", review: "wr_1:review:1")
       expect(tmux.pane_details(name, window: nil).reject { |d| d[:id] == opened[:pane] }.map { |d| d[:review] }).to all(be_nil)
@@ -1783,7 +1848,7 @@ RSpec.describe Workspace::Tmux do
 
       Timeout.timeout(5) { sleep 0.05 until File.exist?(out) && !File.zero?(out) }
       expect(File.read(out)).to eq("v;|x;")
-      expect(tmux.review_windows(name)).to eq([{window: opened[:window], name: "a\#{session_name};", review: "o;", pane: opened[:pane], pid: opened[:pid]}])
+      expect(tmux.review_windows(name)).to eq([{window: opened[:window], name: "a\#{session_name};", review: "o;", pane: opened[:pane], pid: opened[:pid], store: nil}])
     end
 
     it "marks the window even when the session has a gap in its window numbers" do

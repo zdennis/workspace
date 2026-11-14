@@ -56,6 +56,28 @@ module Workspace
   # (reason `backoff`, no stall is recorded); after it, the retry starts as a tick or a resume would start it
   # (outcome `retried`).
   #
+  # For a run whose step reads `reviewing` (a review round), in this order: a round stopped for a person (any
+  # stored reason but `waiting_lock`) is left alone and gets no daemon; a missing daemon is started; a round whose
+  # end was being judged when its process died is handed to {WorkflowEngine#tick} (cause `lost_round`); a round
+  # waiting for its `review.uses` is left to {WorkflowEngine#tick}; a round whose delivery failed (after the
+  # backoff an undelivered line waits) or lapsed with its delivering process gone is handed to
+  # {WorkflowEngine#tick}, which delivers it again or, its `redeliver` spent, stops it `review_incomplete` (cause
+  # `round_undelivered`); a round still being delivered is left alone; then the round's review pane is read, on
+  # positive evidence only ({WorkflowPanes#review_pane_state}; a tmux that can't be read, or a round that recorded
+  # no tmux server, decides neither gone nor restarted, and the daemon's pane row decides the rest): gone (cause `pane_gone`), its agent exited to a shell (cause `agent_gone`),
+  # lost with a restarted tmux server (cause `server_restarted`, delivered again in a new window, counted against
+  # `redeliver`), waiting for an answer (left alone), or its turn over and idle for the definition's `stall`
+  # (cause `idle_turn_over`). A gone pane, a gone agent and an idle turn are decided as the review turn's end
+  # decides them, so verdicts already written count and a round left short stops `review_incomplete`. The idle
+  # turn is not told from one whose Stop listed background tasks (the daemon's pane row does not carry them), so a
+  # reviewer that left a sub-agent running past `stall` is decided on what it has written. Each writes
+  # `step_stalled` with the round.
+  #
+  # Review windows no round uses ({WorkflowReviewOrphans}: the run is over, or its round does not record the window)
+  # are closed, one row each (outcome `closed`, cause `orphan_review_window`), in the workspace given, the named
+  # run's, or every tmux session; a window of another run store is left out, and one whose run this store does not
+  # have is reported (`nothing`, reason `unconfirmed`) and never closed.
+  #
   # A run with a live park, a step that is checking, or no step being worked
   # on is left alone, except that a missing daemon is started for it. Every
   # change goes through {WorkflowEngine} under the run's own lock, and only
@@ -78,9 +100,14 @@ module Workspace
     # @param engine [Workspace::WorkflowEngine] makes every change to a run
     # @param panes [Workspace::WorkflowPanes] says whether a run's pane and daemon are there and what the pane shows
     # @param interrupter [#call] presses keys in a pane (`workspace`, `pane`, `keys`); raises {Workspace::Error} when it can't
+    # @param orphans [Workspace::WorkflowReviewOrphans, nil] finds and closes review windows no round uses; nil closes none
+    # @param holder_alive [#call, nil] given a review round's delivery `holder`, whether that process still runs (nil
+    #   takes every holder as alive, so a lapsed round with a holder is left alone)
     # @param clock [#call] returns the current Time
-    def initialize(store:, engine:, panes:, interrupter:, clock: -> { Time.now })
+    def initialize(store:, engine:, panes:, interrupter:, orphans: nil, holder_alive: nil, clock: -> { Time.now })
       @store = store
+      @orphans = orphans
+      @holder_alive = holder_alive
       @engine = engine
       @panes = panes
       @interrupter = interrupter
@@ -93,8 +120,10 @@ module Workspace
     # @param allow [#call, nil] given a stored run before the sweep changes it or presses keys in its pane;
     #   returns nil to go on or a sentence to leave the run alone
     # @return [Array<Hash>] one row per run looked at, and one `failed` row (`unreadable_run`) for each run file
-    #   that can't be read when no run or workspace is named: "workspace", "outcome" (`nothing`, `recorded`,
-    #   `evaluated`, `interrupted`, `timed_out`, `respawned`, `redelivered`, `retried`, `failed`, `dry_run`), "reason" (for a retry also `backoff`, `pane_busy`,
+    #   that can't be read when no run or workspace is named, and one row for each review window it closes:
+    #   "workspace", "outcome" (`nothing`, `recorded`,
+    #   `evaluated`, `interrupted`, `timed_out`, `respawned`, `redelivered`, `retried`, `stopped` (a review round stopped
+    #   for a person), `closed` (an orphan review window), `failed`, `dry_run`), "reason" (for a retry also `backoff`, `pane_busy`,
     #   `not_delivered`, `waiting_lock`), "message", "run_id",
     #   "step", "attempt", "cause", "action"
     # @raise [Workspace::Error] code `unknown_run` for a +run+ that does not exist
@@ -104,7 +133,8 @@ module Workspace
       pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}}
       rows = runs.map { |each| sweep_run(each, pass) }
       rows += unreadable_rows unless run || workspace
-      rows
+      # Every session of the default tmux server unless a workspace or a run narrows the pass.
+      rows + orphan_rows(run, workspace || (run && runs.first&.workspace), pass)
     end
 
     private
@@ -131,7 +161,10 @@ module Workspace
       return sweep_backoff(run, backoff, pass) if backoff
       return blocked_row(run) if run.backoff&.dig("blocked") && run.state == "waiting"
       return budget_row(run) if (run.budget_hold || run.timeout_hold) && run.state == "waiting"
-      daemon_needed = running || %w[checking reviewing].include?(state.state) || run.parked || run.reason&.dig("code") == "waiting_lock"
+      reviewing = state.state == "reviewing"
+      # A round stopped for a person waits for that person: no daemon is started for it, and nothing reads its pane.
+      return review_held_row(run) if reviewing && run.reason && run.reason["code"] != "waiting_lock"
+      daemon_needed = running || reviewing || state.state == "checking" || run.parked || run.reason&.dig("code") == "waiting_lock"
       if running && !@panes.alive?(run.id)
         pane = run.pane
         return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", "pane" => pane)
@@ -142,7 +175,7 @@ module Workspace
       return row(run, "nothing", reason: "parked", message: "a resume is parked; it is carried out when the pane's turn ends") if run.parked
       return row(run, "nothing", reason: "checking", message: "the step's check is running") if state.state == "checking"
       return sweep_lost_round(run, pass) if state.state == "reviewing" && WorkflowEngine.lost_round?(run.to_h, @clock.call)
-      return row(run, "nothing", reason: "reviewing", message: "step #{run.current} is being reviewed") if state.state == "reviewing"
+      return sweep_reviewing(run, state, pass) if reviewing
       return row(run, "nothing", reason: "not_running", message: "no agent is working on step #{run.current} (#{state.state})") unless running
       sweep_running(run, state, pass)
     rescue Workspace::Error => e
@@ -181,6 +214,117 @@ module Workspace
       return row(run, "nothing", reason: "refused", message: refusal, cause: "lost_round") if refusal
       outcome = @engine.tick(run.id) ? :judged : :busy
       engine_row(run, outcome, "judged_again", cause: "lost_round", message: message, action: "judge_again")
+    end
+
+    def review_held_row(run)
+      round = run.step(run.current)&.review
+      what = (round.is_a?(Hash) && round["round"]) ? "review round #{round["round"]} of step #{run.current}" : "the review of step #{run.current}"
+      row(run, "nothing", reason: "held", message: "#{what} stopped (#{run.reason&.dig("code")}); a person decides it")
+    end
+
+    # The step reads `reviewing` with no stop for a person, and the daemon is running.
+    def sweep_reviewing(run, state, pass)
+      round = state.review
+      return row(run, "nothing", reason: "reviewing", message: "step #{run.current} is being reviewed") unless round.is_a?(Hash) && round["round"]
+      what = "review round #{round["round"]} of step #{run.current}"
+      return row(run, "nothing", reason: "waiting_lock", message: "#{what} waits for a lock its review.uses names; it starts once the lock is free") if run.reason
+      now = @clock.call
+      redelivery = WorkflowTransitions.round_redelivery(run.to_h, now, alive: @holder_alive)
+      return sweep_round_undelivered(run, what, round, redelivery, pass) if redelivery
+      return row(run, "nothing", reason: "delivering", message: "#{what} is still being delivered") if round["delivery"] == "delivering"
+      return row(run, "nothing", reason: "reviewing", message: "the end of #{what} is being judged") if round["recompute"]
+      pane = round["pane"]
+      return row(run, "nothing", reason: "reviewing", message: "#{what} is being reviewed") unless pane
+      case @panes.review_pane_state(run.workspace, pane, round["server_pid"])
+      when :gone
+        return review_stall(run, round, pass, pane, "pane_gone", "review pane #{pane} of #{what} is gone, so nothing will end the round; its verdicts are read now, and it stops for a person (review_incomplete) when they fall short")
+      when :server_restarted
+        return review_stall(run, round, pass, pane, "server_restarted", "the tmux server review pane #{pane} of #{what} was on was restarted; the round is delivered again in a new window")
+      end
+      # With no answer from tmux (unreachable, or no server recorded to rule out a reused pane id) nothing is decided
+      # on the pane being gone or its server restarted; what the daemon's pane row shows still decides the rest.
+      shown = @panes.pane_row(run.workspace, pane)
+      return row(run, "nothing", reason: "unknown", message: "the agent daemon did not say what review pane #{pane} shows") unless shown
+      if WorkflowPanes.agent_gone_row?(shown)
+        return review_stall(run, round, pass, pane, "agent_gone", "review pane #{pane} of #{what} shows a shell: its agent has exited; its verdicts are read now, and it stops for a person (review_incomplete) when they fall short")
+      end
+      return row(run, "nothing", reason: "prompt", message: "review pane #{pane} waits for an answer") if shown["state"] == "waiting"
+      idle_for = shown["idle_seconds"].to_i
+      stall = WorkflowDefinition.stall(run.definition)
+      return row(run, "nothing", reason: "reviewing", message: "#{what} is being reviewed") unless review_turn_over?(shown, round, now) && stall && idle_for >= stall
+      review_stall(run, round, pass, pane, "idle_turn_over", "the review turn in pane #{pane} ended and nothing decided #{what} (idle for #{idle_for} seconds)", {"idle_for" => idle_for})
+    end
+
+    # The review pane's turn is over, idle past the floor, and the round was delivered long enough ago that an idle
+    # pane is not one the line has yet to reach.
+    def review_turn_over?(shown, round, now)
+      return false unless WorkflowPanes.turn_over?(shown, now) && shown["idle_seconds"].to_i >= IDLE_FLOOR
+      now - Time.iso8601((round["delivered_at"] || round["started_at"]).to_s) >= IDLE_GRACE
+    rescue ArgumentError
+      false
+    end
+
+    # A review round's delivery failed or lapsed ({WorkflowTransitions.round_redelivery}): the delivery again, or the
+    # stop once it is spent, is {WorkflowEngine#tick}'s.
+    def sweep_round_undelivered(run, what, round, info, pass)
+      failure = round["failure"]
+      how = failure.is_a?(Hash) ? "was not delivered (#{failure["code"]})" : "was not delivered and the process delivering it is gone"
+      if info[:state] == :waiting
+        return row(run, "nothing", reason: "backoff", cause: "round_undelivered", message: "#{what} #{how}; it is delivered again (#{info[:retries] + 1} of #{info[:limit]}) in #{info[:wait]} seconds")
+      end
+      exhausted = info[:state] == :exhausted
+      message = exhausted ? "#{what} #{how}, and it can't be delivered again (#{info[:retries]} of #{info[:limit]}); it stops for a person (review_incomplete)" : "#{what} #{how}; delivering it again (#{info[:retries] + 1} of #{info[:limit]})"
+      action = exhausted ? "stop" : "redeliver"
+      return row(run, "dry_run", message: message, cause: "round_undelivered", action: action) if pass[:dry_run]
+      refusal = pass[:allow]&.call(run)
+      return row(run, "nothing", reason: "refused", message: refusal, cause: "round_undelivered") if refusal
+      outcome = @engine.tick(run.id) ? :done : :busy
+      engine_row(run, outcome, exhausted ? "stopped" : "redelivered", cause: "round_undelivered", message: message, action: action)
+    end
+
+    # A round stalled in its review pane: the change is {WorkflowEngine#review_stalled}'s. A turn's end is read again just before it.
+    def review_stall(run, round, pass, pane, cause, message, data = {})
+      action = (cause == "server_restarted") ? "redeliver" : "evaluate"
+      return row(run, "dry_run", message: message, cause: cause, action: action) if pass[:dry_run]
+      refusal = pass[:allow]&.call(run)
+      return row(run, "nothing", reason: "refused", message: refusal, cause: cause) if refusal
+      if cause == "idle_turn_over"
+        fresh = @panes.pane_row(run.workspace, pane)
+        unless fresh && WorkflowPanes.turn_over?(fresh, @clock.call) && fresh["idle_seconds"].to_i >= IDLE_FLOOR
+          return row(run, "nothing", reason: "pane_changed", message: "review pane #{pane} no longer shows the review turn over; the next pass looks again", cause: cause)
+        end
+      elsif cause == "agent_gone"
+        unless WorkflowPanes.agent_gone_row?(@panes.pane_row(run.workspace, pane))
+          return row(run, "nothing", reason: "pane_changed", message: "review pane #{pane} no longer shows a shell; the next pass looks again", cause: cause)
+        end
+      end
+      outcome = @engine.review_stalled(run.id, step: run.current, attempt: attempt_of(run), round: round["round"], pane: pane, cause: cause, data: data)
+      engine_row(run, outcome, {evaluated: "evaluated", stopped: "stopped", redelivered: "redelivered"}.fetch(outcome, outcome.to_s), cause: cause, message: message, action: action)
+    end
+
+    # The review windows no round uses, in the workspace looked at (every session when none is named), closed.
+    def orphan_rows(run_id, workspace, pass)
+      return [] unless @orphans
+      return [] if run_id && workspace.nil?
+      @orphans.find(workspace: workspace).filter_map do |orphan|
+        next if run_id && orphan[:run_id] != run_id
+        orphan_row(orphan, pass)
+      end
+    end
+
+    def orphan_row(orphan, pass)
+      message = "review window #{orphan[:window]} (pane #{orphan[:pane]}, round #{orphan[:round]} of step #{orphan[:step]}) is left over: #{WorkflowReviewOrphans::WHY.fetch(orphan[:why])}"
+      base = {"workspace" => orphan[:workspace] || orphan[:session], "run_id" => orphan[:run_id], "step" => orphan[:step], "attempt" => nil, "cause" => "orphan_review_window"}
+      unless orphan[:closable]
+        return base.merge("outcome" => "nothing", "reason" => "unconfirmed", "action" => nil,
+          "message" => "#{message}; it may be another state directory's, so it is left. Close it by hand (tmux kill-window -t #{orphan[:window]}) if it is left over")
+      end
+      return base.merge("outcome" => "dry_run", "reason" => nil, "message" => message, "action" => "close_window") if pass[:dry_run]
+      # A run no one knows is named by its id and session alone, so a caller bound to it is still refused.
+      refusal = pass[:allow]&.call(orphan[:run] || WorkflowRun.from_h("id" => orphan[:run_id], "workspace" => orphan[:session]))
+      return base.merge("outcome" => "nothing", "reason" => "refused", "message" => refusal, "action" => nil) if refusal
+      return base.merge("outcome" => "closed", "reason" => nil, "message" => "#{message}; closed", "action" => "close_window") if @orphans.close(orphan)
+      base.merge("outcome" => "failed", "reason" => "close_failed", "message" => "#{message}, and tmux could not close it", "action" => "close_window")
     end
 
     # The retry's wait is over but the token budget is used: not a failure, and the sweep cannot raise the budget.

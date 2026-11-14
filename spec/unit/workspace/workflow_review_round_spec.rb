@@ -67,7 +67,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
 
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(opened.size).to eq(1)
-      expect(opened.first).to include(session: "app", name: "review-plan", cwd: worktree, env: {"WORKSPACE_REVIEW_RUN" => "wr_1"}, option: "wr_1:plan:1")
+      expect(opened.first).to include(session: "app", name: "review-plan", cwd: worktree, env: {"WORKSPACE_REVIEW_RUN" => "wr_1"}, option: "wr_1:plan:1", store: "st0re")
       expect(panes.calls).to eq([
         [:require_daemon, "app"],
         [:bind, {workspace: "app", pane: "%100", run_id: "wr_1", step: "plan", attempt: 1, instructions: prompt_path,
@@ -210,12 +210,34 @@ RSpec.describe Workspace::WorkflowReviewRound do
       end
     end
 
-    it "takes no stale window id onto a failure that has no window" do
+    it "keeps the window id a kept window left on the round when a delivery again fails before finding a window" do
       store.runs["wr_1"] = run_hash(review: {"window" => "@3"})
 
       build_runner(revision: RecordingReviewRevision.new({revision: nil, problem: "the command failed"})).call("wr_1", pending)
 
-      expect(round).not_to have_key("window")
+      expect(round).to include("delivery" => "failed", "window" => "@3")
+    end
+
+    it "records the tmux server the review pane is on, so the sweep can tell a restarted server" do
+      tmux.server_pid = "777"
+
+      runner.call("wr_1", pending)
+
+      expect(round).to include("pane" => "%100", "server_pid" => "777")
+    end
+
+    it "delivers a round whose earlier delivery died between typing its line and the last change into the window it left, without closing it" do
+      # A tick took the lapsed mark over: the round is delivering again under this process, with the dead delivery's pane on it.
+      store.runs["wr_1"] = run_hash(review: {"pane" => "%70", "window" => "@7", "redeliveries" => 1})
+      tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+
+      runner.call("wr_1", pending)
+
+      expect(opened).to be_empty
+      expect(tmux.killed_windows).to be_empty
+      expect(readiness.calls).to eq([[:await_ready, "app", "%70", "claude", {window: "@7", keep: true}]])
+      expect(panes.calls.map(&:first)).to eq(%i[require_daemon bind kick])
+      expect(round).to include("delivery" => nil, "pane" => "%70", "window" => "@7", "redeliveries" => 1)
     end
 
     it "leaves a window to a round that stopped in it before its pane was recorded" do
@@ -468,10 +490,10 @@ RSpec.describe Workspace::WorkflowReviewRound do
   end
 
   describe "#close" do
-    it "closes the round's step's windows of the run, found by their mark" do
+    it "closes the round's step's windows of the run up to that round, found by their mark" do
       runner.close("wr_1", {"workspace" => "app", "step" => "plan", "round" => 1, "pane" => nil})
 
-      expect(panes.calls).to eq([[:close_review, "app", "wr_1", {step: "plan"}]])
+      expect(panes.calls).to eq([[:close_review, "app", "wr_1", {step: "plan", round: 1}]])
     end
 
     it "closes every window of the run for a step of nil, reading the workspace from the run when none was registered" do

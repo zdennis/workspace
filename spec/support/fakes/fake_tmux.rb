@@ -14,12 +14,18 @@ class FakeTmux
     delivered texts details details= screens screens= screen_script screen_script= on_deliver on_deliver= on_details
     on_details= statuses statuses= capture_calls sessions_calls sessions_strict_args styled_screens styled_screens=
     server_pid server_pid= start_commands start_commands= session_gone session_gone=
-    opened_windows killed_windows review_window_list review_window_list=
+    opened_windows killed_windows review_window_list review_window_list= session_server_pid session_server_pid= renumber_windows renumber_windows= review_windows_by_session review_windows_by_session=
   ].freeze
 
   attr_reader :sent_keys, :sent_key_names, :capture_calls, :sessions_calls, :sessions_strict_args, :opened_windows, :killed_windows
   # @return [Array<Hash>] what `review_windows` lists
   attr_accessor :review_window_list
+  # @return [String, nil] what `server_pid_for_session` answers (nil: `server_pid`)
+  attr_accessor :session_server_pid
+  # @return [Boolean, nil, Hash] what `renumber_windows?` answers: one value, or a Hash of session (nil: global) to value
+  attr_accessor :renumber_windows
+  # @return [Hash{String=>Array<Hash>}, nil] what `review_windows` lists per session; nil lists `review_window_list` for every one
+  attr_accessor :review_windows_by_session
   attr_accessor :styled_screens, :server_pid, :start_commands, :session_gone, :captured_output, :pane_indexes, :delivery_status, :details, :screens, :screen_script, :on_deliver,
     :on_details, :statuses
 
@@ -115,18 +121,18 @@ class FakeTmux
   end
 
   # Records the window and answers with the next ids (`%100`, `@100`, ...), pid 4242.
-  def open_window(session, name:, cwd:, command:, env: {}, option: nil)
+  def open_window(session, name:, cwd:, command:, env: {}, option: nil, store: nil)
     number = 100 + @opened_windows.size
     opened = {pid: 4242, pane: "%#{number}", window: "@#{number}"}
-    @opened_windows << opened.merge(session: session, name: name, cwd: cwd, command: command, env: env, option: option)
+    @opened_windows << opened.merge(session: session, name: name, cwd: cwd, command: command, env: env, option: option, store: store)
     if option
-      @review_window_list << {window: opened[:window], name: name, review: option, pane: opened[:pane], pid: opened[:pid]}
+      @review_window_list << {window: opened[:window], name: name, review: option, pane: opened[:pane], pid: opened[:pid], store: store}
     end
     opened
   end
 
   # A copy, as each real listing is a new one: a window killed while a caller walks it stays in the walk.
-  def review_windows(_session) = @review_window_list.map(&:dup)
+  def review_windows(session) = (@review_windows_by_session ? @review_windows_by_session.fetch(session, []) : @review_window_list).map(&:dup)
 
   # False for a window it never opened or listed.
   def kill_window(target)
@@ -150,6 +156,10 @@ class FakeTmux
   end
 
   def server_pid_for_pane(_pane_id, timeout: nil) = @server_pid
+
+  def server_pid_for_session(_session_name, timeout: nil) = @session_server_pid || @server_pid
+
+  def renumber_windows?(session_name = nil, timeout: nil) = @renumber_windows.is_a?(Hash) ? @renumber_windows[session_name] : @renumber_windows
 
   def pane_start_commands(_session) = @start_commands
 

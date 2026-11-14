@@ -132,6 +132,9 @@ class RecordingRunStore
     Workspace::WorkflowRun.from_h(@runs.fetch(id))
   end
 
+  # A fixed stamp, as the real store's digest of its directory.
+  def stamp = "st0re"
+
   def going?(id)
     @calls << [:going?, id]
     @going.include?(id)
@@ -327,10 +330,12 @@ class RecordingWorkflowPanes
   # @param kick [Hash] what +kick+ answers
   # @param same [Boolean] what +same_pane?+ answers
   # @param gone [Array<String>] the panes tmux no longer has
+  # @param restarted [Array<String>] the review panes whose tmux server was restarted since the round recorded it
   # @param no_daemon [Boolean] +require_daemon+ refuses with `no_daemon`
   # @param on_kick [#call, nil] called with +kick+'s keywords before it answers, as when something else happens while
   #   the line is typed
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], reviewing: {}, no_daemon: false, on_kick: nil)
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil)
+    @restarted = restarted
     @no_daemon = no_daemon
     @on_kick = on_kick
     @reviewing = reviewing
@@ -376,9 +381,16 @@ class RecordingWorkflowPanes
     raise Workspace::Error.new("Could not start the agent daemon for '#{workspace}'.", code: "no_daemon", details: {"workspace" => workspace}) if @no_daemon
   end
 
-  def close_review(workspace, run_id, step: nil)
-    @calls << [:close_review, workspace, run_id, {step: step}]
+  def close_review(workspace, run_id, step: nil, round: nil)
+    @calls << [:close_review, workspace, run_id, round ? {step: step, round: round} : {step: step}]
     []
+  end
+
+  # :gone for a pane in +gone+, :server_restarted for one in +restarted+, else :live.
+  def review_pane_state(workspace, pane, server_pid)
+    @calls << [:review_pane_state, workspace, pane, server_pid]
+    return :gone if @gone.include?(pane)
+    @restarted.include?(pane) ? :server_restarted : :live
   end
 
   def unbind(run_id, role: nil, pane: nil)
@@ -519,6 +531,17 @@ class RecordingProgress
     ctx.review({"step" => hash["current"]})
     hash["steps"][hash["current"]]["review"] = {"restarted" => true}
     Workspace::WorkflowRun.from_h(hash.merge("reason" => nil))
+  end
+
+  # Registers the round on +ctx+ and counts one more of its `redeliveries`, as the real one does.
+  def redeliver_round(run, ctx:, new_server: false)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << (new_server ? [:redeliver_round, hash["current"], {new_server: true}] : [:redeliver_round, hash["current"]])
+    round = hash["steps"][hash["current"]]["review"]
+    round.reject! { |key, _| %w[pane window server_pid].include?(key) } if new_server
+    round.merge!("delivery" => "delivering", "redeliveries" => round["redeliveries"].to_i + 1).delete("failure")
+    ctx.review({"step" => hash["current"], "round" => round["round"]})
+    Workspace::WorkflowRun.from_h(hash)
   end
 
   def end_round(run, how:, ctx:, close: true)

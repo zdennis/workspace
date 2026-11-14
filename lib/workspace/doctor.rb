@@ -70,11 +70,13 @@ module Workspace
     # @param template_status [Workspace::TemplateStatus, nil] says where each config stands against that set; nil skips the `template-current` rows
     # @param template_apply [Workspace::TemplateApply, nil] what `--fix` re-renders stale configs with (without `--force`); nil fixes none
     # @param run_health [Workspace::WorkflowRunHealth, nil] reads orphaned workflow runs and leaked run locks; nil skips that check
+    # @param review_orphans [Workspace::WorkflowReviewOrphans, nil] finds review windows no round uses; nil skips that check
+    # @param tmux [Workspace::Tmux, nil] says whether tmux's `renumber-windows` is on; nil skips that check
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     # @param env [Hash] the environment; a non-empty NO_COLOR turns color off
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, sweep_schedule: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, review_orphans: nil, tmux: nil, sweep_schedule: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -96,6 +98,8 @@ module Workspace
       @event_log = event_log
       @skills = skills
       @run_health = run_health
+      @review_orphans = review_orphans
+      @tmux = tmux
       @library = library
       @template_validator = template_validator
       @template_status = template_status
@@ -160,6 +164,8 @@ module Workspace
       check_agent_panes(stale - fixed)
       check_skills
       check_workflow_runs
+      check_review_windows
+      check_renumber_windows
       check_workflow_sweep
       # A failed --fix is a `fix` row, so `doctor --fix` still exits non-zero
       # when there was nothing it could actually do.
@@ -465,6 +471,10 @@ module Workspace
     ROW_LIMIT = 20
     private_constant :ROW_LIMIT
 
+    # Seconds a tmux option read may take.
+    TMUX_READ_TIMEOUT = 5
+    private_constant :TMUX_READ_TIMEOUT
+
     # Warns about workflow runs nothing can move on and run locks whose run is over. Read only, and `--fix`
     # leaves all of it: ending a run or freeing a lock is the person's call. Every value read from a run or
     # lock file is escaped before it reaches a row, and a lock name goes into a command only when it is a
@@ -479,6 +489,43 @@ module Workspace
       add_row("workflow-runs", "warn", "#{pending.size - ROW_LIMIT} more orphaned runs, unreadable run files or leaked run locks not shown") if pending.size > ROW_LIMIT
       found[:warnings].each { |text| add_row("workflow-runs", "warn", TerminalText.escape(text)) }
       add_row("workflow-runs", "ok", "workflow runs: none orphaned, no leaked run locks") if pending.empty? && found[:warnings].empty?
+    end
+
+    # Warns about review windows no round uses (the run is over or unknown, or its round does not record the
+    # window). Read only; `--fix` leaves them, and `workflow sweep` closes them.
+    def check_review_windows
+      return unless @review_orphans
+      found = @review_orphans.find
+      found.first(ROW_LIMIT).each do |orphan|
+        why = WorkflowReviewOrphans::WHY.fetch(orphan[:why])
+        add_row("workflow-review-window-orphaned", "warn",
+          "review window #{TerminalText.escape(orphan[:window].to_s)} in session #{TerminalText.escape(orphan[:session].to_s)} (run #{TerminalText.escape(orphan[:run_id].to_s)}, step #{TerminalText.escape(orphan[:step].to_s)}, round #{orphan[:round].to_i}) is left over: #{why}",
+          **review_window_fix(orphan))
+      end
+      add_row("workflow-review-window-orphaned", "warn", "#{found.size - ROW_LIMIT} more left-over review windows not shown") if found.size > ROW_LIMIT
+    end
+
+    # A window this store's run says is left over is the sweep's to close; one whose run it doesn't have may be
+    # another state directory's, so only a person closes it.
+    def review_window_fix(orphan)
+      return {fix: "run 'workspace workflow sweep', which closes it", fix_command: "workspace workflow sweep"} if orphan[:closable]
+      {fix: "if no workspace on this machine runs that workflow run, close it with 'tmux kill-window -t #{TerminalText.escape(orphan[:window].to_s)}'; workflow sweep leaves it", fix_command: nil}
+    end
+
+    # Warns when tmux's `renumber-windows` is on: closing a review window (or `dev`'s) then shifts the index of every
+    # window opened after it, so a pane bound in one of those reads as moved and its run waits for a person. Read only.
+    def check_renumber_windows
+      return unless @tmux
+      where = if @tmux.renumber_windows?(timeout: TMUX_READ_TIMEOUT)
+        "tmux renumber-windows is on"
+      else
+        sessions = @tmux.sessions.select { |session| @tmux.renumber_windows?(session, timeout: TMUX_READ_TIMEOUT) }
+        return if sessions.empty?
+        "tmux renumber-windows is on in session#{"s" unless sessions.size == 1} #{sessions.map { |each| TerminalText.escape(each) }.join(", ")}"
+      end
+      add_row("tmux-renumber-windows", "warn",
+        "#{where}: when a review window (or dev's window) closes, the windows opened after it are renumbered, and a workflow pane bound in one of them reads as moved",
+        fix: "turn it off with 'tmux set-option -g renumber-windows off' (for one session, 'tmux set-option -t SESSION renumber-windows off'; and in ~/.tmux.conf), or keep bound panes in window 0", fix_command: "tmux set-option -g renumber-windows off")
     end
 
     # Says whether the `workflow sweep` schedule is installed and loaded. Warns, never fails, and `--fix` leaves

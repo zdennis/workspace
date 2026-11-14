@@ -49,7 +49,7 @@ module Workspace
     def self.backoff(run, now) = WorkflowTransitions.backoff(run, now)
     def self.parked(run, now) = WorkflowTransitions.parked(run, now)
     def self.park_timeout_message(pane, checking: false) = WorkflowTransitions.park_timeout_message(pane, checking: checking)
-    def self.wakeable?(run, now) = WorkflowTransitions.wakeable?(run, now)
+    def self.wakeable?(run, now, alive: nil) = WorkflowTransitions.wakeable?(run, now, alive: alive)
     def self.lost_check?(run, now) = WorkflowTransitions.lost_check?(run, now)
     def self.lost_round?(run, now) = WorkflowTransitions.lost_round?(run, now)
     def self.sweep_marks(run) = WorkflowTransitions.sweep_marks(run)
@@ -166,6 +166,12 @@ module Workspace
     # @return [Symbol] :evaluated, :timed_out, :moved_on or :busy
     def recover(run_id, turn_over:, cause:, data: {}, fail_if_incomplete: nil)
       @recovery.recover(run_id, turn_over: turn_over, cause: cause, data: data, fail_if_incomplete: fail_if_incomplete)
+    end
+
+    # Acts on a review round the sweep found stalled in its review pane. See {WorkflowRecovery#review_stalled}.
+    # @return [Symbol] :evaluated, :stopped, :redelivered, :moved_on or :busy
+    def review_stalled(run_id, step:, attempt:, round:, pane:, cause:, data: {})
+      @recovery.review_stalled(run_id, step: step, attempt: attempt, round: round, pane: pane, cause: cause, data: data)
     end
 
     # Fails a step that ran past its `timeout:`. See {WorkflowRecovery#time_out}.

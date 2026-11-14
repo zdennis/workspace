@@ -24,6 +24,13 @@ module Workspace
     # How long a `turn_ended_background` hold lasts after the last Stop that listed tasks.
     BACKGROUND_HOLD = 90 * 60
 
+    # Seconds after a review round's start for which a holder stored with no start time (its `ps` failed) is still
+    # taken for a live process: by pid alone a reused pid would read alive for ever, so past this it reads gone.
+    UNTIMED_HOLDER_LIMIT = 4 * DELIVERY_WINDOW
+
+    # A review round's delivery failures no delivery again can get past: the round goes straight to its stop.
+    ROUND_REDELIVER_NEVER = %w[review_custom_socket].freeze
+
     # Each guard code in words, for a failure or a warning.
     GUARD_TEXT = {
       "no_commit" => "the checkout had no commit to start from",
@@ -176,7 +183,8 @@ module Workspace
     # Where the delivery of a review round stands. A round is stored `delivering` when it starts, under the run's
     # lock, and its delivery (window, agent, revision, typing) runs outside it and can outlast {DELIVERY_WINDOW}; so
     # time alone does not end the mark: past the window it still holds while the process that delivers it (its
-    # `holder`, a pid and start time) is alive.
+    # `holder`, a pid and start time) is alive. A holder stored with no start time is judged by its pid only until
+    # {UNTIMED_HOLDER_LIMIT}, since a reused pid would hold the mark for ever.
     #
     # @param round [Hash{String=>Object}, nil] a step's `review`
     # @param now [Time]
@@ -187,22 +195,28 @@ module Workspace
       return nil unless round.is_a?(Hash)
       return :failed if round["delivery"] == "failed"
       return nil unless round["delivery"] == "delivering"
-      return :delivering unless now - Time.iso8601(round["started_at"].to_s) > DELIVERY_WINDOW
+      elapsed = now - Time.iso8601(round["started_at"].to_s)
+      return :delivering unless elapsed > DELIVERY_WINDOW
       holder = round["holder"]
-      (holder && (alive.nil? || alive.call(holder))) ? :delivering : :unknown
+      return :unknown unless holder
+      return :unknown if holder.is_a?(Hash) && holder["started"].nil? && elapsed > UNTIMED_HOLDER_LIMIT
+      (alive.nil? || alive.call(holder)) ? :delivering : :unknown
     rescue ArgumentError, TypeError
       :unknown
     end
 
     # Where a review round that has to be delivered again stands: the current step is `reviewing` with no stored
-    # reason and no park, and its round's delivery failed or lapsed ({.round_delivery}). Each delivery again spends
-    # one of the round's `redeliveries`, capped by the definition's `redeliver`.
+    # reason and no park, and its round's delivery failed or lapsed ({.round_delivery}). Each delivery again by
+    # {WorkflowRecovery#tick} spends one of the round's `redeliveries`, capped by the definition's `redeliver` (a
+    # person's resume starts the count again). A stored failure waits out {REDELIVER_BACKOFF} from its `at` first,
+    # as an undelivered line does; a lapsed mark is already past {DELIVERY_WINDOW}. A failure in
+    # {ROUND_REDELIVER_NEVER} is exhausted at once.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
     # @param alive [#call, nil] see {.round_delivery}
-    # @return [Hash, nil] nil when no delivery again applies; else :state (`:due` or `:exhausted`), :round,
-    #   :retries (spent), :limit and :mark (`:failed` or `:unknown`)
+    # @return [Hash, nil] nil when no delivery again applies; else :state (`:due`, `:waiting` for the backoff or
+    #   `:exhausted`), :round, :retries (spent), :limit, :mark (`:failed` or `:unknown`) and :wait (seconds left, 0 unless waiting)
     def self.round_redelivery(run, now, alive: nil)
       return nil if run["parked"] || run["reason"]
       state = run.dig("steps", run["current"])
@@ -212,8 +226,19 @@ module Workspace
       return nil unless %i[failed unknown].include?(mark)
       retries = round["redeliveries"].is_a?(Integer) ? round["redeliveries"] : 0
       limit = WorkflowDefinition.redeliver(run["definition"])
-      {state: (retries >= limit) ? :exhausted : :due, round: round["round"], retries: retries, limit: limit, mark: mark}
+      info = {round: round["round"], retries: retries, limit: limit, mark: mark}
+      return info.merge(state: :exhausted, wait: 0) if retries >= limit || ROUND_REDELIVER_NEVER.include?(round.dig("failure", "code"))
+      wait = (mark == :failed) ? round_backoff(round, retries, now) : 0
+      (wait > 0) ? info.merge(state: :waiting, wait: wait) : info.merge(state: :due, wait: 0)
     end
+
+    # Seconds left before a failed round's delivery again; a failure time that can't be read waits no longer.
+    def self.round_backoff(round, retries, now)
+      (Time.iso8601(round.dig("failure", "at").to_s) + REDELIVER_BACKOFF[[retries, REDELIVER_BACKOFF.size - 1].min] - now).ceil.clamp(0..)
+    rescue ArgumentError, TypeError
+      0
+    end
+    private_class_method :round_backoff
 
     # Where the sweep's retry of an undelivered line stands. The step must wait on a failed delivery (reason
     # `waiting_you`, kind `dispatch`, a code in {REDELIVER_CODES}), with no park, its last attempt ended
@@ -297,20 +322,22 @@ module Workspace
     # (the process running it died), judged by the check's time limit plus a
     # minute, it has been held for background tasks longer than
     # {BACKGROUND_HOLD}, or the end of its review round was being judged and
-    # nothing reported back ({.lost_round?}).
+    # nothing reported back ({.lost_round?}), or its review round has to be
+    # delivered again, or stopped once its deliveries again are spent ({.round_redelivery}).
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
-    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :check, or nil
-    def self.wakeable?(run, now)
+    # @param alive [#call, nil] given a review round's `holder`, whether it still runs (see {.round_delivery}); nil
+    #   takes every holder as alive, so a lapsed round with a holder is not woken
+    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :review, :check, or nil
+    def self.wakeable?(run, now, alive: nil)
       return :parked if run["parked"]
       return :backoff if backoff(run, now)&.fetch(:state) == :due
       return :lock if run.dig("reason", "code") == "waiting_lock"
       return :background if background_expired?(run["reason"], now)
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
-      # A review round due again ({.round_redelivery}) is not woken here until WorkflowRecovery#tick can redeliver it (T32);
-      # woken now, every tick would start an advance that does nothing.
       return :round if lost_round?(run, now)
+      return :review if %i[due exhausted].include?(round_redelivery(run, now, alive: alive)&.fetch(:state))
       :check if run["reason"].nil? && lost_check?(run, now)
     end
 

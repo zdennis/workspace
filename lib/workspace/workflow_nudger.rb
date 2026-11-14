@@ -16,10 +16,13 @@ module Workspace
     # @param executable [String] path to `bin/workspace`
     # @param log_path [#call] the file a workspace's advance processes write to
     # @param spawner [#call] starts a detached process: `(argv, log)`
+    # @param holder_alive [#call, nil] given a review round's delivery `holder`, whether that process still runs, so
+    #   a lapsed round is woken only once its holder is gone (nil takes every holder as alive)
     # @param clock [#call] returns the current Time
     # @param logger [Workspace::Logger]
     # @param error_output [IO] the daemon's log, for a run that can't be looked at
-    def initialize(store:, panes:, executable:, log_path:, spawner: nil, clock: -> { Time.now }, logger: Workspace::Logger.new, error_output: $stderr)
+    def initialize(store:, panes:, executable:, log_path:, spawner: nil, holder_alive: nil, clock: -> { Time.now }, logger: Workspace::Logger.new, error_output: $stderr)
+      @holder_alive = holder_alive
       @error_output = error_output
       @store = store
       @panes = panes
@@ -50,14 +53,16 @@ module Workspace
     end
 
     # Wakes each of the workspace's runs that has a parked resume, waits for
-    # a lock, or whose check never reported back.
+    # a lock (a review round's `review.uses` too), or whose check or review
+    # round never reported back, or whose review round has to be delivered again
+    # ({WorkflowEngine.wakeable?}).
     #
     # @param workspace [String] the daemon's workspace
     # @return [Array<String>] the runs that were woken
     def tick(workspace)
       now = @clock.call
       @store.going.select { |run| run.workspace == workspace }.filter_map do |run|
-        next unless WorkflowEngine.wakeable?(run.to_h, now)
+        next unless WorkflowEngine.wakeable?(run.to_h, now, alive: @holder_alive)
         advance(workspace, run.id)
         run.id
       rescue => e

@@ -59,6 +59,17 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.round_delivery(round(delivery: "failed"), started)).to eq(:failed)
     end
 
+    it "takes a holder stored with no start time for alive only within a multiple of the window, so a reused pid does not hold the mark for ever" do
+      untimed = round(holder: {"pid" => 41, "started" => nil})
+      limit = described_class::UNTIMED_HOLDER_LIMIT
+      expect(limit).to eq(4 * window)
+
+      expect(described_class.round_delivery(untimed, started + limit, alive: ->(_) { true })).to eq(:delivering)
+      expect(described_class.round_delivery(untimed, started + limit + 1, alive: ->(_) { true })).to eq(:unknown)
+      timed = round(holder: {"pid" => 41, "started" => "Sat Oct  4 11:59:00 2026"})
+      expect(described_class.round_delivery(timed, started + limit + 1, alive: ->(_) { true })).to eq(:delivering)
+    end
+
     it "says nothing for a delivered round or none" do
       expect(described_class.round_delivery(round(delivery: nil), started + window + 1)).to be_nil
       expect(described_class.round_delivery(nil, started)).to be_nil
@@ -66,8 +77,30 @@ RSpec.describe Workspace::WorkflowTransitions do
 
     it "is due for a lapsed or failed delivery while redeliveries last, exhausted after" do
       expect(described_class.round_redelivery(reviewing, started)).to be_nil
-      expect(described_class.round_redelivery(reviewing, started + window + 1)).to eq(state: :due, round: 1, retries: 0, limit: 2, mark: :unknown)
-      expect(described_class.round_redelivery(reviewing({delivery: "failed", redeliveries: 2}), started)).to eq(state: :exhausted, round: 1, retries: 2, limit: 2, mark: :failed)
+      expect(described_class.round_redelivery(reviewing, started + window + 1)).to eq(state: :due, round: 1, retries: 0, limit: 2, mark: :unknown, wait: 0)
+      expect(described_class.round_redelivery(reviewing({delivery: "failed", redeliveries: 2}), started)).to eq(state: :exhausted, round: 1, retries: 2, limit: 2, mark: :failed, wait: 0)
+    end
+
+    it "waits out the undelivered line's backoff from a stored failure's time before a failed round is due" do
+      failed = reviewing({delivery: "failed", redeliveries: 1, failure: {"code" => "agent_not_ready", "at" => started.iso8601}})
+      backoff = described_class::REDELIVER_BACKOFF[1]
+
+      expect(described_class.round_redelivery(failed, started + 10)).to include(state: :waiting, wait: backoff - 10)
+      expect(described_class.round_redelivery(failed, started + backoff)).to include(state: :due, wait: 0)
+      expect(described_class.round_redelivery(reviewing({delivery: "failed", failure: {"at" => "garbled"}}), started)).to include(state: :due)
+    end
+
+    it "is exhausted at once for a failure no delivery again gets past" do
+      custom = reviewing({delivery: "failed", failure: {"code" => "review_custom_socket", "at" => started.iso8601}})
+
+      expect(described_class.round_redelivery(custom, started)).to include(state: :exhausted, retries: 0, limit: 2)
+    end
+
+    it "leaves a lapsed round with a live holder alone, and is due once the holder is gone" do
+      held = reviewing({holder: {"pid" => 41, "started" => "x"}})
+
+      expect(described_class.round_redelivery(held, started + window + 1, alive: ->(_) { true })).to be_nil
+      expect(described_class.round_redelivery(held, started + window + 1, alive: ->(_) { false })).to include(state: :due, mark: :unknown)
     end
 
     it "is nil for a stopped round, a parked run or a step not being reviewed" do
@@ -76,10 +109,21 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.round_redelivery(run_with(steps: {"plan" => step("running")}), started)).to be_nil
     end
 
-    it "does not wake a run whose round has to be delivered again, since nothing on a tick redelivers it yet" do
+    it "wakes a run whose round has to be delivered again, or stopped once its deliveries again are spent, as :review" do
       expect(described_class.wakeable?(reviewing, started)).to be_nil
-      expect(described_class.wakeable?(reviewing, started + window + 1)).to be_nil
-      expect(described_class.wakeable?(reviewing({delivery: "failed"}), started)).to be_nil
+      expect(described_class.wakeable?(reviewing, started + window + 1)).to eq(:review)
+      expect(described_class.wakeable?(reviewing({delivery: "failed"}), started)).to eq(:review)
+      expect(described_class.wakeable?(reviewing({delivery: "failed", redeliveries: 2}), started)).to eq(:review)
+    end
+
+    it "does not wake a round whose failure waits out its backoff, a stopped round, or a slow delivery whose holder lives" do
+      waiting = reviewing({delivery: "failed", failure: {"code" => "agent_not_ready", "at" => started.iso8601}})
+      expect(described_class.wakeable?(waiting, started + 1)).to be_nil
+      expect(described_class.wakeable?(reviewing({delivery: "failed"}, "reason" => {"code" => "review_incomplete"}, "state" => "waiting"), started)).to be_nil
+      held = reviewing({holder: {"pid" => 41, "started" => "x"}})
+      expect(described_class.wakeable?(held, started + window + 1, alive: ->(_) { true })).to be_nil
+      expect(described_class.wakeable?(held, started + window + 1)).to be_nil
+      expect(described_class.wakeable?(held, started + window + 1, alive: ->(_) { false })).to eq(:review)
     end
 
     describe ".lost_round?" do

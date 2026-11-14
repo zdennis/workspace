@@ -5749,6 +5749,101 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(lock_holder("review-db")).to include("run_id" => "wr_1")
         expect(rounds).to be_empty
       end
+
+      it "starts the round a tick finds the review's lock free for, and leaves it waiting while the lock is taken" do
+        other = definition("steps:\n  hold:\n    prompt: P\n    uses: [review-db]\n")
+        start(other, inputs: {}, pane: "%6", workspace: "app.worktree-b")
+        engine = reviewed_engine(:approved)
+        engine.start(definition: definition(locked_yaml), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+        artifact("plan.md", "wr_2")
+        engine.turn_ended("wr_2", pane: "%5")
+
+        expect(described_class.wakeable?(stored_run(store, "wr_2"), now.first)).to eq(:lock)
+        engine.tick("wr_2")
+        expect(stored_run(store, "wr_2")["reason"]).to include("code" => "waiting_lock")
+        expect(rounds).to be_empty
+
+        engine.cancel("wr_1")
+        run = engine.tick("wr_2")
+
+        expect(run["reason"]).to be_nil
+        expect(run["steps"]["plan"]).to include("state" => "reviewing", "review_rounds" => 1)
+        expect(run["steps"]["plan"]["review"]).to include("round" => 1, "pane" => "%9")
+        expect(lock_holder("review-db")).to include("run_id" => "wr_2")
+        expect(rounds).to eq([["wr_2", {"step" => "plan", "attempt" => 1, "round" => 1}]])
+      end
+    end
+
+    context "with a delivery that lapses" do
+      let(:alive) { [true] }
+      let(:holder) { {"pid" => 4321, "started" => "Sat Oct  4 12:00:00 2026"} }
+      # A delivery that never writes back, as when its process died after the round started.
+      let(:lapsing) do
+        lambda do |run_id, review|
+          rounds << [run_id, review]
+          nil
+        end
+      end
+
+      def lapsing_engine
+        build_engine(review_round: lapsing, review_tally: RecordingReviewTally.new(outcome: :approved, reviews: []),
+          round_holder: -> { holder }, holder_alive: ->(_found) { alive.first })
+      end
+
+      def lapse = now[0] += Workspace::WorkflowTransitions::DELIVERY_WINDOW + 1
+
+      it "is delivered again once by a tick when the mark lapsed and its holder is gone, and left alone while the holder lives" do
+        engine = lapsing_engine
+        start_reviewed(engine)
+        lapse
+
+        expect(engine.tick("wr_1")).to be_nil
+        expect(rounds.size).to eq(1)
+
+        alive[0] = false
+        run = engine.tick("wr_1")
+
+        expect(run["steps"]["plan"]["review"]).to include("round" => 1, "delivery" => "delivering", "redeliveries" => 1, "holder" => holder)
+        expect(run["steps"]["plan"]["review_rounds"]).to eq(1)
+        expect(run["steps"]["plan"]["attempts"].last["rounds"].map { |each| each["ended"] }).to eq(["redelivered"])
+        expect(rounds.map(&:last)).to eq([{"step" => "plan", "attempt" => 1, "round" => 1}] * 2)
+        expect(engine.tick("wr_1")).to be_nil
+        expect(rounds.size).to eq(2)
+      end
+
+      it "stops review_incomplete once the definition's redeliver is spent, and a person's resume delivers it again with the count started over" do
+        engine = lapsing_engine
+        alive[0] = false
+        start_reviewed(engine)
+        limit = stored_run(store, "wr_1")["definition"]["redeliver"]
+        limit.times do
+          lapse
+          engine.tick("wr_1")
+        end
+        expect(stored_run(store, "wr_1")["steps"]["plan"]["review"]["redeliveries"]).to eq(limit)
+
+        lapse
+        run = engine.tick("wr_1")
+
+        expect(run["reason"]).to include("code" => "review_incomplete")
+        expect(run["reason"]["details"]["problem"]).to include("delivered again #{limit} times, its `redeliver` limit")
+        expect(rounds.size).to eq(limit + 1)
+        expect(described_class.wakeable?(run, now.first)).to be_nil
+      end
+
+      it "starts the count again on a person's resume of a lapsed round" do
+        engine = lapsing_engine
+        alive[0] = false
+        start_reviewed(engine)
+        lapse
+        engine.tick("wr_1")
+        lapse
+
+        run = engine.resume("wr_1")
+
+        expect(run["steps"]["plan"]["review"]).to include("round" => 1, "delivery" => "delivering", "redeliveries" => 0)
+        expect(run["steps"]["plan"]["review_rounds"]).to eq(1)
+      end
     end
 
     context "with a gate" do

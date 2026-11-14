@@ -3,7 +3,10 @@
 # a binding that goes stale when its pane is no longer where it was bound
 # (`stale`), and a kick that types nothing when it reports a failure.
 class FakeWorkflowPanes
-  attr_reader :changed, :kicks, :bound, :stale, :idle, :turn_over, :gone, :agents_gone, :rows, :respawns
+  CONTROL_METHODS = %i[changed kicks bound stale idle turn_over gone agents_gone rows respawns restarted kick_result kick_result= bind_error bind_error=
+    daemon daemon= respawn_result respawn_result= on_row on_row= session session= queue_kicks].freeze
+
+  attr_reader :changed, :kicks, :bound, :stale, :idle, :turn_over, :gone, :agents_gone, :rows, :respawns, :restarted
   attr_accessor :kick_result, :bind_error, :daemon, :respawn_result, :on_row, :session
 
   def initialize
@@ -15,6 +18,7 @@ class FakeWorkflowPanes
     @idle = []
     @turn_over = []
     @gone = []
+    @restarted = []
     @changed = []
     @agents_gone = []
     @daemon = true
@@ -50,6 +54,13 @@ class FakeWorkflowPanes
 
   def agent_gone?(_workspace, pane) = @agents_gone.include?(pane)
 
+  # A review pane in +gone+ closed; one in +restarted+ went with its tmux server; nil (can't tell) with no server recorded.
+  def review_pane_state(_workspace, pane, server_pid)
+    return nil if server_pid.nil?
+    return :gone if @gone.include?(pane)
+    @restarted.include?(pane) ? :server_restarted : :live
+  end
+
   def daemon_running?(_workspace) = @daemon
 
   # The pane's entry in the daemon's snapshot; +on_row+ runs first, for a spec that changes the run in between.
@@ -76,9 +87,10 @@ class FakeWorkflowPanes
     @bound[pane] = fields.merge(workspace: workspace)
   end
 
-  # +role+ "reviewer" or "author" removes only that role's bindings (one bound with no role is the author's); nil removes all.
-  def unbind(run_id, role: nil)
-    @bound.delete_if { |_, entry| entry[:run_id] == run_id && (role.nil? || (entry[:role] || "author") == role) }
+  # +role+ "reviewer" or "author" removes only that role's bindings (one bound with no role is the author's); nil removes
+  # all; +pane+ only that pane's.
+  def unbind(run_id, role: nil, pane: nil)
+    @bound.delete_if { |bound, entry| entry[:run_id] == run_id && (role.nil? || (entry[:role] || "author") == role) && (pane.nil? || bound == pane) }
   end
 
   # Answers the next kick with each result given, in order, then with +kick_result+ again.

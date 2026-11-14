@@ -394,6 +394,7 @@ require_relative "workspace/workflow_prompt"
 require_relative "workspace/workflow_dispatch"
 require_relative "workspace/workflow_round_holder"
 require_relative "workspace/workflow_review_round"
+require_relative "workspace/workflow_review_orphans"
 require_relative "workspace/workflow_progress"
 require_relative "workspace/workflow_evaluation"
 require_relative "workspace/workflow_decisions"
@@ -568,7 +569,7 @@ module Workspace
   #   (default: none)
   # @param round_holder [#call, nil] answers the process that delivers a round a change starts ("pid", "started"), stored on
   #   the round as its `holder` (default: none stored)
-  # @param holder_alive [#call, nil] given a round's `holder`, whether that process still runs, so a resume delivers a
+  # @param holder_alive [#call, nil] given a round's `holder`, whether that process still runs, so a resume or a tick delivers a
   #   lapsed round again only once its holder is gone (default: none, every holder taken as alive)
   # @param clock [#call] returns the current Time
   # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
@@ -599,7 +600,7 @@ module Workspace
       lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
     decisions = WorkflowDecisions.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
       attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, holder_alive: holder_alive, clock: clock)
-    recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, clock: clock)
+    recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, holder_alive: holder_alive, clock: clock)
     WorkflowEngine.new(starter: starter, evaluation: evaluation, decisions: decisions, recovery: recovery)
   end
 
@@ -1082,8 +1083,10 @@ module Workspace
       gate_note: workflow_gate_note)
     workflow_workspace_facts = WorkflowWorkspaceFacts.new(liveness: Liveness.new(tmux: tmux), project_config: project_config, config: config,
       agents: ProjectAgents.new(client: agent_snapshot_client))
+    workflow_review_orphans = WorkflowReviewOrphans.new(tmux: tmux, store: workflow_store, panes: workflow_panes)
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
-      interrupter: ->(workspace, pane, keys) { send_command.deliver(name: workspace, pane: pane, keys: keys) })
+      interrupter: ->(workspace, pane, keys) { send_command.deliver(name: workspace, pane: pane, keys: keys) },
+      orphans: workflow_review_orphans, holder_alive: round_holder.method(:alive?))
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do
         out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)
@@ -1127,7 +1130,7 @@ module Workspace
       error_output: error_output
     )
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
-      log_path: ->(workspace) { config.agent_log_path(workspace) }, logger: logger, error_output: error_output)
+      log_path: ->(workspace) { config.agent_log_path(workspace) }, holder_alive: round_holder.method(:alive?), logger: logger, error_output: error_output)
     kill_command = Commands::Kill.new(git: git, pr_status: PullRequestStatus.new, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, tmux: tmux, locks: name_migration, output: output, input: input)
     pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
     rebase_command = Commands::Rebase.new(git: git, checkout: workspace_checkout, output: output)
@@ -1195,7 +1198,7 @@ module Workspace
       backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer), locks: name_migration,
       project_config: project_config, tmux: tmux, differ: TextDiff.new,
       retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output))
-    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, library: library, template_validator: template_validator, template_status: template_status, template_apply: template_apply, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), sweep_schedule: sweep_schedule, output: output, env: env)
+    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, library: library, template_validator: template_validator, template_status: template_status, template_apply: template_apply, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), review_orphans: workflow_review_orphans, tmux: tmux, sweep_schedule: sweep_schedule, output: output, env: env)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
     )

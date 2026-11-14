@@ -104,17 +104,42 @@ RSpec.describe Workspace::WorkflowNudger do
       expect(spawned.map(&:first)).to eq(%w[wr_1 wr_6 wr_7].map { |id| [RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", id] })
     end
 
-    it "does not wake a review round whose delivery lapsed or failed" do
-      reviewing = ->(id, delivery) do
-        run(id, "app", state: "reviewing").tap do |hash|
+    describe "a review round" do
+      let(:holder) { {"pid" => 41, "started" => "Sat Oct  4 11:00:00 2026"} }
+
+      def reviewing(id, round, reason: nil)
+        run(id, "app", state: "reviewing", reason: reason).tap do |hash|
           hash["definition"]["redeliver"] = 2
-          hash["steps"]["verify"]["review"] = {"round" => 1, "delivery" => delivery, "started_at" => "2026-10-04T11:00:00.000Z", "redeliveries" => 0}
+          hash["steps"]["verify"]["review"] = {"round" => 1, "started_at" => "2026-10-04T11:00:00.000Z", "redeliveries" => 0}.merge(round)
         end
       end
-      going([reviewing.call("wr_1", "delivering"), reviewing.call("wr_2", "failed")])
 
-      expect(nudger.tick("app")).to eq([])
-      expect(spawned).to be_empty
+      def nudger_with(alive)
+        described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(workspace) { "/log/#{workspace}.log" },
+          spawner: ->(argv, log) { spawned << [argv, log] }, holder_alive: alive, clock: -> { now }, error_output: error_output)
+      end
+
+      it "wakes a round whose delivery failed or lapsed with no holder, or whose redeliveries are spent, so tick delivers or stops it" do
+        going([reviewing("wr_1", {"delivery" => "delivering"}), reviewing("wr_2", {"delivery" => "failed"}),
+          reviewing("wr_3", {"delivery" => "failed", "redeliveries" => 2}), reviewing("wr_4", {"delivery" => nil, "pane" => "%9"})])
+
+        expect(nudger.tick("app")).to eq(%w[wr_1 wr_2 wr_3])
+      end
+
+      it "wakes a lapsed round only once its holder is gone, and never a stopped one" do
+        going([reviewing("wr_1", {"delivery" => "delivering", "holder" => holder}), reviewing("wr_2", {"delivery" => "failed"}, reason: "review_incomplete")])
+
+        expect(nudger.tick("app")).to eq([])
+        expect(nudger_with(->(_found) { true }).tick("app")).to eq([])
+        expect(nudger_with(->(_found) { false }).tick("app")).to eq(%w[wr_1])
+      end
+
+      it "wakes a round waiting on the lock its review.uses names, so tick asks for it again" do
+        going([reviewing("wr_1", {"delivery" => nil, "held" => "waiting_lock"}, reason: "waiting_lock")])
+
+        expect(nudger.tick("app")).to eq(%w[wr_1])
+        expect(spawned.map(&:first)).to eq([[RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1"]])
+      end
     end
 
     it "wakes a hold for background tasks only once it is more than 90 minutes old" do

@@ -19,6 +19,9 @@ module Workspace
     # Seconds to wait for the daemon when asking whether a pane is idle.
     IDLE_TIMEOUT = 1.0
 
+    # Seconds each tmux read of {#review_pane_state} may take.
+    TMUX_READ_TIMEOUT = 5
+
     # Seconds since a pane's turn ended before that end counts as unhandled:
     # the `workflow advance` the daemon starts on it has taken the run's lock
     # long before.
@@ -365,22 +368,53 @@ module Workspace
     end
 
     # Closes the review windows of a run, found by their `@workspace-review` mark (so a window whose pane was never
-    # recorded, or that a person renamed, is found too). A workspace on its own tmux socket has none (no round opens
-    # one there), and its session name is not looked up on the default server. Never raises.
+    # recorded, or that a person renamed, is found too), and removes the reviewer binding of each pane it closed. A
+    # workspace on its own tmux socket has none (no round opens one there), and its session name is not looked up on
+    # the default server. Never raises.
     #
     # @param workspace [String] the run's workspace
     # @param run_id [String]
     # @param step [String, nil] only that step's windows; nil closes every window of the run
+    # @param round [Integer, nil] only windows marked for that round or an earlier one, so a late close of round K
+    #   leaves round K+1's window; nil closes every round's
     # @return [Array<String>] the window ids closed
-    def close_review(workspace, run_id, step: nil)
+    def close_review(workspace, run_id, step: nil, round: nil)
       return [] if @tmux.custom_socket_option(workspace)
       @tmux.review_windows(@tmux.session_name_for(workspace)).filter_map do |window|
-        run, marked_step, = self.class.parse_review_mark(window[:review])
-        next if run != run_id || (step && marked_step != step)
-        window[:window] if @tmux.kill_window(window[:window])
+        run, marked_step, marked_round = self.class.parse_review_mark(window[:review])
+        next if run != run_id || (step && marked_step != step) || (round.is_a?(Integer) && marked_round > round)
+        next unless @tmux.kill_window(window[:window])
+        unbind(run_id, role: "reviewer", pane: window[:pane]) if window[:pane]
+        window[:window]
       end
     rescue Workspace::Error, SystemCallError
       []
+    end
+
+    # What became of a round's review pane, for the sweep, answered only on positive evidence: there on the tmux
+    # server the round recorded (`:live`); missing from the session's pane list while the session's server answers
+    # with that same pid (`:gone`); or the session's server, or the server that has the pane id now, answers with another pid
+    # (`:server_restarted`: a pane id the new server reused is not the review pane). Anything else is nil and the
+    # sweep leaves the round alone: no server recorded (nothing can tell a restarted server's reused pane id from
+    # the review pane), or tmux that can't be reached or read.
+    #
+    # @param workspace [String] the run's workspace
+    # @param pane [String] the round's review pane
+    # @param server_pid [String, nil] the tmux server's pid the round recorded
+    # @return [Symbol, nil] :live, :gone, :server_restarted, or nil when it can't be told
+    def review_pane_state(workspace, pane, server_pid)
+      return nil if server_pid.nil? || server_pid.to_s.empty?
+      now = @tmux.server_pid_for_pane(pane, timeout: TMUX_READ_TIMEOUT)
+      return (now.to_s == server_pid.to_s) ? :live : :server_restarted if now
+      session = @tmux.session_name_for(workspace)
+      current = @tmux.server_pid_for_session(session, timeout: TMUX_READ_TIMEOUT)
+      return nil unless current
+      return :server_restarted unless current.to_s == server_pid.to_s
+      # The same server: gone only when it lists the session's panes and this one is not among them.
+      listed = @tmux.pane_details(session, window: nil)
+      (listed.any? && listed.none? { |detail| detail[:id] == pane }) ? :gone : nil
+    rescue SystemCallError, Workspace::Error, Timeout::Error
+      nil
     end
 
     # Types the line that starts a step. The workspace's agent daemon is

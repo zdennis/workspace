@@ -91,6 +91,23 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def restart_review(run, ctx:) = over(run) { |work| restart_in(work, ctx) }
 
+    # Delivers the round of the step being reviewed again, as {WorkflowRecovery#tick} does for a delivery that failed
+    # or lapsed ({WorkflowTransitions.round_redelivery}): the lapsed delivery is recorded (`ended: redelivered`), and the
+    # same round is delivered with a new start and one more of its `redeliveries` spent, so the definition's
+    # `redeliver` caps how often a tick does it (a person's {#restart_review} starts the count again).
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on a step being reviewed; left as it is
+    # @param ctx [Workspace::WorkflowRunChange::Context] gets the round to run
+    # @param new_server [Boolean] the round's window went with a restarted tmux server: the lapsed delivery's record
+    #   keeps its pane, and the round delivered again drops its pane, window and server, so a new window opens
+    # @return [WorkflowRun] the run afterwards
+    def redeliver_round(run, ctx:, new_server: false)
+      over(run) do |work|
+        drop = new_server ? %w[pane window server_pid] : []
+        deliver_again(work, ctx, step_state(work)["review"]["redeliveries"].to_i + 1, drop)
+      end
+    end
+
     # Ends the round of the step being reviewed without a decision: the round's record ({WorkflowAttemptRecord#finish_round},
     # with how it ended and the verdict rows the round already read) is added to the reviewed attempt's `rounds`, and
     # the step's `review` is taken off. With +close+, the reviewer's binding is removed and the review window is
@@ -356,15 +373,25 @@ module Workspace
         end_round_in(run, "resumed", ctx, false)
         return begin_round(run, ctx)
       end
-      # The lapsed delivery's time is recorded as a round record of its own (`ended: redelivered`), so its usage
-      # is kept, and the round starts its clock again: a delivery mark is judged from `started_at`.
+      # A person's resume starts the redelivery count again.
+      deliver_again(run, ctx, 0)
+    end
+
+    # The lapsed delivery's time is recorded as a round record of its own (`ended: redelivered`), so its usage
+    # is kept, and the round starts its clock again: a delivery mark is judged from `started_at`. The window id a
+    # failed delivery kept stays on the round, so the sweep never takes that window for an orphan.
+    def deliver_again(run, ctx, redeliveries, drop = [])
+      state = step_state(run)
+      round = state["review"]
       add_round_record(run, round, "redelivered")
-      state["review"] = round.except("holder", "failure").merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3), "redeliveries" => 0)
+      state["review"] = round.except("holder", "failure", *drop).merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3), "redeliveries" => redeliveries)
       hold_delivery(state["review"])
       state["review"]["snapshot"] = @guard.round_snapshot(run["worktree"], base: run) if @guard
       run["state"] = "running"
       attempt = state["attempts"].last["n"]
-      event(run, "review_started", "step" => run["current"], "attempt" => attempt, "round" => round["round"], "again" => true)
+      data = {"step" => run["current"], "attempt" => attempt, "round" => round["round"], "again" => true}
+      data["redelivery"] = redeliveries if redeliveries.positive?
+      event(run, "review_started", data)
       ctx.review({"step" => run["current"], "attempt" => attempt, "round" => round["round"]})
     end
 

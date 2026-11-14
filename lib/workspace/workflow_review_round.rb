@@ -31,7 +31,7 @@ module Workspace
     # The failure of a delivery whose process was stopped by a signal before it finished.
     INTERRUPTED = "delivery_interrupted"
 
-    # @param store [Workspace::WorkflowRunStore] reads the run before the delivery
+    # @param store [Workspace::WorkflowRunStore] reads the run before the delivery, and stamps the window it opens ({WorkflowRunStore#stamp})
     # @param change [Workspace::WorkflowRunChange] records the delivery under the run's lock
     # @param tmux [Workspace::Tmux] lists, opens and closes review windows
     # @param panes [Workspace::WorkflowPanes] the daemon check, the reviewer binding, the typed line and the window close
@@ -81,14 +81,15 @@ module Workspace
       @store.run(run_id)
     end
 
-    # Closes an ended round's review window (by its mark), or every review window of the run. Never raises.
+    # Closes an ended round's review window (by its mark), or every review window of the run. A close of round K
+    # leaves the window of a later round of the step, which a resume may have opened before this close ran. Never raises.
     #
     # @param run_id [String]
     # @param found [Hash{String=>Object}] what was registered: "workspace", "step" (nil for every step), "round", "pane"
     # @return [Array<String>] the window ids closed
     def close(run_id, found)
       workspace = found["workspace"] || @store.run(run_id).workspace
-      @panes.close_review(workspace, run_id, step: found["step"])
+      @panes.close_review(workspace, run_id, step: found["step"], round: found["step"] && found["round"])
     rescue Workspace::Error, SystemCallError
       []
     end
@@ -204,7 +205,7 @@ module Workspace
       end
       return {pane: kept[:pane], window: kept[:window], reused: true} if kept
       opened = @tmux.open_window(session, name: "review-#{pending["step"]}", cwd: run.worktree, command: [@shell, "-lc", agent],
-        env: {RUN_ENV => run.id}, option: mark)
+        env: {RUN_ENV => run.id}, option: mark, store: @store.stamp)
       opened && {pane: opened[:pane], window: opened[:window], reused: false}
     end
 
@@ -215,6 +216,8 @@ module Workspace
     def record_pane(run, pending, window, revision, written)
       moved = false
       wanted = false
+      # Read before the lock is taken: no tmux call is made under the run's lock.
+      server = server_pid(window[:pane])
       after = @change.call(run.id) do |read|
         unless wanted?(read, pending)
           moved = !left_to_round?(read, pending, window)
@@ -222,8 +225,8 @@ module Workspace
         end
         wanted = true
         hash = read.thawed
-        hash["steps"][pending["step"]]["review"].merge!("pane" => window[:pane], "window" => window[:window], "revision" => revision,
-          "prompt" => written["path"], "packs" => written["packs"])
+        hash["steps"][pending["step"]]["review"].merge!("pane" => window[:pane], "window" => window[:window], "server_pid" => server,
+          "revision" => revision, "prompt" => written["path"], "packs" => written["packs"])
         WorkflowRun.from_h(hash)
       end
       abandon(run, window) if moved
@@ -276,7 +279,10 @@ module Workspace
         round["failure"] = {"code" => code, "message" => message, "at" => @clock.call.utc.iso8601}
         # No turn of this delivery's is the round's: a Stop in its pane decides nothing.
         round.delete("pane")
-        (window && !close) ? round["window"] = window[:window] : round.delete("window")
+        # A failure before any window was found leaves the window id an earlier delivery kept, so the sweep never takes it for an orphan.
+        if window
+          close ? round.delete("window") : round["window"] = window[:window]
+        end
         @change.event(hash, "review_delivery_failed", pending.slice("step", "attempt", "round").merge("code" => code))
         WorkflowRun.from_h(hash)
       end
@@ -301,6 +307,14 @@ module Workspace
 
     def unbind(run, window)
       @panes.unbind(run.id, role: "reviewer", pane: window[:pane]) if window && window[:pane]
+    end
+
+    # The tmux server the review pane is on, so the sweep can tell a restarted server (which may reuse the pane id)
+    # from the same pane; nil when tmux can't say, which the sweep reads as not knowing what became of the pane.
+    def server_pid(pane)
+      @tmux.server_pid_for_pane(pane)
+    rescue SystemCallError
+      nil
     end
 
     def current(run)

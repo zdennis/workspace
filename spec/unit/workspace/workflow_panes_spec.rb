@@ -957,6 +957,23 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(tmux.killed_windows).to be_empty
     end
 
+    it "with a round, leaves the window of a later round, so a late close of round K does not close round K+1's" do
+      tmux.review_window_list << {window: "@4", name: "review-plan", review: "wr_1:plan:2", pane: "%14", pid: 4}
+
+      expect(panes.close_review("app", "wr_1", step: "plan", round: 1)).to eq(["@1"])
+      expect(panes.close_review("app", "wr_1", step: "plan", round: 2)).to eq(["@4"])
+    end
+
+    it "removes the reviewer binding of each pane it closed, and only those" do
+      bindings.bind("%11", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "round" => 1)
+      bindings.bind("%12", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "round" => 2)
+
+      panes.close_review("app", "wr_1", step: "plan")
+
+      expect(bindings.binding_for("%11")).to be_nil
+      expect(bindings.binding_for("%12")).to include("round" => 2)
+    end
+
     context "for a workspace on its own tmux socket" do
       let(:tmux) { FakeTmux.new(session_name: "app", sockets: {"app" => "custom"}) }
 
@@ -964,6 +981,57 @@ RSpec.describe Workspace::WorkflowPanes do
         expect(panes.close_review("app", "wr_1")).to eq([])
         expect(tmux.killed_windows).to be_empty
       end
+    end
+  end
+
+  describe "#review_pane_state" do
+    let(:tmux) { FakeTmux.new(session_name: "app", details: [{id: "%5", window: 0, index: 1}]) }
+
+    it "is live while the pane is on the server the round recorded" do
+      tmux.server_pid = "100"
+
+      expect(panes.review_pane_state("app", "%9", "100")).to eq(:live)
+    end
+
+    it "can't tell with no server recorded, since a restarted server may have reused the pane id" do
+      tmux.server_pid = "100"
+
+      expect(panes.review_pane_state("app", "%9", nil)).to be_nil
+    end
+
+    it "is server_restarted when a pane of that id is on another server, which reused the id" do
+      tmux.server_pid = "200"
+
+      expect(panes.review_pane_state("app", "%9", "100")).to eq(:server_restarted)
+    end
+
+    it "is server_restarted for a pane tmux lacks when the session's server is another one" do
+      tmux.server_pid = nil
+      tmux.session_server_pid = "200"
+
+      expect(panes.review_pane_state("app", "%9", "100")).to eq(:server_restarted)
+    end
+
+    it "is gone only when the session's server is the recorded one and lists its panes without this one" do
+      tmux.server_pid = nil
+      tmux.session_server_pid = "100"
+
+      expect(panes.review_pane_state("app", "%9", "100")).to eq(:gone)
+      tmux.details = [{id: "%9", window: 2, index: 0}]
+      expect(panes.review_pane_state("app", "%9", "100")).to be_nil
+    end
+
+    it "can't tell when tmux can't be reached or read, so the sweep leaves the round alone" do
+      tmux.server_pid = nil
+      tmux.session_server_pid = nil
+      expect(panes.review_pane_state("app", "%9", "100")).to be_nil
+
+      tmux.session_server_pid = "100"
+      tmux.details = []
+      expect(panes.review_pane_state("app", "%9", "100")).to be_nil
+
+      allow(tmux).to receive(:server_pid_for_pane).and_raise(Errno::ENOENT)
+      expect(panes.review_pane_state("app", "%9", "100")).to be_nil
     end
   end
 

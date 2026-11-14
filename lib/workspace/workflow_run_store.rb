@@ -1,3 +1,4 @@
+require "digest"
 require "json"
 require "fileutils"
 require "securerandom"
@@ -61,6 +62,15 @@ module Workspace
       end
     rescue SystemCallError, JSON::GeneratorError, EncodingError => e
       raise store_error(e)
+    end
+
+    # What names this store among others on the same machine (another `HOME` or `XDG_STATE_HOME`, a scheduler's
+    # environment): the first 16 hex digits of the SHA-256 of its runs directory's absolute path. A review window is
+    # stamped with it, so a sweep over another store never takes that window for an orphan.
+    #
+    # @return [String]
+    def stamp
+      Digest::SHA256.hexdigest(File.expand_path(@dir))[0, 16]
     end
 
     # @param id [String] a run id
