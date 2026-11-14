@@ -1588,8 +1588,12 @@ module Workspace
       def describe_review(review)
         escape = ->(value) { TerminalText.escape(value.to_s) }
         round = "round #{review["round"]} of #{review["max_rounds"]}"
-        round += ", stopped; a resume starts round #{review["next_round"]}#{" (past the cap of #{review["max_rounds"]} rounds)" if review["rounds_spent"]}" if review["stopped"]
-        round += ", held (#{escape.call(review["held"])}); it starts as round #{review["next_round"]}" if review["held"]
+        if review["rounds_spent"]
+          round += ", every round spent; no further round starts"
+        else
+          round += ", stopped; a resume starts round #{review["next_round"]}" if review["stopped"]
+          round += ", held (#{escape.call(review["held"])}); it starts as round #{review["next_round"]}" if review["held"]
+        end
         pending = review["pending"].empty? ? "" : ", waiting for #{review["pending"].map(&escape).join(", ")}"
         where = review["pane"] ? ", review pane #{escape.call(review["pane"])}" : ""
         @output.puts "  review: #{round}; #{review["approvals"]} of #{review["need"]} approvals#{pending}#{where}"

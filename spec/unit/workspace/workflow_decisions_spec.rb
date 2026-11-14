@@ -305,6 +305,106 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "state" => "reviewing"}]])
     end
 
+    describe "a step that has spent its review rounds" do
+      def capped(run, rounds: 2)
+        run["definition"]["steps"][0]["review"] = {"from" => %w[skeptic], "need" => 1, "max_rounds" => 2}
+        run["steps"]["plan"]["review_rounds"] = rounds
+        run
+      end
+
+      def rejected_run
+        run = run_hash(state: "failed", extra: {"state" => "waiting"})
+        run["reason"] = {"code" => "review_rejected", "since" => "2026-11-10T11:55:00Z", "details" => {"step" => "plan", "limit" => "rounds"}}
+        run["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:50:00Z", "outcome" => "failed", "code" => "review_rejected")
+        capped(run)
+      end
+
+      it "refuses a resume of a stopped round as review_rounds_spent, changing nothing" do
+        before = deep_copy(stored(capped(reviewing_run(reason: review_incomplete))))
+
+        error = error_for { decisions.resume("wr_1") }
+
+        expect(error.code).to eq("review_rounds_spent")
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "rounds" => 2, "max_rounds" => 2)
+        expect(error.message).to include("has spent its review rounds (2 of 2 max_rounds)", "workflow cancel wr_1")
+        expect(store.runs["wr_1"]).to eq(before)
+        expect(progress.calls).to be_empty
+        expect(change.events).to be_empty
+      end
+
+      it "refuses a resume of the round held at the cap" do
+        run = capped(reviewing_run(reason: {"code" => "review_rounds_spent", "since" => "2026-11-10T11:55:00Z", "details" => {}}))
+        run["steps"]["plan"]["review"] = {"round" => 3, "delivery" => nil, "held" => "review_rounds_spent"}
+        stored(run)
+
+        expect(error_for { decisions.resume("wr_1") }.code).to eq("review_rounds_spent")
+      end
+
+      it "still restarts a stopped round while a round is left" do
+        stored(capped(reviewing_run(reason: review_incomplete), rounds: 1))
+
+        decisions.resume("wr_1")
+
+        expect(progress.calls).to eq([[:restart_review, "plan"]])
+      end
+
+      it "refuses a plain resume of a step a review rejected with every round spent, and a park of one" do
+        stored(rejected_run)
+
+        expect(error_for { decisions.resume("wr_1") }.code).to eq("review_rounds_spent")
+        expect(error_for { decisions.park("wr_1") }.code).to eq("review_rounds_spent")
+        expect(dispatch.calls).to be_empty
+      end
+
+      it "starts the retry a rejection stopped by an attempt limit kept, once --extra-attempts lets it" do
+        run = rejected_run
+        run["steps"]["plan"]["review_rounds"] = 1
+        run["reason"]["details"]["limit"] = "step"
+        run["review_retry"] = {"step" => "plan", "attempt" => 1, "round" => 1, "context" => "continue", "text" => "Review round 1 of 2 rejected the plan step"}
+        stored(run)
+
+        resumed = decisions.resume("wr_1", extra_attempts: 1)
+
+        expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "continue", budgeted: true, retry_of: {"text" => "Review round 1 of 2 rejected the plan step", "attempt" => 1}}])
+        expect(resumed.run.pending_context).to eq(["Review round 1 of 2 rejected the plan step"])
+        expect(resumed.run.to_h).not_to have_key("review_retry")
+      end
+
+      it "drops the kept retry on --from, and closes the window the rejected round kept when --from goes to another step" do
+        run = rejected_run
+        run["review_retry"] = {"step" => "plan", "attempt" => 1, "text" => "the verdicts"}
+        run["steps"]["plan"]["review_window"] = {"round" => 2, "window" => "@7", "pane" => "%7"}
+        stored(run)
+
+        resumed = decisions.resume("wr_1", from: "build")
+
+        expect(progress.calls).to eq([[:end_round, "plan", {how: "from", close: true}]])
+        expect(resumed.run.to_h).not_to have_key("review_retry")
+        expect(resumed.run.pending_context).to be_empty
+      end
+
+      it "drops, on --from, a review retry that waited for a lock, and takes its text out of the pending context" do
+        run = run_hash(state: "waiting", extra: {"state" => "waiting"})
+        run["reason"] = {"code" => "waiting_lock", "since" => "2026-11-10T11:55:00Z", "details" => {"resource" => "db", "step" => "plan"}}
+        run["pending_context"] = ["keep me", "the verdicts"]
+        run["retry_of_pending"] = {"step" => "plan", "attempt" => 1, "context" => "fresh", "text" => "the verdicts"}
+        stored(run)
+
+        resumed = decisions.resume("wr_1", from: "build")
+
+        expect(resumed.run.to_h).not_to have_key("retry_of_pending")
+        expect(resumed.run.pending_context).to eq(["keep me"])
+      end
+
+      it "lets --from go on" do
+        stored(rejected_run)
+
+        decisions.resume("wr_1", from: "plan")
+
+        expect(dispatch.calls.map(&:first)).to eq([:dispatch])
+      end
+    end
+
     it "ends the round with its window closed before --from starts the step named, keeping review_rounds" do
       stored(reviewing_run(reason: review_incomplete))
 
@@ -466,6 +566,14 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(resumed.run.budget_hold).to be_nil
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "budget" => "released"}]])
       expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: nil}])
+    end
+
+    it "releases a held retry of a step a review rejected as a retry_of that attempt" do
+      stored(run_hash(state: "failed", extra: {"budget_hold" => {"context" => "fresh", "pane" => "%3", "text" => "the verdicts", "retry_of" => 1}, "state" => "waiting"}))
+
+      decisions.resume("wr_1")
+
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: {"text" => "the verdicts", "attempt" => 1}}])
     end
 
     it "releases a run its timeout held into its step, with the held context, and with --extra-time records the extension" do

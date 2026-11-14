@@ -395,6 +395,7 @@ require_relative "workspace/workflow_dispatch"
 require_relative "workspace/workflow_round_holder"
 require_relative "workspace/workflow_review_round"
 require_relative "workspace/workflow_review_orphans"
+require_relative "workspace/workflow_rejection"
 require_relative "workspace/workflow_progress"
 require_relative "workspace/workflow_evaluation"
 require_relative "workspace/workflow_decisions"
@@ -592,8 +593,10 @@ module Workspace
       review_round ||= runner.method(:call)
       review_closer ||= runner.method(:close)
     end
+    log_tail ||= WorkflowLogTail.new
+    rejection = WorkflowRejection.new(change: change, dispatch: dispatch, log_tail: log_tail)
     progress = WorkflowProgress.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes,
-      log_tail: log_tail || WorkflowLogTail.new, review_tally: review_tally, guard: guard, holder: round_holder, clock: clock)
+      log_tail: log_tail, review_tally: review_tally, guard: guard, holder: round_holder, rejection: rejection, clock: clock)
     evaluation = WorkflowEvaluation.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
       guard: guard, commands_config: commands_config, inbox_for: inbox_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, review_revision: review_revision, clock: clock)
     starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,

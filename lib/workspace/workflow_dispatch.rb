@@ -55,7 +55,8 @@ module Workspace
     # @param ctx [Workspace::WorkflowRunChange::Context] the change's context, which gets the line to type
     # @param context [String, nil] the step's `context` for this attempt (`fresh` starts a new conversation)
     # @param budgeted [Boolean] false starts the attempt even when the token budget is used up
-    # @param retry_of [Hash{String=>Object}, nil] the retry's "pane", "identity" and "text", kept by a budget hold
+    # @param retry_of [Hash{String=>Object}, nil] the retry's "pane", "identity" and "text", kept by a budget hold, and
+    #   "attempt": the attempt of the step a review rejected, recorded as the new attempt's `retry_of`
     # @return [WorkflowRun] the run afterwards
     def dispatch(run, ctx:, context: nil, budgeted: true, retry_of: nil)
       work = WorkflowRun.from_h(run).thawed
@@ -206,14 +207,24 @@ module Workspace
       if @panes.pane_of(run["id"]) && !@panes.alive?(run["id"])
         return not_delivered(run, state, nil, {code: "pane_gone", message: "pane #{pane} is no longer the pane the run was bound in"})
       end
+      pending_retry = retry_pending(run, retry_of, context)
+      retry_n = pending_retry&.fetch("attempt")
+      context ||= pending_retry&.fetch("context", nil)
       waiting = acquire(run, step, pane)
-      return wait_for_lock(run, state, waiting) if waiting
+      if waiting
+        # A review's retry waiting for a lock is still that retry when the wait ends (a tick or a resume dispatches it
+        # again): its attempt, its context and its text (which a `--from` takes out of the pending context).
+        pending_retry ? run["retry_of_pending"] = pending_retry : run.delete("retry_of_pending")
+        return wait_for_lock(run, state, waiting)
+      end
+      run.delete("retry_of_pending")
 
       # To the millisecond: the end of a turn is matched to the attempt by when that turn began.
       attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => run["pending_context"],
                  "delivery" => "delivering"}
       pending = state.delete("redelivery_pending")
       attempt["redelivery"] = pending if pending
+      attempt["retry_of"] = retry_n if retry_n
       run["pending_context"] = []
       attempt["prompt_file"], composed = @prompt.write(run, step, attempt["n"], attempt["context"])
       started = @attempt_record.start(run: run, attempt: attempt, composed: composed)
@@ -233,6 +244,16 @@ module Workspace
     rescue Workspace::Error, SystemCallError, EncodingError => e
       # The step could not be started (no pane, an unreadable pack, a checkout that is gone, text that can't be written as UTF-8).
       not_delivered(run, state, attempt, {code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.strip})
+    end
+
+    # The review retry this attempt is: given ("attempt", with its "text" and the +context+ it starts with), else the
+    # one kept while the step waited for a lock (for the same step only); nil for any other attempt.
+    def retry_pending(run, retry_of, context)
+      if retry_of.is_a?(Hash) && retry_of["attempt"].is_a?(Integer)
+        return {"step" => run["current"], "attempt" => retry_of["attempt"], "context" => context, "text" => retry_of["text"]}.compact
+      end
+      kept = run["retry_of_pending"]
+      (kept.is_a?(Hash) && kept["step"] == run["current"] && kept["attempt"].is_a?(Integer)) ? kept : nil
     end
 
     # The daemon's answer to a typed line, applied to the stored run.
@@ -315,7 +336,8 @@ module Workspace
     def hold_attempt(run, context, retry_of, budget:, time:)
       pane = retry_of&.fetch("pane", nil) || bound_pane(run)
       identity = retry_of&.fetch("identity", nil) || @panes.identity(run["id"])
-      hold(run, {"context" => context, "pane" => pane, "identity" => identity, "text" => retry_of&.fetch("text", nil)}.compact, budget: budget, time: time)
+      hold(run, {"context" => context, "pane" => pane, "identity" => identity, "text" => retry_of&.fetch("text", nil),
+                 "retry_of" => retry_of&.fetch("attempt", nil)}.compact, budget: budget, time: time)
     end
 
     # The hold itself, for an attempt or a review round: +hold+ is the record each spent limit stores.

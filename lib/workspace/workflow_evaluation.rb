@@ -317,11 +317,23 @@ module Workspace
     end
 
     # Whether a turn's end is the end of the running round's review turn: in the round's own pane, begun no earlier
-    # than the round, with the round not stopped and its end not already being judged.
+    # than the round, with the round not stopped and its end not already being judged. In a window cleared for the
+    # round (one an earlier round left, `clear_from`), a turn counts when it began at or after the confirmed clear
+    # (`cleared_at`, else `clear_from`): a turn a person had there before ends with the clear and is not the reviewers'.
+    # A turn whose start the daemon does not know (it restarted during the round) counts once it stopped at or after
+    # the delivery (`delivered_at`); before a delivery is recorded it does not.
     def review_turn?(run, round, pane, turn_started, stopped_at)
       return false if run["reason"] || !round.is_a?(Hash) || round["recompute"] || pane.nil? || round["pane"] != pane
       started = Time.iso8601(round["started_at"].to_s)
+      return cleared_turn?(round, turn_started, stopped_at) if round["clear_from"]
       !(turn_started && turn_started < started) && !(stopped_at && stopped_at < started)
+    rescue ArgumentError
+      false
+    end
+
+    def cleared_turn?(round, turn_started, stopped_at)
+      return turn_started >= Time.iso8601((round["cleared_at"] || round["clear_from"]).to_s) if turn_started
+      !round["delivered_at"].nil? && !stopped_at.nil? && stopped_at >= Time.iso8601(round["delivered_at"].to_s)
     rescue ArgumentError
       false
     end

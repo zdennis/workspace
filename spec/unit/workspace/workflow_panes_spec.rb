@@ -459,6 +459,12 @@ RSpec.describe Workspace::WorkflowPanes do
                                               "prompt" => "Read plan.md and follow it.", "force" => false, "wait" => true}])
     end
 
+    it "passes on when the daemon confirmed the new conversation" do
+      replies << JSON.generate("ok" => true, "status" => "restarted", "cleared_at" => "2026-11-14T12:00:03.000Z") + "\n"
+
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)).to eq(ok: true, cleared_at: "2026-11-14T12:00:03.000Z")
+    end
+
     it "keeps the reason the daemon gives for a busy pane" do
       replies << JSON.generate("ok" => false, "error" => "pane_busy", "message" => "pane %5 kept changing", "reason" => "background_activity") + "\n"
 

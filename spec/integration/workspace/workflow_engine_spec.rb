@@ -5653,8 +5653,8 @@ RSpec.describe Workspace::WorkflowEngine do
       YAML
     end
 
-    def start_reviewed(engine)
-      engine.start(definition: definition(reviewed_yaml), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+    def start_reviewed(engine, yaml = reviewed_yaml)
+      engine.start(definition: definition(yaml), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
       artifact("plan.md")
       engine.turn_ended("wr_1", pane: "%5")
     end
@@ -5687,19 +5687,46 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["steps"]["build"]["state"]).to eq("running")
     end
 
-    it "stops the run with review_rejected when the round rejects, in the run's own reasons" do
+    it "starts the step again as a new attempt when the round rejects, retry_of the rejected one and told the verdicts, and reviews that one in round 2" do
       engine = reviewed_engine(:rejected)
       start_reviewed(engine)
       now[0] += 60
 
       run = engine.turn_ended("wr_1", pane: "%9")
 
+      plan = run["steps"]["plan"]
+      expect(run["state"]).to eq("running")
+      expect(run["reason"]).to be_nil
+      expect(plan["state"]).to eq("running")
+      expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["failed", nil])
+      expect(plan["attempts"].last).to include("n" => 2, "retry_of" => 1)
+      expect(plan["attempts"].last["context"].first).to start_with("Review round 1 of 6 rejected the plan step: need 1 of 1; got skeptic rejected.")
+      expect(File.read(plan["attempts"].last["prompt_file"])).to include("Review round 1 of 6 rejected the plan step")
+      expect(history).to include("review_retry")
+
+      now[0] += 60
+      artifact("plan.md")
+      run = engine.turn_ended("wr_1", pane: "%5")
+
+      expect(run["steps"]["plan"]).to include("state" => "reviewing", "review_rounds" => 2)
+      expect(rounds.last).to eq(["wr_1", {"step" => "plan", "attempt" => 2, "round" => 2}])
+    end
+
+    it "stops the run with review_rejected once the step's max_rounds are spent, in the run's own reasons" do
+      engine = reviewed_engine(:rejected)
+      start_reviewed(engine, reviewed_yaml.sub("review: [skeptic]", "review: {from: [skeptic], max_rounds: 1}"))
+      now[0] += 60
+
+      run = engine.turn_ended("wr_1", pane: "%9")
+
       expect(run["state"]).to eq("waiting")
       expect(run["reason"]["code"]).to eq("review_rejected")
+      expect(run["reason"]["details"]).to include("limit" => "rounds", "rounds" => 1, "max_rounds" => 1)
       expect(run["steps"]["plan"]["state"]).to eq("failed")
       expect(run["steps"]["plan"]["attempts"].last).to include("outcome" => "failed", "review_outcome" => include("passed" => false))
       expect(run["steps"]["plan"]["attempts"].last["reasons"].to_a.map { |each| each["code"] }).not_to include("review_rejected")
       expect(run["reasons"].last).to include("code" => "review_rejected", "step" => "plan", "until" => nil)
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("review_rounds_spent") }
     end
 
     context "with locks for the author and for the review" do

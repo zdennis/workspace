@@ -216,6 +216,8 @@ module Workspace
           "within #{confirm_timeout}s (before: #{describe(before)}; last reading: #{describe(last)}); the prompt was not sent"))
       end
       reply["context_after"] = after[:pct]
+      # When the new conversation was confirmed: a turn that began before it was not the prompt's.
+      reply["cleared_at"] = @wall_clock.call.utc.iso8601(3)
 
       typed_at = nil
       reply_by = waiting ? started_at + @reply_timeout - REPLY_MARGIN : nil

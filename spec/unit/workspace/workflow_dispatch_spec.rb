@@ -101,6 +101,45 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(change.events.last).to eq(["wr_1", "budget_spent", {"used" => 150, "allowance" => 100, "counted" => 1, "uncounted" => 0, "step" => "plan"}])
     end
 
+    it "records the attempt a review rejected as the new attempt's retry_of, and keeps it on a hold" do
+      failed = run_hash("steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed"}]}})
+
+      run = dispatch.dispatch(failed, ctx: ctx, retry_of: {"text" => "the verdicts", "attempt" => 1})
+
+      expect(run.step("plan").last_attempt.to_h).to include("n" => 2, "retry_of" => 1)
+
+      spent = run_hash("definition" => run_hash["definition"].merge("budget" => {"tokens" => 100}),
+        "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 150}}]}})
+
+      held = dispatch.dispatch(spent, ctx: ctx, retry_of: {"text" => "the verdicts", "attempt" => 1})
+
+      expect(held.budget_hold).to include("text" => "the verdicts", "retry_of" => 1)
+    end
+
+    it "keeps a review's retry_of through a lock wait, for the dispatch that ends it, and only for that step" do
+      waiting = RecordingRunResources.new(acquired: {waiting: {name: "devenv", position: 1, total: 1, holder: {"run_id" => "wr_9", "kind" => "run"}}})
+      failed = run_hash("steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed"}]}})
+      blocked = described_class.new(change: change, store: store, resources: waiting, panes: panes, prompt: prompt, attempt_record: attempt_record, guard: guard, clock: -> { now })
+
+      held = blocked.dispatch(failed, ctx: ctx, context: "fresh", retry_of: {"text" => "the verdicts", "attempt" => 1})
+
+      expect(held.reason["code"]).to eq("waiting_lock")
+      expect(held.to_h["retry_of_pending"]).to eq("step" => "plan", "attempt" => 1, "context" => "fresh", "text" => "the verdicts")
+
+      woken = ctx
+      run = dispatch.dispatch(held, ctx: woken)
+
+      expect(run.step("plan").last_attempt.to_h).to include("n" => 2, "retry_of" => 1)
+      expect(woken.delivery).to include("fresh" => true)
+      expect(run.to_h).not_to have_key("retry_of_pending")
+
+      plain = blocked.dispatch(held.thawed.merge("retry_of_pending" => {"step" => "build", "attempt" => 1}), ctx: ctx)
+      expect(plain.to_h).not_to have_key("retry_of_pending")
+
+      elsewhere = dispatch.dispatch(held.thawed.merge("retry_of_pending" => {"step" => "build", "attempt" => 1}), ctx: ctx)
+      expect(elsewhere.step("plan").last_attempt.to_h).not_to have_key("retry_of")
+    end
+
     it "starts the attempt over a spent budget when told not to hold it (a redelivery)" do
       spent = run_hash("definition" => run_hash["definition"].merge("budget" => {"tokens" => 100}),
         "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 150}}]}})

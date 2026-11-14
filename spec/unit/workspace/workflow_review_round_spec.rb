@@ -111,6 +111,154 @@ RSpec.describe Workspace::WorkflowReviewRound do
       expect(change.events.last.last).to include("reused" => true)
     end
 
+    describe "a later round" do
+      let(:pending) { {"step" => "plan", "attempt" => 2, "round" => 2} }
+      let(:later_prompt) { File.join(worktree, ".workflow", "wr_1", "steps", "plan.2.r2.review.md") }
+
+      before do
+        hash = run_hash(review: {"round" => 2})
+        hash["steps"]["plan"].merge!("review_rounds" => 2, "attempts" => [{"n" => 1, "outcome" => "failed"}, {"n" => 2, "outcome" => "checks_passed"}],
+          "review_window" => {"round" => 1, "window" => "@7", "pane" => "%70"})
+        store.runs["wr_1"] = hash
+      end
+
+      it "carries the window the round before it left over: marks it for this round, binds its reviewer to this round and clears it as the line is typed" do
+        tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70},
+          {window: "@8", name: "review-build", review: "wr_1:build:1", pane: "%80", pid: 80}]
+
+        runner.call("wr_1", pending)
+
+        expect(opened).to be_empty
+        expect(tmux.marked_windows).to eq([["@7", "wr_1:plan:2"]])
+        expect(tmux.killed_windows).to eq(["@8"])
+        expect(readiness.calls).to eq([[:await_ready, "app", "%70", "claude", {window: "@7"}]])
+        expect(panes.calls).to include(
+          [:bind, {workspace: "app", pane: "%70", run_id: "wr_1", step: "plan", attempt: 2, instructions: later_prompt,
+                   artifacts: File.join(worktree, ".workflow", "wr_1"), role: "reviewer", round: 2, relative_to: worktree}],
+          [:kick, {workspace: "app", pane: "%70", text: "Read #{later_prompt} and follow it.", fresh: true, run_id: "wr_1"}]
+        )
+        expect(round).to include("pane" => "%70", "window" => "@7", "delivery" => nil, "clear_from" => "2026-11-14T12:00:00.000Z")
+        expect(store.runs["wr_1"]["steps"]["plan"]).not_to have_key("review_window")
+        expect(change.events.last).to eq(["wr_1", "review_delivered", {"step" => "plan", "attempt" => 2, "round" => 2, "pane" => "%70", "window" => "@7",
+                                                                       "reused" => false, "cleared" => true}])
+      end
+
+      it "records the pane and the clear's start before the line (and its /clear) is typed, so a Stop meanwhile is judged against it" do
+        tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        seen = nil
+        panes = RecordingWorkflowPanes.new(on_kick: ->(**) { seen = store.runs["wr_1"]["steps"]["plan"]["review"].dup })
+        runner = described_class.new(store: store, change: change, tmux: tmux, panes: panes, readiness: readiness, main_agent: main_agent, revision: revision,
+          prompt: prompt, round_dirs: round_dirs, holder: -> { holder }, shell: "/bin/zsh", which: which, error_output: error_output, clock: -> { now })
+
+        runner.call("wr_1", pending)
+
+        expect(seen).to include("pane" => "%70", "clear_from" => "2026-11-14T12:00:00.000Z", "delivery" => "delivering")
+      end
+
+      context "whose Claude Code is not ready" do
+        let(:readiness) { RecordingPaneReadiness.new(ready: false, tmux: tmux) }
+
+        it "closes, not keeps, a carried window (its agent exited), and says so" do
+          tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+
+          runner.call("wr_1", pending)
+
+          expect(tmux.killed_windows).to eq(["@7"])
+
+          expect(readiness.calls).to eq([[:await_ready, "app", "%70", "claude", {window: "@7"}]])
+          expect(round).to include("delivery" => "failed")
+          expect(round).not_to have_key("window")
+          expect(round["failure"]["message"]).to include("the window an earlier round left was closed, and the round's next delivery opens a new one")
+          expect(round["failure"]["message"]).not_to include("used again")
+        end
+      end
+
+      it "clears a kept window an earlier delivery carried over but left at a waiting screen, when the round is delivered again in it" do
+        store.runs["wr_1"]["steps"]["plan"]["review"].merge!("uncleared" => true, "window" => "@7")
+        tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:2", pane: "%70", pid: 70}]
+
+        runner.call("wr_1", pending)
+
+        expect(panes.calls.last).to eq([:kick, {workspace: "app", pane: "%70", text: "Read #{later_prompt} and follow it.", fresh: true, run_id: "wr_1"}])
+        expect(round).not_to have_key("uncleared")
+        expect(round).to include("clear_from" => "2026-11-14T12:00:00.000Z")
+      end
+
+      context "whose Claude Code waits at a screen" do
+        let(:readiness) { RecordingPaneReadiness.new(ready: false, waiting: "trust", tmux: tmux) }
+
+        it "keeps the carried window for the person and marks the round uncleared" do
+          tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+
+          runner.call("wr_1", pending)
+
+          expect(tmux.killed_windows).to be_empty
+          expect(round).to include("delivery" => "failed", "window" => "@7", "uncleared" => true)
+        end
+      end
+
+      it "stores when the daemon confirmed the clear, from the kick's answer" do
+        tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        panes = RecordingWorkflowPanes.new(kick: {ok: true, cleared_at: "2026-11-14T12:00:03.000Z"})
+        runner = described_class.new(store: store, change: change, tmux: tmux, panes: panes, readiness: readiness, main_agent: main_agent, revision: revision,
+          prompt: prompt, round_dirs: round_dirs, holder: -> { holder }, shell: "/bin/zsh", which: which, error_output: error_output, clock: -> { now })
+
+        runner.call("wr_1", pending)
+
+        expect(round).to include("clear_from" => "2026-11-14T12:00:00.000Z", "cleared_at" => "2026-11-14T12:00:03.000Z", "delivered_at" => "2026-11-14T12:00:00.000Z")
+      end
+
+      it "keeps a carried window whose line was refused (a person's turn running), still to be cleared, and carries it again next time" do
+        tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        refused = RecordingWorkflowPanes.new(kick: {ok: false, code: "turn_started", message: "a turn has started"})
+        runner = described_class.new(store: store, change: change, tmux: tmux, panes: refused, readiness: readiness, main_agent: main_agent, revision: revision,
+          prompt: prompt, round_dirs: round_dirs, holder: -> { holder }, shell: "/bin/zsh", which: which, error_output: error_output, clock: -> { now })
+
+        runner.call("wr_1", pending)
+
+        expect(tmux.killed_windows).to be_empty
+        expect(round).to include("delivery" => "failed", "window" => "@7", "uncleared" => true)
+        expect(round).not_to have_key("pane")
+
+        store.runs["wr_1"]["steps"]["plan"]["review"]["delivery"] = "delivering"
+        build_runner.call("wr_1", pending)
+
+        expect(readiness.calls.last).to eq([:await_ready, "app", "%70", "claude", {window: "@7"}])
+        expect(panes.calls.last).to include(:kick)
+        expect(panes.calls.last.last).to include(fresh: true)
+      end
+
+      it "drops the clear marks of an earlier delivery when the round's line goes into a new window" do
+        store.runs["wr_1"]["steps"]["plan"]["review"].merge!("clear_from" => "2026-11-14T11:00:00.000Z", "cleared_at" => "2026-11-14T11:00:01.000Z")
+
+        runner.call("wr_1", pending)
+
+        expect(opened.size).to eq(1)
+        expect(round).not_to include("clear_from", "cleared_at")
+      end
+
+      it "carries the newest earlier round's window and closes the older one" do
+        tmux.review_window_list = [{window: "@6", name: "review-plan", review: "wr_1:plan:0", pane: "%60", pid: 60},
+          {window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+
+        runner.call("wr_1", pending)
+
+        expect(tmux.marked_windows).to eq([["@7", "wr_1:plan:2"]])
+        expect(tmux.killed_windows).to eq(["@6"])
+      end
+
+      it "closes a window it can't mark for this round and opens a new one" do
+        tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        tmux.refuse_marks = true
+
+        runner.call("wr_1", pending)
+
+        expect(tmux.killed_windows).to eq(["@7"])
+        expect(opened.size).to eq(1)
+        expect(panes.calls.last).to eq([:kick, {workspace: "app", pane: "%100", text: "Read #{later_prompt} and follow it.", fresh: false, run_id: "wr_1"}])
+      end
+    end
+
     it "keeps the holder a round start recorded on the delivered round" do
       runner.call("wr_1", pending)
 

@@ -311,6 +311,63 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe "review round counts" do
+    let(:run) do
+      run_with(steps: {"a" => step("failed", {"n" => 1}), "b" => step("pending")}).tap do |run|
+        run["definition"]["steps"].first["review"] = {"from" => %w[skeptic], "max_rounds" => 2}
+        run["definition"]["steps"].last["review"] = {"from" => %w[skeptic]}
+      end
+    end
+
+    it "allows a step its review's max_rounds, the default when the stored review names none, and nothing without a review" do
+      expect(described_class.review_rounds_allowance(run, "a")).to eq(2)
+      expect(described_class.review_rounds_allowance(run, "b")).to eq(Workspace::WorkflowReviewSpec::DEFAULT_MAX_ROUNDS)
+      run["definition"]["steps"].last.delete("review")
+      expect(described_class.review_rounds_allowance(run, "b")).to be_nil
+    end
+
+    it "is spent once the step's review_rounds reach its allowance, and never without a review" do
+      expect(described_class.review_rounds_spent?(run, "a")).to be false
+      run["steps"]["a"]["review_rounds"] = 2
+      expect(described_class.review_rounds_spent?(run, "a")).to be true
+      run["definition"]["steps"].first.delete("review")
+      expect(described_class.review_rounds_spent?(run, "a")).to be false
+    end
+  end
+
+  describe ".rejection_limit and .rounds_refuse_resume?" do
+    let(:run) do
+      run_with(steps: {"a" => step("failed", {"n" => 1}), "b" => step("pending")}).tap do |run|
+        run["current"] = "a"
+        run["definition"]["max_attempts"] = 5
+        run["definition"]["steps"].first["review"] = {"from" => %w[skeptic], "max_rounds" => 2}
+        run["steps"]["a"]["review_rounds"] = 1
+      end
+    end
+
+    it "lets a rejected step try again with rounds and attempts left, and names the first limit spent: run, step, rounds" do
+      expect(described_class.rejection_limit(run)).to eq("rounds" => 1, "max_rounds" => 2)
+      run["steps"]["a"]["review_rounds"] = 2
+      expect(described_class.rejection_limit(run)).to include("limit" => "rounds")
+      run["definition"]["steps"].first["max_attempts"] = 1
+      expect(described_class.rejection_limit(run)).to include("limit" => "step", "attempts" => 1, "max_attempts" => 1)
+      run["definition"]["max_attempts"] = 1
+      expect(described_class.rejection_limit(run)).to include("limit" => "run", "attempts" => 1, "max_attempts" => 1)
+    end
+
+    it "refuses a plain resume only once the rounds are spent, of a rejected step or a round that would start" do
+      run["reason"] = {"code" => "review_rejected"}
+      expect(described_class.rounds_refuse_resume?(run)).to be false
+      run["steps"]["a"]["review_rounds"] = 2
+      expect(described_class.rounds_refuse_resume?(run)).to be true
+      run["reason"] = {"code" => "failed_check"}
+      expect(described_class.rounds_refuse_resume?(run)).to be false
+      run["steps"]["a"].merge!("state" => "reviewing", "review" => {"round" => 2, "ended_at" => "x"})
+      run["reason"] = {"code" => "review_incomplete"}
+      expect(described_class.rounds_refuse_resume?(run)).to be true
+    end
+  end
+
   describe ".starts_attempt?" do
     let(:running) { run_with(steps: {"a" => step("running")}) }
 

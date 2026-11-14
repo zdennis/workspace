@@ -55,7 +55,8 @@ module Workspace
        "reported" => attempt.reported, "proofs" => attempt.proofs, "usage" => attempt.usage, "evidence" => attempt.evidence, "reasons" => attempt.reasons,
        "warnings" => attempt.warnings, "rounds" => attempt.rounds,
        "redelivered" => (attempt.redelivered == true) ? true : nil,
-       "review" => review_summary(attempt), "review_outcome" => attempt.review_outcome, "reviews" => attempt.reviews}
+       "review" => review_summary(attempt), "review_outcome" => attempt.review_outcome, "reviews" => attempt.reviews,
+       "retry_of" => attempt.retry_of.is_a?(Integer) ? attempt.retry_of : nil}
     end
 
     # The verdicts of a reviewed attempt in a line (`2/3 approve, skeptic reject`): the approvals of the verdict rows

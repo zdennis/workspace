@@ -301,8 +301,8 @@ module Workspace
       rows = Array(round["reviews"]).grep(Hash)
       decided = rows.select { |row| row["verdict"] }
       pending = rows.empty? ? Array(round["pending"] || spec["from"]) : spec["from"] - decided.map { |row| row["reviewer"] }
-      # A resume of a stopped round starts the next one. The engine does not stop at `max_rounds` yet, so `rounds_spent`
-      # only says the round it would start is past the cap.
+      # A resume of a stopped round starts the next one; `rounds_spent` says that round is past the cap, so the engine
+      # refuses the resume (`review_rounds_spent`).
       next_round = if state.review_held? then round["round"]
       elsif state.review_stopped? then round["round"].to_i + 1
       end
@@ -615,8 +615,11 @@ module Workspace
           [resume, from.call(reason.dig("details", "step"))] + accept + [cancel]
         end
       when "stalled", "idle" then [resume, cancel]
-      # A stopped round: a resume starts a fresh round (after a rejection, a new attempt); `--from` runs the step again.
-      when *WorkflowTransitions::REVIEW_STOPS then [resume, from.call(reason.dig("details", "step") || run.current), cancel]
+      # A stopped round: a resume starts a fresh round (after a rejection stopped by an attempt limit, a new attempt);
+      # `--from` runs the step again. With every round spent a plain resume is refused (`review_rounds_spent`).
+      when *WorkflowTransitions::REVIEW_STOPS
+        step = reason.dig("details", "step") || run.current
+        [(resume unless WorkflowTransitions.rounds_refuse_resume?(run.to_h)), from.call(step), cancel]
       when "pane_gone" then [action("launch", run.workspace), action("workflow resume", id, needs: with_pane), cancel]
       else [cancel]
       end

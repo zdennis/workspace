@@ -357,11 +357,24 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
       expect(reviews_of(result)).to eq([["skeptic", "approve", true], ["builder", "approve", true]])
     end
 
-    it "stops review_rejected when a reviewer the step must have rejects" do
-      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: reject, builder: approve}}]\n")
+    it "runs the step again when a reviewer it must have rejects, and passes it when the next attempt's round approves" do
+      result = play(reviewed, "steps:\n  design:\n    - {reviews: {skeptic: reject, builder: approve}}\n    - {reviews: {skeptic: approve, builder: approve}}\n")
 
-      expect(result).to include("outcome" => "stopped", "stopped" => {"step" => "design", "attempt" => 1, "reason" => "review_rejected"})
-      expect(reviews_of(result)).to eq([["skeptic", "reject", true], ["builder", "approve", true]])
+      expect(result).to include("outcome" => "completed")
+      expect(types(result)).to include("review_retry")
+      attempts = result["steps"].first["attempts"]
+      expect(attempts.map { |each| each["outcome"] }).to eq(%w[failed passed])
+      expect(attempts.first["reviews"].map { |each| each.values_at("reviewer", "verdict", "counted") }).to eq([["skeptic", "reject", true], ["builder", "approve", true]])
+      expect(reviews_of(result)).to eq([["skeptic", "approve", true], ["builder", "approve", true]])
+    end
+
+    it "stops review_rejected once six rounds, the default max_rounds, reject" do
+      rejected = "    - {reviews: {skeptic: reject, builder: approve}}\n" * 6
+      result = play(reviewed, "steps:\n  design:\n#{rejected}")
+
+      expect(result).to include("outcome" => "stopped", "stopped" => {"step" => "design", "attempt" => 6, "reason" => "review_rejected"})
+      expect(result["steps"].first["attempts"].map { |each| each["outcome"] }).to eq(["failed"] * 6)
+      expect(types(result).count("review_retry")).to eq(5)
     end
 
     it "stops review_incomplete when a reviewer is left out of the map" do

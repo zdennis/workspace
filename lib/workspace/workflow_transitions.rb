@@ -103,6 +103,64 @@ module Workspace
       allowance && (step_attempts_made(run, step) - allowance + 1)
     end
 
+    # The review rounds a step may spend in the run: its stored `review.max_rounds` ({WorkflowReviewSpec::DEFAULT_MAX_ROUNDS}
+    # when the stored review names none).
+    #
+    # @param run [Hash{String=>Object}] a stored run with a definition
+    # @param step [String] a step id
+    # @return [Integer, nil] nil for a step with no `review:`
+    def self.review_rounds_allowance(run, step)
+      review = WorkflowDefinition.review(run.dig("definition", "steps")&.find { |each| each["id"] == step })
+      return nil unless review
+      review["max_rounds"].is_a?(Integer) ? review["max_rounds"] : WorkflowReviewSpec::DEFAULT_MAX_ROUNDS
+    end
+
+    # Whether the step has spent every review round it may: its `review_rounds` (every round started in the run, by
+    # any attempt, reached any way: a rejection's retry, a gate's reject, `resume --from`, an `on_fail` loop; never
+    # reset) at its {.review_rounds_allowance}. False for a step with no `review:`.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a step id
+    # @return [Boolean]
+    def self.review_rounds_spent?(run, step)
+      allowance = review_rounds_allowance(run, step)
+      !allowance.nil? && run.dig("steps", step, "review_rounds").to_i >= allowance
+    end
+
+    # Whether a plain resume (no `--from`) is refused because the current step has spent its review rounds: the
+    # resume would start a round past `max_rounds` (a stopped or held round of the step being reviewed), or run again a
+    # step whose last round rejected it. {WorkflowDecisions} refuses it (`review_rounds_spent`) and {WorkflowStatus}
+    # offers no plain resume then.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Boolean]
+    def self.rounds_refuse_resume?(run)
+      id = run["current"]
+      return false unless review_rounds_spent?(run, id)
+      state = run.dig("steps", id, "state")
+      return true if state == "failed" && run.dig("reason", "code") == "review_rejected"
+      state == "reviewing" && starts_round?(run, from: nil)
+    end
+
+    # What stops a rejected step from running again by itself: the run's `max_attempts` (`limit` "run"), then the
+    # step's own (`limit` "step", both with `attempts` and `max_attempts`), then its `max_rounds` (`limit` "rounds").
+    #
+    # @param run [Hash{String=>Object}] a stored run, at the rejected step
+    # @return [Hash{String=>Object}] `rounds` and `max_rounds`, and `limit` (with its counts) when one stops the retry
+    def self.rejection_limit(run)
+      id = run["current"]
+      rounds = {"rounds" => run.dig("steps", id, "review_rounds").to_i, "max_rounds" => review_rounds_allowance(run, id)}
+      if attempts_spent?(run)
+        rounds.merge("limit" => "run", "attempts" => attempts_made(run), "max_attempts" => attempt_allowance(run))
+      elsif step_attempts_spent?(run, id)
+        rounds.merge("limit" => "step", "attempts" => step_attempts_made(run, id), "max_attempts" => step_allowance(run, id))
+      elsif review_rounds_spent?(run, id)
+        rounds.merge("limit" => "rounds")
+      else
+        rounds
+      end
+    end
+
     # The step a resume or reject would start an attempt of: `from` (`resume --from`, or the `to` of a
     # reject), else the step a waiting retry goes to, else the current step.
     #
@@ -571,7 +629,7 @@ module Workspace
 
     # The reasons a review round stops the run with, the one list every reader of a stopped round matches against
     # (`review_custom_socket` and the other review codes are errors, not stops).
-    REVIEW_STOPS = %w[review_incomplete review_rejected review_stale review_guard review_tampered].freeze
+    REVIEW_STOPS = %w[review_incomplete review_rejected review_stale review_guard review_tampered review_rounds_spent].freeze
 
     # The guard stops `workflow resume --accept-guard` takes: every guard that fails a step. `config_changed` is
     # only ever a warning, so it is not among them.

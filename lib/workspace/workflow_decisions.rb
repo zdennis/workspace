@@ -133,7 +133,8 @@ module Workspace
     #   review round (one a hold kept back, or a fresh one after a stopped round) past the budget or the timeout;
     #   with +accept_guard+, `guard_base_unreadable` (retryable, nothing changed) when the checkout can't be read as a
     #   new base, and with +guard_retry+ `guard_cannot_pass` when the retry would stop on `no_commit` or
-    #   `operation_in_progress` again
+    #   `operation_in_progress` again; `review_rounds_spent` when it would start a review round past the step's
+    #   `max_rounds`, or start again a step a review rejected with every round spent
     def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
       accept_guard: false, guard_retry: false, caller_pane: nil)
       refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
@@ -166,7 +167,7 @@ module Workspace
     # @param extra_seconds [Integer, nil] see {#resume}; applied when the park is released
     # @return [Resumed] the run afterwards, and why nothing was stored when nothing was
     # @raise [Workspace::Error] see {#refuse_resume}; code `pane_has_run` for a +pane+ another run has;
-    #   `attempts_spent` or `budget_spent` as {#resume}; `step_reviewing` for a step being reviewed (a park
+    #   `attempts_spent`, `budget_spent` or `review_rounds_spent` as {#resume}; `step_reviewing` for a step being reviewed (a park
     #   would hold back the review pane's turn end, which decides the round)
     def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
       unchanged = nil
@@ -174,6 +175,7 @@ module Workspace
         stored = read.thawed
         refuse_resume(stored, from: from)
         refuse_reviewing_park(stored, from)
+        refuse_rounds_spent(stored, from)
         if WorkflowTransitions.parked(stored, @clock.call) == :waiting
           unchanged = "a resume is already parked for pane #{park_target(stored)}"
           next
@@ -398,6 +400,19 @@ module Workspace
         code: "guard_cannot_pass", details: {"run_id" => run["id"], "step" => run["current"], "guard" => code, "accepted" => guard, "retry" => true})
     end
 
+    # A resume that would start a review round past the step's `max_rounds` (a stopped or held round of the step being
+    # reviewed), or start again a step whose last round rejected it with every round spent, is refused before anything
+    # changes: its next review could not start. `--from` is not refused; the review it reaches stops the same way.
+    def refuse_rounds_spent(run, from)
+      return if from || !WorkflowTransitions.rounds_refuse_resume?(run)
+      id = run["current"]
+      rounds = step_state(run)["review_rounds"].to_i
+      allowed = WorkflowTransitions.review_rounds_allowance(run, id)
+      raise Workspace::Error.new("Step #{id} of run #{run["id"]} has spent its review rounds (#{rounds} of #{allowed} max_rounds), so no further round can start. " \
+        "Only `workflow cancel #{run["id"]}` or `workflow resume #{run["id"]} --from STEP` goes on, and after --from the review of #{id} stops again (review_rounds_spent) once its author attempt passes.",
+        code: "review_rounds_spent", details: {"run_id" => run["id"], "step" => id, "rounds" => rounds, "max_rounds" => allowed})
+    end
+
     # A park is refused on a step being reviewed: while one stands, the review pane's turn end decides nothing.
     def refuse_reviewing_park(run, from)
       return unless step_state(run)["state"] == "reviewing"
@@ -456,6 +471,7 @@ module Workspace
       # A wait whose pane would not take the retry is held before anything is written: no rebind, note, event or reset.
       held = held_by_pane(stored, pane, from)
       return held if held
+      refuse_rounds_spent(stored, from)
       # A pane another run has is refused first, so a refusal after this point logs nothing.
       check_pane(pane, stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
       # Only a resume that starts an attempt is held to the budget (not a parked one typed again after a
@@ -486,7 +502,7 @@ module Workspace
       if held && !from
         event(stored, "run_resumed", "step" => stored["current"], "budget" => "released")
         stored["reason"] = nil
-        dispatch(stored, ctx, context: held["context"], budgeted: budget)
+        dispatch(stored, ctx, context: held["context"], budgeted: budget, retry_of: held.key?("retry_of") ? held.slice("text").merge("attempt" => held["retry_of"]) : nil)
         return nil
       end
       # A resume skips the wait of a retry; `--from` goes elsewhere and drops it.
@@ -498,9 +514,16 @@ module Workspace
         adopt(stored, @progress.start_retry(stored, waiting_retry, ctx: ctx, proven: !pane.nil?, budgeted: budget))
         return held_retry_sentence(stored)
       end
+      # The retry a rejection stopped by a limit kept: started by a plain resume, dropped by `--from`.
+      again = stored.delete("review_retry")
       if from
-        # The round under way ends first, its window closed, so no reviewer goes on judging work the run left.
-        stored.replace(@progress.end_round(stored, how: "from", ctx: ctx).thawed) if state["state"] == "reviewing"
+        # So is a review retry that waited for a lock, with the text it put in the pending context.
+        waited = stored.delete("retry_of_pending")
+        drop_retry_text(stored, waited) if waited.is_a?(Hash)
+        # The round under way ends first, its window closed, so no reviewer goes on judging work the run left; so
+        # does the window a rejected round kept, when the run goes to another step.
+        kept = state["review_window"].is_a?(Hash) && from != stored["current"]
+        stored.replace(@progress.end_round(stored, how: "from", ctx: ctx).thawed) if state["state"] == "reviewing" || kept
         event(stored, "run_resumed", "from" => from)
         stored["current"] = from
         dispatch(stored, ctx, budgeted: budget)
@@ -520,7 +543,14 @@ module Workspace
       # A round is not an attempt: a resume never starts the author again on a step being reviewed, only its round.
       when "reviewing" then stored.replace(@progress.restart_review(stored, ctx: ctx).thawed)
       when "passed" then adopt(stored, @progress.advance(stored, ctx: ctx))
-      else dispatch(stored, ctx, budgeted: budget)
+      else
+        # A step a review rejected starts the retry the rejection kept: its verdicts and write-ups, `retry_of` it.
+        if again.is_a?(Hash) && again["step"] == stored["current"] && again["text"].is_a?(String)
+          stored["pending_context"] << again["text"]
+          dispatch(stored, ctx, context: again["context"], budgeted: budget, retry_of: again.slice("text", "attempt"))
+        else
+          dispatch(stored, ctx, budgeted: budget)
+        end
       end
       nil
     end

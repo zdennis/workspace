@@ -714,6 +714,22 @@ module Workspace
       end
     end
 
+    # Moves a review window's +@workspace-review+ mark to +mark+ (a later round
+    # taking over the window an earlier round of its step left), and reads it
+    # back.
+    #
+    # @param window [String] a tmux window id (e.g. "@4"); anything else is refused
+    # @param mark [String] the new value
+    # @return [Boolean] whether the window carries +mark+ now
+    def mark_review_window(window, mark)
+      return false unless window.to_s.match?(WINDOW_ID)
+      @logger.debug { "tmux: marking window #{window} #{mark}" }
+      _, _, status = Open3.capture3("tmux", "set-option", "-w", "-t", window, REVIEW_OPTION, tmux_argument(mark))
+      status.success? && read_window_option(window, REVIEW_OPTION) == mark
+    rescue SystemCallError
+      false
+    end
+
     # Closes a whole window, with every pane in it.
     #
     # @param target [String] a tmux window id (e.g. "@4"); anything else is refused

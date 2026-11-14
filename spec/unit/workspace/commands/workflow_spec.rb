@@ -511,6 +511,18 @@ RSpec.describe Workspace::Commands::Workflow do
       TEXT
     end
 
+    it "says a step that has spent its review rounds starts no further round" do
+      round = {"round" => 6, "max_rounds" => 6, "need" => 1, "approvals" => 0, "pending" => [], "pane" => "%9", "stopped" => true, "held" => nil, "next_round" => 7,
+               "rounds_spent" => true, "reviews" => []}
+      stopped = shown("state" => "waiting", "current" => {"step" => "plan", "attempt" => 1, "state" => "reviewing", "flags" => [], "review" => round,
+                                                          "reason" => reason("review_incomplete", {"step" => "plan", "round" => 6}, [])})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [stopped], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  review: round 6 of 6, every round spent; no further round starts; 0 of 1 approvals, review pane %9\n")
+    end
+
     let(:gate) do
       shown("state" => "waiting", "current" => {"step" => "plan", "attempt" => 1, "state" => "passed", "flags" => ["timed_out"],
                                                 "reason" => reason("waiting_you", {"kind" => "gate", "step" => "plan", "artifacts" => ["/src/app/.workflow/wr_1/plan.md"]},

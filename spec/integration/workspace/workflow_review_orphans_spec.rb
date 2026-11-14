@@ -14,9 +14,10 @@ RSpec.describe Workspace::WorkflowReviewOrphans do
   let(:panes) { RecordingWorkflowPanes.new }
   subject(:orphans) { described_class.new(tmux: tmux, store: store, panes: panes) }
 
-  def write_run(id, state: "running", step_state: "reviewing", round: {"round" => 1, "delivery" => nil, "pane" => "%9", "window" => "@9"}, dir: "runs")
-    run = {"id" => id, "workspace" => "app", "state" => state, "current" => "plan", "reason" => nil, "definition" => {"steps" => [{"id" => "plan"}]},
-           "steps" => {"plan" => {"state" => step_state, "review" => round, "attempts" => [{"n" => 1}]}.compact}}
+  def write_run(id, state: "running", step_state: "reviewing", round: {"round" => 1, "delivery" => nil, "pane" => "%9", "window" => "@9"}, dir: "runs", kept: nil, current: "plan")
+    run = {"id" => id, "workspace" => "app", "state" => state, "current" => current, "reason" => nil, "definition" => {"steps" => [{"id" => "plan"}, {"id" => "build"}]},
+           "steps" => {"plan" => {"state" => step_state, "review" => round, "review_window" => kept, "attempts" => [{"n" => 1}]}.compact,
+                       "build" => {"state" => "pending", "attempts" => []}}}
     FileUtils.mkdir_p(File.join(@dir, dir))
     File.write(File.join(@dir, dir, "#{id}.json"), JSON.generate(run))
   end
@@ -48,6 +49,17 @@ RSpec.describe Workspace::WorkflowReviewOrphans do
     tmux.review_window_list = [window("@9", "wr_1:plan:1", "%9")]
 
     expect(found).to eq([["@9", "not_recorded"]])
+  end
+
+  it "leaves the window a rejected round kept for the step's next one while the author works again, and not once the run moved on" do
+    write_run("wr_1", step_state: "running", round: nil, kept: {"round" => 1, "window" => "@9", "pane" => "%9"})
+    tmux.review_window_list = [window("@9", "wr_1:plan:1", "%9"), window("@8", "wr_1:plan:1", "%8")]
+
+    expect(found).to eq([["@8", "not_recorded"]])
+
+    write_run("wr_1", step_state: "passed", round: nil, kept: {"round" => 1, "window" => "@9"}, current: "build")
+
+    expect(found).to eq([["@9", "not_recorded"], ["@8", "not_recorded"]])
   end
 
   it "leaves every window of a round still being delivered, which closes the run's other windows itself" do

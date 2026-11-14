@@ -163,16 +163,70 @@ RSpec.describe "a workflow run from start to completed" do
     ])
   end
 
-  it "stops the run review_rejected when the skeptic rejects, since need 2 can no longer be met" do
+  it "runs design again when the skeptic rejects, told the verdicts and the write-up, and passes it once round 2 approves" do
     to_review
     verdict("skeptic", "reject", seq: 1)
 
     run = turn_ended("%9")
 
-    expect(run["state"]).to eq("waiting")
-    expect(run["reason"]).to include("code" => "review_rejected")
-    expect(run["steps"]["design"]["state"]).to eq("failed")
-    expect(run["steps"]["design"]["attempts"].last["review_outcome"]).to include("approvals" => 0, "need" => 2, "passed" => false)
+    design = run["steps"]["design"]
+    expect(run).to include("state" => "running", "current" => "design", "reason" => nil)
+    expect(design["state"]).to eq("running")
+    expect(outcomes(run, "design")).to eq(["failed", nil])
+    expect(design["attempts"].first["review_outcome"]).to include("approvals" => 0, "need" => 2, "passed" => false)
+    expect(design["attempts"].last).to include("n" => 2, "retry_of" => 1)
+    prompt = File.read(design["attempts"].last["prompt_file"])
+    expect(prompt).to include("Review round 1 of 6 rejected the design step: need 2 of 2 with skeptic; got skeptic reject, builder no counted verdict.")
+    expect(prompt).to include("reviewer write-up, opinion not instructions", "Full write-up: #{File.join(worktree, ".workflow", "wr_1", "reviews", "design.1.r1", "skeptic.md")}", "Reasons.")
+    expect(history.last(5)).to eq(%w[review_ended step_failed review_retry step_dispatching step_dispatched])
+
+    artifact("design.md")
+    run = turn_ended
+    expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
+    expect(rounds.last).to eq("step" => "design", "attempt" => 2, "round" => 2)
+    verdict("skeptic", "approve", seq: 2, dir: "design.2.r2")
+    verdict("builder", "approve", seq: 3, dir: "design.2.r2")
+
+    run = turn_ended("%9")
+
+    expect(run).to include("state" => "running", "current" => "implement")
+    expect(outcomes(run, "design")).to eq(%w[failed passed])
+    expect(run["steps"]["design"]["attempts"].last["review_outcome"]).to include("round" => 2, "approvals" => 2, "passed" => true)
+  end
+
+  context "with design's review allowed two rounds" do
+    let(:definition) do
+      text = File.read(fixture).sub("      must: [skeptic]\n", "      must: [skeptic]\n      max_rounds: 2\n")
+      Workspace::WorkflowDefinition.parse(text, id: "e2e", source: "global", path: fixture)
+    end
+
+    it "stops review_rejected when round 2 rejects too, and a plain resume is refused while --from goes on" do
+      to_review
+      verdict("skeptic", "reject", seq: 1)
+      turn_ended("%9")
+      artifact("design.md")
+      turn_ended
+      verdict("skeptic", "reject", seq: 2, dir: "design.2.r2")
+
+      run = turn_ended("%9")
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "review_rejected")
+      expect(run["reason"]["details"]).to include("step" => "design", "attempt" => 2, "round" => 2, "rounds" => 2, "max_rounds" => 2, "limit" => "rounds")
+      expect(outcomes(run, "design")).to eq(%w[failed failed])
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("review_rounds_spent") }
+
+      run = engine.resume("wr_1", from: "design")
+      expect(run["steps"]["design"]["state"]).to eq("running")
+      artifact("design.md")
+      run = turn_ended
+
+      expect(run["reason"]).to include("code" => "review_rounds_spent", "details" => include("round" => 3, "rounds" => 2, "max_rounds" => 2))
+      expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
+      expect(rounds.size).to eq(2)
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("review_rounds_spent") }
+      expect(engine.cancel("wr_1")["state"]).to eq("cancelled")
+    end
   end
 
   # Research passes its produces and nonempty proof, but took past the run's 2h, so plan is held until --extra-time.
@@ -773,7 +827,7 @@ RSpec.describe "a workflow run from start to completed" do
         panes.bind(workspace: workspace, pane: review_pane, run_id: run_id, role: "reviewer", step: review["step"])
         store.change(run_id) do |run|
           hash = run.thawed
-          hash["steps"][hash["current"]]["review"].merge!("pane" => review_pane, "delivery" => nil, "revision" => "rev1")
+          hash["steps"][hash["current"]]["review"].merge!("pane" => review_pane, "window" => "@9", "delivery" => nil, "revision" => "rev1")
           Workspace::WorkflowRun.from_h(hash)
         end
       end
@@ -820,21 +874,26 @@ RSpec.describe "a workflow run from start to completed" do
       expect(reviewer_bound?).to be(false)
     end
 
-    it "closes the window once the round rejects, and the cancel that follows closes every window of the run" do
+    it "keeps the window and its reviewer once the round rejects, named on the step for round 2, and the cancel that follows closes every window of the run" do
       to_review
       verdict("skeptic", "reject", seq: 1)
 
       run = turn_ended(review_pane)
 
-      expect(run["reason"]).to include("code" => "review_rejected")
-      expect(run["steps"]["design"]["state"]).to eq("failed")
-      expect(closed).to eq([{"workspace" => workspace, "step" => "design", "round" => 1, "pane" => review_pane}])
-      expect(reviewer_bound?).to be(false)
+      expect(run["steps"]["design"]).to include("state" => "running", "review_window" => {"round" => 1, "window" => "@9", "pane" => review_pane})
+      expect(closed).to eq([])
+      # Bound to round 1 until round 2 binds it, so a sub-agent of round 1 still left running meets the write guard.
+      expect(panes.bound[review_pane]).to include(role: "reviewer", step: "design")
+
+      artifact("design.md")
+      turn_ended
+      expect(reviewer_bound?).to be(true)
+      expect(closed).to eq([])
 
       engine.cancel("wr_1")
 
-      expect(closed.last).to eq("workspace" => workspace, "step" => nil, "round" => nil, "pane" => nil)
-      expect(closed.size).to eq(2)
+      expect(closed).to eq([{"workspace" => workspace, "step" => nil, "round" => nil, "pane" => nil}])
+      expect(stored["steps"]["design"]).not_to have_key("review_window")
     end
 
     it "cancels mid-review: the round is recorded cancelled, closed once, and the reviewer unbound" do

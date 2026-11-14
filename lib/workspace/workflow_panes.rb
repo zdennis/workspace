@@ -428,7 +428,8 @@ module Workspace
     #   more once the pane is no longer bound to it. It applies only to a fresh
     #   step: a `context: continue` line is typed without the daemon's restart,
     #   so this does not stop it
-    # @return [Hash] :ok, and :warning when the daemon gave one; when false, :code
+    # @return [Hash] :ok, :warning when the daemon gave one, and for a fresh line :cleared_at (when the daemon confirmed
+    #   the new conversation, ISO 8601, when it says); when false, :code
     #   (an error code) and :message, with :reason and :proof_missing when the daemon gave them
     def kick(workspace:, pane:, text:, fresh:, run_id: nil)
       ensure_daemon!(workspace)
@@ -543,7 +544,7 @@ module Workspace
     def restart(workspace, pane, text, run_id)
       message = AgentProtocol.restart_agent(workspace: workspace, pane: pane, prompt: text, force: false, wait: true, run_id: run_id)
       reply = request(workspace, message)
-      return {ok: true, warning: reply["warning"]}.compact if reply["ok"]
+      return {ok: true, warning: reply["warning"], cleared_at: reply["cleared_at"]}.compact if reply["ok"]
       {ok: false, code: reply["error"].to_s, message: [reply["message"], reply["fix"]].compact.join(" "), reason: reply["reason"],
        proof_missing: reply.dig("details", "proof_missing"), warning: reply["warning"]}.compact
     end

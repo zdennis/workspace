@@ -12,6 +12,15 @@ RSpec.describe Workspace::WorkflowAttempts do
     expect(rows.map { |row| row["outcome"] }).to eq(%w[overridden passed])
   end
 
+  it "names the attempt a review rejected on the attempt that retried it, and none on any other" do
+    run = {"id" => "wr_1", "definition" => {"steps" => [{"id" => "plan"}]},
+           "steps" => {"plan" => {"attempts" => [{"n" => 1, "outcome" => "failed", "code" => "review_rejected"}, {"n" => 2, "retry_of" => 1}, {"n" => 3, "retry_of" => "x"}]}}}
+
+    rows = described_class.new.read(run)["attempts"]
+
+    expect(rows.map { |row| row["retry_of"] }).to eq([nil, 1, nil])
+  end
+
   describe "a reviewed attempt (spec/fixtures/workflow_runs/reviewing.json)" do
     def fixture = JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/reviewing.json")))
 

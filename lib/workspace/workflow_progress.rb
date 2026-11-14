@@ -8,9 +8,12 @@ module Workspace
   # A step with a `review:` does not pass on its own checks: its attempt ends `checks_passed` and the step is
   # `reviewing` while a review round runs ({#pass_step}); the round's outcome decides it ({#decide_review}). A person's
   # resume starts the round again ({#restart_review}), and a cancel or `resume --from` ends it undecided ({#end_round}).
+  # A rejected round starts the step again as a new attempt told what the reviewers wrote, while the step has rounds
+  # (`review.max_rounds`) and the run and step have attempts left; no round starts past `max_rounds`.
   # Every round start is held, as an attempt start is, while the token budget or the run's timeout is used up, and
-  # waits while a lock its `review.uses` names is taken. A decided round, an ended one and a run that ends unbind the
-  # reviewer and register the review window to close once the lock is given up.
+  # waits while a lock its `review.uses` names is taken. An approved round, an ended one and a run that ends unbind
+  # the reviewer and register the review window to close once the lock is given up; a rejected or stopped round keeps
+  # the window for the next round.
   # Each method takes the stored run, leaves it as it is and returns the run afterwards; a step it starts
   # goes through {WorkflowDispatch#dispatch}.
   class WorkflowProgress
@@ -26,8 +29,10 @@ module Workspace
     #   nil takes none, and the round is never checked against one
     # @param holder [#call, nil] answers the process that delivers a round this change starts (its "pid" and
     #   "started"), stored on the round as its `holder` while it is delivered; nil stores none
+    # @param rejection [Workspace::WorkflowRejection, nil] the retry a rejected round starts; nil builds one over +change+,
+    #   +dispatch+ and +log_tail+
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, dispatch:, attempt_record:, panes:, log_tail:, review_tally: nil, guard: nil, holder: nil, clock: -> { Time.now })
+    def initialize(change:, store:, dispatch:, attempt_record:, panes:, log_tail:, review_tally: nil, guard: nil, holder: nil, rejection: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @dispatch = dispatch
@@ -37,6 +42,7 @@ module Workspace
       @review_tally = review_tally
       @guard = guard
       @holder = holder
+      @rejection = rejection || WorkflowRejection.new(change: change, dispatch: dispatch, log_tail: log_tail)
       @clock = clock
     end
 
@@ -65,8 +71,13 @@ module Workspace
     # Decides the review round of the step being reviewed. The attempt the round reviewed already ended
     # (`checks_passed`); its outcome is rewritten, with no second {WorkflowAttemptRecord#finish}, and
     # `review_outcome` (`round`, `approvals`, `need`, `must`, `passed`) and `reviews` added. Approved: the step passes, as {#pass_step} would pass it, to its gate or
-    # the next step. Rejected: the attempt and step fail and the run stops for a person with `review_rejected`.
-    # Both unbind the reviewer and register the review window to close on +ctx+.
+    # the next step, unbinding the reviewer and registering the review window to close on +ctx+. Rejected: the attempt
+    # and step fail, the window and its reviewer's binding are kept (named by the step's `review_window`); the step starts
+    # again as a new attempt (`retry_of` the rejected one, with the step's `review.context`) whose context holds a line
+    # naming the round and each verdict and each counted reviewer's write-up ({WorkflowLogTail#writeup}), and its next
+    # review is a new round. The run stops for a person with `review_rejected` instead, `details.limit` saying why,
+    # when the run's `max_attempts` is spent ("run"), else the step's own ("step"), else its `max_rounds` ("rounds"),
+    # keeping the retry as the run's `review_retry` for a resume ({WorkflowRejection#retry_for}).
     # Incomplete: the step stays `reviewing`, the round is marked ended, and the run stops with `review_incomplete`;
     # its window is kept for the person to look at.
     # Stale (what the round judged changed while it ran): as incomplete, but the run stops with `review_stale`; it
@@ -111,7 +122,8 @@ module Workspace
     # Ends the round of the step being reviewed without a decision: the round's record ({WorkflowAttemptRecord#finish_round},
     # with how it ended and the verdict rows the round already read) is added to the reviewed attempt's `rounds`, and
     # the step's `review` is taken off. With +close+, the reviewer's binding is removed and the review window is
-    # registered on +ctx+ to close. A round that never started (held for the budget, the timeout or a lock) has no
+    # registered on +ctx+ to close; a step with no round but a window a rejected round kept (`review_window`) has that
+    # window closed. A round that never started (held for the budget, the timeout or a lock) has no
     # record and no window of its own: only a window an earlier round of the step left is closed, and the first
     # round registers none. The step's state and `review_rounds` are left as they are. A step with no
     # round changes nothing.
@@ -252,7 +264,8 @@ module Workspace
       begin_round(run, ctx)
     end
 
-    # The one start of a review round: the round is spent here, and its delivery is registered on +ctx+. A round is
+    # The one start of a review round: the round is spent here, and its delivery is registered on +ctx+. A round past
+    # the step's `max_rounds` never starts ({#rounds_spent}), whoever starts it. A round is
     # held first, as an attempt is, when the token budget or the run's timeout is used up ({WorkflowDispatch#hold_round}),
     # then while a lock its `review.uses` names is taken ({WorkflowDispatch#hold_round_lock}, which also gives up the
     # step's own `uses:`): the step stays `reviewing` with the round named, marked `held`, and no delivery; the round
@@ -261,6 +274,7 @@ module Workspace
     def begin_round(run, ctx)
       state = step_state(run)
       round = state["review_rounds"].to_i + 1
+      return rounds_spent(run, round) if WorkflowTransitions.review_rounds_spent?(run, run["current"])
       held = @dispatch.hold_round(run, round: round) || @dispatch.hold_round_lock(run, round: round, step_state: state["state"])
       return hold_round(run, held, round) if held
       state["review_rounds"] = round
@@ -289,6 +303,17 @@ module Workspace
       stop_review(run, opened[:code], details.merge("problem" => opened[:problem]))
     end
 
+    # A round past the step's `max_rounds` never starts: the step stays `reviewing` with the round named and held
+    # (`review_rounds_spent`), nothing is spent or registered, and the run stops for a person. A resume is refused
+    # while the rounds stay spent; `--from` or a cancel goes on.
+    def rounds_spent(run, round)
+      details = {"step" => run["current"], "attempt" => step_state(run)["attempts"].last["n"], "round" => round,
+                 "rounds" => step_state(run)["review_rounds"].to_i, "max_rounds" => WorkflowTransitions.review_rounds_allowance(run, run["current"])}
+      step_state(run)["review"] = {"round" => round, "delivery" => nil, "held" => "review_rounds_spent"}
+      event(run, "review_rounds_spent", details)
+      stop_review(run, "review_rounds_spent", details)
+    end
+
     # A held round has no delivery and no start: its release goes through {#begin_round} for the same round. `held`
     # is the reason that kept it (`budget_spent`, `run_timed_out`, `waiting_lock`, or `waiting_you` for a lock store
     # that could not be read).
@@ -311,7 +336,15 @@ module Workspace
     # by its `@workspace-review` mark, so a round that recorded no pane yet is closed too.
     def close_review(run, ctx, round)
       @panes.unbind(run["id"], role: "reviewer")
+      step_state(run).delete("review_window")
       ctx.close_review({"workspace" => run["workspace"], "step" => run["current"], "round" => round["round"], "pane" => round["pane"]})
+    end
+
+    # The step's `review_window` names the window a round left for the next one, so the sweep never takes it for an
+    # orphan while the step's author works or its next round is held.
+    def record_window(run, round)
+      return unless round.is_a?(Hash) && round["window"]
+      step_state(run)["review_window"] = {"round" => round["round"], "window" => round["window"], "pane" => round["pane"]}.compact
     end
 
     def decide_in(run, tally, ctx)
@@ -339,12 +372,20 @@ module Workspace
         passed(run, ctx)
       when :rejected
         state.delete("review")
-        # The step reads `failed` from here, so no cancel ends this round again: its window is closed now.
-        close_review(run, ctx, round)
+        # Kept, idle, for the next round, which clears it; a run that ends closes it. Its reviewer stays bound to this
+        # round until the next round binds it, so the write guard still holds for a sub-agent left running.
+        record_window(run, round)
         state["attempts"][-1] = attempt.merge("outcome" => "failed", "code" => "review_rejected", "review_outcome" => decided, "reviews" => reviews)
         state["state"] = "failed"
         event(run, "step_failed", "step" => run["current"], "attempt" => attempt["n"], "cause" => "review")
-        stop_review(run, "review_rejected", details.merge("reviews" => reviews))
+        limit = WorkflowTransitions.rejection_limit(run)
+        again = @rejection.retry_for(run, attempt: attempt["n"], round: round["round"], decided: decided, reviews: reviews, max_rounds: limit["max_rounds"])
+        if limit["limit"]
+          # Kept for the resume that goes on (`--extra-attempts`): it starts the retry this rejection would have.
+          run["review_retry"] = again
+          return stop_review(run, "review_rejected", details.merge("reviews" => reviews).merge(limit))
+        end
+        adopt(run, @rejection.start(run, again, rounds: limit, ctx: ctx))
       else
         state["attempts"][-1] = attempt
         # Marked recorded, so the resume or cancel that ends it later adds no second record.
@@ -398,6 +439,8 @@ module Workspace
     def end_round_in(run, how, ctx, close)
       state = step_state(run)
       round = state["review"]
+      # A step a round rejected has no round, only the window it kept: closed when asked.
+      return close_review(run, ctx, state["review_window"]) if !round.is_a?(Hash) && close && state["review_window"].is_a?(Hash)
       return unless round.is_a?(Hash)
       attempt = state["attempts"].last
       held = held_round?(round)
@@ -405,7 +448,7 @@ module Workspace
       state.delete("review")
       # A round a tally already ended wrote its `review_ended`.
       event(run, "review_ended", "step" => run["current"], "attempt" => attempt["n"], "round" => round["round"], "outcome" => how) unless round["ended_at"] || held
-      return unless close
+      return record_window(run, round) unless close
       # A held round opened no window; only an earlier round of the step can have left one.
       return if held && state["review_rounds"].to_i.zero?
       close_review(run, ctx, round)
@@ -456,6 +499,9 @@ module Workspace
       # Every window a round of the run left, of any step: the closer finds them by their mark, a step of nil naming
       # them all, so this takes the place of a close of one step's window the same change registered.
       reviewed = run["steps"].values.any? { |each| each.is_a?(Hash) && each["review_rounds"].to_i.positive? }
+      run["steps"].each_value { |each| each.delete("review_window") if each.is_a?(Hash) }
+      run.delete("review_retry")
+      run.delete("retry_of_pending")
       ctx.close_review({"workspace" => run["workspace"], "step" => nil, "round" => nil, "pane" => nil}) if ctx && reviewed
       run["state"] = state
       run["reason"] = nil

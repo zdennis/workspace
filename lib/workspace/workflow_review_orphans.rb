@@ -5,6 +5,8 @@ module Workspace
   #
   # A window is the round's while the run is going, on the step the mark names, `reviewing`, and its round records
   # the window's pane or window id, or is still being delivered (a delivery closes the run's other windows itself).
+  # A window the step's `review_window` names (kept by a rejected or stopped round for the next one) is in use while
+  # the run is on that step, in any state.
   # A window whose run file can't be read is left alone: nothing can say it is over. A window stamped by another run
   # store ({WorkflowRunStore#stamp}: another `HOME` or `XDG_STATE_HOME` on the same tmux server, such as a scheduler's)
   # is not this store's to judge and is left out. Only a positive read from this store (`run_over`, `not_recorded`)
@@ -85,8 +87,13 @@ module Workspace
 
     def in_use?(run, step, window)
       state = run.steps[step]
-      round = state&.review
-      return false unless run.current == step && state.state == "reviewing" && round.is_a?(Hash)
+      return false unless run.current == step && state
+      # The window a rejected or stopped round left for the step's next round, while the author works again or that
+      # round is held.
+      kept = state.to_h["review_window"]
+      return true if kept.is_a?(Hash) && !kept["window"].nil? && kept["window"] == window[:window]
+      round = state.review
+      return false unless state.state == "reviewing" && round.is_a?(Hash)
       round["delivery"] == "delivering" || (!round["pane"].nil? && round["pane"] == window[:pane]) || (!round["window"].nil? && round["window"] == window[:window])
     end
   end

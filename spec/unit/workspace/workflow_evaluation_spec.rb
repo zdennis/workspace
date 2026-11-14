@@ -306,6 +306,59 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(progress.calls).to be_empty
     end
 
+    describe "in a window an earlier round left, being cleared for this one" do
+      let(:round) { super().merge("clear_from" => "2026-11-10T11:40:00.000Z") }
+
+      it "ignores the end of a turn a person had there before the clear, and one whose start is not known, costing no round" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review_rounds"] = 2 })
+
+        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 35), stopped_at: Time.utc(2026, 11, 10, 11, 41))
+        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 41))
+
+        expect(tally.calls).to be_empty
+        expect(progress.calls).to be_empty
+        expect(store.runs["wr_1"]["steps"]["plan"]).to include("state" => "reviewing", "review_rounds" => 2)
+        expect(store.runs["wr_1"]["reason"]).to be_nil
+      end
+
+      it "decides the round on the reviewers' turn, begun once the clear was under way" do
+        stored(reviewing)
+
+        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 5))
+
+        expect(tally.calls.size).to eq(1)
+      end
+
+      describe "once the daemon confirmed the clear and the delivery was recorded" do
+        let(:round) { super().merge("cleared_at" => "2026-11-10T11:41:00.000Z", "delivered_at" => "2026-11-10T11:42:00.000Z") }
+
+        it "ignores a person's turn begun before the confirmed clear, though after the clear began" do
+          stored(reviewing)
+
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 30))
+
+          expect(tally.calls).to be_empty
+        end
+
+        it "counts a Stop with no known start (the daemon restarted during the round) that came after the delivery" do
+          stored(reviewing)
+
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 50))
+
+          expect(tally.calls.size).to eq(1)
+        end
+
+        it "leaves uncounted such a Stop from before the delivery, and one with no time at all" do
+          stored(reviewing)
+
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 41, 30))
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9")
+
+          expect(tally.calls).to be_empty
+        end
+      end
+    end
+
     it "takes a round as incomplete when no tally is set up" do
       stored(reviewing)
 

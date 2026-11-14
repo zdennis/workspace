@@ -1429,11 +1429,33 @@ RSpec.describe Workspace::WorkflowStatus do
       end
     end
 
-    it "says plainly when the round a resume would start is past max_rounds" do
+    it "says plainly when the round a resume would start is past max_rounds, and offers no plain resume, which is refused" do
       load_fixture(round: {"round" => 6, "ended_at" => round_start, "recorded" => true}, state: "waiting",
-        reason: {"code" => "review_incomplete", "since" => round_start, "details" => {"step" => "build", "round" => 6}})
+        reason: {"code" => "review_incomplete", "since" => round_start, "details" => {"step" => "build", "round" => 6}}) do |fixture|
+        fixture["steps"]["build"]["review_rounds"] = 6
+      end
 
-      expect(review_status["current"]["review"]).to include("round" => 6, "max_rounds" => 6, "next_round" => 7, "rounds_spent" => true)
+      shown = review_status
+      expect(shown["current"]["review"]).to include("round" => 6, "max_rounds" => 6, "next_round" => 7, "rounds_spent" => true)
+      expect(shown["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_simulated", "--from", "build"), action("workflow cancel", "wr_simulated")])
+    end
+
+    it "offers no plain resume after the last round rejected the step, nor at the round held past max_rounds" do
+      load_fixture(state: "waiting", reason: {"code" => "review_rejected", "since" => round_start, "details" => {"step" => "build", "limit" => "rounds"}}) do |fixture|
+        fixture["steps"]["build"].merge!("state" => "failed", "review_rounds" => 6)
+        fixture["steps"]["build"].delete("review")
+      end
+
+      expect(review_status["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_simulated", "--from", "build"), action("workflow cancel", "wr_simulated")])
+
+      load_fixture(round: {"round" => 7, "delivery" => nil, "held" => "review_rounds_spent"}, state: "waiting",
+        reason: {"code" => "review_rounds_spent", "since" => round_start, "details" => {"step" => "build", "round" => 7, "rounds" => 6, "max_rounds" => 6}}) do |fixture|
+        fixture["steps"]["build"]["review_rounds"] = 6
+      end
+
+      shown = review_status
+      expect(shown["current"]["review"]).to include("held" => "review_rounds_spent", "next_round" => 7, "rounds_spent" => true)
+      expect(shown["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_simulated", "--from", "build"), action("workflow cancel", "wr_simulated")])
     end
 
     it "sets no timed_out flag for a started_at that does not parse" do

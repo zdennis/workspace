@@ -14,10 +14,14 @@ class FakeTmux
     delivered texts details details= screens screens= screen_script screen_script= on_deliver on_deliver= on_details
     on_details= statuses statuses= capture_calls sessions_calls sessions_strict_args styled_screens styled_screens=
     server_pid server_pid= start_commands start_commands= session_gone session_gone=
-    opened_windows killed_windows review_window_list review_window_list= session_server_pid session_server_pid= renumber_windows renumber_windows= review_windows_by_session review_windows_by_session=
+    opened_windows killed_windows marked_windows refuse_marks refuse_marks= review_window_list review_window_list= session_server_pid session_server_pid= renumber_windows renumber_windows= review_windows_by_session review_windows_by_session=
   ].freeze
 
   attr_reader :sent_keys, :sent_key_names, :capture_calls, :sessions_calls, :sessions_strict_args, :opened_windows, :killed_windows
+  # @return [Array<Array(String, String)>] each window `mark_review_window` marked, with its new mark
+  attr_reader :marked_windows
+  # @return [Boolean] `mark_review_window` refuses every window, as tmux failing would
+  attr_accessor :refuse_marks
   # @return [Array<Hash>] what `review_windows` lists
   attr_accessor :review_window_list
   # @return [String, nil] what `server_pid_for_session` answers (nil: `server_pid`)
@@ -70,6 +74,7 @@ class FakeTmux
     @sent_keys = []
     @opened_windows = []
     @killed_windows = []
+    @marked_windows = []
     @review_window_list = []
     @sent_key_names = []
     @captured_output = ""
@@ -133,6 +138,15 @@ class FakeTmux
 
   # A copy, as each real listing is a new one: a window killed while a caller walks it stays in the walk.
   def review_windows(session) = (@review_windows_by_session ? @review_windows_by_session.fetch(session, []) : @review_window_list).map(&:dup)
+
+  # Moves a listed window's mark; false for a window it does not list.
+  def mark_review_window(window, mark)
+    listed = @review_window_list.find { |each| each[:window] == window }
+    return false if listed.nil? || @refuse_marks
+    listed[:review] = mark
+    @marked_windows << [window, mark]
+    true
+  end
 
   # False for a window it never opened or listed.
   def kill_window(target)

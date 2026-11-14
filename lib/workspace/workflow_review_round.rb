@@ -9,7 +9,9 @@ module Workspace
   # is computed ({WorkflowReviewRevision}), its directory checked ({WorkflowReviewTally#ensure_round}) and its
   # prompt written ({WorkflowPrompt#review_text}); then a window marked for the round is reused, or one opened
   # (`review-STEP`, `WORKSPACE_REVIEW_RUN` in its environment, the `@workspace-review RUN:STEP:ROUND` mark) running
-  # Claude Code in the checkout, whatever agent the main pane runs; once Claude Code is ready the pane is bound as
+  # Claude Code in the checkout, whatever agent the main pane runs. A window an earlier round of the step left (a
+  # rejection or a stopped round keeps it) is carried over instead: marked for this round, its reviewer bound to this
+  # round, and its conversation cleared (`/clear`) as the line is typed. Once Claude Code is ready the pane is bound as
   # the reviewer, one change records the pane, window, revision, prompt and packs (so a review Stop that comes
   # before the last change still finds its pane), and the prompt's line is typed. A last change then ends the
   # round's delivery mark. Each change applies only while the run is still on that step, attempt and round and
@@ -115,6 +117,8 @@ module Workspace
         window = review_window(run, pending, agent)
         return current(run) if window == :left
         return failed(run, pending, nil, "window_not_opened", "tmux could not open the review window") unless window
+        # A window an earlier round left is cleared (`/clear`, as a `context: fresh` step is) as the line is typed.
+        window[:fresh] = window[:carried]
         unready = present_window(run, pending, window, agent)
         return unready if unready
         # The pane's binding is replaced, whichever round of the run it held.
@@ -122,9 +126,12 @@ module Workspace
           instructions: written["path"], artifacts: run.artifacts_dir, role: "reviewer", round: pending["round"], relative_to: run.worktree)
         recorded = record_pane(run, pending, window, answer[:revision], written)
         return recorded[:run] unless recorded[:wanted]
-        kick = @panes.kick(workspace: workspace, pane: window[:pane], text: format(WorkflowDispatch::KICK, written["path"]), fresh: false, run_id: run.id)
-        return failed(run, pending, window, kick[:code].to_s, kick[:message].to_s) unless kick[:ok]
-        delivered(run, pending, window)
+        # The reviewers start fresh, each told of its own earlier write-up by `review.previous`.
+        kick = @panes.kick(workspace: workspace, pane: window[:pane], text: format(WorkflowDispatch::KICK, written["path"]), fresh: window[:fresh], run_id: run.id)
+        # A window being cleared that refused the line (a person's turn running, no quiet in time) holds no reviewer of
+        # this round: kept, still to be cleared, for the round's next delivery.
+        return failed(run, pending, window, kick[:code].to_s, kick[:message].to_s, close: !window[:fresh]) unless kick[:ok]
+        delivered(run, pending, window, kick)
       rescue Workspace::Error, SystemCallError, EncodingError, IOError => e
         if e.is_a?(Workspace::Error) && e.code == "run_not_active"
           abandon(run, window) if window
@@ -167,6 +174,8 @@ module Workspace
         message += "; the window was kept at its #{spawned.waiting} screen"
       elsif kept
         message += "; the window, used again, was kept, since its agent may still be at work"
+      elsif window[:carried]
+        message += "; the window an earlier round left was closed, and the round's next delivery opens a new one"
       end
       message += "; a review window always runs Claude Code (#{agent}), whatever agent the main pane runs"
       program = program_of(agent)
@@ -184,11 +193,13 @@ module Workspace
       program.include?("/") ? File.executable?(program) : !@which.call(program).nil?
     end
 
-    # The window marked for this round (left by a delivery of it that died), else a new one. Windows marked for another
-    # round of the run hold a reviewer of that round, and are closed (their reviewer unbound) only while this delivery
-    # still owns the round: one taken over meanwhile answers :left and touches nothing.
+    # The window marked for this round (left by a delivery of it that died), else the window an earlier round of the
+    # same step left (a rejected or stopped round keeps its window for the next one): marked for this round and
+    # carried over, its conversation cleared when the line is typed; else a new one. Windows marked for another round
+    # of the run hold a reviewer of that round, and are closed (their reviewer unbound) only while this delivery still
+    # owns the round: one taken over meanwhile answers :left and touches nothing.
     #
-    # @return [Hash, Symbol, nil] :pane, :window and :reused; :left; nil when tmux opened nothing
+    # @return [Hash, Symbol, nil] :pane, :window, :reused and :carried; :left; nil when tmux opened nothing
     def review_window(run, pending, agent)
       session = @tmux.session_name_for(run.workspace)
       mark = WorkflowPanes.review_mark(run.id, pending["step"], pending["round"])
@@ -199,14 +210,34 @@ module Workspace
         (window[:review] == mark && kept.nil?) ? kept = window : others << window
       end
       return :left if others.any? && !still_wanted?(run.id, pending)
+      carried = kept ? nil : earlier_window(others, pending)
+      # One that can't be marked for this round is closed with the rest.
+      carried = nil if carried && !@tmux.mark_review_window(carried[:window], mark)
+      others.delete(carried) if carried
       others.each do |window|
         @tmux.kill_window(window[:window])
         @panes.unbind(run.id, role: "reviewer", pane: window[:pane]) if window[:pane]
       end
-      return {pane: kept[:pane], window: kept[:window], reused: true} if kept
+      # This round's own window that an earlier delivery carried over and never cleared holds no reviewer of the round:
+      # it is carried again, not reused.
+      if kept
+        again = uncleared?(run, pending)
+        return {pane: kept[:pane], window: kept[:window], reused: !again, carried: again}
+      end
+      # Not `reused`: no reviewer of this round can be at work in it, so a failure closes it as a new window's would
+      # (an agent that exited there is never waited on again).
+      return {pane: carried[:pane], window: carried[:window], reused: false, carried: true} if carried
       opened = @tmux.open_window(session, name: "review-#{pending["step"]}", cwd: run.worktree, command: [@shell, "-lc", agent],
         env: {RUN_ENV => run.id}, option: mark, store: @store.stamp)
-      opened && {pane: opened[:pane], window: opened[:window], reused: false}
+      opened && {pane: opened[:pane], window: opened[:window], reused: false, carried: false}
+    end
+
+    # The window of the newest earlier round of the same step, with a pane to type into.
+    def earlier_window(windows, pending)
+      windows.filter_map do |window|
+        _, step, round = WorkflowPanes.parse_review_mark(window[:review])
+        [round, window] if step == pending["step"] && round < pending["round"] && window[:pane]
+      end.max_by(&:first)&.last
     end
 
     # Records the pane, window, revision, prompt and packs before the line is typed, so the review pane's Stop finds
@@ -225,8 +256,15 @@ module Workspace
         end
         wanted = true
         hash = read.thawed
-        hash["steps"][pending["step"]]["review"].merge!("pane" => window[:pane], "window" => window[:window], "server_pid" => server,
+        state = hash["steps"][pending["step"]]
+        state["review"].merge!("pane" => window[:pane], "window" => window[:window], "server_pid" => server,
           "revision" => revision, "prompt" => written["path"], "packs" => written["packs"])
+        # A window being cleared ends the turn a person may have had in it; only a turn begun from now is the round's
+        # (and, once the daemon says, from the confirmed clear, `cleared_at`). A window not cleared has neither.
+        state["review"].delete("cleared_at")
+        window[:fresh] ? state["review"]["clear_from"] = @clock.call.utc.iso8601(3) : state["review"].delete("clear_from")
+        # The round records its window now; a window an earlier round kept is this one or gone.
+        state.delete("review_window")
         WorkflowRun.from_h(hash)
       end
       abandon(run, window) if moved
@@ -236,7 +274,7 @@ module Workspace
     # Ends the round's delivery mark once its line was typed. A round that went on in this window by its own turn's
     # end (a Stop that came first), or that another process took over, is left as it is; a run that left the round
     # gets the window closed.
-    def delivered(run, pending, window)
+    def delivered(run, pending, window, kick = {})
       moved = false
       after = @change.call(run.id) do |read|
         unless wanted?(read, pending)
@@ -248,7 +286,10 @@ module Workspace
         round["delivery"] = nil
         round["delivered_at"] = @clock.call.utc.iso8601(3)
         round.delete("failure")
-        @change.event(hash, "review_delivered", pending.slice("step", "attempt", "round").merge("pane" => window[:pane], "window" => window[:window], "reused" => window[:reused]))
+        round.delete("uncleared")
+        round["cleared_at"] = kick[:cleared_at] if window[:fresh] && kick[:cleared_at].is_a?(String)
+        @change.event(hash, "review_delivered", pending.slice("step", "attempt", "round").merge("pane" => window[:pane], "window" => window[:window], "reused" => window[:reused])
+          .merge(window[:fresh] ? {"cleared" => true} : {}))
         WorkflowRun.from_h(hash)
       end
       abandon(run, window) if moved
@@ -282,6 +323,8 @@ module Workspace
         # A failure before any window was found leaves the window id an earlier delivery kept, so the sweep never takes it for an orphan.
         if window
           close ? round.delete("window") : round["window"] = window[:window]
+          # A kept window that was to be cleared and was not: the next delivery into it clears it.
+          round["uncleared"] = true if !close && window[:fresh]
         end
         @change.event(hash, "review_delivery_failed", pending.slice("step", "attempt", "round").merge("code" => code))
         WorkflowRun.from_h(hash)
@@ -321,6 +364,11 @@ module Workspace
       @store.run(run.id)
     rescue Workspace::Error, SystemCallError
       run
+    end
+
+    # Whether a delivery of this round carried an earlier round's window over and left it uncleared ({#failed}).
+    def uncleared?(run, pending)
+      WorkflowRun.from_h(run).steps[pending["step"]]&.review&.dig("uncleared") == true
     end
 
     # The holder is this process: the same pid and the same start time, so a reused pid is not taken for it. A start

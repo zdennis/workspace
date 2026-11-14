@@ -1335,6 +1335,27 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#mark_review_window" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:ok) { instance_double(Process::Status, success?: true) }
+
+    it "sets the window's mark and says whether it reads back" do
+      allow(Open3).to receive(:capture3).and_return(["", "", ok], ["wr_1:plan:2\n", "", ok], ["", "", ok], ["wr_1:plan:1\n", "", ok])
+
+      expect(tmux.mark_review_window("@4", "wr_1:plan:2")).to be true
+      expect(Open3).to have_received(:capture3).with("tmux", "set-option", "-w", "-t", "@4", "@workspace-review", "wr_1:plan:2")
+      expect(Open3).to have_received(:capture3).with("tmux", "show-options", "-wqv", "-t", "@4", "@workspace-review")
+      expect(tmux.mark_review_window("@4", "wr_1:plan:2")).to be false
+    end
+
+    it "refuses anything that is not a window id, running nothing" do
+      allow(Open3).to receive(:capture3)
+
+      ["app:0", "%3", "", nil].each { |target| expect(tmux.mark_review_window(target, "m")).to be false }
+      expect(Open3).not_to have_received(:capture3)
+    end
+  end
+
   describe "#close_dead_windows" do
     let(:tmux) { described_class.new(config: config) }
 
@@ -1839,6 +1860,13 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.kill_window(opened[:window])).to be true
       expect(tmux.review_windows(name)).to eq([])
       expect(pane_ids(name)).not_to include(opened[:pane])
+    end
+
+    it "moves a review window's mark to a later round, which review_windows then lists" do
+      opened = tmux.open_window(name, name: "review", cwd: "/tmp", command: ["sleep", "30"], option: "wr_1:review:1")
+
+      expect(tmux.mark_review_window(opened[:window], "wr_1:review:2")).to be true
+      expect(tmux.review_windows(name).map { |w| w[:review] }).to eq(["wr_1:review:2"])
     end
 
     it "carries awkward arguments through to the window and its command" do
