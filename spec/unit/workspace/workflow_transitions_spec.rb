@@ -133,6 +133,12 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.starts_round?(run_with(steps: {"plan" => step("failed")}), from: nil)).to be(false)
     end
 
+    it "starts no round on a resume of a round waiting for its review.uses, which was allowed when it was reached" do
+      waiting = reviewing({delivery: nil, held: "waiting_lock"}, "reason" => {"code" => "waiting_lock"})
+      expect(described_class.starts_round?(waiting, from: nil)).to be(false)
+      expect(described_class.starts_attempt?(waiting, from: nil, pane: nil)).to be(false)
+    end
+
     it "leaves a live round alone and lets a stopped or lapsed one be acted on" do
       run = reviewing(delivery: nil)
       expect(described_class.left_alone(run, run["steps"]["plan"], nil, nil, started, -> { "%3" })).to eq("the review round of step plan is still running")
@@ -140,6 +146,15 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.left_alone(stopped, stopped["steps"]["plan"], nil, nil, started, -> { "%3" })).to be_nil
       lapsed = reviewing
       expect(described_class.left_alone(lapsed, lapsed["steps"]["plan"], nil, nil, started + window + 1, -> { "%3" })).to be_nil
+    end
+
+    it "leaves a lapsed round alone while its holder lives, and lets it be acted on once the holder is gone" do
+      held = reviewing({holder: {"pid" => 41, "started" => "x"}})
+      later = started + window + 1
+
+      expect(described_class.left_alone(held, held["steps"]["plan"], nil, nil, later, -> { "%3" }, alive: ->(_) { true })).to eq("the review round of step plan is still running")
+      expect(described_class.left_alone(held, held["steps"]["plan"], nil, nil, later, -> { "%3" }, alive: ->(_) { false })).to be_nil
+      expect(described_class.left_alone(held, held["steps"]["plan"], nil, nil, started, -> { "%3" }, alive: ->(_) { false })).to eq("the review round of step plan is still running")
     end
   end
 

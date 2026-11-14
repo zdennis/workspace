@@ -141,13 +141,15 @@ module Workspace
     # Whether a resume would start a review round, which the token budget and the run's timeout are asked about as
     # an attempt's start is: a round the budget or timeout held, or a fresh round after one that stopped for a
     # person. Not `--from` (it starts an attempt), nor a round whose delivery failed or lapsed (delivered again as
-    # the same round, which no limit holds back).
+    # the same round, which no limit holds back), nor a round waiting for its `review.uses` (`waiting_lock`: it was
+    # allowed when it was reached, as a step's lock wait is).
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param from [String, nil] the step a resume would start again at
     # @return [Boolean]
     def self.starts_round?(run, from:)
       return false if from
+      return false if run.dig("reason", "code") == "waiting_lock"
       return true if round_hold?(run)
       state = run["steps"].fetch(run["current"])
       return false unless state["state"] == "reviewing"
@@ -424,8 +426,9 @@ module Workspace
     # @param turn_over [Hash, nil] the turn's end seen (`step`, `attempt`)
     # @param now [Time]
     # @param bound_pane [#call] the run's bound pane, read only to word the refusal
+    # @param alive [#call, nil] given a review round's delivery `holder`, whether it still runs (see {.round_delivery})
     # @return [String, nil]
-    def self.left_alone(run, state, pane, turn_over, now, bound_pane)
+    def self.left_alone(run, state, pane, turn_over, now, bound_pane, alive: nil)
       case state["state"]
       when "running"
         # Another process is still typing this attempt's line; typing it again would start the step twice.
@@ -438,8 +441,9 @@ module Workspace
       when "checking"
         "the check of step #{run["current"]} is still running" unless lost_check?(run, now)
       when "reviewing"
-        # A round stopped for a person, or one whose delivery failed or lapsed, is the resume's to act on.
-        unless run["reason"] || %i[failed unknown].include?(round_delivery(state["review"], now))
+        # A round stopped for a person, or one whose delivery failed or lapsed (past the window with its holder gone),
+        # is the resume's to act on.
+        unless run["reason"] || %i[failed unknown].include?(round_delivery(state["review"], now, alive: alive))
           "the review round of step #{run["current"]} is still running"
         end
       end

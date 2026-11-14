@@ -5702,6 +5702,55 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["reasons"].last).to include("code" => "review_rejected", "step" => "plan", "until" => nil)
     end
 
+    context "with locks for the author and for the review" do
+      let(:locked_yaml) do
+        <<~YAML
+          reviewers:
+            skeptic: {prompt: Find what is wrong.}
+          steps:
+            plan:
+              prompt: Write {{artifacts}}/plan.md.
+              produces: [plan.md]
+              uses: [test-db]
+              review: {from: [skeptic], uses: [review-db]}
+            build:
+              prompt: Build it.
+        YAML
+      end
+
+      it "gives up the step's own lock at round start and holds the review's while the round runs" do
+        engine = reviewed_engine(:approved)
+        engine.start(definition: definition(locked_yaml), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+        expect(lock_holder("test-db")).to include("run_id" => "wr_1")
+        artifact("plan.md")
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["steps"]["plan"]["state"]).to eq("reviewing")
+        expect(lock_holder("test-db")).to be_nil
+        expect(lock_holder("review-db")).to include("run_id" => "wr_1")
+        expect(rounds.size).to eq(1)
+      end
+
+      it "waits as waiting_lock, the round not started, while another run holds the review's lock" do
+        other = definition("steps:\n  hold:\n    prompt: P\n    uses: [review-db]\n")
+        start(other, inputs: {}, pane: "%6", workspace: "app.worktree-b")
+        engine = reviewed_engine(:approved)
+        engine.start(definition: definition(locked_yaml), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+        artifact("plan.md", "wr_2")
+
+        run = engine.turn_ended("wr_2", pane: "%5")
+
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]).to include("code" => "waiting_lock")
+        expect(run["reason"]["details"]).to include("resource" => "review-db", "review_round" => 1, "holder" => include("run_id" => "wr_1"))
+        expect(run["steps"]["plan"]).to include("state" => "reviewing", "review" => {"round" => 1, "delivery" => nil, "held" => "waiting_lock"})
+        expect(run["steps"]["plan"]["review_rounds"].to_i).to eq(0)
+        expect(lock_holder("review-db")).to include("run_id" => "wr_1")
+        expect(rounds).to be_empty
+      end
+    end
+
     context "with a gate" do
       let(:gate) { "    gate: approve" }
 
@@ -5900,7 +5949,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(plan["review_rounds"]).to eq(1)
       expect(plan).not_to have_key("review")
       expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed", nil])
-      expect(closed).to eq([["wr_1", {"step" => "plan", "round" => 1, "pane" => "%9"}]])
+      expect(closed).to eq([["wr_1", {"workspace" => "app.worktree-x", "step" => "plan", "round" => 1, "pane" => "%9"}]])
     end
 
     describe "a round start past the token budget or the run's timeout" do
@@ -5928,7 +5977,7 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(run["reason"]["details"]).to include("step" => "plan", "used" => 1200, "allowance" => 1000, "review_round" => 1)
         expect(run["budget_hold"]).to eq("review_round" => 1)
         expect(plan["state"]).to eq("reviewing")
-        expect(plan["review"]).to eq("round" => 1, "delivery" => nil)
+        expect(plan["review"]).to eq("round" => 1, "delivery" => nil, "held" => "budget_spent")
         expect(plan).not_to have_key("review_rounds")
         expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed"])
         expect(rounds).to be_empty
@@ -6019,7 +6068,8 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(build["attempts"].last["rounds"].size).to eq(1)
         expect(build["attempts"].last["rounds"].first).to include("round" => 1, "pane" => "%9", "ended" => "cancelled",
           "session" => {"id" => "s1", "transcript" => transcript}, "usage" => {"input_tokens" => 300, "output_tokens" => 20})
-        expect(closed).to eq([["wr_simulated", {"step" => "build", "round" => 1, "pane" => "%9"}]])
+        # The run's end closes every window of the run, in place of the round's own close.
+        expect(closed).to eq([["wr_simulated", {"workspace" => "simulation", "step" => nil, "round" => nil, "pane" => nil}]])
         expect(history("wr_simulated")).to include("review_ended", "run_cancelled")
       end
     end

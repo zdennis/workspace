@@ -135,13 +135,19 @@ RSpec.describe "fake contracts" do
     end
   end
 
+  describe RecordingPaneReadiness do
+    it "accepts every call Workspace::PaneDispatch accepts" do
+      expect(FakeContract.problems(described_class, Workspace::PaneDispatch, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
   describe RecordingReviewTally do
     it "accepts every call Workspace::WorkflowReviewTally accepts" do
       expect(FakeContract.problems(described_class, Workspace::WorkflowReviewTally, control: described_class::CONTROL_METHODS)).to be_empty
     end
 
     it "accepts every call Workspace::WorkflowEvaluation::NoReviewTally accepts, which it stands in for too" do
-      expect(FakeContract.problems(described_class, Workspace::WorkflowEvaluation::NoReviewTally, control: described_class::CONTROL_METHODS + %i[open_round])).to be_empty
+      expect(FakeContract.problems(described_class, Workspace::WorkflowEvaluation::NoReviewTally, control: described_class::CONTROL_METHODS + %i[open_round ensure_round])).to be_empty
     end
   end
 

@@ -911,4 +911,71 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(panes.pane_gone?("%5")).to be(false)
     end
   end
+
+  describe "#require_daemon" do
+    it "starts the daemon when none runs, and refuses with no_daemon when it can't be" do
+      panes.require_daemon("app")
+      expect(ensured).to eq(["app"])
+
+      ensure_result.status = :failed
+      expect { panes.require_daemon("app") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("no_daemon") }
+    end
+  end
+
+  describe ".review_mark" do
+    it "reads back the run, step and round it writes, and nothing else" do
+      expect(described_class.parse_review_mark(described_class.review_mark("wr_1", "plan", 3))).to eq(["wr_1", "plan", 3])
+      expect(described_class.parse_review_mark("wr_1:plan")).to be_nil
+      expect(described_class.parse_review_mark("wr_1:plan:x")).to be_nil
+      expect(described_class.parse_review_mark(nil)).to be_nil
+    end
+  end
+
+  describe "#close_review" do
+    let(:tmux) { FakeTmux.new(session_name: "app") }
+
+    before do
+      tmux.review_window_list = [
+        {window: "@1", name: "review-plan", review: "wr_1:plan:1", pane: "%11", pid: 1},
+        {window: "@2", name: "renamed by hand", review: "wr_1:build:2", pane: "%12", pid: 2},
+        {window: "@3", name: "review-plan", review: "wr_2:plan:1", pane: "%13", pid: 3}
+      ]
+    end
+
+    it "closes the run's windows of one step by their mark, whatever pane or name they have" do
+      expect(panes.close_review("app", "wr_1", step: "plan")).to eq(["@1"])
+      expect(tmux.killed_windows).to eq(["@1"])
+    end
+
+    it "closes every window of the run with no step, and none of another run's" do
+      expect(panes.close_review("app", "wr_1")).to eq(["@1", "@2"])
+      expect(tmux.review_window_list.map { |window| window[:window] }).to eq(["@3"])
+    end
+
+    it "closes nothing when no window is marked for the run" do
+      expect(panes.close_review("app", "wr_9")).to eq([])
+      expect(tmux.killed_windows).to be_empty
+    end
+
+    context "for a workspace on its own tmux socket" do
+      let(:tmux) { FakeTmux.new(session_name: "app", sockets: {"app" => "custom"}) }
+
+      it "closes nothing on the default server, where a session of the same name may be another's" do
+        expect(panes.close_review("app", "wr_1")).to eq([])
+        expect(tmux.killed_windows).to be_empty
+      end
+    end
+  end
+
+  describe "#unbind" do
+    it "removes only the named pane's binding to the run with a pane" do
+      bindings.bind("%6", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "round" => 1)
+      bindings.bind("%7", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "round" => 2)
+
+      panes.unbind("wr_1", role: "reviewer", pane: "%6")
+
+      expect(bindings.binding_for("%6")).to be_nil
+      expect(bindings.binding_for("%7")).to include("round" => 2)
+    end
+  end
 end

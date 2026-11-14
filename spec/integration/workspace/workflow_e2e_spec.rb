@@ -765,8 +765,8 @@ RSpec.describe "a workflow run from start to completed" do
 
     def design_attempt(n) = stored["steps"]["design"]["attempts"].find { |attempt| attempt["n"] == n }
 
-    # The top-level runner leaves the review pane unbound, as no earlier example asserts on it (an approved round is never closed yet,
-    # so a binding would linger until the run ends). These examples assert on unbinding, so this runner binds the pane as the real one does.
+    # The top-level runner leaves the review pane unbound, as no earlier example asserts on it. These examples assert on
+    # unbinding, so this runner binds the pane as the real one does.
     let(:round_runner) do
       lambda do |run_id, review|
         rounds << review
@@ -808,6 +808,35 @@ RSpec.describe "a workflow run from start to completed" do
       expect(attempt["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "incomplete"], [2, "approved"]])
     end
 
+    it "closes the window and unbinds the reviewer once the round approves, before the next step starts" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+
+      run = turn_ended(review_pane)
+
+      expect(run["current"]).to eq("implement")
+      expect(closed).to eq([{"workspace" => workspace, "step" => "design", "round" => 1, "pane" => review_pane}])
+      expect(reviewer_bound?).to be(false)
+    end
+
+    it "closes the window once the round rejects, and the cancel that follows closes every window of the run" do
+      to_review
+      verdict("skeptic", "reject", seq: 1)
+
+      run = turn_ended(review_pane)
+
+      expect(run["reason"]).to include("code" => "review_rejected")
+      expect(run["steps"]["design"]["state"]).to eq("failed")
+      expect(closed).to eq([{"workspace" => workspace, "step" => "design", "round" => 1, "pane" => review_pane}])
+      expect(reviewer_bound?).to be(false)
+
+      engine.cancel("wr_1")
+
+      expect(closed.last).to eq("workspace" => workspace, "step" => nil, "round" => nil, "pane" => nil)
+      expect(closed.size).to eq(2)
+    end
+
     it "cancels mid-review: the round is recorded cancelled, closed once, and the reviewer unbound" do
       to_review
       expect(reviewer_bound?).to be(true)
@@ -816,7 +845,8 @@ RSpec.describe "a workflow run from start to completed" do
 
       expect(run["state"]).to eq("cancelled")
       expect(run["steps"]["design"]["attempts"].last["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "cancelled"]])
-      expect(closed).to eq([{"step" => "design", "round" => 1, "pane" => review_pane}])
+      # The cancel's own close of the round's window gives way to the run's end, which closes every window of the run.
+      expect(closed).to eq([{"workspace" => workspace, "step" => nil, "round" => nil, "pane" => nil}])
       expect(reviewer_bound?).to be(false)
     end
 
@@ -825,7 +855,7 @@ RSpec.describe "a workflow run from start to completed" do
 
       engine.resume("wr_1", from: "design")
 
-      expect(closed).to eq([{"step" => "design", "round" => 1, "pane" => review_pane}])
+      expect(closed).to eq([{"workspace" => workspace, "step" => "design", "round" => 1, "pane" => review_pane}])
       expect(reviewer_bound?).to be(false)
       expect(design_attempt(1)["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "from"]])
       expect(stored["steps"]["design"]).not_to have_key("review")

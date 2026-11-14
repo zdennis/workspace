@@ -95,6 +95,20 @@ module Workspace
       !process.nil? && process[:lstart] == started
     end
 
+    # A review round's delivery holder: {#alive?} when its start time was read, else (the process table could not
+    # give one when the round started) alive while any process has its pid, so a live delivery is never taken for
+    # a dead one.
+    #
+    # @param pid [Integer, nil]
+    # @param started [String, nil]
+    # @return [Boolean]
+    # @raise [Workspace::Error] if the process table cannot be read
+    def holder_alive?(pid:, started:)
+      return alive?(pid: pid, started: started) if started
+      return false unless pid
+      !process_snapshot.find(pid.to_i).nil?
+    end
+
     # A `kind: "run"` holder or waiter is alive for as long as its workflow
     # run is, whichever processes come and go under it.
     #

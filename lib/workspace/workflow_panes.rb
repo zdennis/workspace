@@ -331,11 +331,56 @@ module Workspace
     #
     # @param run_id [String]
     # @param role [String, nil] "reviewer" or "author" removes only that role's binding; nil removes both
+    # @param pane [String, nil] removes only that pane's binding to the run; nil removes the run's every binding
     # @return [void]
-    def unbind(run_id, role: nil)
-      @bindings.unbind_all("run", run_id, role: role)
+    def unbind(run_id, role: nil, pane: nil)
+      @bindings.unbind_all("run", run_id, role: role, pane: pane)
     rescue SystemCallError
       nil
+    end
+
+    # Starts the workspace's agent daemon when none runs, and refuses when it can't be: a review round's verdicts are
+    # proved from the daemon's hook log, so no round is delivered without one.
+    #
+    # @param workspace [String]
+    # @return [void]
+    # @raise [Workspace::Error] code `no_daemon`
+    def require_daemon(workspace)
+      ensure_daemon!(workspace)
+    end
+
+    # The `@workspace-review` mark of a run's review window: `RUN:STEP:ROUND`. Run and step ids hold no `:`.
+    #
+    # @param run_id [String]
+    # @param step [String]
+    # @param round [Integer]
+    # @return [String]
+    def self.review_mark(run_id, step, round) = "#{run_id}:#{step}:#{round}"
+
+    # @param mark [String, nil] a window's `@workspace-review` value
+    # @return [Array(String, String, Integer), nil] its run id, step and round; nil for a value not shaped as {.review_mark} makes it
+    def self.parse_review_mark(mark)
+      found = mark.to_s.match(/\A([^:\s]+):([^:\s]+):(\d+)\z/)
+      found && [found[1], found[2], found[3].to_i]
+    end
+
+    # Closes the review windows of a run, found by their `@workspace-review` mark (so a window whose pane was never
+    # recorded, or that a person renamed, is found too). A workspace on its own tmux socket has none (no round opens
+    # one there), and its session name is not looked up on the default server. Never raises.
+    #
+    # @param workspace [String] the run's workspace
+    # @param run_id [String]
+    # @param step [String, nil] only that step's windows; nil closes every window of the run
+    # @return [Array<String>] the window ids closed
+    def close_review(workspace, run_id, step: nil)
+      return [] if @tmux.custom_socket_option(workspace)
+      @tmux.review_windows(@tmux.session_name_for(workspace)).filter_map do |window|
+        run, marked_step, = self.class.parse_review_mark(window[:review])
+        next if run != run_id || (step && marked_step != step)
+        window[:window] if @tmux.kill_window(window[:window])
+      end
+    rescue Workspace::Error, SystemCallError
+      []
     end
 
     # Types the line that starts a step. The workspace's agent daemon is

@@ -246,6 +246,53 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(evaluation.calls).to be_empty
     end
 
+    context "with a round whose delivery mark lapsed" do
+      let(:holder) { {"pid" => 41, "started" => "Tue Nov 10 11:00:00 2026"} }
+      let(:alive) { [] }
+      let(:seen) { [] }
+
+      def lapsed
+        reviewing_run.tap do |run|
+          run["steps"]["plan"]["review"].merge!("delivery" => "delivering", "started_at" => "2026-11-10T11:50:00.000Z", "holder" => holder)
+          run["steps"]["plan"]["review"].delete("pane")
+        end
+      end
+
+      def decisions
+        described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation, attempt_record: attempt_record,
+          gate_note: gate_note, panes: panes, guard: guard, holder_alive: ->(found) { (seen << found) && alive.include?(found["pid"]) }, clock: -> { now })
+      end
+
+      it "takes over a round whose holder is gone, delivering it again" do
+        stored(lapsed)
+
+        resumed = decisions.resume("wr_1")
+
+        expect(resumed.unchanged).to be_nil
+        expect(seen).to eq([holder])
+        expect(progress.calls).to eq([[:restart_review, "plan"]])
+        expect(evaluation.calls).to eq([[:review_round, "wr_1", {"step" => "plan"}]])
+      end
+
+      it "leaves a slow delivery alone while its holder still runs" do
+        alive << 41
+        before = deep_copy(stored(lapsed))
+
+        resumed = decisions.resume("wr_1")
+
+        expect(resumed.unchanged).to eq("the review round of step plan is still running")
+        expect(resumed.run.to_h).to eq(before)
+        expect(progress.calls).to be_empty
+      end
+
+      it "asks nothing of a holder whose mark has not lapsed" do
+        stored(lapsed.tap { |run| run["steps"]["plan"]["review"]["started_at"] = "2026-11-10T11:59:30.000Z" })
+
+        expect(decisions.resume("wr_1").unchanged).to eq("the review round of step plan is still running")
+        expect(seen).to be_empty
+      end
+    end
+
     it "restarts a stopped round and never starts the author again, nor asks the attempt allowance" do
       stored(reviewing_run(reason: review_incomplete).merge("definition" => run_hash(max_attempts: 1)["definition"]))
 
@@ -281,7 +328,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     describe "a review round held by the token budget or the run's timeout" do
       def held_round(hold, code, definition = {})
         run = reviewing_run(reason: {"code" => code, "since" => "2026-11-10T11:55:00Z", "details" => {"review_round" => 2}})
-        run["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil}
+        run["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil, "held" => code}
         run["steps"]["plan"]["attempts"][0]["usage"] = {"input_tokens" => 150}
         run["definition"].merge!("max_attempts" => 1).merge!(definition)
         run.merge(hold => {"review_round" => 2})

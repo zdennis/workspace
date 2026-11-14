@@ -101,6 +101,23 @@ module Workspace
       @files.make(stored["artifacts_dir"], dir)
     end
 
+    # The round's directory as its delivery needs it: there already as a plain directory (made by {#open_round} when
+    # the round began, with whatever an earlier delivery of the same round left in it), or made now when nothing is
+    # at its path (an engine whose round start made none). Anything else at the path, or a link on the way, is a problem.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the run, on the step being reviewed
+    # @param round [Integer] the round being delivered
+    # @return [Hash{Symbol=>String}, nil] nil when the directory is there; else :code and :problem as {#open_round}
+    def ensure_round(run:, round:)
+      stored = WorkflowRun.from_h(run).to_h
+      dir = round_dir(stored, stored["current"], round)
+      return {code: "review_incomplete", problem: "the run has no artifacts directory to hold the round's verdicts"} unless dir
+      found = @files.directory_problem(stored["artifacts_dir"], dir)
+      return nil unless found
+      return open_round(run: run, round: round) if found == "round_dir_missing" && !File.exist?(dir) && !File.symlink?(dir)
+      {code: "review_tampered", problem: "#{dir} or a directory above it is not a plain directory (#{found}), so the round's verdicts could land anywhere"}
+    end
+
     # The file system half: reading a verdict, checking the round's directory and making it.
     class Files
       # @param path [String]

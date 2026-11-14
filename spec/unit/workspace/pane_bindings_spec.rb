@@ -299,6 +299,17 @@ RSpec.describe Workspace::PaneBindings do
       expect(JSON.parse(File.read(path)).keys.sort).to eq(%w[%5 %7 %8])
       expect(store.unbind_all("run", "wr_1")).to eq([])
     end
+
+    it "removes only the named pane's binding with a pane, and only when it is to the subject in that role" do
+      store.bind("%6", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "round" => 1)
+      store.bind("%7", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "round" => 2)
+      store.bind("%8", "kind" => "run", "id" => "wr_2", "role" => "reviewer", "round" => 1)
+
+      expect(store.unbind_all("run", "wr_1", role: "reviewer", pane: "%8")).to eq([])
+      expect(store.unbind_all("run", "wr_1", role: "reviewer", pane: "%6")).to eq(["%6"])
+
+      expect(JSON.parse(File.read(path)).keys.sort).to eq(%w[%7 %8])
+    end
   end
 
   describe "#unbind" do

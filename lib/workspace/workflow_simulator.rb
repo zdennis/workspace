@@ -85,15 +85,18 @@ module Workspace
       report(store, run.id, definition.to_h, clock, actions, capped)
     end
 
-    # Stands in for a round's delivery: the review window is a pane that is only a name, and the round is delivered at once.
-    # When T30's runner records more (a delivery event, the holder's pid and start time), this stub must copy it.
+    # Stands in for a round's delivery ({WorkflowReviewRound}): the review window is a pane that is only a name, and the
+    # round is delivered at once, recording what the real one records (no window id, prompt file or packs: there are
+    # none) and its `review_delivered` line. When the runner records more, this stub must copy it.
     def round_runner(store)
-      lambda do |run_id, _review|
-        store.change(run_id) do |run|
-          hash = run.thawed
-          hash["steps"][hash["current"]]["review"].merge!("pane" => REVIEW_PANE, "delivery" => nil, "revision" => REVISION)
+      lambda do |run_id, review|
+        run = store.change(run_id) do |read|
+          hash = read.thawed
+          hash["steps"][hash["current"]]["review"].merge!("pane" => REVIEW_PANE, "delivery" => nil, "revision" => REVISION, "packs" => [])
           WorkflowRun.from_h(hash)
         end
+        store.record_event(run_id, "review_delivered", review.slice("step", "attempt", "round").merge("pane" => REVIEW_PANE, "window" => nil, "reused" => false))
+        run
       end
     end
 
@@ -265,8 +268,9 @@ module Workspace
         @bound[run_id] = pane
       end
 
-      def unbind(run_id)
-        @bound.delete(run_id)
+      # Only the author is ever bound here: the review pane is a name nobody binds.
+      def unbind(run_id, role: nil)
+        @bound.delete(run_id) unless role == "reviewer"
       end
 
       def run_on(pane)

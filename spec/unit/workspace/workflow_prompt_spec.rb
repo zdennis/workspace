@@ -217,16 +217,17 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(text).not_to match(/subject line \d+[^\n]*\n```text/)
     end
 
-    it "keeps a pack's headings inside the reviewer's section, which runs to its end line" do
-      composer.define_singleton_method(:compose) do |**|
-        {"text" => "## From pack plan-review (built-in)\n\n# Title\nbody", "packs" => []}
-      end
-      text = text_for(1)
+    context "with a composer whose pack text has headings" do
+      let(:composer) { RecordingComposer.new(answer: {"text" => "## From pack plan-review (built-in)\n\n# Title\nbody", "packs" => []}) }
 
-      expect(text).to include("#### From pack plan-review (built-in)", "### Title")
-      expect(text).not_to match(/^## From pack/)
-      expect(text).to include("runs from its '## Reviewer' heading to the line '--- End of reviewer NAME'")
-      expect(text.scan(/^--- End of reviewer \w+$/)).to eq(["--- End of reviewer skeptical", "--- End of reviewer builder", "--- End of reviewer fair"])
+      it "keeps a pack's headings inside the reviewer's section, which runs to its end line" do
+        text = text_for(1)
+
+        expect(text).to include("#### From pack plan-review (built-in)", "### Title")
+        expect(text).not_to match(/^## From pack/)
+        expect(text).to include("runs from its '## Reviewer' heading to the line '--- End of reviewer NAME'")
+        expect(text.scan(/^--- End of reviewer \w+$/)).to eq(["--- End of reviewer skeptical", "--- End of reviewer builder", "--- End of reviewer fair"])
+      end
     end
 
     it "shows the verdict header lines the tally owns, for each reviewer" do
@@ -255,18 +256,17 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(text_for(1, run: with.call(serial))).to include("Order: run skeptical, then builder, then fair alone, one after the other, each only when the one before has finished. Every")
     end
 
-    it "composes a reviewer's include packs into its section and returns their refs and hashes" do
-      composer.define_singleton_method(:compose) do |**given|
-        calls << [:compose, given]
-        {"text" => "PACK TEXT\n", "packs" => [{"ref" => "play/plan-review", "sha256" => "f" * 64}]}
+    context "with a composer that hashes its packs" do
+      let(:composer) { RecordingComposer.new(answer: {"text" => "PACK TEXT\n", "packs" => [{"ref" => "play/plan-review", "sha256" => "f" * 64}]}) }
+
+      it "composes a reviewer's include packs into its section and returns their refs and hashes" do
+        answer = prompt.review_text(reviewed_run, reviewed, 1, 1, "abc123")
+
+        expect(composer.calls.size).to eq(1)
+        expect(composer.calls.first.last).to include(packs: [], cwd: @dir, step: {"name" => "skeptical", "include" => ["plan-review"], "text" => nil})
+        expect(answer["text"]).to include("PACK TEXT\n\nDoubt")
+        expect(answer["packs"]).to eq([{"reviewer" => "skeptical", "ref" => "play/plan-review", "sha256" => "f" * 64}])
       end
-
-      answer = prompt.review_text(reviewed_run, reviewed, 1, 1, "abc123")
-
-      expect(composer.calls.size).to eq(1)
-      expect(composer.calls.first.last).to include(packs: [], cwd: @dir, step: {"name" => "skeptical", "include" => ["plan-review"], "text" => nil})
-      expect(answer["text"]).to include("PACK TEXT\n\nDoubt")
-      expect(answer["packs"]).to eq([{"reviewer" => "skeptical", "ref" => "play/plan-review", "sha256" => "f" * 64}])
     end
 
     it "lets the composer's error for a missing pack through, and names an encoding clash" do

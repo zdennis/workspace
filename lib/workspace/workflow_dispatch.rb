@@ -136,6 +136,35 @@ module Workspace
       WorkflowRun.from_h(work)
     end
 
+    # Takes the `review.uses` of the step whose round is about to start, as {#dispatch} takes a step's `uses:`: the
+    # run then holds exactly those, so the step's own are given up. A lock another holder has keeps the round from
+    # starting: the run waits on `waiting_lock` (details naming the lock and `review_round`), the step stays as
+    # +step_state+ says, and a later {WorkflowRecovery#tick} or a person's resume asks again. A lock store that can't
+    # be read keeps it too, the run waiting for a person (`waiting_you`, kind `review`), with whatever locks the run
+    # holds kept, as a budget or timeout hold ({#hold_round}) keeps them: nothing is given up that a resume would
+    # have to queue for again. Runs under the run's lock.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, at the step whose round would start; left as it is
+    # @param round [Integer] the round about to start
+    # @param step_state [String] the state the step keeps while the run waits (the caller's `reviewing`)
+    # @return [WorkflowRun, nil] the run waiting; nil when it holds what the round uses
+    def hold_round_lock(run, round:, step_state:)
+      work = WorkflowRun.from_h(run).thawed
+      review = WorkflowDefinition.review(step_def(work)) || {}
+      waiting = begin
+        acquire(work, {"id" => work["current"], "uses" => review["uses"]}, nil)
+      rescue Workspace::Error, SystemCallError => e
+        work["state"] = "waiting"
+        work["reason"] = reason("waiting_you", {"kind" => "review", "step" => work["current"], "review_round" => round,
+          "error" => e.respond_to?(:code) ? e.code : "error", "message" => e.message.lines.first.to_s.scrub.strip})
+        return WorkflowRun.from_h(work)
+      end
+      return nil unless waiting
+      wait_for_lock(work, step_state(work), waiting, step_state: step_state)
+      work["reason"]["details"]["review_round"] = round
+      WorkflowRun.from_h(work)
+    end
+
     # Takes a park off the run however it ended (its note moves to the pending context, see
     # {WorkflowRun#drop_park}) and writes `resume_parked_ended` when there was one.
     #
@@ -338,13 +367,13 @@ module Workspace
       nil
     end
 
-    def wait_for_lock(run, state, waiting)
+    def wait_for_lock(run, state, waiting, step_state: "waiting")
       holder = waiting[:holder] || {}
       details = {"resource" => waiting[:name], "step" => run["current"], "position" => waiting[:position], "total" => waiting[:total],
                  "holder" => {"run_id" => holder["run_id"], "step" => holder["step"], "workspace" => holder["workspace"],
                               "worktree" => holder["worktree"], "pid" => holder["pid"], "kind" => holder["kind"]}.compact}
       since = (run.dig("reason", "code") == "waiting_lock" && run.dig("reason", "details", "resource") == waiting[:name]) ? run["reason"]["since"] : now_iso
-      state["state"] = "waiting"
+      state["state"] = step_state
       run["state"] = "waiting"
       run["reason"] = {"code" => "waiting_lock", "since" => since, "details" => details}
     end

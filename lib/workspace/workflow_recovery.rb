@@ -28,7 +28,7 @@ module Workspace
     end
 
     # The periodic look at a run nothing else will wake: one whose `on_fail` backoff is over starts its retry, one
-    # waiting for a lock asks for it again, a hold for background tasks that passed
+    # waiting for a lock asks for it again (a review round's through {WorkflowProgress#restart_review}), a hold for background tasks that passed
     # {WorkflowTransitions::BACKGROUND_HOLD} becomes a `turn_ended_incomplete` stop, a check that never
     # reported back (its process died) is run again, and so is the end of a review round whose revision was being
     # computed again when its process died ({WorkflowTransitions.lost_round?}; {WorkflowEvaluation#review_ended},
@@ -47,7 +47,13 @@ module Workspace
           start_retry(stored, ctx)
         when :lock
           acted = true
-          dispatch(stored, ctx)
+          # A review round waiting for its `review.uses` asks for the lock again through the round's own start, never
+          # an author attempt; still taken, nothing changes.
+          if stored.dig("steps", stored["current"], "state") == "reviewing"
+            stored.replace(@progress.restart_review(stored, ctx: ctx).thawed)
+          else
+            dispatch(stored, ctx)
+          end
         when :background
           acted = true
           expire_background(stored)

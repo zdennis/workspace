@@ -59,6 +59,16 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(change.deliveries).to eq([{"step" => "build"}])
     end
 
+    it "asks again for the lock a review round waits on through the round's own start, never an author attempt" do
+      stored(run_hash(state: "waiting", step_state: "reviewing", reason: {"code" => "waiting_lock", "details" => {"review_round" => 1}}))
+
+      recovery.tick("wr_1")
+
+      expect(progress.calls).to eq([[:restart_review, "build"]])
+      expect(dispatch.calls).to be_empty
+      expect(change.reviews).to eq([{"step" => "build"}])
+    end
+
     it "turns a background hold that ran out into a turn_ended_incomplete stop" do
       hold = {"code" => "turn_ended_background", "since" => "2026-11-10T09:00:00Z", "seen_at" => "2026-11-10T10:00:00Z",
               "details" => {"step" => "build", "attempt" => 1, "missing" => ["out.md"], "tasks" => [{"id" => "t1"}], "other" => 1}}

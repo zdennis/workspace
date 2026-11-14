@@ -125,7 +125,8 @@ class FakeTmux
     opened
   end
 
-  def review_windows(_session) = @review_window_list
+  # A copy, as each real listing is a new one: a window killed while a caller walks it stays in the walk.
+  def review_windows(_session) = @review_window_list.map(&:dup)
 
   # False for a window it never opened or listed.
   def kill_window(target)

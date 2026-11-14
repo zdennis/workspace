@@ -25,8 +25,11 @@ module Workspace
     # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
     # @param panes [Workspace::WorkflowPanes] finds, binds and unbinds the run's pane
     # @param guard [Workspace::WorkflowGuard] takes the checkout as it is now as the run's base, for `resume --accept-guard`
+    # @param holder_alive [#call, nil] given a review round's delivery `holder` ("pid", "started"), whether that process
+    #   still runs: a round whose mark lapsed is delivered again by a resume only once its holder is gone; nil takes
+    #   every holder as alive
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, clock: -> { Time.now })
+    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, holder_alive: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @progress = progress
@@ -36,6 +39,7 @@ module Workspace
       @gate_note = gate_note
       @panes = panes
       @guard = guard
+      @holder_alive = holder_alive
       @clock = clock
     end
 
@@ -285,7 +289,7 @@ module Workspace
       run = @change.call(run_id) do |read, ctx|
         follow = ctx
         read = @progress.end_round(read, how: "cancelled", ctx: ctx) if read.current_step&.state == "reviewing"
-        ended = @progress.finish(@attempt_record.abandon(read), "cancelled").thawed
+        ended = @progress.finish(@attempt_record.abandon(read), "cancelled", ctx: ctx).thawed
         ended["cancelled_by"] = cause
         event(ended, "run_cancelled", "cause" => cause)
         WorkflowRun.from_h(ended)
@@ -673,7 +677,7 @@ module Workspace
     def last_failure(run) = "The last attempt of this step failed: #{WorkflowTransitions.failure_text(run["reason"]["details"])}."
 
     # Why {#resume} does nothing for the step as it stands; nil when it acts.
-    def left_alone(run, state, pane, turn_over) = WorkflowTransitions.left_alone(run, state, pane, turn_over, @clock.call, -> { bound_pane(run) })
+    def left_alone(run, state, pane, turn_over) = WorkflowTransitions.left_alone(run, state, pane, turn_over, @clock.call, -> { bound_pane(run) }, alive: @holder_alive)
 
     def rebind(run, pane)
       check_pane(pane, run["id"]) unless @panes.run_on(pane) == run["id"]
