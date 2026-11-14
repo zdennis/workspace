@@ -26,6 +26,13 @@ module Workspace
     # The workspace the run is in.
     WORKSPACE = "simulation".freeze
 
+    # The pane a round's reviewers write in; like {PANE} it exists only here.
+    REVIEW_PANE = "%simreview".freeze
+
+    # The revision a round is delivered with, and the one {SimRevision} answers when the script says the work moved.
+    REVISION = "simulated-revision".freeze
+    CHANGED_REVISION = "simulated-revision-changed".freeze
+
     RUN_ID = "wr_simulated".freeze
     # Where the simulated time starts; it is the same every time so a transcript can be compared.
     START = Time.utc(2026, 1, 1)
@@ -71,10 +78,23 @@ module Workspace
       FileUtils.mkdir_p(checkout)
       engine = @engine_factory.call(store: store, resources: SimResources.new, composer: SimComposer.new, panes: panes, checker: SimChecker.new(script),
         commands_config: SimCommands.new, lineage: SimLineage.new, git: SimGit.new, guard: guard, excludes: SimExcludes.new, gate_note: SimGateNote.new,
-        attempt_record: records, require_check: SimRequire.new(script), clock: clock)
+        attempt_record: records, require_check: SimRequire.new(script), review_round: round_runner(store), review_closer: ->(_run_id, _round) {},
+        review_tally: WorkflowReviewTally.new(proof: SimVerdictProof.new), review_revision: SimRevision.new(script), clock: clock)
       run = WorkflowRun.from_h(engine.start(definition: definition, workspace: WORKSPACE, worktree: checkout, inputs: inputs, pane: PANE))
       actions, capped = drive(engine, store, run.id, definition.to_h, script, clock, records)
       report(store, run.id, definition.to_h, clock, actions, capped)
+    end
+
+    # Stands in for a round's delivery: the review window is a pane that is only a name, and the round is delivered at once.
+    # When T30's runner records more (a delivery event, the holder's pid and start time), this stub must copy it.
+    def round_runner(store)
+      lambda do |run_id, _review|
+        store.change(run_id) do |run|
+          hash = run.thawed
+          hash["steps"][hash["current"]]["review"].merge!("pane" => REVIEW_PANE, "delivery" => nil, "revision" => REVISION)
+          WorkflowRun.from_h(hash)
+        end
+      end
     end
 
     # The fake agent and the fake person, one move at a time, until the run is finished or waits for a real person.
@@ -101,6 +121,7 @@ module Workspace
       backoff = run.backoff
       return :backoff if backoff.is_a?(Hash) && backoff["to"].is_a?(String) && !backoff["blocked"]
       return :gate if state.gate_waiting?
+      return :review if state.state == "reviewing" && run.reason.nil? && !run.parked && state.review.is_a?(Hash) && state.review["pane"] == REVIEW_PANE
       :turn if state.state == "running" && run.reason.nil? && !run.parked
     end
 
@@ -125,7 +146,28 @@ module Workspace
         end
       when :turn
         turn(engine, store, run, data, script, records, clock)
+      when :review
+        review(engine, store, run, script, clock)
       end
+    end
+
+    # The round's reviewers write their verdicts, each as its own sub-agent would, and the review pane's turn ends. A reviewer
+    # the script's `reviews:` map leaves out writes nothing.
+    def review(engine, store, run, script, clock)
+      id = run.id
+      step = run.current
+      number = run.step(step).last_attempt.n
+      round = run.step(step).review
+      said = script.attempt(step, number).fetch("reviews", {})
+      dir = ReviewRoundPath.round_dir(run.artifacts_dir, step, number, round["round"])
+      said.each do |reviewer, verdict|
+        FileUtils.mkdir_p(dir)
+        text = (WorkflowReviewTally.header_lines(reviewer: reviewer, verdict: verdict, revision: round["revision"]) + ["", "Written by workflow simulate."]).join("\n")
+        File.write(File.join(dir, "#{reviewer}.md"), text)
+      end
+      store.record_event(id, "simulated_reviewers", "step" => step, "attempt" => number, "round" => round["round"], "reviews" => said)
+      clock.advance(1)
+      engine.turn_ended(id, pane: REVIEW_PANE)
     end
 
     def turn(engine, store, run, data, script, records, clock)
@@ -162,9 +204,17 @@ module Workspace
       stopped = (outcome == "stopped") ? {"step" => run.current, "attempt" => run.step(run.current).last_attempt&.n, "reason" => run.reason&.dig("code")} : nil
       {"workflow" => data["id"], "inputs" => run.inputs, "outcome" => outcome, "stopped" => stopped, "capped" => capped, "max_actions" => @max_actions, "actions" => actions,
        "run" => {"state" => run.state, "current" => run.current, "reason" => run.reason&.dig("code"), "loops" => run.loops},
-       "steps" => data["steps"].map { |step| {"id" => step["id"], "state" => run.step(step["id"]).state, "attempts" => run.step(step["id"]).attempts.map { |each| each.to_h.slice("n", "outcome", "code") }} },
+       "steps" => data["steps"].map { |step| {"id" => step["id"], "state" => run.step(step["id"]).state, "attempts" => run.step(step["id"]).attempts.map { |each| attempt_row(each) }} },
        "budget" => WorkflowBudget.reading(run),
        "transitions" => events.map { |event| {"n" => event["n"], "at" => (Time.iso8601(event["ts"]) - START).round}.merge(event.except("n", "ts")) }}
+    end
+
+    # An attempt as the report shows it; a reviewed one lists what each reviewer's verdict came to.
+    def attempt_row(attempt)
+      row = attempt.to_h.slice("n", "outcome", "code")
+      reviews = attempt.to_h["reviews"] || Array(attempt.to_h["rounds"]).last&.dig("reviews")
+      row["reviews"] = reviews.map { |each| each.slice("reviewer", "verdict", "counted", "problem") } if reviews.is_a?(Array)
+      row
     end
 
     # Simulated time: whole seconds, moving a second per agent turn and when a retry's wait is over.
@@ -273,6 +323,33 @@ module Workspace
 
       def remote_head(_worktree)
         {"unread" => "simulated"}
+      end
+
+      def round_snapshot(_worktree, base: nil)
+        {"head" => "none", "tree_sha256" => "none"}
+      end
+
+      def round_check(_worktree, _snapshot, base: nil)
+        nil
+      end
+    end
+
+    # Proves every verdict, as the daemon's hook log would for a sub-agent's write: one agent per reviewer, the file's own hash.
+    class SimVerdictProof
+      def proven?(round_dir:, path:, review_pane:, workspace:)
+        {ok: true, agent_id: "simulated-#{File.basename(path, ".md")}", sha256: Digest::SHA256.file(path).hexdigest, problem: nil}
+      end
+    end
+
+    # Answers the revision the round was delivered with, unless the script says the reviewed attempt's work moved meanwhile.
+    class SimRevision
+      def initialize(script)
+        @script = script
+      end
+
+      def call(run:, step:, stop_when: nil)
+        number = WorkflowRun.from_h(run).step(step["id"]).last_attempt.n
+        {revision: @script.attempt(step["id"], number)["revision_changes"] ? CHANGED_REVISION : REVISION, problem: nil}
       end
     end
 

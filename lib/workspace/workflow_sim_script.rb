@@ -25,7 +25,7 @@ module Workspace
     MAX_PROBLEMS = 50
 
     TOP_KEYS = %w[inputs steps].freeze
-    ATTEMPT_KEYS = %w[writes report summary code check log require gate note tokens].freeze
+    ATTEMPT_KEYS = %w[writes report summary code check log require gate note tokens reviews revision_changes].freeze
     REPORTS = %w[pass fail].freeze
     CHECKS = %w[pass fail timeout error].freeze
     PROOFS = %w[pass fail].freeze
@@ -152,6 +152,7 @@ module Workspace
         end
       end
       check_writes(where, step, entry, problems)
+      check_reviews(where, step, entry, problems)
       check_require(where, step, entry, problems)
       if entry.key?("tokens") && !(entry["tokens"].is_a?(Integer) && entry["tokens"].between?(0, MAX_TOKENS))
         problems << "#{where}: tokens must be a whole number from 0 to #{MAX_TOKENS}"
@@ -176,6 +177,24 @@ module Workspace
       end
     end
     private_class_method :check_writes
+
+    def self.check_reviews(where, step, entry, problems)
+      review = WorkflowDefinition.review(step)
+      problems << "#{where}: reviews is set, and the step has no review:" if entry.key?("reviews") && !review
+      problems << "#{where}: revision_changes is set, and the step has no review:" if entry.key?("revision_changes") && !review
+      problems << "#{where}: revision_changes must be true or false" if entry.key?("revision_changes") && ![true, false].include?(entry["revision_changes"])
+      return unless entry.key?("reviews") && review
+      unless entry["reviews"].is_a?(Hash)
+        problems << "#{where}: reviews must be a mapping of the step's reviewers to #{WorkflowReviewTally::VERDICTS.join(" or ")}"
+        return
+      end
+      from = Array(review["from"])
+      entry["reviews"].each do |name, verdict|
+        problems << "#{where}: reviews #{name.to_s[0, 60].inspect}: the step has no such reviewer (reviewers: #{from.join(", ").then { |list| list.empty? ? "none" : list }})" unless from.include?(name)
+        problems << "#{where}: reviews #{name.to_s[0, 60].inspect} must be one of #{WorkflowReviewTally::VERDICTS.join(", ")}, not #{verdict.to_s[0, 60].inspect}" unless WorkflowReviewTally::VERDICTS.include?(verdict)
+      end
+    end
+    private_class_method :check_reviews
 
     def self.check_require(where, step, entry, problems)
       return unless entry.key?("require")
