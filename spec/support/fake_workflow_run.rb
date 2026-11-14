@@ -10,6 +10,7 @@ class FakeWorkflowPanes
     @bound = {}
     @kicks = []
     @kick_result = {ok: true}
+    @kick_queue = []
     @stale = []
     @idle = []
     @turn_over = []
@@ -80,9 +81,12 @@ class FakeWorkflowPanes
     @bound.delete_if { |_, entry| entry[:run_id] == run_id && (role.nil? || (entry[:role] || "author") == role) }
   end
 
+  # Answers the next kick with each result given, in order, then with +kick_result+ again.
+  def queue_kicks(*results) = @kick_queue.concat(results)
+
   def kick(**args)
     @kicks << args
-    @kick_result
+    @kick_queue.shift || @kick_result
   end
 end
 

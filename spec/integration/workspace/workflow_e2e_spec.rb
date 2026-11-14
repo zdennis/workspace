@@ -16,6 +16,7 @@ RSpec.describe "a workflow run from start to completed" do
     end
   end
 
+  let(:ids) { ["wr_1"] }
   let(:fixture) { File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "e2e.yml") }
   let(:definition) { Workspace::WorkflowDefinition.parse(File.read(fixture), id: "e2e", source: "global", path: fixture) }
   let(:workspace) { "app.worktree-x" }
@@ -23,7 +24,7 @@ RSpec.describe "a workflow run from start to completed" do
   let(:now) { [Time.utc(2026, 11, 13, 12, 0, 0)] }
   let(:clock) { -> { now.first } }
   let(:runs_dir) { File.join(@dir, "state", ".workflows", "runs") }
-  let(:store) { Workspace::WorkflowRunStore.new(dir: runs_dir, archive_dir: File.join(@dir, "state", ".workflows", "archive"), clock: clock, id_generator: -> { "wr_1" }) }
+  let(:store) { Workspace::WorkflowRunStore.new(dir: runs_dir, archive_dir: File.join(@dir, "state", ".workflows", "archive"), clock: clock, id_generator: -> { (ids.size > 1) ? ids.shift : ids.first }) }
   let(:lock_dir) { File.join(@dir, "state", "locks", "ns") }
   let(:lock_namespace) { instance_double(Workspace::LockNamespace, resolve: {key: "ns", display: "app", dir: lock_dir}) }
   let(:liveness) { RunFileLiveness.new(runs_dir) }
@@ -80,10 +81,10 @@ RSpec.describe "a workflow run from start to completed" do
     File.utime(now.first, now.first, path)
   end
 
-  def tick(seconds = 60) = now[0] += seconds
+  def advance(seconds = 60) = now[0] += seconds
 
   def turn_ended(pane = "%5")
-    tick
+    advance
     engine.turn_ended("wr_1", pane: pane)
   end
 
@@ -171,7 +172,7 @@ RSpec.describe "a workflow run from start to completed" do
   # Research passes its produces and nonempty proof, but took past the run's 2h, so plan is held until --extra-time.
   def research_past_the_time_limit
     artifact("research.md")
-    tick(2 * 3600)
+    advance(2 * 3600)
     run = turn_ended
     expect(outcomes(run, "research")).to eq(["passed"])
     expect(run).to include("state" => "waiting", "current" => "plan")
@@ -243,7 +244,7 @@ RSpec.describe "a workflow run from start to completed" do
     expect(run["loops"]).to eq("verify->implement" => 1)
     expect(panes.kicks.last).to include(fresh: true)
 
-    tick
+    advance
     inbox.upsert({"type" => "note", "title" => "Implemented X-1 again", "dedupe_key" => "e2e:wr_1"}, reopen: true)
     expect(turn_ended["current"]).to eq("verify")
 
@@ -364,6 +365,279 @@ RSpec.describe "a workflow run from start to completed" do
       artifact("research.md")
       run = turn_ended
       expect(outcomes(run, "research")).to eq(%w[failed passed])
+    end
+  end
+
+  describe "daemon wakes" do
+    let(:fixture) { File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "e2e_recovery.yml") }
+    let(:definition) { Workspace::WorkflowDefinition.parse(File.read(fixture), id: "e2e_recovery", source: "global", path: fixture) }
+    let(:fail_check) { {exit_code: 1, timed_out: false} }
+
+    def stored(id = "wr_1") = stored_run(store, id)
+
+    def lock_holder = Workspace::LockStore.new(dir: lock_dir, liveness: liveness).status("test-db").dig("test-db", "holder")
+
+    def events(type, id = "wr_1") = File.readlines(store.events_path(id)).map { |line| JSON.parse(line) }.select { |each| each["type"] == type }
+
+    def kick_count = panes.kicks.size
+
+    # A second run, wr_2, on its own checkout (checkout_has_run refuses two on one), taken to verify so it holds test-db.
+    # The store hands out ids in the order given: wr_2 now, and wr_1 for the run the example starts next.
+    def other_run_holding_test_db
+      other = File.join(@dir, "other")
+      FileUtils.mkdir_p(File.join(other, ".git"))
+      ids.replace(%w[wr_2 wr_1])
+      engine.start(definition: definition, workspace: "app.worktree-y", worktree: other, inputs: {"task" => "X-2"}, pane: "%6")
+      path = File.join(other, ".workflow", "wr_2", "build.md")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "done\n")
+      File.utime(now.first, now.first, path)
+      advance
+      engine.turn_ended("wr_2", pane: "%6")
+    end
+
+    def build_done
+      artifact("build.md")
+      turn_ended
+    end
+
+    # Build left without its produces file: the run waits turn_ended_incomplete, which a resume can be parked on.
+    def incomplete_build
+      start
+      turn_ended
+    end
+
+    # Build done, verify's check failing: the run waits out the on_fail backoff (5 minutes from now).
+    def to_backoff
+      start
+      build_done
+      check_results << fail_check
+      turn_ended
+    end
+
+    # The process running verify's check died after marking the step checking: no result will come.
+    def lose_check
+      edit_run(store, "wr_1") do |run|
+        run["steps"]["verify"]["state"] = "checking"
+        run["steps"]["verify"]["attempts"].last["check"] = {"started_at" => now.first.utc.iso8601, "command" => "bin/test"}
+      end
+    end
+
+    it "holds the second run on test-db with no attempt, makes the held tick change nothing, and starts the step once it is cancelled" do
+      other_run_holding_test_db
+      expect(lock_holder).to include("run_id" => "wr_2")
+
+      start
+      run = build_done
+      expect(run).to include("state" => "waiting", "current" => "verify")
+      expect(run["reason"]).to include("code" => "waiting_lock")
+      expect(run["steps"]["verify"]["attempts"]).to eq([])
+      kicks = kick_count
+      lines = history.size
+      since = run["reason"]["since"]
+
+      advance
+      engine.tick("wr_1")
+      expect(lock_holder).to include("run_id" => "wr_2")
+      expect(stored["reason"]).to include("code" => "waiting_lock", "since" => since)
+      expect(stored["steps"]["verify"]["attempts"]).to eq([])
+      expect(history.size).to eq(lines)
+      expect(kick_count).to eq(kicks)
+
+      engine.cancel("wr_2")
+      # Giving up the lock hands it to the queued run, unclaimed, but the step has not started until a tick.
+      expect(lock_holder).to include("run_id" => "wr_1", "unclaimed" => true)
+      expect(stored["steps"]["verify"]["attempts"]).to eq([])
+      run = engine.tick("wr_1")
+
+      expect(run).to include("state" => "running", "current" => "verify", "reason" => nil)
+      expect(run["steps"]["verify"]["state"]).to eq("running")
+      expect(run["steps"]["verify"]["attempts"].map { |attempt| attempt["n"] }).to eq([1])
+      expect(lock_holder).to include("run_id" => "wr_1", "step" => "verify")
+      expect(lock_holder["unclaimed"]).to be_falsey
+      expect(kick_count).to eq(kicks + 1)
+    end
+
+    it "parks a resume, parks it again when the pane is busy, and carries it out once the line lands" do
+      incomplete_build
+      expect(stored["reason"]).to include("code" => "turn_ended_incomplete")
+      id = engine.park("wr_1", pane: "%5", note: "Write build.md.")["parked"]["id"]
+      kicks = kick_count
+      panes.queue_kicks({ok: false, code: "pane_busy", message: "busy"})
+
+      run = engine.release_park("wr_1", id)
+
+      expect(run["parked"]).to include("retries" => 1)
+      expect(run["parked"]["id"]).not_to eq(id)
+      expect(run["state"]).to eq("waiting")
+      expect(run["steps"]["build"]["attempts"].map { |attempt| attempt["outcome"] }).to eq([nil, "not_delivered"])
+      expect(kick_count).to eq(kicks + 1)
+      expect(events("resume_parked").map { |event| event["retry"] }).to eq([nil, true])
+
+      run = engine.release_park("wr_1", run["parked"]["id"])
+
+      expect(run).not_to have_key("parked")
+      expect(run).to include("state" => "running", "reason" => nil)
+      expect(run["steps"]["build"]["attempts"].map { |attempt| attempt["n"] }).to eq([1, 2, 3])
+      expect(run["steps"]["build"]["attempts"].last).not_to have_key("outcome")
+      expect(kick_count).to eq(kicks + 2)
+      expect(events("resume_parked_ended").size).to eq(2)
+      expect(File.read(File.join(worktree, ".workflow", "wr_1", "steps", "build.3.prompt.md"))).to include("Write build.md.")
+    end
+
+    it "stops parking after PARK_RETRIES busy answers, leaving the run waiting_you with the pane's error" do
+      limit = Workspace::WorkflowDispatch::PARK_RETRIES
+      incomplete_build
+      id = engine.park("wr_1", pane: "%5")["parked"]["id"]
+      panes.queue_kicks(*Array.new(limit + 1) { {ok: false, code: "pane_busy", message: "busy"} })
+
+      retries = Array.new(limit) do
+        run = engine.release_park("wr_1", id)
+        id = run["parked"]["id"]
+        run["parked"]["retries"]
+      end
+      run = engine.release_park("wr_1", id)
+
+      expect(retries).to eq((1..limit).to_a)
+      expect(run).not_to have_key("parked")
+      expect(run).to include("state" => "waiting")
+      expect(run["reason"]).to include("code" => "waiting_you")
+      expect(run["reason"]["details"]).to include("kind" => "dispatch", "error" => "pane_busy", "step" => "build")
+      expect(run["steps"]["build"]["attempts"].map { |attempt| attempt["outcome"] }).to eq([nil] + ["not_delivered"] * (limit + 1))
+    end
+
+    it "ends a parked resume as failed when the daemon gives up on it, keeping the person's note for the next attempt" do
+      incomplete_build
+      id = engine.park("wr_1", pane: "%5", note: "Try again.")["parked"]["id"]
+
+      run = engine.park_failed("wr_1", id, code: "parked_timeout", message: "too long")
+
+      expect(run).not_to have_key("parked")
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "waiting_you")
+      expect(run["reason"]["details"]).to include("error" => "parked_timeout", "message" => "too long")
+      expect(run["pending_context"]).to eq(["Note from the person who resumed the run: Try again."])
+      expect(events("resume_parked_ended").last).to include("how" => "failed")
+      expect(engine.park_failed("wr_1", id, code: "parked_timeout", message: "again")["reason"]).to eq(run["reason"])
+    end
+
+    it "waits out an on_fail backoff holding no attempt or lock, changes nothing a second before it ends, and retries a second later" do
+      run = to_backoff
+
+      expect(run).to include("state" => "waiting", "current" => "verify", "loops" => {"verify->build" => 1})
+      expect(run["reason"]).to include("code" => "retry_backoff")
+      expect(run["steps"]["build"]["attempts"].size).to eq(1)
+      expect(lock_holder).to be_nil
+      kicks = kick_count
+      before = stored
+
+      advance(299)
+      expect(engine.tick("wr_1")).to be_nil
+      expect(stored).to eq(before)
+      expect(kick_count).to eq(kicks)
+
+      advance(1)
+      run = engine.tick("wr_1")
+
+      expect(run).to include("state" => "running", "current" => "build", "reason" => nil)
+      expect(run).not_to have_key("backoff")
+      expect(run["steps"]["build"]["attempts"].map { |attempt| attempt["n"] }).to eq([1, 2])
+      expect(kick_count).to eq(kicks + 1)
+      expect(history.last(3)).to eq(%w[step_retry_started step_dispatching step_dispatched])
+      expect(engine.tick("wr_1")).to be_nil
+    end
+
+    context "with the token budget spent by the time the backoff ends" do
+      let(:definition) do
+        text = File.read(fixture)
+        raise "e2e_recovery.yml has no max_attempts: 20 line to add the budget after" unless text.include?("max_attempts: 20\n")
+        Workspace::WorkflowDefinition.parse(text.sub("max_attempts: 20\n", "max_attempts: 20\nbudget: {tokens: 100}\n"), id: "e2e_recovery", source: "global", path: fixture)
+      end
+      let(:routine_usage) { {"input_tokens" => 60, "output_tokens" => 0} }
+
+      it "holds the retry budget_spent with no attempt or kick, later ticks change nothing, and a resume with extra tokens starts it" do
+        to_backoff
+        kicks = kick_count
+        advance(300)
+
+        run = engine.tick("wr_1")
+
+        expect(run["reason"]).to include("code" => "budget_spent")
+        expect(run["steps"]["build"]["attempts"].size).to eq(1)
+        expect(run).to have_key("budget_hold")
+        expect(kick_count).to eq(kicks)
+        expect(lock_holder).to be_nil
+        held = stored
+        advance
+        engine.tick("wr_1")
+        expect(stored.except("updated_at")).to eq(held.except("updated_at"))
+        expect(kick_count).to eq(kicks)
+
+        run = engine.resume("wr_1", extra_tokens: held["reason"]["details"]["suggested"])
+
+        expect(run).to include("state" => "running", "current" => "build", "reason" => nil)
+        expect(run["steps"]["build"]["attempts"].map { |attempt| attempt["n"] }).to eq([1, 2])
+        expect(kick_count).to eq(kicks + 1)
+      end
+    end
+
+    it "runs a check again that was lost mid-way, once past its timeout, and decides the step" do
+      start
+      build_done
+      lose_check
+
+      advance(300)
+      expect(engine.tick("wr_1")).to be_nil
+      expect(stored["steps"]["verify"]["state"]).to eq("checking")
+
+      advance(61)
+      run = engine.tick("wr_1")
+
+      expect(run).to include("state" => "completed")
+      expect(run["steps"]["verify"]["state"]).to eq("passed")
+      expect(outcomes(run, "verify")).to eq(["passed"])
+      expect(history.last(3)).to include("check_finished", "step_passed", "run_completed")
+      expect(lock_holder).to be_nil
+    end
+
+    it "refuses a tick on a run cancelled while its check was lost, writing nothing and leaving the lock free" do
+      start
+      build_done
+      lose_check
+      engine.cancel("wr_1")
+      lines = history.size
+      advance(400)
+
+      expect { engine.tick("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("run_not_active") }
+
+      expect(stored["state"]).to eq("cancelled")
+      expect(history.size).to eq(lines)
+      expect(history).not_to include("check_finished")
+      expect(history.last).to eq("run_cancelled")
+      expect(lock_holder).to be_nil
+    end
+
+    it "leaves a standing park and the due backoff alone on a tick, and a release of the park starts the retry" do
+      to_backoff
+      id = engine.park("wr_1", pane: "%5")["parked"]["id"]
+      kicks = kick_count
+      advance(300)
+
+      expect(Workspace::WorkflowTransitions.wakeable?(stored, now.first)).to eq(:parked)
+      expect(engine.tick("wr_1")).to be_nil
+      expect(stored["parked"]["id"]).to eq(id)
+      expect(stored["reason"]).to include("code" => "retry_backoff")
+      expect(stored).to have_key("backoff")
+      expect(kick_count).to eq(kicks)
+
+      run = engine.release_park("wr_1", id)
+
+      expect(run).to include("state" => "running", "current" => "build", "reason" => nil)
+      expect(run).not_to have_key("parked")
+      expect(run).not_to have_key("backoff")
+      expect(run["steps"]["build"]["attempts"].map { |attempt| attempt["n"] }).to eq([1, 2])
+      expect(kick_count).to eq(kicks + 1)
+      expect(history).to include("resume_parked", "step_retry_started", "resume_parked_ended")
     end
   end
 end
