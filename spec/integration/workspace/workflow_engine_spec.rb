@@ -38,7 +38,7 @@ RSpec.describe Workspace::WorkflowEngine do
   let(:commands_config) { instance_double(Workspace::CommandsConfig, for_project: commands) }
   let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app")) }
   let(:git) { FakeGit.new(worktree_branch: "feature/x") }
-  let(:guard) { instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}, head: "1" * 40) }
+  let(:guard) { instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}, head: "1" * 40, round_snapshot: {"head" => "1" * 40, "tree_sha256" => "t" * 64}, round_check: nil) }
   let(:events) { [] }
   let(:event_log) do
     log = instance_double(Workspace::EventLog)
@@ -5837,6 +5837,26 @@ RSpec.describe Workspace::WorkflowEngine do
 
         expect(run["current"]).to eq("build")
         expect(run["steps"]["plan"]["state"]).to eq("passed")
+      end
+
+      it "stops review_guard when the checkout changed under the round, tallying nothing, and a resume starts a fresh round" do
+        allow(guard).to receive(:round_check).and_return("changed" => ["head"], "snapshot_head" => "1" * 40, "head" => "2" * 40)
+        engine = revised_engine
+        start_reviewed(engine)
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        plan = run["steps"]["plan"]
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]).to include("code" => "review_guard")
+        expect(run["reason"]["details"]).to include("changed" => ["head"], "snapshot_head" => "1" * 40, "head" => "2" * 40)
+        expect(plan).to include("state" => "reviewing", "review_rounds" => 1)
+        expect(plan["attempts"].last["rounds"].map { |each| each["ended"] }).to eq(["review_guard"])
+        expect(rounds.size).to eq(1)
+
+        allow(guard).to receive(:round_check).and_return(nil)
+        expect(engine.resume("wr_1")["steps"]["plan"]["review_rounds"]).to eq(2)
       end
 
       it "stops review_stale when the plan file was edited between delivery and the round's end, and a resume starts a fresh round" do

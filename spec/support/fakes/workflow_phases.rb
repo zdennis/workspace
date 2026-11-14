@@ -603,7 +603,7 @@ class RecordingRequire
   end
 end
 
-# Fake of Workspace::WorkflowGuard#check, #config_change, #head and #tree_digest: answers what it was given
+# Fake of Workspace::WorkflowGuard#check, #config_change, #head, #tree_digest, #round_snapshot and #round_check: answers what it was given
 # (+head+ and +tree_digest+ answer the current value of +heads+ and +trees+, which a spec may change).
 class RecordingGuard
   CONTROL_METHODS = %i[calls heads trees].freeze
@@ -615,8 +615,10 @@ class RecordingGuard
   # @param head [String, nil] what +head+ answers
   # @param tree [String, nil] what +tree_digest+ answers
   # @param unread [Array<String>] the parts +base+ could not read ("head", "hooks_sha256", "hidden_sha256")
-  def initialize(found: nil, config: nil, head: "a" * 40, tree: "t" * 64, unread: [])
+  # @param round_found [Hash, nil] what +round_check+ answers
+  def initialize(found: nil, config: nil, head: "a" * 40, tree: "t" * 64, unread: [], round_found: nil)
     @found = found
+    @round_found = round_found
     @unread = unread
     @config = config
     @heads = [head]
@@ -637,6 +639,16 @@ class RecordingGuard
   def check(worktree, base, scope)
     @calls << [:check, worktree, scope]
     @found
+  end
+
+  def round_snapshot(worktree, base: nil)
+    @calls << [:round_snapshot, worktree]
+    {"head" => @heads.last, "tree_sha256" => @trees.last}
+  end
+
+  def round_check(worktree, snapshot, base: nil)
+    @calls << [:round_check, worktree, snapshot]
+    @round_found
   end
 
   # The last of +heads+ as the base commit, with a fixed snapshot (+unread+ names the parts given as unreadable, as

@@ -234,6 +234,65 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(store.runs["wr_1"]["steps"]["plan"]["state"]).to eq("passed")
     end
 
+    describe "against the checkout the round began with" do
+      let(:snapshot) { {"head" => "a" * 40, "tree_sha256" => "t" * 64} }
+      let(:round) { super().merge("snapshot" => snapshot) }
+      let(:progress) { Workspace::WorkflowProgress.new(change: change, store: store, dispatch: RecordingDispatch.new, attempt_record: RecordingAttemptRecord.new, panes: panes, log_tail: RecordingLogTail.new, clock: -> { now }) }
+
+      it "goes on to the tally when nothing changed" do
+        stored(reviewing)
+
+        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9")
+
+        expect(guard.calls.map(&:first)).to eq([:round_check])
+        expect(guard.calls.last[2]).to eq(snapshot)
+        expect(tally.calls.size).to eq(1)
+      end
+
+      it "stops a changed checkout review_guard, the round recorded, with no tally, no loop and no round spent" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review_rounds"] = 1 })
+        changed = RecordingGuard.new(round_found: {"changed" => ["tree"], "snapshot_head" => "a" * 40, "head" => "a" * 40})
+
+        run = evaluation(review_tally: tally, guard: changed).turn_ended("wr_1", pane: "%9")
+
+        expect(tally.calls).to be_empty
+        expect(run.state).to eq("waiting")
+        expect(run.reason).to include("code" => "review_guard")
+        expect(run.reason["details"]).to include("step" => "plan", "attempt" => 1, "round" => 1, "changed" => ["tree"])
+        plan = run.step("plan")
+        expect(plan.state).to eq("reviewing")
+        expect(plan.review_rounds).to eq(1)
+        expect(plan.review).to include("recorded" => true)
+        expect(plan.last_attempt.to_h["rounds"].map { |each| each["ended"] }).to eq(["review_guard"])
+        expect(plan.last_attempt.to_h["outcome"]).to eq("checks_passed")
+        expect(change.reviews).to be_empty
+        expect(change.events.map { |each| each[1] }).to include("review_ended")
+      end
+
+      it "stops review_incomplete, not a pass, when the checkout can't be compared" do
+        stored(reviewing)
+        unread = RecordingGuard.new(round_found: {"unread" => ["tree"]})
+
+        run = evaluation(review_tally: tally, guard: unread).turn_ended("wr_1", pane: "%9")
+
+        expect(tally.calls).to be_empty
+        expect(run.reason["code"]).to eq("review_incomplete")
+        expect(run.reason["details"]["problem"]).to include("tree unread")
+      end
+
+      it "checks before the revision is computed again" do
+        stored(reviewing)
+        changed = RecordingGuard.new(round_found: {"changed" => ["head"], "snapshot_head" => "a" * 40, "head" => "b" * 40})
+        revision = RecordingReviewRevision.new({revision: "rev1", problem: nil})
+
+        run = evaluation(review_tally: tally, guard: changed, review_revision: revision).turn_ended("wr_1", pane: "%9")
+
+        expect(revision.calls).to be_empty
+        expect(change.review_ends).to be_empty
+        expect(run.reason["code"]).to eq("review_guard")
+      end
+    end
+
     it "ignores a turn's end in the author's pane, a turn begun before the round, and a stopped round" do
       stored(reviewing)
       evaluation(review_tally: tally).turn_ended("wr_1", pane: "%3")

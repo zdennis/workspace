@@ -364,6 +364,60 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run.step("plan").review["round"]).to eq(3)
     end
 
+    describe "the checkout's snapshot" do
+      it "is stored on the round as it starts" do
+        guard = RecordingGuard.new(head: "b" * 40, tree: "c" * 64)
+        progress = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          guard: guard, clock: -> { now })
+
+        run = progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: ctx)
+
+        expect(run.step("plan").review["snapshot"]).to eq("head" => "b" * 40, "tree_sha256" => "c" * 64)
+        expect(guard.calls).to eq([[:round_snapshot, run.worktree]])
+      end
+
+      it "is not taken for a held round" do
+        guard = RecordingGuard.new
+        held = described_class.new(change: change, store: store, dispatch: RecordingDispatch.new(holds: "budget_spent"), attempt_record: attempt_record,
+          panes: panes, log_tail: log_tail, guard: guard, clock: -> { now })
+        held.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: ctx)
+
+        expect(guard.calls).to be_empty
+      end
+
+      it "is taken again for a redelivered round, so an edit between the deliveries is not a change" do
+        guard = RecordingGuard.new(head: "d" * 40, tree: "e" * 64)
+        again = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          guard: guard, clock: -> { now })
+        given = reviewing_hash
+        given["steps"]["plan"]["review"].merge!("delivery" => "failed", "snapshot" => {"head" => "a" * 40, "tree_sha256" => "t" * 64})
+
+        run = again.restart_review(given, ctx: ctx)
+
+        expect(run.step("plan").review["snapshot"]).to eq("head" => "d" * 40, "tree_sha256" => "e" * 64)
+        expect(guard.calls).to eq([[:round_snapshot, run.worktree]])
+      end
+
+      it "is taken for a held round when it starts" do
+        guard = RecordingGuard.new(head: "d" * 40, tree: "e" * 64)
+        again = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          guard: guard, clock: -> { now })
+        held = reviewing_hash("state" => "running", "reason" => nil)
+        held["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil}
+
+        run = again.restart_review(held, ctx: ctx)
+
+        expect(run.step("plan").review["snapshot"]).to eq("head" => "d" * 40, "tree_sha256" => "e" * 64)
+        expect(guard.calls).to eq([[:round_snapshot, run.worktree]])
+      end
+
+      it "is left out when no guard is set up" do
+        run = progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: ctx)
+
+        expect(run.step("plan").review).not_to have_key("snapshot")
+      end
+    end
+
     describe "the round's directory" do
       it "is made by the tally as the round starts, before the round is registered" do
         tally = RecordingReviewTally.new

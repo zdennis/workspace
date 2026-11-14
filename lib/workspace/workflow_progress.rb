@@ -20,8 +20,10 @@ module Workspace
     # @param log_tail [Workspace::WorkflowLogTail] reads the end of a failed check's log for `on_fail`'s `log_tail`
     # @param review_tally [#open_round, nil] makes each round's directory as the round starts ({WorkflowReviewTally#open_round});
     #   nil makes none
+    # @param guard [#round_snapshot, nil] takes the checkout's snapshot as each round starts ({WorkflowGuard#round_snapshot});
+    #   nil takes none, and the round is never checked against one
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, dispatch:, attempt_record:, panes:, log_tail:, review_tally: nil, clock: -> { Time.now })
+    def initialize(change:, store:, dispatch:, attempt_record:, panes:, log_tail:, review_tally: nil, guard: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @dispatch = dispatch
@@ -29,6 +31,7 @@ module Workspace
       @panes = panes
       @log_tail = log_tail
       @review_tally = review_tally
+      @guard = guard
       @clock = clock
     end
 
@@ -60,12 +63,13 @@ module Workspace
     # the next step. Rejected: the attempt and step fail and the run stops for a person with `review_rejected`.
     # Incomplete: the step stays `reviewing`, the round is marked ended, and the run stops with `review_incomplete`.
     # Stale (what the round judged changed while it ran): as incomplete, but the run stops with `review_stale`; it
-    # never loops and starts no further round, and a resume starts a fresh one on the new revision.
+    # never loops and starts no further round, and a resume starts a fresh one on the new revision. Guard (the
+    # checkout changed under the round, see {WorkflowGuard#round_check}): the same, stopping with `review_guard`.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on a step being reviewed; left as it is
-    # @param tally [Hash{Symbol=>Object}] the round's tally: :outcome (`:approved`, `:rejected`, `:incomplete` or `:stale`),
+    # @param tally [Hash{Symbol=>Object}] the round's tally: :outcome (`:approved`, `:rejected`, `:incomplete`, `:stale` or `:review_guard`),
     #   :reviews (the rows it read), :approvals, :need and :must when it counted them, for an incomplete one :problem,
-    #   and for a stale one :revision (the round's delivered revision) and :revision_now
+    #   and for a stale one :revision (the round's delivered revision) and :revision_now, and for a changed checkout (`:review_guard`) :changed ("head", "tree"), :snapshot_head and :head
     # @param ctx [Workspace::WorkflowRunChange::Context]
     # @return [WorkflowRun] the run afterwards
     def decide_review(run, tally, ctx:) = over(run) { |work| decide_in(work, tally, ctx) }
@@ -230,6 +234,7 @@ module Workspace
       state["review_rounds"] = round
       state["review"] = {"round" => round, "delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3),
                          "pending" => WorkflowDefinition.review(step_def(run))["from"].dup, "redeliveries" => 0}
+      state["review"]["snapshot"] = @guard.round_snapshot(run["worktree"], base: run) if @guard
       run["state"] = "running"
       run["reason"] = nil
       attempt = state["attempts"].last["n"]
@@ -293,6 +298,8 @@ module Workspace
         state["review"] = ended.merge("recorded" => true)
         if outcome == :stale
           stop_review(run, "review_stale", details.merge("revision" => tally[:revision], "revision_now" => tally[:revision_now]))
+        elsif outcome == :review_guard
+          stop_review(run, "review_guard", details.merge("changed" => tally[:changed], "snapshot_head" => tally[:snapshot_head], "head" => tally[:head]).compact)
         else
           stop_review(run, "review_incomplete", details.merge("reviews" => reviews, "problem" => tally[:problem]).compact)
         end
@@ -314,6 +321,7 @@ module Workspace
       # is kept, and the round starts its clock again: a delivery mark is judged from `started_at`.
       add_round_record(run, round, "redelivered")
       state["review"] = round.except("holder").merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3), "redeliveries" => 0)
+      state["review"]["snapshot"] = @guard.round_snapshot(run["worktree"], base: run) if @guard
       run["state"] = "running"
       attempt = state["attempts"].last["n"]
       event(run, "review_started", "step" => run["current"], "attempt" => attempt, "round" => round["round"], "again" => true)

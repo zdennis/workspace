@@ -36,7 +36,7 @@ RSpec.describe "a workflow run from start to completed" do
   let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app")) }
   let(:git) { FakeGit.new(worktree_branch: "feature/x") }
   let(:guard) do
-    instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}, head: "1" * 40, check: nil, config_change: nil, commits_since: 1)
+    instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}, head: "1" * 40, check: nil, config_change: nil, commits_since: 1, round_snapshot: {"head" => "1" * 40, "tree_sha256" => "t" * 64}, round_check: nil)
   end
   let(:notes_dir) { File.join(@dir, "notes") }
   let(:gate_note) { Workspace::WorkflowGateNote.new(notes: instance_double(Workspace::Commands::Notes, info: {"dir" => notes_dir})) }

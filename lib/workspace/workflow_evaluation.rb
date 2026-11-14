@@ -176,6 +176,8 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def review_ended(run, ctx:)
       read = WorkflowRun.from_h(run)
+      guarded = round_guard(read, ctx)
+      return guarded if guarded
       return tally_round(read, ctx) unless @review_revision
       work = read.thawed
       state = step_state(work)
@@ -254,6 +256,25 @@ module Workspace
     rescue Workspace::Error => e
       raise unless e.code == "run_not_active"
       @store.run(run_id)
+    end
+
+    # The checkout against the snapshot the round began with, before anything is recomputed or tallied (a round with no
+    # snapshot, begun before the guard existed or by an engine built without one, is not checked). A changed
+    # checkout stops the round `review_guard` and an unreadable one `review_incomplete`, never a pass; neither loops
+    # through `on_fail`, and the round's record ends `review_guard` or `review_incomplete`.
+    #
+    # @return [WorkflowRun, nil] the run afterwards when the round was stopped; nil when it goes on
+    def round_guard(read, ctx)
+      snapshot = step_state(read.to_h)["review"]&.dig("snapshot")
+      return nil unless snapshot.is_a?(Hash)
+      found = @guard.round_check(read.worktree, snapshot, base: read)
+      return nil unless found
+      tally = if found["unread"]
+        {outcome: :incomplete, reviews: [], problem: "the checkout could not be compared with the round's start (#{found["unread"].join(", ")} unread)"}
+      else
+        {outcome: :review_guard, reviews: [], changed: found["changed"], snapshot_head: found["snapshot_head"], head: found["head"]}
+      end
+      @progress.decide_review(read, tally, ctx: ctx)
     end
 
     def judge_round(read, answer, ctx)
