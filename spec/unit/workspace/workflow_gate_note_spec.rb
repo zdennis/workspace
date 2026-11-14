@@ -92,4 +92,59 @@ RSpec.describe Workspace::WorkflowGateNote do
     expect(described_class.sha256(notes_dir)).to be_nil
     expect(described_class.sha256(File.join(notes_dir, "gone.md"))).to be_nil
   end
+
+  describe "after a passing review round" do
+    let(:summary) { File.join(artifacts, "reviews", "triage.2.r3", "summary.md") }
+
+    # The attempt's round records hold what the engine wrote; +written+ nil records none (a run stored before the hash was kept).
+    def reviewed(outcome, written = :file)
+      written = Digest::SHA256.file(summary).hexdigest if written == :file
+      rounds = written ? [{"round" => 3, "summary" => {"path" => summary, "sha256" => written}}] : []
+      run.merge("steps" => {"triage" => {"state" => "passed", "attempts" => [{"n" => 1}, {"n" => 2, "review_outcome" => outcome, "rounds" => rounds}]}})
+    end
+
+    def refusal(given)
+      gate_note.find(given)
+      nil
+    rescue Workspace::Error => e
+      e
+    end
+
+    before do
+      FileUtils.mkdir_p(File.dirname(summary))
+      File.write(summary, "# Review\n")
+      first_file("note: n.md\n")
+    end
+
+    it "names the round's summary.md, worked out from the run, over the step's note line" do
+      found = gate_note.find(reviewed("round" => 3, "passed" => true, "summary" => "/elsewhere/summary.md"))
+
+      expect(found).to eq("name" => "summary.md", "path" => summary, "sha256" => Digest::SHA256.file(summary).hexdigest)
+    end
+
+    it "reads the step's note line for a round that did not pass, wrote no summary, or a run stored before summaries" do
+      expect(gate_note.find(reviewed("round" => 3, "passed" => false, "summary" => summary))["name"]).to eq("n.md")
+      expect(gate_note.find(reviewed("round" => 3, "passed" => true))["name"]).to eq("n.md")
+      expect(gate_note.find(run)["name"]).to eq("n.md")
+    end
+
+    it "refuses a summary that is gone or a link, naming the way out" do
+      given = reviewed("round" => 3, "passed" => true, "summary" => summary)
+      File.delete(summary)
+      File.symlink(File.join(notes_dir, "n.md"), summary)
+
+      error = refusal(given)
+
+      expect([error.code, error.details.slice("name", "path")]).to eq(["gate_note_unreadable", {"name" => "summary.md", "path" => summary}])
+      expect(error.message).to include("gone or not a regular file", "workflow reject wr_1", "resume wr_1 --from triage", "workflow cancel wr_1")
+    end
+
+    it "refuses a summary changed since the engine wrote it, and reads one of a round that recorded no hash" do
+      changed = refusal(reviewed({"round" => 3, "passed" => true, "summary" => summary}, "0" * 64))
+
+      expect(changed.code).to eq("gate_note_unreadable")
+      expect(changed.message).to include("changed since the engine wrote it", "workflow reject wr_1")
+      expect(gate_note.find(reviewed({"round" => 3, "passed" => true, "summary" => summary}, nil))["name"]).to eq("summary.md")
+    end
+  end
 end

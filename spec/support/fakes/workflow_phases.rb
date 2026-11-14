@@ -93,6 +93,11 @@ class RecordingRunChange
     @reviews << ctx.review if ctx.review
     @review_ends << ctx.review_end if ctx.review_end
     @closes << ctx.close_review if ctx.close_review
+    ctx.after_locks.each do |each|
+      each.call(changed)
+    rescue
+      nil
+    end
     raise @raises_after[@calls.size] if @raises_after.key?(@calls.size)
     changed
   end
@@ -320,9 +325,12 @@ end
 # Fake of the Workspace::WorkflowPanes calls the phases make: bindings, pane runs and gone panes as scripted, a +kick+
 # that answers what it was given, and the calls that change or ask about a pane kept in +calls+.
 class RecordingWorkflowPanes
-  CONTROL_METHODS = %i[calls].freeze
+  CONTROL_METHODS = %i[calls gone_checks].freeze
 
   attr_reader :calls
+
+  # @return [Array<Array>] each +pane_gone?+ asked: the pane and the workspace it named
+  attr_reader :gone_checks
 
   # @param bound [Hash{String=>String}] the pane each run id is bound to
   # @param runs_on [Hash{String=>String}] the run id each pane is bound to as its author
@@ -349,6 +357,7 @@ class RecordingWorkflowPanes
     @kick = kick
     @same = same
     @calls = []
+    @gone_checks = []
   end
 
   def pane_of(run_id) = @bound[run_id]
@@ -362,7 +371,10 @@ class RecordingWorkflowPanes
 
   def alive?(run_id) = !@dead.include?(run_id)
 
-  def pane_gone?(pane) = @gone.include?(pane)
+  def pane_gone?(pane, workspace: nil)
+    @gone_checks << [pane, workspace]
+    @gone.include?(pane)
+  end
 
   # Whether +pane+'s turn is proven over: listed in +turn_over+.
   def main_turn_over?(_workspace, pane) = @turn_over.include?(pane)
@@ -555,14 +567,6 @@ class RecordingProgress
     Workspace::WorkflowRun.from_h(hash)
   end
 
-  # Stops the run review_no_change with the round named and undelivered, as the real one does.
-  def stop_no_change(run, revision:, rejected:)
-    hash = Workspace::WorkflowRun.from_h(run).thawed
-    @calls << [:stop_no_change, hash["current"], {revision: revision, rejected: rejected}]
-    hash["steps"][hash["current"]]["review"].merge!("delivery" => nil, "no_change" => true, "revision" => revision)
-    Workspace::WorkflowRun.from_h(hash.merge("state" => "waiting", "reason" => {"code" => "review_no_change"}))
-  end
-
   def end_round(run, how:, ctx:, close: true)
     hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:end_round, hash["current"], {how: how, close: close}]
@@ -662,6 +666,49 @@ class RecordingReviewRevision
     @calls << [:call, Workspace::WorkflowRun.from_h(run).id, step["id"]]
     @stop_answers << stop_when&.call
     (@answers.size > 1) ? @answers.shift : @answers.first
+  end
+end
+
+# Fake of Workspace::WorkflowReviewSummary: answers the summary it was given for each +write+, and records each
+# +write+ and +notify+ with the run's reason code as it was when notified.
+class RecordingReviewSummary
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param written [Hash{String=>String}] what each +write+ answers ("path" and "sha256", or "problem")
+  def initialize(written = {"path" => "/runs/wr_1/reviews/plan.1.r1/summary.md", "sha256" => "s" * 64})
+    @written = written
+    @calls = []
+  end
+
+  def write(run, round:, outcome:, decided:, reviews:, problem: nil)
+    @calls << [:write, run["current"], {round: round, outcome: outcome, decided: decided, reviews: reviews, problem: problem}]
+    @written
+  end
+
+  def notify(run, step:, attempt:, round:, outcome:, summary:)
+    @calls << [:notify, step, {attempt: attempt, round: round, outcome: outcome, summary: summary, reason: run.dig("reason", "code")}]
+    "created"
+  end
+end
+
+# Fake of Workspace::WorkflowRoundRerun#check_revision: records each round it is asked about and answers what it was
+# given (`{}` delivers the round as registered, `{revision:}` with that revision, `{run:}` stops it).
+class RecordingRoundRerun
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param answer [Hash{Symbol=>Object}] what each +check_revision+ answers
+  def initialize(answer = {})
+    @answer = answer
+    @calls = []
+  end
+
+  def check_revision(run_id, review)
+    @calls << [:check_revision, run_id, review]
+    @answer
   end
 end
 
@@ -809,7 +856,7 @@ class RecordingInbox
 
   def upsert(record, reopen: false)
     @calls << [:upsert, record, {reopen: reopen}]
-    record
+    Workspace::InboxStore::Upsert.new(record, "created")
   end
 end
 

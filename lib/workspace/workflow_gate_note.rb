@@ -1,9 +1,11 @@
 require "digest"
 
 module Workspace
-  # Finds the note a workflow gate asks a person to read: the gated step's
-  # first `produces` file names it on its first line, `note: <file>`, and
-  # the file is a plain file name in the workspace's notes directory, a
+  # Finds the note a workflow gate asks a person to read. After a passing
+  # review round it is the round's `summary.md` ({WorkflowReviewSummary}),
+  # which the engine wrote in the round's directory. Otherwise the gated
+  # step's first `produces` file names it on its first line, `note: <file>`,
+  # and the file is a plain file name in the workspace's notes directory, a
   # regular file and not a link. `workflow approve` and `workflow status`
   # both ask this class, so both name the same file.
   class WorkflowGateNote
@@ -21,11 +23,13 @@ module Workspace
     # @param run [WorkflowRun, Hash{String=>Object}] a stored run
     # @param step_id [String] the gated step
     # @return [Hash{String=>String}, nil] "name", "path" and "sha256" (of the bytes read now);
-    #   nil when the step's first file is missing or has no `note:` line
+    #   nil when the step passed no review with a summary and its first file is missing or has no `note:` line
     # @raise [Workspace::Error] code `gate_note_unreadable` when the named note is not a
-    #   readable regular file in the notes directory
+    #   readable regular file in the notes directory, or the review summary is gone or not a regular file
     def find(run, step_id = WorkflowRun.from_h(run).current)
       run = WorkflowRun.from_h(run)
+      summary = review_summary(run, step_id)
+      return summary if summary
       name = named(run, step_id)
       return nil unless name
       raise unreadable(run, step_id, "#{name} is not a plain file name", name: name) if name.include?("/")
@@ -79,6 +83,37 @@ module Workspace
     end
 
     private
+
+    # The summary of the round that passed the step's last attempt, when the engine wrote one: its path is worked
+    # out from the run's directory, step, attempt and round, never read from the run, and it must be a regular
+    # file, not a link, whose bytes still hash to what the round's record says the engine wrote. A run stored before
+    # summaries has none, and its gate reads the step's `note:` line.
+    def review_summary(run, step_id)
+      attempt = run.steps.fetch(step_id).last_attempt
+      stored = attempt&.to_h || {}
+      outcome = stored["review_outcome"]
+      return nil unless outcome.is_a?(Hash) && outcome["passed"] == true && outcome["summary"].is_a?(String) && outcome["round"].is_a?(Integer)
+      artifacts = run.artifacts_dir
+      return nil unless artifacts.is_a?(String) && artifacts.start_with?("/")
+      path = WorkflowReviewSummary.path(artifacts, step_id, attempt.n, outcome["round"])
+      name = ReviewRoundPath::SUMMARY
+      way_out = "approve can't go on: `workspace workflow reject #{run.id} --note ...` runs the step again (a new round writes a new summary), " \
+        "`workspace workflow resume #{run.id} --from #{step_id}` starts it over, or `workspace workflow cancel #{run.id}`"
+      sha = self.class.sha256(path)
+      raise unreadable(run, step_id, "the review summary #{path} is gone or not a regular file; #{way_out}", name: name, path: path) unless sha
+      written = written_sha(stored, outcome["round"])
+      if written && written != sha
+        raise unreadable(run, step_id, "the review summary #{path} changed since the engine wrote it (sha256 #{written}, now #{sha}); #{way_out}", name: name, path: path)
+      end
+      {"name" => name, "path" => path, "sha256" => sha}
+    end
+
+    # The hash the engine recorded for the round's summary, from the newest record of that round that has one.
+    def written_sha(attempt, round)
+      record = Array(attempt["rounds"]).reverse.find { |each| each.is_a?(Hash) && each["round"] == round && each["summary"].is_a?(Hash) }
+      sha = record&.dig("summary", "sha256")
+      sha.is_a?(String) ? sha : nil
+    end
 
     def first_file(run, step_id)
       step = run.definition["steps"].find { |each| each["id"] == step_id }

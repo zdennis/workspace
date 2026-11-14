@@ -1471,7 +1471,7 @@ module Workspace
         target = run.parked["pane"] || @panes.pane_of(run.id) || run.pane
         unless caller_in_pane?(workspace, caller_pane, target)
           return release_park(run) if @panes.main_turn_over?(workspace, target)
-          return end_park(run, "pane_gone", "pane #{target} of '#{workspace}' is gone, so nothing was typed") if @panes.pane_gone?(target)
+          return end_park(run, "pane_gone", "pane #{target} of '#{workspace}' is gone, so nothing was typed") if @panes.pane_gone?(target, workspace: workspace)
           return end_park(run, "not_an_agent", "the agent in pane #{target} has exited, so nothing was typed") if @panes.agent_gone?(workspace, target)
         end
         return unless WorkflowEngine.parked(run.to_h, @clock.call) == :expired

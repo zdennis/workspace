@@ -1509,7 +1509,7 @@ RSpec.describe Workspace::Commands::Workflow do
       end
 
       it "ends the park when the pane is gone" do
-        allow(panes).to receive(:pane_gone?).with("%5").and_return(true)
+        allow(panes).to receive(:pane_gone?).with("%5", workspace: "app").and_return(true)
 
         command.advance(run: "wr_1")
 

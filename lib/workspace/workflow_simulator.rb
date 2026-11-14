@@ -312,7 +312,7 @@ module Workspace
         true
       end
 
-      def pane_gone?(_pane)
+      def pane_gone?(_pane, workspace: nil)
         false
       end
 

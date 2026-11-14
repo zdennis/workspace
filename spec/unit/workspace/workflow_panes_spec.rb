@@ -906,10 +906,17 @@ RSpec.describe Workspace::WorkflowPanes do
 
   describe "#pane_gone?" do
     it "says whether tmux still knows the pane" do
+      allow(tmux).to receive(:session_name_for_pane).with("%5", project: nil).and_return("app")
       expect(panes.pane_gone?("%5")).to be(false)
 
-      allow(tmux).to receive(:session_name_for_pane).with("%5").and_return(nil)
+      allow(tmux).to receive(:session_name_for_pane).with("%5", project: nil).and_return(nil)
       expect(panes.pane_gone?("%5")).to be(true)
+    end
+
+    it "asks the run's workspace's own tmux socket" do
+      allow(tmux).to receive(:session_name_for_pane).with("%5", project: "app").and_return(nil)
+
+      expect(panes.pane_gone?("%5", workspace: "app")).to be(true)
     end
 
     it "is false when tmux can't be run" do

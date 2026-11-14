@@ -645,6 +645,43 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe "the round predicates" do
+    def reviewing(round = {})
+      {"id" => "wr_1", "state" => "running", "current" => "plan", "reason" => nil,
+       "steps" => {"plan" => {"state" => "reviewing", "attempts" => [{"n" => 2}],
+                              "review" => {"round" => 3, "delivery" => "delivering"}.merge(round)}}}
+    end
+
+    let(:delivery) { {"step" => "plan", "attempt" => 2, "round" => 3} }
+    let(:recompute) { delivery.merge("try" => 1) }
+
+    it "wants a delivery of the round the run waits on, and a recompute whose try is the round's mark" do
+      expect(described_class.round_delivery_wanted?(reviewing, delivery)).to be(true)
+      expect(described_class.round_recompute_wanted?(reviewing("delivery" => nil, "recompute" => {"try" => 1}), recompute)).to be(true)
+    end
+
+    it "wants neither once the run stopped, parked, ended or moved to another step, attempt or round" do
+      judged = reviewing("recompute" => {"try" => 1})
+      [[reviewing.merge("reason" => {"code" => "review_incomplete"}), judged.merge("reason" => {"code" => "review_incomplete"}), {}],
+        [reviewing.merge("parked" => {"pane" => "%1"}), judged.merge("parked" => {"pane" => "%1"}), {}],
+        [reviewing.merge("state" => "cancelled"), judged.merge("state" => "cancelled"), {}],
+        [reviewing.merge("current" => "verify"), judged.merge("current" => "verify"), {}],
+        [reviewing, judged, {"attempt" => 1}],
+        [reviewing, judged, {"round" => 2}]].each do |for_delivery, for_recompute, change|
+        expect(described_class.round_delivery_wanted?(for_delivery, delivery.merge(change))).to be(false)
+        expect(described_class.round_recompute_wanted?(for_recompute, recompute.merge(change))).to be(false)
+      end
+    end
+
+    it "wants no delivery of a round no longer delivering or being judged, and no recompute of another try or of none" do
+      expect(described_class.round_delivery_wanted?(reviewing("delivery" => "failed"), delivery)).to be(false)
+      expect(described_class.round_delivery_wanted?(reviewing("recompute" => {"try" => 1}), delivery)).to be(false)
+      expect(described_class.round_recompute_wanted?(reviewing("recompute" => {"try" => 2}), recompute)).to be(false)
+      expect(described_class.round_recompute_wanted?(reviewing, recompute.merge("try" => nil))).to be(false)
+      expect(described_class.round_recompute_wanted?(reviewing, delivery)).to be(false)
+    end
+  end
+
   describe ".rejected_revision" do
     def run_with(*attempts) = {"steps" => {"plan" => {"attempts" => attempts}}}
 

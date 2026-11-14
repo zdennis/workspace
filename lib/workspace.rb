@@ -396,6 +396,8 @@ require_relative "workspace/workflow_round_holder"
 require_relative "workspace/workflow_review_round"
 require_relative "workspace/workflow_review_orphans"
 require_relative "workspace/workflow_rejection"
+require_relative "workspace/workflow_round_rerun"
+require_relative "workspace/workflow_review_summary"
 require_relative "workspace/workflow_progress"
 require_relative "workspace/workflow_evaluation"
 require_relative "workspace/workflow_decisions"
@@ -554,7 +556,8 @@ module Workspace
   #   (default: a new one)
   # @param alerts [Workspace::WorkflowAlerts, nil] tells a person of a gate, a failure, a stall or a finish through `alerts.notify`
   #   (default: none)
-  # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
+  # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning and each review round's item
+  #   (`review:<run>:<step>`; default: no item)
   # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
   # @param review_round [#call, nil] runs a review round a change registered, given the run id and the round, with the lock given up
   #   (default: none runs, so a reviewed step waits in `reviewing`); `build_cli` gives `review_runner:` instead, so this
@@ -568,6 +571,10 @@ module Workspace
   # @param review_runner [#call, nil] given the engine's `change:`, `store:` and `prompt:`, builds the round's delivery
   #   ({WorkflowReviewRound}), which is then the `review_round` and `review_closer` neither of which is given
   #   (default: none)
+  # @param round_rerun [Workspace::WorkflowRoundRerun, nil] the round lifecycle progress and evaluation share (default: one over the
+  #   engine's change, store, dispatch, attempt record, +review_revision+ and +round_holder+)
+  # @param review_summary [Workspace::WorkflowReviewSummary, nil] writes each decided round's `summary.md` and posts its inbox item
+  #   (default: one over +inbox_for+)
   # @param round_holder [#call, nil] answers the process that delivers a round a change starts ("pid", "started"), stored on
   #   the round as its `holder` (default: none stored)
   # @param holder_alive [#call, nil] given a round's `holder`, whether that process still runs, so a resume or a tick delivers a
@@ -577,7 +584,7 @@ module Workspace
   # @return [Workspace::WorkflowEngine]
   def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
     env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil, review_revision: nil,
-    review_runner: nil, round_holder: nil, holder_alive: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
+    review_runner: nil, round_rerun: nil, review_summary: nil, round_holder: nil, holder_alive: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
     attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
     require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
       commands_config: commands_config, checker: checker)
@@ -595,10 +602,14 @@ module Workspace
     end
     log_tail ||= WorkflowLogTail.new
     rejection = WorkflowRejection.new(change: change, dispatch: dispatch, log_tail: log_tail)
+    round_rerun ||= WorkflowRoundRerun.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record,
+      review_revision: review_revision, holder: round_holder, clock: clock)
+    review_summary ||= WorkflowReviewSummary.new(inbox_for: inbox_for)
     progress = WorkflowProgress.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes,
-      log_tail: log_tail, review_tally: review_tally, guard: guard, holder: round_holder, rejection: rejection, clock: clock)
+      log_tail: log_tail, review_tally: review_tally, guard: guard, round_rerun: round_rerun, review_summary: review_summary,
+      rejection: rejection, clock: clock)
     evaluation = WorkflowEvaluation.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
-      guard: guard, commands_config: commands_config, inbox_for: inbox_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, review_revision: review_revision, clock: clock)
+      guard: guard, commands_config: commands_config, inbox_for: inbox_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, review_revision: review_revision, round_rerun: round_rerun, clock: clock)
     starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
       lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
     decisions = WorkflowDecisions.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,

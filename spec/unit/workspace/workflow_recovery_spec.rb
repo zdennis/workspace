@@ -222,7 +222,7 @@ RSpec.describe Workspace::WorkflowRecovery do
           expect(evaluation.calls.first).to eq([:review_ended, "build"])
         end
 
-        it "judges the round anyway once its wait passed the delivery window, whatever the pane shows (a prompt, an unread pane)" do
+        it "judges the round anyway once its wait passed the delivery window, whatever the pane shows (one that could not be read; a prompt is never judged by a wait)" do
           stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T10:59:59.000Z", "pane" => "%9"))
 
           with_panes(RecordingWorkflowPanes.new).tick("wr_1")
@@ -247,6 +247,7 @@ RSpec.describe Workspace::WorkflowRecovery do
           expect(decided[0..1]).to eq([:decide_review, "build"])
           expect(decided[2]).to include(outcome: :incomplete, reviews: [])
           expect(decided[2][:problem]).to include("still at work when the round's review timeout passed")
+          expect(decided[2][:problem]).to include("a resume starts a fresh round and closes this window, stopping any reviewer still at work there")
         end
 
         it "waits for an agent daemon that can't be reached until the review's timeout, then judges the round" do
@@ -301,8 +302,10 @@ RSpec.describe Workspace::WorkflowRecovery do
           stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T10:59:59.000Z", "pane" => "%9"))
           with_panes(RecordingWorkflowPanes.new(turn_over: ["%9"])).tick("wr_1")
           stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T10:59:59.000Z", "pane" => "%9"))
-          with_panes(RecordingWorkflowPanes.new(gone: ["%9"])).tick("wr_1")
+          gone = RecordingWorkflowPanes.new(gone: ["%9"])
+          with_panes(gone).tick("wr_1")
 
+          expect(gone.gone_checks).to eq([["%9", "app"]])
           expect(evaluation.calls.map(&:first).count(:review_ended)).to eq(2)
           expect(progress.calls).to be_empty
         end

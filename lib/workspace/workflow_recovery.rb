@@ -362,7 +362,7 @@ module Workspace
     end
 
     def typed_pane_state(workspace, pane)
-      return :over if @panes.pane_gone?(pane)
+      return :over if @panes.pane_gone?(pane, workspace: workspace)
       row = @panes.pane_row(workspace, pane)
       return :over if WorkflowPanes.agent_gone_row?(row)
       if row.is_a?(Hash) && row["kind"] == "claude"
@@ -399,7 +399,7 @@ module Workspace
         return :waiting if decision == :wait
         if decision == :stop
           # A reviewer still at work past the review's timeout: a rerun would only meet that working pane again.
-          stop_round(run, ctx, "the review pane #{round["pane"]} was still at work when the round's review timeout passed, after its delivery failed (#{round.dig("failure", "code") || "lapsed"})")
+          stop_round(run, ctx, "the review pane #{round["pane"]} was still at work when the round's review timeout passed, after its delivery failed (#{round.dig("failure", "code") || "lapsed"}); a resume starts a fresh round and closes this window, stopping any reviewer still at work there, so look at the window first")
         else
           adopt(run, @evaluation.review_ended(run, ctx: ctx))
         end

@@ -163,6 +163,18 @@ RSpec.describe "fake contracts" do
     end
   end
 
+  describe RecordingReviewSummary do
+    it "accepts every call Workspace::WorkflowReviewSummary accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowReviewSummary, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRoundRerun do
+    it "accepts every call Workspace::WorkflowRoundRerun accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowRoundRerun, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
   describe RecordingChecker do
     it "accepts every call Workspace::WorkflowCheck accepts" do
       expect(FakeContract.problems(described_class, Workspace::WorkflowCheck, control: described_class::CONTROL_METHODS)).to be_empty

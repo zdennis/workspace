@@ -408,17 +408,12 @@ module Workspace
       holder["started"].nil? || me["started"].nil? || holder["started"] == me["started"]
     end
 
-    # Whether the run still waits for this delivery: on the step, attempt and round it was registered for, still
-    # `reviewing` with the round's mark `delivering`, no stop, no park, not ended, its end not being judged
-    # (`recompute`: the round went on by its own Stop), and the mark held by this process or by none.
+    # Whether the run still waits for this delivery ({WorkflowTransitions.round_delivery_wanted?}), with the round's mark held
+    # by this process or by none.
     def wanted?(run, pending)
       run = WorkflowRun.from_h(run)
-      return false if WorkflowRunStore::TERMINAL_STATES.include?(run.state) || run.parked || run.reason || run.current != pending["step"]
-      step = run.steps[pending["step"]]
-      round = step&.review
-      return false unless step&.state == "reviewing" && step.last_attempt&.n == pending["attempt"] && round.is_a?(Hash)
-      return false unless round["round"] == pending["round"] && round["delivery"] == "delivering" && !round["recompute"]
-      holder = round["holder"]
+      return false unless WorkflowTransitions.round_delivery_wanted?(run, pending)
+      holder = run.steps[pending["step"]].review["holder"]
       !holder.is_a?(Hash) || mine?(holder)
     end
 

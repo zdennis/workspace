@@ -50,7 +50,7 @@ class FakeWorkflowPanes
 
   def parkable?(_workspace, _pane) = true
 
-  def pane_gone?(pane) = @gone.include?(pane)
+  def pane_gone?(pane, workspace: nil) = @gone.include?(pane)
 
   def agent_gone?(_workspace, pane) = @agents_gone.include?(pane)
 

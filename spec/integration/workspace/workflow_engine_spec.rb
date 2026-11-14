@@ -5947,10 +5947,53 @@ RSpec.describe Workspace::WorkflowEngine do
 
         attempt = run["steps"]["plan"]["attempts"].last
         expect(run["current"]).to eq("build")
-        expect(attempt["review_outcome"]).to eq("round" => 1, "approvals" => 1, "need" => 1, "must" => [], "passed" => true, "revision" => "rev1")
+        expect(attempt["review_outcome"]).to eq("round" => 1, "approvals" => 1, "need" => 1, "must" => [], "passed" => true, "revision" => "rev1",
+          "summary" => File.join(round_dir, "summary.md"))
         expect(attempt["reviews"]).to eq([{"reviewer" => "skeptic", "path" => "reviews/plan.1.r1/skeptic.md", "verdict" => "approve", "revision" => "rev1",
                                            "agent_id" => "agent-1", "sha256" => Digest::SHA256.file(File.join(round_dir, "skeptic.md")).hexdigest, "counted" => true, "problem" => nil,
                                            "isolation" => "review_pane"}])
+      end
+
+      context "with a gate after the review and an inbox" do
+        let(:gate) { "    gate: approve" }
+        let(:inbox) { Workspace::InboxStore.new(path: File.join(@dir, "inbox.json"), clock: -> { now.first }) }
+
+        it "waits at the gate with summary.md as its note and one review item, and approve goes on to the next step" do
+          engine = build_engine(review_round: round_runner, inbox_for: ->(_name) { inbox },
+            review_tally: Workspace::WorkflowReviewTally.new(proof: Workspace::ReviewVerdictProof.new(hook_dir: hook_dir)))
+          start_reviewed(engine)
+          review_written("approve")
+          now[0] += 60
+
+          run = engine.turn_ended("wr_1", pane: "%9")
+
+          summary = File.join(round_dir, "summary.md")
+          expect(run["reason"]).to include("code" => "waiting_you", "details" => include("kind" => "gate", "summary" => summary))
+          expect(File.read(summary)).to start_with("# Review of step plan, attempt 1, round 1\n")
+          expect(gate_note.find(run)).to include("name" => "summary.md", "path" => summary)
+          items = inbox.list
+          expect(items.map { |item| item["dedupe_key"] }).to eq(["review:wr_1:plan"])
+          expect(items.first["title"]).to eq("Workflow run wr_1: review of plan, round 1: approved")
+
+          run = engine.approve("wr_1", note_sha256: Digest::SHA256.file(summary).hexdigest)
+
+          expect(run["current"]).to eq("build")
+          expect(run["steps"]["plan"]["gate"]["file"]).to eq("path" => summary, "sha256" => Digest::SHA256.file(summary).hexdigest)
+        end
+
+        it "takes the review_summary it is given in place of the one it builds" do
+          summary = RecordingReviewSummary.new({"problem" => "not written"})
+          engine = build_engine(review_round: round_runner, review_summary: summary,
+            review_tally: Workspace::WorkflowReviewTally.new(proof: Workspace::ReviewVerdictProof.new(hook_dir: hook_dir)))
+          start_reviewed(engine)
+          review_written("approve")
+          now[0] += 60
+
+          run = engine.turn_ended("wr_1", pane: "%9")
+
+          expect(summary.calls.map(&:first)).to eq(%i[write notify])
+          expect(run["reason"]["details"]).not_to have_key("summary")
+        end
       end
 
       it "stops review_incomplete for a verdict another pane wrote, never rejecting" do

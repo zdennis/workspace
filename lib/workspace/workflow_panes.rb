@@ -267,9 +267,10 @@ module Workspace
     end
 
     # @param pane [String] a pane id
+    # @param workspace [String, nil] the run's workspace, whose tmux socket is asked (its config's `socket_name`); nil asks the default one
     # @return [Boolean] whether tmux no longer has the pane; false when tmux can't be read
-    def pane_gone?(pane)
-      @tmux.session_name_for_pane(pane).nil?
+    def pane_gone?(pane, workspace: nil)
+      @tmux.session_name_for_pane(pane, project: workspace).nil?
     rescue SystemCallError
       false
     end

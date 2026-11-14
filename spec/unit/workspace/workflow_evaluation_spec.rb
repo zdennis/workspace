@@ -698,69 +698,40 @@ RSpec.describe Workspace::WorkflowEvaluation do
     end
   end
 
-  describe "a review round registered after a rejected one" do
+  describe "a review round registered with a round rerun collaborator" do
     let(:review) { {"step" => "plan", "attempt" => 2, "round" => 2} }
     let(:rounds) { [] }
     let(:runner) { ->(run_id, pending) { rounds << [run_id, pending] && nil } }
 
-    def after_rejection(round: {})
-      run_hash(definition_step: step("review" => {"from" => %w[skeptic]}), state: "reviewing").tap do |hash|
-        hash["steps"]["plan"] = {"state" => "reviewing", "review_rounds" => 2,
-                                 "review" => {"round" => 2, "delivery" => "delivering", "started_at" => "2026-11-10T11:50:00.000Z"}.merge(round),
-                                 "attempts" => [{"n" => 1, "outcome" => "failed", "review_outcome" => {"round" => 1, "passed" => false, "revision" => "rev1"}},
-                                   {"n" => 2, "outcome" => "checks_passed"}]}
-      end
-    end
-
-    def follow(context = ctx, **overrides)
+    def follow(rerun)
+      stored(run_hash(state: "reviewing"))
+      context = ctx
       context.review(review)
-      evaluation(review_round: runner, **overrides).finish_follow_ups("wr_1", context, Workspace::WorkflowRun.from_h(store.runs["wr_1"]))
+      evaluation(review_round: runner, round_rerun: rerun).finish_follow_ups("wr_1", context, Workspace::WorkflowRun.from_h(store.runs["wr_1"]))
     end
 
-    it "stops it review_no_change when its revision is the one the rejection judged, delivering nothing" do
-      stored(after_rejection)
-      revision = RecordingReviewRevision.new({revision: "rev1", problem: nil})
+    it "asks it about the round before the delivery, and delivers the round as registered when it answers nothing" do
+      rerun = RecordingRoundRerun.new
 
-      follow(review_revision: revision)
+      follow(rerun)
 
-      expect(revision.calls).to eq([[:call, "wr_1", "plan"]])
-      expect(progress.calls).to eq([[:stop_no_change, "plan", {revision: "rev1", rejected: {"revision" => "rev1", "round" => 1, "attempt" => 1}}]])
-      expect(rounds).to be_empty
+      expect(rerun.calls).to eq([[:check_revision, "wr_1", review]])
+      expect(rounds).to eq([["wr_1", review]])
     end
 
-    it "hands the round its computed revision when the author changed what the review reads" do
-      stored(after_rejection)
+    it "hands the delivery the revision it computed" do
+      follow(RecordingRoundRerun.new({revision: "rev2"}))
 
-      follow(review_revision: RecordingReviewRevision.new({revision: "rev2", problem: nil}))
-
-      expect(progress.calls).to be_empty
       expect(rounds).to eq([["wr_1", review.merge("revision" => "rev2")]])
     end
 
-    it "computes nothing for a round whose revision a person accepted, a rerun carrying its own, a first round, or an engine with no revision reader" do
-      revision = RecordingReviewRevision.new({revision: "rev1", problem: nil})
-      stored(after_rejection(round: {"accept_revision" => true}))
-      follow(review_revision: revision)
-      stored(after_rejection.tap { |hash| hash["steps"]["plan"]["attempts"].shift })
-      follow(review_revision: revision)
-      stored(after_rejection)
-      context = ctx
-      context.review(review.merge("revision" => "rev1"))
-      evaluation(review_round: runner, review_revision: revision).finish_follow_ups("wr_1", context, Workspace::WorkflowRun.from_h(store.runs["wr_1"]))
-      follow
+    it "delivers nothing and answers the run it stopped" do
+      stopped = Workspace::WorkflowRun.from_h(run_hash(:state => "reviewing", "reason" => {"code" => "review_no_change"}))
 
-      expect(revision.calls).to be_empty
-      expect(progress.calls).to be_empty
-      expect(rounds.size).to eq(4)
-    end
+      result = follow(RecordingRoundRerun.new({run: stopped}))
 
-    it "leaves a revision it could not compute to the delivery, which reports it" do
-      stored(after_rejection)
-
-      follow(review_revision: RecordingReviewRevision.new({revision: nil, problem: "exited 1"}))
-
-      expect(progress.calls).to be_empty
-      expect(rounds).to eq([["wr_1", review]])
+      expect(rounds).to be_empty
+      expect(result).to equal(stopped)
     end
   end
 

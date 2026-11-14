@@ -722,6 +722,42 @@ module Workspace
       {"revision" => outcome["revision"], "round" => outcome["round"], "attempt" => decided["n"]}
     end
 
+    # Whether the run still waits for the delivery of the round +pending+ names: {.round_waits?}, and the round's mark
+    # `delivering` with its end not being judged (no `recompute`). The test every delivery that runs with the lock
+    # given up makes before it writes back.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @param pending [Hash{String=>Object}] "step", "attempt" and "round" of the delivery
+    # @return [Boolean]
+    def self.round_delivery_wanted?(run, pending)
+      round = round_waits?(run, pending)
+      round ? round["delivery"] == "delivering" && !round["recompute"] : false
+    end
+
+    # Whether the run still waits for the recompute of an ended round's revision +pending+ names: {.round_waits?}, and
+    # the round's `recompute` mark that recompute's own try (a tick that took it for lost started another).
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @param pending [Hash{String=>Object}] "step", "attempt", "round" and "try" of the recompute; a nil "try" is never wanted
+    # @return [Boolean]
+    def self.round_recompute_wanted?(run, pending)
+      return false if pending["try"].nil?
+      round = round_waits?(run, pending)
+      round ? round.dig("recompute", "try") == pending["try"] : false
+    end
+
+    # The round when the run is still on the step, attempt and round +pending+ names, the step `reviewing`, with no
+    # stop, no park and not ended; else nil.
+    def self.round_waits?(run, pending)
+      run = WorkflowRun.from_h(run)
+      return nil if run.parked || run.reason || WorkflowRunStore::TERMINAL_STATES.include?(run.state) || run.current != pending["step"]
+      step = run.steps[pending["step"]]
+      round = step&.review
+      return nil unless step&.state == "reviewing" && step.last_attempt&.n == pending["attempt"] && round.is_a?(Hash) && round["round"] == pending["round"]
+      round
+    end
+    private_class_method :round_waits?
+
     # The guard stops `workflow resume --accept-guard` takes: every guard that fails a step. `config_changed` is
     # only ever a warning, so it is not among them.
     ACCEPTABLE_GUARDS = %w[head_moved hooks_changed hidden_changed no_commit operation_in_progress tracked_changed].freeze

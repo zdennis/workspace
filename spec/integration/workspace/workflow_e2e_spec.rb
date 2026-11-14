@@ -73,7 +73,8 @@ RSpec.describe "a workflow run from start to completed" do
       commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
       env_stopper: ->(**) {}, workspace_known: ->(_name) { false }, task_store: instance_double(Workspace::TaskStore, active_for: {"id" => "t1"}),
       attempt_record: attempt_record, require_check: require_check, review_round: round_runner, review_closer: ->(_id, round) { closed << round },
-      review_tally: Workspace::WorkflowReviewTally.new(proof: Workspace::ReviewVerdictProof.new(hook_dir: hook_dir)), review_revision: review_revision, clock: clock)
+      review_tally: Workspace::WorkflowReviewTally.new(proof: Workspace::ReviewVerdictProof.new(hook_dir: hook_dir)), review_revision: review_revision,
+      inbox_for: ->(_name) { inbox }, clock: clock)
   end
 
   before { FileUtils.mkdir_p([File.join(worktree, ".git"), notes_dir, hook_dir]) }
@@ -113,6 +114,13 @@ RSpec.describe "a workflow run from start to completed" do
             "tool" => "Write", "tool_use_id" => "toolu_#{seq}", "agent_id" => "agent-#{reviewer}", "path" => relative,
             "sha256" => Digest::SHA256.hexdigest(text), "ok" => true}
     File.write(Workspace::HookEventLog.path_for(hook_dir, workspace), JSON.generate(line) + "\n", mode: "a")
+  end
+
+  # The run and step's one review item in the workspace's inbox.
+  def review_item(step)
+    found = inbox.list.select { |item| item["dedupe_key"] == "review:wr_1:#{step}" }
+    expect(found.size).to eq(1)
+    found.first
   end
 
   def start
@@ -194,6 +202,94 @@ RSpec.describe "a workflow run from start to completed" do
     expect(run).to include("state" => "running", "current" => "implement")
     expect(outcomes(run, "design")).to eq(%w[failed passed])
     expect(run["steps"]["design"]["attempts"].last["review_outcome"]).to include("round" => 2, "approvals" => 2, "passed" => true)
+  end
+
+  context "with design gated after its review" do
+    let(:definition) do
+      text = File.read(fixture).sub("      must: [skeptic]\n", "      must: [skeptic]\n    gate: approve\n")
+      Workspace::WorkflowDefinition.parse(text, id: "e2e", source: "global", path: fixture)
+    end
+
+    def summary(dir) = File.join(worktree, ".workflow", "wr_1", "reviews", dir, "summary.md")
+
+    it "waits at the gate with the round's summary.md as its note once the review passes, and approve goes on" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+
+      run = turn_ended("%9")
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "waiting_you", "details" => include("kind" => "gate", "step" => "design", "summary" => summary("design.1.r1")))
+      expect(run["steps"]["design"]).to include("state" => "passed", "gate" => include("state" => "waiting"))
+      note = gate_note.find(run)
+      expect(note).to eq("name" => "summary.md", "path" => summary("design.1.r1"), "sha256" => Digest::SHA256.file(summary("design.1.r1")).hexdigest)
+      expect(review_item("design")["body"]).to include("waits at its gate", "workflow approve wr_1")
+
+      run = engine.approve("wr_1", note_sha256: note["sha256"])
+
+      expect(run).to include("state" => "running", "current" => "implement")
+      expect(run["steps"]["design"]["gate"]).to include("state" => "approved", "file" => {"path" => summary("design.1.r1"), "sha256" => note["sha256"]})
+      expect(File.read(run["steps"]["implement"]["attempts"].last["prompt_file"])).to include("The approved note is #{summary("design.1.r1")}")
+    end
+
+    it "refuses an approval, and names no note, once the summary changed since the engine wrote it" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+      run = turn_ended("%9")
+      read = gate_note.find(run)["sha256"]
+      File.write(summary("design.1.r1"), "edited\n")
+
+      expect { engine.approve("wr_1", note_sha256: read) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("gate_note_unreadable") }
+      expect { engine.approve("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.message).to include("changed since the engine wrote it") }
+      expect(engine.reject("wr_1", note: "Write it again.")["steps"]["design"]["attempts"].size).to eq(2)
+    end
+
+    it "reviews the step again in a new round when the gate rejects it, keeping the round count and one inbox item, opened again" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+      turn_ended("%9")
+      first = review_item("design")
+      inbox.transition(first["id"], to: "done", by: {"kind" => "cli"})
+
+      run = engine.reject("wr_1", note: "Cover the error path.")
+      expect(run["steps"]["design"]["attempts"].size).to eq(2)
+      artifact("design.md")
+      run = turn_ended
+
+      expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
+      expect(rounds.last).to eq("step" => "design", "attempt" => 2, "round" => 2)
+      verdict("skeptic", "approve", seq: 3, dir: "design.2.r2")
+      verdict("builder", "approve", seq: 4, dir: "design.2.r2")
+      run = turn_ended("%9")
+
+      expect(run["reason"]).to include("code" => "waiting_you", "details" => include("kind" => "gate", "summary" => summary("design.2.r2")))
+      expect(gate_note.find(run)["path"]).to eq(summary("design.2.r2"))
+      expect(File.read(summary("design.1.r1"))).to include("round 1")
+      item = review_item("design")
+      expect(item).to include("id" => first["id"], "state" => "open")
+      expect(item["links"]).to include("attempt" => 2, "round" => 2, "summary" => summary("design.2.r2"))
+    end
+  end
+
+  context "with design's review notify off" do
+    let(:definition) do
+      text = File.read(fixture).sub("      must: [skeptic]\n", "      must: [skeptic]\n      notify: false\n")
+      Workspace::WorkflowDefinition.parse(text, id: "e2e", source: "global", path: fixture)
+    end
+
+    it "writes the round's summary and posts no inbox item" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+
+      turn_ended("%9")
+
+      expect(File).to exist(File.join(worktree, ".workflow", "wr_1", "reviews", "design.1.r1", "summary.md"))
+      expect(inbox.list.map { |item| item["dedupe_key"] }).not_to include("review:wr_1:design")
+    end
   end
 
   context "with design's review allowed two rounds" do
@@ -307,7 +403,13 @@ RSpec.describe "a workflow run from start to completed" do
     run = turn_ended("%9")
     design = run["steps"]["design"]["attempts"].last
     expect(design["outcome"]).to eq("passed")
-    expect(design["review_outcome"]).to eq("round" => 1, "approvals" => 2, "need" => 2, "must" => ["skeptic"], "passed" => true, "revision" => "rev1")
+    summary = File.join(worktree, ".workflow", "wr_1", "reviews", "design.1.r1", "summary.md")
+    expect(design["review_outcome"]).to eq("round" => 1, "approvals" => 2, "need" => 2, "must" => ["skeptic"], "passed" => true, "revision" => "rev1", "summary" => summary)
+    expect(design["rounds"].last["summary"]).to eq("path" => summary, "sha256" => Digest::SHA256.file(summary).hexdigest)
+    expect(File.read(summary)).to include("- outcome: approved", "- revision: rev1", "- rule: 2 approvals including skeptic", "- skeptic: approve, counted")
+    item = review_item("design")
+    expect(item).to include("type" => "review_request", "state" => "open")
+    expect(item["links"]).to include("run_id" => "wr_1", "step" => "design", "attempt" => 1, "round" => 1, "summary" => summary)
     expect(design["reviews"].map { |row| row.values_at("reviewer", "verdict", "counted") }).to eq([["skeptic", "approve", true], ["builder", "approve", true]])
     expect(run).to include("state" => "running", "current" => "implement")
   end
