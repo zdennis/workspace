@@ -145,6 +145,26 @@ module Workspace
       WorkflowRun.from_h(work)
     end
 
+    # Decides the step a person's `resume --accept-guard` took a guard stop on, as {#evaluate} would with the guard
+    # left out: its `produces` files, its `require:` proofs (one run outside the lock registered on +ctx+) and its
+    # `status:` check (registered on +ctx+, run by {#finish_check}). The stopped attempt already ended, so it is marked
+    # `guard_accepted` (the guard's code) and is never finished again: when the rest passes, now or once
+    # {#finish_check} applies a result, it reads `overridden` ({WorkflowProgress#pass_overridden}); when it does not,
+    # the step stops with that reason (`turn_ended_incomplete`, or `failed_check` with the proof's or check's code).
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, re-baselined, on the failed step; left as it is
+    # @param ctx [Workspace::WorkflowRunChange::Context] the change's context
+    # @return [WorkflowRun] the run afterwards
+    def evaluate_accepted(run, ctx:)
+      work = WorkflowRun.from_h(run).thawed
+      guard = work.dig("reason", "details", "guard")
+      step_state(work)["attempts"].last["guard_accepted"] = guard
+      work["reason"] = nil
+      work["state"] = "running"
+      judge(work, ctx, nil, [], guard: false)
+      WorkflowRun.from_h(work)
+    end
+
     # The review round of the step being reviewed ended. With a revision reader the round is marked (`recompute`:
     # its `started_at` and `try`) and registered on +ctx+ ({WorkflowRunChange::Context#review_end}): its revision is
     # computed again with the lock given up, and {#finish_follow_ups} decides it. A round already tried
@@ -285,7 +305,7 @@ module Workspace
       false
     end
 
-    def judge(run, ctx, turn_started, background)
+    def judge(run, ctx, turn_started, background, guard: true)
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
@@ -297,7 +317,7 @@ module Workspace
         fail_step(run, {"cause" => "reported", "summary" => reported["summary"]}.merge(code_for("reported", reported["code"])), ctx)
         return
       end
-      if step["guard"]
+      if guard && step["guard"]
         found = guard_check(run, step)
         if found
           fail_step(run, found, ctx)
@@ -349,7 +369,7 @@ module Workspace
         end
       end
       unless step["status"]
-        adopt(run, @progress.pass_step(run, ctx: ctx))
+        adopt(run, pass_step(run, ctx))
         return
       end
 
@@ -426,7 +446,7 @@ module Workspace
           "error" => result[:error]).compact!
         event(stored, "check_finished", "step" => check["step"], "attempt" => check["attempt"], "exit_code" => result[:exit_code])
         if result[:exit_code] == 0
-          passed = @progress.pass_step(stored, ctx: ctx)
+          passed = pass_step(stored, ctx)
           review = ctx.review
           next passed
         end
@@ -466,6 +486,12 @@ module Workspace
 
     def fail_step(run, failure, ctx)
       adopt(run, @progress.fail_step(run, failure, ctx: ctx))
+    end
+
+    # An attempt whose guard stop a person accepted ended already: it passes `overridden`, with no second finish.
+    def pass_step(run, ctx)
+      return @progress.pass_overridden(run, ctx: ctx) if step_state(run)["attempts"].last["guard_accepted"]
+      @progress.pass_step(run, ctx: ctx)
     end
 
     def guard_check(run, step)

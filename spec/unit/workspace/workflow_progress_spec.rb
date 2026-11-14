@@ -66,6 +66,83 @@ RSpec.describe Workspace::WorkflowProgress do
     end
   end
 
+  describe "#pass_overridden" do
+    def guard_stopped(definition_steps: steps)
+      run = run_hash(:definition_steps => definition_steps, "state" => "waiting",
+        "reason" => {"code" => "failed_check", "since" => "2026-11-10T11:55:00Z", "details" => {"cause" => "guard", "guard" => "head_moved"}})
+      run["steps"]["plan"] = {"state" => "failed", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T11:55:00Z", "outcome" => "failed", "code" => "head_moved"}]}
+      run
+    end
+
+    it "marks the failed attempt overridden without finishing it again and starts the next step" do
+      context = ctx
+
+      run = progress.pass_overridden(guard_stopped, ctx: context)
+
+      expect(run.step("plan").state).to eq("passed")
+      expect(run.step("plan").last_attempt.to_h).to eq("n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T11:55:00Z",
+        "outcome" => "overridden", "code" => "head_moved")
+      expect(attempt_record.calls).to be_empty
+      expect(run.current).to eq("build")
+      expect(context.delivery).to eq("step" => "build")
+      expect(change.events).to eq([["wr_1", "step_passed", {"step" => "plan", "attempt" => 1}]])
+    end
+
+    it "still waits at the step's gate" do
+      context = ctx
+
+      run = progress.pass_overridden(guard_stopped(definition_steps: steps("gate" => "approve")), ctx: context)
+
+      expect(run.current).to eq("plan")
+      expect(run.step("plan").to_h["gate"]).to eq("state" => "waiting", "since" => "2026-11-10T12:00:00Z")
+      expect(run.reason).to include("code" => "waiting_you", "details" => include("kind" => "gate", "step" => "plan"))
+      expect(context.delivery).to be_nil
+      expect(change.events.map { |event| event[1] }).to eq(%w[step_passed gate_waiting])
+    end
+  end
+
+  describe "an attempt whose guard stop a person accepted" do
+    let(:review) { {"from" => %w[skeptic tester], "need" => 2, "must" => [], "max_rounds" => 6} }
+
+    def accepted(definition_steps: steps)
+      run_hash(definition_steps: definition_steps).tap do |hash|
+        hash["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:55:00Z", "outcome" => "failed", "code" => "head_moved", "guard_accepted" => "head_moved")
+      end
+    end
+
+    it "with a review: makes the step reviewing and starts its round, the attempt overridden and not finished again" do
+      context = ctx
+
+      run = progress.pass_overridden(accepted(definition_steps: steps("review" => review)), ctx: context)
+
+      state = run.step("plan")
+      expect(state.state).to eq("reviewing")
+      expect(state.last_attempt.outcome).to eq("overridden")
+      expect(state.review).to include("round" => 1, "delivery" => "delivering")
+      expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
+      expect(attempt_record.calls).to be_empty
+      expect(change.events.map { |event| event[1] }).to eq(%w[review_started])
+    end
+
+    it "keeps overridden when the review round then approves it" do
+      given = progress.pass_overridden(accepted(definition_steps: steps("review" => review)), ctx: ctx)
+
+      run = progress.decide_review(given, {outcome: :approved, reviews: [], approvals: 2, need: 2, must: []}, ctx: ctx)
+
+      expect(run.step("plan").state).to eq("passed")
+      expect(run.step("plan").last_attempt.outcome).to eq("overridden")
+    end
+
+    it "fails on a later check with its own code, keeping the attempt's end as the guard recorded it" do
+      run = progress.fail_step(accepted, {"cause" => "check", "exit_code" => 1, "code" => "check_failed"}, ctx: ctx)
+
+      expect(run.step("plan").state).to eq("failed")
+      expect(run.step("plan").last_attempt.to_h).to include("ended_at" => "2026-11-10T11:55:00Z", "outcome" => "failed", "code" => "check_failed")
+      expect(attempt_record.calls).to be_empty
+      expect(run.reason).to include("code" => "failed_check")
+    end
+  end
+
   describe "#advance" do
     it "starts the step after the current one" do
       run = progress.advance(run_hash, ctx: ctx)

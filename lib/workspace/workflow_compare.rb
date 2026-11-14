@@ -20,7 +20,7 @@ module Workspace
   # (all `run_resumed` events) and `resumes_per_run`.
   #
   # A step is a miss when it has more than one delivered attempt (a rejected gate or a `resume --from` reran it,
-  # or it looped) or its delivered attempt ended other than `passed` (in a `completed` run, one with no outcome too: it was passed over by a `resume --from` later step). A step with no delivered attempt, or one
+  # or it looped) or its delivered attempt ended other than `passed` (an `overridden` one, a guard stop a person accepted, is a miss: the run can complete and be settled, never as a first try) (in a `completed` run, one with no outcome too: it was passed over by a `resume --from` later step). A step with no delivered attempt, or one
   # delivered attempt still going, is not a miss; an attempt that never reached the agent is not delivered
   # ({WorkflowStats.kind_of}), so a redelivery is not a miss. A run is a first try when it completed with no miss.
   #

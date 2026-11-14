@@ -433,6 +433,14 @@ class RecordingProgress
     marked(run, "passed")
   end
 
+  # Marks the last attempt `overridden` and the step passed, as the real one does before its gate or next step.
+  def pass_overridden(run, ctx:)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << [:pass_overridden, hash["current"]]
+    hash["steps"][hash["current"]]["attempts"].last["outcome"] = "overridden"
+    marked(hash.merge("reason" => nil), "passed")
+  end
+
   def fail_step(run, failure, ctx:)
     @calls << [:fail_step, Workspace::WorkflowRun.from_h(run).current, failure]
     marked(run, "failed")
@@ -606,8 +614,10 @@ class RecordingGuard
   # @param config [Hash, nil] what +config_change+ answers
   # @param head [String, nil] what +head+ answers
   # @param tree [String, nil] what +tree_digest+ answers
-  def initialize(found: nil, config: nil, head: "a" * 40, tree: "t" * 64)
+  # @param unread [Array<String>] the parts +base+ could not read ("head", "hooks_sha256", "hidden_sha256")
+  def initialize(found: nil, config: nil, head: "a" * 40, tree: "t" * 64, unread: [])
     @found = found
+    @unread = unread
     @config = config
     @heads = [head]
     @trees = [tree]
@@ -627,6 +637,19 @@ class RecordingGuard
   def check(worktree, base, scope)
     @calls << [:check, worktree, scope]
     @found
+  end
+
+  # The last of +heads+ as the base commit, with a fixed snapshot (+unread+ names the parts given as unreadable, as
+  # nil); with +accept_tree+, the last of +trees+ as `accepted_tree_sha256`, listed as unread when nil (neither on an unborn branch, +head+ nil).
+  def base(worktree, accept_tree: false)
+    @calls << [:base, worktree, {accept_tree: accept_tree}]
+    guard = {"config_sha256" => "c", "hooks_sha256" => "h", "hidden_sha256" => "x"}
+    @unread.each { |key| guard[key] = nil if guard.key?(key) }
+    unborn = @heads.last.nil? && !@unread.include?("head")
+    guard["accepted_tree_sha256"] = @trees.last if accept_tree && @trees.last && !unborn
+    unread = @unread.dup
+    unread << "accepted_tree_sha256" if accept_tree && !@trees.last && !unborn
+    {"base_sha" => @unread.include?("head") ? nil : @heads.last, "base_guard" => guard, "unread" => unread}
   end
 
   def config_change(worktree, base, seen: nil)
@@ -697,6 +720,16 @@ class RecordingEvaluation
     ctx.check(@check) if @check
     ctx.review(@review) if @review
     @reason ? Workspace::WorkflowRun.from_h(run.thawed.merge("reason" => @reason)) : run
+  end
+
+  # Marks the last attempt `guard_accepted`, then answers as +evaluate+ does.
+  def evaluate_accepted(run, ctx:)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << [:evaluate_accepted, hash["current"]]
+    hash["steps"][hash["current"]]["attempts"].last["guard_accepted"] = hash.dig("reason", "details", "guard")
+    ctx.check(@check) if @check
+    ctx.review(@review) if @review
+    Workspace::WorkflowRun.from_h(hash.merge("reason" => @reason))
   end
 
   def review_ended(run, ctx:)

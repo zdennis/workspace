@@ -457,6 +457,39 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe "accepting a guard stop" do
+    def guard_stop(guard, cause: "guard") = {"code" => "failed_check", "details" => {"cause" => cause, "guard" => guard}}
+
+    def stopped(reason, step_state: "failed", state: "waiting", base_sha: "a" * 40)
+      run_with(steps: {"plan" => step(step_state, {"n" => 1})}).merge("state" => state, "reason" => reason, "base_sha" => base_sha)
+    end
+
+    it "names the guard of each guard stop a person may accept, no_commit with no base_sha too" do
+      described_class::ACCEPTABLE_GUARDS.each do |guard|
+        expect(described_class.acceptable_guard(stopped(guard_stop(guard)))).to eq(guard)
+      end
+      expect(described_class.acceptable_guard(stopped(guard_stop("no_commit"), base_sha: nil))).to eq("no_commit")
+      expect(described_class::ACCEPTABLE_GUARDS).to match_array(Workspace::WorkflowGuard::CODES)
+      expect(described_class.guard_acceptable?(Workspace::WorkflowRun.from_h(stopped(guard_stop("head_moved"))))).to be true
+    end
+
+    it "takes no other stop, a warning-only guard, a run not waiting or a step not failed" do
+      expect(described_class.acceptable_guard(stopped({"code" => "failed_check", "details" => {"cause" => "check", "code" => "check_failed"}}))).to be_nil
+      expect(described_class.acceptable_guard(stopped(guard_stop("config_changed")))).to be_nil
+      expect(described_class.acceptable_guard(stopped({"code" => "waiting_you", "details" => {"cause" => "guard", "guard" => "head_moved"}}))).to be_nil
+      expect(described_class.acceptable_guard(stopped(guard_stop("head_moved"), state: "running"))).to be_nil
+      expect(described_class.acceptable_guard(stopped(guard_stop("head_moved"), step_state: "running"))).to be_nil
+      expect(described_class.acceptable_guard(stopped(nil))).to be_nil
+      expect(described_class.acceptable_guard(stopped({"code" => "failed_check", "details" => "garbled"}))).to be_nil
+      expect(described_class.guard_acceptable?(stopped(nil))).to be false
+    end
+
+    it "words the line the next attempt reads before the note" do
+      expect(described_class.guard_accepted_line("head_moved", "plan", "0123456789abcdef")).to eq("A person accepted the `head_moved` stop on `plan`; the guard now measures from HEAD `0123456789ab`.")
+      expect(described_class.guard_accepted_line("no_commit", "plan", nil)).to eq("A person accepted the `no_commit` stop on `plan`; the checkout has no commit, so the guard has no HEAD to measure from.")
+    end
+  end
+
   describe "failure words and codes" do
     it "takes an agent's code, else the engine's" do
       expect(described_class.code_for("reported", "oops")).to eq("code" => "oops", "code_source" => "agent")

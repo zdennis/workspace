@@ -730,19 +730,24 @@ module Workspace
       # @param extra_tokens [Integer, nil] add this to the run's token budget (see {Workspace::WorkflowEngine#resume})
       # @param extra_seconds [Integer, nil] add this many seconds to the run's timeout
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
+      # @param accept_guard [Boolean] accept the guard stop the run waits on: the checkout as it is now becomes the
+      #   run's base, and the step passes once its other checks do (see {Workspace::WorkflowDecisions#resume}); needs +note+
+      # @param guard_retry [Boolean] with +accept_guard+, run the stopped step again instead of passing it
       # @return [Hash{String=>Object}] the action row; `outcome` is "unchanged" when an agent
       #   is working on the step or its check is still running
-      # @raise [Workspace::Error] code `bound_pane` for `--from` at a waiting gate from a pane
-      #   bound to a run, or see {Workspace::WorkflowEngine#resume}
-      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil)
+      # @raise [Workspace::Error] code `bound_pane` for `--from` at a waiting gate, or `--accept-guard`, from a pane
+      #   bound to a run (and `--accept-guard` from a process under the run's own pane), or see {Workspace::WorkflowEngine#resume}
+      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil,
+        accept_guard: false, guard_retry: false)
         stored = @store.run(run)
         pane_id = nil
         turn_over = nil
         unless WorkflowRunStore::TERMINAL_STATES.include?(stored.state)
           state = stored.steps.fetch(stored.current)
           refuse_bound_pane!(caller_pane, "workflow resume --from") if from && state.gate_waiting?
-          refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && checked_step?(stored)
-          @engine.refuse_resume(stored.to_h, from: from)
+          refuse_caller!(stored, caller_pane, "workflow resume --accept-guard", "A guard stop is accepted by a person") if accept_guard
+          refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && !accept_guard && checked_step?(stored)
+          @engine.refuse_resume(stored.to_h, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
           pane_id = resume_pane(stored, pane)
           if pane_id.nil? && from.nil? && state.state == "running" && stored.reason.nil? &&
               @panes.idle?(stored.workspace, @panes.pane_of(run) || stored.pane)
@@ -752,11 +757,13 @@ module Workspace
         target = pane_id || @panes.pane_of(run) || stored.pane
         # A round is delivered to the review pane, so a resume of it types nothing into the caller's pane and needs no park.
         reviewing = from.nil? && stored.current_step&.state == "reviewing"
-        if !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && !reviewing && caller_in_pane?(stored.workspace, caller_pane, target) &&
+        # An accepted guard stop is never parked: it is refused from the run's own pane above.
+        if !accept_guard && !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && !reviewing && caller_in_pane?(stored.workspace, caller_pane, target) &&
             @panes.parkable?(stored.workspace, target)
           return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
         end
-        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
+        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds,
+          accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane)
         row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.")
       end
 

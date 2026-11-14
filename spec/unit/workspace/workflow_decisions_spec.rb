@@ -10,11 +10,12 @@ RSpec.describe Workspace::WorkflowDecisions do
   let(:evaluation) { RecordingEvaluation.new(store.runs) }
   let(:attempt_record) { RecordingAttemptRecord.new }
   let(:gate_note) { RecordingGateNote.new }
+  let(:guard) { RecordingGuard.new(head: "b" * 40) }
   let(:panes) { RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, runs_on: {"%3" => "wr_1"}) }
 
   def decisions
     described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-      attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now })
+      attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now })
   end
 
   def run_hash(id: "wr_1", current: "plan", state: "running", gate: nil, reason: nil, max_attempts: 5, extra: {})
@@ -64,7 +65,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(state: "passed", gate: waiting_gate))
 
       run = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now }).approve("wr_1", note_sha256: "abc123")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).approve("wr_1", note_sha256: "abc123")
 
       expect(run.steps["plan"].gate["file"]).to eq("path" => "/notes/plan-note.md", "sha256" => "abc123")
       expect(run.pending_context).to eq(["The approved note is /notes/plan-note.md, sha256 abc123."])
@@ -77,7 +78,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       error = error_for do
         described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-          attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now }).approve("wr_1", note_sha256: "old")
+          attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).approve("wr_1", note_sha256: "old")
       end
 
       expect(error.code).to eq("stale_revision")
@@ -358,7 +359,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(reason: {"code" => "turn_ended_incomplete", "since" => "2026-11-10T11:58:00Z", "details" => {}}))
 
       described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now }).resume("wr_1")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:review_round, "wr_1", {"round" => 1}]])
     end
@@ -368,7 +369,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(reason: {"code" => "turn_ended_incomplete", "since" => "2026-11-10T11:58:00Z", "details" => {}}))
 
       resumed = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now }).resume("wr_1")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:finish_check, "wr_1", {"step" => "plan", "attempt" => 1}]])
       expect(resumed.run.reason).to be_nil
@@ -402,7 +403,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(state: "failed", extra: {"backoff" => {"until" => "2026-11-10T13:00:00Z", "to" => "plan"}, "state" => "waiting"}))
 
       resumed = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now }).resume("wr_1")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1")
 
       expect(resumed.unchanged).to eq("pane %3 is gone")
       expect(progress.calls.last).to eq([:hold_retry, "plan", {code: "pane_gone", message: "pane %3 is gone"}, {pane: "%3"}])
@@ -551,6 +552,233 @@ RSpec.describe Workspace::WorkflowDecisions do
     end
   end
 
+  describe "#resume with accept_guard" do
+    def guard_stop(guard) = {"code" => "failed_check", "since" => "2026-11-10T11:55:00Z", "details" => {"cause" => "guard", "guard" => guard, "code" => guard}}
+
+    def guard_stopped(guard = "head_moved", base_sha: "a" * 40, max_attempts: 5)
+      run = run_hash(state: "failed", reason: guard_stop(guard), max_attempts: max_attempts, extra: {"state" => "waiting", "base_sha" => base_sha, "base_guard" => {"config_sha256" => "old"}})
+      run["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:55:00Z", "outcome" => "failed", "code" => guard)
+      stored(run)
+    end
+
+    def accepted_line(guard, sha) = "A person accepted the `#{guard}` stop on `plan`; the guard now measures from HEAD `#{sha[0, 12]}`."
+
+    def decisions_with(guard) = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now })
+
+    it "takes the checkout as the new base in one reading, records the note and has the rest of the step judged without the guard" do
+      guard_stopped
+
+      resumed = decisions.resume("wr_1", accept_guard: true, note: "I rebased on purpose.", caller_pane: "%1")
+
+      run = resumed.run
+      expect(resumed.unchanged).to be_nil
+      expect(run.base_sha).to eq("b" * 40)
+      expect(run.to_h["base_guard"]).to eq("config_sha256" => "c", "hooks_sha256" => "h", "hidden_sha256" => "x", "accepted_tree_sha256" => "t" * 64)
+      expect(guard.calls).to eq([[:base, "/work/app", {accept_tree: true}]])
+      expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"]])
+      expect(run.steps["plan"].attempts.last.to_h).to include("outcome" => "failed", "guard_accepted" => "head_moved")
+      expect(progress.calls).to be_empty
+      expect(dispatch.calls).to be_empty
+      expect(run.pending_context).to eq([accepted_line("head_moved", "b" * 40), "Note from the person who resumed the run: I rebased on purpose."])
+      expect(change.events).to eq([
+        ["wr_1", "guard_overridden", {"step" => "plan", "attempt" => 1, "guard" => "head_moved", "old_base_sha" => "a" * 40, "new_base_sha" => "b" * 40,
+                                      "note" => "I rebased on purpose.", "pane" => "%1", "retry" => false}],
+        ["wr_1", "run_resumed", {"step" => "plan", "state" => "failed", "accept_guard" => "head_moved"}]
+      ])
+    end
+
+    it "runs the stopped step again with --retry, as a new attempt held to max_attempts" do
+      guard_stopped("tracked_changed", max_attempts: 1)
+
+      error = error_for { decisions.resume("wr_1", accept_guard: true, guard_retry: true, note: "keep the edits") }
+      expect(error.code).to eq("attempts_spent")
+      expect(guard.calls).to be_empty
+      expect(change.events).to be_empty
+
+      run = decisions.resume("wr_1", accept_guard: true, guard_retry: true, note: "keep the edits", extra_attempts: 1).run
+
+      expect(run.base_sha).to eq("b" * 40)
+      expect(run.extra_attempts).to eq(1)
+      expect(run.steps["plan"].attempts.last.outcome).to eq("failed")
+      expect(progress.calls).to be_empty
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(change.deliveries).to eq([{"step" => "plan"}])
+      expect(run.pending_context).to eq([accepted_line("tracked_changed", "b" * 40), "Note from the person who resumed the run: keep the edits"])
+      expect(change.events.map { |event| event[1] }).to eq(%w[attempts_extended guard_overridden run_resumed])
+      expect(change.events[1][2]).to include("retry" => true, "guard" => "tracked_changed")
+      expect(change.events[2][2]).to eq("from" => "plan", "accept_guard" => "tracked_changed")
+    end
+
+    it "accepts no_commit with no base commit, taking HEAD as the base once there is one" do
+      guard_stopped("no_commit", base_sha: nil)
+
+      run = decisions.resume("wr_1", accept_guard: true, note: "committed now").run
+
+      expect(run.base_sha).to eq("b" * 40)
+      expect(change.events.first[2]).to include("old_base_sha" => nil, "new_base_sha" => "b" * 40)
+      expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"]])
+    end
+
+    it "accepts no_commit with no base commit and still no HEAD: the step passes with the note and no base" do
+      guard_stopped("no_commit", base_sha: nil)
+      no_head = RecordingGuard.new(head: nil)
+
+      run = decisions_with(no_head).resume("wr_1", accept_guard: true, note: "empty repo").run
+
+      expect(run.base_sha).to be_nil
+      expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"]])
+      expect(run.pending_context).to eq(["A person accepted the `no_commit` stop on `plan`; the checkout has no commit, so the guard has no HEAD to measure from.",
+        "Note from the person who resumed the run: empty repo"])
+    end
+
+    it "accepts no_commit on an unborn branch without --retry (no accepted tree to read), and refuses --retry as guard_cannot_pass" do
+      guard_stopped("no_commit", base_sha: nil)
+      unborn = RecordingGuard.new(head: nil, tree: nil, found: {"code" => "no_commit", "paths" => []})
+
+      error = error_for { decisions_with(unborn).resume("wr_1", accept_guard: true, guard_retry: true, note: "mine") }
+      expect(error.code).to eq("guard_cannot_pass")
+      expect(change.events).to be_empty
+
+      run = decisions_with(unborn).resume("wr_1", accept_guard: true, note: "empty repo").run
+      expect(run.base_sha).to be_nil
+      expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"]])
+      expect(change.events.map { |e| e[1] }).to include("guard_overridden")
+    end
+
+    it "fails the step with the reason its other checks give, the guard_overridden event and the note kept" do
+      guard_stopped
+      missing = {"code" => "turn_ended_incomplete", "since" => "2026-11-10T12:00:00Z", "details" => {"step" => "plan", "missing" => ["/work/app/.workflow/wr_1/plan.md"]}}
+      evaluation = RecordingEvaluation.new(store.runs, reason: missing)
+      run = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", accept_guard: true, note: "mine").run
+
+      expect(run.reason).to eq(missing)
+      expect(progress.calls).to be_empty
+      expect(run.pending_context.last).to eq("Note from the person who resumed the run: mine")
+      expect(change.events.map { |event| event[1] }).to eq(%w[guard_overridden run_resumed])
+    end
+
+    it "runs a check the evaluation registers outside the lock, through finish_follow_ups" do
+      guard_stopped
+      evaluation = RecordingEvaluation.new(store.runs, check: {"step" => "plan", "attempt" => 1, "command" => "rake"})
+      described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", accept_guard: true, note: "mine")
+
+      expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"], [:finish_check, "wr_1", {"step" => "plan", "attempt" => 1, "command" => "rake"}]])
+    end
+
+    it "refuses with guard_base_unreadable when the tree can't be read, keeping the stored base" do
+      before = deep_copy(guard_stopped("tracked_changed"))
+
+      error = error_for { decisions_with(RecordingGuard.new(head: "b" * 40, tree: nil)).resume("wr_1", accept_guard: true, note: "mine") }
+
+      expect(error.code).to eq("guard_base_unreadable")
+      expect(error.details["unread"]).to eq(["accepted_tree_sha256"])
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(change.events).to be_empty
+      expect(evaluation.calls).to be_empty
+    end
+
+    [["head"], ["hooks_sha256"], ["hidden_sha256"]].each do |unread|
+      it "refuses with guard_base_unreadable, retryable, when #{unread.first} can't be read, keeping the stored base" do
+        before = deep_copy(guard_stopped)
+
+        error = error_for { decisions_with(RecordingGuard.new(head: "b" * 40, unread: unread)).resume("wr_1", accept_guard: true, note: "mine") }
+
+        expect(error.code).to eq("guard_base_unreadable")
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "guard" => "head_moved", "unread" => unread)
+        expect(error.retry).to eq("flags" => [], "destructive" => false)
+        expect(store.runs["wr_1"]).to eq(before)
+        expect(change.events).to be_empty
+        expect(evaluation.calls).to be_empty
+      end
+    end
+
+    {"no_commit" => /still has no commit/, "operation_in_progress" => /still under way: finish or abort it first/}.each do |code, message|
+      it "refuses --retry with guard_cannot_pass while #{code} would stop the retry again, and accepts without it" do
+        guard_stopped(code)
+        guard = RecordingGuard.new(head: "b" * 40, found: {"code" => code, "paths" => []})
+        before = deep_copy(store.runs["wr_1"])
+
+        error = error_for { decisions_with(guard).resume("wr_1", accept_guard: true, guard_retry: true, note: "mine") }
+
+        expect(error.code).to eq("guard_cannot_pass")
+        expect(error.message).to match(message)
+        expect(error.details).to include("guard" => code, "retry" => true)
+        expect(store.runs["wr_1"]).to eq(before)
+        expect(change.events).to be_empty
+        expect(dispatch.calls).to be_empty
+
+        decisions_with(guard).resume("wr_1", accept_guard: true, note: "mine")
+        expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"]])
+      end
+    end
+
+    it "lets --retry go on when the guard from the new base finds something a retry can put right" do
+      guard_stopped("head_moved")
+      guard = RecordingGuard.new(head: "b" * 40, found: {"code" => "tracked_changed", "paths" => ["a.rb"]})
+
+      decisions_with(guard).resume("wr_1", accept_guard: true, guard_retry: true, note: "mine")
+
+      expect(guard.calls.map(&:first)).to eq(%i[base check])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+    end
+
+    it "moves the run to a pane given, refusing one another run holds before anything is changed" do
+      guard_stopped
+      before = deep_copy(store.runs["wr_1"])
+
+      error = error_for { decisions.resume("wr_1", accept_guard: true, note: "mine", pane: "%9") }
+      expect(error.code).to eq("pane_has_run")
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(guard.calls).to be_empty
+      expect(change.events).to be_empty
+
+      run = decisions.resume("wr_1", accept_guard: true, note: "mine", pane: "%7").run
+      expect(run.pane).to eq("%7")
+      expect(panes.calls).to include([:unbind, "wr_1"])
+      expect(dispatch.calls).to include([:check_pane, "%7", {run_id: "wr_1"}])
+    end
+
+    it "takes over from a parked resume" do
+      guard_stopped["parked"] = {"id" => "p0", "pane" => "%3", "requested_at" => "2026-11-10T11:00:00Z", "expires_at" => "2026-11-10T13:00:00Z", "retries" => 0}
+
+      run = decisions.resume("wr_1", accept_guard: true, note: "mine").run
+
+      expect(dispatch.calls.first).to eq([:drop_park, "wr_1", "taken_over", {}])
+      expect(run.parked).to be_nil
+    end
+
+    it "refuses a run no guard stopped with guard_not_stopped, changing nothing" do
+      before = deep_copy(stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting"})))
+
+      error = error_for { decisions.resume("wr_1", accept_guard: true, note: "why") }
+
+      expect(error.code).to eq("guard_not_stopped")
+      expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "reason" => "failed_check", "guard" => nil)
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(guard.calls).to be_empty
+      expect(change.events).to be_empty
+      expect(error_for { decisions.refuse_resume(run_hash, note: "why", accept_guard: true) }.code).to eq("guard_not_stopped")
+    end
+
+    it "refuses the flags that can't go together before the run is read" do
+      guard_stopped
+      [
+        [{accept_guard: true}, "--accept-guard needs --note WHY"],
+        [{accept_guard: true, note: "  "}, "--accept-guard needs --note WHY"],
+        [{guard_retry: true, note: "why"}, "--retry is for"],
+        [{accept_guard: true, guard_retry: true, from: "plan", note: "why"}, "--retry runs the stopped step again; --from can't go with it."],
+        [{accept_guard: true, from: "plan", note: "why"}, "--from can't go with it."]
+      ].each do |options, message|
+        expect { decisions.resume("wr_1", **options) }.to raise_error(Workspace::UsageError, Regexp.new(Regexp.escape(message)))
+        expect { decisions.refuse_resume(store.runs["wr_1"], **options) }.to raise_error(Workspace::UsageError, Regexp.new(Regexp.escape(message)))
+      end
+      expect(change.events).to be_empty
+    end
+  end
+
   describe "#park" do
     def park_of(at, pane: "%5") = {"id" => "p0", "pane" => pane, "requested_at" => "2026-11-10T11:00:00Z", "expires_at" => at, "retries" => 0}
 
@@ -691,7 +919,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(state: "checking", extra: {"parked" => parked}))
 
       described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now }).release_park("wr_1", "p1")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).release_park("wr_1", "p1")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:review_round, "wr_1", {"round" => 1}]])
     end
@@ -791,7 +1019,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(state: "checking", extra: {"parked" => parked}))
 
       resumed = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: -> { now }).release_park("wr_1", "p1")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).release_park("wr_1", "p1")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:finish_check, "wr_1", {"step" => "plan", "attempt" => 1}]])
       expect(resumed.unchanged).to be_nil

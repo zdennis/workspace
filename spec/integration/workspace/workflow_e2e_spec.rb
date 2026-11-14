@@ -370,6 +370,119 @@ RSpec.describe "a workflow run from start to completed" do
       run = turn_ended
       expect(outcomes(run, "research")).to eq(%w[failed passed])
     end
+
+    describe "accepting a guard stop" do
+      let(:moved) { {"code" => "head_moved", "base_sha" => "0" * 40, "head" => "2" * 40} }
+      let(:new_base) { "2" * 40 }
+
+      # Research ended its turn with the checkout's HEAD moved: the run waits on failed_check / head_moved.
+      def stopped_by_head_moved(produced: true)
+        start
+        allow(guard).to receive(:check).and_return(moved)
+        artifact("research.md") if produced
+        turn_ended
+      end
+
+      # The person takes the checkout as it is: the guard reads a new base and passes from here.
+      def person_accepts_new_head
+        allow(guard).to receive(:base).and_return({"base_sha" => new_base, "base_guard" => {}, "unread" => []})
+        allow(guard).to receive(:check).and_return(nil)
+      end
+
+      def prompt_of(step, n) = File.read(File.join(worktree, ".workflow", "wr_1", "steps", "#{step}.#{n}.prompt.md"))
+
+      def overrides = File.readlines(store.events_path("wr_1")).map { |line| JSON.parse(line) }.select { |event| event["type"] == "guard_overridden" }
+
+      it "marks the stopped attempt overridden, re-baselines, records the note and gives it to the next step, and the run completes" do
+        stopped_by_head_moved
+        person_accepts_new_head
+
+        run = engine.resume("wr_1", accept_guard: true, note: "I rebased on purpose.", caller_pane: "%1")
+
+        expect(outcomes(run, "research")).to eq(["overridden"])
+        expect(run["base_sha"]).to eq(new_base)
+        expect(run).to include("current" => "plan", "state" => "running")
+        expect(overrides.size).to eq(1)
+        expect(overrides.first).to include("step" => "research", "attempt" => 1, "guard" => "head_moved", "old_base_sha" => "0" * 40,
+          "new_base_sha" => new_base, "note" => "I rebased on purpose.", "pane" => "%1", "retry" => false)
+        expect(history).to include("guard_overridden", "run_resumed")
+        prompt = prompt_of("plan", 1)
+        expect(prompt).to include(Workspace::WorkflowTransitions.guard_accepted_line("head_moved", "research", new_base), "I rebased on purpose.")
+        expect(prompt.index(Workspace::WorkflowTransitions.guard_accepted_line("head_moved", "research", new_base))).to be < prompt.index("I rebased on purpose.")
+
+        artifact("plan.md")
+        plan_file("active")
+        turn_ended
+        engine.approve("wr_1")
+        artifact("design.md")
+        turn_ended
+        verdict("skeptic", "approve", seq: 1)
+        verdict("builder", "approve", seq: 2)
+        turn_ended(review_pane)
+        inbox.upsert({"type" => "note", "title" => "Implemented X-1", "dedupe_key" => "e2e:wr_1"}, reopen: true)
+        run = turn_ended
+        engine.resume("wr_1", extra_tokens: run["reason"]["details"]["suggested"])
+        run = turn_ended
+        expect(run["state"]).to eq("completed")
+      end
+
+      it "accepts only the guard: a step missing its produces file does not advance, and passes overridden once the file is there" do
+        stopped_by_head_moved(produced: false)
+        expect(stored["reason"]).to include("code" => "failed_check")
+        person_accepts_new_head
+
+        run = engine.resume("wr_1", accept_guard: true, note: "I rebased on purpose.", caller_pane: "%1")
+
+        expect(run).to include("current" => "research", "state" => "waiting", "base_sha" => new_base)
+        expect(run["reason"]).to include("code" => "turn_ended_incomplete")
+        expect(outcomes(run, "research")).to eq(["failed"])
+        expect(overrides.size).to eq(1)
+
+        artifact("research.md")
+        run = engine.resume("wr_1")
+        expect(outcomes(run, "research")).to eq(["overridden"])
+        expect(run["current"]).to eq("plan")
+      end
+
+      it "with retry starts a new attempt of the same step, counted, and the run goes on once it passes" do
+        stopped_by_head_moved
+        person_accepts_new_head
+
+        run = engine.resume("wr_1", accept_guard: true, guard_retry: true, note: "Run it again.", caller_pane: "%1")
+
+        expect(run).to include("current" => "research", "state" => "running", "base_sha" => new_base)
+        expect(run["steps"]["research"]["attempts"].size).to eq(2)
+        expect(overrides.first).to include("retry" => true, "step" => "research", "attempt" => 1)
+        expect(prompt_of("research", 2)).to include("Run it again.")
+
+        artifact("research.md")
+        run = turn_ended
+        expect(outcomes(run, "research")).to eq(%w[failed passed])
+        expect(run["current"]).to eq("plan")
+      end
+
+      it "refuses a stop no guard made with guard_not_stopped, and leaves the run as it was" do
+        start
+        run = turn_ended
+        expect(run["reason"]).to include("code" => "turn_ended_incomplete")
+        before = stored.to_h
+
+        expect { engine.resume("wr_1", accept_guard: true, note: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("guard_not_stopped") }
+        expect { engine.resume("wr_1", accept_guard: true, guard_retry: true, note: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("guard_not_stopped") }
+
+        expect(stored.to_h).to eq(before)
+        expect(history).not_to include("guard_overridden")
+      end
+
+      it "refuses a failed status check the same way" do
+        to_verify
+        check_results << {exit_code: 1, timed_out: false}
+        turn_ended
+        before = stored.to_h
+        expect { engine.resume("wr_1", accept_guard: true, note: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("guard_not_stopped") }
+        expect(stored.to_h).to eq(before)
+      end
+    end
   end
 
   describe "daemon wakes" do

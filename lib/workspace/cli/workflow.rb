@@ -103,6 +103,8 @@ module Workspace
           opts.on("--note TEXT", "run, start: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
           opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
           opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
+          opts.on("--accept-guard", "resume: accept the guard stop the run waits on (needs --note WHY); the checkout as it is now becomes the run's base and the step's other checks decide it") { options[:accept_guard] = true }
+          opts.on("--retry", "resume --accept-guard: run the stopped step again instead of passing it (a new attempt)") { options[:guard_retry] = true }
           opts.on("--extra-attempts N", "resume, reject: add N to the run's attempt allowance when it has spent max_attempts (ignored by a resume that starts no attempt)") { |v| options[:extra_attempts] = v }
           opts.on("--extra-tokens N", "resume, reject: add N to the run's token budget when it has used budget.tokens (ignored by a resume that starts no attempt)") { |v| options[:extra_tokens] = v }
           opts.on("--extra-time DURATION", "resume, reject: add DURATION (30m, 2h) to the run's timeout when it has used its timeout: (ignored by a resume that starts no attempt)") { |v| options[:extra_time] = v }
@@ -210,6 +212,7 @@ module Workspace
         raise UsageError, "--source N is not a position: use a whole number from 1." if subcommand == "install" && subject && !subject.match?(/\A[1-9][0-9]{0,5}\z/)
         raise UsageError, "--dry-run does not apply to `workflow install`." if subcommand == "install" && options[:dry_run]
         raise UsageError, "workflow uninstall takes no argument." if subcommand == "uninstall" && subject
+        workflow_accept_guard_options(subcommand, options)
         gate_options = workflow_gate_options(subcommand, options)
         extra_attempts = workflow_extra_attempts(subcommand, options[:extra_attempts])
         extra_tokens = workflow_extra_tokens(subcommand, options[:extra_tokens])
@@ -336,7 +339,7 @@ module Workspace
             row
           end
         when "resume"
-          workflow_action(invocation, "workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, caller_pane: ENV["TMUX_PANE"]) }
+          workflow_action(invocation, "workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, caller_pane: ENV["TMUX_PANE"], accept_guard: options[:accept_guard] || false, guard_retry: options[:guard_retry] || false) }
         when "cancel" then workflow_action(invocation, "workflow cancel", options) { @workflow_command.cancel(run: subject) }
         when "approve"
           workflow_action(invocation, "workflow approve", options) do
@@ -394,6 +397,13 @@ module Workspace
         end
         raise UsageError, "--extra-time is at most 365 days (8760h), got #{text.to_s[0, 20].inspect}." if seconds > 365 * 86_400
         seconds.ceil
+      end
+
+      # `--accept-guard` and `--retry` belong to resume alone; how they go together is {Workspace::WorkflowDecisions#resume}'s to check.
+      def workflow_accept_guard_options(subcommand, options)
+        return if subcommand == "resume"
+        raise UsageError, "--accept-guard is for `workflow resume`." if options[:accept_guard]
+        raise UsageError, "--retry is for `workflow resume RUN --accept-guard --note WHY`." if options[:guard_retry]
       end
 
       # The `--step`/`--attempt` pair of approve and reject, checked; `--note-sha256` is approve's.

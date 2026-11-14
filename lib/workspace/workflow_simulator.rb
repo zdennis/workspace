@@ -255,7 +255,7 @@ module Workspace
 
     # Reads and checks nothing of a repository: there is none.
     class SimGuard
-      def base(_worktree)
+      def base(_worktree, accept_tree: false)
         {"base_sha" => nil, "base_guard" => nil}
       end
 

@@ -98,10 +98,25 @@ module Workspace
     end
 
     # @param worktree [String] a checkout
-    # @return [Hash{String=>Object}] "base_sha" (nil on an unborn branch or when git can't answer)
-    #   and "base_guard" ("config_sha256", "hooks_sha256", "hidden_sha256", "filter_sha256", each nil when unreadable, and "config_format")
-    def base(worktree)
-      {"base_sha" => head(worktree), "base_guard" => snapshot(worktree).merge("config_format" => CONFIG_FORMAT, "filter_sha256" => filter_digest(filter_entries(worktree)))}
+    # @param accept_tree [Boolean] also take {#tree_digest} of the checkout as it is now, against this same base, as
+    #   `base_guard.accepted_tree_sha256` (`resume --accept-guard`: the tracked files left changed are accepted; when
+    #   the digest can't be read, "accepted_tree_sha256" is listed as unread; on an unborn branch there is no tree to
+    #   accept, so none is recorded and nothing is listed, {#check} stopping at `no_commit` first)
+    # @return [Hash{String=>Object}] "base_sha" (nil on an unborn branch or when git can't answer),
+    #   "base_guard" ("config_sha256", "hooks_sha256", "hidden_sha256", "filter_sha256", each nil when unreadable, and "config_format"),
+    #   and "unread": the parts a guard can't measure from, empty when the base is usable ("head" when git could not
+    #   read HEAD for any reason but an unborn branch, "hooks_sha256", "hidden_sha256", and with +accept_tree+
+    #   "accepted_tree_sha256")
+    def base(worktree, accept_tree: false)
+      sha, sha_read = head_read(worktree)
+      guard = snapshot(worktree).merge("config_format" => CONFIG_FORMAT, "filter_sha256" => filter_digest(filter_entries(worktree)))
+      unread = (sha_read ? [] : ["head"]) + %w[hooks_sha256 hidden_sha256].select { |key| guard[key].nil? }
+      answer = {"base_sha" => sha, "base_guard" => guard, "unread" => unread}
+      return answer unless accept_tree
+      return answer if sha.nil? && sha_read
+      tree = tree_digest(worktree, base: answer)
+      return answer.merge("unread" => unread + ["accepted_tree_sha256"]) unless tree
+      answer.merge("base_guard" => guard.merge("accepted_tree_sha256" => tree))
     end
 
     # @param worktree [String] a checkout
@@ -137,6 +152,7 @@ module Workspace
       end
       return nil unless scope == "unchanged"
       paths = dirty_paths(worktree, base: base)
+      return nil if paths&.any? && accepted_tree?(worktree, base)
       return failure("tracked_changed", "paths" => paths || []) if paths.nil? || paths.any?
       nil
     end
@@ -164,10 +180,14 @@ module Workspace
     # @param worktree [String] a checkout
     # @return [String, nil] the full commit id `git rev-parse` answers for HEAD in the path (a checkout that lost its `.git`
     #   inside another repository reads that repository's HEAD); nil on an unborn branch, past {HEAD_TIMEOUT}, or when git cannot answer
-    def head(worktree)
-      out, ok = run_git(worktree, "rev-parse", "--verify", "--quiet", "HEAD^{commit}", timeout: HEAD_TIMEOUT)
-      ok ? out.strip : nil
+    def head(worktree) = head_read(worktree).first
+
+    # HEAD, and whether git answered: an unborn branch (exit 1, nothing on stderr) is an answer, a timeout or any other failure is not.
+    def head_read(worktree)
+      out, ok, code = run_git(worktree, "rev-parse", "--verify", "--quiet", "HEAD^{commit}", timeout: HEAD_TIMEOUT)
+      ok ? [out.strip, true] : [nil, code == 1]
     end
+    private :head_read
 
     # What the branch's remote holds for it now, on the remote a `git push` would go to: `branch.<b>.pushRemote`, then
     # `remote.pushDefault`, then `branch.<b>.remote`, then `origin`. The ref is the one the branch tracks
@@ -309,6 +329,14 @@ module Workspace
     rescue SystemCallError, IOError
       nil
     end
+
+    # A person accepted the tracked files as they were (`resume --accept-guard`): `base_guard.accepted_tree_sha256`
+    # is {#tree_digest} then, and the tree still reads the same.
+    def accepted_tree?(worktree, base)
+      accepted = base.base_guard&.dig("accepted_tree_sha256")
+      !accepted.nil? && tree_digest(worktree, base: base) == accepted
+    end
+    private :accepted_tree?
 
     # Every file a step left changed against `base`: committed, staged, unstaged and untracked (not ignored) paths.
     # Deleted files are left out, a rename lists the new path only, and git output past MAX_OUTPUT (32 MiB) gives nil. Filters are handled as in

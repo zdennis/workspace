@@ -531,10 +531,14 @@ module Workspace
       when "budget_spent", "run_timed_out" then [resume, cancel]
       when "failed_check"
         # Only a no_commit with no base_sha can never pass; any other guard stop resumes once the checkout is put back.
+        # A guard stop `resume --accept-guard` takes can also be accepted as it is, or accepted and the step run again
+        # from a new baseline; the person writes the note (`needs: ["note"]`).
+        accept = WorkflowTransitions.guard_acceptable?(run) ? [action("workflow resume", id, "--accept-guard", needs: [need("note", "--note")]),
+          action("workflow resume", id, "--accept-guard", "--retry", needs: [need("note", "--note")] + extra.call(here))] : []
         if WorkflowTransitions.guard_unrecoverable?(run)
-          [cancel]
+          [cancel] + accept
         else
-          [resume, from.call(reason.dig("details", "step")), cancel]
+          [resume, from.call(reason.dig("details", "step"))] + accept + [cancel]
         end
       when "stalled", "idle" then [resume, cancel]
       when "pane_gone" then [action("launch", run.workspace), action("workflow resume", id, needs: with_pane), cancel]

@@ -851,7 +851,8 @@ module Workspace
         ]
       },
       "resume" => {
-        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
+        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]",
+          "workflow resume RUN --accept-guard --note WHY [--retry] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
         summary: "Get a run going again",
         about: [
           RUN_ID,
@@ -887,14 +888,30 @@ module Workspace
           "A run held by its definition's timeout: (reason run_timed_out) is refused the same way (run_timed_out)",
           "until --extra-time DURATION adds to its timeout. Only machine time counts against it: time a person",
           "is waited on (a gate, a parked resume, a held budget, a failed check) does not. With the budget and",
-          "the timeout both spent, pass both flags."
+          "the timeout both spent, pass both flags.",
+          "",
+          "--accept-guard takes a guard stop (failed_check by head_moved, hooks_changed, hidden_changed,",
+          "no_commit, operation_in_progress or tracked_changed) as a person's decision; any other stop is",
+          "refused (guard_not_stopped). It needs --note WHY, and is refused from a pane bound to a run. HEAD",
+          "now becomes the run's base_sha and the guard's snapshot is taken again (guard_base_unreadable, and",
+          "nothing changed, when it can't be read). Only the guard is accepted: the step's produces files,",
+          "require: proofs and status: check still run, and only when they pass does its attempt read overridden",
+          "and the step pass (its review round or gate still applies); else it stops on their reason. With",
+          "--retry the step runs again as a new attempt instead, counted against max_attempts; refused",
+          "(guard_cannot_pass) while no_commit or operation_in_progress would stop it again. --from can't go",
+          "with it. Later guarded steps measure from the new base. The note is recorded on a guard_overridden",
+          "event and given to the next attempt, after a line naming the guard and the new base."
         ],
-        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT, JSON_OPT],
+        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT,
+          ["--accept-guard", "Accept the guard stop the run waits on (needs --note WHY)"],
+          ["--retry", "With --accept-guard: run the stopped step again instead of passing it"], JSON_OPT],
         examples: [
           ["workspace workflow resume RUN", "pick a stuck run up again: its lock is asked for again, a failed step runs again"],
           ["workspace workflow resume RUN --from implement", "start again at the implement step of rpiv"],
           ["workspace workflow resume RUN --note \"The migration is already applied.\"", "tell the next attempt something"],
-          ["workspace workflow resume RUN --pane %19", "the run's pane is gone: carry on in another pane of the workspace"]
+          ["workspace workflow resume RUN --pane %19", "the run's pane is gone: carry on in another pane of the workspace"],
+          ["workspace workflow resume RUN --accept-guard --note \"I rebased on purpose.\"", "accept a head_moved stop: the step's other checks run, measured from HEAD now"],
+          ["workspace workflow resume RUN --accept-guard --retry --note \"Hooks were updated upstream.\"", "accept the stop and run the step again"]
         ]
       },
       "cancel" => {

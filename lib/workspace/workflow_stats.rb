@@ -7,7 +7,9 @@ module Workspace
   # window may cover fewer runs than were made.
   #
   # An attempt is counted by its stored `outcome`:
-  # - `passed` and `failed` are the attempts that ran and ended. `attempts` is `passed + failed`.
+  # - `passed`, `failed` and `overridden` are the attempts that ran and ended. `attempts` is `passed + failed + overridden`.
+  #   `overridden` is a guard stop a person accepted with `workflow resume --accept-guard`: the step's work counts as
+  #   done and ran, but it is never a pass, so it is not in `passed`.
   # - `not_delivered` (and an attempt marked `redelivered`, which is an undelivered one typed again) never
   #   reached the agent, so it did no work: it is counted apart and left out of the pass counts, the median
   #   and the tokens.
@@ -15,7 +17,7 @@ module Workspace
   #   without ending, or a cancel or kill closed it with outcome `cancelled`). It is counted apart and left
   #   out of everything else, its `ended_at` included: it never enters the median.
   #
-  # `median_seconds` is the middle `ended_at - started_at` of the `passed` and `failed` attempts that have both
+  # `median_seconds` is the middle `ended_at - started_at` of the `passed`, `failed` and `overridden` attempts that have both
   # times. `resumes` counts the `run_resumed` events in the run's history, each on the step it resumed (the
   # `from` step of a `resume --from`, else the step the run stood at); one with neither is in
   # `unattributed_resumes`. A history is read for every run in the window; a resume does not say whether
@@ -23,7 +25,7 @@ module Workspace
   #
   # Tokens follow {WorkflowBudget}: input, output and cache creation tokens of the main thread and its in-step
   # sub-agents, and of each review round the attempt went through, never cache reads. For each run, a step's figure is the sum over the attempts the budget counts: `passed`,
-  # `failed` and also `unfinished` ones that ended without passing or failing (a cancel, a `resume --from`), so the tokens
+  # `failed`, `overridden` and also `unfinished` ones that ended without passing or failing (a cancel, a `resume --from`), so the tokens
   # spent on a cancelled attempt are not lost; not an attempt still going, and not an undelivered one.
   # A run where any of those attempts (or their rounds) has a null `usage` is `runs_uncounted` for that step, not a smaller
   # number; `mean` is over `runs_counted` only and is nil when there are none.
@@ -40,7 +42,7 @@ module Workspace
     # @param include [#call, nil] see {WorkflowRunLoader#load}
     # @param loaded [Hash, nil] the answer of {WorkflowRunLoader#load}, when the caller has read it already
     # @return [Hash{String=>Object}] "runs" (how many were read), "unreadable" (files that are no run, plus runs whose
-    #   content was the wrong shape), "undated", "steps" (one row per step: "step", "attempts", "passed", "failed",
+    #   content was the wrong shape), "undated", "steps" (one row per step: "step", "attempts", "passed", "failed", "overridden",
     #   "not_delivered", "unfinished", "median_seconds", "resumes", "tokens_from_unfinished" (unfinished attempts whose tokens are in the mean), "tokens" => {"mean", "runs_counted", "runs_uncounted"})
     #   in the order of the newest run's definition then the others, and "unattributed_resumes"
     def read(workflow:, last: nil, include: nil, loaded: nil)
@@ -69,7 +71,7 @@ module Workspace
       {"runs" => used, "unreadable" => loaded["unreadable"] + malformed, "undated" => loaded["undated"], "steps" => steps, "unattributed_resumes" => unattributed}
     end
 
-    # How one attempt counts: `:passed` and `:failed` by its stored outcome, `:not_delivered` for one that never
+    # How one attempt counts: `:passed`, `:failed` and `:overridden` by its stored outcome, `:not_delivered` for one that never
     # reached the agent (or was typed again), `:unfinished` for anything else.
     #
     # @param attempt [WorkflowRun::Attempt, Hash{String=>Object}]
@@ -80,6 +82,7 @@ module Workspace
       case attempt.outcome
       when "passed" then :passed
       when "failed" then :failed
+      when "overridden" then :overridden
       else :unfinished
       end
     end
@@ -91,12 +94,12 @@ module Workspace
     end
 
     def blank(id)
-      {"step" => id, "attempts" => 0, "passed" => 0, "failed" => 0, "not_delivered" => 0, "unfinished" => 0,
+      {"step" => id, "attempts" => 0, "passed" => 0, "failed" => 0, "overridden" => 0, "not_delivered" => 0, "unfinished" => 0,
        "durations" => [], "unfinished_tokens" => 0, "resumes" => 0, "token_sums" => [], "runs_uncounted" => 0}
     end
 
     def merge(row, tallied)
-      %w[passed failed not_delivered unfinished].each { |key| row[key] += tallied[key] }
+      %w[passed failed overridden not_delivered unfinished].each { |key| row[key] += tallied[key] }
       row["durations"].concat(tallied["durations"])
       row["unfinished_tokens"] += tallied["unfinished_tokens"]
       case tallied["tokens"]
@@ -107,7 +110,8 @@ module Workspace
 
     def finish(row)
       counted = row["token_sums"]
-      {"step" => row["step"], "attempts" => row["passed"] + row["failed"], "passed" => row["passed"], "failed" => row["failed"],
+      {"step" => row["step"], "attempts" => row["passed"] + row["failed"] + row["overridden"], "passed" => row["passed"], "failed" => row["failed"],
+       "overridden" => row["overridden"],
        "not_delivered" => row["not_delivered"], "unfinished" => row["unfinished"], "median_seconds" => median(row["durations"]),
        "resumes" => row["resumes"], "tokens_from_unfinished" => row["unfinished_tokens"],
        "tokens" => {"mean" => counted.empty? ? nil : counted.sum.fdiv(counted.size).round, "runs_counted" => counted.size, "runs_uncounted" => row["runs_uncounted"]}}
@@ -131,12 +135,12 @@ module Workspace
       run.steps.to_h do |id, step|
         stored = Array(step.to_h["attempts"])
         attempts = step.attempts.each_with_index.select { |_, index| stored[index].is_a?(Hash) }.map(&:first)
-        t = {"passed" => 0, "failed" => 0, "not_delivered" => 0, "unfinished" => 0, "durations" => [], "unfinished_tokens" => 0}
+        t = {"passed" => 0, "failed" => 0, "overridden" => 0, "not_delivered" => 0, "unfinished" => 0, "durations" => [], "unfinished_tokens" => 0}
         paid = []
         attempts.each do |attempt|
           kind = kind_of(attempt)
           t[kind.to_s] += 1
-          if %i[passed failed].include?(kind)
+          if %i[passed failed overridden].include?(kind)
             seconds = seconds_of(attempt)
             t["durations"] << seconds if seconds
           end

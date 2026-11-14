@@ -538,6 +538,42 @@ module Workspace
       details.is_a?(Hash) && details["cause"] == "guard" && details["guard"] == "no_commit" && run["base_sha"].to_s.empty?
     end
 
+    # The guard stops `workflow resume --accept-guard` takes: every guard that fails a step. `config_changed` is
+    # only ever a warning, so it is not among them.
+    ACCEPTABLE_GUARDS = %w[head_moved hooks_changed hidden_changed no_commit operation_in_progress tracked_changed].freeze
+
+    # The guard a run is stopped by, when `resume --accept-guard` may take it: reason `failed_check` with a guard
+    # cause in {ACCEPTABLE_GUARDS}, `no_commit` with no `base_sha` included.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @return [String, nil] the guard's code, nil for any other state or stop
+    def self.acceptable_guard(run)
+      run = run.to_h
+      reason = run["reason"]
+      return nil unless run["state"] == "waiting" && reason.is_a?(Hash) && reason["code"] == "failed_check"
+      details = reason["details"]
+      return nil unless details.is_a?(Hash) && details["cause"] == "guard" && ACCEPTABLE_GUARDS.include?(details["guard"])
+      state = run["steps"].is_a?(Hash) && run["steps"][run["current"]]
+      (state.is_a?(Hash) && state["state"] == "failed") ? details["guard"] : nil
+    end
+
+    # Whether `resume --accept-guard` may take the run's stop; see {.acceptable_guard}.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @return [Boolean]
+    def self.guard_acceptable?(run) = !acceptable_guard(run).nil?
+
+    # The line put before the person's note in the next attempt's instructions once a guard stop is accepted.
+    #
+    # @param guard [String] the guard's code
+    # @param step [String] the step it stopped
+    # @param base_sha [String, nil] the run's base commit now; nil when the checkout has none
+    # @return [String]
+    def self.guard_accepted_line(guard, step, base_sha)
+      return "A person accepted the `#{guard}` stop on `#{step}`; the checkout has no commit, so the guard has no HEAD to measure from." if base_sha.to_s.empty?
+      "A person accepted the `#{guard}` stop on `#{step}`; the guard now measures from HEAD `#{base_sha[0, 12]}`."
+    end
+
     # @param run [WorkflowRun, Hash{String=>Object}] a stored run stopped on a guard
     # @return [String, nil] what to do before a resume can pass, nil for any other stop
     def self.guard_recovery(run)

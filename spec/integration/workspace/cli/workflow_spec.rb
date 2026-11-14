@@ -420,6 +420,22 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    it "passes --accept-guard, --note and --retry to resume" do
+      cli.run(["workflow", "resume", "wr_1", "--accept-guard", "--note", "Rebased by hand."])
+      cli.run(["workflow", "resume", "wr_1", "--accept-guard", "--retry", "--note", "Again."])
+      cli.run(["workflow", "resume", "wr_1"])
+
+      expect(workflow_command.calls.map { |call| [call.first, call.last.values_at(:accept_guard, :guard_retry, :note)] }).to eq(
+        [[:resume, [true, false, "Rebased by hand."]], [:resume, [true, true, "Again."]], [:resume, [false, false, nil]]]
+      )
+    end
+
+    it "refuses --accept-guard on another verb" do
+      expect { cli.run(["workflow", "approve", "wr_1", "--accept-guard", "--note", "x"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--accept-guard is for `workflow resume`")
+      expect(workflow_command.calls).to be_empty
+    end
+
     it "refuses a bad --step, --attempt or --note-sha256 as a usage error, and moves nothing" do
       {["workflow", "approve", "wr_1", "--attempt", "2"] => /--attempt needs --step/,
        ["workflow", "approve", "wr_1", "--step", "plan", "--attempt", "0"] => /--attempt must be a whole number from 1 up, got "0"/,

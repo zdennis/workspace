@@ -44,6 +44,16 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def pass_step(run, ctx:) = over(run) { |work| pass(work, ctx) }
 
+    # Passes a step whose last attempt already ended failed on a guard a person accepted (`resume --accept-guard`),
+    # once the rest of its checks passed ({WorkflowEvaluation#evaluate_accepted}): the attempt's outcome becomes
+    # `overridden`, with no second {WorkflowAttemptRecord#finish}, and the step goes on as {#pass_step} would take
+    # it on: its review round, its gate, else the next step.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on that step (failed, or checking); left as it is
+    # @param ctx [Workspace::WorkflowRunChange::Context]
+    # @return [WorkflowRun] the run afterwards
+    def pass_overridden(run, ctx:) = over(run) { |work| override(work, ctx) }
+
     # Decides the review round of the step being reviewed. The attempt the round reviewed already ended
     # (`checks_passed`); its outcome is rewritten, with no second {WorkflowAttemptRecord#finish}, and
     # `review_outcome` (`round`, `approvals`, `need`, `must`, `passed`) and `reviews` added. Approved: the step passes, as {#pass_step} would pass it, to its gate or
@@ -176,6 +186,15 @@ module Workspace
       passed(run, ctx)
     end
 
+    def override(run, ctx)
+      state = step_state(run)
+      state["attempts"].last["outcome"] = "overridden"
+      run["reason"] = nil
+      return passed(run, ctx) unless WorkflowDefinition.review(step_def(run))
+      state["state"] = "reviewing"
+      begin_round(run, ctx)
+    end
+
     # The step passed: its gate, else the next step.
     def passed(run, ctx)
       state = step_state(run)
@@ -258,7 +277,9 @@ module Workspace
       case outcome
       when :approved
         state.delete("review")
-        state["attempts"][-1] = attempt.merge("outcome" => "passed", "review_outcome" => decided, "reviews" => reviews)
+        # An attempt that passed only once a person accepted its guard stop stays `overridden`.
+        passed_as = attempt["guard_accepted"] ? "overridden" : "passed"
+        state["attempts"][-1] = attempt.merge("outcome" => passed_as, "review_outcome" => decided, "reviews" => reviews)
         passed(run, ctx)
       when :rejected
         state.delete("review")
@@ -363,9 +384,12 @@ module Workspace
 
     def fail_in(run, failure, ctx)
       step = step_def(run)
-      ended = step_state(run)["attempts"].last.merge("ended_at" => now_iso, "outcome" => "failed")
+      last = step_state(run)["attempts"].last
+      # An attempt whose guard stop a person accepted ended when the guard stopped it: its end is not recorded twice.
+      again = last["guard_accepted"] && last["ended_at"]
+      ended = last.merge("ended_at" => again ? last["ended_at"] : now_iso, "outcome" => "failed")
       ended["code"] = failure["code"] if failure["code"].is_a?(String)
-      record_end(run, ended)
+      again ? (step_state(run)["attempts"][-1] = ended) : record_end(run, ended)
       state = step_state(run)
       attempt = state["attempts"].last
       state["state"] = "failed"

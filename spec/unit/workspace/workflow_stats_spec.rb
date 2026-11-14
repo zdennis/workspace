@@ -51,6 +51,13 @@ RSpec.describe Workspace::WorkflowStats do
   end
 
   describe "an attempt that did no work" do
+    it "counts an overridden attempt apart from passes, in attempts, the median and the tokens" do
+      put("wr_1", steps: {"plan" => [attempt(1, "failed", seconds: 10), attempt(2, "overridden", seconds: 30), attempt(3, "passed", seconds: 50)]})
+      plan = row(stats.read(workflow: "rpiv"), "plan")
+      expect(plan).to include("attempts" => 3, "passed" => 1, "failed" => 1, "overridden" => 1, "unfinished" => 0, "median_seconds" => 30)
+      expect(plan["tokens"]).to include("mean" => 480, "runs_counted" => 1)
+    end
+
     it "keeps a not_delivered one and a redelivered one out of the pass counts, median and tokens" do
       put("wr_1", steps: {"plan" => [attempt(1, "not_delivered", usage: nil), attempt(2, "failed", redelivered: true, usage: nil, seconds: 5000), attempt(3, "passed", seconds: 60)]})
 

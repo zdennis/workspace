@@ -677,6 +677,11 @@ RSpec.describe Workspace::WorkflowStatus do
   end
 
   describe "a failed step's guard code" do
+    def accept_forms
+      note = [{"name" => "note", "flag" => "--note"}]
+      [action("workflow resume", "wr_1", "--accept-guard", needs: note), action("workflow resume", "wr_1", "--accept-guard", "--retry", needs: note)]
+    end
+
     def failed(details)
       reason = {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan"}.merge(details)}
       create(state: "waiting", step_state: "failed", reason: reason, bound: false, base_sha: "abc123")
@@ -686,7 +691,7 @@ RSpec.describe Workspace::WorkflowStatus do
       reason = {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "guard", "guard" => "no_commit", "code" => "no_commit"}}
       create(state: "waiting", step_state: "failed", reason: reason, bound: false, base_sha: nil)
 
-      expect(current["reason"]["actions"]).to eq([action("workflow cancel", "wr_1")])
+      expect(current["reason"]["actions"]).to eq([action("workflow cancel", "wr_1")] + accept_forms)
       expect(current["reason"]).not_to have_key("recovery")
     end
 
@@ -694,18 +699,30 @@ RSpec.describe Workspace::WorkflowStatus do
       it "offers resume, resume --from and cancel for #{code}, with what to put back first" do
         failed("cause" => "guard", "guard" => code, "code" => code, "code_source" => "engine")
 
-        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan"), action("workflow cancel", "wr_1")])
+        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan")] + accept_forms + [action("workflow cancel", "wr_1")])
         expect(current["reason"]["recovery"]).to match(/then resume/)
         expect(current["reason"]["recovery"]).to include("abc123") if code == "head_moved"
       end
     end
 
-    %w[tracked_changed operation_in_progress config_changed].each do |code|
+    %w[tracked_changed operation_in_progress].each do |code|
       it "offers resume, resume --from and cancel for #{code}, which the person can clear or a resume now passes" do
         failed("cause" => "guard", "guard" => code, "code" => code, "code_source" => "engine")
 
-        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan"), action("workflow cancel", "wr_1")])
+        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan")] + accept_forms + [action("workflow cancel", "wr_1")])
       end
+    end
+
+    it "offers no accept-guard form for a guard cause resume --accept-guard does not take" do
+      failed("cause" => "guard", "guard" => "config_changed", "code" => "config_changed", "code_source" => "engine")
+
+      expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan"), action("workflow cancel", "wr_1")])
+    end
+
+    it "offers no accept-guard form for a failed check that is not a guard stop" do
+      failed("code" => "test")
+
+      expect(current["reason"]["actions"].flat_map { |each| each["args"] }).not_to include("--accept-guard")
     end
 
     describe "a token budget" do

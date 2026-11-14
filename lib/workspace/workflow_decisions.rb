@@ -24,8 +24,9 @@ module Workspace
     # @param attempt_record [Workspace::WorkflowAttemptRecord] closes the open attempt of a run that is cancelled
     # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
     # @param panes [Workspace::WorkflowPanes] finds, binds and unbinds the run's pane
+    # @param guard [Workspace::WorkflowGuard] takes the checkout as it is now as the run's base, for `resume --accept-guard`
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, clock: -> { Time.now })
+    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, clock: -> { Time.now })
       @change = change
       @store = store
       @progress = progress
@@ -34,6 +35,7 @@ module Workspace
       @attempt_record = attempt_record
       @gate_note = gate_note
       @panes = panes
+      @guard = guard
       @clock = clock
     end
 
@@ -114,17 +116,33 @@ module Workspace
     #   as `budget_extended`; applied only when the resume starts an attempt or a review round
     # @param extra_seconds [Integer, nil] raises the run's timeout by this many seconds, kept in the run (`extra_seconds`)
     #   and recorded as `time_extended`; applied only when the resume starts an attempt or a review round
+    # @param accept_guard [Boolean] take a guard stop ({WorkflowTransitions.acceptable_guard}) as a person's decision:
+    #   the checkout as it is now becomes the run's base (`base_sha`, `base_guard`), a `guard_overridden` event records
+    #   +note+ (required), and the rest of the step's evaluation runs with the guard left out
+    #   ({WorkflowEvaluation#evaluate_accepted}): the attempt reads `overridden` and the step passes only when its
+    #   `produces`, `require:` and `status:` pass too
+    # @param guard_retry [Boolean] with +accept_guard+: run the stopped step again instead, a new attempt held to the allowance and budget
+    # @param caller_pane [String, nil] the pane the person ran the command in, recorded on `guard_overridden`
     # @return [Resumed] the run afterwards, and why nothing was done when it did nothing
     # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` or `budget_spent` when the resume would
     #   start an attempt the run has no allowance left for; `budget_spent` or `run_timed_out` when it would start a
-    #   review round (one a hold kept back, or a fresh one after a stopped round) past the budget or the timeout
-    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
+    #   review round (one a hold kept back, or a fresh one after a stopped round) past the budget or the timeout;
+    #   with +accept_guard+, `guard_base_unreadable` (retryable, nothing changed) when the checkout can't be read as a
+    #   new base, and with +guard_retry+ `guard_cannot_pass` when the retry would stop on `no_commit` or
+    #   `operation_in_progress` again
+    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
+      accept_guard: false, guard_retry: false, caller_pane: nil)
+      refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
       follow = nil
       unchanged = nil
       run = @change.call(run_id) do |read, ctx|
+        follow = ctx
+        if accept_guard
+          next accept_guard_stop(read, ctx, note: note, pane: pane, guard_retry: guard_retry, caller_pane: caller_pane,
+            extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
+        end
         resumed = apply_resume(read, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
         unchanged = resumed.unchanged
-        follow = ctx
         resumed.run
       end
       Resumed.new(run: @evaluation.finish_follow_ups(run_id, follow, run), unchanged: unchanged)
@@ -232,12 +250,19 @@ module Workspace
     #
     # @param run [WorkflowRun, Hash{String=>Object}] a stored run that has not finished
     # @param from [String, nil] the step a resume would start again at
+    # @param note [String, nil] the resume's note, which +accept_guard+ needs
+    # @param accept_guard [Boolean] see {#resume}
+    # @param guard_retry [Boolean] see {#resume}
     # @return [void]
     # @raise [Workspace::Error] code `gate_waiting` for a run at a gate when no step is named (approve or reject it);
     #   code `guard_cannot_pass` for a run stopped on a guard no resume can pass ({WorkflowTransitions.guard_unrecoverable?})
-    # @raise [Workspace::UsageError] for a step the workflow doesn't have
-    def refuse_resume(run, from: nil)
+    #   unless +accept_guard+; code `guard_not_stopped` with +accept_guard+ for a run no guard stopped
+    # @raise [Workspace::UsageError] for a step the workflow doesn't have, and for +accept_guard+ without a +note+,
+    #   +guard_retry+ without +accept_guard+, or +accept_guard+ with +from+
+    def refuse_resume(run, from: nil, note: nil, accept_guard: false, guard_retry: false)
+      refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
       run = WorkflowRun.from_h(run).to_h
+      return refuse_not_guard_stopped(run) if accept_guard
       refuse_unrecoverable_guard(run)
       if from
         return if step_ids(run).include?(from)
@@ -288,6 +313,86 @@ module Workspace
     private
 
     def adopt(run, changed) = run.replace(changed.thawed)
+
+    # The flags of a guard acceptance that can't go together, refused before the run is read.
+    def refuse_guard_flags(from:, note:, accept_guard:, guard_retry:)
+      raise UsageError, "--retry is for `workflow resume RUN --accept-guard --note WHY`." if guard_retry && !accept_guard
+      return unless accept_guard
+      raise UsageError, "--accept-guard needs --note WHY: the reason is recorded and given to the next attempt." if note.to_s.strip.empty?
+      raise UsageError, "--retry runs the stopped step again; --from can't go with it." if guard_retry && from
+      raise UsageError, "--accept-guard judges the stopped step again without its guard, or runs it again with --retry; --from can't go with it." if from
+    end
+
+    def refuse_not_guard_stopped(run)
+      return if WorkflowTransitions.guard_acceptable?(run)
+      reason = run["reason"].is_a?(Hash) ? run["reason"] : {}
+      raise Workspace::Error.new("Run #{run["id"]} is not stopped by a guard (step #{run["current"]}, reason #{reason["code"] || "none"}), so there is no guard stop to accept.",
+        code: "guard_not_stopped", details: {"run_id" => run["id"], "step" => run["current"], "reason" => reason["code"], "guard" => reason.dig("details", "guard")})
+    end
+
+    # The body of {#resume} with +accept_guard+, inside the change: every refusal first, then the checkout as it is
+    # now becomes the run's base and `guard_overridden` records the note. Only the guard is accepted: without
+    # +guard_retry+ the rest of the step's evaluation runs with the guard left out ({WorkflowEvaluation#evaluate_accepted}),
+    # so a missing `produces` file, an unmet `require:` proof or a failing `status:` check still stops the step.
+    def accept_guard_stop(read, ctx, note:, pane:, guard_retry:, caller_pane:, extra_attempts:, extra_tokens:, extra_seconds:)
+      stored = read.thawed
+      refuse_resume(stored, note: note, accept_guard: true, guard_retry: guard_retry)
+      guard = WorkflowTransitions.acceptable_guard(stored)
+      step = stored["current"]
+      check_pane(pane, stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
+      if guard_retry
+        refuse_spent(stored, extra_attempts, target: step)
+        refuse_over_limits(stored, extra_tokens, extra_seconds)
+      end
+      base = @guard.base(stored["worktree"], accept_tree: true)
+      refuse_unusable_base(stored, guard, base)
+      refuse_hopeless_retry(stored, guard, base) if guard_retry
+      if guard_retry
+        spend_attempts(stored, extra_attempts, target: step)
+        spend_limits(stored, extra_tokens, extra_seconds)
+      end
+      old_sha = stored["base_sha"]
+      stored["base_sha"] = base["base_sha"]
+      stored["base_guard"] = base["base_guard"]
+      stored["steps"].each_value { |each| each.delete("redelivery_pending") }
+      rebind(stored, pane) if pane
+      drop_park(stored, "taken_over")
+      event(stored, "guard_overridden", {"step" => step, "attempt" => step_state(stored)["attempts"].last&.fetch("n", nil), "guard" => guard,
+                                         "old_base_sha" => old_sha, "new_base_sha" => stored["base_sha"], "note" => note,
+                                         "pane" => caller_pane, "retry" => guard_retry})
+      stored["pending_context"] << WorkflowTransitions.guard_accepted_line(guard, step, stored["base_sha"])
+      stored["pending_context"] << WorkflowRun.resume_note(note)
+      if guard_retry
+        event(stored, "run_resumed", "from" => step, "accept_guard" => guard)
+        dispatch(stored, ctx, budgeted: true)
+      else
+        event(stored, "run_resumed", "step" => step, "state" => "failed", "accept_guard" => guard)
+        adopt(stored, @evaluation.evaluate_accepted(stored, ctx: ctx))
+      end
+      WorkflowRun.from_h(stored)
+    end
+
+    # A base the guard can't measure from (HEAD unread though the branch has commits, or the hooks or hidden-file
+    # reading missing) would stop every later guarded step, or pass one it should not; nothing is changed.
+    def refuse_unusable_base(run, guard, base)
+      unread = Array(base["unread"])
+      return if unread.empty?
+      raise Workspace::Error.new("Run #{run["id"]}: the checkout could not be read as a new base (#{unread.join(", ")}), so the #{guard} stop was not accepted and the run's base is unchanged. Try again; if it keeps failing, check `git -C #{run["worktree"]} status`.",
+        code: "guard_base_unreadable", details: {"run_id" => run["id"], "step" => run["current"], "guard" => guard, "unread" => unread}, retry_with: {"flags" => [], "destructive" => false})
+    end
+
+    # A retry measured from the new base would stop the same way while the cause is still there: no commit to measure
+    # from, or a rebase, merge or other operation still under way.
+    def refuse_hopeless_retry(run, guard, base)
+      step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
+      found = @guard.check(run["worktree"], base, step["guard"] || "unchanged")
+      code = found && found["code"]
+      fix = {"no_commit" => "the branch still has no commit: commit something first, or accept the stop without --retry",
+             "operation_in_progress" => "a rebase, merge, cherry-pick or bisect is still under way: finish or abort it first"}[code]
+      return unless fix
+      raise Workspace::Error.new("Run #{run["id"]}: a retry of #{run["current"]} would stop on #{code} again, since #{fix}.",
+        code: "guard_cannot_pass", details: {"run_id" => run["id"], "step" => run["current"], "guard" => code, "accepted" => guard, "retry" => true})
+    end
 
     # A park is refused on a step being reviewed: while one stands, the review pane's turn end decides nothing.
     def refuse_reviewing_park(run, from)
@@ -468,7 +573,7 @@ module Workspace
     # put back, and resumes normally.
     def refuse_unrecoverable_guard(run)
       return unless WorkflowTransitions.guard_unrecoverable?(run)
-      raise Workspace::Error.new("Run #{run["id"]} stopped at #{run["current"]} on the no_commit guard and has no base commit, so no resume can pass it. Run `workflow cancel #{run["id"]}` and start a new run once the branch has a commit.",
+      raise Workspace::Error.new("Run #{run["id"]} stopped at #{run["current"]} on the no_commit guard and has no base commit, so no plain resume can pass it. Run `workflow resume #{run["id"]} --accept-guard --note WHY` to pass the step anyway, or `workflow cancel #{run["id"]}` and start a new run once the branch has a commit.",
         code: "guard_cannot_pass", details: {"run_id" => run["id"], "step" => run["current"], "guard" => "no_commit"})
     end
 

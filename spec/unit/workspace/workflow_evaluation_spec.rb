@@ -507,6 +507,76 @@ RSpec.describe Workspace::WorkflowEvaluation do
     end
   end
 
+  describe "#evaluate_accepted" do
+    def accepted_run(definition_step: step("guard" => "unchanged"))
+      run_hash(definition_step: definition_step, state: "failed").merge(
+        "state" => "waiting", "reason" => {"code" => "failed_check", "since" => "2026-11-10T11:55:00Z", "details" => {"cause" => "guard", "guard" => "head_moved"}}
+      ).tap do |run|
+        run["steps"]["plan"]["attempts"][0].merge!("started_at" => "2026-11-10T11:00:00Z", "ended_at" => "2026-11-10T11:55:00Z", "outcome" => "failed", "code" => "head_moved")
+      end
+    end
+
+    it "skips the guard and passes the step overridden once its files are there" do
+      produce
+      given = accepted_run
+      before = deep_copy(given)
+
+      run = evaluation.evaluate_accepted(given, ctx: ctx)
+
+      expect(given).to eq(before)
+      expect(guard.calls).to be_empty
+      expect(progress.calls).to eq([[:pass_overridden, "plan"]])
+      expect(run.step("plan").last_attempt.to_h).to include("guard_accepted" => "head_moved", "outcome" => "overridden")
+    end
+
+    it "stops on turn_ended_incomplete when a produces file is missing, and does not pass" do
+      run = evaluation.evaluate_accepted(accepted_run, ctx: ctx)
+
+      expect(run.reason).to include("code" => "turn_ended_incomplete")
+      expect(run.state).to eq("waiting")
+      expect(progress.calls).to be_empty
+      expect(run.step("plan").last_attempt.to_h).to include("guard_accepted" => "head_moved", "outcome" => "failed")
+    end
+
+    it "fails the step on an unmet require: proof with the proof's code" do
+      produce
+      require_check = RecordingRequire.new(checks: [{"name" => "commits", "code" => "require_commits", "detail" => "no commits"}])
+
+      evaluation(require_check: require_check).evaluate_accepted(accepted_run(definition_step: step("guard" => "unchanged", "require" => [{"commits" => 1}])), ctx: ctx)
+
+      expect(progress.calls.map(&:first)).to eq([:fail_step])
+      expect(progress.calls.first[2]).to include("code" => "require_commits")
+    end
+
+    it "registers the status check, and passes overridden only once finish_check sees it pass" do
+      produce
+      context = ctx
+      definition_step = step("guard" => "unchanged", "status" => {"command" => "test", "timeout" => 60})
+
+      run = evaluation.evaluate_accepted(accepted_run(definition_step: definition_step), ctx: context)
+
+      expect(run.step("plan").state).to eq("checking")
+      expect(context.check).to include("step" => "plan", "attempt" => 1, "command" => "rake test")
+      expect(progress.calls).to be_empty
+
+      store.runs["wr_1"] = run.thawed
+      evaluation(progress: progress).finish_check("wr_1", context.check)
+      expect(progress.calls).to eq([[:pass_overridden, "plan"]])
+    end
+
+    it "fails the step with the check's code when finish_check sees the status check fail" do
+      produce
+      context = ctx
+      run = evaluation.evaluate_accepted(accepted_run(definition_step: step("guard" => "unchanged", "status" => {"command" => "test", "timeout" => 60})), ctx: context)
+      store.runs["wr_1"] = run.thawed
+
+      evaluation(checker: RecordingChecker.new(result: {exit_code: 1, timed_out: false, error: nil})).finish_check("wr_1", context.check)
+
+      expect(progress.calls.map(&:first)).to eq([:fail_step])
+      expect(progress.calls.first[2]).to include("cause" => "check", "code" => "check_failed")
+    end
+  end
+
   describe "#finish_follow_ups" do
     let(:check) { {"step" => "plan", "attempt" => 1, "command" => "rake test", "timeout" => 60, "log" => File.join(artifacts, "c.log")} }
 

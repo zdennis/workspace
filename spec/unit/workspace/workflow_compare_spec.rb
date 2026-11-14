@@ -159,6 +159,12 @@ RSpec.describe Workspace::WorkflowCompare do
       expect(group(read, sha("d1"))).to include("settled" => 2, "first_try" => 1, "pass_first_percent" => 50)
     end
 
+    it "settles a run that completed through an override but does not count it as a first try" do
+      put("wr_1", attempts: [attempt(1, "overridden")])
+      put("wr_2", attempts: [attempt(1, "passed")])
+      expect(group(read, sha("d1"))).to include("settled" => 2, "first_try" => 1, "pass_first_percent" => 50)
+    end
+
     it "leaves a run waiting on a person out of both settled and stuck, even with a miss" do
       put("wr_1", attempts: [attempt(1, "passed"), attempt(2, nil)], state: "running", reason: "waiting_you")
       expect(group(read, sha("d1"))).to include("settled" => 0, "stuck" => 0, "running" => 1)

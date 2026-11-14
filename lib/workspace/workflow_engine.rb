@@ -116,8 +116,10 @@ module Workspace
 
     # Gets a run that is not moving going again. See {WorkflowDecisions#resume}.
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was done
-    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
-      resumed_h(@decisions.resume(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds))
+    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
+      accept_guard: false, guard_retry: false, caller_pane: nil)
+      resumed_h(@decisions.resume(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds,
+        accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane))
     end
 
     # Stores a resume for later, with {#resume}'s arguments. See {WorkflowDecisions#park}.
@@ -136,7 +138,9 @@ module Workspace
 
     # What {#resume} refuses, checked without changing anything. See {WorkflowDecisions#refuse_resume}.
     # @return [void]
-    def refuse_resume(run, from: nil) = @decisions.refuse_resume(run, from: from)
+    def refuse_resume(run, from: nil, note: nil, accept_guard: false, guard_retry: false)
+      @decisions.refuse_resume(run, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
+    end
 
     # Ends a run: gives up its resources and frees its pane. See {WorkflowDecisions#cancel}.
     # @return [Hash{String=>Object}] the run afterwards
