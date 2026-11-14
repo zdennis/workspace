@@ -68,6 +68,27 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(change.deliveries).to eq([{"step" => "build"}])
     end
 
+    it "decides a delivered round the sweep pressed and whose turn never ended, once the review timeout has passed since the press, with no sweep" do
+      pressed = ->(at) { reviewing("delivery" => nil, "pane" => "%9", "sweep" => {"interrupt" => {"state" => "sent", "at" => at}, "run_interrupt" => {"state" => "sent", "at" => "2026-11-10T11:00:00Z"}}) }
+      stored(pressed.call("2026-11-10T11:30:01Z"))
+
+      expect(recovery.tick("wr_1")).to be_nil
+      expect(evaluation.calls).to be_empty
+
+      stored(pressed.call("2026-11-10T11:30:00Z"))
+      recovery.tick("wr_1")
+
+      expect(evaluation.calls.first).to eq([:review_ended, "build"])
+      expect(event_types.first).to eq(["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "interrupt_unanswered", "waited" => 1800}])
+    end
+
+    it "leaves a delivered round whose press is still pending (never confirmed) to its turn's end" do
+      stored(reviewing("delivery" => nil, "pane" => "%9", "sweep" => {"interrupt" => {"state" => "pending", "at" => "2026-11-10T10:00:00Z"}}))
+
+      expect(recovery.tick("wr_1")).to be_nil
+      expect(evaluation.calls).to be_empty
+    end
+
     it "asks again for the lock a review round waits on through the round's own start, never an author attempt" do
       stored(run_hash(state: "waiting", step_state: "reviewing", reason: {"code" => "waiting_lock", "details" => {"review_round" => 1}}))
 
@@ -260,16 +281,45 @@ RSpec.describe Workspace::WorkflowRecovery do
           expect(evaluation.calls + progress.calls).to be_empty
         end
 
-        it "stops a round whose review pane the sweep pressed and that still works, kept for a person (interrupt_unanswered)" do
+        it "decides a round whose review pane the sweep pressed and that still works on its verdicts first (interrupt_unanswered)" do
           stored(reviewing("delivery" => nil, "pane" => "%9", "window" => "@4", "server_pid" => "100"))
 
           outcome = recovery.review_stalled("wr_1", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupt_unanswered", data: {"waited" => 1300})
 
-          expect(outcome).to eq(:stopped)
-          expect(evaluation.calls.map(&:first)).not_to include(:review_ended)
-          expect(progress.calls.last[0..1]).to eq([:decide_review, "build"])
-          expect(progress.calls.last[2]).to include(outcome: :incomplete, problem: "review pane %9 still showed its agent working 1300 seconds after the sweep's last interrupt")
+          expect(outcome).to eq(:evaluated)
+          expect(evaluation.calls.first).to eq([:review_ended, "build"])
+          expect(progress.calls).to be_empty
           expect(event_types.first).to eq(["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "interrupt_unanswered", "waited" => 1300}])
+        end
+
+        it "judges a typed round the sweep pressed whose pane still works once the longer of stall and review timeout has passed since the press" do
+          busy = RecordingWorkflowPanes.new(rows: {"%9" => claude_row("working")})
+          definition = reviewing["definition"].merge("stall" => 600)
+          round = {"delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T10:59:59.000Z", "started_at" => "2026-11-10T10:59:50.000Z", "pane" => "%9"}
+          stored(reviewing(round.merge("sweep" => {"interrupt" => {"state" => "sent", "at" => "2026-11-10T11:30:01Z"}})).merge("definition" => definition))
+
+          expect(with_panes(busy).tick("wr_1")).to be_nil
+          expect(evaluation.calls + progress.calls).to be_empty
+
+          stored(reviewing(round.merge("sweep" => {"interrupt" => {"state" => "sent", "at" => "2026-11-10T11:30:00Z"}})).merge("definition" => definition))
+          with_panes(busy).tick("wr_1")
+
+          expect(evaluation.calls.first).to eq([:review_ended, "build"])
+          expect(progress.calls).to be_empty
+          expect(event_types.first).to eq(["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "interrupt_unanswered", "waited" => 1800}])
+        end
+
+        describe "when the verdicts read leave the round stopped for a person" do
+          let(:evaluation) { RecordingEvaluation.new(store.runs, review_reason: {"code" => "review_incomplete"}) }
+
+          it "answers :stopped for interrupt_unanswered" do
+            stored(reviewing("delivery" => nil, "pane" => "%9", "window" => "@4", "server_pid" => "100"))
+
+            outcome = recovery.review_stalled("wr_1", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupt_unanswered", data: {"waited" => 1800})
+
+            expect(outcome).to eq(:stopped)
+            expect(evaluation.calls).to eq([[:review_ended, "build"]])
+          end
         end
 
         it "waits for an agent daemon that can't be reached until the review's timeout, then judges the round" do

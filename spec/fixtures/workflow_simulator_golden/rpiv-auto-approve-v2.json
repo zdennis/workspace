@@ -1,0 +1,581 @@
+{
+  "workflow": "rpiv-auto-approve-v2",
+  "inputs": {
+    "task": "golden",
+    "spec": ""
+  },
+  "outcome": "completed",
+  "stopped": null,
+  "capped": false,
+  "max_actions": 200,
+  "actions": 10,
+  "run": {
+    "state": "completed",
+    "current": "verify",
+    "reason": null,
+    "loops": {
+      "verify->implement": 1
+    }
+  },
+  "steps": [
+    {
+      "id": "research",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed"
+        }
+      ]
+    },
+    {
+      "id": "plan",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "failed",
+          "code": "review_rejected",
+          "reviews": [
+            {
+              "reviewer": "supportive",
+              "verdict": "approve",
+              "counted": true,
+              "problem": null
+            },
+            {
+              "reviewer": "skeptical",
+              "verdict": "reject",
+              "counted": true,
+              "problem": null
+            },
+            {
+              "reviewer": "implementer",
+              "verdict": "approve",
+              "counted": true,
+              "problem": null
+            }
+          ]
+        },
+        {
+          "n": 2,
+          "outcome": "passed",
+          "reviews": [
+            {
+              "reviewer": "supportive",
+              "verdict": "approve",
+              "counted": true,
+              "problem": null
+            },
+            {
+              "reviewer": "skeptical",
+              "verdict": "approve",
+              "counted": true,
+              "problem": null
+            },
+            {
+              "reviewer": "implementer",
+              "verdict": "reject",
+              "counted": true,
+              "problem": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "implement",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "passed"
+        },
+        {
+          "n": 2,
+          "outcome": "passed"
+        }
+      ]
+    },
+    {
+      "id": "verify",
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "outcome": "failed",
+          "code": "check_failed"
+        },
+        {
+          "n": 2,
+          "outcome": "passed"
+        }
+      ]
+    }
+  ],
+  "budget": {
+    "tokens": 40000000,
+    "action": "stop",
+    "extra_tokens": 0,
+    "allowance": 40000000,
+    "used": 0,
+    "counted": 7,
+    "uncounted": 3,
+    "measured": true,
+    "spent": false,
+    "needed": null,
+    "suggested": null
+  },
+  "transitions": [
+    {
+      "n": 1,
+      "at": 0,
+      "type": "run_started",
+      "workflow": "rpiv-auto-approve-v2",
+      "workspace": "simulation"
+    },
+    {
+      "n": 2,
+      "at": 0,
+      "type": "step_dispatching",
+      "step": "research",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 3,
+      "at": 0,
+      "type": "step_dispatched",
+      "step": "research",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 4,
+      "at": 0,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "research",
+      "attempt": 1,
+      "wrote": [
+        "research.md"
+      ]
+    },
+    {
+      "n": 5,
+      "at": 1,
+      "type": "step_passed",
+      "step": "research",
+      "attempt": 1
+    },
+    {
+      "n": 6,
+      "at": 1,
+      "type": "step_dispatching",
+      "step": "plan",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 7,
+      "at": 1,
+      "type": "step_dispatched",
+      "step": "plan",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 8,
+      "at": 1,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "plan",
+      "attempt": 1,
+      "wrote": [
+        "plan.md"
+      ]
+    },
+    {
+      "n": 9,
+      "at": 2,
+      "type": "check_finished",
+      "step": "plan",
+      "attempt": 1,
+      "exit_code": 0
+    },
+    {
+      "n": 10,
+      "at": 2,
+      "type": "step_checks_passed",
+      "step": "plan",
+      "attempt": 1
+    },
+    {
+      "n": 11,
+      "at": 2,
+      "type": "review_started",
+      "step": "plan",
+      "attempt": 1,
+      "round": 1
+    },
+    {
+      "n": 12,
+      "at": 2,
+      "type": "review_delivered",
+      "step": "plan",
+      "attempt": 1,
+      "round": 1,
+      "pane": "%simreview",
+      "window": null,
+      "reused": false
+    },
+    {
+      "n": 13,
+      "at": 2,
+      "type": "simulated_reviewers",
+      "step": "plan",
+      "attempt": 1,
+      "round": 1,
+      "reviews": {
+        "supportive": "approve",
+        "skeptical": "reject",
+        "implementer": "approve"
+      }
+    },
+    {
+      "n": 14,
+      "at": 3,
+      "type": "review_ended",
+      "step": "plan",
+      "attempt": 1,
+      "round": 1,
+      "outcome": "rejected"
+    },
+    {
+      "n": 15,
+      "at": 3,
+      "type": "step_failed",
+      "step": "plan",
+      "attempt": 1,
+      "cause": "review"
+    },
+    {
+      "n": 16,
+      "at": 3,
+      "type": "review_retry",
+      "step": "plan",
+      "attempt": 1,
+      "round": 1,
+      "rounds": 1,
+      "max_rounds": 6
+    },
+    {
+      "n": 17,
+      "at": 3,
+      "type": "step_dispatching",
+      "step": "plan",
+      "attempt": 2,
+      "pane": "%sim"
+    },
+    {
+      "n": 18,
+      "at": 3,
+      "type": "step_dispatched",
+      "step": "plan",
+      "attempt": 2,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 19,
+      "at": 3,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "plan",
+      "attempt": 2,
+      "wrote": [
+        "plan.md"
+      ]
+    },
+    {
+      "n": 20,
+      "at": 4,
+      "type": "check_finished",
+      "step": "plan",
+      "attempt": 2,
+      "exit_code": 0
+    },
+    {
+      "n": 21,
+      "at": 4,
+      "type": "step_checks_passed",
+      "step": "plan",
+      "attempt": 2
+    },
+    {
+      "n": 22,
+      "at": 4,
+      "type": "review_started",
+      "step": "plan",
+      "attempt": 2,
+      "round": 2
+    },
+    {
+      "n": 23,
+      "at": 4,
+      "type": "review_delivered",
+      "step": "plan",
+      "attempt": 2,
+      "round": 2,
+      "pane": "%simreview",
+      "window": null,
+      "reused": false
+    },
+    {
+      "n": 24,
+      "at": 4,
+      "type": "simulated_reviewers",
+      "step": "plan",
+      "attempt": 2,
+      "round": 2,
+      "reviews": {
+        "supportive": "approve",
+        "implementer": "reject"
+      }
+    },
+    {
+      "n": 25,
+      "at": 5,
+      "type": "review_ended",
+      "step": "plan",
+      "attempt": 2,
+      "round": 2,
+      "outcome": "rerun"
+    },
+    {
+      "n": 26,
+      "at": 5,
+      "type": "review_rerun",
+      "step": "plan",
+      "attempt": 2,
+      "round": 2,
+      "reviewers": [
+        "skeptical"
+      ],
+      "rerun": 1,
+      "redelivery": 1
+    },
+    {
+      "n": 27,
+      "at": 5,
+      "type": "review_delivered",
+      "step": "plan",
+      "attempt": 2,
+      "round": 2,
+      "pane": "%simreview",
+      "window": null,
+      "reused": false
+    },
+    {
+      "n": 28,
+      "at": 5,
+      "type": "simulated_reviewers",
+      "step": "plan",
+      "attempt": 2,
+      "round": 2,
+      "reviews": {
+        "skeptical": "approve"
+      },
+      "rerun": 1
+    },
+    {
+      "n": 29,
+      "at": 6,
+      "type": "review_ended",
+      "step": "plan",
+      "attempt": 2,
+      "round": 2,
+      "outcome": "approved"
+    },
+    {
+      "n": 30,
+      "at": 6,
+      "type": "step_passed",
+      "step": "plan",
+      "attempt": 2
+    },
+    {
+      "n": 31,
+      "at": 6,
+      "type": "step_dispatching",
+      "step": "implement",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 32,
+      "at": 6,
+      "type": "step_dispatched",
+      "step": "implement",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 33,
+      "at": 6,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "implement",
+      "attempt": 1,
+      "wrote": [
+        "implement.md"
+      ]
+    },
+    {
+      "n": 34,
+      "at": 7,
+      "type": "step_passed",
+      "step": "implement",
+      "attempt": 1
+    },
+    {
+      "n": 35,
+      "at": 7,
+      "type": "step_dispatching",
+      "step": "verify",
+      "attempt": 1,
+      "pane": "%sim"
+    },
+    {
+      "n": 36,
+      "at": 7,
+      "type": "step_dispatched",
+      "step": "verify",
+      "attempt": 1,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 37,
+      "at": 7,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "verify",
+      "attempt": 1,
+      "wrote": [
+        "verify.md"
+      ]
+    },
+    {
+      "n": 38,
+      "at": 8,
+      "type": "check_finished",
+      "step": "verify",
+      "attempt": 1,
+      "exit_code": 1
+    },
+    {
+      "n": 39,
+      "at": 8,
+      "type": "step_failed",
+      "step": "verify",
+      "attempt": 1,
+      "cause": "check",
+      "exit_code": 1
+    },
+    {
+      "n": 40,
+      "at": 8,
+      "type": "step_looped",
+      "from": "verify",
+      "to": "implement",
+      "count": 1
+    },
+    {
+      "n": 41,
+      "at": 8,
+      "type": "step_dispatching",
+      "step": "implement",
+      "attempt": 2,
+      "pane": "%sim"
+    },
+    {
+      "n": 42,
+      "at": 8,
+      "type": "step_dispatched",
+      "step": "implement",
+      "attempt": 2,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 43,
+      "at": 8,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "implement",
+      "attempt": 2,
+      "wrote": [
+        "implement.md"
+      ]
+    },
+    {
+      "n": 44,
+      "at": 9,
+      "type": "step_passed",
+      "step": "implement",
+      "attempt": 2
+    },
+    {
+      "n": 45,
+      "at": 9,
+      "type": "step_dispatching",
+      "step": "verify",
+      "attempt": 2,
+      "pane": "%sim"
+    },
+    {
+      "n": 46,
+      "at": 9,
+      "type": "step_dispatched",
+      "step": "verify",
+      "attempt": 2,
+      "pane": "%sim",
+      "delivered": true
+    },
+    {
+      "n": 47,
+      "at": 9,
+      "type": "simulated_agent",
+      "action": "turn",
+      "step": "verify",
+      "attempt": 2,
+      "wrote": [
+        "verify.md"
+      ]
+    },
+    {
+      "n": 48,
+      "at": 10,
+      "type": "check_finished",
+      "step": "verify",
+      "attempt": 2,
+      "exit_code": 0
+    },
+    {
+      "n": 49,
+      "at": 10,
+      "type": "step_passed",
+      "step": "verify",
+      "attempt": 2
+    },
+    {
+      "n": 50,
+      "at": 10,
+      "type": "run_completed"
+    }
+  ]
+}

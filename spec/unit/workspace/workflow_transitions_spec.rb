@@ -152,6 +152,41 @@ RSpec.describe Workspace::WorkflowTransitions do
       end
     end
 
+    describe ".press_unanswered? and the :unanswered wake" do
+      let(:wait) { Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT }
+
+      def pressed(at, state: "sent", **round_fields)
+        reviewing({delivery: nil, pane: "%9", sweep: {"interrupt" => {"state" => state, "at" => at.iso8601}}}.merge(round_fields))
+      end
+
+      it "reads the newest confirmed press, never a pending claim" do
+        both = {"interrupt" => {"state" => "sent", "at" => started.iso8601}, "run_interrupt" => {"state" => "sent", "at" => (started + 60).iso8601}}
+        expect(described_class.round_last_press({"sweep" => both})).to eq(started + 60)
+        expect(described_class.round_last_press({"sweep" => {"interrupt" => {"state" => "pending", "at" => started.iso8601}}})).to be_nil
+        expect(described_class.round_last_press(nil)).to be_nil
+      end
+
+      it "waits the longer of the review timeout and the definition's stall after the press" do
+        run = pressed(started)
+        round = run["steps"]["plan"]["review"]
+        expect(described_class.press_unanswered?(run, round, started + wait - 1)).to be(false)
+        expect(described_class.press_unanswered?(run, round, started + wait)).to be(true)
+        run["definition"]["stall"] = 600
+        expect(described_class.press_unanswered?(run, round, started + wait - 1)).to be(false)
+        run["definition"]["stall"] = wait * 2
+        expect(described_class.press_unanswered?(run, round, started + wait)).to be(false)
+        expect(described_class.press_unanswered?(run, round, started + wait * 2)).to be(true)
+      end
+
+      it "wakes a delivered round pressed and unanswered as :unanswered, and not a pending press, a stopped round or one being judged" do
+        expect(described_class.wakeable?(pressed(started), started + wait - 1)).to be_nil
+        expect(described_class.wakeable?(pressed(started), started + wait)).to eq(:unanswered)
+        expect(described_class.wakeable?(pressed(started, state: "pending"), started + wait)).to be_nil
+        expect(described_class.wakeable?(pressed(started).merge("reason" => {"code" => "review_incomplete"}), started + wait)).to be_nil
+        expect(described_class.wakeable?(pressed(started, recompute: {"started_at" => (started + wait).iso8601, "try" => 1}), started + wait)).to be_nil
+      end
+    end
+
     it "starts no attempt on a resume of a step being reviewed" do
       expect(described_class.starts_attempt?(reviewing({delivery: nil}, "reason" => {"code" => "review_incomplete"}), from: nil, pane: nil)).to be(false)
       expect(described_class.starts_attempt?(reviewing, from: "plan", pane: nil)).to be(true)

@@ -440,6 +440,67 @@ module Workspace
     end
     private_class_method :interrupt_mark_live?
 
+    # When the sweep's keys last went out for a review round: the newest `sent` mark of {ROUND_INTERRUPT_KEYS}. A
+    # `pending` claim is not a press: a sweep that pressed and died before it confirmed leaves one, which reads as no
+    # press once it is older than {INTERRUPT_CLAIM_SECONDS} ({.round_interrupted}), so a later sweep may press again
+    # and a turn that ends meanwhile may run missing reviewers again. That is accepted rather than recording the press
+    # before the keys go out, which would read a press that never happened as one.
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @return [Time, nil] nil when no press was confirmed
+    def self.round_last_press(round)
+      marks = round_sweep_marks(round)
+      ROUND_INTERRUPT_KEYS.values.filter_map do |key|
+        mark = marks[key]
+        next unless mark.is_a?(Hash) && mark["state"] == "sent"
+        begin
+          Time.iso8601(mark["at"].to_s)
+        rescue ArgumentError
+          nil
+        end
+      end.max
+    end
+
+    # How long a review pane the sweep pressed may go on working before its round is decided without its turn's end:
+    # the longer of the definition's `stall` and the round's `review.timeout` ({.review_timeout}), so a short `stall`
+    # never cuts short a review whose sub-agents still write.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Numeric]
+    def self.press_wait(run)
+      [WorkflowDefinition.stall(run["definition"]).to_i, review_timeout(run)].max
+    end
+
+    # Whether a review round the sweep pressed ({.round_last_press}) has gone {.press_wait} since its newest press
+    # with no turn's end deciding it. Its verdicts then decide it, or it stops `review_incomplete`, whether or not a
+    # sweep runs again ({WorkflowRecovery#tick}, and the sweep's `interrupt_unanswered`).
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param round [Hash{String=>Object}, nil] the current step's `review`
+    # @param now [Time]
+    # @return [Boolean]
+    def self.press_unanswered?(run, round, now)
+      last = round_last_press(round)
+      !last.nil? && now - last >= press_wait(run)
+    end
+
+    # A delivered review round (its `delivery` null) that is the run's, undecided, not being judged and with no stop,
+    # whose press is unanswered ({.press_unanswered?}): {.wakeable?}'s `:unanswered`, so a tick decides it when no
+    # sweep comes back to it.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Boolean]
+    def self.unanswered_round?(run, now)
+      return false if run["parked"] || run["reason"]
+      state = run.dig("steps", run["current"])
+      return false unless state.is_a?(Hash) && state["state"] == "reviewing"
+      round = state["review"]
+      return false unless round.is_a?(Hash) && round.key?("delivery") && round["delivery"].nil? && round["pane"].is_a?(String)
+      return false if round["recompute"] || round["ended_at"]
+      press_unanswered?(run, round, now)
+    end
+
     # Whether a round whose line may have been typed, its review pane at work and never interrupted by the sweep, has
     # run past twice its `review.timeout` ({.round_elapsed}): the sweep presses at the first, so past the second no
     # sweep is coming and the round stops for a person. A start that can't be read has run past it.
@@ -544,13 +605,14 @@ module Workspace
     # minute, it has been held for background tasks longer than
     # {BACKGROUND_HOLD}, or the end of its review round was being judged and
     # nothing reported back ({.lost_round?}), or its review round has to be
-    # delivered again, or stopped once its deliveries again are spent ({.round_redelivery}).
+    # delivered again, or stopped once its deliveries again are spent ({.round_redelivery}), or its delivered
+    # review round was pressed by the sweep and has not answered ({.unanswered_round?}).
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
     # @param alive [#call, nil] given a review round's `holder`, whether it still runs (see {.round_delivery}); nil
     #   takes every holder as alive, so a lapsed round with a holder is not woken
-    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :review, :check, or nil
+    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :unanswered, :review, :check, or nil
     def self.wakeable?(run, now, alive: nil)
       return :parked if run["parked"]
       return :backoff if backoff(run, now)&.fetch(:state) == :due
@@ -558,6 +620,7 @@ module Workspace
       return :background if background_expired?(run["reason"], now)
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
       return :round if lost_round?(run, now)
+      return :unanswered if unanswered_round?(run, now)
       return :review if %i[due exhausted].include?(round_redelivery(run, now, alive: alive)&.fetch(:state))
       :check if run["reason"].nil? && lost_check?(run, now)
     end

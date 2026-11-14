@@ -29,8 +29,9 @@ module Workspace
   # needs the pane still bound to the run as its reviewer. A round whose line may have been typed is pressed the same
   # way before it is handed to the tick. The turn the press ends is then decided as any review turn's end is: the
   # verdicts on disk count, and a round they leave short stops `review_incomplete` with its window kept for the
-  # person, running no reviewer again. A pane still at work the definition's `stall` (else the review's timeout once
-  # more) after every due press stops `review_incomplete` too, its window kept (cause `interrupt_unanswered`). A gone pane, a
+  # person, running no reviewer again. A pane still at work the longer of the definition's `stall` and the review's
+  # timeout after every due press is decided on its verdicts too, stopping `review_incomplete` with its window kept
+  # when they fall short (cause `interrupt_unanswered`; {WorkflowEngine#tick} decides it the same way with no sweep). A gone pane, a
   # gone agent and an idle turn are decided the same way. The idle turn is not told from one whose Stop listed
   # background tasks (the daemon's pane row does not carry them), so a reviewer that left a sub-agent running past
   # `stall` is decided on what it has written. Each writes `step_stalled` with the round.
@@ -230,7 +231,7 @@ module Workspace
     def press_and_confirm(run, round, what, pass, shown, pane, due)
       marks = WorkflowTransitions.round_sweep_marks(round)
       cause, used, limit = due.find { |each, _, _| marks.dig(WorkflowTransitions::ROUND_INTERRUPT_KEYS.fetch(each), "state") != "sent" }
-      return unanswered(run, round, what, pass, pane, due, marks) unless cause
+      return unanswered(run, round, what, pass, pane, due) unless cause
       message = if cause == "run_timed_out"
         "the run has used #{used.round} seconds of its #{limit} second time limit while #{what} is reviewed"
       else
@@ -262,27 +263,21 @@ module Workspace
       WorkflowSweepRows.row(run, "interrupted", message: "#{message}; interrupted, and the round is decided on its verdicts once the review turn ends", cause: cause, action: "interrupt")
     end
 
-    # Every due cause's keys went out and the pane still works: once the definition's `stall` (else the review's
-    # timeout once more) has passed since the last press, the round stops `review_incomplete` with its window kept
-    # (cause `interrupt_unanswered`), so it is never left waiting on a pane no press reaches.
-    def unanswered(run, round, what, pass, pane, due, marks)
+    # Every due cause's keys went out and the pane still works: once {WorkflowTransitions.press_wait} (the longer of the
+    # definition's `stall` and the review's timeout) has passed since the newest press
+    # ({WorkflowTransitions.press_unanswered?}, the reading {WorkflowEngine#tick} also decides by), the round is decided
+    # on the verdicts written and stops `review_incomplete` with its window kept when they fall short (cause
+    # `interrupt_unanswered`), so it is never left waiting on a pane no press reaches.
+    def unanswered(run, round, what, pass, pane, due)
       now = @clock.call
-      last = due.filter_map { |each, _, _| sent_at(marks.dig(WorkflowTransitions::ROUND_INTERRUPT_KEYS.fetch(each), "at")) }.max
-      wait = WorkflowDefinition.stall(run.definition) || WorkflowTransitions.review_timeout(run.to_h)
-      if last.nil? || now - last < wait
+      unless WorkflowTransitions.press_unanswered?(run.to_h, round, now)
         return WorkflowSweepRows.row(run, "nothing", reason: "already_interrupted", cause: due.first.first,
           message: "#{what} was interrupted for its time limit; it is decided once the review turn ends")
       end
-      waited = (now - last).round
+      waited = (now - WorkflowTransitions.round_last_press(round)).round
       stall(run, round, pass, pane, "interrupt_unanswered",
         "review pane #{pane} of #{what} still works #{waited} seconds after it was interrupted for its time limit; " \
-        "it stops for a person (review_incomplete), its window kept", {"waited" => waited})
-    end
-
-    def sent_at(value)
-      Time.iso8601(value.to_s)
-    rescue ArgumentError
-      nil
+        "the verdicts written decide it, else it stops for a person (review_incomplete), its window kept", {"waited" => waited})
     end
 
     # Read just before the press: the same agent still works in the review pane, and the pane is still the run's
@@ -322,7 +317,7 @@ module Workspace
 
     # A round stalled in its review pane: the change is {WorkflowEngine#review_stalled}'s. A turn's end is read again just before it.
     def stall(run, round, pass, pane, cause, message, data = {})
-      action = {"server_restarted" => "redeliver", "interrupt_unanswered" => "stop"}.fetch(cause, "evaluate")
+      action = {"server_restarted" => "redeliver"}.fetch(cause, "evaluate")
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: cause, action: action) if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: cause) if refusal

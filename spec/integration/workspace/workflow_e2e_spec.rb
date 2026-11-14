@@ -173,6 +173,46 @@ RSpec.describe "a workflow run from start to completed" do
     ])
   end
 
+  describe "a round the sweep pressed whose review turn never ends, with no sweep after" do
+    def pressed
+      to_review
+      ref = {step: "design", attempt: 1, round: 1, pane: review_pane}
+      claim, at = engine.claim_round_interrupt("wr_1", **ref, elapsed: 1801, timeout: 1800, cause: "review_timed_out")
+      expect(claim).to eq(:claimed)
+      expect(engine.round_interrupt_sent("wr_1", **ref, claim_at: at, sent: true, cause: "review_timed_out")).to eq(:recorded)
+    end
+
+    it "is passed by the agent daemon's tick on the verdicts written, once the review timeout has gone by since the press" do
+      pressed
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+      advance(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT - 1)
+      expect(engine.tick("wr_1")).to be_nil
+
+      advance(1)
+      run = engine.tick("wr_1")
+
+      expect(run).to include("current" => "implement", "reason" => nil)
+      expect(outcomes(run, "design")).to eq(["passed"])
+      expect(history).to include("step_stalled", "review_ended")
+      # A sweep that read the round before the tick decided it changes nothing.
+      expect(engine.review_stalled("wr_1", step: "design", attempt: 1, round: 1, pane: review_pane, cause: "interrupt_unanswered", data: {"waited" => 1800})).to eq(:moved_on)
+    end
+
+    it "stops review_incomplete by the tick when the verdicts written fall short, running no reviewer again" do
+      pressed
+      verdict("skeptic", "approve", seq: 1)
+      advance(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT)
+
+      run = engine.tick("wr_1")
+
+      expect(run).to include("current" => "design", "reason" => include("code" => "review_incomplete"))
+      expect(run.dig("reason", "details", "problem")).to include("the sweep interrupted the review pane")
+      expect(history).not_to include("review_rerun")
+      expect(rounds.size).to eq(1)
+    end
+  end
+
   it "runs design again when the skeptic rejects, told the verdicts and the write-up, and passes it once round 2 approves" do
     to_review
     verdict("skeptic", "reject", seq: 1)

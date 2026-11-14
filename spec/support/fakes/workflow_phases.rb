@@ -876,11 +876,13 @@ class RecordingEvaluation
   # @param check [Hash, nil] what +evaluate+ registers on its context
   # @param reason [Hash, nil] the reason +evaluate+ leaves on the run
   # @param review [Hash, nil] the review round +evaluate+ registers on its context
-  def initialize(runs, check: nil, reason: nil, review: nil)
+  # @param review_reason [Hash, nil] the reason +review_ended+ leaves on the run (a round it stops for a person)
+  def initialize(runs, check: nil, reason: nil, review: nil, review_reason: nil)
     @runs = runs
     @check = check
     @review = review
     @reason = reason
+    @review_reason = review_reason
     @calls = []
   end
 
@@ -905,6 +907,7 @@ class RecordingEvaluation
   def review_ended(run, ctx:)
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:review_ended, run.current]
+    return Workspace::WorkflowRun.from_h(run.thawed.merge("reason" => @review_reason)) if @review_reason
     ctx.review_end({"step" => run.current})
     run
   end

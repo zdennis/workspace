@@ -190,27 +190,29 @@ RSpec.describe Workspace::WorkflowReviewSweep do
   end
 
   describe "a review pane still at work after every due press" do
-    let(:pressed_at) { (now - 1200).utc.iso8601 }
+    # The longer of the definition's stall (1200) and the review's timeout (1800).
+    let(:pressed_at) { (now - 1800).utc.iso8601 }
 
-    it "says it waits for the turn's end until the stall has passed since the last press, then stops the round for a person" do
+    it "says it waits for the turn's end until the longer of stall and review timeout has passed since the last press, then has the round decided" do
       review_pane("working")
-      marks = {"sweep" => {"interrupt" => {"state" => "sent", "at" => (now - 1199).utc.iso8601}}}
+      marks = {"sweep" => {"interrupt" => {"state" => "sent", "at" => (now - 1799).utc.iso8601}}}
       expect(call(reviewing(started: 3600, round: marks))).to include("outcome" => "nothing", "reason" => "already_interrupted")
       expect(engine).not_to have_received(:review_stalled)
 
       allow(engine).to receive(:review_stalled).and_return(:stopped)
       row = call(reviewing(started: 3600, round: {"sweep" => {"interrupt" => {"state" => "sent", "at" => pressed_at}}}))
 
-      expect(row).to include("outcome" => "stopped", "cause" => "interrupt_unanswered", "action" => "stop")
-      expect(row["message"]).to include("still works 1200 seconds after it was interrupted", "its window kept")
-      expect(engine).to have_received(:review_stalled).with("wr_1", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupt_unanswered", data: {"waited" => 1200})
+      expect(row).to include("outcome" => "stopped", "cause" => "interrupt_unanswered", "action" => "evaluate")
+      expect(row["message"]).to include("still works 1800 seconds after it was interrupted", "its window kept")
+      expect(engine).to have_received(:review_stalled).with("wr_1", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupt_unanswered", data: {"waited" => 1800})
     end
 
-    it "waits the review's timeout once more when the definition has no stall" do
+    it "waits the review's timeout once more when the definition has no stall, or a shorter one" do
       review_pane("working")
-      marks = {"sweep" => {"interrupt" => {"state" => "sent", "at" => pressed_at}}}
+      marks = {"sweep" => {"interrupt" => {"state" => "sent", "at" => (now - 1200).utc.iso8601}}}
 
       expect(call(reviewing(started: 3600, round: marks, definition: {"stall" => nil}))).to include("reason" => "already_interrupted")
+      expect(call(reviewing(started: 3600, round: marks))).to include("reason" => "already_interrupted")
     end
 
     it "is left for the next pass when the pane stopped working by the time it is read again" do
