@@ -287,10 +287,9 @@ RSpec.describe "a workflow run from start to completed" do
       expect(history).to include("run_cancelled")
       expect(test_db_holder).to be_nil
       expect(panes.bound.values.map { |entry| entry[:run_id] }).not_to include("wr_1")
-      # Pinned current behaviour: abandon records the end fields but leaves ended_at and outcome nil (a fix follows).
       attempt = run["steps"]["verify"]["attempts"].last
       expect(attempt).to include("outputs" => [], "usage" => a_kind_of(Hash), "head" => {"before" => "1" * 40, "after" => "1" * 40})
-      expect(attempt.values_at("ended_at", "outcome")).to eq([nil, nil])
+      expect(attempt).to include("ended_at" => now.first.utc.iso8601, "outcome" => "cancelled")
     end
 
     it "keeps a step that ended its turn without its produces file running, and a resume with a note delivers it again" do

@@ -344,7 +344,7 @@ end
 
 # Fake of Workspace::WorkflowAttemptRecord#start, #finish, #abandon and #finish_round: the attempt as given, with a stand-in hash of the
 # composed text at its start and an empty +outputs+ at its end; +abandon+ marks the current step's last attempt
-# `abandoned` when it is still open (no `ended_at`); +finish_round+ answers the round's number, pane and times with
+# `cancelled` when it is still open (no `ended_at`); +finish_round+ answers the round's number, pane and times with
 # the usage it was given and, for a round that read verdicts, its rows with `isolation` and the evidence it was given.
 class RecordingAttemptRecord
   CONTROL_METHODS = %i[calls].freeze
@@ -373,7 +373,10 @@ class RecordingAttemptRecord
     hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:abandon, hash["id"]]
     last = hash["steps"][hash["current"]]["attempts"].last
-    last["outcome"] = "abandoned" if last && !last["ended_at"]
+    if last && !last["ended_at"]
+      last["outcome"] = "cancelled"
+      last["ended_at"] = "2026-11-10T12:00:00Z"
+    end
     Workspace::WorkflowRun.from_h(hash)
   end
 

@@ -60,6 +60,13 @@ RSpec.describe Workspace::WorkflowStats do
       expect(plan["tokens"]).to include("mean" => 160, "runs_uncounted" => 0)
     end
 
+    it "lists a cancelled attempt as unfinished, keeps its ended_at out of the median and still counts its tokens" do
+      put("wr_1", steps: {"plan" => [attempt(1, "passed", seconds: 100), attempt(2, "cancelled", seconds: 5000)]})
+      plan = row(stats.read(workflow: "rpiv"), "plan")
+      expect(plan).to include("attempts" => 1, "passed" => 1, "unfinished" => 1, "median_seconds" => 100, "tokens_from_unfinished" => 1)
+      expect(plan["tokens"]).to include("mean" => 320)
+    end
+
     it "lists an attempt with no outcome as unfinished and leaves it out of everything else" do
       put("wr_1", steps: {"plan" => [attempt(1, nil, usage: nil), attempt(2, "interrupted")]})
       expect(row(stats.read(workflow: "rpiv"), "plan")).to include("attempts" => 0, "unfinished" => 2, "median_seconds" => nil)

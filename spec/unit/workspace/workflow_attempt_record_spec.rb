@@ -260,12 +260,24 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
   end
 
   describe "#abandon" do
-    it "closes the open attempt with the end fields and adds no outcome" do
+    subject(:record) { described_class.new(guard: guard, clock: -> { Time.utc(2026, 10, 4, 12, 30, 0) }) }
+
+    it "closes the open attempt with the end fields, ended_at and outcome cancelled" do
       put("plan.md", "x")
       closed = record.abandon(run).current_step.last_attempt.to_h
 
       expect(closed).to include("outputs" => [include("bytes" => 1)], "head" => {"before" => nil, "after" => "a" * 40})
-      expect(closed).not_to include("outcome", "ended_at")
+      expect(closed).to include("outcome" => "cancelled", "ended_at" => "2026-10-04T12:30:00Z")
+    end
+
+    it "leaves no open attempt, and a reason history attaches nothing new to it" do
+      abandoned = record.abandon(run)
+
+      expect(record.open_attempt(abandoned.to_h)).to be_nil
+      stopped = abandoned.thawed.merge("reason" => {"code" => "waiting_you", "since" => "2026-10-04T12:31:00Z"})
+      after = record.reasons(run: stopped, was_open: nil).thawed
+      expect(after["steps"]["plan"]["attempts"].last["reasons"]).to be_nil
+      expect(after["reasons"]).to include(include("code" => "waiting_you"))
     end
 
     it "leaves an attempt that has ended" do
@@ -792,12 +804,12 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
     end
 
     describe "#abandon" do
-      it "sets session, agent and usage and still adds no ended_at, counting to now" do
+      it "sets session, agent and usage and counts to now, then ends the attempt cancelled" do
         open = {"n" => 2, "started_at" => "2026-10-04T12:00:00.000Z"}
         run["steps"]["plan"]["attempts"] = [open]
         closed = record.abandon(run).current_step.last_attempt.to_h
 
-        expect(closed).not_to include("ended_at", "outcome")
+        expect(closed).to include("outcome" => "cancelled", "ended_at" => "2026-10-04T12:10:00Z")
         expect(closed["session"]).to include("id" => "s1")
         expect(closed["agent"]).to include("kind" => "claude")
         expect(closed["usage"]).to eq("input_tokens" => 5030, "output_tokens" => 512)

@@ -11,8 +11,9 @@ module Workspace
   # - `not_delivered` (and an attempt marked `redelivered`, which is an undelivered one typed again) never
   #   reached the agent, so it did no work: it is counted apart and left out of the pass counts, the median
   #   and the tokens.
-  # - `unfinished` is any other attempt (no outcome yet because it is still going, or it was replaced
-  #   without ending). It is counted apart and left out of everything else.
+  # - `unfinished` is any other attempt (no outcome yet because it is still going, it was replaced
+  #   without ending, or a cancel or kill closed it with outcome `cancelled`). It is counted apart and left
+  #   out of everything else, its `ended_at` included: it never enters the median.
   #
   # `median_seconds` is the middle `ended_at - started_at` of the `passed` and `failed` attempts that have both
   # times. `resumes` counts the `run_resumed` events in the run's history, each on the step it resumed (the
@@ -22,7 +23,7 @@ module Workspace
   #
   # Tokens follow {WorkflowBudget}: input, output and cache creation tokens of the main thread and its in-step
   # sub-agents, and of each review round the attempt went through, never cache reads. For each run, a step's figure is the sum over the attempts the budget counts: `passed`,
-  # `failed` and also `unfinished` ones that ended without an outcome (a cancel, a `resume --from`), so the tokens
+  # `failed` and also `unfinished` ones that ended without passing or failing (a cancel, a `resume --from`), so the tokens
   # spent on a cancelled attempt are not lost; not an attempt still going, and not an undelivered one.
   # A run where any of those attempts (or their rounds) has a null `usage` is `runs_uncounted` for that step, not a smaller
   # number; `mean` is over `runs_counted` only and is nil when there are none.
@@ -40,7 +41,7 @@ module Workspace
     # @param loaded [Hash, nil] the answer of {WorkflowRunLoader#load}, when the caller has read it already
     # @return [Hash{String=>Object}] "runs" (how many were read), "unreadable" (files that are no run, plus runs whose
     #   content was the wrong shape), "undated", "steps" (one row per step: "step", "attempts", "passed", "failed",
-    #   "not_delivered", "unfinished", "median_seconds", "resumes", "tokens_from_unfinished" (attempts with no outcome whose tokens are in the mean), "tokens" => {"mean", "runs_counted", "runs_uncounted"})
+    #   "not_delivered", "unfinished", "median_seconds", "resumes", "tokens_from_unfinished" (unfinished attempts whose tokens are in the mean), "tokens" => {"mean", "runs_counted", "runs_uncounted"})
     #   in the order of the newest run's definition then the others, and "unattributed_resumes"
     def read(workflow:, last: nil, include: nil, loaded: nil)
       loaded ||= @loader.load(workflow: workflow, last: last, include: include)

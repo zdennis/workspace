@@ -838,7 +838,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(progress.calls).to eq([[:finish, "wr_1", "cancelled"]])
       expect(run.state).to eq("cancelled")
       expect(run.cancelled_by).to eq("cancel")
-      expect(run.steps["plan"].last_attempt.outcome).to eq("abandoned")
+      expect(run.steps["plan"].last_attempt.outcome).to eq("cancelled")
       expect(change.events).to eq([["wr_1", "run_cancelled", {"cause" => "cancel"}]])
     end
 
@@ -847,7 +847,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       decisions.cancel("wr_1")
 
-      expect(progress.finished.map { |run| run.steps["plan"].last_attempt.outcome }).to eq(["abandoned"])
+      expect(progress.finished.map { |run| run.steps["plan"].last_attempt.outcome }).to eq(["cancelled"])
     end
 
     it "ends a step's review round before the run: the round's usage recorded, the reviewer unbound and the window closed" do

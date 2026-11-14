@@ -111,6 +111,13 @@ RSpec.describe Workspace::WorkflowCompare do
       expect(group(read, sha("d1"))).to include("settled" => 2, "first_try" => 1, "pass_first_percent" => 50, "cancelled" => 0)
     end
 
+    it "leaves a run cancelled with an attempt closed as cancelled out, like old data with no outcome" do
+      put("wr_1", attempts: [attempt(1, "cancelled")], state: "cancelled")
+      put("wr_2", attempts: [attempt(1, nil)], state: "cancelled")
+      put("wr_3", attempts: [attempt(1, "passed")])
+      expect(group(read, sha("d1"))).to include("settled" => 1, "pass_first_percent" => 100, "cancelled" => 2)
+    end
+
     it "leaves a clean cancelled run out" do
       put("wr_1", attempts: [attempt(1, nil)], state: "cancelled")
       put("wr_2", attempts: [attempt(1, "passed")])
