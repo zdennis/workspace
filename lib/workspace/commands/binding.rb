@@ -19,7 +19,8 @@ module Workspace
       #
       # @param workspace [String]
       # @param pane [String] a pane id ("%19") or "window.pane" ("0.1"); stored by pane id
-      # @param fields [Hash{String=>Object}] see {Workspace::PaneBindings#bind}
+      # @param fields [Hash{String=>Object}] see {Workspace::PaneBindings#bind}; a reviewer binding also
+      #   records the tmux server's pid
       # @return [Hash{String=>Object}] the stored binding
       # @raise [Workspace::UsageError] for fields {Workspace::PaneBindings#bind} refuses
       # @raise [Workspace::Error] see {Workspace::PaneLocator#locate}
@@ -38,9 +39,11 @@ module Workspace
       # @raise [SystemCallError] if `bindings.json` can not be written
       def bind(workspace:, pane:, **fields)
         located = @locator.locate(workspace, pane)
-        @bindings.bind(located.fetch(:id), fields.transform_keys(&:to_s).merge(
+        stored = fields.transform_keys(&:to_s).merge(
           "workspace" => workspace, "session" => located.fetch(:session), "pane_slot" => @tmux.pane_slot(located.fetch(:id))
-        ))
+        )
+        stored["server_pid"] = @tmux.server_pid_for_pane(located.fetch(:id)) if stored["role"] == "reviewer"
+        @bindings.bind(located.fetch(:id), stored)
       end
 
       # Prints what the agent is told, and says so when the binding is stale. The packs
@@ -78,7 +81,8 @@ module Workspace
       #   tmux can't find it (see {Workspace::PaneBindings#stale?})
       def stale?(entry)
         pane = entry["pane_id"]
-        @bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane))
+        @bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane),
+          server_pid: -> { @tmux.server_pid_for_pane(pane) })
       end
 
       # @param pane [String] a pane id ("%19")

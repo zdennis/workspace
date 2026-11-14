@@ -10,8 +10,8 @@ module Workspace
     KEYS = %w[
       id schema_version workflow title definition definition_source definition_path definition_sha256
       workspace project worktree base_sha base_guard task inputs note state created_at started_at ended_at
-      current pane loops pending_context reason reasons artifacts_dir parked backoff budget_hold sweep
-      extra_tokens extra_attempts guard_config_seen cancelled_by
+      current pane loops pending_context reason reasons artifacts_dir parked backoff budget_hold timeout_hold sweep
+      extra_tokens extra_attempts extra_seconds guard_config_seen cancelled_by
     ].freeze
 
     # A frozen deep copy of a parsed value, or the value itself when it is already frozen all the way down.
@@ -169,6 +169,16 @@ module Workspace
         to_h["gate"]
       end
 
+      # @return [Hash, nil] the review round now under way, when the step is being reviewed
+      def review
+        to_h["review"]
+      end
+
+      # @return [Integer, nil] the review rounds the step has spent
+      def review_rounds
+        to_h["review_rounds"]
+      end
+
       # @return [Object, nil]
       def redelivery_pending
         to_h["redelivery_pending"]
@@ -202,7 +212,7 @@ module Workspace
       KEYS = %w[
         n started_at ended_at outcome context prompt_file head definition_sha256 prompt_sha256 packs outputs
         agent session usage reasons check code proofs reported evidence remote warnings redelivered redelivery
-        delivery after_park
+        delivery after_park reviews review_outcome retry_of rounds
       ].freeze
 
       # @param hash [Hash{String=>Object}, nil]
@@ -311,10 +321,11 @@ module Workspace
       end
     end
 
-    # The attempt held back because the token budget is spent (+budget_hold+), with the retry context it keeps.
+    # The attempt held back because the token budget is spent (+budget_hold+), with the retry context it keeps; or the
+    # review round held back (+review_round+, the round its release starts).
     class BudgetHold
       # Keys the engine writes; each is a reader that returns the stored value, nil when absent.
-      KEYS = %w[context pane identity text].freeze
+      KEYS = %w[context pane identity text review_round].freeze
 
       # @param hash [Hash{String=>Object}, nil]
       # @return [BudgetHold]
@@ -344,6 +355,20 @@ module Workspace
       # @return [Integer]
       def hash
         [BudgetHold, to_h].hash
+      end
+    end
+
+    # The attempt held back because the run's timeout is spent (+timeout_hold+): the same record as {BudgetHold}.
+    class TimeoutHold < BudgetHold
+      # @return [Boolean]
+      def ==(other)
+        other.is_a?(TimeoutHold) && to_h == other.to_h
+      end
+      alias_method :eql?, :==
+
+      # @return [Integer]
+      def hash
+        [TimeoutHold, to_h].hash
       end
     end
 

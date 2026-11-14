@@ -48,9 +48,12 @@ module Workspace
       @alert_history = {}
     end
 
-    # @return [Array<Hash>] the session's panes, as {Tmux#pane_details} lists them
+    # The panes the monitor watches: every pane of window 0, and the panes of any other window marked as a review
+    # window. A detail without `:window` counts as window 0.
+    #
+    # @return [Array<Hash>] those panes, as {Tmux#pane_details} lists them
     def pane_details
-      @tmux.pane_details(@session_name)
+      @tmux.pane_details(@session_name, window: nil).select { |d| (d[:window] || 0).zero? || d[:review] }
     end
 
     # @return [Workspace::ProcessTree::Snapshot]
@@ -83,6 +86,8 @@ module Workspace
     def refresh(pane, detail, tree, now)
       load_history
       pane = restore_state(pane, detail) if @history.key?(detail[:id])
+      pane[:window] = detail[:window] || 0
+      pane[:review] = detail[:review]
       pane[:index] = detail[:index]
       pane[:title] = detail[:title]
       pane[:cwd] = detail[:cwd]
@@ -166,7 +171,7 @@ module Workspace
     # Output is hashed rather than compared: a pane's scrollback is large, and
     # only the fact that it changed matters.
     def refresh_activity(pane, now)
-      screen = @tmux.capture_pane(@session_name, pane[:index]).to_s
+      screen = @tmux.capture_pane_by_id(pane[:pane_id]).to_s
       digest = Digest::SHA256.hexdigest(screen)
 
       if pane[:digest] != digest

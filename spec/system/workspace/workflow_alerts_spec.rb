@@ -44,6 +44,15 @@ RSpec.describe Workspace::WorkflowAlerts do
     expect(sent.size).to eq(1)
   end
 
+  it "sends the failed alert when a run is held by its timeout, and says so" do
+    held = run(state: "waiting", reason: {"code" => "run_timed_out"})
+    alerts.fire(alerts.marks(run), held)
+
+    expect(sent.size).to eq(1)
+    expect(sent.first).to include("WORKSPACE_ALERT_EVENT" => "failed", "WORKSPACE_ALERT_REASON" => "run_timed_out")
+    expect(sent.first["WORKSPACE_ALERT_TEXT"]).to include("has used its time limit")
+  end
+
   it "fires a stall for each new cause only" do
     alerts.fire(alerts.marks(run(stalled: {"pane_gone" => "t"})), run(stalled: {"pane_gone" => "t", "agent_gone" => "t"}))
 

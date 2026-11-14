@@ -76,9 +76,9 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 |---|---|
 | `waiting_lock` | Nobody; wait. |
 | `waiting_you` | The person for a gate or prompt; for an ask, see workspace-inbox. |
-| `turn_ended_incomplete`, `failed_check` | `workflow resume RUN`. If `actions` lists only `cancel`, a resume can't get past it: tell the person. |
+| `turn_ended_incomplete`, `failed_check` | `workflow resume RUN`. A guard stop (HEAD moved, hooks changed, and the like) can also be accepted with `resume RUN --accept-guard --note WHY [--retry]`: only when the person asked, never to get past your own change. It accepts the guard alone: the step's files, proofs and check still have to pass. Later guarded steps measure from the new base, so a cause still there (no commit, a rebase under way) stops them again. If `actions` lists only `cancel`, a resume can't get past it: tell the person. If `reason.recovery` is set, do that (or tell the person) before resuming. |
 | `pane_gone` | Bring the pane back (`workspace launch NAME`), then `workflow resume RUN`. |
 
-- Flags: `parked` (wait), `delivering` (do not resume). A reason's `actions` says what can be done, not what to do: `workflow resume` is yours, while `approve`, `reject`, `ask answer` and `dev down` wait for the person to ask.
+- Flags: `parked` (wait), `delivering` (do not resume). A reason's `actions` says what can be done, not what to do: `workflow resume` is yours, while `approve`, `reject`, `resume --accept-guard`, `ask answer` and `dev down` wait for the person to ask. An action whose `needs` holds `note` (`needs: ["note"]`) takes a note the person writes, not one you make up.
 - `workflow cancel RUN` can't be undone: run it only when the person asks, even when `actions` lists it.
 - In a bound pane, `workspace step status` is your own read. The `bound_pane` and `parked` traps are in machine-contract.

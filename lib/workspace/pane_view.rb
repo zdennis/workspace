@@ -37,7 +37,7 @@ module Workspace
         "updated_at" => now.utc.iso8601,
         "features" => features,
         "task" => task_row(task, panes),
-        "panes" => panes.sort_by { |p| p["index"] || 0 }
+        "panes" => panes.sort_by { |p| [p["window"] || 0, p["index"] || 0] }
       }
     end
 
@@ -59,6 +59,8 @@ module Workspace
       state_since = (state == pane[:logged_state]) ? pane[:state_since] : PaneStates.since_for(pane, state, now, idle_after)
       result = {
         "pane_id" => pane[:pane_id],
+        "window" => pane[:window] || 0,
+        "review" => pane[:review],
         "index" => pane[:index],
         "kind" => pane[:kind],
         "label" => pane[:label],

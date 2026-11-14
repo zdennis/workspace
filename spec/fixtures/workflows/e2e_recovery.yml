@@ -1,0 +1,25 @@
+# The workflow the "daemon wakes" group of spec/integration/workspace/workflow_e2e_spec.rb drives: a build
+# step, then a verify step that holds test-db, is checked by a status command and, on failure, goes back to
+# build after a backoff. Kept apart from e2e.yml, whose history that spec pins.
+schema_version: 0.1
+id: e2e_recovery
+title: End-to-end recovery fixture
+description: Two steps that need a lock, a check and a backoff, for the daemon-wakes examples only.
+
+inputs:
+  task:
+    description: What the run is about.
+    required: true
+
+max_attempts: 20
+
+steps:
+  build:
+    prompt: Write {{artifacts}}/build.md.
+    produces: [build.md]
+
+  verify:
+    prompt: Run the tests.
+    uses: [test-db]
+    status: {command: test, timeout: 5m}
+    on_fail: {goto: build, max: 1, backoff: 5m}

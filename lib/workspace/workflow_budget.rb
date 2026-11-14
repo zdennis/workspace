@@ -6,12 +6,16 @@ module Workspace
   # What counts is each attempt's (one still in progress is left out until it ends; one that was replaced without
   # ending, by a resume over it, counts when it has usage and is uncounted when it has none) `usage` ({WorkflowAttemptRecord}): `input_tokens`, `output_tokens` and
   # `cache_creation_input_tokens`. `cache_read_input_tokens` is left out, since a cache read re-reads context
-  # already paid for and would make any long turn look huge. Two things are never counted: sub-agents (the
-  # recorded `usage` is the main thread's) and an attempt whose `usage` is null (another agent than Claude
-  # Code, or a heavy attempt the transcript tail could not cover). The second kind is reported as `uncounted`,
+  # already paid for and would make any long turn look huge. Sub-agents are counted: the recorded
+  # `usage` includes each in-step sub-agent's own transcript. Each review round an attempt went through (its
+  # `rounds`, every round that ended, decided or not) counts its own `usage`, the review pane's session with its
+  # reviewer sub-agents; a round's verdict rows carry no usage, so nothing is counted twice, and a round whose
+  # `usage` is null counts as one more `uncounted` (a round with no pane ran nothing and is left out). An attempt
+  # whose `usage` is null (another agent than Claude Code, or a heavy attempt the transcript tail could not cover)
+  # is `uncounted` too. `counted` and `uncounted` count ended attempts and review rounds, each with its own `usage`,
   # so the total is a minimum, never a figure that reads null as zero.
   #
-  # A run whose ended attempts are all uncounted has a total of 0, which is under any budget, so its budget never
+  # A run whose ended attempts and review rounds are all uncounted has a total of 0, which is under any budget, so its budget never
   # stops it; `measured` is false then, and status says the budget is not being measured. Stopping would mean
   # acting on a figure nobody has, and a budget that ends every non-Claude run after one attempt helps no one.
   class WorkflowBudget
@@ -25,8 +29,8 @@ module Workspace
     # @param live [Boolean] false when the attempt in progress is about to be replaced, so its tokens count too
     # @return [Hash{String=>Object}, nil] nil unless the run's definition declares a budget (a stored run from
     #   before the key, or a bad value, reads nil); else "tokens", "action", "extra_tokens", "allowance",
-    #   "used" (a minimum), "counted" and "uncounted" (ended attempts with and without a readable `usage`),
-    #   "measured" (false when no attempt was counted but some ended), "spent" (used has reached the allowance),
+    #   "used" (a minimum), "counted" and "uncounted" (ended attempts and review rounds with and without a readable `usage`),
+    #   "measured" (false when nothing was counted but some attempt or round ended), "spent" (used has reached the allowance),
     #   "needed" (the least `--extra-tokens` that lets another attempt start, nil unless spent) and "suggested"
     def self.reading(run, live: true)
       run = WorkflowRun.from_h(run)
@@ -40,15 +44,18 @@ module Workspace
       uncounted = 0
       run.steps.each do |id, step|
         stored = Array(step.to_h["attempts"])
+        # A reviewing step's attempt has ended (`checks_passed`) with its usage, so it counts.
         running = (live && id == run.current && %w[running checking].include?(step.state)) ? step.attempts.last : nil
         step.attempts.each_with_index do |attempt, index|
           next unless stored[index].is_a?(Hash) && counted_attempt?(attempt) && !attempt.equal?(running)
-          tokens = tokens_of(attempt.usage)
-          if tokens
-            used += tokens
-            counted += 1
-          else
-            uncounted += 1
+          ([attempt.usage] + rounds_of(attempt).map { |round| round["usage"] }).each do |usage|
+            tokens = tokens_of(usage)
+            if tokens
+              used += tokens
+              counted += 1
+            else
+              uncounted += 1
+            end
           end
         end
       end
@@ -69,7 +76,24 @@ module Workspace
       attempt.outcome != "not_delivered"
     end
 
-    # @param usage [Object] an attempt's stored `usage`
+    # @param attempt [WorkflowRun::Attempt] a stored attempt
+    # @return [Array<Hash>] its review rounds' records (each with its own `usage`); none for an attempt with no `rounds`.
+    #   A round with no pane (one refused before it ran, or a delivery that lapsed before any pane opened) ran no
+    #   agent: it used no tokens and is left out, never uncounted
+    def self.rounds_of(attempt)
+      Array(attempt.rounds).grep(Hash).select { |round| round["pane"].is_a?(String) && !round["pane"].empty? }
+    end
+
+    # The tokens an attempt and its review rounds used, by {.tokens_of}: nil when any of them has no readable `usage`.
+    #
+    # @param attempt [WorkflowRun::Attempt] a stored attempt
+    # @return [Integer, nil]
+    def self.attempt_tokens(attempt)
+      sums = ([attempt.usage] + rounds_of(attempt).map { |round| round["usage"] }).map { |usage| tokens_of(usage) }
+      sums.all? ? sums.sum : nil
+    end
+
+    # @param usage [Object] an attempt's or a review round's stored `usage`
     # @return [Integer, nil] the tokens that count; nil for a null or a value that is not the recorded shape
     def self.tokens_of(usage)
       return nil unless usage.is_a?(Hash)

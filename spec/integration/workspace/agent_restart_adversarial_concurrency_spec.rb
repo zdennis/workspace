@@ -239,7 +239,7 @@ class MovingScreenTmux
 
   def capture_screen(_target) = "#{@frame += 1}s\n#{BOX}"
 
-  def capture_pane(_session, _index) = "pane"
+  def capture_pane_by_id(_pane_id) = "pane"
 
   def capture_screen_styled(_target) = @styled
 

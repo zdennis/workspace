@@ -88,5 +88,17 @@ module Workspace
       hours, minutes = total_minutes.divmod(60)
       hours.positive? ? "#{hours}h #{minutes}m" : "#{minutes}m"
     end
+
+    # Renders a whole number of seconds as one {.parse}able token in the largest unit that divides it
+    # evenly: 900 -> "15m", 3600 -> "1h", 90 -> "90s". What a message tells a person to pass to a flag.
+    #
+    # @param seconds [Numeric] a positive number of seconds
+    # @return [String] the token
+    def self.flag(seconds)
+      whole = seconds.ceil
+      return "#{whole / 3600}h" if (whole % 3600).zero?
+      return "#{whole / 60}m" if (whole % 60).zero?
+      "#{whole}s"
+    end
   end
 end

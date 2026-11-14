@@ -143,7 +143,7 @@ module Workspace
     end
 
     def run_without_daemon?
-      @run && %w[running checking].include?(@run.current&.dig("state")) && @member["daemon"] && @member["daemon"]["up"] == false && @member["running"] != false
+      @run && %w[running checking reviewing].include?(@run.current&.dig("state")) && @member["daemon"] && @member["daemon"]["up"] == false && @member["running"] != false
     end
 
     def structure?(spine)

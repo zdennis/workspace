@@ -71,7 +71,7 @@ module Workspace
       stalled = swept["stalled"]
       {
         gate: (step if run.step(step)&.gate_waiting?),
-        failed: (step if run.state == "failed" || %w[failed_check budget_spent].include?(run.reason&.dig("code"))),
+        failed: (step if run.state == "failed" || %w[failed_check budget_spent run_timed_out].include?(run.reason&.dig("code"))),
         stalled: stalled.is_a?(Hash) ? stalled.keys.map { |cause| ["#{swept["step"]}:#{swept["attempt"]}", cause.to_s] } : [],
         finished: run.state == "completed"
       }
@@ -142,11 +142,15 @@ module Workspace
         "WORKSPACE_ALERT_RUN_ID" => id,
         "WORKSPACE_ALERT_WORKSPACE" => workspace,
         "WORKSPACE_ALERT_STEP" => step,
-        "WORKSPACE_ALERT_TEXT" => "#{workspace}: workflow run #{id} #{(reason == "budget_spent") ? "has used its token budget" : phrase(event)}#{" at #{step}" unless event == "finished"}"
+        "WORKSPACE_ALERT_TEXT" => "#{workspace}: workflow run #{id} #{reason_phrase(reason) || phrase(event)}#{" at #{step}" unless event == "finished"}"
       }
       env["WORKSPACE_ALERT_REASON"] = reason unless reason.empty?
       env["WORKSPACE_ALERT_CAUSE"] = (after[:stalled] - Array(before[:stalled])).map { |_episode, cause| clean(cause) }.join(",") if event == "stalled"
       env
+    end
+
+    def reason_phrase(reason)
+      {"budget_spent" => "has used its token budget", "run_timed_out" => "has used its time limit"}[reason]
     end
 
     def phrase(event)

@@ -64,7 +64,7 @@ Every line has `type`, `at` (ISO 8601, UTC, milliseconds), `workspace` (the name
 | `type` | Fields |
 |---|---|
 | `tool_started` | `tool` (the tool's name), `tool_use_id`, `agent_id` (the sub-agent the tool ran in, `null` for the main agent), `path` (file tools only, below), `input` (a summary of the call, below; left out when the tool has none) |
-| `tool_finished` | the same, plus `ok` (`false` when the tool's response says it failed or was interrupted) and `duration_ms` (the payload's own, else the time since this daemon saw the matching `tool_started`; `null` when it saw none) |
+| `tool_finished` | the same, plus `ok` (`false` when the tool's response says it failed or was interrupted) and `duration_ms` (the payload's own, else the time since this daemon saw the matching `tool_started`; `null` when it saw none), and, for a review pane's write of a verdict file, `sha256` (the file's hash after the write, 64 hex characters; see [`session-event`](README.session-event.md)) |
 | `subagent_started` | `tool_use_id` (of the `Agent` call, `Task` on older Claude Code), `description` (cut to 120 characters), `subagent_type` (cut to 64), `agent_id` (`null`: Claude Code names a sub-agent only once it runs). A `tool_started` for `Agent` comes just before it |
 | `subagent_stopped` | `agent_id` (the stopping sub-agent's, when Claude Code gives one) |
 | `session_started` | `kind` (`claude`), `source` (`startup`, `resume`, `clear` or `compact`) |

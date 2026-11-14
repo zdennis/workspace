@@ -36,6 +36,17 @@ RSpec.describe Workspace::HookEventLog do
     expect(lines.last).not_to have_key("path")
   end
 
+  it "keeps a sha256 on a tool finish when it is 64 hex characters, and drops any other value" do
+    hash = "ab" * 32
+    log.record(event("tool_use", tool: "Write", tool_use_id: "toolu_1", ok: true, sha256: hash))
+    log.record(event("tool_use", tool: "Write", tool_use_id: "toolu_2", ok: true, sha256: "xyz"))
+    log.record(event("tool_use", tool: "Write", tool_use_id: "toolu_3", ok: true, sha256: "ab" * 33))
+    log.record(event("tool_use", tool: "Write", tool_use_id: "toolu_4", ok: true, sha256: 7))
+
+    expect(lines.map { |l| l["sha256"] }).to eq([hash, nil, nil, nil])
+    expect(lines.last).not_to have_key("sha256")
+  end
+
   it "prefers the payload's own duration, and reports none when it saw no start" do
     log.record(event("tool_use", tool: "Bash", tool_use_id: "toolu_1", duration_ms: 40))
     log.record(event("tool_use", tool: "Bash", tool_use_id: "toolu_2", ok: false))

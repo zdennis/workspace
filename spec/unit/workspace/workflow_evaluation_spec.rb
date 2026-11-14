@@ -78,6 +78,12 @@ RSpec.describe Workspace::WorkflowEvaluation do
       }
       expect(change.events).to be_empty
     end
+
+    it "refuses a step being reviewed, since its attempt has ended" do
+      stored(run_hash(state: "reviewing"))
+
+      expect { evaluation.report("wr_1", status: "pass") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("step_not_running") }
+    end
   end
 
   describe "#turn_ended" do
@@ -91,6 +97,18 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
       expect(store.runs["wr_1"]["reason"]).to be_nil
       expect(progress.calls).to be_empty
+    end
+
+    it "follows up a review round the passing step registered, once the change is done" do
+      rounds = []
+      stored
+      produce
+      progress = RecordingProgress.new(review: {"round" => 1})
+
+      evaluation(progress: progress, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).turn_ended("wr_1")
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+      expect(rounds).to eq([["wr_1", {"round" => 1}]])
     end
 
     it "holds the step on turn_ended_incomplete when a file it produces is missing" do
@@ -192,6 +210,196 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(checker.calls).to be_empty
       expect(progress.calls).to eq([[:fail_step, "plan", {"cause" => "check", "timed_out" => false, "error" => "the project's lint command is not set",
                                                           "log" => File.join(artifacts, "steps", "plan.1.check.log"), "code" => "check_error", "code_source" => "engine"}]])
+    end
+  end
+
+  describe "a step being reviewed" do
+    let(:tally) { RecordingReviewTally.new(outcome: :approved, reviews: [{"reviewer" => "skeptic"}]) }
+    let(:round) { {"round" => 1, "delivery" => nil, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "pending" => ["skeptic"], "redeliveries" => 0} }
+
+    def reviewing(**overrides)
+      run_hash(definition_step: step("review" => {"from" => ["skeptic"]}), state: "reviewing", **overrides).tap do |hash|
+        hash["steps"]["plan"]["review"] = round
+        hash["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:20:00Z", "outcome" => "checks_passed")
+      end
+    end
+
+    it "decides the round when the review pane's turn ends, through the tally" do
+      stored(reviewing)
+
+      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 31))
+
+      expect(tally.calls).to eq([[:call, "wr_1", "plan", round]])
+      expect(progress.calls).to eq([[:decide_review, "plan", {outcome: :approved, reviews: [{"reviewer" => "skeptic"}]}]])
+      expect(store.runs["wr_1"]["steps"]["plan"]["state"]).to eq("passed")
+    end
+
+    it "ignores a turn's end in the author's pane, a turn begun before the round, and a stopped round" do
+      stored(reviewing)
+      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%3")
+      evaluation(review_tally: tally).turn_ended("wr_1")
+      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 29))
+      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 29))
+      stored(reviewing("reason" => {"code" => "review_incomplete"}))
+      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9")
+
+      expect(tally.calls).to be_empty
+      expect(progress.calls).to be_empty
+    end
+
+    it "takes a round as incomplete when no tally is set up" do
+      stored(reviewing)
+
+      evaluation.turn_ended("wr_1", pane: "%9")
+
+      expect(progress.calls.first[2]).to include(outcome: :incomplete, reviews: [])
+    end
+
+    it "follows up the next round a decision registers" do
+      rounds = []
+      stored(reviewing)
+      decided = Class.new(RecordingProgress) do
+        def decide_review(run, tally, ctx:)
+          ctx.review({"round" => 2})
+          super
+        end
+      end.new
+
+      evaluation(progress: decided, review_tally: tally, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).turn_ended("wr_1", pane: "%9")
+
+      expect(rounds).to eq([["wr_1", {"round" => 2}]])
+    end
+
+    describe "with its revision computed again" do
+      let(:round) { {"round" => 1, "delivery" => nil, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "pending" => ["skeptic"], "redeliveries" => 0, "revision" => "rev1"} }
+      let(:progress) { Workspace::WorkflowProgress.new(change: change, store: store, dispatch: RecordingDispatch.new, attempt_record: RecordingAttemptRecord.new, panes: panes, log_tail: RecordingLogTail.new, clock: -> { now }) }
+
+      def ended(revision, **overrides)
+        evaluation(review_tally: tally, review_revision: revision, **overrides).turn_ended("wr_1", pane: "%9")
+      end
+
+      it "computes it with the lock given up, and tallies an unchanged round" do
+        stored(reviewing)
+        revision = RecordingReviewRevision.new({revision: "rev1", problem: nil})
+
+        run = ended(revision)
+
+        expect(change.review_ends).to eq([{"step" => "plan", "attempt" => 1, "round" => 1, "try" => 1}])
+        expect(revision.calls).to eq([[:call, "wr_1", "plan"]])
+        expect(revision.stop_answers).to eq([false])
+        expect(tally.calls.size).to eq(1)
+        expect(run.current).to eq("plan")
+        expect(run.step("plan").state).to eq("passed")
+        expect(run.step("plan").to_h).not_to have_key("review")
+      end
+
+      it "stops a changed round as review_stale in the run's reasons, with no loop, no tally and no round spent" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review_rounds"] = 1 })
+
+        run = ended(RecordingReviewRevision.new({revision: "rev2", problem: nil}))
+
+        expect(tally.calls).to be_empty
+        expect(run.state).to eq("waiting")
+        expect(run.reason).to include("code" => "review_stale")
+        expect(run.reason["details"]).to include("step" => "plan", "attempt" => 1, "round" => 1, "revision" => "rev1", "revision_now" => "rev2")
+        plan = run.step("plan")
+        expect(plan.state).to eq("reviewing")
+        expect(plan.review_rounds).to eq(1)
+        expect(plan.review).to include("recorded" => true).and(satisfy { |each| !each.key?("recompute") })
+        expect(plan.last_attempt.to_h["rounds"].map { |each| each["ended"] }).to eq(["stale"])
+        expect(change.reviews).to be_empty
+        expect(change.events.map { |each| each[1] }).to include("review_ended")
+      end
+
+      it "stops review_incomplete with the problem when the revision can't be computed" do
+        stored(reviewing)
+
+        run = ended(RecordingReviewRevision.new({revision: nil, problem: "the review revision command exited 1"}))
+
+        expect(tally.calls).to be_empty
+        expect(run.reason["code"]).to eq("review_incomplete")
+        expect(run.reason["details"]["problem"]).to eq("the round's revision could not be computed again: the review revision command exited 1")
+      end
+
+      it "drops a result for a round that moved on while it was computed (wanted_round?)" do
+        stored(reviewing)
+        stale_result = Class.new(RecordingReviewRevision) do
+          attr_accessor :runs
+
+          def call(run:, step:, stop_when: nil)
+            runs["wr_1"]["steps"]["plan"]["review"]["round"] = 2
+            super
+          end
+        end.new({revision: "rev2", problem: nil})
+        stale_result.runs = store.runs
+
+        run = ended(stale_result)
+
+        expect(stale_result.stop_answers).to eq([true])
+        expect(run.reason).to be_nil
+        expect(tally.calls).to be_empty
+        expect(store.runs["wr_1"]["steps"]["plan"]["review"]).to include("round" => 2, "recompute" => include("try" => 1))
+      end
+
+      it "drops a result whose try a later recompute replaced" do
+        stored(reviewing)
+        replaced = Class.new(RecordingReviewRevision) do
+          attr_accessor :runs
+
+          def call(run:, step:, stop_when: nil)
+            runs["wr_1"]["steps"]["plan"]["review"]["recompute"]["try"] = 2
+            super
+          end
+        end.new({revision: "rev1", problem: nil})
+        replaced.runs = store.runs
+
+        ended(replaced)
+
+        expect(tally.calls).to be_empty
+      end
+
+      it "ignores the review pane's turn ending again while the recompute runs" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review"]["recompute"] = {"started_at" => "2026-11-10T11:59:00Z", "try" => 1} })
+        revision = RecordingReviewRevision.new
+
+        ended(revision)
+
+        expect(revision.calls).to be_empty
+        expect(change.review_ends).to be_empty
+      end
+
+      it "tries a lost recompute once more, then stops review_incomplete" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review"]["recompute"] = {"started_at" => "2026-11-10T11:00:00Z", "try" => 1} })
+        work = evaluation(review_revision: RecordingReviewRevision.new)
+        again = work.review_ended(store.runs["wr_1"], ctx: ctx)
+        expect(again.step("plan").review["recompute"]).to eq("started_at" => "2026-11-10T12:00:00Z", "try" => 2)
+
+        stopped = work.review_ended(again, ctx: ctx)
+
+        expect(stopped.reason["code"]).to eq("review_incomplete")
+        expect(stopped.reason["details"]["problem"]).to eq("the round's revision was computed again 2 times and none reported back")
+        expect(stopped.step("plan").review).not_to have_key("recompute")
+      end
+
+      it "answers the run as stored when it was cancelled while the revision was computed" do
+        stored(reviewing)
+        ended_ids = []
+        finished = RecordingRunChange.new(store.runs, finished: ended_ids)
+        cancelling = Class.new(RecordingReviewRevision) do
+          attr_accessor :ids
+
+          def call(run:, step:, stop_when: nil)
+            ids << "wr_1"
+            super
+          end
+        end.new
+        cancelling.ids = ended_ids
+
+        run = evaluation(change: finished, review_tally: tally, review_revision: cancelling).turn_ended("wr_1", pane: "%9")
+
+        expect(run.step("plan").review["recompute"]).to include("try" => 1)
+        expect(tally.calls).to be_empty
+      end
     end
   end
 
@@ -299,6 +507,142 @@ RSpec.describe Workspace::WorkflowEvaluation do
     end
   end
 
+  describe "#evaluate_accepted" do
+    def accepted_run(definition_step: step("guard" => "unchanged"))
+      run_hash(definition_step: definition_step, state: "failed").merge(
+        "state" => "waiting", "reason" => {"code" => "failed_check", "since" => "2026-11-10T11:55:00Z", "details" => {"cause" => "guard", "guard" => "head_moved"}}
+      ).tap do |run|
+        run["steps"]["plan"]["attempts"][0].merge!("started_at" => "2026-11-10T11:00:00Z", "ended_at" => "2026-11-10T11:55:00Z", "outcome" => "failed", "code" => "head_moved")
+      end
+    end
+
+    it "skips the guard and passes the step overridden once its files are there" do
+      produce
+      given = accepted_run
+      before = deep_copy(given)
+
+      run = evaluation.evaluate_accepted(given, ctx: ctx)
+
+      expect(given).to eq(before)
+      expect(guard.calls).to be_empty
+      expect(progress.calls).to eq([[:pass_overridden, "plan"]])
+      expect(run.step("plan").last_attempt.to_h).to include("guard_accepted" => "head_moved", "outcome" => "overridden")
+    end
+
+    it "stops on turn_ended_incomplete when a produces file is missing, and does not pass" do
+      run = evaluation.evaluate_accepted(accepted_run, ctx: ctx)
+
+      expect(run.reason).to include("code" => "turn_ended_incomplete")
+      expect(run.state).to eq("waiting")
+      expect(progress.calls).to be_empty
+      expect(run.step("plan").last_attempt.to_h).to include("guard_accepted" => "head_moved", "outcome" => "failed")
+    end
+
+    it "fails the step on an unmet require: proof with the proof's code" do
+      produce
+      require_check = RecordingRequire.new(checks: [{"name" => "commits", "code" => "require_commits", "detail" => "no commits"}])
+
+      evaluation(require_check: require_check).evaluate_accepted(accepted_run(definition_step: step("guard" => "unchanged", "require" => [{"commits" => 1}])), ctx: ctx)
+
+      expect(progress.calls.map(&:first)).to eq([:fail_step])
+      expect(progress.calls.first[2]).to include("code" => "require_commits")
+    end
+
+    it "registers the status check, and passes overridden only once finish_check sees it pass" do
+      produce
+      context = ctx
+      definition_step = step("guard" => "unchanged", "status" => {"command" => "test", "timeout" => 60})
+
+      run = evaluation.evaluate_accepted(accepted_run(definition_step: definition_step), ctx: context)
+
+      expect(run.step("plan").state).to eq("checking")
+      expect(context.check).to include("step" => "plan", "attempt" => 1, "command" => "rake test")
+      expect(progress.calls).to be_empty
+
+      store.runs["wr_1"] = run.thawed
+      evaluation(progress: progress).finish_check("wr_1", context.check)
+      expect(progress.calls).to eq([[:pass_overridden, "plan"]])
+    end
+
+    it "fails the step with the check's code when finish_check sees the status check fail" do
+      produce
+      context = ctx
+      run = evaluation.evaluate_accepted(accepted_run(definition_step: step("guard" => "unchanged", "status" => {"command" => "test", "timeout" => 60})), ctx: context)
+      store.runs["wr_1"] = run.thawed
+
+      evaluation(checker: RecordingChecker.new(result: {exit_code: 1, timed_out: false, error: nil})).finish_check("wr_1", context.check)
+
+      expect(progress.calls.map(&:first)).to eq([:fail_step])
+      expect(progress.calls.first[2]).to include("cause" => "check", "code" => "check_failed")
+    end
+  end
+
+  describe "#finish_follow_ups" do
+    let(:check) { {"step" => "plan", "attempt" => 1, "command" => "rake test", "timeout" => 60, "log" => File.join(artifacts, "c.log")} }
+
+    it "answers the run as given when the change registered nothing, or did not run" do
+      stored
+      given = Workspace::WorkflowRun.from_h(run_hash)
+
+      expect(evaluation.finish_follow_ups("wr_1", ctx, given)).to equal(given)
+      expect(evaluation.finish_follow_ups("wr_1", nil, given)).to equal(given)
+    end
+
+    it "hands a registered review round to the round runner and answers the run it returns" do
+      stored
+      after = Workspace::WorkflowRun.from_h(run_hash.merge("note" => "after"))
+      rounds = []
+      runner = ->(run_id, review) { rounds << [run_id, review] && after }
+      context = ctx
+      context.review({"round" => 1})
+
+      result = evaluation(review_round: runner).finish_follow_ups("wr_1", context, Workspace::WorkflowRun.from_h(run_hash))
+
+      expect(rounds).to eq([["wr_1", {"round" => 1}]])
+      expect(result).to equal(after)
+    end
+
+    it "keeps the run as given when the round runner answers nil, or when there is no runner" do
+      stored
+      given = Workspace::WorkflowRun.from_h(run_hash)
+      context = ctx
+      context.review({"round" => 1})
+
+      expect(evaluation(review_round: ->(_id, _review) {}).finish_follow_ups("wr_1", context, given)).to equal(given)
+      expect(evaluation.finish_follow_ups("wr_1", context, given)).to equal(given)
+    end
+
+    it "runs a registered check before a registered review round" do
+      stored
+      order = []
+      context = ctx
+      context.check(check)
+      context.review({"round" => 1})
+      subject = evaluation(review_round: ->(*) { order << :review && nil })
+      allow(subject).to receive(:finish_check) { order << :check && Workspace::WorkflowRun.from_h(run_hash) }
+
+      subject.finish_follow_ups("wr_1", context, Workspace::WorkflowRun.from_h(run_hash))
+
+      expect(order).to eq(%i[check review])
+    end
+
+    it "closes a registered review window first, keeping the run, and closes nothing without a closer" do
+      stored
+      order = []
+      context = ctx
+      context.close_review({"step" => "plan", "round" => 1, "pane" => "%9"})
+      context.review({"round" => 2})
+      closer = ->(run_id, found) { order << [:close, run_id, found] && :ignored }
+      given = Workspace::WorkflowRun.from_h(run_hash)
+
+      result = evaluation(review_closer: closer, review_round: ->(*) { order << :review && nil }).finish_follow_ups("wr_1", context, given)
+
+      expect(order).to eq([[:close, "wr_1", {"step" => "plan", "round" => 1, "pane" => "%9"}], :review])
+      expect(result).to equal(given)
+      expect(evaluation.finish_follow_ups("wr_1", context, given)).to equal(given)
+    end
+  end
+
   describe "#finish_check" do
     let(:pending) { {"index" => 0, "proof" => "command", "token" => "t1"} }
     let(:check) { {"step" => "plan", "attempt" => 1, "cwd" => dir, "proof" => pending} }
@@ -319,6 +663,29 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(run.step("plan").last_attempt.proofs.last).to include("token" => "t1", "exit_code" => 0, "ended_at" => "2026-11-10T12:00:00Z")
       expect(change.events).to eq([["wr_1", "proof_finished", {"step" => "plan", "attempt" => 1, "proof" => "command", "passed" => true}]])
       expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+
+    it "runs the review round a step registered when a proof chain ends in its pass" do
+      rounds = []
+      stored(checking_run)
+      progress = RecordingProgress.new(review: {"round" => 1})
+      require_check = RecordingRequire.new(outside: {"record" => {"exit_code" => 0}, "unmet" => nil})
+
+      evaluation(progress: progress, require_check: require_check, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", check)
+
+      expect(rounds).to eq([["wr_1", {"round" => 1}]])
+    end
+
+    it "runs the review round a step registered when its status check passes" do
+      rounds = []
+      stored(checking_run.tap { |run| run["steps"]["plan"]["attempts"].last["check"] = {"started_at" => "2026-11-10T11:30:00Z", "log" => "/tmp/x.log"} })
+      progress = RecordingProgress.new(review: {"round" => 1})
+      status_check = {"step" => "plan", "attempt" => 1, "command" => "rake", "timeout" => 5, "log" => "/tmp/x.log", "cwd" => dir, "role" => "test"}
+
+      evaluation(progress: progress, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", status_check)
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+      expect(rounds).to eq([["wr_1", {"round" => 1}]])
     end
 
     it "fails the step on a proof found unmet outside the lock" do

@@ -144,6 +144,13 @@ RSpec.describe Workspace::WorkflowDeny do
       expect(check("git push")).to match(/denied/)
     end
 
+    it "denies for a review pane bound to the run" do
+      allow(tmux).to receive(:server_pid_for_pane).and_return(99)
+      bindings.bind("%4", {"kind" => "run", "id" => "wr_1", "role" => "reviewer", "round" => 1, "session" => "app", "pane_slot" => "app:0.1", "server_pid" => 99})
+
+      expect(check("git push")).to match(/denied/)
+    end
+
     it "allows for a stale run binding" do
       bindings.bind("%4", {"kind" => "run", "id" => "wr_1", "session" => "old", "pane_slot" => "app:0.1"})
 

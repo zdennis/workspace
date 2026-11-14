@@ -14,6 +14,10 @@ module Workspace
     # Seconds `tmux list-sessions` or `tmux start-server` may take before the
     # tmux server is taken to be wedged.
     DEFAULT_COMMAND_TIMEOUT = 10
+    # The window option a review window is marked with.
+    REVIEW_OPTION = "@workspace-review"
+    # What a tmux window id looks like.
+    WINDOW_ID = /\A@\d+\z/
     # What tmux says on stderr when a session, or the whole server, isn't there.
     SESSION_GONE = /can't find session|no server running|error connecting to .* \(No such file or directory\)/
 
@@ -351,6 +355,23 @@ module Workspace
       "=#{session_name}:#{rest}"
     end
 
+    # tmux ends a command at an argument that ends in `;`; `\;` keeps it literal.
+    def tmux_argument(arg)
+      arg.end_with?(";") ? "#{arg[0..-2]}\\;" : arg
+    end
+
+    # An argument tmux expands as a format (`#{...}`, `#(...)`): `#` doubled
+    # keeps it literal.
+    def format_literal(arg)
+      tmux_argument(arg.gsub("#", "##"))
+    end
+
+    # @return [String, nil] a window option's value, nil when tmux can't read it
+    def read_window_option(window, option)
+      stdout, _, status = Open3.capture3("tmux", "show-options", "-wqv", "-t", window, option)
+      status.success? ? stdout.chomp : nil
+    end
+
     # A pane id is a target by itself and is never renumbered; any other pane
     # is qualified by its session.
     def pane_target(session_name, pane)
@@ -587,6 +608,82 @@ module Workspace
       pid.to_i
     end
 
+    # Opens a background window like {#new_window}, and marks it with a window
+    # option in the same tmux invocation, so a scan never lists it unmarked.
+    #
+    # tmux has no way to name a `-d` window's id before it answers, so the
+    # window goes after the session's last one (`-a`) and the mark is set on
+    # `{end}`. tmux's server is one event loop that runs an invocation's
+    # command list without letting another client's commands in between
+    # (cmd-queue.c runs a queue's items back to back unless one waits, and
+    # `new-window` and `set-option` don't), so `{end}` is the new window. As a
+    # guard anyway, the mark is read back from the returned window id; if it
+    # differs the window is closed and nil returned.
+    #
+    # Every caller-supplied argument is made safe for tmux: a trailing `;`
+    # would end the command (so it is sent as `\;`), and +name+ and +cwd+ are
+    # format strings (so `#` is doubled).
+    #
+    # @param session_name [String] tmux session to add the window to
+    # @param name [String] window name
+    # @param cwd [String] the window's working directory
+    # @param command [Array<String>] argv to run
+    # @param env [Hash{String=>String}] extra environment for the command
+    # @param option [String, nil] the value of the window's +@workspace-review+
+    #   option; nil sets none
+    # @return [Hash, nil] +{pid:, pane:, window:}+ (pane and window ids), or nil
+    #   if tmux failed or the mark did not land on the new window
+    def open_window(session_name, name:, cwd:, command:, env: {}, option: nil)
+      @logger.debug { "tmux: open-window #{name} in #{session_name}: #{command.join(" ")}" }
+      last = session_target(session_name, "{end}")
+      args = ["tmux", "new-window", "-d", "-a", "-P", "-F", "\#{pane_pid} \#{pane_id} \#{window_id}", "-t", last,
+        "-n", format_literal(name), "-c", format_literal(cwd)]
+      env.each { |key, value| args.push("-e", tmux_argument("#{key}=#{value}")) }
+      args.push("--", *command.map { |arg| tmux_argument(arg) })
+      args.push(";", "set-option", "-w", "-t", last, REVIEW_OPTION, tmux_argument(option)) if option
+      stdout, _, status = Open3.capture3(*args)
+      return nil unless status.success?
+      pid, pane, window = stdout.split
+      return nil unless pid && pane && window
+      if option && read_window_option(window, REVIEW_OPTION) != option
+        kill_window(window)
+        return nil
+      end
+      {pid: pid.to_i, pane: pane, window: window}
+    end
+
+    # Lists the windows of a session that carry a +@workspace-review+ mark,
+    # in one `list-windows`.
+    #
+    # @param session_name [String] tmux session name
+    # @return [Array<Hash>] +{window:, name:, review:, pane:, pid:}+ per marked window
+    #   (the window's active pane); empty when the session isn't there or tmux fails
+    def review_windows(session_name)
+      format = ["window_id", "window_name", "pane_id", "pane_pid", REVIEW_OPTION].map { |field| "\#{#{field}}" }.join("\t")
+      @logger.debug { "tmux: listing review windows in #{session_name}" }
+      stdout, _, status = Open3.capture3("tmux", "list-windows", "-t", session_target(session_name), "-F", format)
+      return [] unless status.success?
+
+      stdout.lines.filter_map do |line|
+        window, window_name, pane, pid, review = line.chomp.split("\t", 5)
+        next if window.nil? || review.nil? || review.empty?
+        {window: window, name: window_name.to_s, review: review, pane: pane, pid: pid.to_i}
+      end
+    end
+
+    # Closes a whole window, with every pane in it.
+    #
+    # @param target [String] a tmux window id (e.g. "@4"); anything else is refused
+    # @return [Boolean] whether tmux closed it
+    def kill_window(target)
+      return false unless target.to_s.match?(WINDOW_ID)
+      @logger.debug { "tmux: killing window #{target}" }
+      _, _, status = Open3.capture3("tmux", "kill-window", "-t", target)
+      status.success?
+    rescue SystemCallError
+      false
+    end
+
     # Closes a pane kept open by remain-on-exit, once its process has exited.
     # Pane ids can outlive a tmux server restart, so the pane is closed only
     # if it is dead and its recorded process is +pid+.
@@ -670,20 +767,22 @@ module Workspace
     # @param session_name [String] tmux session name
     # @param window [String, nil] window index (default "0"), or nil for
     #   every window in the session
-    # @return [Array<Hash>] :id, :window, :index, :pid, :title, :command, :cwd per pane
+    # @return [Array<Hash>] :id, :window, :index, :pid, :title, :command, :cwd, :window_name,
+    #   :review (the window's +@workspace-review+ mark, nil when unset) per pane
     def pane_details(session_name, window: "0")
       scope = window.nil? ? ["-s", "-t", session_target(session_name)] : ["-t", session_target(session_name, window)]
       format = ["pane_id", "window_index", "pane_index", "pane_pid", "pane_current_command",
-        "pane_current_path", "pane_title"].map { |f| "\#{#{f}}" }.join("\t")
+        "pane_current_path", "window_name", REVIEW_OPTION, "pane_title"].map { |f| "\#{#{f}}" }.join("\t")
       @logger.debug { "tmux: listing pane details for #{scope.last}" }
       stdout, _, status = Open3.capture3("tmux", "list-panes", *scope, "-F", format)
       return [] unless status.success?
 
       stdout.lines.filter_map do |line|
-        id, window_index, index, pid, command, cwd, title = line.chomp.split("\t", 7)
+        id, window_index, index, pid, command, cwd, window_name, review, title = line.chomp.split("\t", 9)
         next if id.nil? || id.empty?
         {id: id, window: window_index.to_i, index: index.to_i, pid: pid.to_i, command: command.to_s,
-         cwd: cwd.to_s, title: title.to_s}
+         cwd: cwd.to_s, window_name: window_name.to_s, review: (review.nil? || review.empty?) ? nil : review,
+         title: title.to_s}
       end
     end
 

@@ -197,7 +197,7 @@ RSpec.describe Workspace::Commands::Lock do
     def bound_command(run_id)
       described_class.new(lineage: LineageSupport.lineage, config: config, lock_namespace: lock_namespace, lock_holder: agent, output: output, error_output: error_output,
         sleeper: sleeper, clock: clock, pid_provider: -> { 100 }, trap: ->(*) {},
-        bound_run: instance_double(Workspace::BoundRun, run_id: run_id))
+        bound_run: instance_double(Workspace::BoundRun, author_run_id: run_id))
     end
 
     it "tells the run's own agent the lock is already held for it, instead of queueing behind its run" do

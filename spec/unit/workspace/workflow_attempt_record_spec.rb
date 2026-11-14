@@ -81,6 +81,48 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(attempt["evidence"].map { |e| e["name"] }).to eq(%w[plan.1.prompt.md plan.1.out.0.plan.md])
     end
 
+    describe "a review round's verdicts" do
+      let(:verdict) { "reviewer: skeptic\nverdict: approve\nrevision: r1\n" }
+      let(:rows) do
+        [{"reviewer" => "skeptic", "path" => "reviews/plan.1.r2/skeptic.md", "verdict" => "approve", "sha256" => Digest::SHA256.hexdigest(verdict), "counted" => true},
+          {"reviewer" => "tester", "path" => "reviews/plan.1.r2/tester.md", "verdict" => nil, "sha256" => nil, "counted" => false, "problem" => "missing"}]
+      end
+      let(:round) { {"round" => 2, "started_at" => "2026-10-04T12:00:00Z", "ended_at" => "2026-10-04T12:05:00Z", "reviews" => rows} }
+
+      before do
+        FileUtils.mkdir_p(File.join(run["artifacts_dir"], "reviews", "plan.1.r2"))
+        put("reviews/plan.1.r2/skeptic.md", verdict)
+      end
+
+      it "marks every row review_pane and copies each verdict file it read" do
+        found = record.finish_round(run: run, round: round)
+
+        expect(found["reviews"].map { |row| row["isolation"] }).to eq(%w[review_pane review_pane])
+        expect(found["reviews"].map { |row| row.except("isolation") }).to eq(rows)
+        expect(found["evidence"]).to eq([{"name" => "plan.1.r2.review.skeptic.md", "kind" => "review", "source" => File.join(run["artifacts_dir"], "reviews/plan.1.r2/skeptic.md"),
+                                          "sha256" => Digest::SHA256.hexdigest(verdict), "bytes" => verdict.bytesize}])
+        expect(File.read(File.join(@dir, "ev", "wr_1", "plan.1.r2.review.skeptic.md"))).to eq(verdict)
+      end
+
+      it "records no reviews or evidence for a round that read no verdicts" do
+        expect(record.finish_round(run: run, round: round.except("reviews")).keys).not_to include("reviews", "evidence")
+      end
+
+      it "still marks the rows with no evidence collaborator, and copies nothing" do
+        found = described_class.new(guard: guard).finish_round(run: run, round: round)
+
+        expect(found["reviews"].map { |row| row["isolation"] }).to eq(%w[review_pane review_pane])
+        expect(found["evidence"]).to eq([])
+      end
+
+      it "keeps the verdict copies when the attempt is finished again" do
+        attempt = {"n" => 1, "evidence" => record.finish_round(run: run, round: round)["evidence"]}
+        attempt.replace(record.finish(run: run, step: step, attempt: attempt).thawed)
+
+        expect(attempt["evidence"].map { |e| e["name"] }).to eq(%w[plan.1.r2.review.skeptic.md plan.1.out.0.plan.md])
+      end
+    end
+
     it "takes each output's hash from the one copy" do
       put("plan.md", "o")
       attempt = {"n" => 1}
@@ -218,12 +260,24 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
   end
 
   describe "#abandon" do
-    it "closes the open attempt with the end fields and adds no outcome" do
+    subject(:record) { described_class.new(guard: guard, clock: -> { Time.utc(2026, 10, 4, 12, 30, 0) }) }
+
+    it "closes the open attempt with the end fields, ended_at and outcome cancelled" do
       put("plan.md", "x")
       closed = record.abandon(run).current_step.last_attempt.to_h
 
       expect(closed).to include("outputs" => [include("bytes" => 1)], "head" => {"before" => nil, "after" => "a" * 40})
-      expect(closed).not_to include("outcome", "ended_at")
+      expect(closed).to include("outcome" => "cancelled", "ended_at" => "2026-10-04T12:30:00Z")
+    end
+
+    it "leaves no open attempt, and a reason history attaches nothing new to it" do
+      abandoned = record.abandon(run)
+
+      expect(record.open_attempt(abandoned.to_h)).to be_nil
+      stopped = abandoned.thawed.merge("reason" => {"code" => "waiting_you", "since" => "2026-10-04T12:31:00Z"})
+      after = record.reasons(run: stopped, was_open: nil).thawed
+      expect(after["steps"]["plan"]["attempts"].last["reasons"]).to be_nil
+      expect(after["reasons"]).to include(include("code" => "waiting_you"))
     end
 
     it "leaves an attempt that has ended" do
@@ -409,6 +463,117 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
 
       expect(first["usage"]).to eq("input_tokens" => 10, "output_tokens" => 5)
       expect(second["usage"]).to eq("input_tokens" => 20, "output_tokens" => 7)
+    end
+
+    context "with sub-agent transcript files" do
+      let(:subdir) { File.join(@dir, "s1", "subagents") }
+
+      def write_sub(name, *lines)
+        FileUtils.mkdir_p(subdir)
+        File.write(File.join(subdir, name), lines.join("\n") + "\n")
+      end
+
+      def sub(at, id, input, output) = assistant(at, id, input, output, "isSidechain" => true, "agentId" => "a1")
+
+      def usage_after = record.finish(run: run, step: step, attempt: attempt).thawed["usage"]
+
+      it "sums a sub-agent's own file with the main thread's, inside the window only" do
+        write_sub("agent-a1.jsonl", sub("2026-10-04T11:59:00Z", "x0", 7000, 700), sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+        write_sub("agent-a1.meta.json", "{}")
+
+        expect(usage_after).to eq("input_tokens" => 130, "output_tokens" => 52)
+      end
+
+      it "leaves out a sub-agent file wholly outside the window" do
+        write_sub("agent-a2.jsonl", sub("2026-10-04T12:08:00Z", "x1", 100, 40))
+
+        expect(usage_after).to eq("input_tokens" => 30, "output_tokens" => 12)
+      end
+
+      it "adds nothing without a subagents directory" do
+        expect(usage_after).to eq("input_tokens" => 30, "output_tokens" => 12)
+      end
+
+      it "is nil when one sub-agent file has a usage line with no readable time" do
+        write_sub("agent-a1.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+        write_sub("agent-a2.jsonl", JSON.generate({"type" => "assistant", "message" => {"id" => "y", "usage" => {"input_tokens" => 1}}}))
+
+        expect(usage_after).to be_nil
+      end
+
+      it "is nil when a sub-agent file is a link" do
+        write_sub("agent-real.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+        File.symlink(File.join(subdir, "agent-real.jsonl"), File.join(subdir, "agent-a1.jsonl"))
+
+        expect(usage_after).to be_nil
+      end
+
+      it "is nil when the subagents directory is a link" do
+        elsewhere = File.join(@dir, "elsewhere")
+        FileUtils.mkdir_p(elsewhere)
+        File.write(File.join(elsewhere, "agent-a1.jsonl"), sub("2026-10-04T12:03:00Z", "x1", 100, 40) + "\n")
+        FileUtils.mkdir_p(File.join(@dir, "s1"))
+        File.symlink(elsewhere, subdir)
+
+        expect(usage_after).to be_nil
+      end
+
+      it "counts a sub-agent's lines when the main thread has none in the window" do
+        write_transcript(assistant("2026-10-04T11:30:00Z", "m0", 1000, 100))
+        write_sub("agent-a1.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+
+        expect(usage_after).to eq("input_tokens" => 100, "output_tokens" => 40)
+      end
+
+      it "is nil, and reads no directory, when the session id is not the transcript file's name" do
+        write_sub("agent-a1.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+        File.write(ledger_path, "")
+        start_line("other", "2026-10-04T12:00:01Z")
+        FileUtils.mkdir_p(File.join(@dir, "other", "subagents"))
+
+        expect(usage_after).to be_nil
+      end
+
+      it "is nil for a session id of .." do
+        File.write(ledger_path, "")
+        start_line("..", "2026-10-04T12:00:01Z")
+        FileUtils.mkdir_p(File.join(@dir, "..", "subagents"))
+
+        expect(usage_after).to be_nil
+      end
+
+      it "skips files older than the attempt before the cap, so 65 old files and one current one count" do
+        65.times do |i|
+          write_sub("agent-old#{i}.jsonl", sub("2026-10-04T11:00:00Z", "o#{i}", 1, 1))
+          File.utime(Time.utc(2026, 10, 4, 11, 0), Time.utc(2026, 10, 4, 11, 0), File.join(subdir, "agent-old#{i}.jsonl"))
+        end
+        write_sub("agent-new.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+
+        expect(usage_after).to eq("input_tokens" => 130, "output_tokens" => 52)
+      end
+
+      it "is nil with 65 sub-agent files written since the attempt began" do
+        65.times { |i| write_sub("agent-n#{i}.jsonl", sub("2026-10-04T12:03:00Z", "n#{i}", 1, 1)) }
+
+        expect(usage_after).to be_nil
+      end
+
+      context "with a short transcript read" do
+        let(:max_transcript_bytes) { 400 }
+
+        it "is nil when a sub-agent file's tail does not reach the attempt's start" do
+          write_transcript(assistant("2026-10-04T12:01:00Z", "m1", 10, 1))
+          write_sub("agent-a1.jsonl", *Array.new(6) { |i| sub("2026-10-04T12:03:0#{i}Z", "x#{i}", 100, 40) })
+
+          expect(usage_after).to be_nil
+        end
+      end
+
+      it "reads only the files named agent-<id>.jsonl" do
+        write_sub("notes.jsonl", sub("2026-10-04T12:03:00Z", "x1", 100, 40))
+
+        expect(usage_after).to eq("input_tokens" => 30, "output_tokens" => 12)
+      end
     end
 
     it "leaves out sub-agent lines (U5)" do
@@ -639,15 +804,40 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
     end
 
     describe "#abandon" do
-      it "sets session, agent and usage and still adds no ended_at, counting to now" do
+      it "sets session, agent and usage and counts to now, then ends the attempt cancelled" do
         open = {"n" => 2, "started_at" => "2026-10-04T12:00:00.000Z"}
         run["steps"]["plan"]["attempts"] = [open]
         closed = record.abandon(run).current_step.last_attempt.to_h
 
-        expect(closed).not_to include("ended_at", "outcome")
+        expect(closed).to include("outcome" => "cancelled", "ended_at" => "2026-10-04T12:10:00Z")
         expect(closed["session"]).to include("id" => "s1")
         expect(closed["agent"]).to include("kind" => "claude")
         expect(closed["usage"]).to eq("input_tokens" => 5030, "output_tokens" => 512)
+      end
+    end
+
+    describe "#finish_round" do
+      let(:round) { {"round" => 2, "pane" => "%5", "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00Z", "pending" => []} }
+
+      it "reads the review pane's session and its usage over the round's own window, not the run's pane" do
+        run["pane"] = "%3"
+
+        found = record.finish_round(run: run, round: round)
+
+        expect(found).to eq("round" => 2, "pane" => "%5", "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00Z",
+          "session" => {"id" => "s1", "transcript" => transcript}, "agent" => {"kind" => "claude", "version" => "2.4.1", "model" => "claude-opus-5-5"},
+          "usage" => {"input_tokens" => 30, "output_tokens" => 12})
+      end
+
+      it "ends a round still running now, and records no session for a round that never recorded a pane" do
+        expect(record.finish_round(run: run, round: round.except("ended_at"))["ended_at"]).to eq("2026-10-04T12:10:00Z")
+        expect(record.finish_round(run: run, round: round.except("pane"))).to include("pane" => nil, "session" => nil, "agent" => nil, "usage" => nil)
+      end
+
+      it "is not an attempt: a reviewed step's ended attempt is left as it is by #abandon" do
+        run["steps"]["plan"]["attempts"] = [{"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:01:00Z", "outcome" => "checks_passed"}]
+
+        expect(record.abandon(run).to_h).to eq(run)
       end
     end
   end

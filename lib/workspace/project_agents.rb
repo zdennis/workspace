@@ -17,7 +17,7 @@ module Workspace
     #   `{"available" => false, "reason" => "no_daemon" | "timeout" | "error", "detail" => message}` (`detail` only with "error")
     def facts(workspace, timeout: nil)
       snapshot = @client.fetch(workspace, timeout: timeout)
-      panes = Array(snapshot["panes"]).map { |pane| pane_facts(pane) }
+      panes = Array(snapshot["panes"]).reject { |pane| pane["review"] }.map { |pane| pane_facts(pane) }
       counts = STATES.to_h { |state| [state, panes.count { |pane| pane["state"] == state }] }
       {"available" => true, "panes" => panes, "counts" => counts}
     rescue AgentSnapshotClient::Unavailable => e

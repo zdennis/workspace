@@ -40,7 +40,7 @@ module Workspace
         nil
       end
       pane = @env["TMUX_PANE"].to_s
-      identity = {agent: agent, pane: (pane unless pane.empty?), run: @bound_run.run_id}
+      identity = {agent: agent, pane: (pane unless pane.empty?), run: @bound_run.author_run_id}
       (agent || identity[:run]) ? identity : nil
     end
 

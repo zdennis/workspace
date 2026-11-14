@@ -101,6 +101,10 @@ Limits:
 - `state` can read `done` during a background sub-agent's prompt, as it did before; test `waiting_tool` instead.
 - Hooks installed before `PermissionRequest` was added leave the fields `null`. Run `workspace init --install-hooks` or `workspace doctor --fix`.
 
+### Window and review
+
+Every pane row carries `window` (the tmux window index, `0` for the main window) and `review` (the mark of a [review window](README.workflow.md), `null` for any other pane). The monitor scans window 0 and any other window marked as a review window; panes of other windows, such as a `dev` window, are not listed. Rows are sorted by `window`, then `index`. The `PANE` column of the table reads `window.index`, `0.1` for window 0.
+
 ### Hook mode
 
 Each coding-agent pane also says how the daemon knows what its agent is doing, so a reader can tell a pane that can report `waiting` from one that can't without going by its `kind` (capability `agent_hooks` 1). A shell pane carries neither field.
@@ -192,7 +196,7 @@ workspace config set alerts.idle_after 15m
 
 With no `alerts.notify` set, nothing runs; `sessions` still shows the state. Both settings are read when the daemon starts, so restart it (`workspace agentd <project> --force`, or relaunch) after changing them (`workspace doctor` confirms it's running). For a worktree, the settings come from its parent project, where `workspace config set` stores them, but the daemon to restart is the worktree's own.
 
-Each wait alerts once, and each stretch of unchanged output alerts once, however long it lasts; a new wait, or output that changes and then goes quiet again, alerts again. A pane that is `waiting` doesn't also alert for being idle. Shell panes (no agent) never alert. A restarted daemon reads the alerts it already sent back from the event log, so it doesn't alert again for a quiet stretch that is still going, or for a wait the agent asks about again before sending any other hook event (see [event-log](README.event-log.md#agent-activity)).
+Each wait alerts once, and each stretch of unchanged output alerts once, however long it lasts; a new wait, or output that changes and then goes quiet again, alerts again. A pane that is `waiting` doesn't also alert for being idle. Shell panes (no agent) never alert, and neither does a pane in a [review window](README.workflow.md): a run's review agent is not a pane to watch for waits or idleness, and a review pane stuck on a permission prompt shows up as the run's own `waiting_you` row in `workflow status` and the inbox. A restarted daemon reads the alerts it already sent back from the event log, so it doesn't alert again for a quiet stretch that is still going, or for a wait the agent asks about again before sending any other hook event (see [event-log](README.event-log.md#agent-activity)).
 
 The command runs through `/bin/sh -c`, in its own process group, with stdin and stdout discarded and stderr going to the daemon's log. It gets the alert only as environment variables; nothing from the agent is ever spliced into the command line, so quote the variables you use (`"$WORKSPACE_ALERT_TEXT"`):
 
@@ -200,7 +204,7 @@ The command runs through `/bin/sh -c`, in its own process group, with stdin and 
 |----------|-------|
 | `WORKSPACE_ALERT` | `waiting`, `idle`, `handoff_stalled` or `workflow` |
 | `WORKSPACE_ALERT_WORKSPACE` | The workspace (tmux session) name |
-| `WORKSPACE_ALERT_PANE` | Pane as shown in the PANE column, e.g. `0.1` |
+| `WORKSPACE_ALERT_PANE` | `window.index` of the pane, e.g. `0.1` |
 | `WORKSPACE_ALERT_PANE_ID` | tmux pane id, e.g. `%12` |
 | `WORKSPACE_ALERT_KIND` | Agent kind, e.g. `claude` |
 | `WORKSPACE_ALERT_SECONDS` | Seconds the pane has been waiting or idle (for `handoff_stalled`, since the handoff watch began) |

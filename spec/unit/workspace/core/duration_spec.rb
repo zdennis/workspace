@@ -1,6 +1,13 @@
 require "spec_helper"
 
 RSpec.describe Workspace::Duration do
+  describe ".flag" do
+    it "gives one token in the largest unit that divides the seconds, which .parse reads back" do
+      expect([900, 3600, 5400, 90, 3601].map { |n| described_class.flag(n) }).to eq(%w[15m 1h 90m 90s 3601s])
+      expect(described_class.parse(described_class.flag(5400))).to eq(5400)
+    end
+  end
+
   describe ".parse_window" do
     it "takes days and weeks as well as the .parse forms" do
       expect(described_class.parse_window("30d")).to eq(2_592_000)

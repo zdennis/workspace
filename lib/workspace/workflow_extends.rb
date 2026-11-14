@@ -23,6 +23,9 @@ module Workspace
     # @return [Array<String>] why the parent can't be used; empty when it can
     attr_reader :failure
 
+    # @return [Array<Hash{String=>String}>] things the merge did that are probably a mistake, never an error: "code" (`review_dropped`), "step" and "message"
+    attr_reader :notes
+
     # @param id [String] the id of the definition being read
     # @param source [String] where it came from: "global", "builtin", "file" or "stdin"
     # @param lookup [#call, nil] given a workflow id and `below:` (a source name or nil), answers the parent's "text", "path" and "source", or nil
@@ -35,11 +38,12 @@ module Workspace
       @parents = []
       @problems = []
       @failure = []
+      @notes = []
     end
 
     # @param raw [Hash] the definition's YAML mapping
     # @return [Hash] the mapping to check: the same one when it extends nothing, else the parent's with this one laid over it.
-    #   A key the child sets replaces the parent's value, except `inputs`, which merge by name. `replace:` swaps whole steps in
+    #   A key the child sets replaces the parent's value, except `inputs` and `reviewers`, which merge by name. `replace:` swaps whole steps in
     #   place; `steps:` adds new ones, each after the step its `after:` names, else at the end.
     def resolve(raw)
       raw = raw.dup
@@ -60,6 +64,7 @@ module Workspace
       base = anchor_prompt_files(definition.resolved_raw, found["path"])
       merged = base.except("id", "schema_version").merge(raw.except("steps"))
       merged["inputs"] = merge_inputs(base["inputs"], raw["inputs"]) if raw.key?("inputs")
+      merged["reviewers"] = merge_inputs(base["reviewers"], raw["reviewers"]) if raw.key?("reviewers")
       merged["steps"] = merged_steps("#{own} (#{found["path"]})", base["steps"], replacements, raw["steps"])
       merged
     end
@@ -102,14 +107,24 @@ module Workspace
       (parent || {}).merge(child)
     end
 
-    # A parent's relative `prompt_file:` names a file beside the parent, not beside the child.
+    # A parent's relative `prompt_file:` (of a step or a reviewer) names a file beside the parent, not beside the child.
     def anchor_prompt_files(raw, parent_path)
-      steps = raw["steps"]
-      return raw unless parent_path && steps.is_a?(Hash)
-      anchored = steps.transform_values do |step|
-        (step.is_a?(Hash) && step["prompt_file"].is_a?(String)) ? step.merge("prompt_file" => File.expand_path(step["prompt_file"], File.dirname(parent_path))) : step
+      return raw unless parent_path
+      anchored = raw.dup
+      %w[steps reviewers].each do |key|
+        entries = raw[key]
+        next unless entries.is_a?(Hash)
+        anchored[key] = entries.transform_values do |entry|
+          (entry.is_a?(Hash) && entry["prompt_file"].is_a?(String)) ? entry.merge("prompt_file" => File.expand_path(entry["prompt_file"], File.dirname(parent_path))) : entry
+        end
       end
-      raw.merge("steps" => anchored)
+      anchored
+    end
+
+    def note_review_dropped(step_id, old, new, parent_id)
+      return unless old.is_a?(Hash) && !old["review"].nil? && new.is_a?(Hash) && new["review"].nil?
+      @notes << {"code" => "review_dropped", "step" => step_id,
+                 "message" => "replace step #{step_id} swaps a step of #{parent_id} that had a review: for one with none, so nothing reviews it now. Repeat review: in the replacing step to keep it."}
     end
 
     def merged_steps(parent_id, parent_steps, replacements, added)
@@ -125,6 +140,7 @@ module Workspace
         elsif step.is_a?(Hash) && step.key?("after")
           @problems << "replace step #{step_id}: after: is for added steps; a replaced step keeps its place"
         else
+          note_review_dropped(step_id.to_s, list[index].last, step, parent_id)
           list[index] = [step_id.to_s, step]
         end
       end

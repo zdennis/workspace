@@ -34,8 +34,8 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget deny steps].freeze
-    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout after].freeze
+    TOP_KEYS = %w[schema_version id title description use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny reviewers steps].freeze
+    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts review after].freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
     ON_TIMEOUT_ACTIONS = %w[warn interrupt fail].freeze
@@ -70,6 +70,13 @@ module Workspace
     BUDGET_KEYS = %w[tokens action].freeze
     BUDGET_ACTIONS = %w[stop].freeze
     MAX_BUDGET_TOKENS = 1_000_000_000_000
+
+    # What the run `timeout_action:` may be: hold the next attempt start (the default), or also interrupt the
+    # step under way once `workflow sweep` sees the deadline pass.
+    TIMEOUT_ACTIONS = %w[hold interrupt].freeze
+
+    # The most seconds a run `timeout:` may name (365 days).
+    MAX_RUN_TIMEOUT = 365 * 86_400
 
     # The kinds of ref `workflow start` can be given (`StartRef`'s kinds), which `applies_to:` may list.
     REF_KINDS = %w[jira github_pr github_issue branch].freeze
@@ -148,9 +155,11 @@ module Workspace
       @path = path
       @sha256 = Digest::SHA256.hexdigest(text)
       @problems = []
+      @notes = []
       extension = WorkflowExtends.new(id: id, source: source, lookup: parent_lookup, chain: chain || [[id, path || id]])
       @resolved_raw = extension.resolve(load_yaml(text))
       @parents = extension.parents
+      @notes = extension.notes
       if extension.failure.any?
         # The parent can't be used, so nothing else about this file can be judged.
         @problems = extension.failure
@@ -210,7 +219,13 @@ module Workspace
         {"code" => "on_timeout_without_timeout", "step" => step["id"],
          "message" => "step #{step["id"]} sets on_timeout: #{step["on_timeout"]} but has no timeout:, so it never applies. Add timeout: (such as 2h) or remove on_timeout."}
       end
-      missing + idle + retry_warnings
+      unused_action = if @data.key?("timeout_action") && !@data.key?("timeout")
+        [{"code" => "timeout_action_without_timeout",
+          "message" => "timeout_action: #{@data["timeout_action"]} is set but the workflow has no timeout:, so it never applies. Add timeout: (such as 8h) or remove timeout_action."}]
+      else
+        []
+      end
+      missing + idle + retry_warnings + step_attempt_warnings + WorkflowReviewSpec.round_warnings(steps, @data["max_attempts"]) + @notes + unused_action
     end
 
     # Every project command a definition checks with: each step's `status: command:` and each `require: command:` not marked optional.
@@ -301,6 +316,18 @@ module Workspace
       {"tokens" => value["tokens"], "action" => BUDGET_ACTIONS.first}
     end
 
+    # The run `timeout` of a definition hash: the machine time a run may use before the next attempt is held.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Hash{String=>Object}, nil] "seconds" and "action" (`hold` unless stored `interrupt`); nil for a
+    #   definition that declares none, one stored before the key existed, or a bad stored value
+    def self.run_timeout(definition)
+      value = definition.is_a?(Hash) ? definition["timeout"] : nil
+      return nil unless value.is_a?(Numeric) && value.finite? && value > 0 && value <= MAX_RUN_TIMEOUT
+      action = definition["timeout_action"]
+      {"seconds" => value, "action" => TIMEOUT_ACTIONS.include?(action) ? action : TIMEOUT_ACTIONS.first}
+    end
+
     # The `redeliver` of a definition hash: how many times `workflow sweep` retries a step's undelivered line.
     #
     # @param definition [Hash] {#to_h}, or a stored run's definition
@@ -328,32 +355,90 @@ module Workspace
       (value.is_a?(Integer) && value.between?(1, MAX_LOG_TAIL)) ? value : nil
     end
 
+    # @return [Integer, nil] a step's own attempt cap, nil when it has none (an absent key counts as none)
+    def self.step_max_attempts(step)
+      value = step.is_a?(Hash) ? step["max_attempts"] : nil
+      value.is_a?(Integer) ? value : nil
+    end
+
+    # The `reviewers` of a definition hash: the named reviewers a step's `review:` picks from.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Hash{String=>Hash}] name to "title", "prompt", "include" and "parallel"; empty for a definition that
+    #   declares none, one stored before the key existed, or a bad stored value
+    def self.reviewers(definition)
+      value = definition.is_a?(Hash) ? definition["reviewers"] : nil
+      return {} unless value.is_a?(Hash)
+      value.select { |name, entry| name.is_a?(String) && entry.is_a?(Hash) }
+    end
+
+    # The `review` of a step hash: who reviews the step's work before it passes.
+    #
+    # @param step [Hash] a step of {#to_h}, or of a stored run's definition
+    # @return [Hash{String=>Object}, nil] "from", "need", "must", "subject", "revision", "max_rounds", "timeout",
+    #   "uses", "context" and "notify"; nil for a step with none, one stored before the key existed, or a bad stored value
+    def self.review(step)
+      value = step.is_a?(Hash) ? step["review"] : nil
+      (value.is_a?(Hash) && value["from"].is_a?(Array) && value["from"].any?) ? value : nil
+    end
+
     private
+
+    # Step caps that can't hold: the step an `on_fail` goes back to runs once and then once per
+    # retry, so `max + 1` above its cap means a retry that can never start; and a step cap
+    # above the run's `max_attempts` never applies, since the run cap is spent first.
+    def step_attempt_warnings
+      by_id = steps.to_h { |step| [step["id"], step] }
+      loops = steps.filter_map do |step|
+        on_fail = step["on_fail"] or next
+        cap = self.class.step_max_attempts(by_id[on_fail["goto"]]) or next
+        next if on_fail["max"] + 1 <= cap
+        {"code" => "on_fail_exceeds_step_attempts", "step" => step["id"],
+         "message" => "step #{step["id"]} sets on_fail max: #{on_fail["max"]}, which runs step #{on_fail["goto"]} up to #{on_fail["max"] + 1} times, but step #{on_fail["goto"]} sets max_attempts: #{cap}. Raise its max_attempts to #{on_fail["max"] + 1} or more, or lower max."}
+      end
+      run_cap = @data["max_attempts"]
+      over = steps.filter_map do |step|
+        cap = self.class.step_max_attempts(step)
+        next if cap.nil? || cap <= run_cap
+        {"code" => "step_attempts_exceed_run", "step" => step["id"],
+         "message" => "step #{step["id"]} sets max_attempts: #{cap}, above the workflow's max_attempts: #{run_cap}, so the run stops first. Lower the step's cap or raise the workflow's."}
+      end
+      loops + over
+    end
 
     # An `on_fail` whose retries can never all start. The run spends one attempt per step it
     # delivers, so step N (1-based) fails for the first time on attempt N, and each retry
     # delivers the steps from `goto` to it again. Retry M starts only while the attempts made
     # are fewer than `max_attempts`, which happens at the earliest after N + (M - 1) * span
-    # attempts. Other steps and their loops only add attempts, so this count is a floor.
+    # attempts. Other steps and their loops only add attempts, so without reviews this count is
+    # a floor. A reviewed step counts every round it may use (`WorkflowReviewSpec.attempt_weight`,
+    # a rejection costs an attempt), which makes the count a worst case: the message then says
+    # "if every review round is used". The failing step itself fails before its review.
     def retry_warnings
       ids = steps.map { |step| step["id"] }
       steps.each_with_index.filter_map do |step, index|
         on_fail = step["on_fail"] or next
-        first = index + 1
-        span = index - ids.index(on_fail["goto"]) + 1
+        goto = ids.index(on_fail["goto"])
+        first = steps[0...index].sum { |each| WorkflowReviewSpec.attempt_weight(each) } + 1
+        span = steps[goto...index].sum { |each| WorkflowReviewSpec.attempt_weight(each) } + 1
         wanted = on_fail["max"]
+        reviewed = steps[0...index].any? { |each| WorkflowReviewSpec.reviewed?(each) }
         needed = first + (wanted - 1) * span
         allowed = @data["max_attempts"]
         next if needed < allowed
         fits = (first < allowed) ? (allowed - first - 1) / span + 1 : 0
-        {"code" => "on_fail_exceeds_max_attempts", "step" => step["id"],
-         "message" => "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start (the step fails first on attempt #{first} at the earliest, and each retry runs #{span} step#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max."}
+        message = if reviewed
+          "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start if every review round is used (the step then fails first on attempt #{first}, and each retry runs #{span} attempt#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max or the review max_rounds."
+        else
+          "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start (the step fails first on attempt #{first} at the earliest, and each retry runs #{span} step#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max."
+        end
+        {"code" => "on_fail_exceeds_max_attempts", "step" => step["id"], "message" => message}
       end
     end
 
     # What makes a step's pass mean something: a file it must write, a command that must
     # pass, or a person's gate.
-    PROOF_KEYS = %w[status gate require].freeze
+    PROOF_KEYS = %w[status gate require review].freeze
 
     def proof?(step)
       step["produces"].to_a.any? || PROOF_KEYS.any? { |key| Array(step[key]).any? }
@@ -419,6 +504,12 @@ module Workspace
       instructions = text_or_nil(raw["instructions"], "instructions")
       placeholders(instructions, inputs, "instructions")
       budget = budget_from(raw["budget"])
+      timeout = capped_duration_from(raw["timeout"], "timeout", MAX_RUN_TIMEOUT)
+      timeout_action = raw.fetch("timeout_action", TIMEOUT_ACTIONS.first)
+      problem "timeout_action must be #{TIMEOUT_ACTIONS.join(" or ")}, got #{timeout_action.inspect[0, 40]}" unless TIMEOUT_ACTIONS.include?(timeout_action)
+      reviewers = review_spec.reviewers(raw["reviewers"], inputs)
+      steps = steps_from(raw["steps"], inputs)
+      review_spec.check(steps, reviewers)
       {
         "id" => id,
         "title" => text_or_nil(raw["title"], "title") || id,
@@ -432,8 +523,19 @@ module Workspace
         "stall" => duration_from(raw["stall"], "stall"),
         "redeliver" => redeliver,
         "deny" => deny_from(raw["deny"]),
-        "steps" => steps_from(raw["steps"], inputs)
+        "steps" => steps
       }.merge(budget ? {"budget" => budget} : {})
+        .merge(reviewers.any? ? {"reviewers" => reviewers} : {})
+        .merge(timeout ? {"timeout" => timeout} : {})
+        .merge(((timeout || raw.key?("timeout_action")) && TIMEOUT_ACTIONS.include?(timeout_action)) ? {"timeout_action" => timeout_action} : {})
+    end
+
+    def review_spec
+      @review_spec ||= WorkflowReviewSpec.new(
+        name_pattern: INPUT_PATTERN, report: method(:problem), prompt: method(:prompt_from),
+        placeholders: method(:placeholders), text: method(:text_or_nil), names: method(:names),
+        uses: method(:uses_from), context: method(:context_from), duration: method(:capped_duration_from)
+      )
     end
 
     def unknown_keys(mapping, allowed, where)
@@ -584,8 +686,15 @@ module Workspace
         "on_fail" => on_fail_from(raw["on_fail"], earlier, where),
         "context" => context_from(raw.fetch("context", "fresh"), "#{where}: context"),
         "timeout" => duration_from(raw["timeout"], "#{where}: timeout"),
-        "on_timeout" => on_timeout_from(raw.fetch("on_timeout", DEFAULT_ON_TIMEOUT), where)
-      }
+        "on_timeout" => on_timeout_from(raw.fetch("on_timeout", DEFAULT_ON_TIMEOUT), where),
+        "max_attempts" => step_attempts_from(raw["max_attempts"], where)
+      }.merge(review_spec.review(raw["review"], where, inputs).then { |review| review ? {"review" => review} : {} })
+    end
+
+    def step_attempts_from(value, where)
+      return nil if value.nil?
+      return value if value.is_a?(Integer) && value >= 1
+      problem "#{where}: max_attempts must be a whole number of 1 or more, got #{value.inspect}"
     end
 
     def prompt_from(raw, where)
@@ -604,12 +713,12 @@ module Workspace
       problem "#{where}: prompt_file #{full} can't be read (#{e.class})"
     end
 
-    def placeholders(text, inputs, where)
+    def placeholders(text, inputs, where, extra: [])
       return unless text.is_a?(String)
       text.scan(PLACEHOLDER).flatten.uniq.each do |name|
-        next if VARIABLES.include?(name)
+        next if VARIABLES.include?(name) || extra.include?(name)
         next if name.start_with?("inputs.") && inputs.key?(name.delete_prefix("inputs."))
-        known = (VARIABLES + inputs.keys.map { |input| "inputs.#{input}" }).map { |v| "{{#{v}}}" }.join(", ")
+        known = (VARIABLES + extra + inputs.keys.map { |input| "inputs.#{input}" }).map { |v| "{{#{v}}}" }.join(", ")
         problem "#{where} uses {{#{name}}}, which nothing supplies (known: #{known})"
       end
     end
@@ -840,6 +949,13 @@ module Workspace
     def context_from(value, where)
       return value if CONTEXTS.include?(value)
       problem "#{where} must be one of #{CONTEXTS.join(", ")}, got #{value.inspect}"
+    end
+
+    def capped_duration_from(value, where, max)
+      return nil if value.nil?
+      Duration.parse_capped(value, max: max)
+    rescue ArgumentError => e
+      problem "#{where}: #{e.message}"
     end
 
     def duration_from(value, where)

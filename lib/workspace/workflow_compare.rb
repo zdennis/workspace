@@ -16,16 +16,16 @@ module Workspace
   #
   # Per group: `runs` (all of them), `first_try`, `settled`, `pass_first_percent` (`first_try` of `settled`, nil
   # with none settled), `running` (not settled, still going), `cancelled` (stopped by a person without a miss),
-  # `stuck` (settled runs not ended: waiting on `failed_check` or `budget_spent` after a miss), `resumes`
+  # `stuck` (settled runs not ended: waiting on `failed_check`, `budget_spent` or `run_timed_out` after a miss), `resumes`
   # (all `run_resumed` events) and `resumes_per_run`.
   #
   # A step is a miss when it has more than one delivered attempt (a rejected gate or a `resume --from` reran it,
-  # or it looped) or its delivered attempt ended other than `passed` (in a `completed` run, one with no outcome too: it was passed over by a `resume --from` later step). A step with no delivered attempt, or one
+  # or it looped) or its delivered attempt ended other than `passed` (an `overridden` one, a guard stop a person accepted, is a miss: the run can complete and be settled, never as a first try) (in a `completed` run, one with no outcome too: it was passed over by a `resume --from` later step). A step with no delivered attempt, or one
   # delivered attempt still going, is not a miss; an attempt that never reached the agent is not delivered
   # ({WorkflowStats.kind_of}), so a redelivery is not a miss. A run is a first try when it completed with no miss.
   #
   # Settled runs are the denominator: every `completed` run; a `cancelled` run, and a run `waiting` on
-  # `failed_check` or `budget_spent` (the reasons a run stops and needs a person, stored in its `reason` field
+  # `failed_check`, `budget_spent` or `run_timed_out` (the reasons a run stops and needs a person, stored in its `reason` field
   # as `workflow status` reads it), that missed. A cancelled run with no miss, and any other run still going, is
   # in neither count, so an abandoned clean run or a run in progress is never a result. A stuck run counts as a
   # miss while it waits; a later resume can only move it to a completed miss, never to a first try. No run is
@@ -35,7 +35,7 @@ module Workspace
     MIN_SETTLED = 20
 
     # Reasons a run stops and waits for a person once its attempts are spent.
-    STUCK = %w[failed_check budget_spent].freeze
+    STUCK = %w[failed_check budget_spent run_timed_out].freeze
 
     UNKNOWN = "unknown".freeze
     MIXED = "mixed".freeze
@@ -150,10 +150,11 @@ module Workspace
     end
 
     # In a completed run an attempt with no outcome was passed over (a `resume --from` later step), not passed: a miss.
+    # A `cancelled` attempt (a cancel or kill closed it) is a person's stop, not a miss, like an old one left with no outcome.
     # The engine has stored `outcome` on passed and failed attempts since it first wrote attempts, so an old run is not misread.
     def missed?(attempts, completed)
       delivered = attempts.reject { |attempt| WorkflowStats.kind_of(attempt) == :not_delivered }
-      delivered.size > 1 || delivered.any? { |attempt| attempt.outcome != "passed" && (completed || !attempt.outcome.nil?) }
+      delivered.size > 1 || delivered.any? { |attempt| attempt.outcome != "passed" && attempt.outcome != "cancelled" && (completed || !attempt.outcome.nil?) }
     end
 
     def row(sha, list)

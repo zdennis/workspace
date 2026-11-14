@@ -18,8 +18,9 @@ module Workspace
   #
   # Only names, ids, a checkout-relative path, a pass or fail flag, a
   # duration, a sub-agent's short description (cut to 120 characters) and a
-  # tool call's `input` summary ({ToolInputSummary}: one line, 300 bytes) are
-  # written: never a prompt, a whole command, tool output, or file contents.
+  # tool call's `input` summary ({ToolInputSummary}: one line, 300 bytes) and,
+  # for a review pane's write of a verdict file, the file's `sha256` (64 hex
+  # characters, anything else dropped) are written: never a prompt, a whole command, tool output, or file contents.
   #
   # An append that leaves the file over the rotation threshold renames it to
   # `<file>.1`, replacing the one before; nothing is truncated, so a reader
@@ -155,6 +156,8 @@ module Workspace
       fields["path"] = path if path
       input = ToolInputSummary.cap(event["input"])
       fields["input"] = input if input
+      sha256 = event["sha256"]
+      fields["sha256"] = sha256 if sha256.is_a?(String) && sha256.match?(/\A\h{64}\z/)
       fields
     end
 

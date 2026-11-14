@@ -63,10 +63,54 @@ module Workspace
       attempts_made(run) - attempt_allowance(run) + 1
     end
 
-    # Whether a resume would start a new attempt: `--from`, a run held for its token budget, a retry's wait, a step that failed or never
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a step id
+    # @return [Integer] the step's attempts that count against its own cap: all but those the sweep typed again
+    def self.step_attempts_made(run, step)
+      Array(run.dig("steps", step, "attempts")).count { |earlier| !earlier["redelivered"] }
+    end
+
+    # @param run [Hash{String=>Object}] a stored run with a definition
+    # @param step [String] a step id
+    # @return [Integer, nil] the step's `max_attempts` plus its `extra_attempts`; nil when it has no cap (an old run, or no key)
+    def self.step_allowance(run, step)
+      cap = WorkflowDefinition.step_max_attempts(run.dig("definition", "steps")&.find { |each| each["id"] == step })
+      cap && cap + run.dig("steps", step, "extra_attempts").to_i
+    end
+
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a step id
+    # @return [Boolean] whether the step has made all the attempts its own cap allows; false for a step with no cap
+    def self.step_attempts_spent?(run, step)
+      allowance = step_allowance(run, step)
+      !allowance.nil? && step_attempts_made(run, step) >= allowance
+    end
+
+    # The least `--extra-attempts` that lets one more attempt of the step fit its own cap.
+    #
+    # @param run [Hash{String=>Object}] a stored run with a definition
+    # @param step [String] a step id
+    # @return [Integer, nil] attempts made minus the allowance, plus one; nil for a step with no cap
+    def self.step_extra_attempts_needed(run, step)
+      allowance = step_allowance(run, step)
+      allowance && (step_attempts_made(run, step) - allowance + 1)
+    end
+
+    # The step a resume or reject would start an attempt of: `from` (`resume --from`, or the `to` of a
+    # reject), else the step a waiting retry goes to, else the current step.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param from [String, nil]
+    # @return [String]
+    def self.target_step(run, from: nil)
+      from || run.dig("backoff", "to") || run["current"]
+    end
+
+    # Whether a resume would start a new attempt: `--from`, a run held for its token budget or its timeout before an
+    # attempt, a retry's wait, a step that failed or never
     # got its line, or a running step given a pane. Not a check or a turn left to decide (a failure there goes
-    # through the `on_fail` budget), a passed step moving on, or a lock wait (the attempt was allowed when the
-    # step was reached).
+    # through the `on_fail` budget), a review round, held or not (its attempt has ended; a round is not an attempt), a passed
+    # step moving on, or a lock wait (the attempt was allowed when the step was reached).
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param from [String, nil] the step a resume would start again at
@@ -74,14 +118,41 @@ module Workspace
     # @return [Boolean]
     def self.starts_attempt?(run, from:, pane:)
       return true if from
-      return true if run["budget_hold"].is_a?(Hash)
+      return false if round_hold?(run)
+      return true if run["budget_hold"].is_a?(Hash) || run["timeout_hold"].is_a?(Hash)
       return true if run["backoff"].is_a?(Hash) && run["backoff"]["to"].is_a?(String)
       return false if run.dig("reason", "code") == "waiting_lock"
       case run["steps"].fetch(run["current"])["state"]
       when "running" then !pane.nil?
-      when "checking", "passed" then false
+      when "checking", "reviewing", "passed" then false
       else true
       end
+    end
+
+    # Whether the run's token budget or timeout hold is of a review round (it records `review_round`): its release
+    # starts that round, never an author attempt.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Boolean]
+    def self.round_hold?(run)
+      [run["budget_hold"], run["timeout_hold"]].any? { |hold| hold.is_a?(Hash) && hold.key?("review_round") }
+    end
+
+    # Whether a resume would start a review round, which the token budget and the run's timeout are asked about as
+    # an attempt's start is: a round the budget or timeout held, or a fresh round after one that stopped for a
+    # person. Not `--from` (it starts an attempt), nor a round whose delivery failed or lapsed (delivered again as
+    # the same round, which no limit holds back).
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param from [String, nil] the step a resume would start again at
+    # @return [Boolean]
+    def self.starts_round?(run, from:)
+      return false if from
+      return true if round_hold?(run)
+      state = run["steps"].fetch(run["current"])
+      return false unless state["state"] == "reviewing"
+      round = state["review"]
+      !(round.is_a?(Hash) && run["reason"].nil? && round["ended_at"].nil?)
     end
 
     # Where the line that starts an attempt stands. An attempt is stored as
@@ -98,6 +169,48 @@ module Workspace
       (now - Time.iso8601(attempt["started_at"]) > DELIVERY_WINDOW) ? :unknown : :delivering
     rescue ArgumentError, TypeError
       :unknown
+    end
+
+    # Where the delivery of a review round stands. A round is stored `delivering` when it starts, under the run's
+    # lock, and its delivery (window, agent, revision, typing) runs outside it and can outlast {DELIVERY_WINDOW}; so
+    # time alone does not end the mark: past the window it still holds while the process that delivers it (its
+    # `holder`, a pid and start time) is alive.
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @param now [Time]
+    # @param alive [#call, nil] given the holder, whether that process still runs; nil takes a holder as alive
+    # @return [Symbol, nil] :delivering, :failed (the delivering process stored a failure), :unknown (the mark lapsed
+    #   with no live holder), or nil when the round was delivered or holds no delivery
+    def self.round_delivery(round, now, alive: nil)
+      return nil unless round.is_a?(Hash)
+      return :failed if round["delivery"] == "failed"
+      return nil unless round["delivery"] == "delivering"
+      return :delivering unless now - Time.iso8601(round["started_at"].to_s) > DELIVERY_WINDOW
+      holder = round["holder"]
+      (holder && (alive.nil? || alive.call(holder))) ? :delivering : :unknown
+    rescue ArgumentError, TypeError
+      :unknown
+    end
+
+    # Where a review round that has to be delivered again stands: the current step is `reviewing` with no stored
+    # reason and no park, and its round's delivery failed or lapsed ({.round_delivery}). Each delivery again spends
+    # one of the round's `redeliveries`, capped by the definition's `redeliver`.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @param alive [#call, nil] see {.round_delivery}
+    # @return [Hash, nil] nil when no delivery again applies; else :state (`:due` or `:exhausted`), :round,
+    #   :retries (spent), :limit and :mark (`:failed` or `:unknown`)
+    def self.round_redelivery(run, now, alive: nil)
+      return nil if run["parked"] || run["reason"]
+      state = run.dig("steps", run["current"])
+      return nil unless state.is_a?(Hash) && state["state"] == "reviewing"
+      round = state["review"]
+      mark = round_delivery(round, now, alive: alive)
+      return nil unless %i[failed unknown].include?(mark)
+      retries = round["redeliveries"].is_a?(Integer) ? round["redeliveries"] : 0
+      limit = WorkflowDefinition.redeliver(run["definition"])
+      {state: (retries >= limit) ? :exhausted : :due, round: round["round"], retries: retries, limit: limit, mark: mark}
     end
 
     # Where the sweep's retry of an undelivered line stands. The step must wait on a failed delivery (reason
@@ -180,19 +293,42 @@ module Workspace
     # an `on_fail` retry's backoff is over,
     # it waits for a lock, its check was started and never reported back
     # (the process running it died), judged by the check's time limit plus a
-    # minute, or it has been held for background tasks longer than
-    # {BACKGROUND_HOLD}.
+    # minute, it has been held for background tasks longer than
+    # {BACKGROUND_HOLD}, or the end of its review round was being judged and
+    # nothing reported back ({.lost_round?}).
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
-    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :check, or nil
+    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :check, or nil
     def self.wakeable?(run, now)
       return :parked if run["parked"]
       return :backoff if backoff(run, now)&.fetch(:state) == :due
       return :lock if run.dig("reason", "code") == "waiting_lock"
       return :background if background_expired?(run["reason"], now)
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
+      # A review round due again ({.round_redelivery}) is not woken here until WorkflowRecovery#tick can redeliver it (T32);
+      # woken now, every tick would start an advance that does nothing.
+      return :round if lost_round?(run, now)
       :check if run["reason"].nil? && lost_check?(run, now)
+    end
+
+    # Whether the end of the current step's review round was being judged and nothing reported back: its revision
+    # was being computed again with the lock given up (the round's `recompute` mark) and the mark is older than
+    # {DELIVERY_WINDOW}, so the process doing it died. The sibling of {.lost_check?}, which stays `checking`-only.
+    # A round stopped for a person (a stored reason) or a parked run is never lost.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Boolean]
+    def self.lost_round?(run, now)
+      return false if run["parked"] || run["reason"]
+      state = run.dig("steps", run["current"])
+      return false unless state.is_a?(Hash) && state["state"] == "reviewing"
+      mark = state["review"].is_a?(Hash) ? state["review"]["recompute"] : nil
+      return false unless mark.is_a?(Hash)
+      now - Time.iso8601(mark["started_at"].to_s) > DELIVERY_WINDOW
+    rescue ArgumentError, TypeError
+      true
     end
 
     # Whether nothing is left to report the current step's check: its process
@@ -226,7 +362,8 @@ module Workspace
     private_class_method :background_expired?
 
     # The marks the sweep left on the run's current attempt: "stalled" and "recovered" (cause => time) and
-    # "interrupt" (`state` `pending` or `sent`, and `at`). Empty once the run is on another step or attempt.
+    # "interrupt" (a step timeout's press) and "run_interrupt" (the run timeout's press), each `state` `pending`
+    # or `sent` and `at`. Empty once the run is on another step or attempt.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @return [Hash{String=>Object}]
@@ -300,6 +437,11 @@ module Workspace
         "an agent is working on step #{run["current"]}" unless pane || run["reason"] || over
       when "checking"
         "the check of step #{run["current"]} is still running" unless lost_check?(run, now)
+      when "reviewing"
+        # A round stopped for a person, or one whose delivery failed or lapsed, is the resume's to act on.
+        unless run["reason"] || %i[failed unknown].include?(round_delivery(state["review"], now))
+          "the review round of step #{run["current"]} is still running"
+        end
       end
     end
 
@@ -322,7 +464,8 @@ module Workspace
 
     # Where a failed step goes, read once its failed attempt is stored: back along its `on_fail` (`to` its goto,
     # `count` the edge's loop count after this one, `wait` the backoff seconds or nil), or `:stop` for a person when it has
-    # none, its loops or the run's attempts are used up, or the failure's code or cause is one of its `except:`
+    # none, its loops or the run's attempts are used up, its goto step's own cap is spent (`limit: :step`,
+    # `step:` the goto; only that step is checked, though a loop re-runs every step from it to the failing one), or the failure's code or cause is one of its `except:`
     # (so a run is never sent into a step that cannot pass against the same facts).
     #
     # @param run [Hash{String=>Object}] a stored run at the failed step
@@ -336,6 +479,7 @@ module Workspace
       count = run["loops"].fetch(edge, 0)
       excepted = Array(on_fail["except"]).any? { |name| name == failure["code"] || name == failure["cause"] }
       return {kind: :stop} if excepted || count >= on_fail["max"] || attempts_made(run) >= attempt_allowance(run)
+      return {kind: :stop, limit: :step, step: on_fail["goto"]} if step_attempts_spent?(run, on_fail["goto"])
       {kind: :loop, edge: edge, to: on_fail["goto"], count: count + 1, wait: WorkflowDefinition.backoff(on_fail)}
     end
 
@@ -347,6 +491,16 @@ module Workspace
     def self.budget_details(run, reading)
       {"run_id" => run["id"], "step" => run["current"]}.merge(reading.slice("used", "allowance", "counted", "uncounted", "needed", "suggested"))
         .merge("tokens" => reading["tokens"], "extra_tokens" => reading["extra_tokens"])
+    end
+
+    # The `details` of a `run_timed_out` refusal or hold.
+    #
+    # @param run [Hash] a stored run
+    # @param reading [Hash] its {WorkflowDeadline.reading}
+    # @return [Hash]
+    def self.deadline_details(run, reading)
+      {"run_id" => run["id"], "step" => run["current"], "kind" => "timeout"}
+        .merge(reading.slice("used", "limit", "needed", "suggested", "timeout", "extra_seconds"))
     end
 
     # The one code key of a failed step: an agent's word when it gave one, else the engine's.
@@ -368,6 +522,71 @@ module Workspace
        "reason" => unmet["reason"], "error" => unmet["error"], "exit_code" => unmet["exit_code"], "log" => unmet["log"], "program" => unmet["program"],
        "before" => unmet["before"], "after" => unmet["after"]}
         .compact.merge(code_for(unmet["code"], nil))
+    end
+
+    # Whether a run stopped on a guard that no resume can get past: `no_commit` with no `base_sha` recorded at the
+    # run's start (an unborn branch), so every guarded step compares to a nil base. Any other guard stop (a moved
+    # HEAD, changed hooks, hidden files, a `no_commit` with a base) passes again once the checkout is put back.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @return [Boolean]
+    def self.guard_unrecoverable?(run)
+      run = run.to_h
+      reason = run["reason"]
+      return false unless reason.is_a?(Hash) && reason["code"] == "failed_check"
+      details = reason["details"]
+      details.is_a?(Hash) && details["cause"] == "guard" && details["guard"] == "no_commit" && run["base_sha"].to_s.empty?
+    end
+
+    # The guard stops `workflow resume --accept-guard` takes: every guard that fails a step. `config_changed` is
+    # only ever a warning, so it is not among them.
+    ACCEPTABLE_GUARDS = %w[head_moved hooks_changed hidden_changed no_commit operation_in_progress tracked_changed].freeze
+
+    # The guard a run is stopped by, when `resume --accept-guard` may take it: reason `failed_check` with a guard
+    # cause in {ACCEPTABLE_GUARDS}, `no_commit` with no `base_sha` included.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @return [String, nil] the guard's code, nil for any other state or stop
+    def self.acceptable_guard(run)
+      run = run.to_h
+      reason = run["reason"]
+      return nil unless run["state"] == "waiting" && reason.is_a?(Hash) && reason["code"] == "failed_check"
+      details = reason["details"]
+      return nil unless details.is_a?(Hash) && details["cause"] == "guard" && ACCEPTABLE_GUARDS.include?(details["guard"])
+      state = run["steps"].is_a?(Hash) && run["steps"][run["current"]]
+      (state.is_a?(Hash) && state["state"] == "failed") ? details["guard"] : nil
+    end
+
+    # Whether `resume --accept-guard` may take the run's stop; see {.acceptable_guard}.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @return [Boolean]
+    def self.guard_acceptable?(run) = !acceptable_guard(run).nil?
+
+    # The line put before the person's note in the next attempt's instructions once a guard stop is accepted.
+    #
+    # @param guard [String] the guard's code
+    # @param step [String] the step it stopped
+    # @param base_sha [String, nil] the run's base commit now; nil when the checkout has none
+    # @return [String]
+    def self.guard_accepted_line(guard, step, base_sha)
+      return "A person accepted the `#{guard}` stop on `#{step}`; the checkout has no commit, so the guard has no HEAD to measure from." if base_sha.to_s.empty?
+      "A person accepted the `#{guard}` stop on `#{step}`; the guard now measures from HEAD `#{base_sha[0, 12]}`."
+    end
+
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run stopped on a guard
+    # @return [String, nil] what to do before a resume can pass, nil for any other stop
+    def self.guard_recovery(run)
+      run = run.to_h
+      details = run.dig("reason", "details")
+      return nil unless run.dig("reason", "code") == "failed_check" && details.is_a?(Hash) && details["cause"] == "guard"
+      return nil if guard_unrecoverable?(run)
+      case details["guard"]
+      when "head_moved" then "Move HEAD back to #{run["base_sha"].to_s[0, 12]} (save any work you want to keep, on a branch, first), then resume."
+      when "hooks_changed" then "Restore the repository's hooks, then resume."
+      when "hidden_changed" then "Clear the assume-unchanged or skip-worktree flags, then resume."
+      when "no_commit" then "Check that the checkout has a commit, then resume."
+      end
     end
 
     # @param failure [Hash{String=>Object}] a step's recorded failure

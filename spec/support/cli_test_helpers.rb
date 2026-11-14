@@ -265,7 +265,7 @@ module CLITestHelpers
     def pane_details(session, window: "0")
       panes = @sessions.fetch(session, [])
       panes = panes.select { |p| p[:window] == window.to_i } unless window.nil?
-      panes.map { |p| {pid: 1, command: "zsh", cwd: "/", title: ""}.merge(p) }
+      panes.map { |p| {pid: 1, command: "zsh", cwd: "/", window_name: "", review: nil, title: ""}.merge(p) }
     end
 
     def session_name_for_pane(pane_id)

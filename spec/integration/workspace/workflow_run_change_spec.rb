@@ -99,6 +99,19 @@ RSpec.describe Workspace::WorkflowRunChange do
       expect(contexts.last.delivery).to be_nil
     end
 
+    it "hands a registered review round back on the context and runs nothing for it" do
+      seen = nil
+      result = change.call(run_id) do |_run, ctx|
+        ctx.review({"round" => 1})
+        seen = ctx
+        nil
+      end
+
+      expect(seen.review).to eq("round" => 1)
+      expect(result).to be_a(Workspace::WorkflowRun)
+      expect(delivered).to eq([])
+    end
+
     it "types a registered line through deliver once the lock is given up, and returns what deliver returns" do
       result = change.call(run_id) do |_run, ctx|
         ctx.deliver({"step" => "a", "pane" => "%1"})

@@ -224,6 +224,14 @@ RSpec.describe Workspace::SessionLedger, "#entries_for" do
                                             "session_id" => "s1", "transcript_path" => "/t.jsonl", "cwd" => "/p", "layout" => "L1"}])
     end
 
+    it "keeps a reviewer session's role in its slot and leaves other slots without one" do
+      start("a:1.0", "s1", role: "reviewer")
+      start("a:0.1", "s2")
+
+      expect(slots["a:1.0"]).to include("role" => "reviewer")
+      expect(slots["a:0.1"]).not_to have_key("role")
+    end
+
     it "keeps only the workspace's own slots" do
       start("a:0.1", "s1")
       start("b:0.1", "s2", workspace: "b")

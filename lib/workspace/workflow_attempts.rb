@@ -53,7 +53,7 @@ module Workspace
        "definition_sha256" => attempt.definition_sha256, "prompt_sha256" => attempt.prompt_sha256,
        "packs" => attempt.packs, "outputs" => attempt.outputs, "check" => check,
        "reported" => attempt.reported, "proofs" => attempt.proofs, "usage" => attempt.usage, "evidence" => attempt.evidence, "reasons" => attempt.reasons,
-       "warnings" => attempt.warnings,
+       "warnings" => attempt.warnings, "rounds" => attempt.rounds,
        "redelivered" => (attempt.redelivered == true) ? true : nil}
     end
   end

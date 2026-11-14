@@ -68,9 +68,11 @@ module Workspace
     # @param idle_check [Workspace::IdlePromptCheck] reads a pane's input box
     # @param transcript [Workspace::TranscriptSummary] says whether the main agent wrote anything after a time
     # @param sleeper [#call] waits a number of seconds
+    # @param error_output [IO] where a warning about a path left out of a binding is written
     def initialize(config:, bindings:, tmux:, locator:, binder:, snapshot_client:, agent_ensurer:, connector: ->(path) { UNIXSocket.open(path) },
       reply_timeout: REPLY_TIMEOUT, clock: -> { Time.now }, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new,
-      sleeper: ->(seconds) { sleep(seconds) })
+      sleeper: ->(seconds) { sleep(seconds) }, error_output: $stderr)
+      @error_output = error_output
       @reply_timeout = reply_timeout
       @clock = clock
       @config = config
@@ -89,6 +91,8 @@ module Workspace
     # The pane a run uses when the caller names none: the workspace's first
     # Claude Code pane, as its agent daemon sees it.
     #
+    # A review window's pane (a row with a `review` mark, or a pane bound as the reviewer) is never the answer.
+    #
     # @param workspace [String]
     # @param start_daemon [Boolean] start the daemon when none is running; false
     #   (a dry run) returns nil instead
@@ -99,7 +103,7 @@ module Workspace
       return nil unless start_daemon || @config.agent_running?(workspace)
       ensure_daemon!(workspace)
       snapshot = @snapshot_client.fetch(workspace)
-      pane = Array(snapshot["panes"]).find { |each| each["kind"] == "claude" }
+      pane = Array(snapshot["panes"]).find { |each| each["kind"] == "claude" && !review_pane?(each) }
       return pane["pane_id"] if pane
       raise Workspace::Error.new("No pane of '#{workspace}' is running Claude Code. Start it, or name the pane with --pane.",
         code: "no_agent_pane", details: {"workspace" => workspace})
@@ -116,18 +120,34 @@ module Workspace
     end
 
     # @param pane [String] a pane id
-    # @return [String, nil] the run the pane is bound to now; nil for an unbound
-    #   pane or a binding made for another pane (see {PaneBindings#stale?})
+    # @return [String, nil] the run the pane is bound to as its author now; nil for an unbound
+    #   pane, a review pane, or a binding made for another pane (see {PaneBindings#stale?})
     def run_on(pane)
+      bound = bound_on(pane)
+      (bound && bound[:role] == "author") ? bound[:run_id] : nil
+    end
+
+    # @param pane [String] a pane id
+    # @return [Hash{Symbol=>Object}, nil] `:run_id` and `:role` ("author" or "reviewer") of the run the pane is
+    #   bound to now; nil for an unbound pane, a binding of another kind, or one made for another pane
+    def bound_on(pane)
       entry = @bindings.binding_for(pane)
       return nil unless entry && entry["kind"] == "run"
-      stale?(pane, entry) ? nil : entry["id"]
+      return nil if stale?(pane, entry)
+      {run_id: entry["id"], role: (entry["role"] == "reviewer") ? "reviewer" : "author"}
     end
 
     # @param run_id [String]
-    # @return [String, nil] the pane bound to the run, wherever `restore` moved the binding
+    # @return [String, nil] the pane bound to the run as its author, wherever `restore` moved the
+    #   binding; never the run's review pane
     def pane_of(run_id)
       @bindings.pane_for("run", run_id)
+    end
+
+    # @param run_id [String]
+    # @return [String, nil] the run's review pane; nil when none is bound
+    def review_pane_of(run_id)
+      @bindings.pane_for("run", run_id, role: "reviewer")
     end
 
     # @param run_id [String]
@@ -183,8 +203,8 @@ module Workspace
 
     # Whether a resume from the pane itself can be parked: starts the daemon,
     # which must be one that can release a park, and the pane must run Claude
-    # Code. A pane the daemon has no row for yet counts only in window 0, the one
-    # it scans; a pane elsewhere would never get a row.
+    # Code. A pane the daemon has no row for yet counts only in window 0; a pane
+    # elsewhere gets a row only in a marked review window.
     #
     # @param workspace [String]
     # @param pane [String] a pane id
@@ -269,7 +289,8 @@ module Workspace
     #   binding's stale check; false for no identity, a pane tmux does not have, or a pane id reused elsewhere
     def same_pane?(pane, identity)
       return false unless identity.is_a?(Hash) && identity["session"].is_a?(String)
-      !@bindings.stale?(identity, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane))
+      !@bindings.stale?(identity, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane),
+        server_pid: -> { @tmux.server_pid_for_pane(pane) })
     rescue SystemCallError
       false
     end
@@ -284,20 +305,35 @@ module Workspace
     # @param attempt [Integer]
     # @param instructions [String] the step's instructions file
     # @param artifacts [String] the run's artifacts directory
+    # @param role [String, nil] "reviewer" for a review pane; nil binds the step's own agent
+    # @param round [Integer, nil] the review round, for a reviewer
+    # @param relative_to [String, nil] the checkout; a reviewer's paths too long for a field are tried relative to it
     # @return [Hash{String=>Object}] the stored binding
     # @raise [Workspace::Error] when the pane is not one of the workspace's
-    def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:)
+    def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:, role: nil, round: nil, relative_to: nil)
       fields = {kind: "run", id: run_id, step: step, attempt: attempt, instructions: instructions, artifacts: artifacts}
-      fields.delete_if { |key, value| %i[instructions artifacts].include?(key) && value.length > PaneBindings::MAX_FIELD_LENGTH }
+      if role
+        fields[:role] = role
+        fields[:round] = round if round
+        %i[instructions artifacts].each { |key| fields[key] = relative_path(fields[key], relative_to) }
+      end
+      fields.delete_if do |key, value|
+        next false unless %i[instructions artifacts].include?(key)
+        next true if value.nil?
+        too_long = value.length > PaneBindings::MAX_FIELD_LENGTH
+        @error_output.puts "Warning: the #{key} path of run #{run_id} is longer than #{PaneBindings::MAX_FIELD_LENGTH} characters, so it is not stored in the pane's binding." if too_long
+        too_long
+      end
       @binder.bind(workspace: workspace, pane: pane, **fields)
     end
 
     # Removes the run's binding, one `restore` has not carried to a pane yet included.
     #
     # @param run_id [String]
+    # @param role [String, nil] "reviewer" or "author" removes only that role's binding; nil removes both
     # @return [void]
-    def unbind(run_id)
-      @bindings.unbind_all("run", run_id)
+    def unbind(run_id, role: nil)
+      @bindings.unbind_all("run", run_id, role: role)
     rescue SystemCallError
       nil
     end
@@ -324,8 +360,20 @@ module Workspace
 
     private
 
+    # A path too long for a binding field, made relative to the checkout when it lies inside it.
+    def relative_path(path, root)
+      return path if path.nil? || path.length <= PaneBindings::MAX_FIELD_LENGTH || root.nil?
+      prefix = "#{root.to_s.chomp("/")}/"
+      path.start_with?(prefix) ? path.delete_prefix(prefix) : path
+    end
+
+    def review_pane?(row)
+      row["review"] || @bindings.binding_for(row["pane_id"])&.dig("role") == "reviewer"
+    end
+
     def stale?(pane, entry)
-      @bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane))
+      @bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane),
+        server_pid: -> { @tmux.server_pid_for_pane(pane) })
     end
 
     def ensure_daemon!(workspace)

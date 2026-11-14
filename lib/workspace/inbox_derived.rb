@@ -30,7 +30,7 @@ module Workspace
 
     # The {WorkflowNeedsMe} codes that get their own row here: the others are a gate, an undelivered step,
     # or a prompt or question (each already a row).
-    ATTENTION_CODES = %w[failed_check waiting_lock budget_spent stalled idle].freeze
+    ATTENTION_CODES = %w[failed_check waiting_lock budget_spent run_timed_out stalled idle].freeze
 
     # The longest derived title, as for a posted item.
     TITLE_MAX = 200
@@ -92,7 +92,7 @@ module Workspace
       panes = daemons.to_h do |workspace, thread|
         reply = thread.value
         if reply[:panes]
-          rows.concat(reply[:panes].select { |pane| pane["state"] == "waiting" }.map { |pane| pane_row(workspace, pane) })
+          rows.concat(reply[:panes].select { |pane| pane["state"] == "waiting" && !pane["review"] }.map { |pane| pane_row(workspace, pane) })
         else
           warnings << {"code" => "daemons_unavailable", "workspace" => workspace,
                        "message" => "The agent daemon for '#{workspace}' did not answer (#{reply[:code]}), so its waiting panes are not shown."}
@@ -235,6 +235,7 @@ module Workspace
         "failed_check" => "Workflow #{title}: the check of step #{step} failed#{detail}",
         "waiting_lock" => "Workflow #{title}: step #{step} has waited for a lock",
         "budget_spent" => "Workflow #{title}: step #{step} was not started, the token budget is used",
+        "run_timed_out" => "Workflow #{title}: step #{step} was not started, the run's time limit is used",
         "stalled" => "Workflow #{title}: step #{step} stalled#{detail}",
         "idle" => "Workflow #{title}: step #{step} is idle, its turn is over"
       }.fetch(code)

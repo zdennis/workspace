@@ -504,9 +504,9 @@ RSpec.describe Workspace::CLI::Workflow do
       cli.run(["workflow", "reject", "wr_1", "--note", "Too big.", "--to", "research"])
 
       expect(workflow_command.calls).to eq([
-        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", extra_attempts: nil, extra_tokens: nil, caller_pane: nil}],
+        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil, accept_guard: false, guard_retry: false}],
         [:cancel, {run: "wr_1"}],
-        [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: nil}]
+        [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil}]
       ])
     end
 
@@ -516,8 +516,30 @@ RSpec.describe Workspace::CLI::Workflow do
 
       cli.run(["workflow", "resume", "wr_1", "--json"])
 
-      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: "%5"}]])
+      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: "%5", accept_guard: false, guard_retry: false}]])
       expect(JSON.parse(output.string)).to include("ok" => true, "status" => "ok", "summary" => {"unchanged" => 1})
+    end
+
+    it "passes --accept-guard and --retry with the note to the resume, leaving how they go together to the command" do
+      cli.run(["workflow", "resume", "wr_1", "--accept-guard", "--note", "The rebase was mine."])
+      cli.run(["workflow", "resume", "wr_1", "--accept-guard", "--retry", "--note", "Run it again.", "--extra-attempts", "1"])
+
+      expect(workflow_command.calls).to eq([
+        [:resume, {run: "wr_1", from: nil, note: "The rebase was mine.", pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil, accept_guard: true, guard_retry: false}],
+        [:resume, {run: "wr_1", from: nil, note: "Run it again.", pane: nil, extra_attempts: 1, extra_tokens: nil, extra_seconds: nil, caller_pane: nil, accept_guard: true, guard_retry: true}]
+      ])
+      cli.run(%w[workflow resume wr_1 --retry --from plan])
+      expect(workflow_command.calls.last).to eq([:resume, {run: "wr_1", from: "plan", note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil, accept_guard: false, guard_retry: true}])
+    end
+
+    {
+      %w[cancel wr_1 --accept-guard --note why] => "--accept-guard is for `workflow resume`.",
+      %w[approve wr_1 --retry --note why] => "--retry is for `workflow resume RUN --accept-guard --note WHY`."
+    }.each do |args, message|
+      it "refuses `workflow #{args.join(" ")}` before the command is called" do
+        expect { cli.run(["workflow", *args]) }.to raise_error(Workspace::UsageError, Regexp.new(Regexp.escape(message)))
+        expect(workflow_command.calls).to be_empty
+      end
     end
 
     it "approves a gate, telling the command which pane it was run from" do
@@ -538,7 +560,7 @@ RSpec.describe Workspace::CLI::Workflow do
 
       expect(workflow_command.calls).to eq([
         [:approve, {run: "wr_1", note: nil, step: "triage", attempt: 2, note_sha256: sha, caller_pane: "%5"}],
-        [:reject, {run: "wr_1", note: "Redo F3.", to: "triage", step: "triage", attempt: 2, extra_attempts: nil, extra_tokens: nil, caller_pane: "%5"}],
+        [:reject, {run: "wr_1", note: "Redo F3.", to: "triage", step: "triage", attempt: 2, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: "%5"}],
         [:approve, {run: "wr_1", note: nil, step: "triage", attempt: nil, note_sha256: nil, caller_pane: "%5"}]
       ])
     end

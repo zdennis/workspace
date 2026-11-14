@@ -355,6 +355,8 @@ require_relative "workspace/workflow_branch_inputs"
 require_relative "workspace/workflow_seed"
 require_relative "workspace/workflow_log_tail"
 require_relative "workspace/workflow_extends"
+require_relative "workspace/review_round_path"
+require_relative "workspace/workflow_review_spec"
 require_relative "workspace/workflow_definition"
 require_relative "workspace/workflow_argv"
 require_relative "workspace/workflow_exec_program"
@@ -367,14 +369,18 @@ require_relative "workspace/workflow_project"
 require_relative "workspace/workflow_run"
 require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_deny"
+require_relative "workspace/review_write_guard"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
 require_relative "workspace/workflow_step_check"
 require_relative "workspace/workflow_guard"
 require_relative "workspace/workflow_require"
 require_relative "workspace/workflow_produced"
+require_relative "workspace/review_verdict_proof"
+require_relative "workspace/workflow_review_tally"
 require_relative "workspace/workflow_attempt_record"
 require_relative "workspace/workflow_budget"
+require_relative "workspace/workflow_deadline"
 require_relative "workspace/workflow_evidence"
 require_relative "workspace/workflow_attempts"
 require_relative "workspace/workflow_audit"
@@ -382,6 +388,7 @@ require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
 require_relative "workspace/workflow_inputs"
 require_relative "workspace/workflow_transitions"
+require_relative "workspace/workflow_review_revision"
 require_relative "workspace/workflow_run_change"
 require_relative "workspace/workflow_prompt"
 require_relative "workspace/workflow_dispatch"
@@ -545,11 +552,19 @@ module Workspace
   #   (default: none)
   # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
   # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
+  # @param review_round [#call, nil] runs a review round a change registered, given the run id and the round, with the lock given up
+  #   (default: none runs, so a reviewed step waits in `reviewing`)
+  # @param review_tally [#call, #open_round, nil] makes each round's directory as it starts and decides the round, given `run:`, `step:`
+  #   and `round:` ({WorkflowReviewTally}; default: {WorkflowEvaluation::NoReviewTally}, and no directory is made)
+  # @param review_closer [#call, nil] closes an ended round's review window, given the run id and the round's "step", "round" and "pane",
+  #   with the lock given up (default: none, so the window stays open)
+  # @param review_revision [#call, nil] computes a round's revision again when it ends, with the lock given up, given `run:`,
+  #   `step:` and `stop_when:` ({WorkflowReviewRevision}; default: none, and a round is tallied at once)
   # @param clock [#call] returns the current Time
   # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
   # @return [Workspace::WorkflowEngine]
   def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-    env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
+    env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil, review_revision: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
     attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
     require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
       commands_config: commands_config, checker: checker)
@@ -561,13 +576,13 @@ module Workspace
     dispatch = WorkflowDispatch.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
       guard: guard, env_stopper: env_stopper, event_log: event_log, clock: clock)
     progress = WorkflowProgress.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes,
-      log_tail: log_tail || WorkflowLogTail.new, clock: clock)
+      log_tail: log_tail || WorkflowLogTail.new, review_tally: review_tally, clock: clock)
     evaluation = WorkflowEvaluation.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
-      guard: guard, commands_config: commands_config, inbox_for: inbox_for, clock: clock)
+      guard: guard, commands_config: commands_config, inbox_for: inbox_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, review_revision: review_revision, clock: clock)
     starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
       lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
     decisions = WorkflowDecisions.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-      attempt_record: attempt_record, gate_note: gate_note, panes: panes, clock: clock)
+      attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: clock)
     recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, clock: clock)
     WorkflowEngine.new(starter: starter, evaluation: evaluation, decisions: decisions, recovery: recovery)
   end
@@ -941,6 +956,7 @@ module Workspace
     bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
     workflow_deny = WorkflowDeny.new(bound_run: bound_run, logger: logger, event_log: event_log,
       run_store: WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir))
+    review_write_guard = ReviewWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, env: env, event_log: event_log, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     recovery_stop_marker = RecoveryStopMarker.new(state_dir: config.state_dir)
     delivery_log = DeliveryLog.new(path: File.join(config.state_dir, "session-event.log"))
@@ -948,7 +964,7 @@ module Workspace
       on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
       workspace_for_session: workspace_for_session, delivery_log: delivery_log,
-      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
+      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, review_write_guard: review_write_guard, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
       dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), recovery_marker: recovery_stop_marker, logger: logger))
     process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, lineage: lineage,
@@ -989,7 +1005,7 @@ module Workspace
     workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, evidence: workflow_evidence)
     workflow_run_loader = WorkflowRunLoader.new(store: workflow_store)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
-      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new)
+      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new, error_output: error_output)
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
     workflow_guard = WorkflowGuard.new(git_path: Which.path("git") || "git")
     workflow_checker = WorkflowCheck.new
@@ -1021,6 +1037,8 @@ module Workspace
         commands_config: commands_config, checker: workflow_checker,
         inbox_for: workflow_inbox_for),
       inbox_for: workflow_inbox_for,
+      review_tally: WorkflowReviewTally.new(proof: ReviewVerdictProof.new(hook_dir: config.hook_events_dir)),
+      review_revision: WorkflowReviewRevision.new(guard: workflow_guard, checker: workflow_checker),
       excludes: GitExclude.new(git: git),
       gate_note: workflow_gate_note,
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },
@@ -1147,7 +1165,7 @@ module Workspace
       backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer), locks: name_migration,
       project_config: project_config, tmux: tmux, differ: TextDiff.new,
       retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output))
-    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, library: library, template_validator: template_validator, template_status: template_status, template_apply: template_apply, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), output: output, env: env)
+    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, library: library, template_validator: template_validator, template_status: template_status, template_apply: template_apply, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), sweep_schedule: sweep_schedule, output: output, env: env)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
     )

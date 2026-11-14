@@ -24,14 +24,21 @@ RSpec.describe Workspace::WorkflowNudger do
 
   describe "#turn_ended" do
     it "starts `workflow advance` for the run the pane is bound to, logging beside the daemon" do
-      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
 
       expect(nudger.turn_ended("app", "%5")).to eq("wr_1")
       expect(spawned).to eq([[[RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--stopped-at", "2026-10-04T12:30:00.000Z"], "/log/app.log"]])
     end
 
+    it "wakes the run a review pane is bound to, since its turn ends the round" do
+      allow(panes).to receive(:bound_on).with("%9").and_return({run_id: "wr_1", role: "reviewer"})
+
+      expect(nudger.turn_ended("app", "%9")).to eq("wr_1")
+      expect(spawned.first.first).to include("advance", "wr_1", "--turn-ended", "--pane", "%9")
+    end
+
     it "passes on when the turn began, to the millisecond, when the daemon knows" do
-      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
 
       nudger.turn_ended("app", "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_456))
 
@@ -39,7 +46,7 @@ RSpec.describe Workspace::WorkflowNudger do
     end
 
     it "adds one --background-task TYPE:ID per task, in order, and nothing else of a task" do
-      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
       tasks = [{"id" => "b1a2c3d4e", "type" => "shell", "description" => "secret"}, {"id" => "k12345678", "type" => "MCP task"}]
 
       nudger.turn_ended("app", "%5", background: tasks)
@@ -50,17 +57,17 @@ RSpec.describe Workspace::WorkflowNudger do
     end
 
     it "starts nothing for a pane bound to no run" do
-      allow(panes).to receive(:run_on).with("%5").and_return(nil)
+      allow(panes).to receive(:bound_on).with("%5").and_return(nil)
 
       expect(nudger.turn_ended("app", "%5")).to be_nil
       expect(spawned).to eq([])
     end
 
     it "does not raise when the binding can't be read or the process can't be started" do
-      allow(panes).to receive(:run_on).and_raise(Errno::EACCES)
+      allow(panes).to receive(:bound_on).and_raise(Errno::EACCES)
       expect(nudger.turn_ended("app", "%5")).to be_nil
 
-      allow(panes).to receive(:run_on).and_return("wr_1")
+      allow(panes).to receive(:bound_on).and_return({run_id: "wr_1", role: "author"})
       failing = described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(_) { "/log" },
         spawner: ->(*) { raise Errno::ENOENT })
       expect(failing.turn_ended("app", "%5")).to be_nil
@@ -69,7 +76,7 @@ RSpec.describe Workspace::WorkflowNudger do
 
   describe "starting the process" do
     it "clears TMUX_PANE, so a daemon started from a pane does not count as that pane" do
-      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
       allow(Process).to receive(:spawn).and_return(1234)
       allow(Process).to receive(:detach)
       real = described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(_) { "/log" }, clock: -> { now })
@@ -97,6 +104,19 @@ RSpec.describe Workspace::WorkflowNudger do
       expect(spawned.map(&:first)).to eq(%w[wr_1 wr_6 wr_7].map { |id| [RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", id] })
     end
 
+    it "does not wake a review round whose delivery lapsed or failed" do
+      reviewing = ->(id, delivery) do
+        run(id, "app", state: "reviewing").tap do |hash|
+          hash["definition"]["redeliver"] = 2
+          hash["steps"]["verify"]["review"] = {"round" => 1, "delivery" => delivery, "started_at" => "2026-10-04T11:00:00.000Z", "redeliveries" => 0}
+        end
+      end
+      going([reviewing.call("wr_1", "delivering"), reviewing.call("wr_2", "failed")])
+
+      expect(nudger.tick("app")).to eq([])
+      expect(spawned).to be_empty
+    end
+
     it "wakes a hold for background tasks only once it is more than 90 minutes old" do
       held = ->(id, seen_at) { run(id, "app").merge("reason" => {"code" => "turn_ended_background", "seen_at" => seen_at}) }
       going([
@@ -118,7 +138,7 @@ RSpec.describe Workspace::WorkflowNudger do
     end
 
     it "picks up a parked run a turn's end could not wake, its pane being bound to no run" do
-      allow(panes).to receive(:run_on).with("%5").and_return(nil)
+      allow(panes).to receive(:bound_on).with("%5").and_return(nil)
       going([run("wr_1", "app").merge("parked" => {"id" => "p1", "expires_at" => "2026-10-04T13:00:00Z"})])
 
       expect(nudger.turn_ended("app", "%5")).to be_nil

@@ -79,4 +79,32 @@ RSpec.describe Workspace::BoundRun do
 
     expect(bound_run.run_id).to be_nil
   end
+
+  describe "a review pane" do
+    before { bind("%4", "role" => "reviewer", "round" => 1, "pane_slot" => "app:3.0") }
+
+    it "is the run's for the deny tripwire, whatever the window index now is" do
+      expect(bound_run.run_id).to eq("wr_1")
+    end
+
+    it "is nil once tmux restarted and a new server reused the pane id" do
+      bind("%4", "role" => "reviewer", "round" => 1, "pane_slot" => "app:3.0", "server_pid" => "4242")
+      allow(tmux).to receive(:server_pid_for_pane).with("%4").and_return("9999")
+      expect(bound_run.run_id).to be_nil
+
+      allow(tmux).to receive(:server_pid_for_pane).with("%4").and_return("4242")
+      expect(bound_run.run_id).to eq("wr_1")
+    end
+
+    it "is not the author's run, for dev up, lock acquire and promote" do
+      expect(bound_run.author_run_id).to be_nil
+    end
+  end
+
+  it "names the author's run through author_run_id, and nothing for an unbound pane" do
+    bind("%4")
+
+    expect(bound_run.author_run_id).to eq("wr_1")
+    expect(described_class.new(pane_bindings: bindings, tmux: tmux, env: {}).author_run_id).to be_nil
+  end
 end

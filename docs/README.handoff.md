@@ -17,7 +17,7 @@ workspace handoff new   [NAME | --name WS] [--pane PANE] [--handoff-doc PATH | -
 
 | Option | Description |
 |--------|-------------|
-| `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the calling pane when it is a Claude Code or Codex pane of the workspace, else the daemon's first Claude Code pane, else its first Codex pane. See [Naming the pane](#naming-the-pane) |
+| `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the calling pane when it is a Claude Code or Codex pane of the workspace, else the daemon's first Claude Code pane, else its first Codex pane (a pane in a review window is never the default). See [Naming the pane](#naming-the-pane) |
 | `--threshold PCT` | Context-usage percent that triggers a handoff, 1-100 (default: `handoff.threshold`, or 11) |
 | `--context-pct N` | Skip detection and use this value |
 | `--handoff-doc PATH` | Doc the agent updates and resumes from (default: the plan when there is one, else `HANDOFF.md` in the notes directory) |
@@ -28,7 +28,7 @@ workspace handoff new   [NAME | --name WS] [--pane PANE] [--handoff-doc PATH | -
 
 | Option | Description |
 |--------|-------------|
-| `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the calling pane when it is a Claude Code or Codex pane of the workspace, else the daemon's first Claude Code pane, else its first Codex pane. See [Naming the pane](#naming-the-pane) |
+| `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the calling pane when it is a Claude Code or Codex pane of the workspace, else the daemon's first Claude Code pane, else its first Codex pane (a pane in a review window is never the default). See [Naming the pane](#naming-the-pane) |
 | `--handoff-doc PATH` | Doc the agent reads and resumes from (default: the plan when there is one, else `HANDOFF.md` in the notes directory) |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
 | `--wait` | Wait for the restart to finish and report how it went. Don't use it from the agent being restarted: it would block the turn the restart waits on |
@@ -123,7 +123,7 @@ With `--json`, the reason and fix go in the JSON object instead of stderr:
 
 `--context-pct N` skips detection for that call, so you can run a handoff even while detection is broken.
 
-The other two outcomes print `status` (`ok`, or `handoff_sent` / `handoff_send_failed`), `context_pct`, `threshold`, `pane` (the pane's index in its window) and `pane_id` (its tmux pane id, e.g. `%19`, which a later `--pane` accepts). At or over the threshold they add `delivery` and `landed`. When the prompt landed, `handoff_sent` also carries [`followup`](#follow-ups).
+The other two outcomes print `status` (`ok`, or `handoff_sent` / `handoff_send_failed`), `context_pct`, `threshold`, `pane` (the pane's index in its window), `window` (its window index, `0` for an older daemon that does not say) and `pane_id` (its tmux pane id, e.g. `%19`, which a later `--pane` accepts). At or over the threshold they add `delivery` and `landed`. When the prompt landed, `handoff_sent` also carries [`followup`](#follow-ups).
 
 Every `check --json` document (the three above) also carries `next`, the exit code spelled out so a reader need not keep the table: `"continue"` (exit 0), `"handoff"` (exit 1, for `handoff_sent` and `handoff_send_failed` alike) or `"unknown"` (exit 2); and `doc`, the absolute path of the doc the agent writes and resumes from (`--handoff-doc` expanded, else the default doc), or `null` for `--handoff-prompt` or when the default cannot be worked out. `--json` without `--handoff-doc` reads the notes directory but makes nothing.
 
@@ -179,7 +179,7 @@ Run with an explicit `--handoff-doc`, `check` and `new` send and exit exactly as
 
 An agent can read the save-state prompt and never run `handoff new`: it answers, or goes quiet, and the pane sits at a context limit with no handoff. When `check` lands its prompt, it asks the pane's agent daemon to watch the pane. While the pane stays quiet, the agent daemon (not a person) types a short follow-up into it that opens with "Are you handing off to a fresh conversation?" and asks whether the agent is handing off, gives the `handoff new` command to run once its state is saved, and says to do nothing if it already ran it, or to say why and stop if it was refused.
 
-**What a watch needs.** Only a Claude Code pane in hook mode is watched, because the follow-up is typed through Claude Code's ready prompt and the daemon needs the prompt text that only Claude Code's hooks forward. Only panes in window 0 can be watched, since that is the only window the daemon scans. A pane bound to a run or review gets none: [`binding.md`](README.binding.md) tells those agents not to run `handoff new` unless their instructions say so. A pane bound to a play is watched, including one other than the plan play, so a play pane that was told not to hand off can still get follow-ups, up to the cap. A pane with a pipeline stage running on it is refused. One watch is open per pane; running `check` again in a watched pane adds to it and does not reset its tries or its hour.
+**What a watch needs.** Only a Claude Code pane in hook mode is watched, because the follow-up is typed through Claude Code's ready prompt and the daemon needs the prompt text that only Claude Code's hooks forward. Only panes in window 0 can be watched: the daemon scans review windows too, but refuses to watch a pane in one (`review_pane`). A pane bound to a run or review gets none: [`binding.md`](README.binding.md) tells those agents not to run `handoff new` unless their instructions say so. A pane bound to a play is watched, including one other than the plan play, so a play pane that was told not to hand off can still get follow-ups, up to the cap. A pane with a pipeline stage running on it is refused. One watch is open per pane; running `check` again in a watched pane adds to it and does not reset its tries or its hour.
 
 **When a follow-up is typed.** The pane must be quiet for `handoff.followup_interval` (default 30 seconds): no tool call or sub-agent running, no screen change, and no earlier follow-up, restart, API-error recovery hold or save-state prompt within that time. The daemon looks every 5 seconds, so a follow-up can come up to 5 seconds late. Activity does not end the watch; it pushes the next follow-up back, and follow-ups start again if the pane goes quiet with no handoff. A try is any attempt to type a follow-up, whatever its `outcome` (see below); a pane found gone ends the watch (`pane_gone`) and is not a try. After `handoff.followup_max` tries (default 10, about five minutes at the default interval) the next quiet interval ends the watch `stalled`. `0` turns follow-ups off.
 
@@ -214,7 +214,7 @@ An agent can read the save-state prompt and never run `handoff new`: it answers,
 | `unsupported_daemon` | The daemon is older and does not know `handoff_watch`; `workspace agentd restart NAME` replaces it |
 | `error` | `check` hit an error making the request (a warning is printed) |
 
-or passed through from the daemon: `not_scanned` (not in window 0, or not scanned yet), `not_claude`, `no_hooks`, `invalid` (a setting the daemon refused), `usage`, `pipeline_stage`, `internal_error` (the daemon refused the request), `refused` (a refusal with no code), or `unknown` (an answer with no reason).
+or passed through from the daemon: `not_scanned` (not in a window the daemon scans, or not scanned yet), `review_pane` (a pane in a review window), `not_claude`, `no_hooks`, `invalid` (a setting the daemon refused), `usage`, `pipeline_stage`, `internal_error` (the daemon refused the request), `refused` (a refusal with no code), or `unknown` (an answer with no reason).
 
 **Limits.**
 

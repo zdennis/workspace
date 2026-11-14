@@ -551,6 +551,17 @@ RSpec.describe Workspace::Commands::Restore do
       expect(tmux.delivered.size).to eq(1)
     end
 
+    it "skips a reviewer slot and resumes only the author's pane" do
+      started("api:0.2", sid(1))
+      started("api:1.0", sid(2), role: "reviewer")
+      ended("api:1.0", sid(2), "other")
+
+      result = call
+
+      expect(rows(result)).to match([include("slot" => "api:0.2", "outcome" => "restored")])
+      expect(tmux.delivered.size).to eq(1)
+    end
+
     it "leaves alone a pane whose ledger names an agent other than Claude Code" do
       started("api:0.4", sid(1), kind: "codex")
       ended("api:0.4", sid(1), "other")

@@ -96,6 +96,8 @@ module Workspace
     end
 
     def take_in(message)
+      return if review_pane?(message["pane_id"])
+
       return stamp_subagent(message) if message["agent_id"]
 
       case message["event"]
@@ -105,6 +107,11 @@ module Workspace
       when "session_start" then session_started(message)
       when "session_end" then session_ended(message)
       end
+    end
+
+    # A review window's agent is never recovered: its run reports a failed round.
+    def review_pane?(pane_id)
+      !!@session_monitor.delivery_facts(pane_id)&.dig(:review)
     end
 
     def stamp_subagent(message)

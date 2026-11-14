@@ -111,6 +111,13 @@ RSpec.describe Workspace::WorkflowCompare do
       expect(group(read, sha("d1"))).to include("settled" => 2, "first_try" => 1, "pass_first_percent" => 50, "cancelled" => 0)
     end
 
+    it "leaves a run cancelled with an attempt closed as cancelled out, like old data with no outcome" do
+      put("wr_1", attempts: [attempt(1, "cancelled")], state: "cancelled")
+      put("wr_2", attempts: [attempt(1, nil)], state: "cancelled")
+      put("wr_3", attempts: [attempt(1, "passed")])
+      expect(group(read, sha("d1"))).to include("settled" => 1, "pass_first_percent" => 100, "cancelled" => 2)
+    end
+
     it "leaves a clean cancelled run out" do
       put("wr_1", attempts: [attempt(1, nil)], state: "cancelled")
       put("wr_2", attempts: [attempt(1, "passed")])
@@ -131,6 +138,12 @@ RSpec.describe Workspace::WorkflowCompare do
       expect(group(read, sha("d1"))).to include("runs" => 3, "settled" => 3, "stuck" => 2, "first_try" => 1, "running" => 0)
     end
 
+    it "counts a run held by its timeout as stuck after a miss" do
+      put("wr_1", attempts: [attempt(1, "failed")], state: "waiting", reason: "run_timed_out")
+
+      expect(group(read, sha("d1"))).to include("settled" => 1, "stuck" => 1)
+    end
+
     it "leaves out a run that waits for any other reason, or waits without a miss" do
       put("wr_1", attempts: [attempt(1, "failed")], state: "waiting", reason: "retry_backoff")
       put("wr_2", attempts: [attempt(1, "passed")], state: "waiting", reason: "failed_check")
@@ -142,6 +155,12 @@ RSpec.describe Workspace::WorkflowCompare do
 
     it "counts a completed run with a delivered attempt that has no outcome as a miss (resume --from passed it over)" do
       put("wr_1", attempts: [attempt(1, nil)])
+      put("wr_2", attempts: [attempt(1, "passed")])
+      expect(group(read, sha("d1"))).to include("settled" => 2, "first_try" => 1, "pass_first_percent" => 50)
+    end
+
+    it "settles a run that completed through an override but does not count it as a first try" do
+      put("wr_1", attempts: [attempt(1, "overridden")])
       put("wr_2", attempts: [attempt(1, "passed")])
       expect(group(read, sha("d1"))).to include("settled" => 2, "first_try" => 1, "pass_first_percent" => 50)
     end

@@ -278,9 +278,11 @@ module Workspace
     }.freeze
 
     WORKFLOW_NOTE = ["--note TEXT", "Added to the next attempt's instructions"].freeze
-    EXTRA_ATTEMPTS_OPT = ["--extra-attempts N", "Add N (a whole number from 1 up) to the run's attempt allowance, for a run that has spent max_attempts; N must cover the overrun (1 for a run exactly spent), and the refusal names the least"].freeze
+    EXTRA_ATTEMPTS_OPT = ["--extra-attempts N", "Add N (a whole number from 1 up) to the run's attempt allowance, for a run or step that has spent max_attempts; N must cover the overrun (1 for a run exactly spent), and the refusal names the least"].freeze
 
     EXTRA_TOKENS_OPT = ["--extra-tokens N", "Add N (a whole number from 1 up) to the run's token budget, for a run that has used budget.tokens; N must cover the overrun, and the refusal names the least and a round figure"].freeze
+
+    EXTRA_TIME_OPT = ["--extra-time DURATION", "Add DURATION (30m, 2h, or seconds) to the run's timeout, for a run that has used its timeout:; DURATION must cover the overrun, and the refusal names the least and a round figure"].freeze
 
     WORKFLOW = {
       "list" => {
@@ -634,7 +636,7 @@ module Workspace
           "checkout's and its worktrees' runs, finished ones too, and --all every workspace's, finished ones too.",
           "",
           "A run that is not moving says why: waiting_lock, waiting_you, turn_ended_incomplete, failed_check,",
-          "budget_spent (the definition's token budget is used up), retry_backoff (a failed step's retry is waiting",
+          "budget_spent (the definition's token budget is used up), run_timed_out (its timeout is used up), retry_backoff (a failed step's retry is waiting",
           "out its on_fail backoff) or pane_gone, with the",
           "commands that resolve it. A parked resume shows as the flag `parked`.",
           "",
@@ -751,7 +753,7 @@ module Workspace
           "RUNS is every run in the group. PASS-1ST is the share of settled runs that were a first try: they completed and every",
           "step they reached had one delivered attempt, which passed (a rejected gate, a `resume --from` rerun or a loop is a miss;",
           "an attempt that never reached the agent is not). Settled runs: every completed run, plus a cancelled run or a run waiting",
-          "on failed_check or budget_spent that missed. A clean cancelled run and a run still going are left out. A stuck run counts",
+          "on failed_check, budget_spent or run_timed_out that missed. A clean cancelled run and a run still going are left out. A stuck run counts",
           "as a miss while it waits; resuming it can only make it a completed miss, never a first try.",
           "RESUMES/RUN is the group's `workflow resume` count (every run in it) divided by its runs. SHA is the first 8 characters; --json has all 64.",
           "",
@@ -849,7 +851,8 @@ module Workspace
         ]
       },
       "resume" => {
-        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--json]"],
+        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]",
+          "workflow resume RUN --accept-guard --note WHY [--retry] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
         summary: "Get a run going again",
         about: [
           RUN_ID,
@@ -868,26 +871,54 @@ module Workspace
           "after the upgrade (workspace daemon restart) and a pane in window 0. With a draft in a Claude pane's",
           "input box nothing is typed and the draft stays (pane_busy, input_not_empty).",
           "",
+          "On a step being reviewed (reviewing) it never runs the author again: a round still running is left",
+          "alone, a round stopped for a person starts again as a fresh round (spending one of the step's",
+          "rounds), and --from ends the round and closes its review window first. It is not parked then, and",
+          "--from from the run's own pane is refused (step_reviewing).",
+          "",
           "A resume that would start an attempt is refused (attempts_spent) when the run has made all its",
-          "max_attempts; --extra-attempts N adds N to the run's allowance and goes on. N must cover the overrun",
+          "max_attempts, or (step_attempts_spent) when the step it would run has made all its own max_attempts;",
+          "--extra-attempts N adds N to the run's allowance and to that step's, and goes on. N must cover the overrun",
           "(1 for a run exactly spent; the refusal names the least). It is ignored when the resume starts no attempt.",
           "",
           "A run held by its definition's budget (reason budget_spent) is refused the same way (budget_spent)",
           "until --extra-tokens N adds N to its token budget; the total counted is a minimum, since sub-agents",
-          "and attempts with no usage are left out."
+          "and attempts with no usage are left out.",
+          "",
+          "A run held by its definition's timeout: (reason run_timed_out) is refused the same way (run_timed_out)",
+          "until --extra-time DURATION adds to its timeout. Only machine time counts against it: time a person",
+          "is waited on (a gate, a parked resume, a held budget, a failed check) does not. With the budget and",
+          "the timeout both spent, pass both flags.",
+          "",
+          "--accept-guard takes a guard stop (failed_check by head_moved, hooks_changed, hidden_changed,",
+          "no_commit, operation_in_progress or tracked_changed) as a person's decision; any other stop is",
+          "refused (guard_not_stopped). It needs --note WHY, and is refused from a pane bound to a run. HEAD",
+          "now becomes the run's base_sha and the guard's snapshot is taken again (guard_base_unreadable, and",
+          "nothing changed, when it can't be read). Only the guard is accepted: the step's produces files,",
+          "require: proofs and status: check still run, and only when they pass does its attempt read overridden",
+          "and the step pass (its review round or gate still applies); else it stops on their reason. With",
+          "--retry the step runs again as a new attempt instead, counted against max_attempts; refused",
+          "(guard_cannot_pass) while no_commit or operation_in_progress would stop it again. --from can't go",
+          "with it. Later guarded steps measure from the new base. The note is recorded on a guard_overridden",
+          "event and given to the next attempt, after a line naming the guard and the new base."
         ],
-        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, JSON_OPT],
+        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT,
+          ["--accept-guard", "Accept the guard stop the run waits on (needs --note WHY)"],
+          ["--retry", "With --accept-guard: run the stopped step again instead of passing it"], JSON_OPT],
         examples: [
           ["workspace workflow resume RUN", "pick a stuck run up again: its lock is asked for again, a failed step runs again"],
           ["workspace workflow resume RUN --from implement", "start again at the implement step of rpiv"],
           ["workspace workflow resume RUN --note \"The migration is already applied.\"", "tell the next attempt something"],
-          ["workspace workflow resume RUN --pane %19", "the run's pane is gone: carry on in another pane of the workspace"]
+          ["workspace workflow resume RUN --pane %19", "the run's pane is gone: carry on in another pane of the workspace"],
+          ["workspace workflow resume RUN --accept-guard --note \"I rebased on purpose.\"", "accept a head_moved stop: the step's other checks run, measured from HEAD now"],
+          ["workspace workflow resume RUN --accept-guard --retry --note \"Hooks were updated upstream.\"", "accept the stop and run the step again"]
         ]
       },
       "cancel" => {
         usage: ["workflow cancel RUN [--json]"],
         summary: "End a run and release the locks it holds",
-        about: [RUN_ID, "", "It does not type into the pane: the agent there is left as it is. A run that has ended is refused."],
+        about: [RUN_ID, "", "It does not type into the pane: the agent there is left as it is. A run that has ended is refused.",
+          "A step being reviewed has its round ended (the round's usage recorded) and its review window closed."],
         options: [JSON_OPT],
         examples: [
           ["workspace workflow cancel RUN", "give up on a run that is going wrong; its locks are released"],
@@ -918,21 +949,22 @@ module Workspace
         ]
       },
       "reject" => {
-        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--json]"],
+        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
         summary: "Turn a run's gate down",
         about: [
           RUN_ID,
           "",
           "The gated step (or --to an earlier one) runs again with the note. Refused from a pane a run is bound",
           "to and from a process under the run's own pane, as approve is. It is refused (attempts_spent) when",
-          "the run has made all its max_attempts, unless --extra-attempts N adds to the allowance; N must cover the",
-          "overrun (1 for a run exactly spent). The same goes for a spent token budget (budget_spent) and",
-          "--extra-tokens N."
+          "the run, or the step it would run, has made all its max_attempts (step_attempts_spent), unless",
+          "--extra-attempts N adds to the allowances; N must cover the overrun (1 for a run exactly spent). The",
+          "same goes for a spent token budget (budget_spent) and --extra-tokens N, and a spent run timeout",
+          "(run_timed_out) and --extra-time DURATION."
         ],
         options: [["--note TEXT", "Why; given to the next attempt"],
           ["--to STEP", "The step to run again (the gated step, or one before it)"],
           ["--step STEP", "The gated step you saw (current.step in status --json); refused unless the run waits there"],
-          ["--attempt N", "That step's attempt you saw (current.attempt); needs --step"], EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, JSON_OPT],
+          ["--attempt N", "That step's attempt you saw (current.attempt); needs --step"], EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT, JSON_OPT],
         examples: [
           ["workspace workflow reject RUN --note \"Too big; split it.\"", "send the gated step back; it runs again with the note"],
           ["workspace workflow reject RUN --note \"Research the API first.\" --to research", "go back to an earlier step of rpiv instead"],

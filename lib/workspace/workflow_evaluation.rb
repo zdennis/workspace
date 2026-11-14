@@ -8,13 +8,29 @@ module Workspace
   # Each method that takes a run leaves it as it is and returns the run afterwards.
   class WorkflowEvaluation
     # The words in `details.code` the engine sets itself; `step done --code` refuses them, so `code_source: agent` never carries one.
-    ENGINE_CODES = (WorkflowGuard::CODES + [WorkflowGuard::CONFIG_CHANGED] + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported step_timed_out]).freeze
+    ENGINE_CODES = (WorkflowGuard::CODES + [WorkflowGuard::CONFIG_CHANGED] + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported step_timed_out review_rejected review_incomplete review_stale review_tampered review_guard review_no_change]).freeze
 
     # The most of a failed check's log the `report_code` reading looks at.
     CHECK_CODE_TAIL_BYTES = 4096
 
+    # How many times the end of one round has its revision computed again: the first, and one more after a
+    # recompute that never reported back ({WorkflowTransitions.lost_round?}); past it the round stops `review_incomplete`.
+    REVISION_TRIES = 2
+
     # What {#report} recorded: the run, its step and attempt, and the stored report ("status", "summary", "code", "at").
     Reported = Data.define(:run_id, :step, :attempt, :reported)
+
+    # The tally used when none is given (an engine built without one, as a spec's or the simulator's; `build_cli` gives
+    # {WorkflowReviewTally}): it reads no verdicts, so every round it is asked about is incomplete.
+    class NoReviewTally
+      # @param run [WorkflowRun] the run, on a step being reviewed
+      # @param step [Hash{String=>Object}] the step's definition
+      # @param round [Hash{String=>Object}] the step's round
+      # @return [Hash{Symbol=>Object}] :outcome `:incomplete`, :reviews and :problem
+      def call(run:, step:, round:)
+        {outcome: :incomplete, reviews: [], problem: "no reader of verdicts is set up, so the round's verdicts were not read"}
+      end
+    end
 
     # @param change [Workspace::WorkflowRunChange] changes the run under its lock and writes its history
     # @param store [Workspace::WorkflowRunStore] reads the run while a check runs outside its lock
@@ -25,8 +41,17 @@ module Workspace
     # @param guard [Workspace::WorkflowGuard] checks a guarded step against the run's base and reads config changes
     # @param commands_config [Workspace::CommandsConfig] the project's `commands.test`/`commands.lint`
     # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
+    # @param review_round [#call, nil] given the run id and the review round a change registered, runs it with the lock given up and answers the run afterwards (default: nothing runs)
+    # @param review_tally [#call, nil] given `run:`, `step:` and `round:`, the round's outcome and the reviews it read ({WorkflowReviewTally};
+    #   default: {NoReviewTally})
+    # @param review_closer [#call, nil] given the run id and an ended round's "step", "round" and "pane", closes its review
+    #   window with the lock given up; it must not raise (default: none, so the window stays open)
+    # @param review_revision [#call, nil] given `run:`, `step:` and `stop_when:`, the revision of what the round judges now
+    #   ({WorkflowReviewRevision}), computed again with the lock given up when a round ends (default: none, and the
+    #   round is tallied at once, under the lock that saw it end)
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, clock: -> { Time.now })
+    def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil,
+      review_revision: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @progress = progress
@@ -36,11 +61,17 @@ module Workspace
       @guard = guard
       @commands_config = commands_config
       @inbox_for = inbox_for
+      @review_round = review_round
+      @review_tally = review_tally || NoReviewTally.new
+      @review_closer = review_closer
+      @review_revision = review_revision
       @clock = clock
     end
 
     # The agent's turn ended in the run's pane: decides whether the current step is done. A step with a
     # `status:` check has it run here, outside the run's lock, so a long check never blocks a `cancel`.
+    # On a step being reviewed only the round's review pane counts: its turn's end decides the round
+    # ({#review_ended}), and a turn's end in the author's pane changes nothing.
     #
     # @param run_id [String]
     # @param pane [String, nil] the pane the turn ended in; an event from a pane the run is not bound to changes nothing
@@ -50,20 +81,26 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def turn_ended(run_id, pane: nil, turn_started: nil, stopped_at: nil, background: [])
-      check = nil
+      follow = nil
       run = @change.call(run_id) do |read, ctx|
         stored = read.to_h
         next if stored["parked"]
         state = step_state(stored)
+        if state["state"] == "reviewing"
+          next unless review_turn?(stored, state["review"], pane, turn_started, stopped_at)
+          judged = review_ended(read, ctx: ctx)
+          follow = ctx
+          next judged
+        end
         next unless state["state"] == "running"
         next if pane && bound_pane(stored) != pane
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
         next if stopped_at && stopped_at < Time.iso8601(state["attempts"].last["started_at"])
         judged = evaluate(read, ctx: ctx, turn_started: turn_started, background: background)
-        check = ctx.check
+        follow = ctx
         judged
       end
-      check ? finish_check(run_id, check) : run
+      finish_follow_ups(run_id, follow, run)
     end
 
     # Records what the agent says about its current attempt. Nothing moves until the turn ends.
@@ -108,16 +145,86 @@ module Workspace
       WorkflowRun.from_h(work)
     end
 
+    # Decides the step a person's `resume --accept-guard` took a guard stop on, as {#evaluate} would with the guard
+    # left out: its `produces` files, its `require:` proofs (one run outside the lock registered on +ctx+) and its
+    # `status:` check (registered on +ctx+, run by {#finish_check}). The stopped attempt already ended, so it is marked
+    # `guard_accepted` (the guard's code) and is never finished again: when the rest passes, now or once
+    # {#finish_check} applies a result, it reads `overridden` ({WorkflowProgress#pass_overridden}); when it does not,
+    # the step stops with that reason (`turn_ended_incomplete`, or `failed_check` with the proof's or check's code).
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, re-baselined, on the failed step; left as it is
+    # @param ctx [Workspace::WorkflowRunChange::Context] the change's context
+    # @return [WorkflowRun] the run afterwards
+    def evaluate_accepted(run, ctx:)
+      work = WorkflowRun.from_h(run).thawed
+      guard = work.dig("reason", "details", "guard")
+      step_state(work)["attempts"].last["guard_accepted"] = guard
+      work["reason"] = nil
+      work["state"] = "running"
+      judge(work, ctx, nil, [], guard: false)
+      WorkflowRun.from_h(work)
+    end
+
+    # The review round of the step being reviewed ended. With a revision reader the round is marked (`recompute`:
+    # its `started_at` and `try`) and registered on +ctx+ ({WorkflowRunChange::Context#review_end}): its revision is
+    # computed again with the lock given up, and {#finish_follow_ups} decides it. A round already tried
+    # {REVISION_TRIES} times stops `review_incomplete`. Without a reader the tally reads the round now and the step
+    # is decided through {WorkflowProgress#decide_review}.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on a step being reviewed; left as it is
+    # @param ctx [Workspace::WorkflowRunChange::Context] the change's context
+    # @return [WorkflowRun] the run afterwards
+    def review_ended(run, ctx:)
+      read = WorkflowRun.from_h(run)
+      return tally_round(read, ctx) unless @review_revision
+      work = read.thawed
+      state = step_state(work)
+      round = state["review"]
+      tries = round["recompute"].is_a?(Hash) ? round["recompute"]["try"].to_i : 0
+      if tries >= REVISION_TRIES
+        round.delete("recompute")
+        problem = "the round's revision was computed again #{tries} times and none reported back"
+        return @progress.decide_review(work, {outcome: :incomplete, reviews: [], problem: problem}, ctx: ctx)
+      end
+      round["recompute"] = {"started_at" => now_iso, "try" => tries + 1}
+      ctx.review_end({"step" => work["current"], "attempt" => state["attempts"].last["n"], "round" => round["round"], "try" => tries + 1})
+      WorkflowRun.from_h(work)
+    end
+
+    # The one place a change's follow-ups run, once its lock is given up: the review window of an ended round it
+    # registered is closed first, then the check or proof it registered runs, then the ended round whose revision
+    # it registered is decided ({#review_ended}), then the review round it registered.
+    # Every caller of {WorkflowRunChange#call} whose block can register one ends with it.
+    #
+    # @param run_id [String]
+    # @param ctx [WorkflowRunChange::Context, nil] the change's context; nil when the change did not run
+    # @param run [WorkflowRun] the run the change returned
+    # @return [WorkflowRun] the run afterwards
+    def finish_follow_ups(run_id, ctx, run)
+      return run unless ctx
+      @review_closer.call(run_id, ctx.close_review) if ctx.close_review && @review_closer
+      run = finish_check(run_id, ctx.check) if ctx.check
+      return finish_review_end(run_id, ctx.review_end) if ctx.review_end
+      review = ctx.review
+      run = @review_round.call(run_id, review) || run if review && @review_round
+      run
+    end
+
     # Runs what {#evaluate} registered with the run's lock given up, and whatever comes after it: a proof can be
-    # followed by another proof or the `status:` check.
+    # followed by another proof or the `status:` check. A review round the chain's last change registered (a passed
+    # step that has reviewers) runs once the chain ends.
     #
     # @param run_id [String]
     # @param check [Hash{String=>Object}] the proof or check {#evaluate} registered on its context
     # @return [WorkflowRun] the run afterwards; as stored when it was cancelled while the check ran
     def finish_check(run_id, check)
       run = nil
-      run, check = apply_check(run_id, check, run_check(run_id, check)) while check
-      run
+      review = nil
+      while check
+        run, check, registered = apply_check(run_id, check, run_check(run_id, check))
+        review = registered if registered
+      end
+      (review && @review_round) ? (@review_round.call(run_id, review) || run) : run
     rescue Workspace::Error => e
       # Cancelled while the check ran: there is nothing left to decide.
       raise unless e.code == "run_not_active"
@@ -129,7 +236,76 @@ module Workspace
     # Puts the phase answer +changed+ (a WorkflowRun) into the run Hash being changed in place.
     def adopt(run, changed) = run.replace(changed.thawed)
 
-    def judge(run, ctx, turn_started, background)
+    # Computes the ended round's revision again with the lock given up, then, under the lock and only while the run
+    # still waits for this recompute ({#wanted_round?}), decides the round: a revision that can't be computed stops
+    # `review_incomplete`, one that differs from the revision the round was delivered with stops `review_stale` (no
+    # loop, no further round), and an unchanged one is tallied. What that decision registers is followed up in turn.
+    def finish_review_end(run_id, pending)
+      read = @store.run(run_id)
+      step = read.definition["steps"].find { |each| each["id"] == pending["step"] }
+      answer = @review_revision.call(run: read, step: step, stop_when: -> { !still_wanted_round?(run_id, pending) })
+      follow = nil
+      run = @change.call(run_id) do |current, ctx|
+        next unless wanted_round?(current, pending)
+        follow = ctx
+        judge_round(current, answer, ctx)
+      end
+      finish_follow_ups(run_id, follow, run)
+    rescue Workspace::Error => e
+      raise unless e.code == "run_not_active"
+      @store.run(run_id)
+    end
+
+    def judge_round(read, answer, ctx)
+      work = read.thawed
+      round = step_state(work)["review"]
+      round.delete("recompute")
+      if answer[:problem]
+        return @progress.decide_review(work, {outcome: :incomplete, reviews: [], problem: "the round's revision could not be computed again: #{answer[:problem]}"}, ctx: ctx)
+      end
+      delivered = round["revision"]
+      if delivered.is_a?(String) && !delivered.empty? && answer[:revision] != delivered
+        return @progress.decide_review(work, {outcome: :stale, reviews: [], revision: delivered, revision_now: answer[:revision]}, ctx: ctx)
+      end
+      tally_round(WorkflowRun.from_h(work), ctx)
+    end
+
+    def tally_round(read, ctx)
+      stored = read.to_h
+      tally = @review_tally.call(run: read, step: step_def(stored), round: step_state(stored)["review"])
+      @progress.decide_review(read, tally, ctx: ctx)
+    end
+
+    # Whether a recompute's result still applies: the run is on the step, attempt and round the recompute started
+    # for, still `reviewing` with no stop and no park, and the round's mark is that recompute's own try (a tick that
+    # took it for lost started another).
+    def wanted_round?(run, pending)
+      run = WorkflowRun.from_h(run)
+      step = run.steps[pending["step"]]
+      round = step&.review
+      !run.parked && run.reason.nil? && !WorkflowRunStore::TERMINAL_STATES.include?(run.state) && run.current == pending["step"] &&
+        step.state == "reviewing" && step.last_attempt&.n == pending["attempt"] && round.is_a?(Hash) && round["round"] == pending["round"] &&
+        round.dig("recompute", "try") == pending["try"]
+    end
+
+    # {#wanted_round?} read from the store, for a command running outside the lock; a run that can't be read is still wanted.
+    def still_wanted_round?(run_id, pending)
+      wanted_round?(@store.run(run_id), pending)
+    rescue Workspace::Error, SystemCallError
+      true
+    end
+
+    # Whether a turn's end is the end of the running round's review turn: in the round's own pane, begun no earlier
+    # than the round, with the round not stopped and its end not already being judged.
+    def review_turn?(run, round, pane, turn_started, stopped_at)
+      return false if run["reason"] || !round.is_a?(Hash) || round["recompute"] || pane.nil? || round["pane"] != pane
+      started = Time.iso8601(round["started_at"].to_s)
+      !(turn_started && turn_started < started) && !(stopped_at && stopped_at < started)
+    rescue ArgumentError
+      false
+    end
+
+    def judge(run, ctx, turn_started, background, guard: true)
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
@@ -141,7 +317,7 @@ module Workspace
         fail_step(run, {"cause" => "reported", "summary" => reported["summary"]}.merge(code_for("reported", reported["code"])), ctx)
         return
       end
-      if step["guard"]
+      if guard && step["guard"]
         found = guard_check(run, step)
         if found
           fail_step(run, found, ctx)
@@ -193,7 +369,7 @@ module Workspace
         end
       end
       unless step["status"]
-        adopt(run, @progress.pass_step(run, ctx: ctx))
+        adopt(run, pass_step(run, ctx))
         return
       end
 
@@ -252,6 +428,7 @@ module Workspace
     # @return [Array] the run afterwards, and what to run next outside the lock, or nil
     def apply_check(run_id, check, result)
       following = nil
+      review = nil
       run = @change.call(run_id) do |read, ctx|
         next if read.parked
         stored = read.thawed
@@ -262,12 +439,17 @@ module Workspace
         if check["proof"]
           apply_proof(stored, attempt, check, result, ctx)
           following = ctx.check
+          review = ctx.review
           next WorkflowRun.from_h(stored)
         end
         attempt["check"].merge!("ended_at" => now_iso, "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
           "error" => result[:error]).compact!
         event(stored, "check_finished", "step" => check["step"], "attempt" => check["attempt"], "exit_code" => result[:exit_code])
-        next @progress.pass_step(stored, ctx: ctx) if result[:exit_code] == 0
+        if result[:exit_code] == 0
+          passed = pass_step(stored, ctx)
+          review = ctx.review
+          next passed
+        end
         code = if result[:timed_out]
           "check_timed_out"
         else
@@ -280,7 +462,7 @@ module Workspace
         end
         @progress.fail_step(stored, failure, ctx: ctx)
       end
-      [run, following]
+      [run, following, review]
     end
 
     # Records a proof's result; a passed one goes on to the next `require:` entry. A proof run again (a tick or a
@@ -304,6 +486,12 @@ module Workspace
 
     def fail_step(run, failure, ctx)
       adopt(run, @progress.fail_step(run, failure, ctx: ctx))
+    end
+
+    # An attempt whose guard stop a person accepted ended already: it passes `overridden`, with no second finish.
+    def pass_step(run, ctx)
+      return @progress.pass_overridden(run, ctx: ctx) if step_state(run)["attempts"].last["guard_accepted"]
+      @progress.pass_step(run, ctx: ctx)
     end
 
     def guard_check(run, step)

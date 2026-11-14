@@ -244,7 +244,7 @@ module Workspace
 
       def render_pane(pane)
         @output.puts format_row(
-          "0.#{pane["index"]}",
+          "#{pane["window"] || 0}.#{pane["index"]}",
           pane["kind"],
           truncate(pane["label"] || pane["title"], 22),
           pane["state"],

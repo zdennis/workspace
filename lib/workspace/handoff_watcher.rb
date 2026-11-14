@@ -138,7 +138,7 @@ module Workspace
     # @param text [String] the follow-up prompt
     # @param sent_text [String] the save-state prompt as typed
     # @return [Hash] `:watching`, and `:reason` (`invalid`, `not_scanned`,
-    #   `not_claude`, `no_hooks`) when it is false
+    #   `review_pane`, `not_claude`, `no_hooks`) when it is false
     def arm(pane_id:, sent_at:, interval:, max:, text:, sent_text:)
       return {watching: false, reason: "invalid"} unless valid_settings?(sent_at, interval, max)
       facts = @session_monitor.followup_facts(pane_id)
@@ -209,6 +209,7 @@ module Workspace
 
     def refusal(facts)
       return "not_scanned" unless facts
+      return "review_pane" if facts[:review]
       return "not_claude" unless facts[:kind] == "claude"
       "no_hooks" unless facts[:hooks]
     end

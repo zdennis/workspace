@@ -210,6 +210,12 @@ RSpec.describe Workspace::InboxDerived do
         "links" => a_hash_including("pane" => "%12"))
     end
 
+    it "leaves out a waiting pane of a review window" do
+      daemon_replies["api.worktree-a"]["panes"] << pane("%9", "waiting", message: "Allow Write?").merge("window" => 1, "review" => "r:plan:1")
+
+      expect(read[:rows].select { |row| row["kind"] == "pane_waiting" }.map { |row| row["links"]["pane"] }).to eq(["%5"])
+    end
+
     it "leaves out an ask once it is withdrawn" do
       ask_store_for.call("api").withdraw(ask["id"])
 
@@ -404,6 +410,15 @@ RSpec.describe Workspace::InboxDerived do
       expect(attention).to contain_exactly(a_hash_including(
         "id" => "workflow:budget_spent:r-1", "kind" => "workflow_budget_spent", "title" => "Workflow Fix login: step plan was not started, the token budget is used",
         "body" => nil, "links" => a_hash_including("run_id" => "r-1", "next_action" => {"action" => "workflow resume", "args" => ["r-1"], "needs" => [need]})
+      ))
+    end
+
+    it "adds a row for a run held by its timeout" do
+      run = workflow_run("r-1", workspace: "api.worktree-c", code: "run_timed_out", kind: "timeout")
+      workflow_reply["runs"] = [run]
+
+      expect(attention).to contain_exactly(a_hash_including(
+        "id" => "workflow:run_timed_out:r-1", "kind" => "workflow_run_timed_out", "title" => "Workflow Fix login: step plan was not started, the run's time limit is used"
       ))
     end
 

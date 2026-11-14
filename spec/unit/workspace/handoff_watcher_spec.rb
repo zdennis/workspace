@@ -161,6 +161,12 @@ RSpec.describe Workspace::HandoffWatcher do
       expect(arm).to eq({watching: false, reason: "not_claude"})
     end
 
+    it "refuses a pane of a review window" do
+      facts[:review] = "wr_1:review:1"
+      expect(arm).to eq({watching: false, reason: "review_pane"})
+      expect(events).to be_empty
+    end
+
     it "refuses a pane whose agent has sent no hook event" do
       facts[:hooks] = false
       expect(arm).to eq({watching: false, reason: "no_hooks"})

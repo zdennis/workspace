@@ -677,26 +677,52 @@ RSpec.describe Workspace::WorkflowStatus do
   end
 
   describe "a failed step's guard code" do
+    def accept_forms
+      note = [{"name" => "note", "flag" => "--note"}]
+      [action("workflow resume", "wr_1", "--accept-guard", needs: note), action("workflow resume", "wr_1", "--accept-guard", "--retry", needs: note)]
+    end
+
     def failed(details)
       reason = {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan"}.merge(details)}
       create(state: "waiting", step_state: "failed", reason: reason, bound: false, base_sha: "abc123")
     end
 
+    it "offers only cancel for no_commit when the run recorded no base commit" do
+      reason = {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "guard", "guard" => "no_commit", "code" => "no_commit"}}
+      create(state: "waiting", step_state: "failed", reason: reason, bound: false, base_sha: nil)
+
+      expect(current["reason"]["actions"]).to eq([action("workflow cancel", "wr_1")] + accept_forms)
+      expect(current["reason"]).not_to have_key("recovery")
+    end
+
     %w[no_commit head_moved hooks_changed hidden_changed].each do |code|
-      it "offers only cancel for #{code}, which a resume can't get past" do
+      it "offers resume, resume --from and cancel for #{code}, with what to put back first" do
         failed("cause" => "guard", "guard" => code, "code" => code, "code_source" => "engine")
 
-        expect(current["reason"]["actions"]).to eq([action("workflow cancel", "wr_1")])
-        expect(current["reason"]["details"]).to include("code" => code, "code_source" => "engine", "guard" => code)
+        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan")] + accept_forms + [action("workflow cancel", "wr_1")])
+        expect(current["reason"]["recovery"]).to match(/then resume/)
+        expect(current["reason"]["recovery"]).to include("abc123") if code == "head_moved"
       end
     end
 
-    %w[tracked_changed operation_in_progress config_changed].each do |code|
+    %w[tracked_changed operation_in_progress].each do |code|
       it "offers resume, resume --from and cancel for #{code}, which the person can clear or a resume now passes" do
         failed("cause" => "guard", "guard" => code, "code" => code, "code_source" => "engine")
 
-        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan"), action("workflow cancel", "wr_1")])
+        expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan")] + accept_forms + [action("workflow cancel", "wr_1")])
       end
+    end
+
+    it "offers no accept-guard form for a guard cause resume --accept-guard does not take" do
+      failed("cause" => "guard", "guard" => "config_changed", "code" => "config_changed", "code_source" => "engine")
+
+      expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--from", "plan"), action("workflow cancel", "wr_1")])
+    end
+
+    it "offers no accept-guard form for a failed check that is not a guard stop" do
+      failed("code" => "test")
+
+      expect(current["reason"]["actions"].flat_map { |each| each["args"] }).not_to include("--accept-guard")
     end
 
     describe "a token budget" do
@@ -718,6 +744,18 @@ RSpec.describe Workspace::WorkflowStatus do
         expect(row["budget"]).to eq("tokens" => 1000, "action" => "stop", "extra_tokens" => 0, "allowance" => 1000, "used" => 1500, "counted" => 1, "uncounted" => 0,
           "measured" => true, "spent" => true, "minimum" => true)
         need = [{"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}]
+        expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])
+      end
+
+      it "offers resume with --extra-tokens alone for a held review round, which asks no attempt allowance" do
+        create(state: "waiting", reason: held.merge("details" => held["details"].merge("review_round" => 1)), bound: false, budget_hold: {"review_round" => 1},
+          definition: {"max_attempts" => 1, "budget" => {"tokens" => 1000, "action" => "stop"}, "steps" => steps},
+          steps: {"research" => {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed", "usage" => {"input_tokens" => 1500}}]},
+                  "plan" => {"state" => "reviewing", "review" => {"round" => 1, "delivery" => nil}, "attempts" => [{"n" => 1, "outcome" => "checks_passed"}]}})
+        row = status.run("wr_1")["runs"].first
+
+        need = [{"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}]
+        expect(row["current"]["reason"]["code"]).to eq("budget_spent")
         expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])
       end
 
@@ -759,6 +797,52 @@ RSpec.describe Workspace::WorkflowStatus do
       end
     end
 
+    describe "a run timeout" do
+      let(:timed) { {"code" => "run_timed_out", "since" => "2026-10-04T12:55:00Z", "details" => {"kind" => "timeout", "step" => "plan"}} }
+
+      def timed_run(timeout: 1200, **rest)
+        create(state: "waiting", step_state: "pending", reason: timed, bound: false,
+          definition: {"max_attempts" => 6, "timeout" => timeout, "timeout_action" => "hold", "steps" => [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil}]},
+          **rest)
+      end
+
+      it "shows the deadline and offers resume only with --extra-time" do
+        timed_run
+        row = status.run("wr_1")["runs"].first
+
+        expect(row["deadline"]).to eq("timeout" => 1200, "action" => "hold", "extra_seconds" => 0, "limit" => 1200, "used" => 1800.0, "spent" => true)
+        need = [{"name" => "extra_time", "flag" => "--extra-time", "min" => 601, "suggested" => 900}]
+        expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])
+      end
+
+      it "has no deadline row without a timeout, and no need while time remains" do
+        timed_run(timeout: 7200)
+        row = status.run("wr_1")["runs"].first
+
+        expect(row["deadline"]).to include("spent" => false, "limit" => 7200)
+        expect(row["current"]["reason"]["actions"].first["needs"]).to eq([])
+        create(state: "running")
+        expect(status.run("wr_2")["runs"].first).not_to have_key("deadline")
+      end
+
+      it "reads the time need from the deadline when the budget is spent too" do
+        timed_run(steps: {"research" => {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed", "usage" => {"input_tokens" => 1500}, "started_at" => "2026-10-04T12:30:00Z"}]}, "plan" => {"state" => "pending", "attempts" => []}})
+        edit_run(store, "wr_1") do |run|
+          run["definition"]["budget"] = {"tokens" => 1000, "action" => "stop"}
+          run["reason"] = {"code" => "budget_spent", "since" => "2026-10-04T12:55:00Z", "details" => {"kind" => "budget", "step" => "plan", "run_timed_out" => {"kind" => "timeout"}}}
+        end
+        needs = status.run("wr_1")["runs"].first["current"]["reason"]["actions"].first["needs"]
+
+        expect(needs.map { |each| each["name"] }).to eq(%w[extra_tokens extra_time])
+      end
+
+      it "is listed by --needs-me" do
+        timed_run
+
+        expect(Workspace::WorkflowNeedsMe.new.rows(status.run("wr_1")["runs"]).map { |row| row["code"] }).to eq(["run_timed_out"])
+      end
+    end
+
     describe "once the run has made all its attempts" do
       let(:extra) { [{"name" => "extra_attempts", "flag" => "--extra-attempts", "min" => 1}] }
 
@@ -772,6 +856,15 @@ RSpec.describe Workspace::WorkflowStatus do
 
         expect(current["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: extra),
           action("workflow resume", "wr_1", "--from", "plan", needs: extra), action("workflow cancel", "wr_1")])
+      end
+
+      it "asks for the step's shortfall when only the step has spent its own cap" do
+        steps = [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil, "max_attempts" => 1}]
+        create(state: "waiting", step_state: "failed", reason: {"code" => "failed_check", "since" => "t", "details" => {"step" => "plan", "cause" => "check"}},
+          bound: false, definition: {"max_attempts" => 9, "steps" => steps})
+
+        resume = current["reason"]["actions"].find { |each| each["action"] == "workflow resume" }
+        expect(resume["needs"]).to eq([{"name" => "extra_attempts", "flag" => "--extra-attempts", "min" => 2}])
       end
 
       it "stops asking once the allowance was raised" do

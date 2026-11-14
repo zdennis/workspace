@@ -96,6 +96,12 @@ module Workspace
       # since a cut path names a different file.
       MAX_PATH_LENGTH = 1024
 
+      # The tools whose PostToolUse is hashed when they write a review round's verdict file.
+      VERDICT_TOOLS = %w[Write Edit MultiEdit].freeze
+
+      # The most a verdict file may hold for its hash to be taken.
+      VERDICT_MAX_BYTES = 1_048_576
+
       # Longest sub-agent description forwarded.
       MAX_DESCRIPTION_LENGTH = 120
 
@@ -120,6 +126,8 @@ module Workspace
       #   nil skips enforcement
       # @param workflow_deny [Workspace::WorkflowDeny, nil] denies a Bash command the bound run's
       #   definition lists under `deny:`; nil skips it
+      # @param review_write_guard [Workspace::ReviewWriteGuard, nil] denies a file write in a review pane
+      #   that is not a sub-agent's write of its round's verdict file; nil skips it
       # @param session_ledger [Workspace::SessionLedger, nil] records each
       #   SessionStart and SessionEnd; nil skips the ledger
       # @param pane_bindings [Workspace::PaneBindings, nil] looked up on SessionStart to
@@ -136,7 +144,7 @@ module Workspace
       # @param connect_timeout [Numeric] seconds to wait for the daemon's socket to take the connection
       # @param reply_timeout [Numeric] seconds to wait for the daemon's reply
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
-        lock_idle_tracker: nil, lock_enforcer: nil, workflow_deny: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
+        lock_idle_tracker: nil, lock_enforcer: nil, workflow_deny: nil, review_write_guard: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
         workspace_for_session: ->(session) { session }, delivery_log: nil,
         connect_timeout: CONNECT_TIMEOUT, reply_timeout: REPLY_TIMEOUT)
         @workspace_for_session = workspace_for_session
@@ -154,6 +162,7 @@ module Workspace
         @lock_idle_tracker = lock_idle_tracker
         @lock_enforcer = lock_enforcer
         @workflow_deny = workflow_deny
+        @review_write_guard = review_write_guard
         @session_ledger = session_ledger
         @pane_bindings = pane_bindings
         @instruction_composer = instruction_composer
@@ -182,6 +191,7 @@ module Workspace
 
         if hook == "PreToolUse"
           deny = @lock_enforcer&.check(tool_name: payload["tool_name"], cwd: cwd) ||
+            @review_write_guard&.check(tool_name: payload["tool_name"], tool_input: payload["tool_input"], cwd: cwd, agent_id: agent_id_for(payload)) ||
             @workflow_deny&.check(tool_name: payload["tool_name"], tool_input: payload["tool_input"])
           if deny
             @error_output.puts deny
@@ -260,6 +270,8 @@ module Workspace
         # Named only for an agent other than Claude Code, as before other agents
         # had hooks; `restore` resumes Claude Code sessions only.
         entry["kind"] = @agent unless claude?
+        # A workflow step review's reviewer: `restore` must not resume its conversation.
+        entry["role"] = "reviewer" unless @env["WORKSPACE_REVIEW_RUN"].to_s.empty?
         @session_ledger.record(entry)
       rescue => e
         @logger.debug { "session-event: ledger write failed (#{e.class}: #{e.message})" }
@@ -274,7 +286,8 @@ module Workspace
 
         entry = @pane_bindings.binding_for(pane_id)
         return unless entry
-        return if @pane_bindings.stale?(entry, session: @tmux.session_name_for_pane(pane_id), pane_slot: @tmux.pane_slot(pane_id))
+        return if @pane_bindings.stale?(entry, session: @tmux.session_name_for_pane(pane_id), pane_slot: @tmux.pane_slot(pane_id),
+          server_pid: -> { @tmux.server_pid_for_pane(pane_id) })
 
         @output.puts JSON.generate("hookSpecificOutput" => {
           "hookEventName" => "SessionStart",
@@ -288,6 +301,7 @@ module Workspace
       # them. A pack that can no longer be read leaves them out; the subject still prints.
       def packs_context(entry, payload)
         return nil unless @instruction_composer
+        return nil if entry["role"] == "reviewer"
         names = @pane_bindings.packs_for(entry)
         return nil if names.empty?
 
@@ -378,11 +392,33 @@ module Workspace
           duration = payload["duration_ms"]
           fields["duration_ms"] = duration.round if duration.is_a?(Numeric) && duration >= 0
         end
+        if hook == "PostToolUse" && fields["ok"]
+          sha = verdict_sha256(payload)
+          fields["sha256"] = sha if sha
+        end
         if claude? && SUBAGENT_TOOLS.include?(fields["tool"]) && hook == "PreToolUse" && payload["tool_input"].is_a?(Hash)
           fields["description"] = clean(payload["tool_input"]["description"], MAX_DESCRIPTION_LENGTH)
           fields["subagent_type"] = clean(payload["tool_input"]["subagent_type"], MAX_NAME_LENGTH)
         end
         fields
+      end
+
+      # The sha256 of a verdict file a review pane's Write, Edit or MultiEdit just
+      # wrote, read from the disk and not from the tool's input (an Edit has no
+      # whole content). Only a regular file, not a link, directly in or under the
+      # pane's round directory (`.workflow/<run>/reviews/<step>.<attempt>.r<round>/`
+      # in its checkout, from the reviewer binding) of at most VERDICT_MAX_BYTES;
+      # anything else, or any trouble reading, gives nil.
+      def verdict_sha256(payload)
+        return nil unless VERDICT_TOOLS.include?(payload["tool_name"]) && @pane_bindings
+        entry = @pane_bindings.binding_for(@env["TMUX_PANE"].to_s)
+        return nil unless ReviewRoundPath.reviewer?(entry)
+        input = payload["tool_input"]
+        path = ReviewRoundPath.verdict_path(entry, input.is_a?(Hash) ? input["file_path"] : nil, text_field(payload, "cwd"))
+        return nil unless path
+        WorkflowProduced.digest(path, max_bytes: VERDICT_MAX_BYTES)&.sha256
+      rescue
+        nil
       end
 
       def permission_fields(payload)
@@ -427,12 +463,7 @@ module Workspace
       end
 
       def checkout_root(dir)
-        loop do
-          return dir if File.exist?(File.join(dir, ".git"))
-          parent = File.dirname(dir)
-          return nil if parent == dir
-          dir = parent
-        end
+        ReviewRoundPath.checkout_root(dir)
       end
 
       def name_field(payload, key)

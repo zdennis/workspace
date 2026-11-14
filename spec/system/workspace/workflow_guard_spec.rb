@@ -66,9 +66,41 @@ RSpec.describe Workspace::WorkflowGuard do
       FileUtils.mkdir_p(empty)
       git("init", "-q", "-b", "main", path: empty)
 
-      expect(guard.base(empty)["base_sha"]).to be_nil
+      expect(guard.base(empty)).to include("base_sha" => nil, "unread" => [])
       expect(guard.check(empty, guard.base(empty), "unchanged")).to include("code" => "no_commit")
       expect(guard.check(@dir, guard.base(@dir), "config")).to include("code" => "no_commit")
+    end
+  end
+
+  describe "#base" do
+    it "reads a usable base with nothing unread, and the accepted tree only when asked" do
+      expect(base).to include("base_sha" => match(/\A\h{40}\z/), "unread" => [])
+      expect(base["base_guard"]).not_to have_key("accepted_tree_sha256")
+      expect(guard.base(repo, accept_tree: true)["base_guard"]["accepted_tree_sha256"]).to match(/\A\h{64}\z/)
+    end
+
+    it "names accepted_tree_sha256 as unread when asked for the tree and it can't be read, and not otherwise" do
+      allow(guard).to receive(:tree_digest).and_return(nil)
+
+      expect(guard.base(repo, accept_tree: true)).to include("unread" => ["accepted_tree_sha256"])
+      expect(guard.base(repo, accept_tree: true)["base_guard"]).not_to have_key("accepted_tree_sha256")
+      expect(guard.base(repo)["unread"]).to eq([])
+    end
+
+    it "reads an unborn branch as usable with accept_tree: nothing unread, no accepted tree recorded" do
+      unborn = Dir.mktmpdir
+      system("git", "init", "-q", unborn, exception: true)
+
+      answer = guard.base(unborn, accept_tree: true)
+
+      expect(answer).to include("base_sha" => nil, "unread" => [])
+      expect(answer["base_guard"]).not_to have_key("accepted_tree_sha256")
+    ensure
+      FileUtils.remove_entry(unborn) if unborn
+    end
+
+    it "names head as unread when git can't answer for a checkout that is no repository" do
+      expect(guard.base(@dir)["unread"]).to include("head")
     end
   end
 
@@ -155,6 +187,25 @@ RSpec.describe Workspace::WorkflowGuard do
   end
 
   describe "tracked_changed" do
+    it "passes tracked changes a person accepted while the tree reads the same, and stops again once it moves" do
+      write("a.txt", "changed\n")
+      accepted = guard.base(repo, accept_tree: true)
+
+      expect(accepted["base_guard"]["accepted_tree_sha256"]).to eq(guard.tree_digest(repo, base: accepted))
+      expect(guard.check(repo, accepted, "unchanged")).to be_nil
+
+      write("dir/b.txt", "changed too\n")
+      expect(guard.check(repo, accepted, "unchanged")).to eq("code" => "tracked_changed", "paths" => ["a.txt", "dir/b.txt"])
+    end
+
+    it "stops again when an accepted tree can't be read now" do
+      write("a.txt", "changed\n")
+      accepted = guard.base(repo, accept_tree: true)
+      allow(guard).to receive(:tree_digest).and_return(nil)
+
+      expect(guard.check(repo, accepted, "unchanged")).to eq("code" => "tracked_changed", "paths" => ["a.txt"])
+    end
+
     it "finds an unstaged change, naming the path" do
       write("a.txt", "changed\n")
 
@@ -1091,6 +1142,55 @@ RSpec.describe Workspace::WorkflowGuard do
 
     it "is nil when git can't answer" do
       expect(guard.dirty_paths(File.join(@dir, "gone"))).to be_nil
+    end
+  end
+
+  describe "#tree_digest" do
+    it "stays put for an untouched tree and an untracked file, and moves for a tracked edit, staged or not" do
+      clean = guard.tree_digest(repo, base: base)
+      expect(clean).to match(/\A\h{64}\z/)
+      write("new.txt")
+      expect(guard.tree_digest(repo, base: base)).to eq(clean)
+
+      write("a.txt", "changed\n")
+      edited = guard.tree_digest(repo, base: base)
+      expect(edited).not_to eq(clean)
+      git("add", "a.txt")
+      expect(guard.tree_digest(repo, base: base)).to eq(edited)
+      write("a.txt", "one\n")
+      git("add", "a.txt")
+      expect(guard.tree_digest(repo, base: base)).to eq(clean)
+    end
+
+    it "is not moved by a config change to how a diff is shown" do
+      write("a.txt", "line\n" * 20 + "changed\n" + "line\n" * 20)
+      write("dir/b.txt", "changed too\n")
+      before = guard.tree_digest(repo)
+      git("config", "diff.noprefix", "true")
+      git("config", "diff.renames", "copies")
+      git("config", "diff.context", "10")
+      git("config", "diff.interHunkContext", "5")
+      git("config", "diff.indentHeuristic", "false")
+      git("config", "diff.suppressBlankEmpty", "true")
+      git("config", "diff.orderFile", write(".order", "dir/b.txt\na.txt\n"))
+      git("config", "diff.relative", "true")
+
+      expect(guard.tree_digest(repo)).to eq(before)
+    end
+
+    it "moves for a deleted tracked file, a mode change and a file turned into a link" do
+      clean = guard.tree_digest(repo)
+      File.chmod(0o755, File.join(repo, "a.txt"))
+      chmodded = guard.tree_digest(repo)
+      File.delete(File.join(repo, "dir/b.txt"))
+      deleted = guard.tree_digest(repo)
+      File.symlink("a.txt", File.join(repo, "dir/b.txt"))
+
+      expect([clean, chmodded, deleted, guard.tree_digest(repo)].uniq.size).to eq(4)
+    end
+
+    it "is nil when git can't answer" do
+      expect(guard.tree_digest(File.join(@dir, "gone"))).to be_nil
     end
   end
 

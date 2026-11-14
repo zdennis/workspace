@@ -121,7 +121,8 @@ module Workspace
     def mark_state(pane, state, since)
       pane[:logged_state] = state
       pane[:state_since] = since
-      {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "index" => pane[:index],
+      {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "window" => pane[:window] || 0, "index" => pane[:index],
+       "review" => pane[:review],
        "kind" => pane[:kind], "state" => state, "since" => since.utc.iso8601(3),
        "stop_reason" => pane[:done] && pane[:done][:stop_reason]}.compact
     end

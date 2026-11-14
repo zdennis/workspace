@@ -391,7 +391,7 @@ module Workspace
 
       # @return [String] the pane id of the first Claude Code pane the daemon lists, else of the first Codex pane
       def default_pane(name, snapshot)
-        panes = (snapshot["panes"] || []).select { |p| p["pane_id"] }
+        panes = (snapshot["panes"] || []).select { |p| p["pane_id"] && !p["review"] }
         listed = panes.find { |p| p["kind"] == "claude" } || panes.find { |p| p["kind"] == "codex" }
         raise Workspace::UsageError, "No Claude Code or Codex pane found in workspace '#{name}'; pass --pane." unless listed
         listed["pane_id"]
@@ -446,12 +446,17 @@ module Workspace
       RESTARTABLE_KINDS = AgentProvider.restartable_kinds.freeze
       private_constant :RESTARTABLE_KINDS
 
+      # @return [String] "window.index", the pane as `agent-run` and tmux name it; window 0 for an older daemon's row
+      def pane_label(pane)
+        "#{pane["window"] || 0}.#{pane["index"]}"
+      end
+
       def pane_kind_ok?(pane_info)
         RESTARTABLE_KINDS.include?(pane_info["kind"])
       end
 
       def unsupported_pane_message(name, pane_info)
-        "Pane #{pane_info["index"]} in workspace '#{name}' is running #{pane_info["kind"]}, not Claude Code or Codex; " \
+        "Pane #{pane_label(pane_info)} in workspace '#{name}' is running #{pane_info["kind"]}, not Claude Code or Codex; " \
           "handoff only restarts Claude Code and Codex, whose /clear it types."
       end
 
@@ -470,7 +475,7 @@ module Workspace
       def ok(json, pct:, threshold:, pane:, doc: nil)
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => "ok", "context_pct" => pct,
-                                        "threshold" => threshold, "pane" => pane["index"], "pane_id" => pane["pane_id"],
+                                        "threshold" => threshold, "pane" => pane["index"], "window" => pane["window"] || 0, "pane_id" => pane["pane_id"],
                                         "next" => "continue", "doc" => doc})
         else
           @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- under threshold, nothing to do."
@@ -487,16 +492,16 @@ module Workspace
         status = delivery.landed? ? "handoff_sent" : "handoff_send_failed"
         if json
           document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => status,
-                      "context_pct" => pct, "threshold" => threshold, "pane" => pane["index"], "pane_id" => pane["pane_id"],
+                      "context_pct" => pct, "threshold" => threshold, "pane" => pane["index"], "window" => pane["window"] || 0, "pane_id" => pane["pane_id"],
                       "delivery" => delivery.status.to_s, "landed" => delivery.landed?,
                       "next" => "handoff", "doc" => doc}
           document["followup"] = followup if followup
           @output.puts JSON.generate(document)
         elsif delivery.landed?
-          @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- at/over threshold; sent save-state prompt to pane #{pane["index"]} (#{delivery.status})."
-          @output.puts "The agent daemon will follow up in pane #{pane["index"]} if no handoff happens." if followup && followup["watching"]
+          @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- at/over threshold; sent save-state prompt to pane #{pane_label(pane)} (#{delivery.status})."
+          @output.puts "The agent daemon will follow up in pane #{pane_label(pane)} if no handoff happens." if followup && followup["watching"]
         else
-          @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- at/over threshold; failed to deliver the save-state prompt to pane #{pane["index"]} (#{delivery.status})."
+          @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- at/over threshold; failed to deliver the save-state prompt to pane #{pane_label(pane)} (#{delivery.status})."
           @error_output.puts "Warning: the save-state prompt did not reach the pane (#{delivery.status})."
         end
         {exit_code: 1}

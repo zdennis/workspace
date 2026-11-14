@@ -5,7 +5,8 @@ module Workspace
   # Starts a run's current step and types its line: {#dispatch} takes the step's resources, writes its
   # instructions, binds the pane and stores the attempt as `delivering` inside the run's lock; {#deliver}
   # types the line after the lock is given up and records the answer, parking a released resume again when
-  # the pane was only busy. A run whose token budget is used up is held before the attempt. {#check_pane}
+  # the pane was only busy. A run whose token budget or timeout is used up is held before the attempt, or before a
+  # review round ({#hold_round}). {#check_pane}
   # says whether another run holds a pane, through the store's occupancy queries.
   class WorkflowDispatch
     # The one line typed into the pane; the instructions themselves are in the file.
@@ -97,7 +98,7 @@ module Workspace
     # @raise [Workspace::Error] code `pane_has_run`
     def check_pane(pane, run_id: nil)
       return unless pane
-      bound = @panes.run_on(pane)
+      bound = @panes.bound_on(pane)&.fetch(:run_id)
       other = (bound && @store.going?(bound)) ? bound : (parked_on(pane, run_id) || backoff_on(pane, run_id))
       return unless other
       raise Workspace::Error.new("Pane #{pane} is already running workflow run #{other}. Cancel it, or pass --pane for another agent pane.",
@@ -114,6 +115,25 @@ module Workspace
       @resources.release(run_id: hash["id"], worktree: hash["worktree"]).each { |name| lock_event(hash, "lock_released", name) }
     rescue Workspace::Error, SystemCallError
       nil
+    end
+
+    # Holds a review round before it starts when the run's token budget or timeout is used up, as {#dispatch} holds
+    # an attempt, with the same exemption (a round leaving a lock wait was allowed when it was reached). The hold
+    # (`budget_hold`, `timeout_hold`) records `{"review_round" => round}` and no pane, so its release starts that
+    # round, never an author attempt; the reason is `budget_spent` or `run_timed_out`, its details naming the round.
+    # The caller keeps the step `reviewing`. A redelivery of a round already started is not asked here.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, at the step whose round would start; left as it is
+    # @param round [Integer] the round about to start
+    # @return [WorkflowRun, nil] the run held; nil when the round may start
+    def hold_round(run, round:)
+      work = WorkflowRun.from_h(run).thawed
+      spent = budget_holds?(work)
+      late = time_holds?(work)
+      return nil unless spent || late
+      hold(work, {"review_round" => round}, budget: spent, time: late)
+      work["reason"]["details"]["review_round"] = round
+      WorkflowRun.from_h(work)
     end
 
     # Takes a park off the run however it ended (its note moves to the pending context, see
@@ -141,7 +161,11 @@ module Workspace
       adopt(run, drop_park(run, "moved_on")) if run.key?("parked")
       step = step_def(run)
       state = step_state(run)
-      return hold_for_budget(run, context, retry_of) if budgeted && budget_holds?(run)
+      if budgeted
+        spent = budget_holds?(run)
+        late = time_holds?(run)
+        return hold_attempt(run, context, retry_of, budget: spent, time: late) if spent || late
+      end
       # A rejected gate stays marked for the first run of the step again, and no longer.
       gate = state["gate"]
       state.delete("gate") unless gate && gate["state"] == "rejected" && gate["attempt"] == state["attempts"].last&.fetch("n", nil)
@@ -247,17 +271,41 @@ module Workspace
       !!(reading && reading["spent"])
     end
 
+    # Whether the attempt about to start is held: the run's `timeout:` is used up (machine time, see
+    # {WorkflowDeadline}). Exempt as {#budget_holds?} is: a lock wait that ends was allowed when the step was reached.
+    def time_holds?(run)
+      return false if run.dig("reason", "code") == "waiting_lock"
+      reading = WorkflowDeadline.reading(run, @clock.call)
+      !!(reading && reading["spent"])
+    end
+
     # Stops the run before the attempt: nothing is held, the step is left as it was, and the run waits for a
-    # person. The resume that ends it starts the attempt, with the context the stop kept.
-    def hold_for_budget(run, context, retry_of = nil)
-      reading = WorkflowBudget.reading(run, live: false)
-      release(run)
+    # person. The resume that ends it starts the attempt, with the context the stop kept. Each limit that is spent
+    # stores a hold of its own (`budget_hold`, `timeout_hold`); the reason is `budget_spent` when the token budget
+    # is spent, else `run_timed_out`, and carries the other's details under `run_timed_out` when both are.
+    def hold_attempt(run, context, retry_of, budget:, time:)
       pane = retry_of&.fetch("pane", nil) || bound_pane(run)
       identity = retry_of&.fetch("identity", nil) || @panes.identity(run["id"])
-      run["budget_hold"] = {"context" => context, "pane" => pane, "identity" => identity, "text" => retry_of&.fetch("text", nil)}.compact
+      hold(run, {"context" => context, "pane" => pane, "identity" => identity, "text" => retry_of&.fetch("text", nil)}.compact, budget: budget, time: time)
+    end
+
+    # The hold itself, for an attempt or a review round: +hold+ is the record each spent limit stores.
+    def hold(run, hold, budget:, time:)
+      reading = WorkflowBudget.reading(run, live: false) if budget
+      deadline = WorkflowDeadline.reading(run, @clock.call) if time
+      release(run)
+      run["budget_hold"] = hold if budget
+      run["timeout_hold"] = hold.dup if time
       run["state"] = "waiting"
-      run["reason"] = reason("budget_spent", WorkflowTransitions.budget_details(run, reading).merge("kind" => "budget"))
-      @change.event(run, "budget_spent", reading.slice("used", "allowance", "counted", "uncounted").merge("step" => run["current"]))
+      if budget
+        details = WorkflowTransitions.budget_details(run, reading).merge("kind" => "budget")
+        details["run_timed_out"] = WorkflowTransitions.deadline_details(run, deadline) if time
+        run["reason"] = reason("budget_spent", details)
+      else
+        run["reason"] = reason("run_timed_out", WorkflowTransitions.deadline_details(run, deadline))
+      end
+      @change.event(run, "budget_spent", reading.slice("used", "allowance", "counted", "uncounted").merge("step" => run["current"])) if budget
+      @change.event(run, "run_timed_out", deadline.slice("used", "limit", "timeout", "extra_seconds").merge("step" => run["current"])) if time
       true
     end
 

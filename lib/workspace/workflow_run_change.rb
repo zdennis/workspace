@@ -1,10 +1,12 @@
 module Workspace
   # The one way a workflow run changes: under the run's lock, with the attempt record's reasons kept before and
   # after the change, `workflow_changed` written when what a reader sees moved, alerts fired once the lock is given
-  # up, and then the line of a step the change started typed, through +deliver+. It never runs a check: a block that
-  # registers one reads it back from its {Context} and the caller runs it.
+  # up, and then the line of a step the change started typed, through +deliver+. It never runs a check, a review round or a window close: a
+  # block that registers one reads it back from its {Context} and the caller runs it through
+  # {WorkflowEvaluation#finish_follow_ups}.
   class WorkflowRunChange
-    # What one change hands out of its block: the step line to type after the lock, and the check to run.
+    # What one change hands out of its block: the step line to type after the lock, the check to run, the review round to
+    # run, the ended round whose revision is computed again and the review window to close.
     # A new one is made for every {WorkflowRunChange#call}, so no follow-up outlives the change that made it.
     class Context
       # @return [Hash{String=>Object}, nil] the step line registered with {#deliver}
@@ -22,6 +24,32 @@ module Workspace
       # @return [Hash{String=>Object}, nil]
       def check(found = nil)
         found ? @check = found : @check
+      end
+
+      # With an argument, registers the review round to run once the lock is given up; without, the one registered.
+      #
+      # @param found [Hash{String=>Object}, nil]
+      # @return [Hash{String=>Object}, nil]
+      def review(found = nil)
+        found ? @review = found : @review
+      end
+
+      # With an argument, registers the ended review round whose revision is computed again once the lock is given
+      # up ({WorkflowEvaluation#finish_follow_ups}); without, the one registered.
+      #
+      # @param found [Hash{String=>Object}, nil] "step", "attempt", "round" and "try" of the round's `recompute` mark
+      # @return [Hash{String=>Object}, nil]
+      def review_end(found = nil)
+        found ? @review_end = found : @review_end
+      end
+
+      # With an argument, registers the review window of an ended round to close once the lock is given up; without,
+      # the one registered.
+      #
+      # @param found [Hash{String=>Object}, nil] "step", "round" and "pane" (nil when the round never recorded one)
+      # @return [Hash{String=>Object}, nil]
+      def close_review(found = nil)
+        found ? @close_review = found : @close_review
       end
     end
 

@@ -20,8 +20,9 @@ module Workspace
     # What {#spawn} did: the new pane's id and the {AgentReadiness::Result} of the wait.
     # +closed+ is true when the agent was never ready and the new pane was closed again. +waiting+ is
     # `sign_in`, `trust` or `approval` when the agent sits at that screen; the pane is then kept open
-    # for the person to finish it.
-    Spawned = Struct.new(:pane, :ready, :label, :closed, :waiting, keyword_init: true) do
+    # for the person to finish it. +warning+ says a window that should have been closed was left open
+    # (a custom tmux socket), else nil.
+    Spawned = Struct.new(:pane, :ready, :label, :closed, :waiting, :warning, keyword_init: true) do
       # @return [Boolean] whether the agent was ready for text in time
       def ready? = ready.ready?
     end
@@ -86,6 +87,7 @@ module Workspace
     end
 
     # The Claude Code or Codex pane +preferred+ names, else the first one.
+    # A pane of a review window (its row's `review` mark) is never one of them.
     #
     # @param name [String] the workspace
     # @param panes [Array<Hash>] from {#panes}
@@ -94,7 +96,7 @@ module Workspace
     # @return [Hash] the pane's row
     # @raise [Workspace::Error] `no_agent_pane` when no pane runs Claude Code or Codex
     def main_pane(name, panes, preferred:, what:)
-      agents = panes.select { |pane| MAIN_KINDS.include?(pane["kind"]) && pane["pane_id"] }
+      agents = panes.select { |pane| MAIN_KINDS.include?(pane["kind"]) && pane["pane_id"] && !pane["review"] }
       agents.find { |pane| pane["pane_id"] == preferred } || agents.first ||
         raise(Workspace::Error.new("No pane of '#{name}' runs Claude Code or Codex, so there is nowhere to send #{what}.",
           code: "no_agent_pane", details: {"workspace" => name}))
@@ -135,19 +137,40 @@ module Workspace
     # @raise [ArgumentError] for a kind that is not one of {AGENT_KINDS}, before any pane is made
     # @raise [Workspace::Error] what {Workspace::Commands::Run#call} raises
     def spawn(name, kind)
-      provider = AgentProvider.find(kind) || raise(ArgumentError, "unknown agent kind #{kind.inspect}")
+      AgentProvider.find(kind) || raise(ArgumentError, "unknown agent kind #{kind.inspect}")
       id = @runner.call(name, @main_agent.spawn_command(name, kind), split: true,
         cwd: @project_config.project_root_for(name))
+      await_ready(name, id, kind)
+    end
+
+    # Waits until the agent of +kind+ in a pane made elsewhere is ready for text, and closes what
+    # was made for it when it never is: the pane, or the whole +window+ when one is given. A pane at
+    # a sign-in, trust or approval screen is kept. A workspace on a custom tmux socket keeps its
+    # window, with a +warning+ on the result, since window ids repeat across servers.
+    #
+    # @param name [String] the workspace
+    # @param pane [String] the pane id
+    # @param kind [String] one of {AGENT_KINDS}
+    # @param window [String, nil] the tmux window id (`@N`) made for the pane, closed instead of the pane
+    # @return [Spawned]
+    # @raise [ArgumentError] for a kind that is not one of {AGENT_KINDS}
+    # @raise [Workspace::Error] what {Workspace::AgentReadiness#wait} raises, with `pane_id` and `pane_closed` added
+    def await_ready(name, pane, kind, window: nil)
+      provider = AgentProvider.find(kind) || raise(ArgumentError, "unknown agent kind #{kind.inspect}")
       begin
-        ready = @readiness.wait(@tmux.session_name_for(name), deadline: @readiness.deadline_in(@prompt_timeout), only_pane: id, **(@agent_commands&.detector_options(name) || {}))
+        ready = @readiness.wait(@tmux.session_name_for(name), deadline: @readiness.deadline_in(@prompt_timeout), only_pane: pane, **(@agent_commands&.detector_options(name) || {}))
       rescue Workspace::Error => e
-        closed = close_unused(name, id)
-        raise Workspace::Error.new(e.message, code: e.code, details: e.details.merge("pane_id" => id, "pane_closed" => closed), retry_with: e.retry)
+        closed = close_unused(name, pane, window: window)
+        details = e.details.merge("pane_id" => pane, "pane_closed" => closed)
+        left_open = left_open_warning(name, window, closed)
+        details["warning"] = left_open if left_open
+        raise Workspace::Error.new(e.message, code: e.code, details: details, retry_with: e.retry)
       end
-      return Spawned.new(pane: id, ready: ready, label: provider.label, closed: false) if ready.ready?
-      waiting = provider.waiting_screen(@tmux.capture_screen(id))&.fetch(:reason)
-      closed = waiting ? false : close_unused(name, id)
-      Spawned.new(pane: id, ready: ready, label: provider.label, closed: closed, waiting: waiting)
+      return Spawned.new(pane: pane, ready: ready, label: provider.label, closed: false) if ready.ready?
+      waiting = provider.waiting_screen(@tmux.capture_screen(pane))&.fetch(:reason)
+      closed = waiting ? false : close_unused(name, pane, window: window)
+      warning = left_open_warning(name, window, closed) unless waiting
+      Spawned.new(pane: pane, ready: ready, label: provider.label, closed: closed, waiting: waiting, warning: warning)
     end
 
     # The human message for a spawn whose agent was not ready.
@@ -172,15 +195,16 @@ module Workspace
       spawned.waiting ? details.merge("waiting" => spawned.waiting) : details
     end
 
-    # Closes a pane {#spawn} made, when its agent never became ready and nothing was typed into it.
+    # Closes a pane {#spawn} made (or the +window+ made for one), when its agent never became ready and nothing was typed into it.
     # A workspace on a custom tmux socket keeps its pane: pane ids repeat across servers and the close
     # would go to the default one.
     # @param name [String] the workspace
     # @param id [String] the new pane
+    # @param window [String, nil] a window id to close whole instead of the pane
     # @return [Boolean] whether it was closed
-    def close_unused(name, id)
+    def close_unused(name, id, window: nil)
       return false if @tmux.custom_socket_option(name)
-      @tmux.close_pane(id)
+      window ? @tmux.kill_window(window) : @tmux.close_pane(id)
     end
 
     # @param name [String] the workspace
@@ -217,6 +241,13 @@ module Workspace
       nil
     rescue Workspace::Error, SystemCallError => e
       "Sent, but could not bind pane #{pane} to the play (#{e.message})."
+    end
+
+    private
+
+    def left_open_warning(name, window, closed)
+      return unless window && !closed && @tmux.custom_socket_option(name)
+      "Window #{window} was left open: '#{name}' uses a custom tmux socket, so it can't be closed by id."
     end
   end
 end

@@ -51,6 +51,7 @@ module Workspace
     def self.park_timeout_message(pane, checking: false) = WorkflowTransitions.park_timeout_message(pane, checking: checking)
     def self.wakeable?(run, now) = WorkflowTransitions.wakeable?(run, now)
     def self.lost_check?(run, now) = WorkflowTransitions.lost_check?(run, now)
+    def self.lost_round?(run, now) = WorkflowTransitions.lost_round?(run, now)
     def self.sweep_marks(run) = WorkflowTransitions.sweep_marks(run)
 
     # {Workspace.build_workflow_engine} builds the phases over one shared {WorkflowRunChange}.
@@ -109,20 +110,22 @@ module Workspace
 
     # Turns a gate down: the gated step, or an earlier one, runs again. See {WorkflowDecisions#reject}.
     # @return [Hash{String=>Object}] the run afterwards
-    def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil)
-      @decisions.reject(run_id, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens).to_h
+    def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
+      @decisions.reject(run_id, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds).to_h
     end
 
     # Gets a run that is not moving going again. See {WorkflowDecisions#resume}.
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was done
-    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
-      resumed_h(@decisions.resume(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens))
+    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
+      accept_guard: false, guard_retry: false, caller_pane: nil)
+      resumed_h(@decisions.resume(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds,
+        accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane))
     end
 
     # Stores a resume for later, with {#resume}'s arguments. See {WorkflowDecisions#park}.
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was stored
-    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil)
-      resumed_h(@decisions.park(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens))
+    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
+      resumed_h(@decisions.park(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds))
     end
 
     # Carries out the parked resume +id+. See {WorkflowDecisions#release_park}.
@@ -135,7 +138,9 @@ module Workspace
 
     # What {#resume} refuses, checked without changing anything. See {WorkflowDecisions#refuse_resume}.
     # @return [void]
-    def refuse_resume(run, from: nil) = @decisions.refuse_resume(run, from: from)
+    def refuse_resume(run, from: nil, note: nil, accept_guard: false, guard_retry: false)
+      @decisions.refuse_resume(run, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
+    end
 
     # Ends a run: gives up its resources and frees its pane. See {WorkflowDecisions#cancel}.
     # @return [Hash{String=>Object}] the run afterwards
@@ -177,14 +182,14 @@ module Workspace
 
     # Takes the right to interrupt a step past its `timeout:`. See {WorkflowRecovery#claim_interrupt}.
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`]; or :repeat, :moved_on or :busy
-    def claim_interrupt(run_id, step:, attempt:, elapsed:, timeout:)
-      @recovery.claim_interrupt(run_id, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout)
+    def claim_interrupt(run_id, step:, attempt:, elapsed:, timeout:, cause: "timed_out")
+      @recovery.claim_interrupt(run_id, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout, cause: cause)
     end
 
     # Ends a {#claim_interrupt}. See {WorkflowRecovery#interrupt_sent}.
     # @return [Symbol] :recorded, :released, :taken_over or :moved_on
-    def interrupt_sent(run_id, step:, attempt:, claim_at:, sent:, record: true)
-      @recovery.interrupt_sent(run_id, step: step, attempt: attempt, claim_at: claim_at, sent: sent, record: record)
+    def interrupt_sent(run_id, step:, attempt:, claim_at:, sent:, record: true, cause: "timed_out")
+      @recovery.interrupt_sent(run_id, step: step, attempt: attempt, claim_at: claim_at, sent: sent, record: record, cause: cause)
     end
 
     private

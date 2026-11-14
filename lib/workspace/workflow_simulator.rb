@@ -223,6 +223,11 @@ module Workspace
         @bound.key(pane)
       end
 
+      def bound_on(pane)
+        run_id = run_on(pane)
+        run_id && {run_id: run_id, role: "author"}
+      end
+
       def pane_of(run_id)
         @bound[run_id]
       end
@@ -250,7 +255,7 @@ module Workspace
 
     # Reads and checks nothing of a repository: there is none.
     class SimGuard
-      def base(_worktree)
+      def base(_worktree, accept_tree: false)
         {"base_sha" => nil, "base_guard" => nil}
       end
 

@@ -74,9 +74,6 @@ module Workspace
     # Seconds to wait for the workspace's agent daemon before going on without it.
     SNAPSHOT_TIMEOUT = 1.0
 
-    # The guard codes a resume can't get past.
-    FINAL_GUARDS = %w[no_commit head_moved hooks_changed hidden_changed].freeze
-
     # Seconds after an attempt starts during which an idle pane is not flagged `idle`.
     IDLE_GRACE = 30
 
@@ -210,6 +207,7 @@ module Workspace
       state = run.steps.fetch(run.current)
       finished = WorkflowRunStore::TERMINAL_STATES.include?(run.state)
       pane = finished ? nil : (run.parked&.dig("pane") || @panes.pane_of(run.id) || run.pane)
+      # A reviewing step is not read from the author's pane, whose turn is over; its stored reason is shown.
       working = !finished && %w[running checking].include?(state.state)
       daemon_warning(run, working, warnings) unless finished
       # What the pane shows matters only while an agent should be working in it, or a parked resume waits on
@@ -223,14 +221,14 @@ module Workspace
         "created_at" => run.created_at, "started_at" => run.started_at, "ended_at" => run.ended_at,
         "cancelled_by" => run.cancelled_by,
         "current" => {"step" => run.current, "attempt" => state.last_attempt&.n, "state" => state.state,
-                      "reason" => reason&.merge("actions" => actions(run, reason, pane)),
+                      "reason" => shown_reason(run, reason, pane),
                       "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state))
             .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)),
         "steps" => run.definition["steps"].map { |step| step_row(step, run.steps.fetch(step["id"]), run) },
         "base_sha" => run.base_sha, "pane" => pane, "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
         "artifacts_dir" => run.artifacts_dir, "events_path" => @store.events_path(run.id),
         "guard_warnings" => guard_warnings(run)
-      }.merge(budget_row(run))
+      }.merge(budget_row(run)).merge(deadline_row(run))
     end
 
     # What the guard warned of on any attempt, oldest first; the run went on past each.
@@ -243,12 +241,20 @@ module Workspace
     end
 
     # The token budget as it stands, only for a run whose definition declares one. `used` is a minimum: it leaves
-    # out sub-agents and any ended attempt whose `usage` is null (`uncounted`), and `minimum` says so.
+    # out any ended attempt or review round whose `usage` is null (`uncounted`), and `minimum` says so.
     def budget_row(run)
       reading = WorkflowBudget.reading(run.to_h)
       return {} unless reading
       {"budget" => reading.slice("tokens", "action", "extra_tokens", "allowance", "used", "counted", "uncounted", "measured", "spent")
         .merge("minimum" => true)}
+    end
+
+    # The run timeout as it stands, only for a run whose definition declares one. `used` is machine time in
+    # seconds (a gate, a parked resume and a held budget cost nothing); `limit` is the timeout plus `extra_seconds`.
+    def deadline_row(run)
+      reading = WorkflowDeadline.reading(run.to_h, @clock.call)
+      return {} unless reading
+      {"deadline" => reading.slice("timeout", "action", "extra_seconds", "limit", "used", "spent")}
     end
 
     # A step that reads running with no reason but is not moving: the sweep noted a stall on this attempt and
@@ -436,6 +442,7 @@ module Workspace
       flags = []
       timeout = run.definition["steps"].find { |step| step["id"] == run.current }["timeout"]
       started = state.last_attempt&.started_at
+      # A reviewing step's attempt has ended, so the step timeout no longer runs.
       if timeout && started && %w[running checking].include?(state.state) && @clock.call - Time.iso8601(started) > timeout
         flags << "timed_out"
       end
@@ -457,6 +464,14 @@ module Workspace
       false
     end
 
+    # The reason as shown: its actions, and for a guard stop a resume can pass, what to put back first.
+    def shown_reason(run, reason, pane)
+      return nil unless reason
+      shown = reason.merge("actions" => actions(run, reason, pane))
+      hint = WorkflowTransitions.guard_recovery(run)
+      hint ? shown.merge("recovery" => hint) : shown
+    end
+
     def actions(run, reason, pane)
       build_actions(run, reason, pane).compact
     end
@@ -467,17 +482,31 @@ module Workspace
       cancel = action("workflow cancel", id)
       # An action that starts an attempt is refused once the budget is spent, so it needs --extra-attempts (at
       # least "min"). A plain resume starts one only for some steps; with a named pane (a gone pane) for more.
-      spent = WorkflowEngine.attempts_spent?(run.to_h)
-      extra = spent ? [need("extra_attempts", "--extra-attempts").merge("min" => WorkflowEngine.extra_attempts_needed(run.to_h))] : []
       budget = WorkflowBudget.reading(run.to_h)
-      extra += [need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"])] if budget && budget["spent"]
-      plain = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: nil) ? extra : []
-      with_pane = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: "%0") ? extra : []
+      deadline = WorkflowDeadline.reading(run.to_h, @clock.call)
+      # "min" is the larger of the run's shortfall and the shortfall of the step the action would start an attempt of.
+      limits = lambda do
+        needs = []
+        needs << need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"]) if budget && budget["spent"]
+        needs << need("extra_time", "--extra-time").merge("min" => deadline["needed"], "suggested" => deadline["suggested"]) if deadline && deadline["spent"]
+        needs
+      end
+      extra = lambda do |target|
+        shortfalls = []
+        shortfalls << WorkflowEngine.extra_attempts_needed(run.to_h) if WorkflowEngine.attempts_spent?(run.to_h)
+        shortfalls << WorkflowTransitions.step_extra_attempts_needed(run.to_h, target) if WorkflowTransitions.step_attempts_spent?(run.to_h, target)
+        (shortfalls.empty? ? [] : [need("extra_attempts", "--extra-attempts").merge("min" => shortfalls.max)]) + limits.call
+      end
+      here = WorkflowTransitions.target_step(run.to_h)
+      # A review round is not an attempt: a resume that starts one needs only the token and time limits.
+      round = WorkflowTransitions.starts_round?(run.to_h, from: nil) ? limits.call : []
+      plain = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: nil) ? extra.call(here) : round
+      with_pane = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: "%0") ? extra.call(here) : round
       resume = action("workflow resume", id, needs: plain)
-      from = ->(step) { action("workflow resume", id, "--from", step.to_s, needs: extra) }
+      from = ->(step) { action("workflow resume", id, "--from", step.to_s, needs: extra.call(step.to_s)) }
       focus = action("focus", run.workspace, "--pane", pane) if pane
       # A held retry would block again on the same pane: the resume has to name another one.
-      return [action("workflow resume", id, needs: [need("pane", "--pane")] + extra), cancel] if run.backoff&.dig("blocked") && run.state == "waiting"
+      return [action("workflow resume", id, needs: [need("pane", "--pane")] + extra.call(here)), cancel] if run.backoff&.dig("blocked") && run.state == "waiting"
       case reason["code"]
       when "waiting_lock"
         holder = reason.dig("details", "holder") || {}
@@ -489,7 +518,7 @@ module Workspace
         case reason.dig("details", "kind")
         when "gate"
           at = ["--step", run.current, "--attempt", run.steps.fetch(run.current).last_attempt&.n.to_s]
-          [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")] + extra), cancel]
+          [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")] + extra.call(run.current)), cancel]
         when "ask" then [action("ask answer", reason.dig("details", "ask").to_s, "--name", run.workspace, needs: [need("answer", nil)]), focus]
         when "prompt" then [focus]
         # Resume decides the step as a turn's end would; --from types the line again.
@@ -499,13 +528,17 @@ module Workspace
       when "turn_ended_incomplete" then [focus, resume, cancel]
       # A resume skips the wait and starts the retry now.
       when "retry_backoff" then [resume, cancel]
-      when "budget_spent" then [resume, cancel]
+      when "budget_spent", "run_timed_out" then [resume, cancel]
       when "failed_check"
-        # A moved HEAD or changed hooks can't pass again, and base_sha is never re-recorded: only a new run goes on.
-        if reason.dig("details", "cause") == "guard" && FINAL_GUARDS.include?(reason.dig("details", "guard"))
-          [cancel]
+        # Only a no_commit with no base_sha can never pass; any other guard stop resumes once the checkout is put back.
+        # A guard stop `resume --accept-guard` takes can also be accepted as it is, or accepted and the step run again
+        # from a new baseline; the person writes the note (`needs: ["note"]`).
+        accept = WorkflowTransitions.guard_acceptable?(run) ? [action("workflow resume", id, "--accept-guard", needs: [need("note", "--note")]),
+          action("workflow resume", id, "--accept-guard", "--retry", needs: [need("note", "--note")] + extra.call(here))] : []
+        if WorkflowTransitions.guard_unrecoverable?(run)
+          [cancel] + accept
         else
-          [resume, from.call(reason.dig("details", "step")), cancel]
+          [resume, from.call(reason.dig("details", "step"))] + accept + [cancel]
         end
       when "stalled", "idle" then [resume, cancel]
       when "pane_gone" then [action("launch", run.workspace), action("workflow resume", id, needs: with_pane), cancel]

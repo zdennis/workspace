@@ -37,6 +37,12 @@ RSpec.describe Workspace::WorkflowNeedsMe do
     expect(rows.first["next_action"]).to eq(cancel("wr_1"))
   end
 
+  it "keeps cancel first for an unrecoverable guard stop, ahead of the accept-guard forms" do
+    accept = {"action" => "workflow resume", "args" => ["wr_1", "--accept-guard"], "needs" => [{"name" => "note", "flag" => "--note"}]}
+    rows = needs_me.rows([run("wr_1", reason: reason("failed_check", actions: [cancel("wr_1"), accept]))])
+    expect(rows.first["next_action"]).to eq(cancel("wr_1"))
+  end
+
   %w[turn_ended_incomplete pane_gone].each do |code|
     it "lists #{code}" do
       expect(needs_me.rows([run("wr_1", reason: reason(code))]).map { |row| row["code"] }).to eq([code])

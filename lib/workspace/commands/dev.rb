@@ -452,7 +452,7 @@ module Workspace
         return none unless @snapshot_client && holder["worktree"].is_a?(String)
         lineage = @lineage.resolve(cwd: holder["worktree"])
         panes = Array(@snapshot_client.fetch(lineage.worktree || lineage.name)["panes"])
-          .select { |pane| !AGENTLESS_KINDS.include?(pane["kind"]) && AGENT_STATES.include?(pane["state"]) }
+          .select { |pane| !pane["review"] && !AGENTLESS_KINDS.include?(pane["kind"]) && AGENT_STATES.include?(pane["state"]) }
         return none if panes.empty?
         return ["working", nil] if panes.any? { |pane| pane["state"] == "working" }
         ["idle", panes.filter_map { |pane| pane["state_since"] }.max]
@@ -491,7 +491,7 @@ module Workspace
       #   queue behind the run like any other waiter
       def up_under_run(ctx, holder, wait:, takeover:, ready:)
         delegate = running_delegate(holder)
-        unless @bound_run && @bound_run.run_id == holder["run_id"]
+        unless @bound_run && @bound_run.author_run_id == holder["run_id"]
           return refuse_force_against_run(holder) if takeover
           return nil if wait
           running = delegate ? ", with a dev environment running for #{describe(delegate)}" : ""
@@ -583,7 +583,7 @@ module Workspace
         return if target.nil? || (target["stale"] && !run?(holder))
         return if own_hold(entry, ctx)&.fetch(:state) == :running
         return if target["worktree"] == ctx[:worktree] || holder["worktree"] == ctx[:worktree]
-        return if run?(holder) && @bound_run && @bound_run.run_id == holder["run_id"]
+        return if run?(holder) && @bound_run && @bound_run.author_run_id == holder["run_id"]
 
         name = holder_workspace_name(target)
         run_id = holder["run_id"]

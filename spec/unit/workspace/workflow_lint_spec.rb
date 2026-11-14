@@ -174,4 +174,9 @@ RSpec.describe Workspace::WorkflowLint do
     found = lint.call(definition(yaml), cwd: "/repo")
     expect(found["not_checked"]).to match([include("code" => "commands_not_checked", "message" => /bad yaml/)])
   end
+  it "checks the packs of each reviewer, naming the reviewer" do
+    text = "reviewers:\n  skeptic:\n    prompt: Doubt\n    include: [commits, missing]\nsteps:\n  a:\n    prompt: P\n    gate: approve\n    review: [skeptic]\n"
+    found = lint.call(definition(text), cwd: "/repo")["warnings"]
+    expect(found).to match([include("code" => "unknown_pack", "step" => nil, "message" => /reviewer skeptic includes pack missing.*stop when a review round starts/)])
+  end
 end

@@ -3,7 +3,7 @@ require "json"
 
 # The fixtures in spec/fixtures/workflow_runs are run files the real engine wrote under the simulator (fixed
 # clock and run id, the temporary directory replaced by /tmp/workspace-simulate, each prompt_sha256 by a token).
-# parked, swept_stall, budget_hold_extended, attempt_detail, cancelled, legacy_minimal and unknown_keys are those
+# reviewing, parked, swept_stall, budget_hold_extended, attempt_detail, cancelled, legacy_minimal and unknown_keys are those
 # files with the keys the simulator never writes added or removed by hand, in the shapes the engine writes them.
 RSpec.describe Workspace::WorkflowRun do
   let(:dir) { File.join(PROJECT_ROOT, "spec", "fixtures", "workflow_runs") }
@@ -18,8 +18,8 @@ RSpec.describe Workspace::WorkflowRun do
   end
 
   it "has a fixture for each state a run is stored in" do
-    expect(names).to include("waiting_gate", "running_attempt", "parked", "retry_backoff", "budget_spent", "budget_hold_extended",
-      "swept_stall", "attempt_detail", "completed", "cancelled", "legacy_minimal", "unknown_keys")
+    expect(names).to include("waiting_gate", "running_attempt", "parked", "retry_backoff", "budget_spent", "run_timed_out", "budget_hold_extended",
+      "swept_stall", "attempt_detail", "completed", "cancelled", "legacy_minimal", "unknown_keys", "reviewing")
   end
 
   it "gives back every fixture byte for byte" do
@@ -40,6 +40,16 @@ RSpec.describe Workspace::WorkflowRun do
   end
 
   describe "readers" do
+    it "read a step being reviewed: its round, the rounds spent and the attempt that ended checks_passed" do
+      step = run("reviewing").step("build")
+
+      expect(step.state).to eq("reviewing")
+      expect(step.review).to eq("round" => 1, "delivery" => "delivering", "started_at" => "2026-01-01T00:00:00.000Z", "pending" => ["skeptic"], "redeliveries" => 0)
+      expect(step.review_rounds).to eq(1)
+      expect(step.last_attempt.outcome).to eq("checks_passed")
+      expect(step.last_attempt.review_outcome).to be_nil
+    end
+
     it "read the run's own keys" do
       given = run("running_attempt")
 
@@ -128,6 +138,18 @@ RSpec.describe Workspace::WorkflowRun do
         expect { given = described_class.from_h(partial) }.not_to raise_error
         expect { [given.state, given.current_step, given.summary, given.steps.values.map(&:last_attempt)] }.not_to raise_error
       end
+    end
+
+    it "reads the review keys of an attempt and a step, nil when absent" do
+      given = described_class.from_h({"steps" => {"a" => {"review" => {"round" => 2}, "review_rounds" => 2,
+                                                          "attempts" => [{"n" => 1, "reviews" => [{"reviewer" => "x"}], "review_outcome" => "passed", "retry_of" => 1}]}, "b" => {}}})
+
+      expect(given.step("a").review).to eq("round" => 2)
+      expect(given.step("a").review_rounds).to eq(2)
+      expect(given.step("a").last_attempt.reviews).to eq([{"reviewer" => "x"}])
+      expect(given.step("a").last_attempt.review_outcome).to eq("passed")
+      expect(given.step("a").last_attempt.retry_of).to eq(1)
+      expect([given.step("b").review, given.step("b").review_rounds]).to eq([nil, nil])
     end
 
     it "reads nil for every key of an empty run" do

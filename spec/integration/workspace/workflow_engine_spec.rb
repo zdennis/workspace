@@ -1999,6 +1999,10 @@ RSpec.describe Workspace::WorkflowEngine do
       it "reserves the require codes so step done --code can't forge them" do
         expect(described_class::ENGINE_CODES).to include("require_commits", "require_nonempty", "require_plan_status", "require_tracked_clean", "require_command", "require_inbox_item", "require_remote_unchanged", "require_remote_unreachable", "require_exec")
       end
+
+      it "reserves the review codes" do
+        expect(described_class::ENGINE_CODES).to include("review_rejected", "review_incomplete", "review_stale", "review_tampered", "review_guard", "review_no_change")
+      end
     end
 
     describe "a produces file that is not a non-empty regular file" do
@@ -4673,6 +4677,29 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["state"]).to eq("completed")
     end
 
+    it "refuses a resume at a step that spent its own max_attempts, accepts --extra-attempts once and names the new need after" do
+      capped = definition("max_attempts: 9\nsteps:\n  a:\n    prompt: P\n    status: bin/check\n    max_attempts: 1\n")
+      start(capped, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error, /Step a of run wr_1 has spent its max_attempts \(1 of 1\)/) { |error|
+        expect(error.code).to eq("step_attempts_spent")
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "a", "attempts" => 1, "max_attempts" => 1, "needed" => 1)
+      }
+
+      run = engine.resume("wr_1", extra_attempts: 1)
+      expect(run["extra_attempts"]).to eq(1)
+      expect(run["steps"]["a"]["extra_attempts"]).to eq(1)
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1")
+
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error|
+        expect(error.code).to eq("step_attempts_spent")
+        expect(error.details).to include("attempts" => 2, "max_attempts" => 2, "needed" => 1)
+      }
+    end
+
     it "refuses a reject once max_attempts is spent, and goes on with --extra-attempts" do
       gated = definition("max_attempts: 1\nsteps:\n  plan:\n    prompt: P\n    produces: [plan.md]\n    gate: approve\n")
       start(gated, inputs: {})
@@ -5027,17 +5054,60 @@ RSpec.describe Workspace::WorkflowEngine do
     end
   end
 
+  describe "the run timeout" do
+    let(:two_steps) { definition("timeout: 1h\nsteps:\n  a:\n    prompt: A\n    status: bin/check\n  b:\n    prompt: B\n    status: bin/check\n") }
+
+    def kinds = history_lines.map { |line| line["type"] }
+
+    def held_at_b
+      start(two_steps, inputs: {})
+      now[0] += 2 * 3600
+      engine.turn_ended("wr_1", pane: "%5")
+    end
+
+    it "holds the next step once the machine time is used, starts nothing, and keeps the step as it was" do
+      run = held_at_b
+
+      expect(run).to include("state" => "waiting", "current" => "b")
+      expect(run["reason"]).to include("code" => "run_timed_out")
+      expect(run["reason"]["details"]).to include("kind" => "timeout", "step" => "b", "limit" => 3600, "needed" => 3601, "suggested" => 4500)
+      expect(run["steps"]["b"]).to eq("state" => "pending", "attempts" => [])
+      expect(run["timeout_hold"]).to eq("pane" => "%5", "identity" => {"session" => "app", "pane_slot" => "app:0.1"})
+      expect(panes.kicks.size).to eq(1)
+      expect(kinds).to include("run_timed_out")
+    end
+
+    it "lets the next step start while time is left" do
+      start(two_steps, inputs: {})
+      now[0] += 600
+
+      expect(engine.turn_ended("wr_1", pane: "%5")).to include("state" => "running", "current" => "b")
+    end
+
+    it "refuses a resume until --extra-time covers the overrun, then starts the held step" do
+      held_at_b
+      before = stored_run(store, "wr_1")
+      lines = history_lines.size
+
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error, /used its time limit \(2h 0m of 1h 0m\)\. Pass --extra-time 75m to continue \(3601s is the least\)/) { |error|
+        expect(error.code).to eq("run_timed_out")
+      }
+      expect { engine.resume("wr_1", extra_seconds: 3600) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("run_timed_out") }
+      expect(stored_run(store, "wr_1")).to eq(before)
+      expect(history_lines.size).to eq(lines)
+
+      run = engine.resume("wr_1", extra_seconds: 3601)
+
+      expect(run).to include("state" => "running", "current" => "b", "extra_seconds" => 3601, "reason" => nil)
+      expect(run).not_to have_key("timeout_hold")
+      expect(panes.kicks.size).to eq(2)
+      expect(history_lines.find { |line| line["type"] == "time_extended" }).to include("extra" => 3601, "extra_seconds" => 3601, "limit" => 7201)
+    end
+  end
+
   describe "the token budget" do
     let(:usages) { [] }
-    let(:recorder) do
-      queue = usages
-      Class.new(Workspace::WorkflowAttemptRecord) do
-        define_method(:finish) do |run:, step:, attempt:|
-          done = super(run: run, step: step, attempt: attempt)
-          queue.empty? ? done : Workspace::WorkflowRun::Attempt.from_h(done.to_h.merge("usage" => queue.shift))
-        end
-      end.new(guard: guard)
-    end
+    let(:recorder) { UsageAttemptRecord.new(usages: usages, guard: guard) }
     subject(:engine) { engine_with(attempt_record: recorder) }
 
     let(:two_steps) { definition("budget: {tokens: 1000}\nsteps:\n  a:\n    prompt: A\n    status: bin/check\n  b:\n    prompt: B\n    status: bin/check\n") }
@@ -5545,6 +5615,393 @@ RSpec.describe Workspace::WorkflowEngine do
       engine.turn_ended("wr_1", pane: "%5")
 
       expect(engine.resume("wr_1", extra_tokens: 5)).not_to have_key("extra_tokens")
+    end
+  end
+
+  describe "a step with a review" do
+    let(:gate) { "" }
+    let(:rounds) { [] }
+    # Stands in for the round's delivery: it records the round it was given and the review pane on it, as the
+    # runner's own second change will.
+    let(:round_runner) do
+      lambda do |run_id, review|
+        rounds << [run_id, review]
+        store.change(run_id) do |run|
+          hash = run.thawed
+          hash["steps"][hash["current"]]["review"].merge!("pane" => "%9", "delivery" => nil)
+          Workspace::WorkflowRun.from_h(hash)
+        end
+      end
+    end
+
+    def reviewed_engine(outcome)
+      build_engine(review_round: round_runner, review_tally: RecordingReviewTally.new(outcome: outcome, reviews: [{"reviewer" => "skeptic", "verdict" => outcome.to_s}]))
+    end
+
+    def reviewed_yaml
+      <<~YAML
+        reviewers:
+          skeptic: {prompt: Find what is wrong.}
+        steps:
+          plan:
+            prompt: Write {{artifacts}}/plan.md.
+            produces: [plan.md]
+            review: [skeptic]
+        #{gate}
+          build:
+            prompt: Build it.
+      YAML
+    end
+
+    def start_reviewed(engine)
+      engine.start(definition: definition(reviewed_yaml), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      artifact("plan.md")
+      engine.turn_ended("wr_1", pane: "%5")
+    end
+
+    it "ends the author's attempt as checks_passed and runs round 1 once the lock is given up" do
+      run = start_reviewed(reviewed_engine(:approved))
+
+      plan = run["steps"]["plan"]
+      expect(plan["state"]).to eq("reviewing")
+      expect(plan["attempts"].last["outcome"]).to eq("checks_passed")
+      expect(plan["review_rounds"]).to eq(1)
+      expect(plan["review"]).to include("round" => 1, "pane" => "%9", "pending" => ["skeptic"], "redeliveries" => 0)
+      expect(rounds).to eq([["wr_1", {"step" => "plan", "attempt" => 1, "round" => 1}]])
+      expect(run["state"]).to eq("running")
+      expect(history).to include("step_checks_passed", "review_started")
+    end
+
+    it "ignores the author's turn ending while the round runs, and goes on to the next step when the round approves" do
+      engine = reviewed_engine(:approved)
+      start_reviewed(engine)
+      now[0] += 60
+
+      expect(engine.turn_ended("wr_1", pane: "%5")["steps"]["plan"]["state"]).to eq("reviewing")
+      run = engine.turn_ended("wr_1", pane: "%9")
+
+      expect(run["current"]).to eq("build")
+      expect(run["steps"]["plan"]["state"]).to eq("passed")
+      expect(run["steps"]["plan"]["attempts"].map { |each| each["outcome"] }).to eq(["passed"])
+      expect(run["steps"]["plan"]["attempts"].last).to include("review_outcome" => {"round" => 1, "approvals" => nil, "need" => nil, "must" => nil, "passed" => true}, "reviews" => [{"reviewer" => "skeptic", "verdict" => "approved", "isolation" => "review_pane"}])
+      expect(run["steps"]["build"]["state"]).to eq("running")
+    end
+
+    it "stops the run with review_rejected when the round rejects, in the run's own reasons" do
+      engine = reviewed_engine(:rejected)
+      start_reviewed(engine)
+      now[0] += 60
+
+      run = engine.turn_ended("wr_1", pane: "%9")
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]["code"]).to eq("review_rejected")
+      expect(run["steps"]["plan"]["state"]).to eq("failed")
+      expect(run["steps"]["plan"]["attempts"].last).to include("outcome" => "failed", "review_outcome" => include("passed" => false))
+      expect(run["steps"]["plan"]["attempts"].last["reasons"].to_a.map { |each| each["code"] }).not_to include("review_rejected")
+      expect(run["reasons"].last).to include("code" => "review_rejected", "step" => "plan", "until" => nil)
+    end
+
+    context "with a gate" do
+      let(:gate) { "    gate: approve" }
+
+      it "waits at the gate after the round approves, and the approval does not review the step again" do
+        engine = reviewed_engine(:approved)
+        start_reviewed(engine)
+        waiting = engine.turn_ended("wr_1", pane: "%9")
+        expect(waiting["reason"]).to include("code" => "waiting_you")
+
+        run = engine.approve("wr_1")
+
+        expect(run["current"]).to eq("build")
+        expect(rounds.size).to eq(1)
+      end
+    end
+
+    it "starts a fresh round on a resume of a stopped one, spending a round and starting no author attempt" do
+      engine = reviewed_engine(:incomplete)
+      start_reviewed(engine)
+      now[0] += 60
+      expect(engine.turn_ended("wr_1", pane: "%9")["reason"]["code"]).to eq("review_incomplete")
+
+      run = engine.resume("wr_1")
+
+      plan = run["steps"]["plan"]
+      expect(run["state"]).to eq("running")
+      expect(plan["state"]).to eq("reviewing")
+      expect(plan["review_rounds"]).to eq(2)
+      expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed"])
+      expect(plan["attempts"].last["rounds"].map { |each| each.slice("round", "pane", "ended") }).to eq([{"round" => 1, "pane" => "%9", "ended" => "incomplete"}])
+      expect(rounds.map { |_id, review| review["round"] }).to eq([1, 2])
+    end
+
+    describe "with the verdict tally" do
+      let(:hook_dir) { File.join(@dir, "events") }
+      let(:round_dir) { File.join(worktree, ".workflow", "wr_1", "reviews", "plan.1.r1") }
+      # The round's delivery as T30's runner will record it: the review pane and the revision delivered.
+      let(:round_runner) do
+        lambda do |run_id, review|
+          rounds << [run_id, review]
+          store.change(run_id) do |run|
+            hash = run.thawed
+            hash["steps"][hash["current"]]["review"].merge!("pane" => "%9", "delivery" => nil, "revision" => "rev1")
+            Workspace::WorkflowRun.from_h(hash)
+          end
+        end
+      end
+
+      def tallied_engine
+        build_engine(review_round: round_runner, review_tally: Workspace::WorkflowReviewTally.new(proof: Workspace::ReviewVerdictProof.new(hook_dir: hook_dir)))
+      end
+
+      # The skeptic's sub-agent writes its verdict in the review pane, and the daemon logs the write with the file's hash.
+      def review_written(verdict, pane: "%9")
+        FileUtils.mkdir_p([File.join(worktree, ".git"), hook_dir])
+        text = (Workspace::WorkflowReviewTally.header_lines(reviewer: "skeptic", verdict: verdict, revision: "rev1") + ["", "Reasons."]).join("\n")
+        File.write(File.join(round_dir, "skeptic.md"), text)
+        line = {"type" => "tool_finished", "at" => "2026-11-10T12:00:00.000Z", "workspace" => "app.worktree-x", "pane_id" => pane, "boot_id" => "b", "seq" => 1,
+                "tool" => "Write", "tool_use_id" => "toolu_1", "agent_id" => "agent-1", "path" => ".workflow/wr_1/reviews/plan.1.r1/skeptic.md",
+                "sha256" => Digest::SHA256.hexdigest(text), "ok" => true}
+        File.write(Workspace::HookEventLog.path_for(hook_dir, "app.worktree-x"), JSON.generate(line) + "\n")
+      end
+
+      it "makes the round's directory, and passes the step on a proven approval" do
+        engine = tallied_engine
+        start_reviewed(engine)
+        expect(File.directory?(round_dir)).to be(true)
+        review_written("approve")
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        attempt = run["steps"]["plan"]["attempts"].last
+        expect(run["current"]).to eq("build")
+        expect(attempt["review_outcome"]).to eq("round" => 1, "approvals" => 1, "need" => 1, "must" => [], "passed" => true)
+        expect(attempt["reviews"]).to eq([{"reviewer" => "skeptic", "path" => "reviews/plan.1.r1/skeptic.md", "verdict" => "approve", "revision" => "rev1",
+                                           "agent_id" => "agent-1", "sha256" => Digest::SHA256.file(File.join(round_dir, "skeptic.md")).hexdigest, "counted" => true, "problem" => nil,
+                                           "isolation" => "review_pane"}])
+      end
+
+      it "stops review_incomplete for a verdict another pane wrote, never rejecting" do
+        engine = tallied_engine
+        start_reviewed(engine)
+        review_written("approve", pane: "%5")
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        expect(run["reason"]).to include("code" => "review_incomplete")
+        expect(run["reason"]["details"]["problem"]).to eq("no counted verdict from skeptic (other_pane)")
+        expect(run["steps"]["plan"]["state"]).to eq("reviewing")
+      end
+
+      it "stops review_tampered when the round's directory was there before the round began" do
+        FileUtils.mkdir_p(round_dir)
+        engine = tallied_engine
+        engine.start(definition: definition(reviewed_yaml), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+        artifact("plan.md")
+
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]).to include("code" => "review_tampered")
+        expect(run["steps"]["plan"]["state"]).to eq("reviewing")
+        expect(rounds).to be_empty
+      end
+    end
+
+    describe "with the round's revision computed again" do
+      let(:revision) { Workspace::WorkflowReviewRevision.new(guard: RecordingGuard.new, checker: checker) }
+      # The round's delivery as T30's runner will record it: the review pane, and the revision through the same reader.
+      let(:round_runner) do
+        lambda do |run_id, review|
+          rounds << [run_id, review]
+          store.change(run_id) do |run|
+            hash = run.thawed
+            step = hash["definition"]["steps"].find { |each| each["id"] == hash["current"] }
+            hash["steps"][hash["current"]]["review"].merge!("pane" => "%9", "delivery" => nil, "revision" => revision.call(run: run, step: step)[:revision])
+            Workspace::WorkflowRun.from_h(hash)
+          end
+        end
+      end
+
+      def revised_engine(outcome = :approved)
+        build_engine(review_round: round_runner, review_tally: RecordingReviewTally.new(outcome: outcome), review_revision: revision)
+      end
+
+      it "tallies a round whose subject did not change" do
+        engine = revised_engine
+        start_reviewed(engine)
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        expect(run["current"]).to eq("build")
+        expect(run["steps"]["plan"]["state"]).to eq("passed")
+      end
+
+      it "stops review_stale when the plan file was edited between delivery and the round's end, and a resume starts a fresh round" do
+        engine = revised_engine
+        start_reviewed(engine)
+        delivered = stored_run(store, "wr_1")["steps"]["plan"]["review"]["revision"]
+        File.write(File.join(worktree, ".workflow", "wr_1", "plan.md"), "An edited plan.\n")
+        now[0] += 60
+
+        run = engine.turn_ended("wr_1", pane: "%9")
+
+        plan = run["steps"]["plan"]
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]).to include("code" => "review_stale")
+        expect(run["reason"]["details"]).to include("revision" => delivered, "revision_now" => satisfy { |now_rev| now_rev != delivered })
+        expect(run["reasons"].last).to include("code" => "review_stale", "step" => "plan")
+        expect(plan).to include("state" => "reviewing", "review_rounds" => 1)
+        expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed"])
+        expect(rounds.size).to eq(1)
+
+        resumed = engine.resume("wr_1")
+
+        expect(resumed["steps"]["plan"]["review_rounds"]).to eq(2)
+        expect(resumed["steps"]["plan"]["attempts"].last["rounds"].map { |each| each["ended"] }).to eq(["stale"])
+        expect(rounds.map { |_id, review| review["round"] }).to eq([1, 2])
+        expect(engine.turn_ended("wr_1", pane: "%9")["current"]).to eq("build")
+      end
+    end
+
+    it "ends the round and closes its window on resume --from, keeping review_rounds" do
+      closed = []
+      engine = build_engine(review_round: round_runner, review_tally: RecordingReviewTally.new(outcome: :incomplete), review_closer: ->(run_id, found) { closed << [run_id, found] })
+      start_reviewed(engine)
+      now[0] += 60
+      engine.turn_ended("wr_1", pane: "%9")
+
+      run = engine.resume("wr_1", from: "plan")
+
+      plan = run["steps"]["plan"]
+      expect(plan["state"]).to eq("running")
+      expect(plan["review_rounds"]).to eq(1)
+      expect(plan).not_to have_key("review")
+      expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed", nil])
+      expect(closed).to eq([["wr_1", {"step" => "plan", "round" => 1, "pane" => "%9"}]])
+    end
+
+    describe "a round start past the token budget or the run's timeout" do
+      # The author's attempt ends with +usage+, as its transcript would say.
+      def recorder(usage) = UsageAttemptRecord.new(default: usage, guard: guard, clock: -> { now.first })
+
+      def limited_engine(usage: {"input_tokens" => 1200, "output_tokens" => 0})
+        build_engine(review_round: round_runner, attempt_record: recorder(usage),
+          review_tally: RecordingReviewTally.new(outcome: :approved, reviews: [{"reviewer" => "skeptic", "verdict" => "approve"}]))
+      end
+
+      def start_limited(engine, limit)
+        engine.start(definition: definition("#{limit}\n#{reviewed_yaml}"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+        artifact("plan.md")
+        engine.turn_ended("wr_1", pane: "%5")
+      end
+
+      it "holds round 1 when the author's attempt spent the budget, and --extra-tokens starts that round, not an attempt" do
+        engine = limited_engine
+        run = start_limited(engine, "budget: {tokens: 1000}")
+
+        plan = run["steps"]["plan"]
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]).to include("code" => "budget_spent")
+        expect(run["reason"]["details"]).to include("step" => "plan", "used" => 1200, "allowance" => 1000, "review_round" => 1)
+        expect(run["budget_hold"]).to eq("review_round" => 1)
+        expect(plan["state"]).to eq("reviewing")
+        expect(plan["review"]).to eq("round" => 1, "delivery" => nil)
+        expect(plan).not_to have_key("review_rounds")
+        expect(plan["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed"])
+        expect(rounds).to be_empty
+        expect(history).to include("step_checks_passed", "budget_spent")
+        expect(history).not_to include("review_started")
+
+        expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
+
+        run = engine.resume("wr_1", extra_tokens: 201)
+
+        plan = run["steps"]["plan"]
+        expect(run["state"]).to eq("running")
+        expect(run).not_to have_key("budget_hold")
+        expect(plan["state"]).to eq("reviewing")
+        expect(plan["review_rounds"]).to eq(1)
+        expect(plan["review"]).to include("round" => 1, "pane" => "%9")
+        expect(plan["attempts"].size).to eq(1)
+        expect(rounds).to eq([["wr_1", {"step" => "plan", "attempt" => 1, "round" => 1}]])
+        expect(panes.kicks.size).to eq(1)
+      end
+
+      it "holds round 1 with run_timed_out once the run's time is used, and --extra-time starts it" do
+        engine = limited_engine(usage: nil)
+        engine.start(definition: definition("timeout: 1h\n#{reviewed_yaml}"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+        artifact("plan.md")
+        now[0] += 2 * 3600
+        run = engine.turn_ended("wr_1", pane: "%5")
+
+        expect(run["reason"]).to include("code" => "run_timed_out")
+        expect(run["timeout_hold"]).to eq("review_round" => 1)
+        expect(run["steps"]["plan"]["state"]).to eq("reviewing")
+        expect(rounds).to be_empty
+
+        run = engine.resume("wr_1", extra_seconds: 3601)
+
+        expect(run["state"]).to eq("running")
+        expect(run["steps"]["plan"]["review_rounds"]).to eq(1)
+        expect(rounds.map { |_id, review| review["round"] }).to eq([1])
+      end
+
+      it "starts round 1 while the budget lasts" do
+        start_limited(limited_engine(usage: {"input_tokens" => 10, "output_tokens" => 0}), "budget: {tokens: 1000}")
+
+        expect(rounds.size).to eq(1)
+      end
+
+      it "ends a held round on cancel with no round record" do
+        engine = limited_engine
+        start_limited(engine, "budget: {tokens: 1000}")
+
+        run = engine.cancel("wr_1")
+
+        expect(run["state"]).to eq("cancelled")
+        expect(run["steps"]["plan"]).not_to have_key("review")
+        expect(run["steps"]["plan"]["attempts"].last["rounds"]).to be_nil
+      end
+    end
+
+    describe "cancel of a run being reviewed (spec/fixtures/workflow_runs/reviewing.json)" do
+      let(:transcript) { File.join(@dir, "s1.jsonl") }
+      let(:ledger_path) { File.join(@dir, "ledger.jsonl") }
+      let(:ledger) { Workspace::SessionLedger.new(path: ledger_path) }
+
+      before do
+        fixture = JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/reviewing.json")))
+        fixture["worktree"] = worktree
+        fixture["steps"]["build"]["review"]["pane"] = "%9"
+        FileUtils.mkdir_p(runs_dir)
+        File.write(File.join(runs_dir, "wr_simulated.json"), JSON.generate(fixture))
+        File.write(ledger_path, JSON.generate("workspace" => "simulation", "at" => "2026-01-01T00:00:01Z", "event" => "session_start", "pane_id" => "%9",
+          "session_id" => "s1", "transcript_path" => transcript) + "\n")
+        File.write(transcript, JSON.generate("type" => "assistant", "timestamp" => "2026-01-01T00:01:00Z",
+          "message" => {"id" => "m1", "model" => "claude-opus-5-5", "usage" => {"input_tokens" => 300, "output_tokens" => 20}}) + "\n")
+      end
+
+      it "leaves no open attempt, records the round's usage once and closes its window" do
+        closed = []
+        record = Workspace::WorkflowAttemptRecord.new(guard: guard, ledger: ledger, clock: -> { now.first })
+        engine = build_engine(attempt_record: record, review_closer: ->(run_id, found) { closed << [run_id, found] })
+
+        run = engine.cancel("wr_simulated")
+
+        build = run["steps"]["build"]
+        expect(run["state"]).to eq("cancelled")
+        expect(build["attempts"].map { |each| each["outcome"] }).to eq(["checks_passed"])
+        expect(build["attempts"].all? { |each| each["ended_at"] }).to be(true)
+        expect(build).not_to have_key("review")
+        expect(build["attempts"].last["rounds"].size).to eq(1)
+        expect(build["attempts"].last["rounds"].first).to include("round" => 1, "pane" => "%9", "ended" => "cancelled",
+          "session" => {"id" => "s1", "transcript" => transcript}, "usage" => {"input_tokens" => 300, "output_tokens" => 20})
+        expect(closed).to eq([["wr_simulated", {"step" => "build", "round" => 1, "pane" => "%9"}]])
+        expect(history("wr_simulated")).to include("review_ended", "run_cancelled")
+      end
     end
   end
 end

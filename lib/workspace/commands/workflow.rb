@@ -483,6 +483,7 @@ module Workspace
       # @raise [Workspace::Error] see {Workspace::WorkflowEngine#preflight}
       def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false)
         definition = @catalog.find(id, project: project)
+        warn_sweep_missing(definition)
         filled, from = (fill_from_branch && @branch_inputs) ? @branch_inputs.call(definition, worktree, inputs) : [inputs, {}]
         if dry_run
           pane_id = pane ? @panes.locate(workspace, pane) : @panes.default_pane(workspace, start_daemon: false)
@@ -727,20 +728,26 @@ module Workspace
       # @param pane [String, nil] move the run to this pane of its workspace
       # @param extra_attempts [Integer, nil] add this to the run's attempt allowance
       # @param extra_tokens [Integer, nil] add this to the run's token budget (see {Workspace::WorkflowEngine#resume})
+      # @param extra_seconds [Integer, nil] add this many seconds to the run's timeout
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
+      # @param accept_guard [Boolean] accept the guard stop the run waits on: the checkout as it is now becomes the
+      #   run's base, and the step passes once its other checks do (see {Workspace::WorkflowDecisions#resume}); needs +note+
+      # @param guard_retry [Boolean] with +accept_guard+, run the stopped step again instead of passing it
       # @return [Hash{String=>Object}] the action row; `outcome` is "unchanged" when an agent
       #   is working on the step or its check is still running
-      # @raise [Workspace::Error] code `bound_pane` for `--from` at a waiting gate from a pane
-      #   bound to a run, or see {Workspace::WorkflowEngine#resume}
-      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: nil)
+      # @raise [Workspace::Error] code `bound_pane` for `--from` at a waiting gate, or `--accept-guard`, from a pane
+      #   bound to a run (and `--accept-guard` from a process under the run's own pane), or see {Workspace::WorkflowEngine#resume}
+      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil,
+        accept_guard: false, guard_retry: false)
         stored = @store.run(run)
         pane_id = nil
         turn_over = nil
         unless WorkflowRunStore::TERMINAL_STATES.include?(stored.state)
           state = stored.steps.fetch(stored.current)
           refuse_bound_pane!(caller_pane, "workflow resume --from") if from && state.gate_waiting?
-          refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && checked_step?(stored)
-          @engine.refuse_resume(stored.to_h, from: from)
+          refuse_caller!(stored, caller_pane, "workflow resume --accept-guard", "A guard stop is accepted by a person") if accept_guard
+          refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && !accept_guard && checked_step?(stored)
+          @engine.refuse_resume(stored.to_h, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
           pane_id = resume_pane(stored, pane)
           if pane_id.nil? && from.nil? && state.state == "running" && stored.reason.nil? &&
               @panes.idle?(stored.workspace, @panes.pane_of(run) || stored.pane)
@@ -748,11 +755,15 @@ module Workspace
           end
         end
         target = pane_id || @panes.pane_of(run) || stored.pane
-        if !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && caller_in_pane?(stored.workspace, caller_pane, target) &&
+        # A round is delivered to the review pane, so a resume of it types nothing into the caller's pane and needs no park.
+        reviewing = from.nil? && stored.current_step&.state == "reviewing"
+        # An accepted guard stop is never parked: it is refused from the run's own pane above.
+        if !accept_guard && !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && !reviewing && caller_in_pane?(stored.workspace, caller_pane, target) &&
             @panes.parkable?(stored.workspace, target)
-          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
+          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
         end
-        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
+        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds,
+          accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane)
         row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.")
       end
 
@@ -787,12 +798,14 @@ module Workspace
       # @param step [String, nil] the gated step the caller saw
       # @param attempt [Integer, nil] that step's attempt the caller saw
       # @param extra_attempts [Integer, nil] add this to the run's attempt allowance
+      # @param extra_tokens [Integer, nil] add this to the run's token budget
+      # @param extra_seconds [Integer, nil] add this many seconds to the run's timeout
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `bound_pane`, or see {Workspace::WorkflowEngine#reject}
-      def reject(run:, note:, to: nil, step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, caller_pane: nil)
+      def reject(run:, note:, to: nil, step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil)
         guard = ->(stored) { refuse_caller!(WorkflowRun.from_h(stored), caller_pane, "workflow reject") }
-        row(@engine.reject(run, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens), "rejected")
+        row(@engine.reject(run, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds), "rejected")
       end
 
       # What the agent daemon runs when a turn ends in a bound pane, and on
@@ -833,7 +846,7 @@ module Workspace
       # @param summary [String, nil]
       # @param code [String, nil] a word for why, matching {WorkflowDefinition::CODE_PATTERN} (`usage` otherwise)
       # @return [Hash{String=>Object}] the action row
-      # @raise [Workspace::Error] code `not_bound` outside a run's pane, `step_not_running`
+      # @raise [Workspace::Error] code `not_bound` outside a run's pane, `review_pane_bound` in a review pane, `step_not_running`
       def step_done(pane:, status: "pass", summary: nil, code: nil)
         raise UsageError, "--status must be pass or fail, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
         raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || WorkflowDefinition::CODE_PATTERN.match?(code)
@@ -853,7 +866,7 @@ module Workspace
       # @param pane [String, nil] the pane the agent runs in (`$TMUX_PANE`)
       # @param json [Boolean]
       # @return [void]
-      # @raise [Workspace::Error] code `not_bound` outside a run's pane
+      # @raise [Workspace::Error] code `not_bound` outside a run's pane, `review_pane_bound` in a review pane
       def step_status(pane:, json: false)
         run = @store.run(bound_run!(pane))
         step = run.definition["steps"].find { |each| each["id"] == run.current }
@@ -889,6 +902,19 @@ module Workspace
       end
 
       private
+
+      # Says on stderr that no sweep will check a time limit when the definition has a run `timeout` or a step
+      # `timeout` and the sweep schedule is not installed. Reads the schedule's state only; with no schedule wired
+      # or one that cannot answer it says nothing.
+      def warn_sweep_missing(definition)
+        return unless @schedule
+        data = definition.to_h
+        return unless data["timeout"] || Array(data["steps"]).any? { |step| step["timeout"] }
+        return if @schedule.status["installed"]
+        @error_output.puts "Warning: #{data["id"]} sets a timeout, but the workflow sweep is not installed, so nothing enforces the timeout while no agent is working the run. Run `workspace workflow sweep --install` to install it."
+      rescue Workspace::Error
+        nil
+      end
 
       # The last {CHECK_TAIL_LINES} lines of a check log, read from its last 64 KiB.
       def log_tail(path)
@@ -1010,7 +1036,7 @@ module Workspace
         "-"
       end
 
-      QUIET_SWEEP_REASONS = %w[healthy parked checking not_running finished held idle delivering prompt timed_out backoff pane_busy already_recorded].freeze
+      QUIET_SWEEP_REASONS = %w[healthy parked checking reviewing not_running finished held idle delivering prompt timed_out backoff pane_busy already_recorded].freeze
 
       def print_sweep(rows, summary:)
         shown = rows.reject { |each| each["outcome"] == "nothing" && QUIET_SWEEP_REASONS.include?(each["reason"]) }
@@ -1375,9 +1401,9 @@ module Workspace
 
       # The caller is in the pane the resume would type into, so nothing is typed:
       # the resume is stored and the daemon carries it out once this turn ends.
-      def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil, extra_tokens: nil)
+      def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
         existing = WorkflowEngine.parked(stored.to_h, @clock.call) == :waiting
-        parked = @engine.park(stored.id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens)
+        parked = @engine.park(stored.id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
         if parked["unchanged"]
           message = "Nothing was done: #{parked["unchanged"]}."
           if existing
@@ -1401,7 +1427,7 @@ module Workspace
       # A gate is passed by a person. The check guards against an agent's mistake and is not
       # a boundary: an agent can clear `$TMUX_PANE`.
       def refuse_bound_pane!(caller_pane, verb, subject = "A gate is passed by a person")
-        bound = caller_pane && @panes.run_on(caller_pane)
+        bound = caller_pane && @panes.bound_on(caller_pane)&.fetch(:run_id)
         return unless bound
         raise Workspace::Error.new("#{subject}: this pane (#{caller_pane}) is bound to workflow run #{bound}, " \
           "so `#{verb}` is refused here. Run it from another terminal.",
@@ -1506,8 +1532,12 @@ module Workspace
       end
 
       def bound_run!(pane)
-        run_id = pane && !pane.empty? && @panes.run_on(pane)
-        return run_id if run_id
+        bound = pane && !pane.empty? && @panes.bound_on(pane)
+        if bound && bound[:role] == "reviewer"
+          raise Workspace::Error.new("This pane reviews run #{bound[:run_id]}; the step is the author\x27s, so a review pane has no step to report or read. Write your verdict file for this round and end your turn.",
+            code: "review_pane_bound", details: {"pane" => pane, "run_id" => bound[:run_id]})
+        end
+        return bound[:run_id] if bound
         raise Workspace::Error.new("This pane is not bound to a workflow run#{" (not inside tmux)" if pane.nil? || pane.empty?}.",
           code: "not_bound", details: {"pane" => pane})
       end
@@ -1545,6 +1575,7 @@ module Workspace
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
         parked = current["parked"]
         @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked
+        @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }
       end
@@ -1555,8 +1586,12 @@ module Workspace
       end
 
       def budget_sentence(details)
-        minimum = details["uncounted"].to_i.positive? ? " (at least; #{details["uncounted"]} ended attempt#{"s" unless details["uncounted"] == 1} not counted)" : ""
-        "#{delimit(details["used"])} of #{delimit(details["allowance"])} tokens#{minimum}  (resume --extra-tokens #{details["suggested"]})"
+        minimum = details["uncounted"].to_i.positive? ? " (at least; #{details["uncounted"]} ended attempt#{"s" unless details["uncounted"] == 1} or review round#{"s" unless details["uncounted"] == 1} not counted)" : ""
+        "#{delimit(details["used"])} of #{delimit(details["allowance"])} tokens#{minimum}  (resume --extra-tokens #{details["suggested"]}#{" --extra-time #{Duration.flag(details["run_timed_out"]["suggested"])}" if details["run_timed_out"].is_a?(Hash)})"
+      end
+
+      def deadline_sentence(details)
+        "the run has used #{Duration.humanize(details["used"].to_f)} of its #{Duration.humanize(details["limit"].to_f)} time limit  (resume --extra-time #{Duration.flag(details["suggested"])})"
       end
 
       def delimit(number)
@@ -1602,6 +1637,8 @@ module Workspace
           end
         when "budget_spent"
           "step #{details["step"]} was not started: #{budget_sentence(details)}"
+        when "run_timed_out"
+          "step #{details["step"]} was not started: #{deadline_sentence(details)}"
         when "retry_backoff"
           "step #{details["step"]} failed; step #{details["to"]} starts again at #{details["until"]} (after #{details["seconds"].to_f.round} seconds), or sooner with a resume"
         when "pane_gone" then "pane #{details["pane"]} of #{details["workspace"]} is not running#{": #{details["message"]}" if details["message"]}"

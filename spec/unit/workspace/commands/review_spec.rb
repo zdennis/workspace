@@ -140,6 +140,12 @@ RSpec.describe Workspace::Commands::Review do
       expect(snapshot_client).not_to have_received(:fetch)
     end
 
+    it "leaves a review window's pane out of the agent's facts" do
+      facts = review.agent_facts_from("app", panes: [pane("%2", "idle"), pane("%9", "working", "review" => "r:plan:1")])
+      expect(facts).to include("state" => "idle")
+      expect(facts["panes"].map { |p| p["pane_id"] }).to eq(["%2"])
+    end
+
     it "falls back to the recorded states when there is no daemon" do
       recorded_states["app"] = {"%2" => {"pane_id" => "%2", "kind" => "claude", "state" => "done", "since" => "t"}}
       expect(review.agent_facts_from("app", panes: nil, unavailable: "no_daemon")).to include("source" => "recorded", "state" => "done")

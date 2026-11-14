@@ -299,7 +299,7 @@ module Workspace
       # @return [String, nil] the id of the run this pane is bound to, when
       #   that run holds +name+
       def own_run_holding(store, name)
-        run_id = @bound_run&.run_id
+        run_id = @bound_run&.author_run_id
         return nil unless run_id
         holder = store.status(name).dig(name, "holder")
         run_id if LockStore.run?(holder) && holder["run_id"] == run_id && !holder["stale"]

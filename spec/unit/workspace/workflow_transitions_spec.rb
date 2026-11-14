@@ -31,6 +31,118 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe "review rounds" do
+    let(:started) { Time.utc(2026, 10, 4, 12, 0, 0) }
+    let(:window) { described_class::DELIVERY_WINDOW }
+
+    def round(**fields)
+      {"round" => 1, "delivery" => "delivering", "started_at" => started.iso8601(3), "redeliveries" => 0}.merge(fields.transform_keys(&:to_s))
+    end
+
+    def reviewing(round_fields = {}, **fields)
+      run_with(steps: {"plan" => step("reviewing", {"n" => 1, "outcome" => "checks_passed"}).merge("review" => round(**round_fields))}, **fields).tap do |run|
+        run["definition"]["redeliver"] = 2
+      end
+    end
+
+    it "is delivering within the window and, past it, while its holder is alive" do
+      expect(described_class.round_delivery(round, started + window)).to eq(:delivering)
+      holder = {"pid" => 41, "started_at" => "x"}
+      expect(described_class.round_delivery(round(holder: holder), started + window + 1, alive: ->(found) { found == holder })).to eq(:delivering)
+      expect(described_class.round_delivery(round(holder: holder), started + window + 1)).to eq(:delivering)
+    end
+
+    it "is unknown past the window with its holder gone or none recorded, and failed once a failure is stored" do
+      expect(described_class.round_delivery(round(holder: {"pid" => 41}), started + window + 1, alive: ->(_) { false })).to eq(:unknown)
+      expect(described_class.round_delivery(round, started + window + 1)).to eq(:unknown)
+      expect(described_class.round_delivery(round(started_at: "garbled"), started)).to eq(:unknown)
+      expect(described_class.round_delivery(round(delivery: "failed"), started)).to eq(:failed)
+    end
+
+    it "says nothing for a delivered round or none" do
+      expect(described_class.round_delivery(round(delivery: nil), started + window + 1)).to be_nil
+      expect(described_class.round_delivery(nil, started)).to be_nil
+    end
+
+    it "is due for a lapsed or failed delivery while redeliveries last, exhausted after" do
+      expect(described_class.round_redelivery(reviewing, started)).to be_nil
+      expect(described_class.round_redelivery(reviewing, started + window + 1)).to eq(state: :due, round: 1, retries: 0, limit: 2, mark: :unknown)
+      expect(described_class.round_redelivery(reviewing({delivery: "failed", redeliveries: 2}), started)).to eq(state: :exhausted, round: 1, retries: 2, limit: 2, mark: :failed)
+    end
+
+    it "is nil for a stopped round, a parked run or a step not being reviewed" do
+      expect(described_class.round_redelivery(reviewing({delivery: "failed"}, "reason" => {"code" => "review_incomplete"}), started)).to be_nil
+      expect(described_class.round_redelivery(reviewing({delivery: "failed"}, "parked" => {"expires_at" => started.iso8601}), started)).to be_nil
+      expect(described_class.round_redelivery(run_with(steps: {"plan" => step("running")}), started)).to be_nil
+    end
+
+    it "does not wake a run whose round has to be delivered again, since nothing on a tick redelivers it yet" do
+      expect(described_class.wakeable?(reviewing, started)).to be_nil
+      expect(described_class.wakeable?(reviewing, started + window + 1)).to be_nil
+      expect(described_class.wakeable?(reviewing({delivery: "failed"}), started)).to be_nil
+    end
+
+    describe ".lost_round?" do
+      let(:judging) { {delivery: nil, recompute: {"started_at" => started.iso8601, "try" => 1}} }
+
+      it "is true only once a recompute's mark is older than the delivery window with nothing reported back" do
+        expect(described_class.lost_round?(reviewing(judging), started + window)).to be(false)
+        expect(described_class.lost_round?(reviewing(judging), started + window + 1)).to be(true)
+      end
+
+      it "is false for a round with no recompute, a stopped round, a parked run and a step not being reviewed" do
+        late = started + window + 1
+        expect(described_class.lost_round?(reviewing({delivery: nil}), late)).to be(false)
+        expect(described_class.lost_round?(reviewing(judging, "reason" => {"code" => "review_stale"}), late)).to be(false)
+        expect(described_class.lost_round?(reviewing(judging, "parked" => {"id" => "p"}), late)).to be(false)
+        expect(described_class.lost_round?(run_with(steps: {"plan" => step("checking")}), late)).to be(false)
+      end
+
+      it "takes a mark with no readable start as lost" do
+        expect(described_class.lost_round?(reviewing({recompute: {"started_at" => "garbled", "try" => 1}}), started)).to be(true)
+      end
+
+      it "wakes the run as :round once lost, and not before" do
+        expect(described_class.wakeable?(reviewing(judging), started + window)).to be_nil
+        expect(described_class.wakeable?(reviewing(judging), started + window + 1)).to eq(:round)
+      end
+    end
+
+    it "starts no attempt on a resume of a step being reviewed" do
+      expect(described_class.starts_attempt?(reviewing({delivery: nil}, "reason" => {"code" => "review_incomplete"}), from: nil, pane: nil)).to be(false)
+      expect(described_class.starts_attempt?(reviewing, from: "plan", pane: nil)).to be(true)
+    end
+
+    it "starts no attempt but a round on a resume of a round the budget or timeout held" do
+      %w[budget_hold timeout_hold].each do |key|
+        held = reviewing({delivery: nil, started_at: nil}).merge(key => {"review_round" => 2}, "reason" => {"code" => "budget_spent"})
+        expect(described_class.round_hold?(held)).to be(true)
+        expect(described_class.starts_attempt?(held, from: nil, pane: "%0")).to be(false)
+        expect(described_class.starts_round?(held, from: nil)).to be(true)
+        expect(described_class.starts_round?(held, from: "plan")).to be(false)
+      end
+      attempt_hold = run_with(steps: {"plan" => step("failed")}).merge("budget_hold" => {"pane" => "%3"})
+      expect(described_class.round_hold?(attempt_hold)).to be(false)
+      expect(described_class.starts_attempt?(attempt_hold, from: nil, pane: nil)).to be(true)
+    end
+
+    it "starts a round on a resume of a stopped round, and not on a redelivery of a lapsed one or for another step" do
+      expect(described_class.starts_round?(reviewing({delivery: nil}, "reason" => {"code" => "review_incomplete"}), from: nil)).to be(true)
+      expect(described_class.starts_round?(reviewing({ended_at: "2026-10-04T12:05:00Z"}), from: nil)).to be(true)
+      expect(described_class.starts_round?(reviewing({delivery: "failed"}), from: nil)).to be(false)
+      expect(described_class.starts_round?(run_with(steps: {"plan" => step("failed")}), from: nil)).to be(false)
+    end
+
+    it "leaves a live round alone and lets a stopped or lapsed one be acted on" do
+      run = reviewing(delivery: nil)
+      expect(described_class.left_alone(run, run["steps"]["plan"], nil, nil, started, -> { "%3" })).to eq("the review round of step plan is still running")
+      stopped = reviewing({delivery: nil}, "reason" => {"code" => "review_incomplete"})
+      expect(described_class.left_alone(stopped, stopped["steps"]["plan"], nil, nil, started, -> { "%3" })).to be_nil
+      lapsed = reviewing
+      expect(described_class.left_alone(lapsed, lapsed["steps"]["plan"], nil, nil, started + window + 1, -> { "%3" })).to be_nil
+    end
+  end
+
   describe ".parked" do
     let(:run) { {"parked" => {"expires_at" => now.iso8601}} }
 
@@ -98,6 +210,45 @@ RSpec.describe Workspace::WorkflowTransitions do
 
     it "is never spent for a definition with no max_attempts" do
       expect(described_class.attempts_spent?(run.merge("definition" => {}))).to be(false)
+    end
+  end
+
+  describe "step attempt counts" do
+    let(:run) do
+      run_with(steps: {"a" => step("failed", {"n" => 1}, {"n" => 2, "redelivered" => true}, {"n" => 3}), "b" => step("pending")}).tap do |run|
+        run["definition"]["steps"].first["max_attempts"] = 2
+        run["steps"]["a"]["extra_attempts"] = 1
+      end
+    end
+
+    it "counts a step's attempts but those the sweep typed again" do
+      expect(described_class.step_attempts_made(run, "a")).to eq(2)
+      expect(described_class.step_attempts_made(run, "b")).to eq(0)
+    end
+
+    it "adds the step's extra attempts to its cap, and has no allowance without a cap" do
+      expect(described_class.step_allowance(run, "a")).to eq(3)
+      expect(described_class.step_allowance(run, "b")).to be_nil
+    end
+
+    it "is spent at the allowance, and never for a step with no cap or an old run" do
+      expect(described_class.step_attempts_spent?(run, "a")).to be(false)
+      run["steps"]["a"]["extra_attempts"] = 0
+      expect(described_class.step_attempts_spent?(run, "a")).to be(true)
+      expect(described_class.step_attempts_spent?(run, "b")).to be(false)
+      expect(described_class.step_attempts_spent?(run.merge("definition" => {}), "a")).to be(false)
+    end
+
+    it "needs one more than the shortfall" do
+      run["steps"]["a"]["extra_attempts"] = 0
+      expect(described_class.step_extra_attempts_needed(run, "a")).to eq(1)
+      expect(described_class.step_extra_attempts_needed(run, "b")).to be_nil
+    end
+
+    it "targets from, else a waiting retry's step, else the current step" do
+      expect(described_class.target_step(run, from: "b")).to eq("b")
+      expect(described_class.target_step(run.merge("backoff" => {"to" => "b"}))).to eq("b")
+      expect(described_class.target_step(run)).to eq("a")
     end
   end
 
@@ -273,6 +424,69 @@ RSpec.describe Workspace::WorkflowTransitions do
     it "stops on a code or cause on_fail excepts" do
       expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 2, "except" => ["check_failed"]}), failure)).to eq(kind: :stop)
       expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 2, "except" => ["check"]}), failure)).to eq(kind: :stop)
+    end
+  end
+
+  describe ".after_failure with a step cap" do
+    let(:failure) { {"cause" => "check", "code" => "check_failed"} }
+
+    def two_steps(cap, made, extra: 0)
+      run = run_with(steps: {"implement" => step("passed", *Array.new(made) { |index| {"n" => index + 1} }), "verify" => step("failed", {"n" => 1})}, current: "verify")
+        .merge("loops" => {})
+      run["definition"]["max_attempts"] = 20
+      run["definition"]["steps"][0]["max_attempts"] = cap
+      run["definition"]["steps"][1]["on_fail"] = {"goto" => "implement", "max" => 5}
+      run["steps"]["implement"]["extra_attempts"] = extra
+      run
+    end
+
+    it "loops into a target with attempts left" do
+      expect(described_class.after_failure(two_steps(2, 1), failure)).to include(kind: :loop, to: "implement")
+    end
+
+    it "stops, naming the step and limit, when the target's cap is spent" do
+      expect(described_class.after_failure(two_steps(2, 2), failure)).to eq(kind: :stop, limit: :step, step: "implement")
+    end
+
+    it "loops again once extra attempts cover it" do
+      expect(described_class.after_failure(two_steps(2, 2, extra: 1), failure)).to include(kind: :loop)
+    end
+
+    it "ignores a target with no cap" do
+      expect(described_class.after_failure(two_steps(nil, 4), failure)).to include(kind: :loop)
+    end
+  end
+
+  describe "accepting a guard stop" do
+    def guard_stop(guard, cause: "guard") = {"code" => "failed_check", "details" => {"cause" => cause, "guard" => guard}}
+
+    def stopped(reason, step_state: "failed", state: "waiting", base_sha: "a" * 40)
+      run_with(steps: {"plan" => step(step_state, {"n" => 1})}).merge("state" => state, "reason" => reason, "base_sha" => base_sha)
+    end
+
+    it "names the guard of each guard stop a person may accept, no_commit with no base_sha too" do
+      described_class::ACCEPTABLE_GUARDS.each do |guard|
+        expect(described_class.acceptable_guard(stopped(guard_stop(guard)))).to eq(guard)
+      end
+      expect(described_class.acceptable_guard(stopped(guard_stop("no_commit"), base_sha: nil))).to eq("no_commit")
+      expect(described_class::ACCEPTABLE_GUARDS).to match_array(Workspace::WorkflowGuard::CODES)
+      expect(described_class.guard_acceptable?(Workspace::WorkflowRun.from_h(stopped(guard_stop("head_moved"))))).to be true
+    end
+
+    it "takes no other stop, a warning-only guard, a run not waiting or a step not failed" do
+      expect(described_class.acceptable_guard(stopped({"code" => "failed_check", "details" => {"cause" => "check", "code" => "check_failed"}}))).to be_nil
+      expect(described_class.acceptable_guard(stopped(guard_stop("config_changed")))).to be_nil
+      expect(described_class.acceptable_guard(stopped({"code" => "waiting_you", "details" => {"cause" => "guard", "guard" => "head_moved"}}))).to be_nil
+      expect(described_class.acceptable_guard(stopped(guard_stop("head_moved"), state: "running"))).to be_nil
+      expect(described_class.acceptable_guard(stopped(guard_stop("head_moved"), step_state: "running"))).to be_nil
+      expect(described_class.acceptable_guard(stopped(nil))).to be_nil
+      expect(described_class.acceptable_guard(stopped({"code" => "failed_check", "details" => "garbled"}))).to be_nil
+      expect(described_class.guard_acceptable?(stopped(nil))).to be false
+    end
+
+    it "words the line the next attempt reads before the note" do
+      expect(described_class.guard_accepted_line("head_moved", "plan", "0123456789abcdef")).to eq("A person accepted the `head_moved` stop on `plan`; the guard now measures from HEAD `0123456789ab`.")
+      expect(described_class.guard_accepted_line("no_commit", "plan", nil)).to eq("A person accepted the `no_commit` stop on `plan`; the checkout has no commit, so the guard has no HEAD to measure from.")
     end
   end
 

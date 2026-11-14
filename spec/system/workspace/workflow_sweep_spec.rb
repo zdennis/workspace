@@ -52,9 +52,11 @@ RSpec.describe Workspace::WorkflowSweep do
     allow(lock_namespace).to receive(:resolve).with(cwd: worktree).and_return(key: "ns", display: "app", dir: lock_dir)
   end
 
-  def flow(stall: "20m", timeout: "1h", on_timeout: "warn", on_fail: nil)
+  def flow(stall: "20m", timeout: "1h", on_timeout: "warn", on_fail: nil, run_timeout: nil, run_action: nil)
     Workspace::WorkflowDefinition.parse(<<~YAML, id: "flow", source: "global", path: "/defs/flow.yml")
       #{"stall: #{stall}" if stall}
+      #{"timeout: #{run_timeout}" if run_timeout}
+      #{"timeout_action: #{run_action}" if run_action}
       steps:
         build:
           prompt: Build it.
@@ -275,6 +277,47 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "checking")
     end
 
+    it "leaves a step being reviewed alone, and does not read the author's idle pane as a stall" do
+      edit_run(store, "wr_1") { |run| run["steps"]["build"]["state"] = "reviewing" }
+      advance(1500)
+      before = stored_run(store, "wr_1")
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "reviewing")
+      expect(stored_run(store, "wr_1")).to eq(before)
+      expect(types).not_to include("step_stalled")
+    end
+
+    it "hands a round whose recompute never reported back to tick, and records no stall" do
+      edit_run(store, "wr_1") do |run|
+        run["steps"]["build"].merge!("state" => "reviewing", "review_rounds" => 1,
+          "review" => {"round" => 1, "pane" => "%9", "delivery" => nil, "recompute" => {"started_at" => now.first.utc.iso8601, "try" => 1}})
+      end
+      advance(Workspace::WorkflowTransitions::DELIVERY_WINDOW - 1)
+      expect(only_row(sweep.call(dry_run: true))).to include("outcome" => "nothing", "reason" => "reviewing")
+      advance(2)
+
+      expect(only_row(sweep.call(dry_run: true))).to include("outcome" => "dry_run", "cause" => "lost_round", "action" => "judge_again")
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "judged_again", "cause" => "lost_round")
+      expect(stored_run(store, "wr_1")["reason"]).to include("code" => "review_incomplete")
+      expect(types).not_to include("step_stalled")
+    end
+
+    it "leaves a lost round alone when allow: refuses it" do
+      edit_run(store, "wr_1") do |run|
+        run["steps"]["build"].merge!("state" => "reviewing", "review_rounds" => 1,
+          "review" => {"round" => 1, "pane" => "%9", "delivery" => nil, "recompute" => {"started_at" => now.first.utc.iso8601, "try" => 1}})
+      end
+      advance(Workspace::WorkflowTransitions::DELIVERY_WINDOW + 1)
+      before = stored_run(store, "wr_1")
+
+      row = only_row(sweep.call(allow: ->(_run) { "a person is looking at it" }))
+
+      expect(row).to include("outcome" => "nothing", "reason" => "refused", "cause" => "lost_round", "message" => "a person is looking at it")
+      expect(stored_run(store, "wr_1")).to eq(before)
+    end
+
     it "leaves a run waiting at a gate alone" do
       definition = Workspace::WorkflowDefinition.parse("stall: 20m\nsteps:\n  build:\n    prompt: B\n    gate: approve\n", id: "g", source: "global", path: "/d/g.yml")
       engine.cancel("wr_1")
@@ -449,6 +492,121 @@ RSpec.describe Workspace::WorkflowSweep do
       end
 
       expect(only_row(sweep.call)).to include("outcome" => "respawned")
+    end
+  end
+
+  describe "a run past its timeout with timeout_action: interrupt" do
+    def run_flow(**options) = begin_run(flow(timeout: nil, run_timeout: "30m", run_action: "interrupt", **options))
+
+    it "interrupts the working agent once under its own cause, and leaves the run going" do
+      run_flow
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+
+      first = only_row(sweep.call)
+      second = only_row(sweep.call)
+
+      expect(first).to include("outcome" => "interrupted", "action" => "interrupt", "cause" => "run_timed_out")
+      expect(pressed).to eq([["app.worktree-x", "%5", Workspace::AgentProvider.find("claude").interrupt_keys]])
+      expect(second).to include("outcome" => "nothing", "reason" => "already_interrupted", "cause" => "run_timed_out")
+      expect(events.count { |each| each["type"] == "step_stalled" && each["cause"] == "run_timed_out" }).to eq(1)
+      expect(events.last).to include("type" => "step_recovered", "action" => "interrupted")
+      run = stored_run(store, "wr_1")
+      expect(run["sweep"]["run_interrupt"]["state"]).to eq("sent")
+      expect(run["sweep"]).not_to have_key("interrupt")
+      expect(run["state"]).to eq("running")
+    end
+
+    it "decides the step once the interrupted agent is idle" do
+      run_flow
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+      sweep.call
+      artifact
+      pane_shows("idle", idle_seconds: 30)
+
+      expect(only_row(sweep.call)).to include("outcome" => "evaluated", "cause" => "interrupted")
+    end
+
+    it "ends held as run_timed_out, not failed or cancelled, when the next attempt would start" do
+      run_flow
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+      sweep.call
+      artifact
+      pane_shows("idle", idle_seconds: 30)
+      sweep.call
+
+      run = stored_run(store, "wr_1")
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "run_timed_out")
+      expect(run["current"]).to eq("verify")
+      expect(types).to include("run_timed_out")
+    end
+
+    it "decides a turn that ended on its own past the deadline, with no stall and either action" do
+      %w[hold interrupt].each do |action|
+        ids.replace(%w[wr_1])
+        FileUtils.rm_rf(runs_dir)
+        begin_run(flow(stall: nil, timeout: nil, run_timeout: "30m", run_action: action))
+        advance(1900)
+        artifact
+        pane_shows("idle", idle_seconds: 300)
+
+        expect(only_row(sweep.call)).to include("outcome" => "evaluated", "cause" => "idle_turn_over")
+        expect(stored_run(store, "wr_1")["reason"]).to include("code" => "run_timed_out")
+        now[0] = Time.utc(2026, 10, 4, 12, 0, 0)
+      end
+    end
+
+    it "does nothing while the run is within its limit" do
+      run_flow
+      advance(600)
+      pane_shows("working", idle_seconds: 2)
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "healthy")
+      expect(pressed).to be_empty
+    end
+
+    it "does not press for timeout_action: hold" do
+      begin_run(flow(timeout: nil, run_timeout: "30m"))
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "healthy")
+      expect(pressed).to be_empty
+    end
+
+    it "reports the plan on a dry run and writes nothing" do
+      run_flow
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+
+      expect(only_row(sweep.call(dry_run: true))).to include("outcome" => "dry_run", "cause" => "run_timed_out", "action" => "interrupt")
+      expect(pressed).to be_empty
+      expect(stored_run(store, "wr_1")["sweep"]).to be_nil
+    end
+
+    it "presses once when a step timeout with its own interrupt is due on the same attempt" do
+      begin_run(flow(timeout: "10m", on_timeout: "interrupt", run_timeout: "30m", run_action: "interrupt"))
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+
+      expect(only_row(sweep.call)).to include("outcome" => "interrupted", "cause" => "timed_out")
+      expect(only_row(sweep.call)).to include("reason" => "already_interrupted", "cause" => "timed_out")
+      expect(pressed.size).to eq(1)
+    end
+
+    it "keeps the marks apart: a step's interrupt already sent does not stop the run's own claim" do
+      run_flow
+      advance(1900)
+      pane_shows("working", idle_seconds: 2)
+      claim, at = engine.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 1900, timeout: 1800, cause: "run_timed_out")
+      expect(claim).to eq(:claimed)
+      other, = engine.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 1900, timeout: 600)
+      expect(other).to eq(:claimed)
+      expect(engine.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: at, sent: true, cause: "run_timed_out")).to eq(:recorded)
+      expect(stored_run(store, "wr_1")["sweep"].keys).to include("interrupt", "run_interrupt")
     end
   end
 
@@ -1154,6 +1312,21 @@ RSpec.describe Workspace::WorkflowSweep do
     end
   end
 
+  describe "a run held by its timeout" do
+    it "is reported as nothing with the reason run_timed_out, and names --extra-time" do
+      begin_run
+      edit_run(store, "wr_1") do |run|
+        run["state"] = "waiting"
+        run["timeout_hold"] = {}
+        run["reason"] = {"code" => "run_timed_out", "since" => "2026-10-04T12:30:00Z", "details" => {"kind" => "timeout", "step" => "build"}}
+      end
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "nothing", "reason" => "run_timed_out")
+      expect(row["message"]).to include("--extra-time")
+    end
+  end
+
   describe "a retry whose wait is over while the token budget is used" do
     let(:budgeted) do
       Workspace::WorkflowDefinition.parse(<<~YAML, id: "back", source: "global", path: "/defs/back.yml")
@@ -1338,6 +1511,33 @@ RSpec.describe Workspace::WorkflowSweep do
       advance(300)
 
       expect(only_row(sweep.call(run: "wr_1"))).to include("outcome" => "nothing", "reason" => "finished")
+    end
+  end
+
+  describe "a run held at a review round's start" do
+    def hold_round(code, hold)
+      begin_run
+      edit_run(store, "wr_1") do |run|
+        run["steps"]["build"].merge!("state" => "reviewing", "review_rounds" => 1, "review" => {"round" => 2, "delivery" => nil})
+        run.merge!("state" => "waiting", hold => {"review_round" => 2},
+          "reason" => {"code" => code, "since" => now.first.utc.iso8601, "details" => {"step" => "build", "review_round" => 2}})
+      end
+    end
+
+    it "reports budget_spent as nothing, naming the round held" do
+      hold_round("budget_spent", "budget_hold")
+
+      row = only_row(sweep.call)
+      expect(row).to include("outcome" => "nothing", "reason" => "budget_spent")
+      expect(row["message"]).to start_with("review round 2 of step build was not started: the run's token budget is used. Resume it with --extra-tokens N")
+    end
+
+    it "reports run_timed_out as nothing, naming the round held" do
+      hold_round("run_timed_out", "timeout_hold")
+
+      row = only_row(sweep.call)
+      expect(row).to include("outcome" => "nothing", "reason" => "run_timed_out")
+      expect(row["message"]).to start_with("review round 2 of step build was not started: the run's time limit is used. Resume it with --extra-time DURATION")
     end
   end
 end

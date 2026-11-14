@@ -74,7 +74,7 @@ module Workspace
     # @param output [IO] output stream for results
     # @param env [Hash] the environment; a non-empty NO_COLOR turns color off
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, sweep_schedule: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -100,6 +100,7 @@ module Workspace
       @template_validator = template_validator
       @template_status = template_status
       @template_apply = template_apply
+      @sweep_schedule = sweep_schedule
       @skills_fixed = []
       @skills_notes = []
       @file_backup = file_backup || FileBackup.new(output: output)
@@ -159,6 +160,7 @@ module Workspace
       check_agent_panes(stale - fixed)
       check_skills
       check_workflow_runs
+      check_workflow_sweep
       # A failed --fix is a `fix` row, so `doctor --fix` still exits non-zero
       # when there was nothing it could actually do.
       issues = @rows.count { |row| row[:status] == "fail" }
@@ -479,6 +481,23 @@ module Workspace
       add_row("workflow-runs", "ok", "workflow runs: none orphaned, no leaked run locks") if pending.empty? && found[:warnings].empty?
     end
 
+    # Says whether the `workflow sweep` schedule is installed and loaded. Warns, never fails, and `--fix` leaves
+    # it: installing a LaunchAgent is the person's call. Reads state only; a schedule that errors is one warning row.
+    def check_workflow_sweep
+      return unless @sweep_schedule
+      status = @sweep_schedule.status
+      if status["installed"] && status["loaded"] != false
+        add_row("workflow-sweep", "ok", "workflow sweep: installed#{" (launchctl could not say whether it is loaded)" if status["loaded"].nil?}")
+      else
+        why = status["installed"] ? "installed but not loaded" : "not installed"
+        add_row("workflow-sweep", "warn", "the workflow sweep is #{why}. This matters only for workflows that set a timeout: (on the run or on a step); without the sweep, nothing enforces it while no agent is working the run",
+          fix: "only if you use workflow timeouts: workspace workflow sweep --install", fix_command: "workspace workflow sweep --install")
+      end
+    rescue Workspace::Error => e
+      add_row("workflow-sweep", "warn", "workflow sweep: could not read its schedule: #{TerminalText.escape(e.message)}",
+        fix: "run 'workspace workflow sweep --installed' to see the error")
+    end
+
     def orphan_row(run)
       add_row("workflow-run-orphaned", "warn",
         "workflow run #{TerminalText.escape(run.id)} (#{TerminalText.escape(run.workflow)}, #{TerminalText.escape(run.state)}) is orphaned: #{TerminalText.escape(run.why)}",
@@ -748,12 +767,12 @@ module Workspace
         panes = pairs.map(&:last)
         readable = panes.select { |pane| pane["context_error"].nil? && !pane["context_pct"].nil? }
         if readable.any?
-          detail = readable.map { |pane| "pane #{pane["index"]} (#{pane["context_pct"]}% used)" }.join(", ")
+          detail = readable.map { |pane| "pane #{pane["window"] || 0}.#{pane["index"]} (#{pane["context_pct"]}% used)" }.join(", ")
           add_row("context-#{provider.key}", "ok", "#{provider.label} context usage read from #{detail}", project: project)
         end
         panes.reject { |pane| pane["context_error"].nil? }.each do |pane|
           hint = ContextReasons.fix_hint(pane["kind"])
-          add_row("context-#{provider.key}", "warn", "#{provider.label} context usage unreadable on pane #{pane["index"]} (#{pane["context_error"]})",
+          add_row("context-#{provider.key}", "warn", "#{provider.label} context usage unreadable on pane #{pane["window"] || 0}.#{pane["index"]} (#{pane["context_error"]})",
             fix: hint, hints: [hint], project: project)
         end
       end

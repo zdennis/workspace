@@ -44,7 +44,7 @@ module Workspace
     #   panes' output, which holds back idle alerts
     # @return [Array<Due>]
     def due(pane, now, session_name:, idle_alert_after:, stale:)
-      return [] if PaneStates::NOT_AGENTS.include?(pane[:kind])
+      return [] if PaneStates::NOT_AGENTS.include?(pane[:kind]) || pane[:review]
 
       unless pane[:waits].empty?
         return pane[:waits].reject { |_, wait| wait[:alerted] }.map do |agent_id, wait|
@@ -131,7 +131,8 @@ module Workspace
     # @param followups [Integer, nil] follow-ups sent, for "handoff_stalled"
     # @return [Hash{String => String}]
     def env(pane, alert, seconds, message, session_name:, followups: nil)
-      where = "#{session_name} pane 0.#{pane[:index]} (#{pane[:label]})"
+      position = "#{pane[:window] || 0}.#{pane[:index]}"
+      where = "#{session_name} pane #{position} (#{pane[:label]})"
       text = if alert == "waiting"
         "#{where} is waiting#{": #{message}" if message}"
       elsif alert == "handoff_stalled"
@@ -142,7 +143,7 @@ module Workspace
       {
         "WORKSPACE_ALERT" => alert,
         "WORKSPACE_ALERT_WORKSPACE" => session_name,
-        "WORKSPACE_ALERT_PANE" => "0.#{pane[:index]}",
+        "WORKSPACE_ALERT_PANE" => position,
         "WORKSPACE_ALERT_PANE_ID" => pane[:pane_id].to_s,
         "WORKSPACE_ALERT_KIND" => pane[:kind].to_s,
         "WORKSPACE_ALERT_SECONDS" => seconds.round.to_s,

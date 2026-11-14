@@ -23,7 +23,7 @@ RSpec.describe Workspace::PaneScanner do
       logger: logger, error_output: err, event_log: event_log, project: "proj")
   end
 
-  before { allow(tmux).to receive(:capture_pane).with("proj", 1).and_return("output") }
+  before { allow(tmux).to receive(:capture_pane_by_id).with("%2").and_return("output") }
 
   def refresh(at = now) = (@pane = scanner.refresh(pane, detail, snapshot, at))
 
@@ -33,7 +33,7 @@ RSpec.describe Workspace::PaneScanner do
 
   describe "#pane_details and #process_snapshot" do
     it "lists the session's panes and snapshots the process table" do
-      allow(tmux).to receive(:pane_details).with("proj").and_return([detail])
+      allow(tmux).to receive(:pane_details).with("proj", window: nil).and_return([detail])
       allow(process_tree).to receive(:snapshot).and_return(snapshot)
 
       expect(scanner.pane_details).to eq([detail])
@@ -70,14 +70,14 @@ RSpec.describe Workspace::PaneScanner do
       refresh(now + 40)
       expect(pane[:last_activity_at]).to eq(now)
 
-      allow(tmux).to receive(:capture_pane).with("proj", 1).and_return("more output")
+      allow(tmux).to receive(:capture_pane_by_id).with("%2").and_return("more output")
       refresh(now + 50)
       expect(pane[:last_activity_at]).to eq(now + 50)
     end
 
     it "opens a wait for an agent's waiting screen, dated by the clock" do
       agents[200] = {provider: codex, pid: 350}
-      allow(tmux).to receive(:capture_pane).with("proj", 1).and_return("  1. Sign in with ChatGPT\n")
+      allow(tmux).to receive(:capture_pane_by_id).with("%2").and_return("  1. Sign in with ChatGPT\n")
       times[0] = now + 2
 
       refresh
@@ -87,7 +87,7 @@ RSpec.describe Workspace::PaneScanner do
 
     it "ends a bound permission wait once the ready prompt is back on the screen" do
       rule = "─" * 40
-      allow(tmux).to receive(:capture_pane).with("proj", 1).and_return("#{rule}\n❯ \n#{rule}\n")
+      allow(tmux).to receive(:capture_pane_by_id).with("%2").and_return("#{rule}\n❯ \n#{rule}\n")
       pane[:waits][nil] = {since: now, tool: "Bash", input: "ls"}
 
       refresh
@@ -178,7 +178,7 @@ RSpec.describe Workspace::PaneScanner do
       allow(snapshot).to receive(:find_descendant)
         .with(200, ["claude"], hash_including(include_root: true))
         .and_return({pid: 250, command: "claude", args: "claude"})
-      allow(tmux).to receive(:capture_pane).and_return("output")
+      allow(tmux).to receive(:capture_pane_by_id).and_return("output")
     end
 
     def pane(id)
@@ -483,7 +483,7 @@ RSpec.describe Workspace::PaneScanner do
         end
 
         def scan_showing(screen)
-          allow(tmux).to receive(:capture_pane).and_return(screen)
+          allow(tmux).to receive(:capture_pane_by_id).and_return(screen)
           monitor.scan
         end
 

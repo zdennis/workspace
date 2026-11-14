@@ -402,6 +402,37 @@ RSpec.describe Workspace::Commands::Handoff do
       end
     end
 
+    it "leaves a review window's pane out when picking the default pane" do
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
+      review = claude_pane.merge("index" => 0, "pane_id" => "%8", "window" => 1, "review" => "r:s:1", "context_pct" => 42)
+      author = claude_pane.merge("index" => 1, "pane_id" => "%1", "context_pct" => 42)
+
+      with_sessions([review, author]) { command.check(name: "myapp", handoff_doc: "HANDOFF.md", json: true) }
+
+      expect(tmux).to have_received(:deliver).with("myapp", "%1", anything)
+      expect(JSON.parse(output.string)).to include("pane_id" => "%1", "window" => 0, "pane" => 1)
+    end
+
+    it "labels the pane window.index in the text output and reports window in --json" do
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
+      pane = claude_pane.merge("index" => 2, "pane_id" => "%7", "window" => 3, "context_pct" => 42)
+      allow(locator).to receive(:locate).with("myapp", "%7").and_return({id: "%7", session: "myapp"})
+
+      with_sessions([pane]) { command.check(name: "myapp", pane: "%7", handoff_doc: "HANDOFF.md") }
+
+      expect(output.string).to include("sent save-state prompt to pane 3.2")
+    end
+
+    it "names the refused pane window.index" do
+      allow(tmux).to receive(:deliver)
+      allow(locator).to receive(:locate).with("myapp", "1.2").and_return({id: "%1", session: "myapp"})
+
+      with_sessions([claude_pane.merge("kind" => "opencode", "index" => 2, "window" => 1)]) do
+        expect { command.check(name: "myapp", pane: "1.2") }
+          .to raise_error(Workspace::UsageError, /Pane 1\.2 in workspace 'myapp' is running opencode/)
+      end
+    end
+
     it "refuses an OpenCode pane, naming both agents handoff does restart" do
       allow(tmux).to receive(:deliver)
 
@@ -532,7 +563,7 @@ RSpec.describe Workspace::Commands::Handoff do
       check(json: true)
       document = JSON.parse(output.string)
       expect(document["followup"]).to eq("watching" => true, "reason" => nil)
-      expect(document.keys - ["followup"]).to eq(%w[schema_version ok status context_pct threshold pane pane_id delivery landed next doc])
+      expect(document.keys - ["followup"]).to eq(%w[schema_version ok status context_pct threshold pane window pane_id delivery landed next doc])
     end
 
     it "leaves followup out of the under-threshold and undetermined documents" do

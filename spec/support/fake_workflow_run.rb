@@ -10,6 +10,7 @@ class FakeWorkflowPanes
     @bound = {}
     @kicks = []
     @kick_result = {ok: true}
+    @kick_queue = []
     @stale = []
     @idle = []
     @turn_over = []
@@ -26,6 +27,11 @@ class FakeWorkflowPanes
   def run_on(pane)
     run_id = @bound[pane]&.fetch(:run_id)
     @stale.include?(run_id) ? nil : run_id
+  end
+
+  def bound_on(pane)
+    run_id = run_on(pane)
+    run_id && {run_id: run_id, role: "author"}
   end
 
   def pane_of(run_id) = @bound.find { |_, entry| entry[:run_id] == run_id }&.first
@@ -70,13 +76,17 @@ class FakeWorkflowPanes
     @bound[pane] = fields.merge(workspace: workspace)
   end
 
-  def unbind(run_id)
-    @bound.delete(pane_of(run_id))
+  # +role+ "reviewer" or "author" removes only that role's bindings (one bound with no role is the author's); nil removes all.
+  def unbind(run_id, role: nil)
+    @bound.delete_if { |_, entry| entry[:run_id] == run_id && (role.nil? || (entry[:role] || "author") == role) }
   end
+
+  # Answers the next kick with each result given, in order, then with +kick_result+ again.
+  def queue_kicks(*results) = @kick_queue.concat(results)
 
   def kick(**args)
     @kicks << args
-    @kick_result
+    @kick_queue.shift || @kick_result
   end
 end
 
@@ -105,6 +115,24 @@ class RunFileLiveness
   def start_time(pid = Process.pid) = "start-#{pid}"
 
   def run_alive?(run_id) = @runs.alive?(run_id)
+end
+
+# The real attempt record, whose ended attempts carry the token usage a spec gives, as a transcript would say.
+class UsageAttemptRecord < Workspace::WorkflowAttemptRecord
+  # @param usages [Array<Hash>, Hash{String=>Array<Hash>}] usages each finish takes in turn, or per step id (taken off the Arrays given)
+  # @param default [Hash, nil] the usage once those run out; nil keeps what the record found (none without a transcript)
+  def initialize(usages: [], default: nil, **rest)
+    super(**rest)
+    @usages = usages
+    @default = default
+  end
+
+  def finish(run:, step:, attempt:)
+    done = super
+    queue = @usages.is_a?(Hash) ? @usages.fetch(step["id"], []) : @usages
+    usage = queue.shift || @default
+    usage ? Workspace::WorkflowRun::Attempt.from_h(done.to_h.merge("usage" => usage)) : done
+  end
 end
 
 # The daemon's side of one connection: reads a line, answers with the next reply.

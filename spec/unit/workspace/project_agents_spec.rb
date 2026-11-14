@@ -20,6 +20,18 @@ RSpec.describe Workspace::ProjectAgents do
 
   subject(:agents) { described_class.new(client: client) }
 
+  it "leaves a review window's pane out of the panes and the counts" do
+    allow(client).to receive(:fetch).and_return("panes" => [
+      {"pane_id" => "%1", "kind" => "claude", "state" => "idle"},
+      {"pane_id" => "%9", "kind" => "claude", "state" => "waiting", "review" => "r:plan:1"}
+    ])
+
+    facts = agents.facts("app")
+
+    expect(facts["panes"].map { |pane| pane["pane_id"] }).to eq(["%1"])
+    expect(facts["counts"]).to include("idle" => 1, "waiting" => 0)
+  end
+
   it "summarizes panes, their sub-agents and per-state counts, dropping the daemon's extra fields" do
     snapshot = {"workspace" => "app", "panes" => [
       {"pane_id" => "%1", "index" => 0, "kind" => "claude", "state" => "waiting", "idle_seconds" => 4,

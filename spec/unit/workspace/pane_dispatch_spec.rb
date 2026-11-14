@@ -39,6 +39,16 @@ RSpec.describe Workspace::PaneDispatch do
     end
   end
 
+  describe "#main_pane with a review window" do
+    it "never picks a pane whose row carries a review mark, even when preferred" do
+      panes = [{"pane_id" => "%8", "kind" => "claude", "review" => "r:plan:1"}, {"pane_id" => "%2", "kind" => "claude"}]
+
+      expect(dispatch.main_pane("api", panes, preferred: "%8", what: "x")["pane_id"]).to eq("%2")
+      expect { dispatch.main_pane("api", [panes.first], preferred: nil, what: "x") }
+        .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("no_agent_pane") }
+    end
+  end
+
   describe "#main_pane" do
     let(:panes) { [{"pane_id" => "%1", "kind" => "shell"}, {"pane_id" => "%2", "kind" => "claude"}, {"pane_id" => "%3", "kind" => "codex"}] }
 
@@ -145,6 +155,70 @@ RSpec.describe Workspace::PaneDispatch do
         expect(e.code).to eq("tmux_error")
         expect(e.details).to include("pane_id" => "%23", "pane_closed" => true)
       }
+    end
+  end
+
+  describe "#await_ready for a pane made elsewhere" do
+    before { allow(tmux).to receive_messages(close_pane: true, kill_window: true, custom_socket_option: nil, capture_screen: "") }
+
+    it "waits for that pane without splitting one" do
+      spawned = dispatch.await_ready("api", "%9", "claude", window: "@4")
+
+      expect(spawned).to have_attributes(pane: "%9", closed: false, warning: nil)
+      expect(runner).not_to have_received(:call)
+      expect(readiness).to have_received(:wait).with("api", deadline: 9.0, only_pane: "%9")
+      expect(tmux).not_to have_received(:kill_window)
+    end
+
+    it "closes the whole window when the agent is never ready" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timeout"))
+
+      expect(dispatch.await_ready("api", "%9", "claude", window: "@4")).to have_attributes(closed: true, warning: nil)
+      expect(tmux).to have_received(:kill_window).with("@4")
+      expect(tmux).not_to have_received(:close_pane)
+    end
+
+    it "closes the window and names the pane in details when the wait raises" do
+      allow(readiness).to receive(:wait).and_raise(Workspace::Error.new("tmux gone", code: "tmux_error"))
+
+      expect { dispatch.await_ready("api", "%9", "claude", window: "@4") }.to raise_error(Workspace::Error) { |e|
+        expect(e.details).to include("pane_id" => "%9", "pane_closed" => true)
+      }
+      expect(tmux).to have_received(:kill_window).with("@4")
+    end
+
+    it "leaves the window open with a warning on a custom tmux socket" do
+      allow(tmux).to receive(:custom_socket_option).with("api").and_return("-L x")
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timeout"))
+
+      spawned = dispatch.await_ready("api", "%9", "claude", window: "@4")
+
+      expect(spawned).to have_attributes(closed: false)
+      expect(spawned.warning).to match(/Window @4 was left open.*custom tmux socket/)
+      expect(tmux).not_to have_received(:kill_window)
+    end
+
+    it "names the left-open window in details when the wait raises on a custom tmux socket" do
+      allow(tmux).to receive(:custom_socket_option).with("api").and_return("-L x")
+      allow(readiness).to receive(:wait).and_raise(Workspace::Error.new("tmux gone", code: "tmux_error"))
+
+      expect { dispatch.await_ready("api", "%9", "claude", window: "@4") }.to raise_error(Workspace::Error) { |e|
+        expect(e.details).to include("pane_id" => "%9", "pane_closed" => false)
+        expect(e.details["warning"]).to match(/Window @4 was left open/)
+      }
+      expect(tmux).not_to have_received(:kill_window)
+    end
+
+    it "keeps the window at a sign-in screen" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "x"))
+      allow(tmux).to receive(:capture_screen).with("%9").and_return("Welcome to Codex\n\n> 1. Sign in with ChatGPT\n  2. Provide your own API key\n")
+
+      expect(dispatch.await_ready("api", "%9", "codex", window: "@4")).to have_attributes(closed: false, waiting: "sign_in", warning: nil)
+      expect(tmux).not_to have_received(:kill_window)
+    end
+
+    it "refuses an unknown kind" do
+      expect { dispatch.await_ready("api", "%9", "nope") }.to raise_error(ArgumentError)
     end
   end
 

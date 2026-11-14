@@ -20,6 +20,9 @@ module Workspace
     # to the attempt's start, `usage` is recorded as nil rather than a count that leaves tokens out.
     MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024
 
+    # Evidence entries {#finish} keeps from before it copies: the prompt, and a review round's verdicts.
+    KEPT_EVIDENCE = %w[prompt review].freeze
+
     # An attempt's start is recorded a moment before its session's hook may have been.
     START_SLACK = 5
 
@@ -29,7 +32,12 @@ module Workspace
     MODEL = /\A[A-Za-z0-9._:\/\[\]-]{1,100}\z/
     KIND = /\A[a-z][a-z0-9_-]{0,31}\z/
     USAGE_KEYS = %w[input_tokens output_tokens cache_creation_input_tokens cache_read_input_tokens].freeze
-    private_constant :START_SLACK, :SESSION_ID, :TRANSCRIPT_PATH, :VERSION, :MODEL, :KIND, :USAGE_KEYS
+    # A sub-agent transcript's file name, and the most of them one attempt reads (more is uncounted).
+    SUBAGENT_FILE = /\Aagent-[A-Za-z0-9._-]{1,128}\.jsonl\z/
+    MAX_SUBAGENT_FILES = 64
+    # The most directory entries looked at before the attempt gives up as uncounted.
+    MAX_SUBAGENT_ENTRIES = 4096
+    private_constant :KEPT_EVIDENCE, :SUBAGENT_FILE, :MAX_SUBAGENT_FILES, :MAX_SUBAGENT_ENTRIES, :START_SLACK, :SESSION_ID, :TRANSCRIPT_PATH, :VERSION, :MODEL, :KIND, :USAGE_KEYS
 
     # @param guard [Workspace::WorkflowGuard] reads the checkout's HEAD
     # @param ledger [Workspace::SessionLedger, nil] finds an attempt's session; nil records none
@@ -86,7 +94,7 @@ module Workspace
       copies = @evidence ? @evidence.copy(run: run, step: step, attempt: attempt) : []
       attempt["outputs"] = outputs(step, run.to_h, copies)
       attempt.merge!(agent_facts(run.to_h, attempt))
-      attempt["evidence"] = Array(attempt["evidence"]).select { |each| each["kind"] == "prompt" } + copies if @evidence
+      attempt["evidence"] = Array(attempt["evidence"]).select { |each| KEPT_EVIDENCE.include?(each["kind"]) } + copies if @evidence
       WorkflowRun::Attempt.from_h(attempt)
     end
 
@@ -145,7 +153,11 @@ module Workspace
     end
 
     # Closes the current step's attempt for a run that is cancelled or whose workspace was killed, if it is
-    # still open (no `ended_at`). Never raises; a checkout that is gone gives a nil `head.after`.
+    # still open (no `ended_at`): the end fields of {#finish}, `ended_at` now and outcome `cancelled`. A
+    # `check` or `proofs` row that was running keeps its own open state (no `ended_at`, `exit_code`).
+    # Never raises; a checkout that is gone gives a nil `head.after`. A step being reviewed has no open
+    # attempt (it ended `checks_passed`), so nothing is closed here: its round is ended by
+    # {WorkflowProgress#end_round}, which records it through {#finish_round}.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] left as it is
     # @return [WorkflowRun] the run with that attempt closed; the run given, unchanged, when there was none
@@ -155,12 +167,62 @@ module Workspace
       attempt = value.current_step&.last_attempt
       return value if attempt.nil? || attempt.ended_at
       step = value.definition["steps"].find { |each| each["id"] == value.current }
-      value.with_attempt(value.current, finish(run: value, step: step, attempt: attempt))
+      # One clock read stamps the end and bounds the usage window ({#agent_facts} reads `ended_at`).
+      ended = attempt.thawed.merge("ended_at" => @clock.call.utc.iso8601, "outcome" => "cancelled")
+      value.with_attempt(value.current, finish(run: value, step: step, attempt: ended))
     rescue
       WorkflowRun.from_h(run)
     end
 
+    # How the verdicts a review round read were made: by sub-agents of the round's own review pane. Every row of a
+    # round's `reviews` carries it as `isolation`, so a later reader can tell these verdicts from any other kind.
+    ISOLATION = "review_pane"
+
+    # What an ended review round records about itself: its pane, the session that ran in that pane during the
+    # round, and that session's usage over the round's time (main thread and sub-agents, by {#finish}'s rules).
+    # A round that read verdicts (its `reviews`) gives each row `isolation` ({ISOLATION}) and copies each verdict file
+    # it read to the evidence directory ({WorkflowEvidence#review}); the copies come back as `evidence`, which the
+    # caller adds to the reviewed attempt's own `evidence`, never in place of it.
+    # Never raises: what can't be told is nil, and a round that never recorded a pane has no session or usage.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] left as it is; on the step being reviewed
+    # @param round [Hash{String=>Object}] the step's `review` ("round", "pane", "started_at", "reviews", ...)
+    # @return [Hash{String=>Object}] "round", "pane", "started_at", "ended_at", "session", "agent" and "usage"; when the
+    #   round read verdicts, also "reviews" and "evidence" (the copies; empty with no evidence collaborator)
+    def finish_round(run:, round:)
+      ended_at = round["ended_at"] || @clock.call.utc.iso8601
+      record = {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => ended_at,
+                "session" => nil, "agent" => nil, "usage" => nil}
+      reviews = marked_reviews(round["reviews"])
+      if reviews
+        record["reviews"] = reviews
+        record["evidence"] = []
+      end
+      value = WorkflowRun.from_h(run)
+      pane = round["pane"]
+      facts = (pane.is_a?(String) && !pane.empty?) ? agent_facts(value.to_h, record, pane: pane) : {}
+      record.merge!("session" => facts["session"], "agent" => facts["agent"], "usage" => facts["usage"])
+      record["evidence"] = verdict_copies(value, round, reviews) if reviews
+      record
+    rescue
+      record || {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => nil,
+                 "session" => nil, "agent" => nil, "usage" => nil}
+    end
+
     private
+
+    def marked_reviews(rows)
+      return nil unless rows.is_a?(Array)
+      rows.map { |row| row.is_a?(Hash) ? row.merge("isolation" => ISOLATION) : row }
+    end
+
+    def verdict_copies(run, round, reviews)
+      attempt = run.current_step&.last_attempt
+      return [] unless @evidence && attempt
+      @evidence.review(run: run, step_id: run.current, attempt: attempt.to_h, round: round["round"], reviews: reviews)
+    rescue
+      []
+    end
 
     def effective_reason(run)
       parked = run["parked"]
@@ -210,19 +272,19 @@ module Workspace
 
     # The agent, session and usage of the attempt that is ending. Every part is nil when it can't be told.
     #
-    # The session that counts is the latest one started in the run's pane (this workspace's, on this tmux
+    # The session that counts is the latest one started in the pane (the run's, or a review round's; this workspace's, on this tmux
     # server) at or before the attempt ended, unless it ended before the attempt began. A fresh-conversation
     # restart (and a `/clear`) starts a session after the attempt's record is made, so the last one is the
     # conversation that did the attempt's work. One that began before the attempt and never ended is chosen
     # only when its transcript has a line inside the attempt's window, since a pane id can outlive its tmux
     # server. Tokens are the main thread's, summed from transcript lines inside the attempt's own time
     # window, so a resumed attempt in the same session does not count earlier attempts.
-    def agent_facts(run, attempt)
+    def agent_facts(run, attempt, pane: run["pane"])
       none = {"agent" => nil, "session" => nil, "usage" => nil}
       started = Time.iso8601(attempt["started_at"].to_s)
       ended = attempt["ended_at"] ? Time.iso8601(attempt["ended_at"].to_s) : @clock.call
-      server = @server_for.call(run["pane"])
-      entry, ended_session = session_entry(run, started, ended, server)
+      server = @server_for.call(pane)
+      entry, ended_session = session_entry(run, pane, started, ended, server)
       return none unless entry
       kind = entry["kind"].nil? ? "claude" : entry["kind"]
       kind = nil unless kind.is_a?(String) && KIND.match?(kind)
@@ -234,16 +296,16 @@ module Workspace
         read_transcript(path, started, ended, new_file ? time(entry["at"]) : nil)
       end
       return none if carried?(entry, started, server) && !ended_session && !(read && read[:seen])
+      usage = (read && read[:ok]) ? with_subagents(read, path, entry["session_id"], started, ended) : nil
       {"session" => {"id" => entry["session_id"], "transcript" => path},
        "agent" => {"kind" => kind, "version" => read && read[:version], "model" => read && read[:model]},
-       "usage" => read && read[:usage]}
+       "usage" => usage}
     rescue
       {"agent" => nil, "session" => nil, "usage" => nil}
     end
 
     # @return [Array(Hash, Boolean), nil] the chosen SessionStart entry and whether a SessionEnd for it was seen
-    def session_entry(run, started, ended, server)
-      pane = run["pane"]
+    def session_entry(run, pane, started, ended, server)
       return nil unless @ledger && pane.is_a?(String) && !pane.empty?
       names = Array(@session_names.call(run["workspace"])).select { |name| name.is_a?(String) && !name.empty? }
       entries = @ledger.recent_entries(max_bytes: MAX_LEDGER_BYTES, matching: pane)
@@ -282,7 +344,11 @@ module Workspace
     # the tail starts after the window does (it must reach the attempt's start, or the chosen session's
     # first line when that came later), a usage line has no readable time, or a count is not a whole number
     # at least 0. Sub-agent (`isSidechain`) lines are left out.
-    def read_transcript(path, from, to, session_at)
+    #
+    # With `sidechain` true the file is a sub-agent's own transcript: its lines are all sidechain and all
+    # count, and the answer's `ok` says whether it can be trusted. A file with nothing in the window is `ok` with no `records`
+    # (and a nil `usage`).
+    def read_transcript(path, from, to, session_at, sidechain: false)
       return nil unless File.lstat(path).file?
       lines, complete = tail_lines(path)
       floor = (session_at && session_at >= from) ? session_at : from
@@ -292,7 +358,7 @@ module Workspace
       unreadable = seen = false
       lines.each_with_index do |line, index|
         entry = parse_line(line) or next
-        next if entry["isSidechain"] == true
+        next if entry["isSidechain"] == true && !sidechain
         message = (entry["type"] == "assistant" && entry["message"].is_a?(Hash)) ? entry["message"] : nil
         at = time(entry["timestamp"])
         unless at
@@ -310,8 +376,47 @@ module Workspace
         record[:model] = message["model"] if message["model"].is_a?(String) && MODEL.match?(message["model"]) && message["model"] != "<synthetic>"
       end
       counted = messages.values.select { |record| record[:usage] && record[:first] >= from && record[:first] <= to }
-      {usage: (reached && !unreadable) ? total(counted.map { |record| record[:usage] }) : nil,
+      records = counted.map { |record| record[:usage] }
+      {usage: (reached && !unreadable) ? total(records) : nil, records: records, ok: reached && !unreadable,
        model: counted.reverse_each.find { |record| record[:model] }&.fetch(:model), version: version, seen: seen}
+    rescue SystemCallError, IOError
+      nil
+    end
+
+    # The attempt's usage with its sub-agents': each `agent-*.jsonl` under `<transcript dir>/<session id>/subagents/`
+    # is read with the main transcript's window and tail rules and summed with the main thread's. The
+    # directory is derived from the session's own transcript path, never from a hook payload, and no link is
+    # followed. The session id must be the transcript file's own name (so it can never be `.` or `..` or
+    # name another directory); when it is not, the usage is nil (uncounted), as it is for a sub-agent file
+    # that can't be read whole enough, a link, a directory with too many entries or one that can't be listed.
+    # A file last written before the attempt began can't hold a line inside it and is not read or counted
+    # toward the cap of {MAX_SUBAGENT_FILES}. No such directory adds nothing.
+    def with_subagents(main, path, session_id, from, to)
+      return nil unless session_id.is_a?(String) && SESSION_ID.match?(session_id) && !%w[. ..].include?(session_id) &&
+        session_id == File.basename(path, ".jsonl")
+      session_dir = File.join(File.dirname(path), session_id)
+      dir = File.join(session_dir, "subagents")
+      [session_dir, dir].each do |each|
+        return nil unless File.lstat(each).directory?
+      end
+      seen = 0
+      names = []
+      Dir.each_child(dir) do |name|
+        return nil if (seen += 1) > MAX_SUBAGENT_ENTRIES
+        next unless SUBAGENT_FILE.match?(name)
+        next if File.lstat(File.join(dir, name)).mtime < from - START_SLACK
+        names << name
+        return nil if names.size > MAX_SUBAGENT_FILES
+      end
+      records = main[:records].dup
+      names.sort.each do |name|
+        read = read_transcript(File.join(dir, name), from, to, nil, sidechain: true)
+        return nil unless read && read[:ok]
+        records.concat(read[:records])
+      end
+      total(records)
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      main[:usage]
     rescue SystemCallError, IOError
       nil
     end

@@ -114,6 +114,12 @@ RSpec.describe Workspace::WorkflowWorkspaceFacts do
       expect(facts.call(["a"])["a"]["agent"]).to eq("idle")
     end
 
+    it "does not count a review pane that is waiting or working" do
+      answers["a"] = {"available" => true, "panes" => [{"kind" => "claude", "state" => "idle"},
+        {"kind" => "claude", "state" => "waiting", "review" => "r:plan:1"}, {"kind" => "claude", "state" => "working", "review" => "r:plan:1"}]}
+      expect(facts.call(["a"])["a"]["agent"]).to eq("idle")
+    end
+
     it "is nil when only shell panes are left" do
       answers["a"] = panes(["shell", "working"])
       expect(facts.call(["a"])["a"]["agent"]).to be_nil

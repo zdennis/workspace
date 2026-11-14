@@ -139,6 +139,85 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
   end
 
+  describe "the run timeout" do
+    it "reads timeout and timeout_action, and stores them only when written" do
+      data = parse("timeout: 8h\ntimeout_action: interrupt\n#{minimal}").to_h
+      expect(data).to include("timeout" => 28_800.0, "timeout_action" => "interrupt")
+      expect(parse("timeout: 90m\n#{minimal}").to_h).to include("timeout" => 5400.0, "timeout_action" => "hold")
+      expect(parse(minimal).to_h.keys).not_to include("timeout", "timeout_action")
+    end
+
+    it "reads an absent or bad stored timeout as none" do
+      expect(described_class.run_timeout({"timeout" => 60.0, "timeout_action" => "interrupt"})).to eq("seconds" => 60.0, "action" => "interrupt")
+      expect(described_class.run_timeout({"timeout" => 60.0})).to eq("seconds" => 60.0, "action" => "hold")
+      expect(described_class.run_timeout({"steps" => []})).to be_nil
+      expect(described_class.run_timeout({"timeout" => "soon"})).to be_nil
+      expect(described_class.run_timeout(nil)).to be_nil
+    end
+
+    it "refuses a bad duration or action" do
+      expect(problems("timeout: soon\n#{minimal}")).to include(a_string_matching(/timeout: expected a duration/))
+      expect(problems("timeout: 0\n#{minimal}")).to include(a_string_matching(/timeout: must be greater than 0/))
+      expect(problems("timeout: 1#{"0" * 400}\n#{minimal}")).to include(a_string_matching(/timeout: must be greater than 0 and at most 31536000s/))
+      expect(problems("timeout: 8761h\n#{minimal}")).to include(a_string_matching(/at most 31536000s/))
+      expect(parse("timeout: 8760h\n#{minimal}").to_h["timeout"]).to eq(31_536_000.0)
+      expect(described_class.run_timeout({"timeout" => Float::INFINITY})).to be_nil
+      expect(problems("timeout: 1h\ntimeout_action: stop\n#{minimal}")).to include(a_string_matching(/timeout_action must be hold or interrupt/))
+    end
+
+    it "warns on timeout_action without a timeout, and not otherwise" do
+      expect(parse("timeout_action: interrupt\n#{minimal}").warnings).to include(a_hash_including("code" => "timeout_action_without_timeout"))
+      expect(parse("timeout: 1h\ntimeout_action: interrupt\n#{minimal}").warnings.map { |w| w["code"] }).not_to include("timeout_action_without_timeout")
+    end
+  end
+
+  describe "a step's max_attempts" do
+    def step_problems(value)
+      problems("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n    max_attempts: #{value}\n")
+    end
+
+    it "reads a whole number of 1 or more and defaults to none" do
+      definition = parse("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n    max_attempts: 3\n  b:\n    prompt: P\n    produces: [b.md]\n")
+      expect(definition.steps.map { |step| step["max_attempts"] }).to eq([3, nil])
+      expect(described_class.step_max_attempts(definition.steps[0])).to eq(3)
+      expect(described_class.step_max_attempts(definition.steps[1])).to be_nil
+      expect(described_class.step_max_attempts({"id" => "x"})).to be_nil
+    end
+
+    it "accepts an explicit nil as none" do
+      expect(step_problems("~")).to eq([])
+    end
+
+    it "refuses 0, a string and a fraction" do
+      ["0", "\"3\"", "1.5", "-1"].each do |value|
+        expect(step_problems(value)).to include(a_string_matching(/step a: max_attempts must be a whole number of 1 or more, got/))
+      end
+    end
+  end
+
+  describe "step attempt warnings" do
+    def found(yaml, code)
+      parse(yaml).warnings.select { |w| w["code"] == code }
+    end
+
+    let(:looping) { "max_attempts: 10\nsteps:\n  a:\n    prompt: P\n    produces: [a.md]\n    max_attempts: 2\n  b:\n    prompt: P\n    produces: [b.md]\n    on_fail: {goto: a, max: 2}\n" }
+
+    it "warns when on_fail.max + 1 is above the target's cap" do
+      expect(found(looping, "on_fail_exceeds_step_attempts")).to match([include("step" => "b", "message" => /up to 3 times.*max_attempts: 2/)])
+    end
+
+    it "is quiet when the cap holds every run of the target or the target has none" do
+      expect(found(looping.sub("max_attempts: 2", "max_attempts: 3"), "on_fail_exceeds_step_attempts")).to eq([])
+      expect(found(looping.sub("    max_attempts: 2\n", ""), "on_fail_exceeds_step_attempts")).to eq([])
+    end
+
+    it "warns when a step's cap is above the run's" do
+      yaml = looping.sub("max_attempts: 10", "max_attempts: 2").sub("max_attempts: 2\n  b", "max_attempts: 5\n  b")
+      expect(found(yaml, "step_attempts_exceed_run")).to match([include("step" => "a", "message" => /max_attempts: 5.*max_attempts: 2/)])
+      expect(found(looping, "step_attempts_exceed_run")).to eq([])
+    end
+  end
+
   describe "on_fail_exceeds_max_attempts" do
     def retry_warnings(attempts, *steps)
       body = steps.map { |id, extra| "  #{id}:\n    prompt: P\n    produces: [#{id}.md]\n#{extra}" }.join
@@ -263,7 +342,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "id" => "demo", "title" => "demo", "description" => nil, "use_when" => nil, "applies_to" => [], "inputs" => {}, "include" => [], "instructions" => nil,
       "max_attempts" => 6, "stall" => nil, "redeliver" => 3, "deny" => [],
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
-                   "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn"}]
+                   "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn", "max_attempts" => nil}]
     )
   end
 
@@ -517,7 +596,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, deny, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, timeout, timeout_action, deny, reviewers, steps)",
       "schema_version must be one of 0.1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",
@@ -526,7 +605,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "input Task: required must be true or false",
       "step id \"Build\" must be lowercase letters, digits, '-' and '_'",
       "step Build needs exactly one of prompt and prompt_file",
-      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout, after)",
+      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout, max_attempts, review, after)",
       "step test: prompt uses {{inputs.nope}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: prompt uses {{secret}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: produces \"../escape.md\" must be a path under the run's artifacts directory",
@@ -831,6 +910,180 @@ RSpec.describe Workspace::WorkflowDefinition do
 
     it "refuses a require that is not a list" do
       expect(problems("steps:\n  build:\n    prompt: B.\n    require: {commits: 1}\n")).to eq(["step build: require must be a list of proofs such as - commits: 1, got {\"commits\" => 1}"])
+    end
+  end
+
+  describe "reviewers and a step's review" do
+    let(:reviewers) { "reviewers:\n  skeptic:\n    prompt: Doubt {{review.subject}} at {{review.revision}}.\n  fan:\n    title: Fan\n    prompt: Like it.\n    include: [plan-review]\n    parallel: false\n" }
+
+    def with_review(review, extra = "")
+      "#{reviewers}#{extra}steps:\n  plan:\n    prompt: P\n#{review}"
+    end
+
+    it "parses reviewers with their defaults and a bare list as from" do
+      definition = parse(with_review("    review: [skeptic, fan]\n"))
+      expect(definition.to_h["reviewers"]).to eq(
+        "skeptic" => {"title" => "skeptic", "prompt" => "Doubt {{review.subject}} at {{review.revision}}.", "include" => [], "parallel" => true},
+        "fan" => {"title" => "Fan", "prompt" => "Like it.", "include" => ["plan-review"], "parallel" => false}
+      )
+      expect(definition.steps[0]["review"]).to eq(
+        "from" => %w[skeptic fan], "need" => 2, "must" => [], "subject" => nil, "revision" => nil, "max_rounds" => 6,
+        "timeout" => 1800, "uses" => [], "context" => "fresh", "notify" => true
+      )
+      expect(described_class.reviewers(definition.to_h).keys).to eq(%w[skeptic fan])
+      expect(described_class.review(definition.steps[0])).to eq(definition.steps[0]["review"])
+    end
+
+    it "parses a full mapping" do
+      review = "    review:\n      from: [skeptic, fan]\n      need: 1\n      must: [skeptic]\n      subject: the plan, see {{artifacts}}/research.md and round {{review.round}}\n      revision: echo hi\n      max_rounds: 3\n      timeout: 10m\n      uses: [test-db]\n      context: continue\n      notify: false\n"
+      expect(parse(with_review(review)).steps[0]["review"]).to include(
+        "need" => 1, "must" => ["skeptic"], "revision" => "echo hi", "max_rounds" => 3, "timeout" => 600, "uses" => ["test-db"], "context" => "continue", "notify" => false
+      )
+    end
+
+    it "reads absence as none, so a definition stored before the keys loads" do
+      definition = parse(minimal)
+      expect(definition.to_h).not_to have_key("reviewers")
+      expect(definition.steps[0]).not_to have_key("review")
+      expect(described_class.reviewers({"steps" => []})).to eq({})
+      expect(described_class.reviewers(nil)).to eq({})
+      expect(described_class.review({"id" => "x"})).to be_nil
+      expect(described_class.review({"review" => {"from" => []}})).to be_nil
+      stored = JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/legacy_minimal.json")))
+      expect(described_class.reviewers(stored["definition"])).to eq({})
+    end
+
+    it "counts review as a proof" do
+      expect(parse(with_review("    review: [skeptic]\n")).warnings.map { |w| w["code"] }).not_to include("step_without_proof")
+      expect(parse(with_review("    review: {from: [skeptic]}\n")).warnings.map { |w| w["code"] }).not_to include("step_without_proof")
+    end
+
+    it "refuses an unknown reviewer, a repeat, and need or must that don't fit" do
+      expect(problems(with_review("    review: [skeptic, ghost]\n"))).to include(a_string_matching(/step plan: review names unknown reviewer ghost \(known: skeptic, fan\)/))
+      expect(problems("steps:\n  plan:\n    prompt: P\n    review: [a]\n")).to include(a_string_matching(/unknown reviewer a \(known: none/))
+      expect(problems(with_review("    review: [skeptic, skeptic]\n"))).to include(a_string_matching(/lists skeptic more than once/))
+      expect(problems(with_review("    review: {from: [skeptic], need: 2}\n"))).to include(a_string_matching(/need is 2, more than the 1 reviewer in from/))
+      expect(problems(with_review("    review: {from: [skeptic, fan], need: 0}\n"))).to include(a_string_matching(/need must be a whole number of 1 or more/))
+      expect(problems(with_review("    review: {from: [skeptic], must: [fan]}\n"))).to include(a_string_matching(/must lists fan, which is not in from/))
+      expect(problems(with_review("    review: {from: [skeptic, fan], need: 1, must: [skeptic, fan]}\n"))).to include(a_string_matching(/need is 1, fewer than the 2 reviewers in must/))
+    end
+
+    it "refuses a bad shape, key, value or an empty review" do
+      expect(problems(with_review("    review: {}\n"))).to include(a_string_matching(/review must be a list of reviewer names or a mapping with from/))
+      expect(problems(with_review("    review: []\n"))).to include(a_string_matching(/review must be a list/))
+      expect(problems(with_review("    review: skeptic\n"))).to include(a_string_matching(/review must be a list/))
+      expect(problems(with_review("    review: {from: [skeptic], bogus: 1}\n"))).to include(a_string_matching(/unknown key bogus/))
+      expect(problems(with_review("    review: {need: 1}\n"))).to include(a_string_matching(/review from must be a list/))
+      expect(problems(with_review("    review: {from: [skeptic], max_rounds: 0}\n"))).to include(a_string_matching(/max_rounds must be a whole number from 1 to 50/))
+      expect(problems(with_review("    review: {from: [skeptic], timeout: soon}\n"))).to include(a_string_matching(/review timeout/))
+      expect(problems(with_review("    review: {from: [skeptic], context: never}\n"))).to include(a_string_matching(/review context must be one of/))
+      expect(problems(with_review("    review: {from: [skeptic], notify: maybe}\n"))).to include(a_string_matching(/notify must be true or false/))
+      expect(problems(with_review("    review: {from: [skeptic], uses: [edit]}\n"))).to include(a_string_matching(/step plan: review: uses: edit is not a resource a run can hold; it is taken by the agent that edits/))
+    end
+
+    it "reports an invalid from once, without a bogus need problem" do
+      ["foo", "[]", "[Bad]"].each do |from|
+        found = problems(with_review("    review: {from: #{from}}\n"))
+        expect(found).to eq(["step plan: review from must be a list of reviewer names, got #{YAML.safe_load(from).inspect}"])
+      end
+      expect(problems(with_review("    review: {from: foo, need: 2}\n")).grep(/need/)).to eq([])
+    end
+
+    it "reports a repeat in must as a repeat" do
+      found = problems(with_review("    review: {from: [skeptic, fan], need: 2, must: [skeptic, skeptic]}\n"))
+      expect(found).to eq(["step plan: review must lists skeptic more than once"])
+    end
+
+    it "refuses a null on every key that has a default, and reads a null subject or revision as none" do
+      %w[need must max_rounds timeout notify context uses].each do |key|
+        found = problems(with_review("    review: {from: [skeptic], #{key}: ~}\n"))
+        expect(found).to include(a_string_matching(/review #{key} .*got nothing/)), "#{key}: #{found.inspect}"
+      end
+      review = parse(with_review("    review: {from: [skeptic], subject: ~, revision: ~}\n")).steps[0]["review"]
+      expect(review).to include("subject" => nil, "revision" => nil)
+      expect(problems("reviewers:\n  a: {prompt: x, parallel: ~}\n#{minimal}")).to include(a_string_matching(/parallel must be true or false, got nothing/))
+    end
+
+    it "refuses the reviewer name summary, which would be the engine's summary.md" do
+      expect(problems("reviewers:\n  summary: {prompt: x}\n#{minimal}")).to include("reviewer name summary is reserved: its verdict file would be the engine's summary.md")
+      expect { parse("reviewers:\n  summary: {prompt: x}\n#{minimal}") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+
+    it "refuses a reviewer whose prompt is null" do
+      expect(problems("reviewers:\n  a: {prompt: ~}\n#{minimal}")).to include("reviewer a: prompt must be text, got nothing")
+      expect(problems("reviewers:\n  a: {prompt: ~, prompt_file: ~}\n#{minimal}")).not_to be_empty
+    end
+
+    it "refuses a bad reviewers mapping" do
+      expect(problems("reviewers: [a]\n#{minimal}")).to include(a_string_matching(/reviewers must be a mapping/))
+      expect(problems("reviewers:\n  Bad-Name:\n    prompt: x\n#{minimal}")).to include(a_string_matching(/reviewer name "Bad-Name" must be lowercase/))
+      expect(problems("reviewers:\n  a: nope\n#{minimal}")).to include(a_string_matching(/reviewer a must be a mapping/))
+      expect(problems("reviewers:\n  a: {title: T}\n#{minimal}")).to include(a_string_matching(/reviewer a needs exactly one of prompt and prompt_file/))
+      expect(problems("reviewers:\n  a: {prompt: x, prompt_file: y}\n#{minimal}")).to include(a_string_matching(/exactly one of prompt and prompt_file/))
+      expect(problems("reviewers:\n  a: {prompt: x, agent: claude}\n#{minimal}")).to include(a_string_matching(/reviewer a has unknown key agent/))
+      expect(problems("reviewers:\n  a: {prompt: x, parallel: 1}\n#{minimal}")).to include(a_string_matching(/parallel must be true or false/))
+    end
+
+    it "reads a reviewer's prompt_file beside the definition" do
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, "skeptic.md"), "Doubt {{review.previous}}.\n")
+        definition = described_class.parse("reviewers:\n  s: {prompt_file: skeptic.md}\n#{minimal}", id: "demo", source: "global", path: File.join(dir, "demo.yml"))
+        expect(definition.to_h["reviewers"]["s"]["prompt"]).to eq("Doubt {{review.previous}}.\n")
+      end
+    end
+
+    it "allows the review placeholders only in a reviewer's prompt and a review subject" do
+      expect(problems("reviewers:\n  a: {prompt: 'x {{review.nope}}'}\n#{minimal}")).to include(a_string_matching(/reviewer a: prompt uses \{\{review.nope\}\}.*review.verdict_path/))
+      expect(problems("steps:\n  build:\n    prompt: 'see {{review.round}}'\n")).to include(a_string_matching(/step build: prompt uses \{\{review.round\}\}/))
+      expect(problems("instructions: '{{review.subject}}'\n#{minimal}")).to include(a_string_matching(/instructions uses \{\{review.subject\}\}/))
+      expect(problems(with_review("    review: {from: [skeptic], subject: 'x {{review.subject}}'}\n"))).to include(a_string_matching(/review subject uses \{\{review.subject\}\}/))
+      expect(problems(with_review("    review: {from: [skeptic], subject: 'x {{inputs.nope}}'}\n"))).to include(a_string_matching(/review subject uses \{\{inputs.nope\}\}/))
+    end
+
+    it "keeps reviewers in the stored copy" do
+      stored = JSON.parse(JSON.generate(parse(with_review("    review: [skeptic]\n")).to_h))
+      expect(stored["reviewers"].keys).to eq(%w[skeptic fan])
+      expect(stored["steps"][0]["review"]["from"]).to eq(["skeptic"])
+    end
+  end
+  describe "review round warnings" do
+    def warned(yaml, code)
+      parse(yaml).warnings.select { |w| w["code"] == code }
+    end
+
+    def reviewed(run_cap: 10, cap: nil, rounds: 3, extra: "")
+      "max_attempts: #{run_cap}\nreviewers:\n  skeptic:\n    prompt: Doubt\nsteps:\n  a:\n    prompt: P\n    produces: [a.md]\n#{"    max_attempts: #{cap}\n" if cap}    review: {from: [skeptic], max_rounds: #{rounds}}\n  b:\n    prompt: Q\n    produces: [b.md]\n#{extra}"
+    end
+
+    it "warns when max_rounds reaches the step's own cap" do
+      expect(warned(reviewed(cap: 3), "review_rounds_reach_step_attempts")).to match([include("step" => "a", "message" => /max_rounds: 3.*max_attempts: 3.*Set the step.s max_attempts: 4 or review.max_rounds: 2/)])
+      expect(warned(reviewed(cap: 4), "review_rounds_reach_step_attempts")).to eq([])
+      expect(warned(reviewed, "review_rounds_reach_step_attempts")).to eq([])
+    end
+
+    it "warns when the run's cap leaves fewer attempts than max_rounds" do
+      expect(warned(reviewed(run_cap: 3), "review_rounds_exceed_run_attempts")).to match([include("step" => "a", "message" => /max_rounds: 3.*max_attempts: 3 leaves 2 attempts.*max_attempts: 4 or review.max_rounds: 2/)])
+      expect(warned(reviewed(run_cap: 4), "review_rounds_exceed_run_attempts")).to eq([])
+    end
+
+    it "counts the review rounds of a step inside an on_fail loop" do
+      loop_text = reviewed(run_cap: 7, extra: "    on_fail: {goto: a, max: 2}\n")
+      expect(warned(loop_text, "on_fail_exceeds_max_attempts")).to match([include("step" => "b", "message" => /if every review round is used.*each retry runs 4 attempts again.*Raise max_attempts to 9/)])
+      expect(warned(loop_text.sub("max_rounds: 3", "max_rounds: 1"), "on_fail_exceeds_max_attempts")).to eq([])
+    end
+    it "words an on_fail count with a reviewed step as the worst case, and counts research, a reviewed plan and implement by hand" do
+      yaml = "max_attempts: 8\nreviewers:\n  skeptic:\n    prompt: D\nsteps:\n  research:\n    prompt: R\n    produces: [r.md]\n  plan:\n    prompt: P\n    produces: [p.md]\n    review: {from: [skeptic], max_rounds: 3}\n  implement:\n    prompt: I\n    produces: [i.md]\n    on_fail: {goto: plan, max: 2}\n"
+      found = parse(yaml).warnings.select { |w| w["code"] == "on_fail_exceeds_max_attempts" }
+      expect(found).to match([include("message" => /lets only 1 of those retries start if every review round is used \(the step then fails first on attempt 5, and each retry runs 4 attempts again\).*Raise max_attempts to 10/)])
+    end
+
+    it "names the values to set for the default max_rounds and max_attempts" do
+      yaml = "reviewers:\n  skeptic:\n    prompt: D\nsteps:\n  a:\n    prompt: P\n    produces: [a.md]\n    review: [skeptic]\n  b:\n    prompt: Q\n    produces: [b.md]\n"
+      expect(parse(yaml).warnings.select { |w| w["code"] == "review_rounds_exceed_run_attempts" }).to match([include("message" => /set max_attempts: 7 or review.max_rounds: 5/i)])
+    end
+
+    it "has no extends notes, and no warning from them, for a definition that extends nothing" do
+      expect(parse("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n").warnings).to eq([])
     end
   end
 end

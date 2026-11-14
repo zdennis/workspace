@@ -73,7 +73,7 @@ module Workspace
     #
     # @param workspaces [Array<String>] the names the workspace's entries were recorded under
     # @return [Array<Hash{String=>Object}>] one record per slot: `pane_slot`, `pane_id`, `tmux_server`, `session_id`,
-    #   `transcript_path`, `cwd`, `layout`, `at`, and for a session that
+    #   `transcript_path`, `cwd`, `layout`, `at`, `kind` and `role` when recorded, and for a session that
     #   ended `ended_at` and `end_reason`; empty when there is no ledger
     # @raise [SystemCallError] if the ledger exists but can't be read
     def slots_for(*workspaces)
@@ -229,7 +229,7 @@ module Workspace
     private
 
     RENAMED = "renamed"
-    SLOT_FIELDS = %w[pane_slot pane_id tmux_server session_id transcript_path cwd layout at kind].freeze
+    SLOT_FIELDS = %w[pane_slot pane_id tmux_server session_id transcript_path cwd layout at kind role].freeze
     private_constant :SLOT_FIELDS
 
     def existing_slots(workspace, session)

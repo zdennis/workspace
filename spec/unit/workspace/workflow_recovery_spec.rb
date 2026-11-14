@@ -80,6 +80,33 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(evaluation.calls).to eq([[:evaluate, "build"], [:finish_check, "wr_1", {"kind" => "status"}]])
     end
 
+    it "judges again the end of a review round whose recompute never reported back, the recompute outside the lock" do
+      round = {"round" => 1, "pane" => "%9", "recompute" => {"started_at" => "2026-11-10T11:00:00Z", "try" => 1}}
+      stored(run_hash(step_state: "reviewing").tap { |hash| hash["steps"]["build"]["review"] = round })
+
+      run = recovery.tick("wr_1")
+
+      expect(run.id).to eq("wr_1")
+      expect(evaluation.calls).to eq([[:review_ended, "build"], [:review_end, "wr_1", {"step" => "build"}]])
+    end
+
+    it "leaves a review round's recompute alone while it may still report back" do
+      round = {"round" => 1, "pane" => "%9", "recompute" => {"started_at" => "2026-11-10T11:59:00Z", "try" => 1}}
+      stored(run_hash(step_state: "reviewing").tap { |hash| hash["steps"]["build"]["review"] = round })
+
+      expect(recovery.tick("wr_1")).to be_nil
+      expect(evaluation.calls).to be_empty
+    end
+
+    it "follows up a review round the tick registered, outside the lock" do
+      evaluation = RecordingEvaluation.new(store.runs, review: {"round" => 1})
+      stored(run_hash(step_state: "checking", attempt: {"check" => {"started_at" => "2026-11-10T11:00:00Z"}}))
+
+      described_class.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, clock: -> { now }).tick("wr_1")
+
+      expect(evaluation.calls).to eq([[:evaluate, "build"], [:review_round, "wr_1", {"round" => 1}]])
+    end
+
     it "answers nil for a run nothing wakes" do
       stored
 
@@ -142,6 +169,16 @@ RSpec.describe Workspace::WorkflowRecovery do
   end
 
   describe "#recover" do
+    it "follows up a review round the recovered turn registered, outside the lock" do
+      evaluation = RecordingEvaluation.new(store.runs, review: {"round" => 1})
+      stored
+
+      described_class.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, clock: -> { now })
+        .recover("wr_1", turn_over: {"step" => "build", "attempt" => 1}, cause: "idle_turn_over")
+
+      expect(evaluation.calls).to eq([[:evaluate, "build"], [:review_round, "wr_1", {"round" => 1}]])
+    end
+
     it "decides a turn that ended unseen and runs the check it registers" do
       evaluation = RecordingEvaluation.new(store.runs, check: {"kind" => "status"})
       stored
@@ -267,6 +304,22 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(recovery.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: outcome.last, sent: true)).to eq(:recorded)
       expect(store.runs["wr_1"]["sweep"]["interrupt"]).to eq("state" => "sent", "at" => "2026-11-10T12:00:00Z")
       expect(event_types.map(&:first)).to eq(%w[step_stalled step_recovered])
+    end
+
+    it "keeps the run's own cause apart from the step's" do
+      stored
+      step_claim = recovery.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 700, timeout: 600)
+      run_claim = recovery.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 700, timeout: 650, cause: "run_timed_out")
+      expect(run_claim.first).to eq(:claimed)
+      expect(recovery.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 700, timeout: 650, cause: "run_timed_out")).to eq(:repeat)
+
+      expect(recovery.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: run_claim.last, sent: true, cause: "run_timed_out")).to eq(:recorded)
+      marks = store.runs["wr_1"]["sweep"]
+      expect(marks["run_interrupt"]["state"]).to eq("sent")
+      expect(marks["interrupt"]["state"]).to eq("pending")
+      expect(marks["stalled"].keys).to eq(%w[timed_out run_timed_out])
+      expect(marks["recovered"].keys).to eq(%w[run_timed_out])
+      expect(step_claim.first).to eq(:claimed)
     end
 
     it "lets a later sweep take over a pending claim past its hold" do

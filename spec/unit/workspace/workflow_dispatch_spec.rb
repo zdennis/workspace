@@ -112,12 +112,103 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(run.state).to eq("running")
     end
 
+    context "with a run timeout" do
+      let(:timed) do
+        run_hash("definition" => run_hash["definition"].merge("timeout" => 3600),
+          "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "started_at" => "2026-11-10T10:00:00.000Z"}]}})
+      end
+
+      it "holds the attempt once the machine time is used, keeping the context for the resume" do
+        run = dispatch.dispatch(timed, ctx: ctx, context: "fresh")
+
+        expect(run.timeout_hold).to eq("context" => "fresh", "pane" => "%3", "identity" => "identity-of-wr_1")
+        expect(run.budget_hold).to be_nil
+        expect(run.state).to eq("waiting")
+        expect(run.reason).to include("code" => "run_timed_out")
+        expect(run.reason["details"]).to include("kind" => "timeout", "run_id" => "wr_1", "step" => "plan", "used" => 7200, "limit" => 3600, "needed" => 3601, "suggested" => 4500)
+        expect(run.step("plan").attempts.size).to eq(1)
+        expect(change.events.last).to eq(["wr_1", "run_timed_out", {"used" => 7200.0, "limit" => 3600, "timeout" => 3600, "extra_seconds" => 0, "step" => "plan"}])
+      end
+
+      it "starts the attempt when told not to hold it (a redelivery), when the lock wait it ends was allowed, or when --extra-time covers it" do
+        expect(dispatch.dispatch(timed, ctx: ctx, budgeted: false).step("plan").attempts.map(&:n)).to eq([1, 2])
+        waited = timed.merge("reason" => {"code" => "waiting_lock", "since" => "2026-11-10T11:00:00Z", "details" => {}})
+        expect(dispatch.dispatch(waited, ctx: ctx).timeout_hold).to be_nil
+        extended = timed.merge("extra_seconds" => 3601)
+        expect(dispatch.dispatch(extended, ctx: ctx).state).to eq("running")
+      end
+
+      it "holds under both limits when the token budget is spent too, naming the budget and carrying the timeout's details" do
+        both = timed.merge("definition" => timed["definition"].merge("budget" => {"tokens" => 100}))
+        both["steps"]["plan"]["attempts"][0]["usage"] = {"input_tokens" => 150}
+
+        run = dispatch.dispatch(both, ctx: ctx, context: "fresh")
+
+        expect(run.reason).to include("code" => "budget_spent")
+        expect(run.reason["details"]["run_timed_out"]).to include("kind" => "timeout", "limit" => 3600)
+        expect(run.budget_hold).to eq(run.timeout_hold)
+        expect(change.events.map { |event| event[1] }.last(2)).to eq(%w[budget_spent run_timed_out])
+      end
+    end
+
     it "leaves the run waiting for a person when the checkout is gone" do
       run = dispatch.dispatch(run_hash("worktree" => File.join(@dir, "gone")), ctx: ctx)
 
       expect(run.state).to eq("waiting")
       expect(run.reason["details"]).to include("kind" => "dispatch", "error" => "error", "message" => "the checkout #{File.join(@dir, "gone")} is gone")
       expect(resources.calls.map(&:first)).to eq([:release])
+    end
+  end
+
+  describe "#hold_round" do
+    def reviewing(**overrides)
+      run_hash("state" => "running", "definition" => run_hash["definition"].merge(overrides),
+        "steps" => {"plan" => {"state" => "reviewing", "review_rounds" => 1,
+                               "attempts" => [{"n" => 1, "started_at" => "2026-11-10T10:00:00.000Z", "ended_at" => "2026-11-10T10:30:00Z",
+                                               "outcome" => "checks_passed", "usage" => {"input_tokens" => 150}}]}})
+    end
+
+    it "holds a round past the token budget with budget_spent, recording the round and no pane, and gives up the locks" do
+      given = reviewing("budget" => {"tokens" => 100})
+      before = deep_copy(given)
+
+      run = dispatch.hold_round(given, round: 2)
+
+      expect(given).to eq(before)
+      expect(run.budget_hold).to eq("review_round" => 2)
+      expect(run.timeout_hold).to be_nil
+      expect(run.state).to eq("waiting")
+      expect(run.reason).to include("code" => "budget_spent")
+      expect(run.reason["details"]).to include("kind" => "budget", "step" => "plan", "used" => 150, "allowance" => 100, "review_round" => 2)
+      expect(run.step("plan").state).to eq("reviewing")
+      expect(resources.calls.map(&:first)).to eq([:release])
+      expect(change.events.last).to eq(["wr_1", "budget_spent", {"used" => 150, "allowance" => 100, "counted" => 1, "uncounted" => 0, "step" => "plan"}])
+    end
+
+    it "holds a round past the run's timeout with run_timed_out" do
+      run = dispatch.hold_round(reviewing("timeout" => 3600), round: 1)
+
+      expect(run.timeout_hold).to eq("review_round" => 1)
+      expect(run.budget_hold).to be_nil
+      expect(run.reason).to include("code" => "run_timed_out")
+      expect(run.reason["details"]).to include("kind" => "timeout", "limit" => 3600, "review_round" => 1)
+    end
+
+    it "holds under both limits with the one record, naming the budget" do
+      run = dispatch.hold_round(reviewing("budget" => {"tokens" => 100}, "timeout" => 3600), round: 1)
+
+      expect(run.reason["code"]).to eq("budget_spent")
+      expect(run.budget_hold).to eq(run.timeout_hold)
+      expect(run.reason["details"]["run_timed_out"]).to include("limit" => 3600)
+    end
+
+    it "lets the round start within the limits, with no limits, and on a wake from a lock wait" do
+      expect(dispatch.hold_round(reviewing("budget" => {"tokens" => 1000}, "timeout" => 36_000), round: 1)).to be_nil
+      expect(dispatch.hold_round(reviewing, round: 1)).to be_nil
+      waited = reviewing("budget" => {"tokens" => 100}, "timeout" => 3600).merge("reason" => {"code" => "waiting_lock", "since" => "2026-11-10T11:00:00Z", "details" => {}})
+      expect(dispatch.hold_round(waited, round: 1)).to be_nil
+      expect(change.events).to be_empty
+      expect(resources.calls).to be_empty
     end
   end
 
@@ -185,6 +276,15 @@ RSpec.describe Workspace::WorkflowDispatch do
       }
       expect { dispatch.check_pane("%4") }.not_to raise_error
       expect { dispatch.check_pane(nil) }.not_to raise_error
+    end
+
+    it "refuses a review pane of a run still going, for any run, so an agent is never started in it" do
+      panes = RecordingWorkflowPanes.new(reviewing: {"%7" => "wr_9"})
+      going << "wr_9"
+      dispatch = described_class.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
+        guard: guard, clock: -> { now })
+
+      expect { dispatch.check_pane("%7", run_id: "wr_9") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("pane_has_run") }
     end
 
     it "refuses a pane a parked run waits for, but not to the run that parked" do

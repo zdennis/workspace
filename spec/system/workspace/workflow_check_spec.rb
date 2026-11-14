@@ -39,6 +39,16 @@ RSpec.describe Workspace::WorkflowCheck do
     expect(File.read(log)).to eq("#{@dir}\nto-stderr\n")
   end
 
+  it "sends stderr to err_log when given, so the log holds stdout alone" do
+    err_log = File.join(@dir, "steps", "verify.1.check.err")
+
+    result = check.call(command: "echo to-stdout && echo to-stderr >&2", cwd: @dir, timeout: 30, log: log, err_log: err_log)
+
+    expect(result).to eq(exit_code: 0, timed_out: false)
+    expect(File.read(log)).to eq("to-stdout\n")
+    expect(File.read(err_log)).to eq("to-stderr\n")
+  end
+
   it "reports the exit status of a command that fails" do
     expect(check.call(command: "echo broken; exit 3", cwd: @dir, timeout: 30, log: log)).to eq(exit_code: 3, timed_out: false)
     expect(File.read(log)).to eq("broken\n")

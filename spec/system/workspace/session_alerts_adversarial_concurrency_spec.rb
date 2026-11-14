@@ -86,10 +86,10 @@ RSpec.describe "session alerts: concurrency and signals (adversarial)" do
     end
 
     before do
-      allow(tmux).to receive(:pane_details).with("proj").and_return(panes)
+      allow(tmux).to receive(:pane_details).with("proj", window: nil).and_return(panes)
       allow(process_tree).to receive(:snapshot).and_return(snapshot)
       allow(snapshot).to receive(:find_descendant).and_return(nil)
-      allow(tmux).to receive(:capture_pane).and_return("output")
+      allow(tmux).to receive(:capture_pane_by_id).and_return("output")
     end
 
     it "SC2: stopping the monitor stops a notify command that is still running" do
@@ -138,7 +138,7 @@ RSpec.describe "session alerts: concurrency and signals (adversarial)" do
       monitor.scan
       allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps timed out")
       output = 0
-      allow(tmux).to receive(:capture_pane) { "output #{output += 1}" }
+      allow(tmux).to receive(:capture_pane_by_id) { "output #{output += 1}" }
 
       (60..720).step(60) do |t|
         at(t)

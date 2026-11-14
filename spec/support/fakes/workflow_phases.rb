@@ -46,12 +46,13 @@ end
 
 # Fake of Workspace::WorkflowRunChange over the run Hashes a RecordingRunStore holds: +call+ yields the stored run
 # as a frozen WorkflowRun and a real Context, writes the run the block returns (the one read for nil) back into the Hash,
-# keeps the line a block registered in +deliveries+ (it types nothing) and returns the run;
+# keeps the line a block registered in +deliveries+ (it types nothing), the review round in +reviews+, the ended round whose
+# revision is computed again in +review_ends+ and the window to close in +closes+, and returns the run;
 # a +nonblocking+ call on a run it was told is busy answers nil without yielding.
 class RecordingRunChange
-  CONTROL_METHODS = %i[calls events deliveries].freeze
+  CONTROL_METHODS = %i[calls events deliveries reviews review_ends closes].freeze
 
-  attr_reader :calls, :events, :deliveries
+  attr_reader :calls, :events, :deliveries, :reviews, :review_ends, :closes
 
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param finished [Array<String>] ids whose change raises `run_not_active`, as for a run cancelled meanwhile
@@ -64,6 +65,9 @@ class RecordingRunChange
     @calls = []
     @events = []
     @deliveries = []
+    @reviews = []
+    @review_ends = []
+    @closes = []
   end
 
   def call(run_id, nonblocking: false)
@@ -77,6 +81,9 @@ class RecordingRunChange
     raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(Workspace::WorkflowRun)
     stored.replace(changed.thawed)
     @deliveries << ctx.delivery if ctx.delivery
+    @reviews << ctx.review if ctx.review
+    @review_ends << ctx.review_end if ctx.review_end
+    @closes << ctx.close_review if ctx.close_review
     changed
   end
 
@@ -135,7 +142,7 @@ class RecordingRunStore
     @calls << [:backoff_on, pane, {except: except}]
     found = @backoff_on[pane]
     return nil unless found && found["id"] != except
-    same_pane.call(pane, (found["backoff"] || found["budget_hold"] || {})["identity"]) ? Workspace::WorkflowRun.from_h(found) : nil
+    same_pane.call(pane, (found["backoff"] || found["budget_hold"] || found["timeout_hold"] || {})["identity"]) ? Workspace::WorkflowRun.from_h(found) : nil
   end
 
   def record_event(id, type, data = {})
@@ -204,10 +211,21 @@ class RecordingDispatch
 
   # @param busy [Array<String>] the panes +check_pane+ refuses with `pane_has_run`
   # @param appends [Boolean] whether +dispatch+ starts a new attempt, as a delivered line does
-  def initialize(busy: [], appends: false)
+  # @param holds [String, nil] the reason +hold_round+ holds a round with (`budget_spent` or `run_timed_out`); nil lets it start
+  def initialize(busy: [], appends: false, holds: nil)
     @busy = busy
     @appends = appends
+    @holds = holds
     @calls = []
+  end
+
+  def hold_round(run, round:)
+    run = Workspace::WorkflowRun.from_h(run)
+    @calls << [:hold_round, run.id, {round: round}]
+    return nil unless @holds
+    hold = (@holds == "run_timed_out") ? "timeout_hold" : "budget_hold"
+    Workspace::WorkflowRun.from_h(run.thawed.merge("state" => "waiting", hold => {"review_round" => round},
+      "reason" => {"code" => @holds, "since" => "2026-11-10T12:00:00Z", "details" => {"step" => run.current, "review_round" => round}}))
   end
 
   def dispatch(run, ctx:, context: nil, budgeted: true, retry_of: nil)
@@ -271,12 +289,14 @@ class RecordingWorkflowPanes
   attr_reader :calls
 
   # @param bound [Hash{String=>String}] the pane each run id is bound to
-  # @param runs_on [Hash{String=>String}] the run id each pane is bound to
+  # @param runs_on [Hash{String=>String}] the run id each pane is bound to as its author
+  # @param reviewing [Hash{String=>String}] the run id each review pane is bound to
   # @param dead [Array<String>] run ids whose binding was made for another pane
   # @param kick [Hash] what +kick+ answers
   # @param same [Boolean] what +same_pane?+ answers
   # @param gone [Array<String>] the panes tmux no longer has
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [])
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], reviewing: {})
+    @reviewing = reviewing
     @bound = bound
     @runs_on = runs_on
     @dead = dead
@@ -290,6 +310,11 @@ class RecordingWorkflowPanes
 
   def run_on(pane) = @runs_on[pane]
 
+  def bound_on(pane)
+    return {run_id: @runs_on[pane], role: "author"} if @runs_on[pane]
+    {run_id: @reviewing[pane], role: "reviewer"} if @reviewing[pane]
+  end
+
   def alive?(run_id) = !@dead.include?(run_id)
 
   def pane_gone?(pane) = @gone.include?(pane)
@@ -301,13 +326,13 @@ class RecordingWorkflowPanes
     @same
   end
 
-  def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:)
+  def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:, role: nil, round: nil, relative_to: nil)
     @calls << [:bind, {workspace: workspace, pane: pane, run_id: run_id, step: step, attempt: attempt, instructions: instructions, artifacts: artifacts}]
     true
   end
 
-  def unbind(run_id)
-    @calls << [:unbind, run_id]
+  def unbind(run_id, role: nil)
+    @calls << (role ? [:unbind, run_id, {role: role}] : [:unbind, run_id])
     true
   end
 
@@ -317,15 +342,20 @@ class RecordingWorkflowPanes
   end
 end
 
-# Fake of Workspace::WorkflowAttemptRecord#start, #finish and #abandon: the attempt as given, with a stand-in hash of the
+# Fake of Workspace::WorkflowAttemptRecord#start, #finish, #abandon and #finish_round: the attempt as given, with a stand-in hash of the
 # composed text at its start and an empty +outputs+ at its end; +abandon+ marks the current step's last attempt
-# `abandoned`.
+# `cancelled` when it is still open (no `ended_at`); +finish_round+ answers the round's number, pane and times with
+# the usage it was given and, for a round that read verdicts, its rows with `isolation` and the evidence it was given.
 class RecordingAttemptRecord
   CONTROL_METHODS = %i[calls].freeze
 
   attr_reader :calls
 
-  def initialize
+  # @param round_usage [Hash, nil] the usage +finish_round+ records
+  # @param round_evidence [Array<Hash>] the verdict copies +finish_round+ answers for a round that read verdicts
+  def initialize(round_usage: nil, round_evidence: [])
+    @round_usage = round_usage
+    @round_evidence = round_evidence
     @calls = []
   end
 
@@ -342,8 +372,22 @@ class RecordingAttemptRecord
   def abandon(run)
     hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:abandon, hash["id"]]
-    hash["steps"][hash["current"]]["attempts"].last&.merge!("outcome" => "abandoned")
+    last = hash["steps"][hash["current"]]["attempts"].last
+    if last && !last["ended_at"]
+      last["outcome"] = "cancelled"
+      last["ended_at"] = "2026-11-10T12:00:00Z"
+    end
     Workspace::WorkflowRun.from_h(hash)
+  end
+
+  def finish_round(run:, round:)
+    @calls << [:finish_round, Workspace::WorkflowRun.from_h(run).id, round["round"]]
+    {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => round["ended_at"] || "2026-11-10T12:00:00Z",
+     "session" => nil, "agent" => nil, "usage" => @round_usage}.tap do |record|
+      next unless round["reviews"].is_a?(Array)
+      record["reviews"] = round["reviews"].map { |row| row.merge("isolation" => "review_pane") }
+      record["evidence"] = @round_evidence
+    end
   end
 end
 
@@ -364,8 +408,9 @@ class RecordingLogTail
 end
 
 # Fake of Workspace::WorkflowProgress for the evaluation and decision phases: +pass_step+ and +fail_step+ mark the
-# current step passed or failed, +advance+ answers the run as given, +finish+ sets the run's end state,
-# +start_retry+ moves the run to the wait's step, +hold_retry+ marks the wait blocked with the problem's message as
+# current step passed or failed, +decide_review+ marks it with the tally's outcome, +advance+ answers the run as given, +finish+ sets the run's end state,
+# +restart_review+ marks the step's round restarted, +end_round+ takes the step's round off (registering the window to
+# close on +ctx+ when +close+), +start_retry+ moves the run to the wait's step, +hold_retry+ marks the wait blocked with the problem's message as
 # the reason, and +retry_pane_problem+ answers the problem it was given. Each records its call; +finished+ keeps
 # each run +finish+ was given, as a WorkflowRun.
 class RecordingProgress
@@ -374,15 +419,26 @@ class RecordingProgress
   attr_reader :calls, :finished
 
   # @param pane_problem [Hash{Symbol=>String}, nil] what +retry_pane_problem+ answers
-  def initialize(pane_problem: nil)
+  # @param review [Hash, nil] the review round +pass_step+ registers on its context
+  def initialize(pane_problem: nil, review: nil)
     @pane_problem = pane_problem
+    @review = review
     @calls = []
     @finished = []
   end
 
   def pass_step(run, ctx:)
     @calls << [:pass_step, Workspace::WorkflowRun.from_h(run).current]
+    ctx.review(@review) if @review
     marked(run, "passed")
+  end
+
+  # Marks the last attempt `overridden` and the step passed, as the real one does before its gate or next step.
+  def pass_overridden(run, ctx:)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << [:pass_overridden, hash["current"]]
+    hash["steps"][hash["current"]]["attempts"].last["outcome"] = "overridden"
+    marked(hash.merge("reason" => nil), "passed")
   end
 
   def fail_step(run, failure, ctx:)
@@ -390,9 +446,30 @@ class RecordingProgress
     marked(run, "failed")
   end
 
+  def decide_review(run, tally, ctx:)
+    @calls << [:decide_review, Workspace::WorkflowRun.from_h(run).current, tally]
+    marked(run, {approved: "passed", rejected: "failed"}.fetch(tally[:outcome], "reviewing"))
+  end
+
   def advance(run, ctx:)
     @calls << [:advance, Workspace::WorkflowRun.from_h(run).current]
     Workspace::WorkflowRun.from_h(run)
+  end
+
+  def restart_review(run, ctx:)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << [:restart_review, hash["current"]]
+    ctx.review({"step" => hash["current"]})
+    hash["steps"][hash["current"]]["review"] = {"restarted" => true}
+    Workspace::WorkflowRun.from_h(hash.merge("reason" => nil))
+  end
+
+  def end_round(run, how:, ctx:, close: true)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << [:end_round, hash["current"], {how: how, close: close}]
+    round = hash["steps"][hash["current"]].delete("review")
+    ctx.close_review({"step" => hash["current"], "round" => round&.fetch("round", nil)}) if close
+    Workspace::WorkflowRun.from_h(hash)
   end
 
   def finish(run, state)
@@ -430,6 +507,55 @@ class RecordingProgress
   end
 end
 
+# Fake of Workspace::WorkflowReviewTally#call and #open_round: answers the outcome it was given and records the step
+# and round it was asked about; +open_round+ answers +opened+ (nil: the directory was made).
+class RecordingReviewTally
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param outcome [Symbol] :approved, :rejected or :incomplete
+  # @param reviews [Array<Hash>] the review rows it answers
+  # @param problem [String, nil] why an incomplete round is incomplete
+  # @param opened [Hash, nil] what +open_round+ answers (:code and :problem when the directory could not be made for the round)
+  def initialize(outcome: :approved, reviews: [], problem: nil, opened: nil)
+    @answer = {outcome: outcome, reviews: reviews, problem: problem}.compact
+    @opened = opened
+    @calls = []
+  end
+
+  def open_round(run:, round:)
+    @calls << [:open_round, Workspace::WorkflowRun.from_h(run).id, round]
+    @opened
+  end
+
+  def call(run:, step:, round:)
+    @calls << [:call, Workspace::WorkflowRun.from_h(run).id, step["id"], round]
+    @answer
+  end
+end
+
+# Fake of Workspace::WorkflowReviewRevision#call: answers each scripted answer in turn (the last again once they run out),
+# after asking +stop_when+ once (kept in +stop_answers+), and records the step it was asked about.
+class RecordingReviewRevision
+  CONTROL_METHODS = %i[calls stop_answers].freeze
+
+  attr_reader :calls, :stop_answers
+
+  # @param answers [Array<Hash>] what each +call+ answers (`revision:` and `problem:`)
+  def initialize(*answers)
+    @answers = answers.empty? ? [{revision: "rev1", problem: nil}] : answers
+    @calls = []
+    @stop_answers = []
+  end
+
+  def call(run:, step:, stop_when: nil)
+    @calls << [:call, Workspace::WorkflowRun.from_h(run).id, step["id"]]
+    @stop_answers << stop_when&.call
+    (@answers.size > 1) ? @answers.shift : @answers.first
+  end
+end
+
 # Fake of Workspace::WorkflowCheck#call: answers the result it was given, after asking +stop_when+ once (kept in
 # +stop_answers+), and records the command it was asked to run.
 class RecordingChecker
@@ -444,8 +570,8 @@ class RecordingChecker
     @stop_answers = []
   end
 
-  def call(cwd:, timeout:, log:, command: nil, argv: nil, stop_when: nil, env: {})
-    @calls << [:call, {command: command, cwd: cwd, timeout: timeout, log: log, env: env}]
+  def call(cwd:, timeout:, log:, command: nil, argv: nil, stop_when: nil, env: {}, err_log: nil)
+    @calls << [:call, {command: command, cwd: cwd, timeout: timeout, log: log, env: env}.merge(err_log ? {err_log: err_log} : {})]
     @stop_answers << stop_when&.call
     @result
   end
@@ -477,23 +603,53 @@ class RecordingRequire
   end
 end
 
-# Fake of Workspace::WorkflowGuard#check and #config_change: answers what it was given.
+# Fake of Workspace::WorkflowGuard#check, #config_change, #head and #tree_digest: answers what it was given
+# (+head+ and +tree_digest+ answer the current value of +heads+ and +trees+, which a spec may change).
 class RecordingGuard
-  CONTROL_METHODS = %i[calls].freeze
+  CONTROL_METHODS = %i[calls heads trees].freeze
 
-  attr_reader :calls
+  attr_reader :calls, :heads, :trees
 
   # @param found [Hash, nil] what +check+ answers
   # @param config [Hash, nil] what +config_change+ answers
-  def initialize(found: nil, config: nil)
+  # @param head [String, nil] what +head+ answers
+  # @param tree [String, nil] what +tree_digest+ answers
+  # @param unread [Array<String>] the parts +base+ could not read ("head", "hooks_sha256", "hidden_sha256")
+  def initialize(found: nil, config: nil, head: "a" * 40, tree: "t" * 64, unread: [])
     @found = found
+    @unread = unread
     @config = config
+    @heads = [head]
+    @trees = [tree]
     @calls = []
+  end
+
+  def head(worktree)
+    @calls << [:head, worktree]
+    @heads.last
+  end
+
+  def tree_digest(worktree, base: nil)
+    @calls << [:tree_digest, worktree]
+    @trees.last
   end
 
   def check(worktree, base, scope)
     @calls << [:check, worktree, scope]
     @found
+  end
+
+  # The last of +heads+ as the base commit, with a fixed snapshot (+unread+ names the parts given as unreadable, as
+  # nil); with +accept_tree+, the last of +trees+ as `accepted_tree_sha256`, listed as unread when nil (neither on an unborn branch, +head+ nil).
+  def base(worktree, accept_tree: false)
+    @calls << [:base, worktree, {accept_tree: accept_tree}]
+    guard = {"config_sha256" => "c", "hooks_sha256" => "h", "hidden_sha256" => "x"}
+    @unread.each { |key| guard[key] = nil if guard.key?(key) }
+    unborn = @heads.last.nil? && !@unread.include?("head")
+    guard["accepted_tree_sha256"] = @trees.last if accept_tree && @trees.last && !unborn
+    unread = @unread.dup
+    unread << "accepted_tree_sha256" if accept_tree && !@trees.last && !unborn
+    {"base_sha" => @unread.include?("head") ? nil : @heads.last, "base_guard" => guard, "unread" => unread}
   end
 
   def config_change(worktree, base, seen: nil)
@@ -536,9 +692,11 @@ class RecordingInbox
   end
 end
 
-# Fake of Workspace::WorkflowEvaluation#evaluate and #finish_check for the decision and recovery phases: +evaluate+
-# registers the check it was given on +ctx+ and answers the run as given (with the reason it was given, when one
-# was); +finish_check+ answers the stored run.
+# Fake of Workspace::WorkflowEvaluation#evaluate, #review_ended, #finish_check and #finish_follow_ups for the decision and recovery
+# phases: +evaluate+ registers the check it was given on +ctx+ and answers the run as given (with the reason it was given, when one
+# was); +review_ended+ registers the round's end on +ctx+ and answers the run as given; +finish_check+ answers the stored run;
+# +finish_follow_ups+ runs the check registered on a context through +finish_check+ and keeps a registered window close, round
+# end and review in the calls as +:close_review+, +:review_end+ and +:review_round+.
 class RecordingEvaluation
   CONTROL_METHODS = %i[calls].freeze
 
@@ -547,9 +705,11 @@ class RecordingEvaluation
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param check [Hash, nil] what +evaluate+ registers on its context
   # @param reason [Hash, nil] the reason +evaluate+ leaves on the run
-  def initialize(runs, check: nil, reason: nil)
+  # @param review [Hash, nil] the review round +evaluate+ registers on its context
+  def initialize(runs, check: nil, reason: nil, review: nil)
     @runs = runs
     @check = check
+    @review = review
     @reason = reason
     @calls = []
   end
@@ -558,12 +718,39 @@ class RecordingEvaluation
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:evaluate, run.current]
     ctx.check(@check) if @check
+    ctx.review(@review) if @review
     @reason ? Workspace::WorkflowRun.from_h(run.thawed.merge("reason" => @reason)) : run
+  end
+
+  # Marks the last attempt `guard_accepted`, then answers as +evaluate+ does.
+  def evaluate_accepted(run, ctx:)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << [:evaluate_accepted, hash["current"]]
+    hash["steps"][hash["current"]]["attempts"].last["guard_accepted"] = hash.dig("reason", "details", "guard")
+    ctx.check(@check) if @check
+    ctx.review(@review) if @review
+    Workspace::WorkflowRun.from_h(hash.merge("reason" => @reason))
+  end
+
+  def review_ended(run, ctx:)
+    run = Workspace::WorkflowRun.from_h(run)
+    @calls << [:review_ended, run.current]
+    ctx.review_end({"step" => run.current})
+    run
   end
 
   def finish_check(run_id, check)
     @calls << [:finish_check, run_id, check]
     Workspace::WorkflowRun.from_h(@runs.fetch(run_id))
+  end
+
+  def finish_follow_ups(run_id, ctx, run)
+    return run unless ctx
+    @calls << [:close_review, run_id, ctx.close_review] if ctx.close_review
+    run = finish_check(run_id, ctx.check) if ctx.check
+    @calls << [:review_end, run_id, ctx.review_end] if ctx.review_end
+    @calls << [:review_round, run_id, ctx.review] if ctx.review
+    run
   end
 end
 
