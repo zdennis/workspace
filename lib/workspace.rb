@@ -412,6 +412,8 @@ require_relative "workspace/workflow_compare"
 require_relative "workspace/workflow_sim_script"
 require_relative "workspace/workflow_simulator"
 require_relative "workspace/workflow_run_health"
+require_relative "workspace/workflow_sweep_rows"
+require_relative "workspace/workflow_review_sweep"
 require_relative "workspace/workflow_sweep"
 require_relative "workspace/sweep_schedule"
 require_relative "workspace/workflow_workspace_facts"
@@ -1098,9 +1100,11 @@ module Workspace
     workflow_workspace_facts = WorkflowWorkspaceFacts.new(liveness: Liveness.new(tmux: tmux), project_config: project_config, config: config,
       agents: ProjectAgents.new(client: agent_snapshot_client))
     workflow_review_orphans = WorkflowReviewOrphans.new(tmux: tmux, store: workflow_store, panes: workflow_panes)
-    workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
-      interrupter: ->(workspace, pane, keys) { send_command.deliver(name: workspace, pane: pane, keys: keys) },
+    sweep_interrupter = ->(workspace, pane, keys) { send_command.deliver(name: workspace, pane: pane, keys: keys) }
+    workflow_review_sweep = WorkflowReviewSweep.new(engine: workflow_engine, panes: workflow_panes, interrupter: sweep_interrupter,
       orphans: workflow_review_orphans, holder_alive: round_holder.method(:alive?))
+    workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
+      interrupter: sweep_interrupter, reviews: workflow_review_sweep)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do
         out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)

@@ -1,5 +1,6 @@
 require "spec_helper"
 require "stringio"
+require "tmpdir"
 
 RSpec.describe Workspace::Doctor, "review windows" do
   let(:orphans) { instance_double(Workspace::WorkflowReviewOrphans, find: found) }
@@ -41,6 +42,25 @@ RSpec.describe Workspace::Doctor, "review windows" do
     expect(rows.first).to include(fix_command: nil)
     expect(rows.first[:fix]).to include("tmux kill-window -t @6", "workflow sweep leaves it")
     expect(rows.first[:message]).to end_with("no workflow run in this state directory has its id")
+  end
+
+  it "reports a window whose run this state directory does not have as the sweep's unconfirmed row, and --fix leaves it open" do
+    Dir.mktmpdir("doctor-review") do |dir|
+      store = Workspace::WorkflowRunStore.new(dir: File.join(dir, "runs"), archive_dir: File.join(dir, "archive"))
+      tmux = FakeTmux.new(sessions: ["app"], session_name: "app")
+      tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_404:plan:1", pane: "%7", pid: 7}]
+      real = Workspace::WorkflowReviewOrphans.new(tmux: tmux, store: store, panes: FakeWorkflowPanes.new)
+      doctor = described_class.new(config: Workspace::Config.new, state: CLITestHelpers::FakeState.new, hook_installer: hook_installer,
+        project_detector: double("project_detector", detect: nil), output: StringIO.new, project_settings: CLITestHelpers::FakeProjectSettings.new,
+        review_orphans: real, tmux: tmux, which: ->(_exe) { true }, launch_mode: launch_mode)
+
+      listed = doctor.report(fix: true)[:rows].select { |row| row[:id] == "workflow-review-window-orphaned" }
+
+      expect(listed).to contain_exactly(include(status: "warn", fix_command: nil))
+      expect(listed.first[:message]).to eq("review window @7 in session app (run wr_404, step plan, round 1) is left over: no workflow run in this state directory has its id")
+      expect(listed.first[:fix]).to include("tmux kill-window -t @7", "workflow sweep leaves it")
+      expect(tmux.killed_windows).to be_empty
+    end
   end
 
   it "escapes what a window's mark and session carry" do

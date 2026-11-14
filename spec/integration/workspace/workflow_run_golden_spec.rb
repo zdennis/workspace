@@ -133,7 +133,8 @@ RSpec.describe Workspace::WorkflowEngine, "golden run files" do
     begin_run
     now[0] += 1500
     panes.rows["%5"] = {"pane_id" => "%5", "kind" => "claude", "state" => "idle", "idle_seconds" => 1500, "state_since" => now.first.utc.iso8601}
-    sweep = Workspace::WorkflowSweep.new(store: store, engine: engine, panes: panes, interrupter: ->(*) {}, clock: -> { now.first })
+    reviews = Workspace::WorkflowReviewSweep.new(engine: engine, panes: panes, interrupter: ->(*) {}, clock: -> { now.first })
+    sweep = Workspace::WorkflowSweep.new(store: store, engine: engine, panes: panes, interrupter: ->(*) {}, reviews: reviews, clock: -> { now.first })
     sweep.call
 
     golden("sweep_stall")

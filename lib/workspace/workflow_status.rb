@@ -533,14 +533,10 @@ module Workspace
       flags
     end
 
-    # A live review round past its `review.timeout`, counted from the round's start; nothing is stopped for it.
+    # A live review round past its `review.timeout`, counted from the round's start ({WorkflowTransitions.round_timed_out?},
+    # the reading the sweep's interrupt takes).
     def round_timed_out?(run, state)
-      return false unless round_live?(run)
-      timeout = review_spec(run)&.dig("timeout")
-      started = state.review["started_at"]
-      !!(timeout && started && @clock.call - Time.iso8601(started) > timeout)
-    rescue ArgumentError
-      false
+      round_live?(run) && WorkflowTransitions.round_timed_out?(run.to_h, state.review, @clock.call)
     end
 
     # A pane reads idle for a moment right after a dispatch, before the agent takes the prompt.

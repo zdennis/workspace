@@ -1350,6 +1350,15 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(shown["steps"].last).not_to have_key("review_rounds")
     end
 
+    it "applies the 30 minute default to a stored review with no timeout, counted from the round's start" do
+      without_timeout = ->(fixture) { fixture["definition"]["steps"].first["review"].delete("timeout") }
+      load_fixture(round: {"started_at" => "2026-10-04T12:29:59.000Z"}, &without_timeout)
+      expect(review_status["current"]["flags"]).to eq(["timed_out"])
+
+      load_fixture(round: {"started_at" => "2026-10-04T12:30:00.000Z"}, &without_timeout)
+      expect(review_status["current"]["flags"]).to eq([])
+    end
+
     it "flags a round past review.timeout, counted from the round's start, and a round being delivered" do
       load_fixture(round: {"started_at" => "2026-10-04T12:20:00.000Z"})
       expect(review_status["current"]["flags"]).to eq(["timed_out"])

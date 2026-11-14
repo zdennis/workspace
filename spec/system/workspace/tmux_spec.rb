@@ -55,6 +55,18 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.session_name_for_pane("%3")).to be_nil
     end
 
+    it "raises, with strict, when tmux doesn't answer about a pane's session, so a wedged server is not a gone pane" do
+      fake_tmux("exec sleep 30")
+
+      expect { tmux.session_name_for_pane("%3", strict: true) }.to raise_error(Workspace::Error, /did not respond/)
+    end
+
+    it "answers nil, strict or not, when tmux says it has no such pane" do
+      fake_tmux("echo \"can't find pane: %3\" >&2; exit 1")
+
+      expect(tmux.session_name_for_pane("%3", strict: true)).to be_nil
+    end
+
     it "names a pane's session through the bounded call" do
       fake_tmux(%(echo "$*" > '#{File.join(tmpdir, "args")}'; echo ws-app))
 
@@ -1289,6 +1301,22 @@ RSpec.describe Workspace::Tmux do
       allow(Workspace::TimedProcess).to receive(:run).and_raise(Timeout::Error)
       expect(tmux.renumber_windows?(timeout: 3)).to be_nil
       expect { tmux.server_pid_for_session("app", timeout: 3) }.to raise_error(Timeout::Error)
+    end
+
+    it "lists panes and review windows through TimedProcess with a timeout, raising past it, and answers a window not closed" do
+      allow(Workspace::TimedProcess).to receive(:run).and_return(["%3\t0\t1\t42\tzsh\t/w\tmain\t\tt\n", "", true],
+        ["@2\treview\t%12\t4321\t\trun:step:1\n", "", true], ["", "", true])
+
+      expect(tmux.pane_details("app", window: nil, timeout: 3).map { |each| each[:id] }).to eq(["%3"])
+      expect(Workspace::TimedProcess).to have_received(:run).with(["tmux", "list-panes", "-s", "-t", "=app:", "-F", anything], chdir: Dir.pwd, timeout: 3)
+      expect(tmux.review_windows("app", timeout: 3).map { |each| each[:window] }).to eq(["@2"])
+      expect(tmux.kill_window("@2", timeout: 3)).to be true
+      expect(Workspace::TimedProcess).to have_received(:run).with(["tmux", "kill-window", "-t", "@2"], chdir: Dir.pwd, timeout: 3)
+
+      allow(Workspace::TimedProcess).to receive(:run).and_raise(Timeout::Error)
+      expect { tmux.pane_details("app", window: nil, timeout: 3) }.to raise_error(Timeout::Error)
+      expect { tmux.review_windows("app", timeout: 3) }.to raise_error(Timeout::Error)
+      expect(tmux.kill_window("@2", timeout: 3)).to be false
     end
   end
 

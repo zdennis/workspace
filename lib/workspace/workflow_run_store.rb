@@ -65,12 +65,22 @@ module Workspace
     end
 
     # What names this store among others on the same machine (another `HOME` or `XDG_STATE_HOME`, a scheduler's
-    # environment): the first 16 hex digits of the SHA-256 of its runs directory's absolute path. A review window is
-    # stamped with it, so a sweep over another store never takes that window for an orphan.
+    # environment): the first 16 hex digits of the SHA-256 of its runs directory's real path (links resolved, so a
+    # state directory reached through a symlink stamps as the one it points at; a part not made yet is kept as
+    # written below the deepest part that is there). A review window is stamped with it, so a sweep over another
+    # store never takes that window for an orphan.
     #
     # @return [String]
     def stamp
-      Digest::SHA256.hexdigest(File.expand_path(@dir))[0, 16]
+      Digest::SHA256.hexdigest(real_path(File.expand_path(@dir)))[0, 16]
+    end
+
+    # Every stamp a review window of this store may carry: {#stamp}, and the one stamped before it resolved links
+    # (the SHA-256 of the runs directory's absolute path as written), so a window opened before is still this store's.
+    #
+    # @return [Array<String>]
+    def stamps
+      [stamp, Digest::SHA256.hexdigest(File.expand_path(@dir))[0, 16]].uniq
     end
 
     # @param id [String] a run id
@@ -253,6 +263,14 @@ module Workspace
     end
 
     private
+
+    # +path+ with its links resolved up to the deepest part that is there; the rest kept as written.
+    def real_path(path)
+      File.realpath(path)
+    rescue SystemCallError
+      parent = File.dirname(path)
+      (parent == path) ? path : File.join(real_path(parent), File.basename(path))
+    end
 
     def parse_event(line)
       event = JSON.parse(line)

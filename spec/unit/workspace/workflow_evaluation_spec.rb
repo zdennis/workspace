@@ -338,6 +338,32 @@ RSpec.describe Workspace::WorkflowEvaluation do
         expect(tally.calls.size).to eq(1)
       end
 
+      describe "for a round whose line may have been typed, waiting on a prompt in the review pane" do
+        let(:typed) { {"code" => "connection_failed", "message" => "daemon gone", "at" => "2026-11-10T11:41:30Z", "typed" => true} }
+
+        it "counts the reviewers' Stop once the person answers, the clear confirmed though the delivery never was" do
+          stored(reviewing.tap do |hash|
+            hash["steps"]["plan"]["review"].merge!("delivery" => "failed", "failure" => typed, "kick_at" => "2026-11-10T11:41:10.000Z",
+              "cleared_at" => "2026-11-10T11:41:00.000Z")
+          end)
+
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 41, 20), stopped_at: Time.utc(2026, 11, 10, 11, 55))
+
+          expect(tally.calls.size).to eq(1)
+        end
+
+        it "leaves such a Stop uncounted when neither the clear nor the delivery is known, for the sweep or the tick to judge" do
+          stored(reviewing.tap do |hash|
+            hash["steps"]["plan"]["review"].merge!("delivery" => "failed", "failure" => typed, "kick_at" => "2026-11-10T11:41:10.000Z")
+          end)
+
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 41, 20), stopped_at: Time.utc(2026, 11, 10, 11, 55))
+
+          expect(tally.calls).to be_empty
+          expect(store.runs["wr_1"]["reason"]).to be_nil
+        end
+      end
+
       describe "once the daemon confirmed the clear and the delivery was recorded" do
         let(:round) { super().merge("cleared_at" => "2026-11-10T11:41:00.000Z", "delivered_at" => "2026-11-10T11:42:00.000Z") }
 

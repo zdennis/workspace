@@ -19,7 +19,8 @@ module Workspace
     # Seconds to wait for the daemon when asking whether a pane is idle.
     IDLE_TIMEOUT = 1.0
 
-    # Seconds each tmux read of {#review_pane_state} may take.
+    # Seconds each tmux read of a review window (its pane state, listing, closing) may take, so a wedged tmux server
+    # does not hang the sweep, `doctor` or a round's delivery.
     TMUX_READ_TIMEOUT = 5
 
     # Seconds since a pane's turn ended before that end counts as unhandled:
@@ -268,10 +269,11 @@ module Workspace
 
     # @param pane [String] a pane id
     # @param workspace [String, nil] the run's workspace, whose tmux socket is asked (its config's `socket_name`); nil asks the default one
-    # @return [Boolean] whether tmux no longer has the pane; false when tmux can't be read
+    # @return [Boolean] whether tmux no longer has the pane; false when tmux can't be read or does not answer in time
+    #   (a wedged server is not a gone pane)
     def pane_gone?(pane, workspace: nil)
-      @tmux.session_name_for_pane(pane, project: workspace).nil?
-    rescue SystemCallError
+      @tmux.session_name_for_pane(pane, project: workspace, strict: true).nil?
+    rescue Workspace::Error, SystemCallError
       false
     end
 
@@ -381,14 +383,14 @@ module Workspace
     # @return [Array<String>] the window ids closed
     def close_review(workspace, run_id, step: nil, round: nil)
       return [] if @tmux.custom_socket_option(workspace)
-      @tmux.review_windows(@tmux.session_name_for(workspace)).filter_map do |window|
+      @tmux.review_windows(@tmux.session_name_for(workspace), timeout: TMUX_READ_TIMEOUT).filter_map do |window|
         run, marked_step, marked_round = self.class.parse_review_mark(window[:review])
         next if run != run_id || (step && marked_step != step) || (round.is_a?(Integer) && marked_round > round)
-        next unless @tmux.kill_window(window[:window])
+        next unless @tmux.kill_window(window[:window], timeout: TMUX_READ_TIMEOUT)
         unbind(run_id, role: "reviewer", pane: window[:pane]) if window[:pane]
         window[:window]
       end
-    rescue Workspace::Error, SystemCallError
+    rescue Workspace::Error, SystemCallError, Timeout::Error
       []
     end
 
@@ -412,7 +414,7 @@ module Workspace
       return nil unless current
       return :server_restarted unless current.to_s == server_pid.to_s
       # The same server: gone only when it lists the session's panes and this one is not among them.
-      listed = @tmux.pane_details(session, window: nil)
+      listed = @tmux.pane_details(session, window: nil, timeout: TMUX_READ_TIMEOUT)
       (listed.any? && listed.none? { |detail| detail[:id] == pane }) ? :gone : nil
     rescue SystemCallError, Workspace::Error, Timeout::Error
       nil

@@ -1,5 +1,6 @@
 require "spec_helper"
 require "tmpdir"
+require "digest"
 
 RSpec.describe Workspace::WorkflowRunStore do
   around do |example|
@@ -69,6 +70,22 @@ RSpec.describe Workspace::WorkflowRunStore do
       expect(store.stamp).to match(/\A\h{16}\z/)
       expect(described_class.new(dir: runs_dir, archive_dir: archive_dir).stamp).to eq(store.stamp)
       expect(other.stamp).not_to eq(store.stamp)
+    end
+
+    it "is the same through a symlinked state directory, before and after the runs directory is made" do
+      real = File.join(File.realpath(@dir), "real-state")
+      FileUtils.mkdir_p(real)
+      linked = File.join(@dir, "linked-state")
+      File.symlink(real, linked)
+      through_link = described_class.new(dir: File.join(linked, "runs"), archive_dir: archive_dir)
+      direct = described_class.new(dir: File.join(real, "runs"), archive_dir: archive_dir)
+
+      expect(through_link.stamp).to eq(direct.stamp)
+      before = through_link.stamp
+      FileUtils.mkdir_p(File.join(real, "runs"))
+      expect(through_link.stamp).to eq(before)
+      expect(through_link.stamps).to eq([through_link.stamp, Digest::SHA256.hexdigest(File.join(linked, "runs"))[0, 16]])
+      expect(direct.stamps).to eq([direct.stamp])
     end
   end
 

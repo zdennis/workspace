@@ -232,38 +232,60 @@ RSpec.describe Workspace::WorkflowRecovery do
 
         def claude_row(state, **rest) = {"kind" => "claude", "state" => state, "idle_seconds" => 0}.merge(rest)
 
-        it "waits for a reviewer at work past the short wait, and stops the round review_incomplete once the review's timeout has passed, running no one again" do
-          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:50:00.000Z", "pane" => "%9"))
+        it "waits for a reviewer at work past its review timeout for the sweep's press, and stops the round review_incomplete only at twice that timeout with no press" do
           busy = RecordingWorkflowPanes.new(rows: {"%9" => claude_row("working")})
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:29:59.000Z", "started_at" => "2026-11-10T11:29:50.000Z", "pane" => "%9"))
 
           expect(with_panes(busy).tick("wr_1")).to be_nil
-          expect(evaluation.calls).to be_empty
+          expect(evaluation.calls + progress.calls).to be_empty
 
-          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:29:59.000Z", "pane" => "%9"))
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T10:59:59.000Z", "started_at" => "2026-11-10T10:59:50.000Z", "pane" => "%9"))
           with_panes(busy).tick("wr_1")
 
           expect(evaluation.calls).to be_empty
           decided = progress.calls.last
           expect(decided[0..1]).to eq([:decide_review, "build"])
           expect(decided[2]).to include(outcome: :incomplete, reviews: [])
-          expect(decided[2][:problem]).to include("still at work when the round's review timeout passed")
+          expect(decided[2][:problem]).to include("still at work at twice the round's review timeout", "no workflow sweep interrupted it")
           expect(decided[2][:problem]).to include("a resume starts a fresh round and closes this window, stopping any reviewer still at work there")
+        end
+
+        it "keeps waiting for a reviewer at work the sweep interrupted, whose turn's end decides the round" do
+          busy = RecordingWorkflowPanes.new(rows: {"%9" => claude_row("working")})
+          pressed = {"interrupt" => {"state" => "sent", "at" => "2026-11-10T11:59:00Z"}}
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T10:59:59.000Z", "started_at" => "2026-11-10T10:59:50.000Z",
+            "pane" => "%9", "sweep" => pressed))
+
+          expect(with_panes(busy).tick("wr_1")).to be_nil
+          expect(evaluation.calls + progress.calls).to be_empty
+        end
+
+        it "stops a round whose review pane the sweep pressed and that still works, kept for a person (interrupt_unanswered)" do
+          stored(reviewing("delivery" => nil, "pane" => "%9", "window" => "@4", "server_pid" => "100"))
+
+          outcome = recovery.review_stalled("wr_1", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupt_unanswered", data: {"waited" => 1300})
+
+          expect(outcome).to eq(:stopped)
+          expect(evaluation.calls.map(&:first)).not_to include(:review_ended)
+          expect(progress.calls.last[0..1]).to eq([:decide_review, "build"])
+          expect(progress.calls.last[2]).to include(outcome: :incomplete, problem: "review pane %9 still showed its agent working 1300 seconds after the sweep's last interrupt")
+          expect(event_types.first).to eq(["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "interrupt_unanswered", "waited" => 1300}])
         end
 
         it "waits for an agent daemon that can't be reached until the review's timeout, then judges the round" do
           down = RecordingWorkflowPanes.new(no_daemon: true)
-          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:50:00.000Z", "pane" => "%9"))
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:50:00.000Z", "started_at" => "2026-11-10T11:49:50.000Z", "pane" => "%9"))
 
           expect(with_panes(down).tick("wr_1")).to be_nil
 
-          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:29:59.000Z", "pane" => "%9"))
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:29:59.000Z", "started_at" => "2026-11-10T11:29:50.000Z", "pane" => "%9"))
           with_panes(down).tick("wr_1")
 
           expect(evaluation.calls.first).to eq([:review_ended, "build"])
         end
 
         it "counts running sub-agents in an idle-looking pane as at work" do
-          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:50:00.000Z", "pane" => "%9"))
+          stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:50:00.000Z", "started_at" => "2026-11-10T11:49:50.000Z", "pane" => "%9"))
 
           expect(with_panes(RecordingWorkflowPanes.new(rows: {"%9" => claude_row("idle", "subagents" => [{"id" => "a"}])})).tick("wr_1")).to be_nil
         end
@@ -308,6 +330,19 @@ RSpec.describe Workspace::WorkflowRecovery do
           expect(gone.gone_checks).to eq([["%9", "app"]])
           expect(evaluation.calls.map(&:first).count(:review_ended)).to eq(2)
           expect(progress.calls).to be_empty
+        end
+
+        it "delivers a round whose line may have been typed again in a new window once tmux says its server restarted, as the sweep's server_restarted does" do
+          stored(reviewing("delivery" => "failed", "failure" => recent_failure, "kick_at" => "2026-11-10T11:58:59.000Z", "pane" => "%9", "panes" => ["%9"],
+            "window" => "@4", "server_pid" => "100"))
+          restarted = RecordingWorkflowPanes.new(restarted: ["%9"], rows: {"%9" => claude_row("working")})
+
+          with_panes(restarted).tick("wr_1")
+
+          expect(restarted.calls).to include([:review_pane_state, "app", "%9", "100"])
+          expect(evaluation.calls.map(&:first)).not_to include(:review_ended)
+          expect(progress.calls).to eq([[:redeliver_round, "build", {new_server: true}]])
+          expect(store.runs["wr_1"]["steps"]["build"]["review"]).not_to include("pane", "window", "server_pid")
         end
       end
 
@@ -629,6 +664,94 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(recovery.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: "2026-11-10T11:00:00Z", sent: true)).to eq(:taken_over)
       expect(recovery.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: at, sent: false)).to eq(:released)
       expect(store.runs["wr_1"]["sweep"]).not_to have_key("interrupt")
+    end
+  end
+
+  describe "#claim_round_interrupt and #round_interrupt_sent" do
+    def delivered(round = {})
+      reviewing({"delivery" => nil, "pane" => "%9", "window" => "@4", "server_pid" => "100"}.merge(round))
+    end
+
+    def claim(cause = "review_timed_out", **rest)
+      recovery.claim_round_interrupt("wr_1", step: "build", attempt: 1, round: 1, pane: "%9", elapsed: 1801, timeout: 1800, cause: cause, **rest)
+    end
+
+    def confirm(at, sent: true, cause: "review_timed_out")
+      recovery.round_interrupt_sent("wr_1", step: "build", attempt: 1, round: 1, pane: "%9", claim_at: at, sent: sent, cause: cause)
+    end
+
+    def round_marks = store.runs["wr_1"]["steps"]["build"]["review"]["sweep"]
+
+    it "claims once on the round itself, records it sent, and writes step_stalled and step_recovered with the round" do
+      stored(delivered)
+
+      outcome = claim
+      expect(outcome).to eq([:claimed, "2026-11-10T12:00:00Z"])
+      expect(claim).to eq(:repeat)
+      expect(confirm(outcome.last)).to eq(:recorded)
+
+      expect(round_marks["interrupt"]).to eq("state" => "sent", "at" => "2026-11-10T12:00:00Z")
+      expect(store.runs["wr_1"]).not_to have_key("sweep")
+      expect(event_types).to eq([
+        ["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "review_timed_out", "elapsed" => 1801, "timeout" => 1800}],
+        ["step_recovered", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "action" => "interrupted", "cause" => "review_timed_out"}]
+      ])
+    end
+
+    it "keeps the round's cause and the run's apart, and never reads the reviewed attempt's own marks as the round's" do
+      stored(delivered.merge("sweep" => {"step" => "build", "attempt" => 1, "run_interrupt" => {"state" => "sent", "at" => "2026-11-10T11:00:00Z"}, "stalled" => {"run_timed_out" => "x"}}))
+
+      round_claim = claim
+      run_claim = claim("run_timed_out")
+      expect([round_claim.first, run_claim.first]).to eq(%i[claimed claimed])
+      confirm(run_claim.last, cause: "run_timed_out")
+
+      expect(round_marks["interrupt"]["state"]).to eq("pending")
+      expect(round_marks["run_interrupt"]["state"]).to eq("sent")
+      expect(round_marks["stalled"].keys).to eq(%w[review_timed_out run_timed_out])
+      expect(event_types.map(&:first)).to eq(%w[step_stalled step_stalled step_recovered])
+    end
+
+    it "lets a later sweep take over a pending claim past its hold, and gives back one whose keys were not pressed" do
+      stored(delivered)
+      _, at = claim
+      clock_at.replace([now + described_class::INTERRUPT_CLAIM_SECONDS + 1])
+      _, later = claim
+
+      expect(confirm(at)).to eq(:taken_over)
+      expect(confirm(later, sent: false)).to eq(:released)
+      expect(round_marks).not_to have_key("interrupt")
+    end
+
+    it "claims nothing for a round that moved on: another round, another pane, still delivering, being judged, or stopped" do
+      [delivered("round" => 2), delivered("pane" => "%8"), delivered("delivery" => "delivering"), delivered("recompute" => {"try" => 1}),
+        delivered.merge("reason" => {"code" => "review_incomplete"})].each do |hash|
+        stored(hash)
+        expect(claim).to eq(:moved_on)
+      end
+      expect(change.events).to be_empty
+    end
+
+    it "confirms a press on a round whose end is being judged by now, but not on one that ended" do
+      stored(delivered)
+      _, at = claim
+      store.runs["wr_1"]["steps"]["build"]["review"]["recompute"] = {"try" => 1}
+      expect(confirm(at)).to eq(:recorded)
+
+      stored(delivered)
+      _, at = claim
+      store.runs["wr_1"]["steps"]["build"].delete("review")
+      expect(confirm(at)).to eq(:moved_on)
+    end
+
+    context "when another process is changing the run" do
+      let(:busy) { ["wr_1"] }
+
+      it "answers :busy for the claim" do
+        stored(delivered)
+
+        expect(claim).to eq(:busy)
+      end
     end
   end
 end

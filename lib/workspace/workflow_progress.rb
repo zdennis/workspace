@@ -428,9 +428,21 @@ module Workspace
         elsif outcome == :review_guard
           stop_review(run, "review_guard", details.merge("changed" => tally[:changed], "snapshot_head" => tally[:snapshot_head], "head" => tally[:head]).compact)
         else
-          stop_review(run, "review_incomplete", details.merge("reviews" => reviews, "problem" => tally[:problem]).compact)
+          stop_review(run, "review_incomplete", details.merge("reviews" => reviews, "problem" => incomplete_problem(run, round, tally[:problem])).compact)
         end
       end
+    end
+
+    # An incomplete round's problem; for one the sweep interrupted for a time limit, what was interrupted and why first.
+    def incomplete_problem(run, round, problem)
+      cause = WorkflowTransitions.round_interrupted(round, @clock.call)
+      return problem unless cause
+      why = if cause == "run_timed_out"
+        "the run used its time limit while the round was reviewed, so the sweep interrupted the review pane; a resume needs --extra-time"
+      else
+        "the round ran past its #{WorkflowTransitions.review_timeout(run).round} second review timeout, so the sweep interrupted the review pane"
+      end
+      "#{why}, and the verdicts written by then did not decide it#{": #{problem}" if problem}. Its window is kept: look at it first, since a resume starts a fresh round and closes it"
     end
 
     def restart_in(run, ctx)
@@ -474,8 +486,9 @@ module Workspace
       round = state["review"]
       add_round_record(run, round, "redelivered") if record
       # The earlier delivery's own marks go: a turn's end is judged from this delivery's (`clear_from` excepted: a
-      # line an earlier delivery typed into a cleared window may be the reviewers' turn, so its clear still counts).
-      state["review"] = round.except("holder", "failure", "delivered_at", "cleared_at", "kick_at", *drop).merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3), "redeliveries" => redeliveries)
+      # line an earlier delivery typed into a cleared window may be the reviewers' turn, so its clear still counts),
+      # and its time limits start again, so the sweep's interrupt marks (`sweep`) go too.
+      state["review"] = round.except("holder", "failure", "delivered_at", "cleared_at", "kick_at", "sweep", *drop).merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3), "redeliveries" => redeliveries)
       @rounds.hold(state["review"])
       state["review"]["snapshot"] = @guard.round_snapshot(run["worktree"], base: run) if @guard
       run["state"] = "running"

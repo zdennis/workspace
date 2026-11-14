@@ -727,4 +727,71 @@ RSpec.describe Workspace::WorkflowTransitions do
   it "lists review_no_change among the review stops" do
     expect(described_class::REVIEW_STOPS).to include("review_no_change")
   end
+
+  describe "a round's time limit" do
+    def reviewed(review)
+      {"current" => "plan", "definition" => {"steps" => [{"id" => "plan", "review" => review}.compact]}}
+    end
+
+    let(:round) { {"round" => 1, "started_at" => "2026-10-04T11:30:00.000Z", "kick_at" => "2026-10-04T11:45:00.000Z"} }
+
+    it "reads the step's review.timeout, the default for a stored review without one" do
+      expect(described_class.review_timeout(reviewed({"from" => ["a"], "timeout" => 600}))).to eq(600)
+      expect(described_class.review_timeout(reviewed({"from" => ["a"]}))).to eq(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT)
+      expect(described_class.review_timeout(reviewed(nil))).to eq(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT)
+    end
+
+    it "measures every reading from the round's start, never from when its line went out" do
+      run = reviewed({"from" => ["a"], "timeout" => 1799})
+
+      expect(described_class.round_elapsed(round, now)).to eq(1800)
+      expect(described_class.round_timed_out?(run, round, now)).to be(true)
+      expect(described_class.typed_review_timed_out?(run, round, now)).to be(true)
+      expect(described_class.round_timed_out?(reviewed({"from" => ["a"], "timeout" => 1800}), round, now)).to be(false)
+      expect(described_class.typed_review_timed_out?(reviewed({"from" => ["a"], "timeout" => 1800}), round, now)).to be(false)
+    end
+
+    it "says a typed round's press was missed only past twice its review timeout, from the round's start" do
+      expect(described_class.typed_press_missed?(reviewed({"from" => ["a"], "timeout" => 900}), round, now)).to be(false)
+      expect(described_class.typed_press_missed?(reviewed({"from" => ["a"], "timeout" => 899}), round, now)).to be(true)
+      expect(described_class.typed_press_missed?(reviewed({"from" => ["a"], "timeout" => 60}), round.merge("started_at" => nil), now)).to be(true)
+    end
+
+    it "takes a start that can't be read as not timed out for the sweep and status, and as timed out for a typed round's wait" do
+      run = reviewed({"from" => ["a"], "timeout" => 60})
+      bad = round.merge("started_at" => "not a time")
+
+      expect(described_class.round_elapsed(bad, now)).to be_nil
+      expect(described_class.round_elapsed(nil, now)).to be_nil
+      expect(described_class.round_timed_out?(run, bad, now)).to be(false)
+      expect(described_class.typed_review_timed_out?(run, bad, now)).to be(true)
+    end
+  end
+
+  describe "a round's sweep marks" do
+    it "keeps them on the round, apart from the attempt's own" do
+      expect(described_class.round_sweep_marks({"sweep" => {"interrupt" => {"state" => "sent"}}})).to eq("interrupt" => {"state" => "sent"})
+      expect(described_class.round_sweep_marks({"sweep" => "junk"})).to eq({})
+      expect(described_class.round_sweep_marks(nil)).to eq({})
+    end
+
+    it "names the cause the round was interrupted for, a pending press too, the round's own first" do
+      mark = ->(state) { {"state" => state, "at" => "2026-10-04T11:59:30Z"} }
+
+      expect(described_class.round_interrupted({"sweep" => {"run_interrupt" => mark.call("sent"), "interrupt" => mark.call("pending")}}, now)).to eq("review_timed_out")
+      expect(described_class.round_interrupted({"sweep" => {"run_interrupt" => mark.call("sent")}}, now)).to eq("run_timed_out")
+      expect(described_class.round_interrupted({"sweep" => {"stalled" => {"review_timed_out" => "x"}}}, now)).to be_nil
+      expect(described_class.round_interrupted({}, now)).to be_nil
+    end
+
+    it "no longer counts a pending press older than the claim's hold, left by a sweep that died before it pressed" do
+      stale = {"state" => "pending", "at" => (now - described_class::INTERRUPT_CLAIM_SECONDS).utc.iso8601}
+      fresh = stale.merge("at" => (now - described_class::INTERRUPT_CLAIM_SECONDS + 1).utc.iso8601)
+
+      expect(described_class.round_interrupted({"sweep" => {"interrupt" => stale}}, now)).to be_nil
+      expect(described_class.round_interrupted({"sweep" => {"interrupt" => fresh}}, now)).to eq("review_timed_out")
+      expect(described_class.round_interrupted({"sweep" => {"interrupt" => {"state" => "pending", "at" => "junk"}}}, now)).to be_nil
+      expect(described_class::INTERRUPT_CLAIM_SECONDS).to eq(Workspace::WorkflowRecovery::INTERRUPT_CLAIM_SECONDS)
+    end
+  end
 end

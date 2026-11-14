@@ -41,7 +41,14 @@ RSpec.describe Workspace::WorkflowSweep do
       pressed << [workspace, pane, keys]
     end
   end
-  subject(:sweep) { described_class.new(store: store, engine: engine, panes: panes, interrupter: interrupter, clock: -> { now.first }) }
+  # The sweep with its review rows over the same parts (+orphans+, +holder_alive+ as build_cli gives them).
+  def sweep_with(orphans: nil, holder_alive: nil)
+    reviews = Workspace::WorkflowReviewSweep.new(engine: engine, panes: panes, interrupter: interrupter, orphans: orphans,
+      holder_alive: holder_alive, clock: -> { now.first })
+    described_class.new(store: store, engine: engine, panes: panes, interrupter: interrupter, reviews: reviews, clock: -> { now.first })
+  end
+
+  subject(:sweep) { sweep_with }
 
   before do
     FileUtils.mkdir_p(worktree)
@@ -1544,7 +1551,7 @@ RSpec.describe Workspace::WorkflowSweep do
   describe "a step being reviewed" do
     let(:tmux) { FakeTmux.new(sessions: ["app"], session_name: "app") }
     let(:orphans) { Workspace::WorkflowReviewOrphans.new(tmux: tmux, store: store, panes: panes) }
-    subject(:sweep) { described_class.new(store: store, engine: engine, panes: panes, interrupter: interrupter, orphans: orphans, clock: -> { now.first }) }
+    subject(:sweep) { sweep_with(orphans: orphans) }
 
     before { allow(guard).to receive(:round_snapshot).and_return({"head" => "1" * 40, "tree_sha256" => "t"}) }
 
@@ -1736,8 +1743,7 @@ RSpec.describe Workspace::WorkflowSweep do
       tmux = FakeTmux.new(sessions: %w[app other], session_name: "app")
       tmux.review_windows_by_session = {"app" => [{window: "@1", name: "review-build", review: "wr_1:build:1", pane: "%1", pid: 1}],
                                         "other" => [{window: "@2", name: "review-build", review: "wr_404:build:1", pane: "%2", pid: 2}]}
-      sweeping = described_class.new(store: store, engine: engine, panes: panes, interrupter: interrupter, clock: -> { now.first },
-        orphans: Workspace::WorkflowReviewOrphans.new(tmux: tmux, store: store, panes: panes))
+      sweeping = sweep_with(orphans: Workspace::WorkflowReviewOrphans.new(tmux: tmux, store: store, panes: panes))
 
       expect(sweeping.call(workspace: "app.worktree-x", dry_run: true).map { |each| each["run_id"] }).to eq(["wr_1"])
       rows = sweeping.call(dry_run: true)
@@ -1780,6 +1786,74 @@ RSpec.describe Workspace::WorkflowSweep do
       review_pane_shows("idle", idle_seconds: 1500)
 
       expect(only_row(sweep.call)).to include("outcome" => "evaluated", "cause" => "idle_turn_over")
+    end
+
+    describe "a round past a time limit" do
+      # Bound once the run's author pane is, as a round's delivery binds it.
+      def bind_reviewer = panes.bind(workspace: "app.worktree-x", pane: "%9", run_id: "wr_1", role: "reviewer")
+
+      it "claims, presses in the review pane and confirms once for a round past its review.timeout, then decides the turn the press ends on its verdicts" do
+        review
+        bind_reviewer
+        advance(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT + 1)
+        review_pane_shows("working", idle_seconds: 0)
+
+        expect(only_row(sweep.call(dry_run: true))).to include("outcome" => "dry_run", "cause" => "review_timed_out", "action" => "interrupt")
+        expect(pressed).to be_empty
+        row = only_row(sweep.call)
+
+        expect(row).to include("outcome" => "interrupted", "cause" => "review_timed_out", "action" => "interrupt")
+        expect(pressed).to eq([["app.worktree-x", "%9", Workspace::AgentProvider.find("claude").interrupt_keys]])
+        expect(stored_round["sweep"]).to include("interrupt" => include("state" => "sent"))
+        expect(events.select { |each| each["type"] == "step_stalled" }).to contain_exactly(include("cause" => "review_timed_out", "round" => 1, "pane" => "%9", "timeout" => Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT))
+        expect(events.select { |each| each["type"] == "step_recovered" }).to contain_exactly(include("action" => "interrupted", "cause" => "review_timed_out", "round" => 1))
+
+        expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "already_interrupted")
+        expect(pressed.size).to eq(1)
+
+        advance(10)
+        review_pane_shows("idle", idle_seconds: 10)
+        decided = only_row(sweep.call)
+
+        expect(decided).to include("outcome" => "evaluated", "cause" => "interrupted")
+        reason = stored_run(store, "wr_1")["reason"]
+        expect(reason).to include("code" => "review_incomplete")
+        expect(reason.dig("details", "problem")).to include("past its #{Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT} second review timeout", "Its window is kept")
+        expect(stored_run(store, "wr_1")["steps"]["build"]["state"]).to eq("reviewing")
+        expect(tmux.killed_windows).to be_empty
+      end
+
+      it "presses in the review pane, never the author's, for a run past its timeout with timeout_action: interrupt, and once more for the round's own timeout" do
+        begin_run(flow(run_timeout: "1h", run_action: "interrupt"))
+        advance(3601)
+        edit_run(store, "wr_1") do |run|
+          run["steps"]["build"].merge!("state" => "reviewing", "review_rounds" => 1,
+            "review" => {"round" => 1, "delivery" => nil, "started_at" => now.first.utc.iso8601(3), "delivered_at" => now.first.utc.iso8601(3),
+                         "pane" => "%9", "window" => "@9", "server_pid" => "100", "redeliveries" => 0})
+        end
+        bind_reviewer
+        pane_shows("working")
+        review_pane_shows("working", idle_seconds: 0)
+
+        row = only_row(sweep.call)
+
+        expect(row).to include("outcome" => "interrupted", "cause" => "run_timed_out")
+        expect(pressed.map { |_, pane, _| pane }).to eq(["%9"])
+        expect(stored_round["sweep"]).to include("run_interrupt" => include("state" => "sent"))
+        expect(stored_run(store, "wr_1")["sweep"].to_h).not_to include("run_interrupt")
+        expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "already_interrupted", "cause" => "run_timed_out")
+
+        advance(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT + 1)
+        expect(only_row(sweep.call)).to include("outcome" => "interrupted", "cause" => "review_timed_out")
+        expect(pressed.map { |_, pane, _| pane }).to eq(["%9", "%9"])
+        expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "already_interrupted")
+
+        review_pane_shows("idle", idle_seconds: 10)
+        expect(only_row(sweep.call)).to include("outcome" => "evaluated", "cause" => "interrupted")
+        reason = stored_run(store, "wr_1")["reason"]
+        expect(reason).to include("code" => "review_incomplete")
+        expect(stored_run(store, "wr_1")["state"]).not_to eq("cancelled")
+      end
     end
 
     it "closes a window its going run's round does not use, and leaves the one it does" do

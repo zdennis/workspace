@@ -33,9 +33,10 @@ class FakeWorkflowPanes
     @stale.include?(run_id) ? nil : run_id
   end
 
+  # The role the pane was bound with: "reviewer" for a reviewer binding, else "author".
   def bound_on(pane)
     run_id = run_on(pane)
-    run_id && {run_id: run_id, role: "author"}
+    run_id && {run_id: run_id, role: (@bound[pane][:role] == "reviewer") ? "reviewer" : "author"}
   end
 
   def pane_of(run_id) = @bound.find { |_, entry| entry[:run_id] == run_id }&.first

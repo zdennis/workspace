@@ -21,6 +21,10 @@ module Workspace
     # The daemon's `reason` for a failure that may have left the line in the input box; retrying could type it twice.
     REDELIVER_NEVER_REASONS = %w[prompt_unconfirmed].freeze
 
+    # Seconds a pending interrupt claim holds before another sweep may take it over: the process that took it died
+    # between the claim and the press. Past it a pending mark no longer counts as a press under way.
+    INTERRUPT_CLAIM_SECONDS = 60
+
     # How long a `turn_ended_background` hold lasts after the last Stop that listed tasks.
     BACKGROUND_HOLD = 90 * 60
 
@@ -349,19 +353,104 @@ module Workspace
     end
 
     # Whether a round whose line may have been typed, and whose review pane shows its agent at work, has run past the
-    # review's own `timeout` (stored in seconds; {WorkflowReviewSpec::DEFAULT_TIMEOUT} when the stored review has none)
-    # since its line went out (`kick_at`, else its failure). A time that can't be read has run past it.
+    # review's own `timeout` ({.round_timed_out?}'s one reading, from the round's `started_at`). A start that can't be
+    # read has run past it.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param round [Hash{String=>Object}] the current step's `review`
     # @param now [Time]
     # @return [Boolean]
     def self.typed_review_timed_out?(run, round, now)
+      elapsed = round_elapsed(round, now)
+      elapsed.nil? || elapsed > review_timeout(run)
+    end
+
+    # The current step's `review.timeout` in seconds, {WorkflowReviewSpec::DEFAULT_TIMEOUT} when the stored review has
+    # none. The one reading of a round's time limit: `workflow status`'s `timed_out` flag, the sweep's interrupt and
+    # the wait for a round whose line may have been typed all take it, measured by {.round_elapsed}.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Numeric]
+    def self.review_timeout(run)
       review = WorkflowDefinition.review(run.dig("definition", "steps")&.find { |each| each["id"] == run["current"] })
-      timeout = (review && review["timeout"].is_a?(Numeric)) ? review["timeout"] : WorkflowReviewSpec::DEFAULT_TIMEOUT
-      now - Time.iso8601((round["kick_at"] || round.dig("failure", "at")).to_s) >= timeout
+      (review && review["timeout"].is_a?(Numeric)) ? review["timeout"] : WorkflowReviewSpec::DEFAULT_TIMEOUT
+    end
+
+    # Seconds a review round has run, from its `started_at` (a delivery again, or a rerun of missing reviewers, starts
+    # it again).
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @param now [Time]
+    # @return [Float, nil] nil when the round holds no start that can be read
+    def self.round_elapsed(round, now)
+      return nil unless round.is_a?(Hash) && round["started_at"]
+      now - Time.iso8601(round["started_at"].to_s)
     rescue ArgumentError, TypeError
-      true
+      nil
+    end
+
+    # Whether a review round has run past its `review.timeout` ({.review_timeout}, {.round_elapsed}); false for one
+    # whose start can't be read.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param round [Hash{String=>Object}, nil] the current step's `review`
+    # @param now [Time]
+    # @return [Boolean]
+    def self.round_timed_out?(run, round, now)
+      elapsed = round_elapsed(round, now)
+      !elapsed.nil? && elapsed > review_timeout(run)
+    end
+
+    # The sweep's interrupt causes a review round's own marks (`review.sweep`) keep apart, each pressed once for the
+    # round: its `review.timeout` and the run's `timeout_action: interrupt`.
+    ROUND_INTERRUPT_KEYS = {"review_timed_out" => "interrupt", "run_timed_out" => "run_interrupt"}.freeze
+
+    # The marks the sweep left on a review round ("interrupt" for its `review.timeout`, "run_interrupt" for the run's
+    # deadline, each `state` `pending` or `sent` and `at`; "stalled" and "recovered", cause => time). Kept on the round
+    # itself, so the reviewed attempt's own marks (its author's interrupt) never stand for the round's; a delivery of
+    # the round again starts with none.
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @return [Hash{String=>Object}]
+    def self.round_sweep_marks(round)
+      marks = round.is_a?(Hash) ? round["sweep"] : nil
+      marks.is_a?(Hash) ? marks : {}
+    end
+
+    # The cause the sweep interrupted a review round's pane for (`review_timed_out` first): its keys went out, or are
+    # going out (a pending claim younger than {INTERRUPT_CLAIM_SECONDS}, so a turn the press ends before it is
+    # confirmed reads the same; an older one was left by a sweep that died before it pressed); nil when it pressed
+    # none. A round interrupted is decided on the verdicts already written: none is run again.
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @param now [Time]
+    # @return [String, nil]
+    def self.round_interrupted(round, now)
+      marks = round_sweep_marks(round)
+      ROUND_INTERRUPT_KEYS.find { |_, key| interrupt_mark_live?(marks[key], now) }&.first
+    end
+
+    # A round mark that stands for a press: `sent`, or `pending` and younger than {INTERRUPT_CLAIM_SECONDS}.
+    def self.interrupt_mark_live?(mark, now)
+      return false unless mark.is_a?(Hash)
+      return true if mark["state"] == "sent"
+      mark["state"] == "pending" && now - Time.iso8601(mark["at"].to_s) < INTERRUPT_CLAIM_SECONDS
+    rescue ArgumentError, TypeError
+      false
+    end
+    private_class_method :interrupt_mark_live?
+
+    # Whether a round whose line may have been typed, its review pane at work and never interrupted by the sweep, has
+    # run past twice its `review.timeout` ({.round_elapsed}): the sweep presses at the first, so past the second no
+    # sweep is coming and the round stops for a person. A start that can't be read has run past it.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param round [Hash{String=>Object}] the current step's `review`
+    # @param now [Time]
+    # @return [Boolean]
+    def self.typed_press_missed?(run, round, now)
+      elapsed = round_elapsed(round, now)
+      elapsed.nil? || elapsed > 2 * review_timeout(run)
     end
 
     # Seconds left before a failed round's delivery again; a failure time that can't be read waits no longer.

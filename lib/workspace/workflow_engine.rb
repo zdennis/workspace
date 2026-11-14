@@ -198,6 +198,18 @@ module Workspace
       @recovery.interrupt_sent(run_id, step: step, attempt: attempt, claim_at: claim_at, sent: sent, record: record, cause: cause)
     end
 
+    # Takes the right to interrupt a review round's pane past a time limit. See {WorkflowRecovery#claim_round_interrupt}.
+    # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`]; or :repeat, :moved_on or :busy
+    def claim_round_interrupt(run_id, step:, attempt:, round:, pane:, elapsed:, timeout:, cause:)
+      @recovery.claim_round_interrupt(run_id, step: step, attempt: attempt, round: round, pane: pane, elapsed: elapsed, timeout: timeout, cause: cause)
+    end
+
+    # Ends a {#claim_round_interrupt}. See {WorkflowRecovery#round_interrupt_sent}.
+    # @return [Symbol] :recorded, :released, :taken_over or :moved_on
+    def round_interrupt_sent(run_id, step:, attempt:, round:, pane:, claim_at:, sent:, cause:)
+      @recovery.round_interrupt_sent(run_id, step: step, attempt: attempt, round: round, pane: pane, claim_at: claim_at, sent: sent, cause: cause)
+    end
+
     private
 
     # The Hash a resume, a park and a park's release answer: the run, with "unchanged" when nothing was done.

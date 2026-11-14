@@ -140,6 +140,8 @@ class RecordingRunStore
   # A fixed stamp, as the real store's digest of its directory.
   def stamp = "st0re"
 
+  def stamps = [stamp]
+
   def going?(id)
     @calls << [:going?, id]
     @going.include?(id)

@@ -118,6 +118,18 @@ RSpec.describe Workspace::WorkflowRoundRerun do
       expect(rerun.rerun_names(run, round.merge("redeliveries" => 99), {outcome: :incomplete, reviews: rows})).to be_nil
       expect(rerun.rerun_names(run, round, {outcome: :incomplete, reviews: rows.first(1)})).to be_nil
     end
+
+    it "names none for a round the sweep interrupted for a time limit, sent or pending" do
+      run = after_rejection(round: {"redeliveries" => 0})
+      round = run["steps"]["plan"]["review"]
+
+      %w[sent pending].each do |state|
+        interrupted = round.merge("sweep" => {"run_interrupt" => {"state" => state, "at" => "2026-11-10T11:59:30Z"}})
+        expect(rerun.rerun_names(run, interrupted, {outcome: :incomplete, reviews: rows})).to be_nil
+      end
+      stale = round.merge("sweep" => {"run_interrupt" => {"state" => "pending", "at" => "2026-11-10T11:00:00Z"}})
+      expect(rerun.rerun_names(run, stale, {outcome: :incomplete, reviews: rows})).to eq(%w[b])
+    end
   end
 
   describe "#rerun" do

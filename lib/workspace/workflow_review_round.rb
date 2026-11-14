@@ -142,7 +142,7 @@ module Workspace
           return failed(run, pending, window, kick[:code].to_s, kick[:message].to_s, close: !window[:fresh], typed: typed)
         end
         delivered(run, pending, window, kick)
-      rescue Workspace::Error, SystemCallError, EncodingError, IOError => e
+      rescue Workspace::Error, SystemCallError, EncodingError, IOError, Timeout::Error => e
         if e.is_a?(Workspace::Error) && e.code == "run_not_active"
           abandon(run, window) if window
           raise
@@ -215,7 +215,7 @@ module Workspace
       mark = WorkflowPanes.review_mark(run.id, pending["step"], pending["round"])
       kept = nil
       others = []
-      @tmux.review_windows(session).each do |window|
+      @tmux.review_windows(session, timeout: WorkflowPanes::TMUX_READ_TIMEOUT).each do |window|
         next unless WorkflowPanes.parse_review_mark(window[:review])&.first == run.id
         (window[:review] == mark && kept.nil?) ? kept = window : others << window
       end
@@ -225,7 +225,7 @@ module Workspace
       carried = nil if carried && !@tmux.mark_review_window(carried[:window], mark)
       others.delete(carried) if carried
       others.each do |window|
-        @tmux.kill_window(window[:window])
+        @tmux.kill_window(window[:window], timeout: WorkflowPanes::TMUX_READ_TIMEOUT)
         @panes.unbind(run.id, role: "reviewer", pane: window[:pane]) if window[:pane]
       end
       # This round's own window that an earlier delivery carried over and never cleared holds no reviewer of the round:
@@ -374,7 +374,7 @@ module Workspace
     # The run left the round while it was delivered: nothing it made is anyone's.
     def abandon(run, window)
       unbind(run, window)
-      @tmux.kill_window(window[:window])
+      @tmux.kill_window(window[:window], timeout: WorkflowPanes::TMUX_READ_TIMEOUT)
     end
 
     def unbind(run, window)
@@ -384,8 +384,8 @@ module Workspace
     # The tmux server the review pane is on, so the sweep can tell a restarted server (which may reuse the pane id)
     # from the same pane; nil when tmux can't say, which the sweep reads as not knowing what became of the pane.
     def server_pid(pane)
-      @tmux.server_pid_for_pane(pane)
-    rescue SystemCallError
+      @tmux.server_pid_for_pane(pane, timeout: WorkflowPanes::TMUX_READ_TIMEOUT)
+    rescue SystemCallError, Timeout::Error
       nil
     end
 

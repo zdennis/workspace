@@ -9,7 +9,8 @@ module Workspace
   # the run is on that step, in any state.
   # A window whose run file can't be read is left alone: nothing can say it is over. A window stamped by another run
   # store ({WorkflowRunStore#stamp}: another `HOME` or `XDG_STATE_HOME` on the same tmux server, such as a scheduler's)
-  # is not this store's to judge and is left out. Only a positive read from this store (`run_over`, `not_recorded`)
+  # is not this store's to judge and is left out ({WorkflowRunStore#stamps}: the stamp, or the one stamped before
+  # links were resolved). Only a positive read from this store (`run_over`, `not_recorded`)
   # makes a window `closable`; one whose run this store does not have (`run_unknown`) is reported, never closed,
   # since it may be another store's window opened before windows were stamped.
   class WorkflowReviewOrphans
@@ -28,15 +29,15 @@ module Workspace
     # @param workspace [String, nil] only that workspace's session; nil looks at every session of the default tmux server
     # @return [Array<Hash{Symbol=>Object}>] one per orphan: :session, :window, :pane, :review (the mark), :run_id,
     #   :step, :round, :workspace (the run's, nil for an unknown run), :run (the stored run, nil when unknown) and
-    #   :why (`run_over`, `run_unknown` or `not_recorded`) and :closable (true only for `run_over` and `not_recorded`);
-    #   empty when tmux can't be read
+    #   :why (`run_over`, `run_unknown` or `not_recorded`) and :closable (true only for `run_over` and `not_recorded`,
+    #   so a closable one always has its :run); empty when tmux can't be read or does not answer in time
     def find(workspace: nil)
       unreadable = nil
       unreadable_ids = -> { unreadable ||= @store.unreadable(archived: true).map { |path| File.basename(path, ".json") } }
       sessions(workspace).flat_map do |session|
-        @tmux.review_windows(session).filter_map { |window| orphan(session, window, unreadable_ids) }
+        @tmux.review_windows(session, timeout: WorkflowPanes::TMUX_READ_TIMEOUT).filter_map { |window| orphan(session, window, unreadable_ids) }
       end
-    rescue Workspace::Error, SystemCallError
+    rescue Workspace::Error, SystemCallError, Timeout::Error
       []
     end
 
@@ -46,7 +47,7 @@ module Workspace
     # @return [Boolean] whether tmux closed it; false, closing nothing, for one that is not `closable`
     def close(orphan)
       return false unless orphan[:closable]
-      closed = @tmux.kill_window(orphan[:window])
+      closed = @tmux.kill_window(orphan[:window], timeout: WorkflowPanes::TMUX_READ_TIMEOUT)
       @panes.unbind(orphan[:run_id], role: "reviewer", pane: orphan[:pane]) if closed && orphan[:pane]
       closed
     end
@@ -61,7 +62,7 @@ module Workspace
     def orphan(session, window, unreadable_ids)
       run_id, step, round = WorkflowPanes.parse_review_mark(window[:review])
       return nil unless run_id
-      return nil if window[:store] && window[:store] != @store.stamp
+      return nil if window[:store] && !@store.stamps.include?(window[:store])
       run = read_run(run_id, unreadable_ids)
       return nil if run == :unreadable
       # A session of that name on the default server is not the workspace's when the workspace runs on its own socket.

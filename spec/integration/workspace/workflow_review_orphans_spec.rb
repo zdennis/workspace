@@ -1,4 +1,5 @@
 require "spec_helper"
+require "digest"
 require "tmpdir"
 
 RSpec.describe Workspace::WorkflowReviewOrphans do
@@ -107,6 +108,15 @@ RSpec.describe Workspace::WorkflowReviewOrphans do
 
     expect(found).to eq([["@1", "run_over"], ["@2", "run_over"]])
     expect(orphans.find.map { |each| each[:closable] }).to eq([true, true])
+  end
+
+  it "judges a window stamped before the store resolved links, by the digest of its directory as written, as this store's" do
+    write_run("wr_1", state: "completed", dir: "archive")
+    legacy = Digest::SHA256.hexdigest(File.expand_path(File.join(@dir, "runs")))[0, 16]
+    tmux.review_window_list = [window("@1", "wr_1:plan:1", "%1", store: legacy)]
+
+    expect(store.stamps).to include(legacy, store.stamp)
+    expect(found).to eq([["@1", "run_over"]])
   end
 
   it "reports a window whose run this store does not have, stamped or not, and never closes it" do

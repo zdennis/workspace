@@ -316,6 +316,11 @@ module Workspace
         false
       end
 
+      # A review pane is never lost with a tmux server.
+      def review_pane_state(_workspace, _pane, _server_pid)
+        nil
+      end
+
       # The review pane is only a name: its turn is always over, and it has no row.
       def main_turn_over?(_workspace, _pane)
         true

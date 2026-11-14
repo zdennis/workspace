@@ -906,21 +906,28 @@ RSpec.describe Workspace::WorkflowPanes do
 
   describe "#pane_gone?" do
     it "says whether tmux still knows the pane" do
-      allow(tmux).to receive(:session_name_for_pane).with("%5", project: nil).and_return("app")
+      allow(tmux).to receive(:session_name_for_pane).with("%5", project: nil, strict: true).and_return("app")
       expect(panes.pane_gone?("%5")).to be(false)
 
-      allow(tmux).to receive(:session_name_for_pane).with("%5", project: nil).and_return(nil)
+      allow(tmux).to receive(:session_name_for_pane).with("%5", project: nil, strict: true).and_return(nil)
       expect(panes.pane_gone?("%5")).to be(true)
     end
 
     it "asks the run's workspace's own tmux socket" do
-      allow(tmux).to receive(:session_name_for_pane).with("%5", project: "app").and_return(nil)
+      allow(tmux).to receive(:session_name_for_pane).with("%5", project: "app", strict: true).and_return(nil)
 
       expect(panes.pane_gone?("%5", workspace: "app")).to be(true)
     end
 
     it "is false when tmux can't be run" do
       allow(tmux).to receive(:session_name_for_pane).and_raise(Errno::ENOENT)
+      expect(panes.pane_gone?("%5")).to be(false)
+    end
+
+    it "is false when tmux does not answer in time: a wedged server is not a gone pane" do
+      allow(tmux).to receive(:session_name_for_pane).with("%5", project: nil, strict: true)
+        .and_raise(Workspace::Error, "tmux display-message did not respond within 5s")
+
       expect(panes.pane_gone?("%5")).to be(false)
     end
   end
@@ -997,6 +1004,21 @@ RSpec.describe Workspace::WorkflowPanes do
     end
   end
 
+  describe "#close_review with tmux read through a time limit" do
+    let(:tmux) { instance_double(Workspace::Tmux, custom_socket_option: nil, session_name_for: "app") }
+
+    it "lists and closes with a time limit, and closes nothing when tmux does not answer in time" do
+      limit = described_class::TMUX_READ_TIMEOUT
+      allow(tmux).to receive(:review_windows).with("app", timeout: limit).and_return([{window: "@1", review: "wr_1:plan:1", pane: "%11"}])
+      allow(tmux).to receive(:kill_window).with("@1", timeout: limit).and_return(true)
+
+      expect(panes.close_review("app", "wr_1", step: "plan")).to eq(["@1"])
+
+      allow(tmux).to receive(:review_windows).and_raise(Timeout::Error)
+      expect(panes.close_review("app", "wr_1")).to eq([])
+    end
+  end
+
   describe "#review_pane_state" do
     let(:tmux) { FakeTmux.new(session_name: "app", details: [{id: "%5", window: 0, index: 1}]) }
 
@@ -1044,6 +1066,14 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(panes.review_pane_state("app", "%9", "100")).to be_nil
 
       allow(tmux).to receive(:server_pid_for_pane).and_raise(Errno::ENOENT)
+      expect(panes.review_pane_state("app", "%9", "100")).to be_nil
+    end
+
+    it "lists the session's panes with a time limit, and can't tell when tmux does not answer in time" do
+      tmux.server_pid = nil
+      tmux.session_server_pid = "100"
+      allow(tmux).to receive(:pane_details).with("app", window: nil, timeout: described_class::TMUX_READ_TIMEOUT).and_raise(Timeout::Error)
+
       expect(panes.review_pane_state("app", "%9", "100")).to be_nil
     end
   end

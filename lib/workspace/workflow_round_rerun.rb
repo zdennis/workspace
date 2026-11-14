@@ -88,7 +88,8 @@ module Workspace
     end
 
     # The reviewers of an incomplete round to run again in the same round ({WorkflowReviewTally.rerun_names}), while
-    # the round has a delivery left under the definition's `redeliver`.
+    # the round has a delivery left under the definition's `redeliver`. None for a round the sweep interrupted for a
+    # time limit ({WorkflowTransitions.round_interrupted}): its verdicts on disk decide it, or it stops for a person.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on the step being reviewed
     # @param round [Hash{String=>Object}, nil] the step's round
@@ -96,6 +97,7 @@ module Workspace
     # @return [Array<String>, nil] the names; nil when none is run again
     def rerun_names(run, round, tally)
       return nil unless tally[:outcome] == :incomplete && round.is_a?(Hash) && round["round"].is_a?(Integer)
+      return nil if WorkflowTransitions.round_interrupted(round, @clock.call)
       return nil unless round["redeliveries"].to_i < WorkflowDefinition.redeliver(WorkflowRun.from_h(run).definition)
       names = WorkflowReviewTally.rerun_names(tally[:reviews])
       names.empty? ? nil : names
@@ -127,7 +129,7 @@ module Workspace
         # The rerun clears the window again, so the clear an earlier delivery made is not this rerun's: its own
         # `clear_from` is set as its line goes out. A delivery again of the same line keeps it, since the line an
         # earlier delivery typed after that clear may be the reviewers' turn.
-        state["review"] = round.except("holder", "failure", "recompute", "delivered_at", "cleared_at", "clear_from", "kick_at", "ended_at", "recorded")
+        state["review"] = round.except("holder", "failure", "recompute", "delivered_at", "cleared_at", "clear_from", "kick_at", "ended_at", "recorded", "sweep")
           .merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3), "redeliveries" => redeliveries, "reruns" => reruns,
             "rerun" => names, "pending" => names, "reviews" => kept, "uncleared" => true)
         hold(state["review"])

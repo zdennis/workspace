@@ -137,7 +137,7 @@ class FakeTmux
   end
 
   # A copy, as each real listing is a new one: a window killed while a caller walks it stays in the walk.
-  def review_windows(session) = (@review_windows_by_session ? @review_windows_by_session.fetch(session, []) : @review_window_list).map(&:dup)
+  def review_windows(session, timeout: nil) = (@review_windows_by_session ? @review_windows_by_session.fetch(session, []) : @review_window_list).map(&:dup)
 
   # Moves a listed window's mark; false for a window it does not list.
   def mark_review_window(window, mark)
@@ -149,7 +149,7 @@ class FakeTmux
   end
 
   # False for a window it never opened or listed.
-  def kill_window(target)
+  def kill_window(target, timeout: nil)
     known = @opened_windows.any? { |opened| opened[:window] == target } || @review_window_list.any? { |w| w[:window] == target }
     return false unless known
     @killed_windows << target
@@ -201,7 +201,7 @@ class FakeTmux
 
   def find_pane_by_title(_session, _pattern, **_opts) = nil
 
-  def pane_details(_session, window: "0")
+  def pane_details(_session, window: "0", timeout: nil)
     raise ArgumentError, "expected every window" if @strict_windows && !window.nil?
     @on_details&.call
     return [] unless @details
@@ -221,7 +221,7 @@ class FakeTmux
 
   def session_exists?(name, project: nil) = @sessions.include?(name)
 
-  def session_name_for_pane(pane_id, project: nil) = @pane_sessions[pane_id]
+  def session_name_for_pane(pane_id, project: nil, strict: false) = @pane_sessions[pane_id]
 
   def client_session_name(tmux_env) = @client_sessions[tmux_env]
 

@@ -719,6 +719,24 @@ RSpec.describe Workspace::WorkflowProgress do
         expect(run.step("plan").review).not_to include("pane", "panes", "window", "server_pid")
       end
 
+      it "runs no reviewer again in a round the sweep interrupted for a time limit, and says why it stopped, its window kept" do
+        %w[interrupt run_interrupt].each do |key|
+          given = rerunnable
+          given["steps"]["plan"]["review"]["sweep"] = {key => {"state" => "sent", "at" => "2026-11-10T11:59:00Z"}}
+          context = ctx
+
+          run = progress.decide_review(given, {outcome: :incomplete, reviews: rows, problem: "no counted verdict from tester (missing)"}, ctx: context)
+
+          expect(run.reason).to include("code" => "review_incomplete")
+          expect(run.step("plan").review).not_to include("rerun")
+          expect(context.review).to be_nil
+          expect(context.close_review).to be_nil
+          problem = run.reason.dig("details", "problem")
+          expect(problem).to include("so the sweep interrupted the review pane", "did not decide it: no counted verdict from tester (missing)", "Its window is kept")
+          expect(problem).to include((key == "interrupt") ? "past its 1800 second review timeout" : "a resume needs --extra-time")
+        end
+      end
+
       it "stops review_incomplete for a round problem no rerun gets past" do
         broken = rows.map { |row| row.merge("counted" => false, "problem" => "no_review_pane") }
 
@@ -1013,7 +1031,7 @@ RSpec.describe Workspace::WorkflowProgress do
       it "delivers the round again as the same round, spending one more of its redeliveries and keeping the window a failure kept" do
         given = reviewing_hash
         given["steps"]["plan"]["review"].merge!("delivery" => "failed", "redeliveries" => 1, "window" => "@7", "holder" => {"pid" => 1},
-          "failure" => {"code" => "agent_not_ready"})
+          "failure" => {"code" => "agent_not_ready"}, "sweep" => {"interrupt" => {"state" => "sent", "at" => "2026-11-10T11:00:00Z"}})
         context = ctx
 
         run = progress.redeliver_round(given, ctx: context)
@@ -1021,7 +1039,7 @@ RSpec.describe Workspace::WorkflowProgress do
         state = run.step("plan")
         expect(state.review_rounds).to eq(1)
         expect(state.review).to include("round" => 1, "delivery" => "delivering", "window" => "@7", "started_at" => "2026-11-10T12:00:00.000Z", "redeliveries" => 2)
-        expect(state.review).not_to include("failure", "holder")
+        expect(state.review).not_to include("failure", "holder", "sweep")
         expect(state.last_attempt.to_h["rounds"].map { |each| each["ended"] }).to eq(["redelivered"])
         expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
         expect(change.events).to eq([["wr_1", "review_started", {"step" => "plan", "attempt" => 1, "round" => 1, "again" => true, "redelivery" => 2}]])
