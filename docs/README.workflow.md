@@ -965,11 +965,54 @@ workspace workflow run rpiv --input task="PROJ-101 invoice PDF export"
 
 ### The `rpiv-auto-approve-v2` preset
 
-`rpiv-auto-approve-v2` extends `rpiv` and replaces the `plan` step with one that has no gate and a `review:` of three built-in reviewers (`supportive`, `skeptical`, `implementer`): two of three must approve, the skeptic among them, for up to six rounds. It has four steps (`research`, `plan`, `implement`, `verify`), `max_attempts: 17` (the plan step 8), `timeout: 8h` and a 40,000,000-token budget. The figures are estimates; replace them with `workflow stats` once there are runs. `rpiv-auto-approve` stays as it is.
+`rpiv-auto-approve-v2` is the recommended preset for a run no person watches. Needs `workflow` 40 in `capabilities`.
+
+Which to pick:
+
+- `rpiv`: a person approves the plan at a gate.
+- `rpiv-auto-approve-v2`: nobody watches; reviewers the engine runs approve the plan.
+- `rpiv-auto-approve`: only for definitions that already extend it. It stays as it is, so they keep working.
+
+It extends `rpiv` and replaces the `plan` step with one that has no gate and a `review:` of three built-in reviewers (`supportive`, `skeptical`, `implementer`): two of three must approve, the skeptic among them, for up to six rounds. It has four steps (`research`, `plan`, `implement`, `verify`), `max_attempts: 17` (the plan step 8), `timeout: 8h` and a 40,000,000-token budget. These figures are estimates, set before there were runs; replace them with `workflow stats` once there are.
+
+How it differs from [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset):
+
+- The engine runs the review. There are no reviewer steps and no tally step: the old preset's four extra steps and its hand-counted `max_attempts: 68` are gone, and the engine counts the approvals.
+- The three reviewers run in one review window of their own, not in the author's pane, as parallel sub-agents of one review conversation. Each writes a verdict file the engine proves against the agent daemon's log. See [Verdict files](#verdict-files).
+- A rejected round sends the plan step back as a new attempt with every reviewer's write-up in its instructions, then reviews it again. A retry that changes nothing the review reads stops the run as `review_no_change` instead of spending a round.
+- The run is capped: per-step `max_attempts`, a run `timeout` and a token `budget`.
+
+What you see while it runs:
+
+- `workflow status` shows the plan step as `reviewing`, with `current.review` holding the round, `max_rounds`, the approvals so far, the reviewers still pending and the review window's pane.
+- Each round that ends leaves a `summary.md` in `<artifacts>/reviews/plan.<attempt>.r<round>/` and one `review_request` inbox item for the run and step (dedupe key `review:RUN:plan`), which later rounds update. The item says what the run does next. The preset has no gate, so nothing waits for your approval; the summary is a record. See [A gate after a review](#a-gate-after-a-review).
+- The review window stays open across rejected rounds. See [A review round's window](#a-review-rounds-window) for `renumber-windows` and iTerm native windows.
+
+When it stops for a person:
+
+| Reason | Meaning | What to do |
+|--------|---------|------------|
+| `review_rejected`, `details.limit` `run` or `step` | The last round rejected the plan and the run (`run`) or the plan step (`step`) spent its `max_attempts` | Read the reviewers' write-ups, then `workflow resume RUN --extra-attempts N`, or `workflow cancel RUN` |
+| `review_rejected`, `details.limit` `rounds` | The last round rejected the plan and the step spent its six rounds | Read the write-ups, then `workflow resume RUN --extra-rounds N`, or `workflow cancel RUN` |
+| `review_rounds_spent` | The plan reached a review with every round spent | `workflow resume RUN --extra-rounds N` |
+| `review_no_change` | The retry changed nothing the review reads; the round was not spent | `workflow resume RUN` reviews that same round as it stands, or `workflow resume RUN --from plan` runs the plan step again |
+| `review_incomplete` | A round ended without a decision (a missing or unproven verdict, or the revision could not be computed) | `workflow resume RUN` starts a fresh round, which spends one |
+| `review_stale`, `review_guard`, `review_tampered` | The plan (`review_stale`) or the checkout (`review_guard`) changed during a round, or something was already at the round's directory (`review_tampered`) | `workflow resume RUN` starts a fresh round on what is there now, which spends one |
+
+See [The rejection loop](#the-rejection-loop) for how a rejected round retries and [Where a run is stuck](#where-a-run-is-stuck) for every reason. A v2 plan has no gate, so there is nothing to approve or reject. The `--extra-*` flags allow more attempts or rounds, and so more tokens and time: use them only when the person asked.
+
+Run the sweep on a schedule for an unattended run. For v2, `workflow sweep` presses the interrupt keys of a review pane that is still working past `review.timeout` (30 minutes a round), which ends its turn so the round is decided, and it decides turns that ended while no daemon saw them. It presses the author's pane for the step `timeout` only if the definition sets `on_timeout: interrupt` or `fail` on the step, and for the run `timeout` only with `timeout_action: interrupt`; v2 sets neither, so those limits hold a new attempt or round (`run_timed_out`) and never interrupt. Without the sweep nothing presses a review pane that keeps working, so such a round waits until a person looks. Once a pane has been pressed, the agent daemon's timer decides a round the pane still holds, so that part needs no sweep.
+
+`workflow sweep --install` writes a per-user launchd entry that runs the sweep every 5 minutes; `--uninstall` removes it and `--installed` checks it without changing anything ([Running the sweep on a schedule](#running-the-sweep-on-a-schedule)). `workflow run` and `workflow start` warn on stderr when a definition with a `timeout:` runs without it.
+
+```sh
+workspace workflow sweep --install
+workspace workflow start rpiv-auto-approve-v2 --prompt "add a retry to the uploader"
+```
 
 ### The `rpiv-auto-approve` preset
 
-`rpiv-auto-approve` is `rpiv` with no gate, for a run no person watches. Eight steps run in order: `research`, `plan`, `review_supportive`, `review_skeptical`, `review_implementer`, `plan_review`, `implement` and `verify`. The three review steps and the tally take the gate's place.
+`rpiv-auto-approve` is `rpiv` with no gate, for a run no person watches. For new unattended work prefer [`rpiv-auto-approve-v2`](#the-rpiv-auto-approve-v2-preset), which has the engine run the review. Eight steps run in order: `research`, `plan`, `review_supportive`, `review_skeptical`, `review_implementer`, `plan_review`, `implement` and `verify`. The three review steps and the tally take the gate's place.
 
 Each reviewer is a step of its own with `context: fresh`, so the engine dispatches three separate conversations. None holds the planner's reasoning or another reviewer's, and the run's attempt records tie each one to its recorded session. A reviewer reads `plan status --json`, takes `plans[0].revision` (the full SHA-256 digest of the plan) and writes `approval-supportive.md`, `approval-skeptical.md` or `approval-implementer.md`: three header lines (`reviewer:`, `verdict:` and `plan_revision:`), then its reasons. Each verdict file is a `produces` file, so the step is done only when that file is newer than the attempt, and a verdict left over from an earlier round does not count.
 

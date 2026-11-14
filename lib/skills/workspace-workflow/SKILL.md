@@ -63,8 +63,8 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 | ID | Required input | Steps | For |
 |---|---|---|---|
 | `rpiv` | `task` | research, plan (gate), implement, verify | One feature end to end; needs `commands.test` |
-| `rpiv-auto-approve` | `task` | as `rpiv`, three reviewers in place of the gate | The same, unattended |
-| `rpiv-auto-approve-v2` | `task` | as `rpiv`, plan reviewed by built-in reviewers (`review:`) in place of the gate | The same, unattended; fewer steps, capped attempts, run timeout and token budget |
+| `rpiv-auto-approve` | `task` | as `rpiv`, three reviewers in place of the gate | The older unattended form; choose v2 for new runs |
+| `rpiv-auto-approve-v2` | `task` | as `rpiv`, plan reviewed by built-in reviewers (`review:`) in place of the gate | The recommended unattended preset: no person reviews the plan, fewer steps, capped attempts, run timeout and token budget. Suggest the person run `workflow sweep --install` (you do not: it changes their login session), since only the sweep presses a review pane past the review timeout (it is a per-user launchd entry running every 5 minutes; `workflow sweep --installed` checks it, read-only). A plan has no gate, so never approve or reject it |
 | `pr-feedback` | none | triage (gate), fix | Review feedback on a PR; never posts or pushes |
 | `investigate` | none | reproduce, diagnose (gate), fix | A failing check or bug; stops `no_input` with no input and no PR |
 | `explore` | `task` | survey (gate), report | Read-only research or gap analysis |
@@ -78,8 +78,13 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 | `waiting_lock` | Nobody; wait. |
 | `waiting_you` | The person for a gate or prompt; for an ask, see workspace-inbox. |
 | `turn_ended_incomplete`, `failed_check` | `workflow resume RUN`. A guard stop (HEAD moved, hooks changed, and the like) can also be accepted with `resume RUN --accept-guard --note WHY [--retry]`: only when the person asked, never to get past your own change. It accepts the guard alone: the step's files, proofs and check still have to pass. Later guarded steps measure from the new base, so a cause still there (no commit, a rebase under way) stops them again. If `actions` lists only `cancel`, a resume can't get past it: tell the person. If `reason.recovery` is set, do that (or tell the person) before resuming. |
+| `review_rounds_spent`, `review_no_change`, `review_incomplete`, `review_stale`, `review_guard` | A review of a step's work stopped. Plain `workflow resume RUN` starts a fresh round (`review_no_change`: reviews the same round; `resume RUN --from plan` reruns the author). `review_rounds_spent` refuses a plain resume: it needs `--extra-rounds N`. |
+| `review_rejected` (`details.limit`) | `run` or `step`: `resume RUN --extra-attempts N`; `rounds`: `resume RUN --extra-rounds N`. `--extra-attempts` and `--extra-rounds` spend tokens and time: only when the person asked. |
 | `pane_gone` | Bring the pane back (`workspace launch NAME`), then `workflow resume RUN`. |
 
+- A v2 run is polled with `workflow status --needs-me --json`. Follow each row's `next_action`, and run only commands in the row's `actions`.
+- `current.review` is present only while a step is `reviewing`: `round`, `max_rounds` (includes any extras), `approvals`, `need`, `must`, `pending` (reviewers with no verdict), `stopped`, `held`, `next_round`, `rounds_spent` (true: a plain resume is refused), `pane` and `window`, and `reviews[]` with `reviewer`, `verdict`, `counted` and `problem`.
+- Each round's write-ups are in `<artifacts>/reviews/plan.<attempt>.r<round>/`, with `summary.md`; read them before resuming.
 - Flags: `parked` (wait), `delivering` (do not resume). A reason's `actions` says what can be done, not what to do: `workflow resume` is yours, while `approve`, `reject`, `resume --accept-guard`, `ask answer` and `dev down` wait for the person to ask. An action whose `needs` holds `note` (`needs: ["note"]`) takes a note the person writes, not one you make up.
 - `workflow cancel RUN` can't be undone: run it only when the person asks, even when `actions` lists it.
 - In a bound pane, `workspace step status` is your own read. The `bound_pane` and `parked` traps are in machine-contract.

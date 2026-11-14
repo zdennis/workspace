@@ -625,7 +625,7 @@ module Workspace
           ["workspace workflow start rpiv --prompt \"add a hello script\" --branch hello-script", "choose the branch's name yourself"],
           ["workspace workflow start pr-feedback '#123'", "work through the review feedback on pull request 123 (needs gh)"],
           ["workspace workflow start rpiv PROJ-101 --note \"Keep the change small.\"", "tell every step something extra"],
-          ["workspace workflow start rpiv-auto-approve --prompt \"add a hello script\"", "a run no person watches: three reviewer sub-agents approve the plan in place of the gate"]
+          ["workspace workflow start rpiv-auto-approve-v2 --prompt \"add a hello script\"", "the recommended preset for a run no person watches: three reviewers the engine runs approve the plan in place of the gate"]
         ]
       },
       "status" => {
