@@ -117,15 +117,15 @@ module Workspace
     # Gets a run that is not moving going again. See {WorkflowDecisions#resume}.
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was done
     def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
-      accept_guard: false, guard_retry: false, caller_pane: nil)
-      resumed_h(@decisions.resume(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds,
+      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil)
+      resumed_h(@decisions.resume(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
         accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane))
     end
 
     # Stores a resume for later, with {#resume}'s arguments. See {WorkflowDecisions#park}.
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was stored
-    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
-      resumed_h(@decisions.park(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds))
+    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
+      resumed_h(@decisions.park(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds))
     end
 
     # Carries out the parked resume +id+. See {WorkflowDecisions#release_park}.

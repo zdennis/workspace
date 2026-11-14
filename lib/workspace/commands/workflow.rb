@@ -731,6 +731,7 @@ module Workspace
       # @param extra_attempts [Integer, nil] add this to the run's attempt allowance
       # @param extra_tokens [Integer, nil] add this to the run's token budget (see {Workspace::WorkflowEngine#resume})
       # @param extra_seconds [Integer, nil] add this many seconds to the run's timeout
+      # @param extra_rounds [Integer, nil] add this to the review rounds the step may spend (its `review.max_rounds`)
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @param accept_guard [Boolean] accept the guard stop the run waits on: the checkout as it is now becomes the
       #   run's base, and the step passes once its other checks do (see {Workspace::WorkflowDecisions#resume}); needs +note+
@@ -739,7 +740,7 @@ module Workspace
       #   is working on the step or its check is still running
       # @raise [Workspace::Error] code `bound_pane` for `--from` at a waiting gate, or `--accept-guard`, from a pane
       #   bound to a run (and `--accept-guard` from a process under the run's own pane), or see {Workspace::WorkflowEngine#resume}
-      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil,
+      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, caller_pane: nil,
         accept_guard: false, guard_retry: false)
         stored = @store.run(run)
         pane_id = nil
@@ -762,9 +763,9 @@ module Workspace
         # An accepted guard stop is never parked: it is refused from the run's own pane above.
         if !accept_guard && !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && !reviewing && caller_in_pane?(stored.workspace, caller_pane, target) &&
             @panes.parkable?(stored.workspace, target)
-          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
+          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
         end
-        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds,
+        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
           accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane)
         row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.")
       end
@@ -1403,9 +1404,9 @@ module Workspace
 
       # The caller is in the pane the resume would type into, so nothing is typed:
       # the resume is stored and the daemon carries it out once this turn ends.
-      def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
+      def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
         existing = WorkflowEngine.parked(stored.to_h, @clock.call) == :waiting
-        parked = @engine.park(stored.id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
+        parked = @engine.park(stored.id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
         if parked["unchanged"]
           message = "Nothing was done: #{parked["unchanged"]}."
           if existing

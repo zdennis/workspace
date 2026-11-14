@@ -420,6 +420,20 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    it "passes --extra-rounds to resume, and refuses a bad one or another verb" do
+      cli.run(["workflow", "resume", "wr_1", "--extra-rounds", "2"])
+
+      expect(workflow_command.calls.map { |call| [call.first, call.last[:extra_rounds]] }).to eq([[:resume, 2]])
+      {["workflow", "resume", "wr_1", "--extra-rounds", "0"] => /--extra-rounds must be a whole number from 1 up, got "0"/,
+       ["workflow", "resume", "wr_1", "--extra-rounds", "-1"] => /--extra-rounds must be a whole number from 1 up/,
+       ["workflow", "resume", "wr_1", "--extra-rounds", "x"] => /--extra-rounds must be a whole number/,
+       ["workflow", "reject", "wr_1", "--note", "No.", "--extra-rounds", "1"] => /--extra-rounds is for `workflow resume`/}.each do |argv, message|
+        cli, _, error_output = build_test_cli(workflow_command: workflow_command)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+      end
+    end
+
     it "passes --accept-guard, --note and --retry to resume" do
       cli.run(["workflow", "resume", "wr_1", "--accept-guard", "--note", "Rebased by hand."])
       cli.run(["workflow", "resume", "wr_1", "--accept-guard", "--retry", "--note", "Again."])

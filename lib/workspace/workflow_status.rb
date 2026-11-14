@@ -306,11 +306,12 @@ module Workspace
       next_round = if state.review_held? then round["round"]
       elsif state.review_stopped? then round["round"].to_i + 1
       end
-      {"review" => {"round" => round["round"], "max_rounds" => spec["max_rounds"], "need" => spec["need"], "must" => spec["must"],
+      allowance = WorkflowTransitions.review_rounds_allowance(run.to_h, run.current)
+      {"review" => {"round" => round["round"], "max_rounds" => allowance, "extra_rounds" => run.to_h.dig("steps", run.current, "extra_rounds").to_i, "need" => spec["need"], "must" => spec["must"],
                     "approvals" => decided.count { |row| row["verdict"] == "approve" }, "pending" => pending,
                     "pane" => round["pane"], "window" => round["window"], "delivery" => round["delivery"], "started_at" => round["started_at"],
                     "stopped" => state.review_stopped?, "held" => round["held"], "next_round" => next_round,
-                    "rounds_spent" => !next_round.nil? && next_round > spec["max_rounds"].to_i,
+                    "rounds_spent" => !next_round.nil? && next_round > allowance,
                     "reviews" => rows.map { |row| REVIEW_ROW_KEYS.to_h { |key| [key, row[key]] } }}}
     end
 
@@ -616,10 +617,13 @@ module Workspace
         end
       when "stalled", "idle" then [resume, cancel]
       # A stopped round: a resume starts a fresh round (after a rejection stopped by an attempt limit, a new attempt);
-      # `--from` runs the step again. With every round spent a plain resume is refused (`review_rounds_spent`).
+      # `--from` runs the step again. With every round spent a resume needs `--extra-rounds` (`review_rounds_spent` without it).
       when *WorkflowTransitions::REVIEW_STOPS
         step = reason.dig("details", "step") || run.current
-        [(resume unless WorkflowTransitions.rounds_refuse_resume?(run.to_h)), from.call(step), cancel]
+        # The resume then needs --extra-rounds, at least what lets one more round start.
+        spent = WorkflowTransitions.rounds_refuse_resume?(run.to_h)
+        rounds = need("extra_rounds", "--extra-rounds").merge("min" => WorkflowTransitions.review_extra_rounds_needed(run.to_h, step)) if spent
+        [(spent ? action("workflow resume", id, needs: [rounds] + plain) : resume), from.call(step), cancel]
       when "pane_gone" then [action("launch", run.workspace), action("workflow resume", id, needs: with_pane), cancel]
       else [cancel]
       end

@@ -227,6 +227,34 @@ RSpec.describe "a workflow run from start to completed" do
       expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("review_rounds_spent") }
       expect(engine.cancel("wr_1")["state"]).to eq("cancelled")
     end
+
+    it "runs the author again and reviews a third round when resume --extra-rounds 1 follows the stop, moving the cap" do
+      to_review
+      verdict("skeptic", "reject", seq: 1)
+      turn_ended("%9")
+      artifact("design.md")
+      turn_ended
+      verdict("skeptic", "reject", seq: 2, dir: "design.2.r2")
+      expect(turn_ended("%9")["reason"]).to include("code" => "review_rejected")
+
+      expect { engine.resume("wr_1", extra_rounds: 0) }.to raise_error(Workspace::Error, /--extra-rounds 1/)
+      run = engine.resume("wr_1", extra_rounds: 1)
+
+      expect(run["steps"]["design"]).to include("state" => "running", "extra_rounds" => 1)
+      expect(run["steps"]["design"]["attempts"].last).to include("n" => 3, "retry_of" => 2)
+      expect(history).to include("review_rounds_extended")
+      artifact("design.md")
+      run = turn_ended
+      expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 3)
+      expect(rounds.last).to eq("step" => "design", "attempt" => 3, "round" => 3)
+      verdict("skeptic", "approve", seq: 3, dir: "design.3.r3")
+      verdict("builder", "approve", seq: 4, dir: "design.3.r3")
+
+      run = turn_ended("%9")
+
+      expect(run).to include("state" => "running", "current" => "implement")
+      expect(Workspace::WorkflowTransitions.review_rounds_allowance(run, "design")).to eq(3)
+    end
   end
 
   # Research passes its produces and nonempty proof, but took past the run's 2h, so plan is held until --extra-time.

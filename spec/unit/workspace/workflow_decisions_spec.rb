@@ -325,11 +325,93 @@ RSpec.describe Workspace::WorkflowDecisions do
         error = error_for { decisions.resume("wr_1") }
 
         expect(error.code).to eq("review_rounds_spent")
-        expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "rounds" => 2, "max_rounds" => 2)
-        expect(error.message).to include("has spent its review rounds (2 of 2 max_rounds)", "workflow cancel wr_1")
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "rounds" => 2, "max_rounds" => 2, "needed" => 1)
+        expect(error.message).to include("has spent its review rounds (2 of 2 max_rounds)", "--extra-rounds 1", "workflow cancel wr_1")
         expect(store.runs["wr_1"]).to eq(before)
         expect(progress.calls).to be_empty
         expect(change.events).to be_empty
+      end
+
+      it "names the least --extra-rounds, and refuses one that falls short" do
+        stored(capped(reviewing_run(reason: review_incomplete), rounds: 3))
+
+        expect(error_for { decisions.resume("wr_1", extra_rounds: 1) }.details).to include("rounds" => 3, "needed" => 2)
+        expect(progress.calls).to be_empty
+        expect(change.events).to be_empty
+      end
+
+      it "restarts a stopped round once --extra-rounds covers the overrun, keeping the extra in the step and recording it" do
+        stored(capped(reviewing_run(reason: review_incomplete)))
+
+        decisions.resume("wr_1", extra_rounds: 1)
+
+        expect(progress.calls).to eq([[:restart_review, "plan"]])
+        expect(store.runs["wr_1"]["steps"]["plan"]["extra_rounds"]).to eq(1)
+        expect(change.events).to include(["wr_1", "review_rounds_extended", {"step" => "plan", "extra" => 1, "extra_rounds" => 1, "max_rounds" => 3}])
+        expect(Workspace::WorkflowTransitions.review_rounds_allowance(store.runs["wr_1"], "plan")).to eq(3)
+      end
+
+      it "adds the extra rounds to the allowance again on a later resume" do
+        run = capped(reviewing_run(reason: review_incomplete), rounds: 3)
+        run["steps"]["plan"]["extra_rounds"] = 1
+        stored(run)
+
+        decisions.resume("wr_1", extra_rounds: 2)
+
+        expect(store.runs["wr_1"]["steps"]["plan"]["extra_rounds"]).to eq(3)
+      end
+
+      it "runs the author again for a step a review rejected once --extra-rounds covers the overrun" do
+        stored(rejected_run)
+
+        decisions.resume("wr_1", extra_rounds: 1)
+
+        expect(store.runs["wr_1"]["steps"]["plan"]["extra_rounds"]).to eq(1)
+        expect(dispatch.calls).not_to be_empty
+      end
+
+      it "ignores --extra-rounds on a step with rounds left: nothing added, no event, and a repeat does not stack" do
+        stored(capped(reviewing_run(reason: review_incomplete), rounds: 1))
+
+        decisions.resume("wr_1", extra_rounds: 2)
+
+        expect(store.runs["wr_1"]["steps"]["plan"]).not_to have_key("extra_rounds")
+        expect(change.events.map { |event| event[1] }).not_to include("review_rounds_extended")
+      end
+
+      it "with --from checks a spent reviewed step against --extra-rounds, and keeps today's behaviour with none" do
+        run = capped(run_hash(state: "failed", extra: {"state" => "waiting"}))
+        stored(run)
+
+        expect { decisions.resume("wr_1", from: "plan") }.not_to raise_error
+        error = error_for { decisions.resume("wr_1", from: "plan", extra_rounds: 0) }
+        expect(error.code).to eq("review_rounds_spent")
+        expect(error.details).to include("step" => "plan", "needed" => 1)
+      end
+
+      it "with --from credits --extra-rounds only to a spent step" do
+        stored(capped(run_hash(state: "failed", extra: {"state" => "waiting"})))
+        decisions.resume("wr_1", from: "plan", extra_rounds: 1)
+        expect(store.runs["wr_1"]["steps"]["plan"]["extra_rounds"]).to eq(1)
+
+        stored(capped(run_hash(state: "failed", extra: {"state" => "waiting"}), rounds: 1))
+        decisions.resume("wr_1", from: "plan", extra_rounds: 1)
+        expect(store.runs["wr_1"]["steps"]["plan"]).not_to have_key("extra_rounds")
+      end
+
+      it "parks the resume with its extra rounds, and carries them out when the park is released" do
+        stored(rejected_run)
+
+        decisions.park("wr_1", extra_rounds: 1)
+
+        expect(store.runs["wr_1"]["parked"]).to include("extra_rounds" => 1)
+      end
+
+      it "is a usage error for a step with no review, and with --accept-guard" do
+        stored(run_hash(state: "failed", extra: {"state" => "waiting"}))
+
+        expect { decisions.resume("wr_1", extra_rounds: 1) }.to raise_error(Workspace::UsageError, /has no review: to extend/)
+        expect { decisions.resume("wr_1", extra_rounds: 1, accept_guard: true, note: "x") }.to raise_error(Workspace::UsageError, /--extra-rounds/)
       end
 
       it "refuses a resume of the round held at the cap" do

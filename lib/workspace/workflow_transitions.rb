@@ -104,7 +104,7 @@ module Workspace
     end
 
     # The review rounds a step may spend in the run: its stored `review.max_rounds` ({WorkflowReviewSpec::DEFAULT_MAX_ROUNDS}
-    # when the stored review names none).
+    # when the stored review names none) plus the step's `extra_rounds` (`resume --extra-rounds`).
     #
     # @param run [Hash{String=>Object}] a stored run with a definition
     # @param step [String] a step id
@@ -112,7 +112,18 @@ module Workspace
     def self.review_rounds_allowance(run, step)
       review = WorkflowDefinition.review(run.dig("definition", "steps")&.find { |each| each["id"] == step })
       return nil unless review
-      review["max_rounds"].is_a?(Integer) ? review["max_rounds"] : WorkflowReviewSpec::DEFAULT_MAX_ROUNDS
+      base = review["max_rounds"].is_a?(Integer) ? review["max_rounds"] : WorkflowReviewSpec::DEFAULT_MAX_ROUNDS
+      base + run.dig("steps", step, "extra_rounds").to_i
+    end
+
+    # The least `--extra-rounds` that lets one more round of the step start: rounds made minus the allowance, plus one.
+    #
+    # @param run [Hash{String=>Object}] a stored run with a definition
+    # @param step [String] a step id
+    # @return [Integer, nil] nil for a step with no `review:`
+    def self.review_extra_rounds_needed(run, step)
+      allowance = review_rounds_allowance(run, step)
+      allowance && (run.dig("steps", step, "review_rounds").to_i - allowance + 1)
     end
 
     # Whether the step has spent every review round it may: its `review_rounds` (every round started in the run, by

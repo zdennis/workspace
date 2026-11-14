@@ -504,7 +504,7 @@ RSpec.describe Workspace::CLI::Workflow do
       cli.run(["workflow", "reject", "wr_1", "--note", "Too big.", "--to", "research"])
 
       expect(workflow_command.calls).to eq([
-        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil, accept_guard: false, guard_retry: false}],
+        [:resume, {run: "wr_1", from: "implement", note: "Fixed the fixture.", pane: "%8", extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, caller_pane: nil, accept_guard: false, guard_retry: false}],
         [:cancel, {run: "wr_1"}],
         [:reject, {run: "wr_1", note: "Too big.", to: "research", step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil}]
       ])
@@ -516,8 +516,14 @@ RSpec.describe Workspace::CLI::Workflow do
 
       cli.run(["workflow", "resume", "wr_1", "--json"])
 
-      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: "%5", accept_guard: false, guard_retry: false}]])
+      expect(workflow_command.calls).to eq([[:resume, {run: "wr_1", from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, caller_pane: "%5", accept_guard: false, guard_retry: false}]])
       expect(JSON.parse(output.string)).to include("ok" => true, "status" => "ok", "summary" => {"unchanged" => 1})
+    end
+
+    it "hands --extra-rounds to the resume" do
+      cli.run(["workflow", "resume", "wr_1", "--extra-rounds", "3"])
+
+      expect(workflow_command.calls.last.last).to include(run: "wr_1", extra_rounds: 3)
     end
 
     it "passes --accept-guard and --retry with the note to the resume, leaving how they go together to the command" do
@@ -525,11 +531,11 @@ RSpec.describe Workspace::CLI::Workflow do
       cli.run(["workflow", "resume", "wr_1", "--accept-guard", "--retry", "--note", "Run it again.", "--extra-attempts", "1"])
 
       expect(workflow_command.calls).to eq([
-        [:resume, {run: "wr_1", from: nil, note: "The rebase was mine.", pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil, accept_guard: true, guard_retry: false}],
-        [:resume, {run: "wr_1", from: nil, note: "Run it again.", pane: nil, extra_attempts: 1, extra_tokens: nil, extra_seconds: nil, caller_pane: nil, accept_guard: true, guard_retry: true}]
+        [:resume, {run: "wr_1", from: nil, note: "The rebase was mine.", pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, caller_pane: nil, accept_guard: true, guard_retry: false}],
+        [:resume, {run: "wr_1", from: nil, note: "Run it again.", pane: nil, extra_attempts: 1, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, caller_pane: nil, accept_guard: true, guard_retry: true}]
       ])
       cli.run(%w[workflow resume wr_1 --retry --from plan])
-      expect(workflow_command.calls.last).to eq([:resume, {run: "wr_1", from: "plan", note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil, accept_guard: false, guard_retry: true}])
+      expect(workflow_command.calls.last).to eq([:resume, {run: "wr_1", from: "plan", note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, caller_pane: nil, accept_guard: false, guard_retry: true}])
     end
 
     {

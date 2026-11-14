@@ -335,6 +335,26 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe ".review_rounds_allowance and .review_extra_rounds_needed" do
+    let(:run) do
+      {"definition" => {"steps" => [{"id" => "a", "review" => {"from" => %w[x], "need" => 1, "max_rounds" => 2}}, {"id" => "b"}]},
+       "steps" => {"a" => {"review_rounds" => 3}, "b" => {}}}
+    end
+
+    it "adds the step's extra_rounds to max_rounds, and needs the overrun plus one" do
+      expect(described_class.review_rounds_allowance(run, "a")).to eq(2)
+      expect(described_class.review_extra_rounds_needed(run, "a")).to eq(2)
+      run["steps"]["a"]["extra_rounds"] = 2
+      expect(described_class.review_rounds_allowance(run, "a")).to eq(4)
+      expect(described_class.review_rounds_spent?(run, "a")).to be false
+      expect(described_class.review_extra_rounds_needed(run, "a")).to eq(0)
+    end
+
+    it "is nil for a step with no review" do
+      expect(described_class.review_extra_rounds_needed(run, "b")).to be_nil
+    end
+  end
+
   describe ".rejection_limit and .rounds_refuse_resume?" do
     let(:run) do
       run_with(steps: {"a" => step("failed", {"n" => 1}), "b" => step("pending")}).tap do |run|

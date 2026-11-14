@@ -280,6 +280,8 @@ module Workspace
     WORKFLOW_NOTE = ["--note TEXT", "Added to the next attempt's instructions"].freeze
     EXTRA_ATTEMPTS_OPT = ["--extra-attempts N", "Add N (a whole number from 1 up) to the run's attempt allowance, for a run or step that has spent max_attempts; N must cover the overrun (1 for a run exactly spent), and the refusal names the least"].freeze
 
+    EXTRA_ROUNDS_OPT = ["--extra-rounds N", "Add N (a whole number from 1 up) to the review rounds the step may spend (its review.max_rounds), for a step that has spent them all; N must cover the overrun (1 for a step exactly spent), and the refusal names the least. Ignored, and nothing added, when the step still has rounds left or the resume does nothing. A usage error for a step with no review:"].freeze
+
     EXTRA_TOKENS_OPT = ["--extra-tokens N", "Add N (a whole number from 1 up) to the run's token budget, for a run that has used budget.tokens; N must cover the overrun, and the refusal names the least and a round figure"].freeze
 
     EXTRA_TIME_OPT = ["--extra-time DURATION", "Add DURATION (30m, 2h, or seconds) to the run's timeout, for a run that has used its timeout:; DURATION must cover the overrun, and the refusal names the least and a round figure"].freeze
@@ -851,7 +853,7 @@ module Workspace
         ]
       },
       "resume" => {
-        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]",
+        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--extra-rounds N] [--json]",
           "workflow resume RUN --accept-guard --note WHY [--retry] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
         summary: "Get a run going again",
         about: [
@@ -876,7 +878,8 @@ module Workspace
           "rounds), and --from ends the round and closes its review window first. It is not parked then, and",
           "--from from the run's own pane is refused (step_reviewing). Once the step has spent its",
           "review.max_rounds, a resume that would start another round, or run again a step its last round",
-          "rejected, is refused (review_rounds_spent); --from still goes on, and cancel ends the run.",
+          "rejected, is refused (review_rounds_spent) unless --extra-rounds N adds N to the step's rounds (N",
+          "must cover the overrun; the refusal names the least). --from still goes on, and cancel ends the run.",
           "",
           "A resume that would start an attempt is refused (attempts_spent) when the run has made all its",
           "max_attempts, or (step_attempts_spent) when the step it would run has made all its own max_attempts;",
@@ -904,7 +907,7 @@ module Workspace
           "with it. Later guarded steps measure from the new base. The note is recorded on a guard_overridden",
           "event and given to the next attempt, after a line naming the guard and the new base."
         ],
-        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT,
+        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT, EXTRA_ROUNDS_OPT,
           ["--accept-guard", "Accept the guard stop the run waits on (needs --note WHY)"],
           ["--retry", "With --accept-guard: run the stopped step again instead of passing it"], JSON_OPT],
         examples: [
@@ -912,6 +915,7 @@ module Workspace
           ["workspace workflow resume RUN --from implement", "start again at the implement step of rpiv"],
           ["workspace workflow resume RUN --note \"The migration is already applied.\"", "tell the next attempt something"],
           ["workspace workflow resume RUN --pane %19", "the run's pane is gone: carry on in another pane of the workspace"],
+          ["workspace workflow resume RUN --extra-rounds 2", "a review spent its max_rounds: allow two more rounds and go on"],
           ["workspace workflow resume RUN --accept-guard --note \"I rebased on purpose.\"", "accept a head_moved stop: the step's other checks run, measured from HEAD now"],
           ["workspace workflow resume RUN --accept-guard --retry --note \"Hooks were updated upstream.\"", "accept the stop and run the step again"]
         ]
