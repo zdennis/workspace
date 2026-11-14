@@ -255,4 +255,118 @@ RSpec.describe "a workflow run from start to completed" do
     run = engine.resume("wr_1", extra_attempts: 1)
     expect(run["steps"]["verify"]).to include("state" => "running", "extra_attempts" => 1)
   end
+
+  describe "person commands and agent outcomes" do
+    def stored = stored_run(store, "wr_1")
+
+    def test_db_holder = Workspace::LockStore.new(dir: lock_dir, liveness: liveness).status("test-db").dig("test-db", "holder")
+
+    def review_pane = "%9"
+
+    # Research and the plan done, then design reviewed: implement, then verify begun holding test-db.
+    # Each verdict's seq is its place in the hook event log (skeptic first, then builder), which the tally checks for gaps.
+    def to_verify
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+      turn_ended(review_pane)
+      inbox.upsert({"type" => "note", "title" => "Implemented X-1", "dedupe_key" => "e2e:wr_1"}, reopen: true)
+      run = turn_ended
+      engine.resume("wr_1", extra_tokens: run["reason"]["details"]["suggested"])
+    end
+
+    it "cancels a run while verify holds the test-db lock, freeing the lock and the pane and closing the attempt" do
+      to_verify
+      expect(stored).to include("state" => "running", "current" => "verify")
+      expect(test_db_holder).not_to be_nil
+      expect(panes.bound.values.map { |entry| entry[:run_id] }).to include("wr_1")
+
+      run = engine.cancel("wr_1")
+
+      expect(run).to include("state" => "cancelled", "cancelled_by" => "cancel")
+      expect(history).to include("run_cancelled")
+      expect(test_db_holder).to be_nil
+      expect(panes.bound.values.map { |entry| entry[:run_id] }).not_to include("wr_1")
+      # Pinned current behaviour: abandon records the end fields but leaves ended_at and outcome nil (a fix follows).
+      attempt = run["steps"]["verify"]["attempts"].last
+      expect(attempt).to include("outputs" => [], "usage" => a_kind_of(Hash), "head" => {"before" => "1" * 40, "after" => "1" * 40})
+      expect(attempt.values_at("ended_at", "outcome")).to eq([nil, nil])
+    end
+
+    it "keeps a step that ended its turn without its produces file running, and a resume with a note delivers it again" do
+      start
+      run = turn_ended
+      expect(run["reason"]).to include("code" => "turn_ended_incomplete")
+      kicks = panes.kicks.size
+
+      engine.resume("wr_1", note: "Please write research.md.", pane: "%5")
+      expect(panes.kicks.size).to eq(kicks + 1)
+      expect(File.read(File.join(worktree, ".workflow", "wr_1", "steps", "research.2.prompt.md"))).to include("Please write research.md.")
+      expect(stored["steps"]["research"]["attempts"].size).to eq(2)
+
+      artifact("research.md")
+      run = turn_ended
+      expect(outcomes(run, "research")).to eq([nil, "passed"])
+      expect(run["current"]).to eq("plan")
+    end
+
+    it "records an agent's fail report on research as a failed attempt that stops the run, research having no on_fail" do
+      start
+      engine.report("wr_1", status: "fail", summary: "Cannot find the code.")
+      artifact("research.md")
+      run = turn_ended
+
+      expect(history).to include("step_reported")
+      expect(outcomes(run, "research")).to eq(["failed"])
+      expect(run["steps"]["research"]["attempts"].last["reported"]).to include("status" => "fail", "summary" => "Cannot find the code.")
+      expect(run).to include("state" => "waiting", "current" => "research")
+      expect(run["reason"]).to include("code" => "failed_check")
+      expect(panes.bound.values.map { |entry| entry[:run_id] }).to include("wr_1")
+    end
+
+    it "restarts at implement with an extra attempt once verify has spent its attempts" do
+      to_verify
+      check_results << {exit_code: 1, timed_out: false}
+      run = turn_ended
+      expect(run["current"]).to eq("implement")
+      inbox.upsert({"type" => "note", "title" => "Again", "dedupe_key" => "e2e:wr_1"}, reopen: true)
+      run = turn_ended
+      expect(run["current"]).to eq("verify")
+      check_results << {exit_code: 1, timed_out: false}
+      run = turn_ended
+      expect(outcomes(run, "verify")).to eq(%w[failed failed])
+      expect(run).to include("state" => "waiting", "current" => "verify")
+      expect(run["reason"]).to include("code" => "failed_check")
+
+      run = engine.resume("wr_1", from: "implement", extra_attempts: 1)
+      expect(run["current"]).to eq("implement")
+      expect(run["steps"]["implement"]["attempts"].size).to eq(3)
+
+      inbox.upsert({"type" => "note", "title" => "A third time", "dedupe_key" => "e2e:wr_1"}, reopen: true)
+      turn_ended
+      run = turn_ended
+      expect(run["state"]).to eq("completed")
+    end
+
+    it "stops research failed_check with head_moved when the guard says so, and a plain resume only meets the guard again" do
+      start
+      allow(guard).to receive(:check).and_return({"code" => "head_moved", "base_sha" => "0" * 40, "head" => "2" * 40})
+      artifact("research.md")
+      run = turn_ended
+
+      expect(run).to include("state" => "waiting", "current" => "research")
+      expect(run["reason"]).to include("code" => "failed_check")
+      expect(run["reason"]["details"]).to include("code" => "head_moved", "guard" => "head_moved", "cause" => "guard")
+      expect(outcomes(run, "research")).to eq(["failed"])
+      # Pinned current behaviour: a plain resume dispatches again though status offers only cancel for a moved HEAD (a fix follows).
+      engine.resume("wr_1")
+      expect(stored).to include("state" => "running", "current" => "research")
+      expect(stored["steps"]["research"]["attempts"].size).to eq(2)
+      artifact("research.md")
+      run = turn_ended
+      expect(run).to include("state" => "waiting", "current" => "research")
+      expect(run["reason"]["details"]).to include("guard" => "head_moved")
+      expect(outcomes(run, "research")).to eq(%w[failed failed])
+    end
+  end
 end
