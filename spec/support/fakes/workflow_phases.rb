@@ -189,6 +189,15 @@ class RecordingWorkflowPrompt
     File.join(Workspace::WorkflowRun.from_h(run).artifacts_dir, "steps", "#{step["id"]}.#{attempt_number}.prompt.md")
   end
 
+  def review_path(run, step, attempt_number, round)
+    File.join(Workspace::WorkflowRun.from_h(run).artifacts_dir, "steps", "#{step["id"]}.#{attempt_number}.r#{round}.review.md")
+  end
+
+  def review_text(run, step, attempt_number, round, revision)
+    @calls << [:review_text, Workspace::WorkflowRun.from_h(run), step["id"], attempt_number, round, revision]
+    {"path" => review_path(run, step, attempt_number, round), "text" => "review prompt", "packs" => []}
+  end
+
   def step_binding(run, step, attempt_number, path)
     {"kind" => "run", "id" => Workspace::WorkflowRun.from_h(run).id, "step" => step["id"], "attempt" => attempt_number, "instructions" => path}
   end
@@ -404,6 +413,11 @@ class RecordingLogTail
   def block(path, lines:)
     @calls << [:block, path, {lines: lines}]
     "the last #{lines} lines of #{path}"
+  end
+
+  def writeup(path)
+    @calls << [:writeup, path]
+    "the write-up at #{path}"
   end
 end
 
