@@ -1,6 +1,6 @@
 # workspace skills
 
-Link the five workspace skills that ship in `lib/skills` into the skills directory of each coding agent on your machine, or remove those links. The skills teach an agent to use the `workspace` CLI: `workspace` (the router and ground rules), `workspace-agent-run`, `workspace-inbox`, `workspace-lifecycle` and `workspace-workflow`.
+Link the six workspace skills that ship in `lib/skills` into the skills directory of each coding agent on your machine, or remove those links. The skills teach an agent to use the `workspace` CLI: `workspace` (the router and ground rules), `workspace-agent-run`, `workspace-inbox`, `workspace-lifecycle`, `workspace-template` and `workspace-workflow`.
 
 ## Usage
 
@@ -36,13 +36,13 @@ Where the links point depends on how workspace is installed. Under Homebrew they
 
 ## install
 
-`install` asks once, on one screen, which of the harnesses found to install for. Answer with numbers or names, `all` (also an empty answer) or `none`. The harnesses you leave out are remembered as declined in `skills.json` in the state directory and are not asked about again. `--install-all` installs for all of them and clears the record. A harness whose links are all already ours is never asked about. After an upgrade that ships a new skill, the harness counts as not fully linked: `install` asks again unless you declined it, `workspace doctor` reports it `missing`, and `workspace doctor --fix` or `workspace skills install` adds the link.
+`install` asks once, on one screen, which of the harnesses found to install for. Answer with numbers or names, `all` (also an empty answer) or `none`. The harnesses you leave out are remembered as declined in `skills.json` in the state directory and are not asked about again. `--install-all` installs for all of them and clears the record. A harness whose links are all already ours is never asked about. After an upgrade that ships a new skill, the harness counts as not fully linked: `install` asks again unless you declined it, `workspace doctor` reports it `missing`, and `workspace doctor --fix` or `workspace skills install` adds the link. Under `--no-input`, `install` needs `--install-all` to offer it again.
 
 End of input at the question installs nothing new and records nothing, so an unattended run cannot opt every harness out. The exit code is 0 and `ok` is true, and the undecided harnesses read `skipped`: exit 0 does not mean installed. It prints how to run it again. When every harness found is declined, it also exits 0 with nothing to do.
 
-In each directory it links all five skills or none. Nothing that is not our own link is ever replaced:
+In each directory it links all six skills or none. Nothing that is not our own link is ever replaced:
 
-- A link of ours (named as one of the five, pointing at a `lib/skills/<name>` of this tool) is relinked to the current source. That is what a re-run does after a move or an upgrade.
+- A link of ours (named as one of the six, pointing at a `lib/skills/<name>` of this tool) is relinked to the current source. That is what a re-run does after a move or an upgrade.
 - A real directory identical to the shipped one is moved to `skill-backups/<time>/` in the state directory and linked. The text report says where it went.
 - A real directory with other content, a file, or someone else's link is refused. Nothing is linked in that directory, and the row carries the `mv` command that moves the path aside. Run it, then run `install` again.
 - A skills directory that is, or holds, the skills source is refused, so the source can never be moved.
@@ -59,7 +59,7 @@ A failure while writing undoes what was done in that directory and reports `skil
 
 ## uninstall
 
-`uninstall` removes our links, dangling ones included, from every skills directory above that exists, found or not. It works from a linked worktree and ignores `--no-input`, since it never asks. A real directory or someone else's link at one of the five names stays, and the report counts it as left. It asks nothing and records no decline. It never fails because something was left.
+`uninstall` removes our links, dangling ones included, from every skills directory above that exists, found or not. It works from a linked worktree and ignores `--no-input`, since it never asks. A real directory or someone else's link at one of the six names stays, and the report counts it as left. It asks nothing and records no decline. It never fails because something was left.
 
 ## Exit codes
 

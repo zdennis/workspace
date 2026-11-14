@@ -4,8 +4,8 @@ RSpec.describe "lib/skills" do
   let(:root) { File.join(PROJECT_ROOT, "lib", "skills") }
   let(:skill_dirs) { Dir.children(root).map { |d| File.join(root, d) }.select { |d| File.directory?(d) }.sort }
 
-  it "ships the five workspace skills" do
-    expect(skill_dirs.map { |d| File.basename(d) }).to eq(%w[workspace workspace-agent-run workspace-inbox workspace-lifecycle workspace-workflow])
+  it "ships the six workspace skills" do
+    expect(skill_dirs.map { |d| File.basename(d) }).to eq(%w[workspace workspace-agent-run workspace-inbox workspace-lifecycle workspace-template workspace-workflow])
   end
 
   it "gives each SKILL.md a name equal to its directory and a description" do
