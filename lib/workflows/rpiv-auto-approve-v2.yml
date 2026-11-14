@@ -1,0 +1,87 @@
+schema_version: 0.1
+id: rpiv-auto-approve-v2
+title: Research, Plan, Implement, Verify (auto-approve, built-in reviewers)
+description: One feature end to end with no person, three reviewers the engine runs on the plan in one review window, and a test-backed verify loop.
+extends: rpiv
+
+use_when: A feature or change to build end to end when no person will review the plan.
+
+# Estimates, to replace with `workflow stats` once there are runs. Research 1, plan up to 8
+# (6 review rounds plus 2 spare for a failed status: or an undelivered line), and implement
+# and verify up to 4 each (verify's on_fail goes back to implement 3 times) make 17.
+max_attempts: 17
+# Parallel reviewers make a round the slowest reviewer rather than the sum: 6 rounds of about
+# 15 minutes of planning and 15 of review, research, and implement plus verify come to about
+# 7.5 hours of machine time.
+timeout: 8h
+# About 35M counted tokens at worst (plan and research turns, reviewer sub-agents, implement
+# and verify turns); 40M lets a worst-case run finish its rounds before the budget stops it.
+budget:
+  tokens: 40000000
+
+reviewers:
+  supportive:
+    title: Supportive review
+    prompt: |
+      You review {{review.subject}}. No person will look at it, so this review is the only
+      approval it gets. Look for what makes it sound, and approve unless something would
+      really stop it working. Do not edit the plan.
+      If {{review.previous}} is set, read your earlier write-up there first and say whether
+      each objection in it was answered.
+  skeptical:
+    title: Skeptical review
+    prompt: |
+      You review {{review.subject}}. No person will look at it. Assume it is wrong and try
+      to prove it: missing cases, wrong order, steps that can't be undone, requirements of
+      the task it doesn't meet. Approve only if you can't find a blocking problem. Do not edit
+      the plan.
+      If {{review.previous}} is set, read your earlier write-up there first and say whether
+      each objection in it was answered.
+  implementer:
+    title: Implementer review
+    prompt: |
+      You review {{review.subject}}. You will have to build it. Check each task is small,
+      ordered, testable and says enough to start, and approve unless something would really
+      stop you. Do not edit the plan.
+      If {{review.previous}} is set, read your earlier write-up there first and say whether
+      each objection in it was answered.
+
+replace:
+  plan:
+    title: Plan
+    include: [notes, implementation-plan]
+    prompt: |
+      If reviewers turned the last plan down, read every reviewer's reasons, including the ones
+      that approved. Don't just patch each objection: rethink what it takes, and change the
+      design if the current one can't meet them all.
+      Using {{artifacts}}/research.md, write the plan as the workspace plan: the
+      IMPLEMENTATION_PLAN.md that `workspace plan path` names (run `workspace plan init --title "<title>"` first if it does not exist), in the syntax the
+      implementation-plan instructions give, so `workspace plan status` shows it.
+      One task per commit, in order, with the files touched, tests to add and how you'll
+      know it works under that task in Task details. Call out anything that needs the
+      dev environment or the test database. Set `status: active` and leave every task `[ ]`.
+      You only write the plan here; do not start any task, and do not set `status: done`.
+      Then write {{artifacts}}/plan.md: the approach, the risks, and
+      the path of the plan file. Do not copy the task list into it. The step is not
+      finished until plan.md exists.
+      Say in plan.md how each reviewer objection, if any, was answered.
+      Don't change code.
+    produces: [plan.md]
+    guard: unchanged
+    # Done only when the workspace plan exists and has at least one task.
+    status:
+      run: |
+        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit(plan && plan["exists"] && plan["counts"]["total"].to_i > 0 ? 0 : 1)'
+    timeout: 45m
+    max_attempts: 8
+    review:
+      from: [supportive, skeptical, implementer]
+      need: 2
+      must: [skeptical]
+      subject: the workspace plan (`workspace plan path`), against {{artifacts}}/research.md
+      # Added to the hash of plan.md, HEAD and the tracked tree: the plan lives outside the
+      # checkout, and plan.md under .workflow/ is not tracked.
+      revision: workspace plan status --json | ruby -rjson -e 'data = JSON.parse($stdin.read); abort "no plans" unless data.key?("plans"); puts data["plans"].to_a.first&.dig("revision")'
+      max_rounds: 6
+      timeout: 30m
+      context: fresh

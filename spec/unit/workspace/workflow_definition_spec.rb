@@ -712,7 +712,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       catalog.find(id).to_h
     end
 
-    %w[rpiv rpiv-auto-approve].each do |id|
+    %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2].each do |id|
       it "is true for #{id} at research, plan and implement, and false at verify" do
         definition = preset(id)
 

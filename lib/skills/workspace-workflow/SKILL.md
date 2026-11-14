@@ -1,6 +1,6 @@
 ---
 name: workspace-workflow
-description: "Start and follow `workspace` workflow runs: `go` from a ticket, PR or text, name a preset (rpiv, rpiv-auto-approve, investigate, pr-feedback, explore), `workflow start`, `workflow run`, read `workflow status`. Use for 'run rpiv on this' or 'start an investigate workflow on PROJ-101'. Not a worktree with no workflow, or ending one: use workspace-lifecycle."
+description: "Start and follow `workspace` workflow runs: `go` from a ticket, PR or text, name a preset (rpiv, rpiv-auto-approve, rpiv-auto-approve-v2, investigate, pr-feedback, explore), `workflow start`, `workflow run`, read `workflow status`. Use for 'run rpiv on this' or 'start an investigate workflow on PROJ-101'. Not a worktree with no workflow, or ending one: use workspace-lifecycle."
 ---
 
 Written against workspace 0.97.0; check with the working --help form.
@@ -64,6 +64,7 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 |---|---|---|---|
 | `rpiv` | `task` | research, plan (gate), implement, verify | One feature end to end; needs `commands.test` |
 | `rpiv-auto-approve` | `task` | as `rpiv`, three reviewers in place of the gate | The same, unattended |
+| `rpiv-auto-approve-v2` | `task` | as `rpiv`, plan reviewed by built-in reviewers (`review:`) in place of the gate | The same, unattended; fewer steps, capped attempts, run timeout and token budget |
 | `pr-feedback` | none | triage (gate), fix | Review feedback on a PR; never posts or pushes |
 | `investigate` | none | reproduce, diagnose (gate), fix | A failing check or bug; stops `no_input` with no input and no PR |
 | `explore` | `task` | survey (gate), report | Read-only research or gap analysis |
