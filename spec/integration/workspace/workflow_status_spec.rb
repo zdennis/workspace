@@ -1566,4 +1566,54 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(old["current"]).not_to have_key("review")
     end
   end
+
+  describe "a paused run" do
+    let(:paused) { {"since" => "2026-10-04T12:55:00Z", "by" => "zach", "text" => "lunch"} }
+    let(:unpause) { action("workflow unpause", "wr_1") }
+
+    it "shows the pause as the reason, with unpause and cancel, and the flag" do
+      create(paused: paused)
+
+      row = status.run("wr_1")["runs"].first
+      expect(row["state"]).to eq("waiting")
+      expect(row["current"]["reason"]).to eq({"code" => "paused", "since" => "2026-10-04T12:55:00Z", "by" => "zach", "text" => "lunch",
+                                              "actions" => [unpause, action("workflow cancel", "wr_1")]})
+      expect(row["current"]["flags"]).to eq(["paused"])
+    end
+
+    it "leaves out the text when none was given" do
+      create(paused: paused.except("text"))
+
+      expect(current["reason"]).not_to have_key("text")
+    end
+
+    it "still shows a gate under the pause, as details.held and on the step" do
+      gate = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "step" => "plan", "artifacts" => []}}
+      create(state: "waiting", step_state: "passed", reason: gate, bound: false, paused: paused)
+
+      row = status.run("wr_1")["runs"].first
+      expect(row["current"]["reason"]).to include("code" => "paused", "details" => {"held" => gate})
+      expect(row["current"]["reason"]["actions"].first).to eq(unpause)
+      expect(row["steps"].last).to include("state" => "passed")
+    end
+
+    it "is listed by the needs-me reader with unpause" do
+      create(paused: paused)
+
+      rows = Workspace::WorkflowNeedsMe.new(clock: -> { now.first }).rows(status.runs["runs"])
+      expect(rows.map { |row| [row["code"], row["next_action"]] }).to eq([["paused", unpause]])
+    end
+
+    it "offers unpause and cancel even when a retry was blocked on its pane" do
+      create(state: "waiting", paused: paused, backoff: {"blocked" => true})
+
+      expect(current["reason"]["actions"]).to eq([unpause, action("workflow cancel", "wr_1")])
+    end
+
+    it "does not flag a timed-out step while paused" do
+      create(timeout: 60, paused: paused)
+
+      expect(current["flags"]).to eq(["paused"])
+    end
+  end
 end

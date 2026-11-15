@@ -5,14 +5,14 @@ module Workspace
   # pane's state and the member's spine counts. It reads and writes nothing.
   class GoalState
     # Run reasons that mean a person has to act.
-    WAITING_REASONS = %w[waiting_you failed_check turn_ended_incomplete].freeze
+    WAITING_REASONS = %w[waiting_you failed_check turn_ended_incomplete paused].freeze
 
     # The values `waiting_on` can take.
     WAITING_ON = %w[nothing person agent lock].freeze
 
     # The values `next.event` can take.
     EVENTS = %w[gate_approved answered check_passed turn_ended ask_answered prompt_answered lock_released
-      workflow_resumed agent_restarted launched stage_started task_started delivered].freeze
+      workflow_resumed run_unpaused agent_restarted launched stage_started task_started delivered].freeze
 
     # @return [String] `done`, `waiting`, `waiting_lock`, `working`, `stuck`, `stopped`, `idle` or `none`
     attr_reader :state
@@ -173,7 +173,7 @@ module Workspace
     def waiting_next
       if @reason && WAITING_REASONS.include?(@reason["code"])
         event = {"waiting_you" => ((@reason.dig("details", "kind") == "gate") ? "gate_approved" : "answered"),
-                 "failed_check" => "check_passed", "turn_ended_incomplete" => "turn_ended"}.fetch(@reason["code"])
+                 "failed_check" => "check_passed", "turn_ended_incomplete" => "turn_ended", "paused" => "run_unpaused"}.fetch(@reason["code"])
         return ["person", {"event" => event, "action" => Array(@reason["actions"]).first}]
       end
       ask = Array(@member["questions"]).first

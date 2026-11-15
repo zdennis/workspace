@@ -107,12 +107,20 @@ RSpec.describe Workspace::GoalState do
   end
 
   it "maps each waiting reason to its event" do
-    events = {"failed_check" => "check_passed", "turn_ended_incomplete" => "turn_ended"}
+    events = {"failed_check" => "check_passed", "turn_ended_incomplete" => "turn_ended", "paused" => "run_unpaused"}
 
     events.each do |code, event|
       expect(goal(run: run(reason: {"code" => code})).next_step["event"]).to eq(event)
     end
     expect(goal(run: run(reason: {"code" => "waiting_you", "details" => {}})).next_step["event"]).to eq("answered")
+  end
+
+  it "waits on a person for a paused run, with unpause as the action" do
+    unpause = {"action" => "workflow unpause", "args" => ["r_1"], "needs" => []}
+    reason = {"code" => "paused", "actions" => [unpause]}
+
+    expect(goal(run: run(reason: reason), turn_state: "working")).to have_attributes(state: "waiting", waiting_on: "person")
+    expect(goal(run: run(reason: reason)).next_step).to eq("event" => "run_unpaused", "action" => unpause)
   end
 
   it "is working on the agent when a turn ended incomplete but the turn is working again" do
