@@ -64,7 +64,9 @@
       "type": "step_dispatching",
       "step": "reproduce",
       "attempt": 1,
-      "pane": "%sim"
+      "pane": "%sim",
+      "from_state": "waiting",
+      "to_state": "running"
     },
     {
       "n": 3,
@@ -91,7 +93,9 @@
       "at": 1,
       "type": "step_passed",
       "step": "reproduce",
-      "attempt": 1
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running"
     },
     {
       "n": 6,
@@ -99,7 +103,9 @@
       "type": "step_dispatching",
       "step": "diagnose",
       "attempt": 1,
-      "pane": "%sim"
+      "pane": "%sim",
+      "from_state": "running",
+      "to_state": "running"
     },
     {
       "n": 7,
@@ -126,13 +132,17 @@
       "at": 2,
       "type": "step_passed",
       "step": "diagnose",
-      "attempt": 1
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "waiting"
     },
     {
       "n": 10,
       "at": 2,
       "type": "gate_waiting",
-      "step": "diagnose"
+      "step": "diagnose",
+      "from_state": "running",
+      "to_state": "waiting"
     },
     {
       "n": 11,
@@ -146,7 +156,9 @@
       "n": 12,
       "at": 2,
       "type": "gate_approved",
-      "step": "diagnose"
+      "step": "diagnose",
+      "from_state": "waiting",
+      "to_state": "running"
     },
     {
       "n": 13,
@@ -154,7 +166,9 @@
       "type": "step_dispatching",
       "step": "fix",
       "attempt": 1,
-      "pane": "%sim"
+      "pane": "%sim",
+      "from_state": "waiting",
+      "to_state": "running"
     },
     {
       "n": 14,
@@ -181,12 +195,16 @@
       "at": 3,
       "type": "step_passed",
       "step": "fix",
-      "attempt": 1
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "completed"
     },
     {
       "n": 17,
       "at": 3,
-      "type": "run_completed"
+      "type": "run_completed",
+      "from_state": "running",
+      "to_state": "completed"
     }
   ]
 }

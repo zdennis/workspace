@@ -9,7 +9,9 @@
   "type": "step_dispatching",
   "step": "build",
   "attempt": 1,
-  "pane": "%5"
+  "pane": "%5",
+  "from_state": "waiting",
+  "to_state": "running"
 }
 {
   "ts": "2026-10-04T12:00:00.000Z",
@@ -25,17 +27,23 @@
   "step": "build",
   "pane": "%5",
   "from": null,
-  "has_note": false
+  "has_note": false,
+  "from_state": "waiting",
+  "to_state": "waiting"
 }
 {
   "ts": "2026-10-04T12:00:05.000Z",
   "type": "run_resumed",
   "step": "build",
-  "state": "running"
+  "state": "running",
+  "from_state": "waiting",
+  "to_state": "waiting"
 }
 {
   "ts": "2026-10-04T12:00:05.000Z",
   "type": "resume_parked_ended",
   "step": "build",
-  "how": "released"
+  "how": "released",
+  "from_state": "waiting",
+  "to_state": "waiting"
 }

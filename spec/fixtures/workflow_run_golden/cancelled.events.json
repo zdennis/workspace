@@ -9,7 +9,9 @@
   "type": "step_dispatching",
   "step": "build",
   "attempt": 1,
-  "pane": "%5"
+  "pane": "%5",
+  "from_state": "waiting",
+  "to_state": "running"
 }
 {
   "ts": "2026-10-04T12:00:00.000Z",
@@ -22,5 +24,7 @@
 {
   "ts": "2026-10-04T12:00:00.000Z",
   "type": "run_cancelled",
-  "cause": "cancel"
+  "cause": "cancel",
+  "from_state": "running",
+  "to_state": "cancelled"
 }

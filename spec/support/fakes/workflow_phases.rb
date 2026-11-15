@@ -49,7 +49,8 @@ end
 # Fake of Workspace::WorkflowRunChange over the run Hashes a RecordingRunStore holds: +call+ yields the stored run
 # as a frozen WorkflowRun and a real Context, writes the run the block returns (the one read for nil) back into the Hash,
 # keeps the line a block registered in +deliveries+ (it types nothing), the review round in +reviews+, the ended round whose
-# revision is computed again in +review_ends+ and the window to close in +closes+, and returns the run;
+# revision is computed again in +review_ends+, the window to close in +closes+ and the lines queued with Context#event in
+# +events+ (as +event+ does, with no from_state or to_state), and returns the run;
 # a +nonblocking+ call on a run it was told is busy answers nil without yielding.
 class RecordingRunChange
   CONTROL_METHODS = %i[calls events deliveries reviews review_ends closes].freeze
@@ -89,6 +90,7 @@ class RecordingRunChange
     changed = yield(read, ctx) || read
     raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(Workspace::WorkflowRun)
     stored.replace(changed.thawed)
+    ctx.events.each { |type, data| @events << [run_id, type, data] }
     @deliveries << ctx.delivery if ctx.delivery
     @reviews << ctx.review if ctx.review
     @review_ends << ctx.review_end if ctx.review_end

@@ -11,7 +11,8 @@ RSpec.describe Workspace::WorkflowRunChange do
 
   let(:now) { Time.utc(2026, 10, 4, 12, 0, 0) }
   let(:store) do
-    Workspace::WorkflowRunStore.new(dir: File.join(@dir, "runs"), archive_dir: File.join(@dir, "archive"), clock: -> { now }, id_generator: -> { "wr_1" })
+    Interceptable.subclass(Workspace::WorkflowRunStore, :record_event)
+      .new(dir: File.join(@dir, "runs"), archive_dir: File.join(@dir, "archive"), clock: -> { now }, id_generator: -> { "wr_1" })
   end
   let(:attempt_record) { Workspace::WorkflowAttemptRecord.new(guard: nil, clock: -> { now }) }
   let(:event_log) { CLITestHelpers::FakeEventLog.new }
@@ -224,15 +225,149 @@ RSpec.describe Workspace::WorkflowRunChange do
   end
 
   describe "#event" do
-    it "appends the line to the run's history at once, under the lock" do
-      lines = nil
+    def lines(id = run_id)
+      File.exist?(store.events_path(id)) ? File.readlines(store.events_path(id)).map { |line| JSON.parse(line) } : []
+    end
+
+    it "queues a line written inside the block and writes it once the run is stored, still under the lock" do
+      seen = nil
+      store.on(:record_event) do |original, *args|
+        seen = [File.exist?(File.join(@dir, "runs", "#{run_id}.json")) && stored_run(store, run_id)["note"], locked?(run_id)]
+        original.call(*args)
+      end
+      inside = nil
       change.call(run_id) do |run, _ctx|
         change.event(run, "step_reported", "step" => "a")
-        lines = File.readlines(store.events_path(run_id)).map { |line| JSON.parse(line) }
+        inside = lines
+        edited(run) { |work| work["note"] = "changed" }
+      end
+
+      expect(inside).to eq([])
+      expect(seen).to eq(["changed", true])
+      expect(lines).to eq([{"ts" => now.iso8601(3), "type" => "step_reported", "step" => "a", "from_state" => "running", "to_state" => "running"}])
+    end
+
+    it "gives a queued line the change's from_state and to_state, and keeps a key the event has of its own" do
+      change.call(run_id) do |run, _ctx|
+        change.event(run.to_h, "step_failed", "step" => "a", "to_state" => "own")
+        change.event(run, "run_failed")
+        edited(run) { |work| work["state"] = "failed" }
+      end
+
+      expect(lines.map { |line| line.values_at("type", "from_state", "to_state") }).to eq([%w[step_failed running own], %w[run_failed running failed]])
+      expect(store.events_path(run_id)).to start_with(File.join(@dir, "archive"))
+    end
+
+    it "writes no line when the block raises after queueing one" do
+      expect do
+        change.call(run_id) do |run, _ctx|
+          change.event(run, "attempts_extended", "step" => "a")
+          raise Workspace::Error.new("refused", code: "refused")
+        end
+      end.to raise_error(Workspace::Error, "refused")
+
+      expect(lines).to eq([])
+    end
+
+    it "writes no line when the store can't write the run" do
+      expect do
+        change.call(run_id) do |run, _ctx|
+          change.event(run, "budget_extended", "step" => "a")
+          edited(run) { |work| work["note"] = Float::NAN }
+        end
+      end.to raise_error(Workspace::Error)
+
+      expect(lines).to eq([])
+    end
+
+    it "writes a line for another run at once" do
+      other = Workspace::WorkflowRunStore.new(dir: File.join(@dir, "runs"), archive_dir: File.join(@dir, "archive"), clock: -> { now }, id_generator: -> { "wr_2" })
+        .create({"workflow" => "wf", "state" => "running"})["id"]
+      inside = nil
+      change.call(run_id) do |_run, _ctx|
+        change.event({"id" => other}, "noted")
+        inside = lines(other)
         nil
       end
 
-      expect(lines).to eq([{"ts" => now.iso8601(3), "type" => "step_reported", "step" => "a"}])
+      expect(inside).to eq([{"ts" => now.iso8601(3), "type" => "noted"}])
+    end
+
+    it "writes queued lines before the step_dispatched line deliver writes" do
+      typing = described_class.new(store: store, attempt_record: attempt_record, alerts: alerts, event_log: event_log,
+        deliver: ->(id, delivery) { store.record_event(id, "step_dispatched", "step" => delivery["step"]) })
+      typing.call(run_id) do |run, ctx|
+        typing.event(run, "step_dispatching", "step" => "a")
+        ctx.deliver({"step" => "a"})
+        nil
+      end
+
+      expect(lines.map { |line| line["type"] }).to eq(%w[step_dispatching step_dispatched])
+    end
+
+    it "writes a line from an after-lock block at once, and keeps the outer queue past a nested change of the same run" do
+      after = nil
+      change.call(run_id) do |run, ctx|
+        change.call(run_id, nonblocking: true) { nil }
+        change.event(run, "late")
+        ctx.after_lock do |stored|
+          change.event(stored, "noticed")
+          after = lines.map { |line| line["type"] }
+        end
+        nil
+      end
+
+      expect(after).to eq(%w[late noticed])
+      expect(lines.map { |line| line.key?("from_state") }).to eq([true, false])
+    end
+
+    it "keeps the lines of changes one after the other in change order, each from_state the last to_state" do
+      change.call(run_id) do |run, _ctx|
+        change.event(run, "first")
+        edited(run) { |work| work["state"] = "waiting" }
+      end
+      change.call(run_id) do |run, _ctx|
+        change.event(run, "second")
+        edited(run) { |work| work["state"] = "running" }
+      end
+
+      expect(lines.map { |line| line.values_at("type", "from_state", "to_state") }).to eq([%w[first running waiting], %w[second waiting running]])
+    end
+
+    it "writes no line for a nonblocking change that finds the run busy" do
+      inner = :not_called
+      change.call(run_id) do |run, _ctx|
+        inner = change.call(run_id, nonblocking: true) { |busy, _inner_ctx| change.event(busy, "never") }
+        nil
+      end
+
+      expect(inner).to be_nil
+      expect(lines).to eq([])
+    end
+
+    it "keeps the stored change and the other lines when writing one queued line raises" do
+      store.on(:record_event) do |original, id, type, data|
+        raise IOError, "disk gone" if type == "broken"
+        original.call(id, type, data)
+      end
+      result = change.call(run_id) do |run, _ctx|
+        change.event(run, "broken")
+        change.event(run, "kept")
+        edited(run) { |work| work["note"] = "stored" }
+      end
+
+      expect(result.note).to eq("stored")
+      expect(stored_run(store, run_id)["note"]).to eq("stored")
+      expect(lines.map { |line| line["type"] }).to eq(["kept"])
+    end
+
+    it "writes Context#event lines as it writes queued ones" do
+      change.call(run_id) do |_run, ctx|
+        ctx.event("step_reported", "step" => "a")
+        nil
+      end
+
+      expect(lines.map { |line| line.values_at("type", "from_state") }).to eq([%w[step_reported running]])
     end
   end
 end
