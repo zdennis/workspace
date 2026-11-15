@@ -570,6 +570,75 @@ Other codes: `workflow_source_invalid` (an entry is not a usable source), `workf
 
 Each event's `n` is its 1-based line number in the file, so a reader that remembers the last `n` (or `next_since`) asks for `--since N` and gets only what is new. A complete line that is not a JSON object (hand-edited, or blank: a blank line counts as a bad line) is skipped, keeps its number and is named in `warnings`. A last line with no newline yet is an event still being written: it is not returned, counted or warned about, and `next_since` stays at the last complete line, so the next poll gets it. At most 1000 events are answered; when more follow, `truncated` is true and `next_since` is the line number to pass as `--since`.
 
+#### Keys that say why a run changed
+
+`workflow events --json` lines written by a run change carry five more keys: `from_state`, `to_state`, `actor`, `cause` and, on `step_dispatching`, `retry_of`. They came with the `workflow` capability at revision 41 (see `workspace capabilities --json`, and [`capabilities`](README.capabilities.md)). For example, the line written when a review round rejected a step and sent it back for another attempt (the reviewers ended their turn, so the daemon's `workflow advance` made the change):
+
+```json
+{"n":12,"ts":"2026-10-25T09:31:07.482Z","type":"step_dispatching","step":"research","attempt":2,"retry_of":1,"from_state":"running","to_state":"running","actor":"daemon","cause":"review_rejected"}
+```
+
+A run stored before that revision has none of the five keys on its old lines, so a reader treats a missing key as `null`. Existing keys keep their names and types. `ts` is not new, but it now has milliseconds (`2026-10-25T09:30:00.123Z`).
+
+- `from_state` and `to_state` are the run's `state` (`waiting`, `running`, `completed`, `failed` or `cancelled`) before and after the change that wrote the line. Every line one change writes shows the same pair: where the run was when the change began and where it was when it ended. The state is the stored one with nothing hidden, so a run that waits at a gate, waits for a lock and waits out a retry backoff reads `running` to `waiting` on the line that starts each of the three waits, and `waiting` to `running` on the line that ends it; [Telling a waiting run's reason apart](#telling-a-waiting-runs-reason-apart) shows how to tell them. A run whose agent ended its turn while its background work is still running reads `running` to `running`.
+- A `from_state` and `to_state` of `null` on a line that has the keys means the line was written after the change was stored and its lock was let go, so it has no pair. Two lines are written this way: `step_dispatched` (actor `engine`, and the cause that started the attempt) and the `step_recovered` a redelivery writes (actor `sweep`, cause `redelivery`).
+- A missing key, with no `null` written, is read as `null`. Every line of a run stored before revision 41 lacks the keys, and a few lines of a new run lack them too: `command_denied` and other lines written outside any run change. `workspace capabilities --json` shows whether this CLI has the revision.
+- `actor` is one of five values: `person`, `agent`, `daemon`, `sweep` or `engine`. It is who caused the change. `person` is a `workflow` command someone ran; `agent` is `step done` from the run's pane; `daemon` is `workflow advance` and the agent daemon's timers; `sweep` is `workflow sweep`. A line that follows from a change, such as the result of a step's `status:` check or the end of a review round, has the actor of the change that led to it. `engine` is only for work the engine does on its own: recording whether the prompt typed into the pane arrived, recording a review round's delivery, running a review round again, and writing `step_dispatched`. `person` is what the caller says, not a checked identity: a check refuses approve and reject from the run's own pane, but nothing proves who is at the keyboard.
+- `cause` is a short code with two meanings. A line that has a `cause` of its own keeps it: `step_failed` keeps its failure kind (`check`, `guard`, `timeout` and the like), and the `step_stalled`, `step_recovered` and `run_cancelled` lines keep theirs. Every other line gets the cause of the change that wrote it.
+- `retry_of` on `step_dispatching` is the attempt's own `retry_of`. It is set only when a rejected review round started the attempt; a `loop` or backoff retry reads `null`, and `cause` tells them apart.
+
+The run is stored first and its lines are written after, while the run's lock is still held. Lines are therefore in the order the changes happened, and one change's `to_state` is the next change's `from_state`. A change that fails stores nothing and writes no lines.
+
+##### Telling a waiting run's reason apart
+
+Because `running` to `waiting` is the same for every wait, read the event type first and the `cause` second.
+
+| The run waits for | Starts with | Ends with |
+|---|---|---|
+| A person at a gate | `gate_waiting` | `gate_approved`, or `gate_rejected` followed by `step_dispatching` (cause `gate_rejected`) |
+| A lock a step `uses:` | no line in the run's history. `lock_wait_started` and `lock_acquired` are in the [event log](README.event-log.md), which `workspace events` reads; match them by `run_id` | `step_dispatching`, carrying the cause the attempt had before it waited. If none was kept (a run stored before causes were kept), the cause is `lock_ended` |
+| A retry backoff | `step_failed`, then `step_looped` with a `backoff` key (the wait, such as `30s`); the run is waiting and there is no `gate_waiting` line | `step_retry_started`, or `step_retry_blocked` when the pane is no longer the run's; the retry's `step_dispatching` has cause `backoff_ended` (or `resume` when a person did not wait) |
+
+##### The causes
+
+The cause a change gives its lines (the second meaning above: lines with no `cause` of their own):
+
+| Cause | The change |
+|---|---|
+| `start` | the run was started |
+| `approve`, `reject` | a person decided a gate |
+| `resume` | a person resumed the run |
+| `park` | a resume was stored for later because the pane was busy (the run is "parked") |
+| `release_park` | the pane went idle and the stored resume ran |
+| `park_failed` | the stored resume could not run |
+| `cancel`, `kill` | a person cancelled the run; the workspace was killed |
+| `turn_ended` | an agent's turn ended and the engine decided the step |
+| `report` | the agent reported on its step with `step done` |
+| `delivery` | the engine recorded whether the prompt typed into the pane arrived |
+| `tick` | a timer pass (the daemon's, or the sweep's) moved a run that could move: a backoff ended, a lock came free, a holder died, or a review round was due. When a backoff ended, the retry's `step_dispatching` has cause `backoff_ended` and its other lines `tick` |
+| `backoff_ended` | the sweep started a retry whose backoff had ended; every line of that change has this cause |
+| `redelivery` | the sweep typed an undelivered prompt into the pane again |
+| `review_round` | a review round was delivered or its window was handled |
+| `round_rerun` | a review round ran again for the reviewers whose verdicts did not count |
+| `timeout` | a step ran past its `timeout:` and failed |
+| `timed_out` | the sweep pressed the interrupt keys (the keys that stop an agent's turn) because a step passed its `timeout:` |
+| `run_timed_out` | the sweep pressed the interrupt keys because the run passed its `timeout:` |
+
+A sweep that notices something wrong writes a `step_stalled` or `step_recovered` line with a cause of its own, which stays on the line (see [Sweeping stopped runs](#sweeping-stopped-runs)). `workflow sweep` rows use other codes of their own; only these appear on run lines:
+
+| Cause | What the sweep found |
+|---|---|
+| `pane_gone`, `agent_gone`, `daemon_down` | the run's pane, its agent or its agent daemon is gone |
+| `server_restarted` | the tmux server a review round's pane was on was restarted (review rounds only) |
+| `idle_turn_over` | the agent's turn ended and nothing decided the step |
+| `undelivered` | a prompt never reached the pane (the `step_stalled` of a redelivery change, whose other lines get `redelivery`) |
+| `redelivery_exhausted` | the prompt was typed again as often as `redeliver` allows and still did not arrive |
+| `review_timed_out` | a review round passed its `review.timeout` |
+| `interrupted` | the sweep pressed the interrupt keys (for a step or a review round) and the turn then ended |
+| `interrupt_unanswered` | keys were pressed for every time limit due and the review pane still did not stop |
+
+The causes that start an attempt are written on `step_dispatching` and `step_dispatched`: `first` (the run's first step), `next_step` (the step after a pass), `loop` (a `loop` retry), `backoff_ended`, `review_rejected` (a rejected review round), `resume`, `gate_rejected` (a rejected gate), `redelivery` and `lock_ended`. An attempt that has to wait for a `uses:` lock writes its own cause once the wait ends, as the table above says.
+
 ### Produced files
 
 A run started with this version stores `"produces_check": "strict"` in its definition snapshot (`workflow status --json` does not show it; the run file does). For such a run each file a step `produces` must be, at the turn's end, a regular file (read with `lstat`, so a symlink as the last part of the path is never followed, even one to a real file; a symlinked directory earlier in the path is followed, as the check does not look at the parents) that is not empty and was written during this attempt. A symlink, a directory or an empty file keeps the step from passing: the run stores `turn_ended_incomplete` with `details.invalid`, a list of `{file, rule}` where `rule` is `symlink`, `not_regular_file` or `empty`. The run holds there: `step status` and `workflow status` name the rule that was broken. Nothing is typed to the agent; the next turn's end or `workflow resume` looks again. A link to nothing is a `symlink`, not `missing`. This is a hold, not a failure, so there is no `details.code` or `code_source`, and no `on_fail` applies. A run stored before this change has no marker and keeps the old check: the path exists (through a link, a directory counts) and was written this attempt. `step status` and the `turn_ended` decision use the same check.

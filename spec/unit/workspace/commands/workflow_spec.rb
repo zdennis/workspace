@@ -2392,6 +2392,17 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(JSON.parse(example)).to eq(json)
     end
 
+    it "prints a line with the change keys beside one without them, each key keeping its name and type" do
+      fixture_run
+      real_store.record_event("wr_2610250930abcd", "step_dispatching", "step" => "research", "attempt" => 2, "from_state" => "running", "to_state" => "waiting", "actor" => "person", "cause" => "reject", "retry_of" => 1)
+
+      events_command.events(run: "wr_2610250930abcd", json: true)
+
+      old, new = json["events"].values_at(0, -1)
+      expect(old).to eq("n" => 1, "ts" => "2026-10-25T09:30:00.000Z", "type" => "run_started", "workflow" => "rpiv")
+      expect(new).to include("n" => 5, "type" => "step_dispatching", "step" => "research", "attempt" => 2, "from_state" => "running", "to_state" => "waiting", "actor" => "person", "cause" => "reject", "retry_of" => 1)
+    end
+
     it "prints one line per event, then the warnings" do
       fixture_run
 
