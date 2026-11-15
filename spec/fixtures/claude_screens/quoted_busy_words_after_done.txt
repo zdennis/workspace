@@ -1,0 +1,20 @@
+  - [1mPart[0m [1m1[0m [1mdoesn't[0m [1mfix[0m [1mitem 15.[0m The real finished-turn line already passes the screen check today, so T4 is a guard. The run records keep only the error code, so
+    it can't be shown what refused item 15.
+  - [1mLive[0m [1mspinner[0m [1mwording.[0m Today's live spinner has no [38;5;153mesc[39m [38;5;153mto[39m [38;5;153minterrupt[39m; it reads [38;5;153m(8s[39m [38;5;153m·[39m [38;5;153m↓[39m [38;5;153m381[39m [38;5;153mtokens)[39m. The second spinner spec uses that real screen instead of
+    the wording the acceptance criterion names.
+  - [1mNo backoff.[0m "The existing backoff" doesn't exist: a re-parked resume just waits for the next turn end or [38;5;153madvance[39m tick. No timer is added; item 10 owns real
+    backoff.
+
+  One gap remains: when these codes come back on a first dispatch or a sweep redelivery, the run still waits for a person, because the sweep's list of retryable
+  codes is left alone on purpose. Item 04's last failure was one of these, so this plan would not have saved that run either. I've left it for item 10.
+
+  I sent the done notification.
+
+[38;5;246m✻[39m [38;5;246mCogitated for 1m 19s · done 1:23 PM[39m
+
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ 
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [36m[Opus 5.5][38;5;246m 📁 workspace | 🌿 main[39m
+  [32m█░░░░░░░░░[38;5;246m 11% ctx | [33m$1.00[39m [38;5;246m|[39m [38;5;246m⏱️[39m [38;5;246m12m 0s[39m
+  [38;5;211m⏵⏵ bypass permissions on[38;5;246m (shift+tab to cycle)[39m

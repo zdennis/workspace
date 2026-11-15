@@ -16,6 +16,11 @@ module Workspace
   # with no ellipsis, and a sub-agent row has text after its ellipsis; neither
   # is busy. Anything else shaped like a spinner, a task row ending in an
   # ellipsis included, reads busy, which keeps the refusal.
+  #
+  # A finished turn ends with a {DONE_ROW} such as `✻ Brewed for 57s · done
+  # 12:51 PM`. Rows above the last one belong to that turn's transcript, so
+  # a reply that quotes `esc to interrupt` or ends a line in an ellipsis does
+  # not read busy; a new turn's spinner is drawn below it and still does.
   class IdlePromptCheck
     # One glyph, a verb of any spelling, the ellipsis, then nothing or a timer.
     # No `:`, so a `⎿  Tip: ...…` row is not one.
@@ -23,6 +28,11 @@ module Workspace
 
     # Words that only a running turn shows.
     BUSY_WORDS = /esc to interrupt|Retrying in/
+
+    # The line Claude Code draws when a turn ends: a glyph, a verb, `for` and the
+    # elapsed time, then `· done`, which may be followed by the clock time and
+    # `· 1 shell still running`.
+    DONE_ROW = /\A\S\s+\S+ for (\d+[dhms]\s*)+· done\b/
 
     # Rows above the input box's opening rule that are searched: the spinner,
     # the `⎿  Tip:` lines under it and a task list.
@@ -55,6 +65,8 @@ module Workspace
       opening_rule = text[0...text.rindex(pattern)].count("\n")
       lines = text.tr("\u00a0", " ").split("\n", -1)
       above = lines[[opening_rule - ROWS_ABOVE, 0].max...opening_rule]
+      done = above.rindex { |row| row.match?(DONE_ROW) }
+      above = above[(done + 1)..] if done
       above.any? { |row| row.match?(SPINNER_ROW) || row.match?(BUSY_WORDS) } ||
         lines[(opening_rule + 1)..].any? { |row| row.match?(BUSY_WORDS) }
     end

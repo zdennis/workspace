@@ -100,6 +100,39 @@ RSpec.describe Workspace::IdlePromptCheck do
     expect(check.refusal(facts, screen(*quoted, *filler))).to be_nil
   end
 
+  describe "rows above the last finished-turn line" do
+    it "does not read a real idle pane whose reply quotes `esc to interrupt` as busy" do
+      captured = File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", "quoted_busy_words_after_done.txt"))
+
+      expect(check.refusal(facts, captured)).to be_nil
+    end
+
+    it "does not read the turn's own rows as busy" do
+      above = ["⏺ Done. It no longer prints esc to interrupt or ends a line in an ellipsis…", "",
+        "✻ Cogitated for 1m 19s · done 1:23 PM", ""]
+
+      expect(check.refusal(facts, screen(*above))).to be_nil
+    end
+
+    it "reads a new turn's spinner below the line as busy" do
+      above = ["✻ Brewed for 6s · done 1:28 PM", "", "❯ next prompt", "", "✽ Incubating… (8s · ↓ 381 tokens)", ""]
+
+      expect(check.refusal(facts, screen(*above))).to include(reason: "turn_started")
+    end
+
+    it "does not take an indented, quoted done-line for the end of a turn" do
+      above = ["  press esc to interrupt", "  ✻ Brewed for 25s · done", ""]
+
+      expect(check.refusal(facts, screen(*above))).to include(reason: "turn_started")
+    end
+
+    it "takes a done-line with background shells left for the end of a turn" do
+      above = ["  Retrying in 3s is quoted here", "✻ Churned for 1m 8s · done 12:53 PM · 1 shell still running", ""]
+
+      expect(check.refusal(facts, screen(*above))).to be_nil
+    end
+  end
+
   it "goes by the last input box on screen" do
     text = screen("✽ Frosting… (2s)", "") + Array.new(30) { "line" }.join("\n") + "\n" + screen
 
