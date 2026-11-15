@@ -587,7 +587,7 @@ A run stored before that revision has none of the five keys on its old lines, so
 - `cause` is a short code with two meanings. A line that has a `cause` of its own keeps it: `step_failed` keeps its failure kind (`check`, `guard`, `timeout` and the like), and the `step_stalled`, `step_recovered` and `run_cancelled` lines keep theirs. Every other line gets the cause of the change that wrote it.
 - `retry_of` on `step_dispatching` is the attempt's own `retry_of`. It is set only when a rejected review round started the attempt; a `loop` or backoff retry reads `null`, and `cause` tells them apart.
 
-The run is stored first and its lines are written after, while the run's lock is still held. Lines are therefore in the order the changes happened, and one change's `to_state` is the next change's `from_state`. A change that fails stores nothing and writes no lines.
+The run is stored first and its lines are written after, while the run's lock is still held. Lines are therefore in the order the changes happened, and one change's `to_state` is the next change's `from_state`. A change that fails stores nothing and writes no lines. A crash after the run is stored and before its lines are written leaves the stored change with no lines; the run file is the record, so a reader that checks it is never misled by a line for a change that did not happen.
 
 ##### Telling a waiting run's reason apart
 
