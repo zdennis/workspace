@@ -343,6 +343,42 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(attempt["reasons"]).to eq([{"code" => "parked", "since" => "2026-10-04T12:00:00Z", "until" => "2026-10-04T12:00:10Z"}])
     end
 
+    it "records a pause as the reason `paused` on the open attempt and ends it when the pause goes" do
+      run["paused"] = {"since" => "2026-10-04T12:00:00Z", "by" => "zach"}
+      run.replace(record.reasons(run: run).thawed)
+      now[0] += 10
+      run.delete("paused")
+      run.replace(record.reasons(run: run).thawed)
+
+      expect(attempt["reasons"]).to eq([{"code" => "paused", "since" => "2026-10-04T12:00:00Z", "until" => "2026-10-04T12:00:10Z"}])
+    end
+
+    it "reopens a gate wait the pause hid once the pause ends" do
+      run["reason"] = {"code" => "waiting_you", "since" => "2026-10-04T12:00:00Z", "details" => {"kind" => "gate"}}
+      run.replace(record.reasons(run: run).thawed)
+      now[0] += 5
+      run["paused"] = {"since" => "2026-10-04T12:00:05Z", "by" => "zach"}
+      run.replace(record.reasons(run: run).thawed)
+      now[0] += 5
+      run.delete("paused")
+      run.replace(record.reasons(run: run).thawed)
+
+      expect(attempt["reasons"].map { |e| [e["code"], e["since"], e["until"]] }).to eq([
+        ["waiting_you", "2026-10-04T12:00:00Z", nil],
+        ["paused", "2026-10-04T12:00:05Z", "2026-10-04T12:00:10Z"]
+      ])
+      expect(attempt["reasons"].first).not_to have_key("parked")
+    end
+
+    it "puts a pause between steps (no open attempt) on the run with its step" do
+      attempt["ended_at"] = "2026-10-04T12:00:00Z"
+      run["paused"] = {"since" => "2026-10-04T12:00:01Z", "by" => "zach"}
+      run.replace(record.reasons(run: run).thawed)
+
+      expect(attempt).not_to have_key("reasons")
+      expect(run["reasons"]).to eq([{"code" => "paused", "since" => "2026-10-04T12:00:01Z", "until" => nil, "step" => run["current"]}])
+    end
+
     it "gives a failed check or a gate wait set as the attempt ends to that attempt" do
       attempt["ended_at"] = "2026-10-04T12:00:00Z"
       run["reason"] = {"code" => "failed_check", "since" => "2026-10-04T12:00:00Z", "details" => {"attempt" => attempt["n"]}}

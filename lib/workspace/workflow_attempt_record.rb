@@ -31,6 +31,8 @@ module Workspace
     VERSION = /\A[A-Za-z0-9._+-]{1,50}\z/
     MODEL = /\A[A-Za-z0-9._:\/\[\]-]{1,100}\z/
     KIND = /\A[a-z][a-z0-9_-]{0,31}\z/
+    # The reason codes that hide the stored reason while they stand; the entry they close carries the stored key `parked`.
+    HIDING_CODES = %w[parked paused].freeze
     USAGE_KEYS = %w[input_tokens output_tokens cache_creation_input_tokens cache_read_input_tokens].freeze
     # A sub-agent transcript's file name, and the most of them one attempt reads (more is uncounted).
     SUBAGENT_FILE = /\Aagent-[A-Za-z0-9._-]{1,128}\.jsonl\z/
@@ -99,7 +101,7 @@ module Workspace
     end
 
     # Keeps the history of a run's reason: every change of the effective reason (the stored one, or
-    # `parked` while a resume is parked) closes the open entry with `until` and opens one with its `since`.
+    # `parked` while a resume is parked, `paused` while the run is paused) closes the open entry with `until` and opens one with its `since`.
     # An open entry with the same code and `since` is left alone wherever it sits. A new entry lives:
     #
     # * on the step's open attempt, when there is one;
@@ -123,10 +125,10 @@ module Workspace
       return given if entry && current && entry["code"] == current["code"] && entry["since"] == current["since"]
       reopened = current && closed_entry(run, current)
       # A park replaced by a park keeps the mark, so the wait under it can still be reopened.
-      each_entry(run) { |place, each| each.delete("parked") unless place == at } unless entry && entry["code"] == "parked"
+      each_entry(run) { |place, each| each.delete("parked") unless place == at } unless entry && HIDING_CODES.include?(entry["code"])
       if entry
         entry["until"] = @clock.call.utc.iso8601
-        entry["parked"] = true if current && current["code"] == "parked"
+        entry["parked"] = true if current && HIDING_CODES.include?(current["code"])
       end
       return WorkflowRun.from_h(run) unless current
       # A wait that a park interrupted and the park gave back is one wait: the entry the park closed (marked
@@ -228,6 +230,8 @@ module Workspace
     end
 
     def effective_reason(run)
+      paused = run["paused"]
+      return {"code" => "paused", "since" => paused["since"], "by" => paused["by"], "text" => paused["text"]}.compact if paused.is_a?(Hash)
       parked = run["parked"]
       return {"code" => "parked", "since" => parked["requested_at"]} if parked.is_a?(Hash)
       reason = run["reason"]
