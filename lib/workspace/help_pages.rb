@@ -38,7 +38,9 @@ module Workspace
         about: [
           "A workspace with no plan is a row, not an error. With no scope flag it is the current workspace's row",
           "(outside any workspace: not_in_workspace). Give at most one of --name, --project, --all, --file and",
-          "--group."
+          "--group.",
+          "A stalled or blocked row prints a 'next:' line with the first command that helps. In --json every row has",
+          "next_actions (empty for other states and for --file), and the top level lists them all in row order."
         ],
         options: [NAME_OPT,
           ["--project [NAME]", "Every workspace of a project (NAME, or the project of the current workspace)"],

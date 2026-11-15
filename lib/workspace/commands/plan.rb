@@ -68,7 +68,8 @@ module Workspace
       def status(names: [], all: false, project: nil, file: nil, json: false)
         rows = file ? [file_row(file)] : rows(names: names, all: all, project: project)
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "plans" => rows})
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "plans" => rows,
+                                      "next_actions" => rows.flat_map { |row| row["next_actions"] }})
         else
           @output.puts "No plans in project #{project.name}." if project && !all && rows.empty?
           rows.each { |row| print_row(row) }
@@ -93,7 +94,7 @@ module Workspace
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "group" => {"id" => found.id, "name" => found.name},
                                       "repositories" => found.repositories.map { |r| {"id" => r.id, "name" => r.name, "path" => r.path, "exists" => r.exists} },
-                                      "plans" => rows})
+                                      "plans" => rows, "next_actions" => rows.flat_map { |row| row["next_actions"] }})
         else
           @output.puts "#{found.name} (#{found.id})"
           @output.puts "  no repositories: add one with 'workspace projects group add GROUP PATH'" if by_repository.empty?
@@ -259,12 +260,40 @@ module Workspace
         file = PlanFile.path_in(info["dir"])
         project = WorkspaceName.project_of(name)
         plan = PlanFile.read(file)
-        return @plan_state.row(workspace: name, project: project, path: file, plan: plan) if plan.nil? || plan.tasks.empty?
+        if plan.nil? || plan.tasks.empty?
+          return with_next_actions(@plan_state.row(workspace: name, project: project, path: file, plan: plan))
+        end
 
         live = @access.session_live?(name, memo)
         panes = (owned?(plan) && live != false) ? read_panes(name) : nil
-        @plan_state.row(workspace: name, project: project, path: file, plan: plan, session_live: live, panes: panes,
-          open_asks: open_asks(name), stall_seconds: @plan_config.stall_seconds_for(name))
+        with_next_actions(@plan_state.row(workspace: name, project: project, path: file, plan: plan, session_live: live, panes: panes,
+          open_asks: open_asks(name), stall_seconds: @plan_config.stall_seconds_for(name)))
+      end
+
+      # The row with what a person can do about it. A row with no workspace (`--file`) gets none: a command
+      # without `--name` would act on whichever plan the caller stands in.
+      def with_next_actions(row)
+        row.merge("next_actions" => next_actions_for(row))
+      end
+
+      def next_actions_for(row)
+        name = row["workspace"]
+        return [] if name.nil?
+        case row["state"]
+        when "stalled"
+          [NextAction.build("plan show", "--name", name, why: "the plan has work left but its agent has been idle past the stall limit"),
+            NextAction.build("plan start", "--name", name,
+              why: "sets the plan active and re-sends it to the owner pane, launching the workspace if it is stopped")]
+        when "blocked"
+          todo = IdPatterns::TASK_STATES.fetch(IdPatterns::TASK_STATES.index("todo"))
+          unblock = row["tasks"].select { |task| task["state"] == "blocked" && task["id"] }.map do |task|
+            NextAction.build("plan task set-state", "--name", name, "--task", task["id"], "--state", todo,
+              why: task["reason"] || "#{task["id"]} is blocked")
+          end
+          unblock + [NextAction.build("plan show", "--name", name, why: "read the plan to see what blocks it")]
+        else
+          []
+        end
       end
 
       # Whether the plan or any of its tasks names an owner pane, so the daemon is worth asking.
@@ -275,12 +304,12 @@ module Workspace
       def broken_row(name, error)
         project = WorkspaceName.project_of(name)
         row = @plan_state.row(workspace: name, project: project, path: nil, plan: nil)
-        row.merge("warnings" => [PlanFile.warning(error.code, nil, error.message.lines.first.to_s.strip)])
+        with_next_actions(row.merge("warnings" => [PlanFile.warning(error.code, nil, error.message.lines.first.to_s.strip)]))
       end
 
       def file_row(file)
         path = File.expand_path(file)
-        @plan_state.row(workspace: nil, project: nil, path: path, plan: PlanFile.read(path))
+        with_next_actions(@plan_state.row(workspace: nil, project: nil, path: path, plan: PlanFile.read(path)))
       end
 
       def group_rows(repository, projects)
@@ -322,6 +351,8 @@ module Workspace
           line = "#{label}  #{row["state"]}  #{counts["done"] + counts["skipped"]}/#{counts["total"]} (#{row["percent"]}%)"
           line += "  #{[current["id"], current["title"]].compact.join(" ")}" if current
           @output.puts "#{indent}#{line}"
+          hint = %w[stalled blocked].include?(row["state"]) && row["next_actions"].first
+          @output.puts "#{indent}  next: workspace #{TerminalText.escape(([hint["action"]] + hint["args"]).join(" "))}" if hint
         else
           @output.puts "#{indent}#{label}  no plan"
         end
