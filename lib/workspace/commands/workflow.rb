@@ -707,7 +707,7 @@ module Workspace
         rows = @sweep.call(run: run, workspace: name, dry_run: dry_run, allow: allow)
         print_sweep(rows, summary: !json)
         {exit_code: ((rows.any? { |each| each["outcome"] == "failed" }) ? 1 : 0), results: rows, status: (dry_run ? "dry_run" : nil),
-         extra: {"next_actions" => @sweep_actions.call(rows, run: run, name: name)}}
+         extra: (json ? {"next_actions" => @sweep_actions.call(rows, run: run, name: name)} : {})}
       end
 
       # `workflow sweep --install`, `--uninstall` or `--installed`: the opt-in launchd

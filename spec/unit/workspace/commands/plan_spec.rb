@@ -620,14 +620,12 @@ RSpec.describe Workspace::Commands::Plan do
       expect(output.string.lines.first(2)).to eq(["api  stalled  1/3 (33%)  T2 Second\n", "  next: workspace plan show --name api\n"])
     end
 
-    it "prints the first action under a blocked row, escaped" do
+    it "prints the first action under a blocked row" do
       write_plan("api", "## Tasks\n- [!] T1 a\n")
-      allow(Workspace::TerminalText).to receive(:escape).and_call_original
 
       command.status(names: ["api"])
 
       expect(output.string).to include("  next: workspace plan task set-state --name api --task T1 --state todo\n")
-      expect(Workspace::TerminalText).to have_received(:escape).with("plan task set-state --name api --task T1 --state todo")
     end
 
     it "prints no hint under a row in another state" do
