@@ -65,6 +65,14 @@ RSpec.describe Workspace::WorkflowNudger do
       expect(spawned.last.first.drop(5)).to eq(["--turn-ended", "--pane", "%5", "--stopped-at", "2026-10-04T12:30:00.000Z"])
     end
 
+    it "still starts `workflow advance --turn-ended` for a pane bound to a paused run" do
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
+      going([run("wr_1", "app").merge("paused" => {"since" => "2026-10-04T12:00:00Z", "by" => "person", "text" => nil})])
+
+      expect(nudger.turn_ended("app", "%5")).to eq("wr_1")
+      expect(spawned.first.first).to include("advance", "wr_1", "--turn-ended", "--pane", "%5")
+    end
+
     it "starts nothing for a pane bound to no run" do
       allow(panes).to receive(:bound_on).with("%5").and_return(nil)
 
@@ -98,6 +106,16 @@ RSpec.describe Workspace::WorkflowNudger do
   end
 
   describe "#tick" do
+    it "does not run `advance` for a paused run, though it waits for a lock" do
+      going([
+        run("wr_1", "app", reason: "waiting_lock").merge("paused" => {"since" => "2026-10-04T12:00:00Z", "by" => "person", "text" => nil}),
+        run("wr_2", "app", reason: "waiting_lock")
+      ])
+
+      expect(nudger.tick("app")).to eq(%w[wr_2])
+      expect(advances.map { |argv| argv[4] }).to eq(%w[wr_2])
+    end
+
     it "wakes this workspace's runs that wait for a lock or whose check never reported back, and no others" do
       going([
         run("wr_1", "app", reason: "waiting_lock"),

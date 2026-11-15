@@ -59,6 +59,18 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(change.calls).to eq([[:call, "wr_1", {nonblocking: true, actor: "sweep", cause: "tick"}]])
     end
 
+    it "leaves a paused run's file unchanged, though its backoff is over" do
+      paused = run_hash(state: "waiting", step_state: "failed", reason: {"code" => "retry_backoff"},
+        extra: {"backoff" => backoff_wait, "paused" => {"since" => "2026-11-10T11:30:00Z", "by" => "person", "text" => nil}})
+      stored(paused)
+      before = Marshal.load(Marshal.dump(paused))
+
+      expect(recovery.tick("wr_1", actor: "sweep")).to be_nil
+
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(progress.calls).to be_empty
+    end
+
     it "hands the actor it was given to the change, whether the daemon's advance or the sweep" do
       stored(run_hash(state: "waiting", step_state: "failed", reason: {"code" => "retry_backoff"}, extra: {"backoff" => backoff_wait}))
 

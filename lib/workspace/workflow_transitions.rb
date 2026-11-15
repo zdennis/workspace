@@ -614,6 +614,7 @@ module Workspace
     #   takes every holder as alive, so a lapsed round with a holder is not woken
     # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :unanswered, :review, :check, or nil
     def self.wakeable?(run, now, alive: nil)
+      return nil if run["paused"]
       return :parked if run["parked"]
       return :backoff if backoff(run, now)&.fetch(:state) == :due
       return :lock if run.dig("reason", "code") == "waiting_lock"

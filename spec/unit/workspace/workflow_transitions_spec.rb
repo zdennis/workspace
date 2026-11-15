@@ -285,6 +285,16 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.wakeable?(waiting, now - 1)).to be_nil
       expect(described_class.wakeable?(waiting, now)).to eq(:backoff)
     end
+
+    it "answers nil for a paused run, whatever its backoff, park or lock wait says" do
+      paused = {"since" => now.iso8601, "by" => "person", "text" => nil}
+      waiting = run_with(:steps => {"a" => step("failed")}, "state" => "waiting", "backoff" => {"until" => now.iso8601, "to" => "a"})
+      parked = run_with(:steps => {"a" => step("waiting")}, "parked" => {"expires_at" => now.iso8601}, "reason" => lock_wait)
+
+      expect(described_class.wakeable?(waiting.merge("paused" => paused), now)).to be_nil
+      expect(described_class.wakeable?(parked.merge("paused" => paused), now)).to be_nil
+      expect(described_class.wakeable?(lost_check.merge("paused" => paused), now)).to be_nil
+    end
   end
 
   describe "attempt counts" do
