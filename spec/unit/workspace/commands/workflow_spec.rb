@@ -2381,8 +2381,8 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json).to eq(
         "schema_version" => 1, "ok" => true, "run" => "wr_2610250930abcd",
         "events" => [
-          {"n" => 2, "ts" => "2026-10-25T09:30:00Z", "type" => "step_dispatched", "step" => "research", "attempt" => 1},
-          {"n" => 4, "ts" => "2026-10-25T09:30:00Z", "type" => "step_done", "step" => "research", "attempt" => 1, "status" => "pass"}
+          {"n" => 2, "ts" => "2026-10-25T09:30:00.000Z", "type" => "step_dispatched", "step" => "research", "attempt" => 1},
+          {"n" => 4, "ts" => "2026-10-25T09:30:00.000Z", "type" => "step_done", "step" => "research", "attempt" => 1, "status" => "pass"}
         ],
         "truncated" => false, "next_since" => 4,
         "warnings" => ["Line 3 of the history is not a JSON object; skipped."]
@@ -2398,9 +2398,9 @@ RSpec.describe Workspace::Commands::Workflow do
       events_command.events(run: "wr_2610250930abcd")
 
       expect(output.string.lines.map(&:chomp)).to eq([
-        "   1  2026-10-25T09:30:00Z  run_started  workflow=rpiv",
-        "   2  2026-10-25T09:30:00Z  step_dispatched  step=research  attempt=1",
-        "   4  2026-10-25T09:30:00Z  step_done  step=research  attempt=1  status=pass",
+        "   1  2026-10-25T09:30:00.000Z  run_started  workflow=rpiv",
+        "   2  2026-10-25T09:30:00.000Z  step_dispatched  step=research  attempt=1",
+        "   4  2026-10-25T09:30:00.000Z  step_done  step=research  attempt=1  status=pass",
         "Warning: Line 3 of the history is not a JSON object; skipped."
       ])
     end
@@ -2411,7 +2411,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       events_command.events(run: "wr_2610250930abcd")
 
-      expect(output.string).to eq(%(   1  2026-10-25T09:30:00Z  gate_rejected  step=plan  to=plan  note="Too big.\\nSplit it."\n))
+      expect(output.string).to eq(%(   1  2026-10-25T09:30:00.000Z  gate_rejected  step=plan  to=plan  note="Too big.\\nSplit it."\n))
     end
 
     it "says so when there is nothing after since, and how to continue when capped" do

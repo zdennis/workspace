@@ -100,8 +100,8 @@ RSpec.describe Workspace::WorkflowRunStore do
 
       expect(store.events("wr_1")).to eq(
         "events" => [
-          {"n" => 1, "ts" => "2026-10-04T12:00:00Z", "type" => "run_started", "step" => "plan"},
-          {"n" => 2, "ts" => "2026-10-04T12:00:00Z", "type" => "step_dispatched", "step" => "plan"}
+          {"n" => 1, "ts" => "2026-10-04T12:00:00.000Z", "type" => "run_started", "step" => "plan"},
+          {"n" => 2, "ts" => "2026-10-04T12:00:00.000Z", "type" => "step_dispatched", "step" => "plan"}
         ],
         "truncated" => false, "next_since" => 2, "warnings" => []
       )
@@ -444,9 +444,17 @@ RSpec.describe Workspace::WorkflowRunStore do
 
     lines = File.readlines(store.events_path("wr_1")).map { |line| JSON.parse(line) }
     expect(lines).to eq([
-      {"ts" => "2026-10-04T12:00:00Z", "type" => "run_started", "workflow" => "rpiv"},
-      {"ts" => "2026-10-04T12:00:05Z", "type" => "step_dispatched", "step" => "research", "attempt" => 1}
+      {"ts" => "2026-10-04T12:00:00.000Z", "type" => "run_started", "workflow" => "rpiv"},
+      {"ts" => "2026-10-04T12:00:05.000Z", "type" => "step_dispatched", "step" => "research", "attempt" => 1}
     ])
+  end
+
+  it "stamps events with millisecond resolution" do
+    create
+    now[0] = Time.utc(2026, 10, 4, 12, 0, 0, 123_000)
+    store.record_event("wr_1", "run_started")
+
+    expect(JSON.parse(File.readlines(store.events_path("wr_1")).last)["ts"]).to match(/\.\d{3}Z\z/).and eq("2026-10-04T12:00:00.123Z")
   end
 
   it "does not raise when the history can't be written" do

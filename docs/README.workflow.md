@@ -1374,7 +1374,7 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 
 <!-- workflow-events-example -->
 ```json
-{"schema_version":1,"ok":true,"run":"wr_2610250930abcd","events":[{"n":2,"ts":"2026-10-25T09:30:00Z","type":"step_dispatched","step":"research","attempt":1},{"n":4,"ts":"2026-10-25T09:30:00Z","type":"step_done","step":"research","attempt":1,"status":"pass"}],"truncated":false,"next_since":4,"warnings":["Line 3 of the history is not a JSON object; skipped."]}
+{"schema_version":1,"ok":true,"run":"wr_2610250930abcd","events":[{"n":2,"ts":"2026-10-25T09:30:00.000Z","type":"step_dispatched","step":"research","attempt":1},{"n":4,"ts":"2026-10-25T09:30:00.000Z","type":"step_done","step":"research","attempt":1,"status":"pass"}],"truncated":false,"next_since":4,"warnings":["Line 3 of the history is not a JSON object; skipped."]}
 ```
 
 `workflow files --json` prints `{"schema_version":1,"ok":true,"run":ID,"artifacts_dir":PATH,"files":[...]}`. Each file is `{"path","kind","step","attempt","exists","bytes"}` plus `"link":true` for a symlink, and for a `produces` file `"problem"`: the rule it breaks (`symlink`, `not_regular_file` or `empty`, else `null`; always `null` for a run started before the rules existed), from the same check the engine uses: `path` is absolute; `kind` is `prompt`, `check_log`, `proof_log` or `produces`; `attempt` is the attempt number, or `null` for `produces`; `bytes` is `null` when the file is missing, a link or not a regular file. For example, on a run whose first step has one attempt, a `produces` file that is there, one that is missing and one that is a symlink:

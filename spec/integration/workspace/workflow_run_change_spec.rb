@@ -232,7 +232,7 @@ RSpec.describe Workspace::WorkflowRunChange do
         nil
       end
 
-      expect(lines).to eq([{"ts" => now.iso8601, "type" => "step_reported", "step" => "a"}])
+      expect(lines).to eq([{"ts" => now.iso8601(3), "type" => "step_reported", "step" => "a"}])
     end
   end
 end

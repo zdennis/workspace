@@ -210,7 +210,7 @@ module Workspace
     # @param data [Hash{String=>Object}] details of it
     # @return [void]
     def record_event(id, type, data = {})
-      line = JSON.generate({"ts" => @clock.call.utc.iso8601, "type" => type}.merge(data)) + "\n"
+      line = JSON.generate({"ts" => @clock.call.utc.iso8601(3), "type" => type}.merge(data)) + "\n"
       File.open(events_path(id), File::WRONLY | File::APPEND | File::CREAT, 0o600) { |file| file.syswrite(line) }
     rescue SystemCallError, JSON::GeneratorError, EncodingError
       nil
