@@ -8,6 +8,9 @@ RSpec.describe Workspace::WorkflowSimScript do
       title: Demo
       inputs:
         task: {required: true}
+      reviewers:
+        skeptic: {prompt: Find what is wrong.}
+        builder: {prompt: Check it can be built.}
       steps:
         build:
           prompt: build
@@ -19,6 +22,11 @@ RSpec.describe Workspace::WorkflowSimScript do
           produces: [test.md]
           status: {run: "true"}
           gate: approve
+        design:
+          prompt: design
+          produces: [design.md]
+          review:
+            from: [skeptic, builder]
     YAML
   end
 
@@ -154,6 +162,51 @@ RSpec.describe Workspace::WorkflowSimScript do
       expect(e.details["problems"].first).to include("\e")
     }
   end
+  describe "reviews" do
+    it "reads a verdict per reviewer of the step and revision_changes" do
+      script = parse("steps:\n  design:\n    - {reviews: {skeptic: approve, builder: reject}, revision_changes: true}\n")
+
+      expect(script.attempt("design", 1)).to include("reviews" => {"skeptic" => "approve", "builder" => "reject"}, "revision_changes" => true)
+    end
+
+    it "refuses a reviewer the step does not name" do
+      expect(problems("steps:\n  design: [{reviews: {nobody: approve}}]\n")).to match([a_string_matching(/reviews "nobody": the step has no such reviewer \(reviewers: skeptic, builder\)/)])
+    end
+
+    it "refuses a verdict that is not approve or reject" do
+      expect(problems("steps:\n  design: [{reviews: {skeptic: maybe}}]\n")).to match([a_string_matching(/reviews "skeptic" must be one of approve, reject, not "maybe"/)])
+    end
+
+    it "refuses reviews that are not a mapping" do
+      expect(problems("steps:\n  design: [{reviews: [skeptic]}]\n")).to match([a_string_matching(/reviews must be a mapping of the step's reviewers to approve or reject/)])
+    end
+
+    it "refuses reviews and revision_changes on a step without review:" do
+      expect(problems("steps:\n  build: [{reviews: {skeptic: approve}, revision_changes: true}]\n")).to match([
+        a_string_matching(/reviews is set, and the step has no review:/), a_string_matching(/revision_changes is set, and the step has no review:/)
+      ])
+    end
+
+    it "refuses a revision_changes that is not a boolean" do
+      expect(problems("steps:\n  design: [{revision_changes: yes please}]\n")).to match([a_string_matching(/revision_changes must be true or false/)])
+    end
+
+    it "reads reruns, one verdict map per rerun of the round's missing reviewers, and unchanged" do
+      script = parse("steps:\n  design:\n    - {reviews: {skeptic: approve}, reruns: [{builder: approve}, {}], unchanged: false}\n")
+
+      expect(script.attempt("design", 1)).to include("reruns" => [{"builder" => "approve"}, {}], "unchanged" => false)
+    end
+
+    it "refuses reruns that are not a list of verdict maps, an unknown reviewer in one, and an unchanged that is not a boolean" do
+      expect(problems("steps:\n  design: [{reruns: {builder: approve}}]\n")).to match([a_string_matching(/reruns must be a list, one mapping of reviewers/)])
+      expect(problems("steps:\n  design: [{reruns: [{nobody: approve}]}]\n")).to match([a_string_matching(/reruns\[0\] "nobody": the step has no such reviewer/)])
+      expect(problems("steps:\n  design: [{unchanged: maybe}]\n")).to match([a_string_matching(/unchanged must be true or false/)])
+      expect(problems("steps:\n  build: [{reruns: [], unchanged: true}]\n")).to match([
+        a_string_matching(/reruns is set, and the step has no review:/), a_string_matching(/unchanged is set, and the step has no review:/)
+      ])
+    end
+  end
+
   describe "require exec" do
     let(:exec_definition) do
       {"id" => "d", "inputs" => {}, "steps" => [{"id" => "t", "require" => [{"exec" => ["a"]}, {"exec" => ["b"]}]}]}

@@ -26,7 +26,8 @@ module Workspace
 
     # @param round_dir [String] the round's directory, absolute
     # @param path [String] the verdict file, absolute, in +round_dir+
-    # @param review_pane [String] the round's review pane id
+    # @param review_pane [String, Array<String>] the round's review pane id, or every pane the round was delivered into
+    #   (a rerun or a delivery again may use a new pane, and a verdict written in an earlier one still counts)
     # @param workspace [String] the run's workspace, whose daemon wrote the hook lines
     # @return [Hash{Symbol=>Object}] :ok, :agent_id and :sha256 of the write that proves it (nil when unknown),
     #   and :problem (nil when proven): `no_log`, `outside_checkout`, `no_write`, `log_gap`, `other_pane`,
@@ -39,7 +40,7 @@ module Workspace
       last, gap = last_write(files, relative)
       return refused("no_write") unless last
       return refused("log_gap") if gap
-      return refused("other_pane") unless last["pane_id"] == review_pane
+      return refused("other_pane") unless Array(review_pane).include?(last["pane_id"])
       agent = last["agent_id"]
       return refused("main_thread") unless agent.is_a?(String) && !agent.empty?
       sha = last["sha256"]

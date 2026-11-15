@@ -1,5 +1,6 @@
 require "spec_helper"
 require "tmpdir"
+require "digest"
 
 RSpec.describe "the shipped workflow presets" do
   let(:config) { Workspace::Config.new }
@@ -11,7 +12,7 @@ RSpec.describe "the shipped workflow presets" do
   after { FileUtils.remove_entry(dir) }
 
   it "parses every file in lib/workflows" do
-    expect(ids).to include("rpiv", "rpiv-auto-approve", "pr-feedback", "investigate", "explore")
+    expect(ids).to include("rpiv", "rpiv-auto-approve", "rpiv-auto-approve-v2", "pr-feedback", "investigate", "explore")
     ids.each { |id| expect(catalog.find(id).source).to eq("builtin") }
   end
 
@@ -33,7 +34,8 @@ RSpec.describe "the shipped workflow presets" do
       "pr-feedback" => %w[triage fix],
       "investigate" => %w[diagnose fix],
       "rpiv" => [],
-      "rpiv-auto-approve" => []
+      "rpiv-auto-approve" => [],
+      "rpiv-auto-approve-v2" => []
     }
     expect(expected.keys.sort).to eq(ids)
     expected.each do |id, step_ids|
@@ -42,8 +44,8 @@ RSpec.describe "the shipped workflow presets" do
     end
   end
 
-  describe "rpiv and rpiv-auto-approve" do
-    %w[rpiv rpiv-auto-approve].each do |id|
+  describe "rpiv, rpiv-auto-approve and rpiv-auto-approve-v2" do
+    %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2].each do |id|
       it "#{id} requires a commit and a done plan to implement, and a passing lint to verify" do
         steps = catalog.find(id).to_h["steps"]
         by_id = ->(name) { steps.find { |step| step["id"] == name } }
@@ -55,7 +57,7 @@ RSpec.describe "the shipped workflow presets" do
     end
 
     it "guards research and plan (and the reviewer steps and plan_review in rpiv-auto-approve) as unchanged, and nothing else" do
-      %w[rpiv rpiv-auto-approve].each do |id|
+      %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2].each do |id|
         guards = catalog.find(id).to_h["steps"].to_h { |step| [step["id"], step["guard"]] }
         expect(guards.select { |_, guard| guard }).to eq({"research" => "unchanged", "plan" => "unchanged"}.merge((id == "rpiv-auto-approve") ? {
           "review_supportive" => "unchanged", "review_skeptical" => "unchanged", "review_implementer" => "unchanged", "plan_review" => "unchanged"
@@ -63,7 +65,7 @@ RSpec.describe "the shipped workflow presets" do
       end
     end
 
-    %w[rpiv rpiv-auto-approve].each do |id|
+    %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2].each do |id|
       it "#{id} refuses a dirty checkout at preflight and accepts a clean one" do
         definition = catalog.find(id)
         worktree = File.join(File.realpath(dir), "app")
@@ -94,7 +96,7 @@ RSpec.describe "the shipped workflow presets" do
     end
 
     it "makes the lint proof optional, so a project without a lint command still runs" do
-      %w[rpiv rpiv-auto-approve].each do |id|
+      %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2].each do |id|
         verify = catalog.find(id).to_h["steps"].find { |step| step["id"] == "verify" }
         expect(verify["require"]).to eq([{"command" => "lint", "optional" => true}])
         expect(verify["prompt"].gsub(/\s+/, " ")).to include("lint command, when it has one, must pass")
@@ -102,10 +104,57 @@ RSpec.describe "the shipped workflow presets" do
     end
 
     it "tells implement never to amend or rebase, and to commit empty when nothing needs changing" do
-      %w[rpiv rpiv-auto-approve].each do |id|
+      %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2].each do |id|
         implement = catalog.find(id).to_h["steps"].find { |step| step["id"] == "implement" }
         expect(implement["prompt"].gsub(/\s+/, " ")).to include("never amend or rebase").and include("git commit --allow-empty -m '<why>'")
       end
+    end
+  end
+
+  describe "rpiv-auto-approve-v2" do
+    let(:definition) { catalog.find("rpiv-auto-approve-v2") }
+    let(:data) { definition.to_h }
+    let(:plan) { data["steps"].find { |step| step["id"] == "plan" } }
+
+    it "is listed by the catalog as a builtin and validates with no warnings" do
+      expect(catalog.list.map { |row| [row["id"], row["source"]] }).to include(["rpiv-auto-approve-v2", "builtin"])
+      expect(catalog.known?("rpiv-auto-approve-v2")).to be(true)
+      expect(definition.warnings).to eq([])
+    end
+
+    it "reviews the plan in place of the gate: skeptic plus one other, six rounds, caps from the design" do
+      expect(plan["gate"]).to be_nil
+      expect(Workspace::WorkflowDefinition.review(plan)).to include("from" => %w[supportive skeptical implementer], "need" => 2, "must" => ["skeptical"], "max_rounds" => 6)
+      expect(Workspace::WorkflowDefinition.step_max_attempts(plan)).to eq(8)
+      expect(Workspace::WorkflowDefinition.reviewers(data).keys).to eq(%w[supportive skeptical implementer])
+      expect(data["max_attempts"]).to eq(17)
+      expect(Workspace::WorkflowDefinition.run_timeout(data)).to include("seconds" => 28_800.0, "action" => "hold")
+      expect(Workspace::WorkflowDefinition.budget(data)).to include("tokens" => 40_000_000)
+    end
+
+    it "hashes the workspace plan into the review revision and keeps plan.md among the produced files" do
+      expect(plan["produces"]).to eq(["plan.md"])
+      expect(plan["review"]["revision"]).to eq(%q(workspace plan status --json | ruby -rjson -e 'data = JSON.parse($stdin.read); abort "no plans" unless data.key?("plans"); puts data["plans"].to_a.first&.dig("revision")'))
+    end
+
+    it "keeps the plan step's include, status check and timeout" do
+      expect(plan["include"]).to eq(%w[notes implementation-plan])
+      expect(plan["status"]["run"]).to eq(catalog.find("rpiv").to_h["steps"].find { |step| step["id"] == "plan" }["status"]["run"])
+      expect(plan["timeout"]).to eq(2700.0)
+    end
+
+    it "titles its reviewers and has each prompt use the subject and the previous write-up" do
+      reviewers = Workspace::WorkflowDefinition.reviewers(data)
+      expect(reviewers.transform_values { |reviewer| reviewer["title"] }).to eq("supportive" => "Supportive review", "skeptical" => "Skeptical review", "implementer" => "Implementer review")
+      reviewers.each_value do |reviewer|
+        expect(reviewer["prompt"].gsub(/\s+/, " ")).to include("{{review.subject}}").and include("{{review.previous}}").and include("Do not edit the plan")
+      end
+    end
+
+    it "leaves the files of rpiv and rpiv-auto-approve as they were" do
+      sha = ->(id) { Digest::SHA256.file(File.join(config.builtin_workflows_dir, "#{id}.yml")).hexdigest }
+      expect(sha.call("rpiv")).to eq("42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8")
+      expect(sha.call("rpiv-auto-approve")).to eq("edc35af9ff94282c2facb8b01da9c7fe71306c1850c980c63b104e4dc52aac5e")
     end
   end
 

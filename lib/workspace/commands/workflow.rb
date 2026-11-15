@@ -587,7 +587,9 @@ module Workspace
         return document("run" => run, "attempts" => result["attempts"], "unowned_reasons" => result["unowned_reasons"]) if json
         @output.puts "No attempts recorded for #{run}#{" step #{TerminalText.escape(step)}" if step}." if result["attempts"].empty?
         unless result["attempts"].empty?
-          table = [%w[STEP ATTEMPT OUTCOME CODE HEAD DURATION TOKENS]] + result["attempts"].map { |each| attempt_cells(each) }
+          reviewed = result["attempts"].any? { |each| each["review"] }
+          table = [%w[STEP ATTEMPT OUTCOME CODE HEAD DURATION TOKENS] + (reviewed ? %w[REVIEW] : [])] +
+            result["attempts"].map { |each| attempt_cells(each) + (reviewed ? [TerminalText.escape(each["review"] || "-")] : []) }
           widths = table.transpose.map { |column| column.map(&:length).max }
           table.each { |cells| @output.puts cells.each_with_index.map { |cell, index| cell.ljust(widths[index]) }.join("  ").rstrip }
         end
@@ -729,6 +731,7 @@ module Workspace
       # @param extra_attempts [Integer, nil] add this to the run's attempt allowance
       # @param extra_tokens [Integer, nil] add this to the run's token budget (see {Workspace::WorkflowEngine#resume})
       # @param extra_seconds [Integer, nil] add this many seconds to the run's timeout
+      # @param extra_rounds [Integer, nil] add this to the review rounds the step may spend (its `review.max_rounds`)
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @param accept_guard [Boolean] accept the guard stop the run waits on: the checkout as it is now becomes the
       #   run's base, and the step passes once its other checks do (see {Workspace::WorkflowDecisions#resume}); needs +note+
@@ -737,7 +740,7 @@ module Workspace
       #   is working on the step or its check is still running
       # @raise [Workspace::Error] code `bound_pane` for `--from` at a waiting gate, or `--accept-guard`, from a pane
       #   bound to a run (and `--accept-guard` from a process under the run's own pane), or see {Workspace::WorkflowEngine#resume}
-      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil,
+      def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, caller_pane: nil,
         accept_guard: false, guard_retry: false)
         stored = @store.run(run)
         pane_id = nil
@@ -760,9 +763,9 @@ module Workspace
         # An accepted guard stop is never parked: it is refused from the run's own pane above.
         if !accept_guard && !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && !reviewing && caller_in_pane?(stored.workspace, caller_pane, target) &&
             @panes.parkable?(stored.workspace, target)
-          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
+          return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
         end
-        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds,
+        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
           accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane)
         row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.")
       end
@@ -1401,9 +1404,9 @@ module Workspace
 
       # The caller is in the pane the resume would type into, so nothing is typed:
       # the resume is stored and the daemon carries it out once this turn ends.
-      def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
+      def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
         existing = WorkflowEngine.parked(stored.to_h, @clock.call) == :waiting
-        parked = @engine.park(stored.id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
+        parked = @engine.park(stored.id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
         if parked["unchanged"]
           message = "Nothing was done: #{parked["unchanged"]}."
           if existing
@@ -1468,7 +1471,7 @@ module Workspace
         target = run.parked["pane"] || @panes.pane_of(run.id) || run.pane
         unless caller_in_pane?(workspace, caller_pane, target)
           return release_park(run) if @panes.main_turn_over?(workspace, target)
-          return end_park(run, "pane_gone", "pane #{target} of '#{workspace}' is gone, so nothing was typed") if @panes.pane_gone?(target)
+          return end_park(run, "pane_gone", "pane #{target} of '#{workspace}' is gone, so nothing was typed") if @panes.pane_gone?(target, workspace: workspace)
           return end_park(run, "not_an_agent", "the agent in pane #{target} has exited, so nothing was typed") if @panes.agent_gone?(workspace, target)
         end
         return unless WorkflowEngine.parked(run.to_h, @clock.call) == :expired
@@ -1573,11 +1576,32 @@ module Workspace
         reason = current["reason"]
         @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
+        describe_review(current["review"]) if current["review"]
         parked = current["parked"]
         @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked
         @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }
+      end
+
+      # The round of a step being reviewed: which round of how many, the verdicts so far, who is still out, and where.
+      # Everything comes from the run file, so each value is escaped for a terminal.
+      def describe_review(review)
+        escape = ->(value) { TerminalText.escape(value.to_s) }
+        round = "round #{review["round"]} of #{review["max_rounds"]}"
+        if review["rounds_spent"]
+          round += ", every round spent; no further round starts"
+        else
+          round += ", stopped; a resume starts round #{review["next_round"]}" if review["stopped"]
+          round += ", held (#{escape.call(review["held"])}); it starts as round #{review["next_round"]}" if review["held"]
+        end
+        round += ", running again for #{review["rerun"].map(&escape).join(", ")}" if review["rerun"].is_a?(Array) && !review["rerun"].empty?
+        pending = review["pending"].empty? ? "" : ", waiting for #{review["pending"].map(&escape).join(", ")}"
+        where = review["pane"] ? ", review pane #{escape.call(review["pane"])}" : ""
+        @output.puts "  review: #{round}; #{review["approvals"]} of #{review["need"]} approvals#{pending}#{where}"
+        review["reviews"].each do |row|
+          @output.puts "    #{escape.call(row["reviewer"])}: #{escape.call(row["verdict"] || "no verdict#{" (#{row["problem"]})" if row["problem"]}")}#{" [#{escape.call(row["isolation"])}]" if row["isolation"]}"
+        end
       end
 
       # What a person has to supply, shown as an upper-case placeholder where it goes.
@@ -1612,7 +1636,7 @@ module Workspace
         when "waiting_you"
           case details["kind"]
           when "gate" then "step #{details["step"]} passed and waits for approval#{" (#{details["artifacts"].join(", ")})" if details["artifacts"].any?}"
-          when "prompt" then "pane #{details["pane"]} is waiting for an answer#{": #{details["message"]}" if details["message"]}"
+          when "prompt" then "#{"review " if details["role"] == "reviewer"}pane #{details["pane"]} is waiting for an answer#{": #{details["message"]}" if details["message"]}"
           when "ask" then "open question #{details["ask"]}: #{details["question"]}"
           when "delivery" then "step #{details["step"]}'s line was on its way to pane #{details["pane"]} when the process typing it stopped; the agent may not have it"
           else "step #{details["step"]} could not be started (#{details["error"]}): #{details["message"]}"
@@ -1642,6 +1666,10 @@ module Workspace
         when "retry_backoff"
           "step #{details["step"]} failed; step #{details["to"]} starts again at #{details["until"]} (after #{details["seconds"].to_f.round} seconds), or sooner with a resume"
         when "pane_gone" then "pane #{details["pane"]} of #{details["workspace"]} is not running#{": #{details["message"]}" if details["message"]}"
+        when "review_no_change"
+          "step #{details["step"]}'s review round #{details["round"]} was not delivered: the retry changed nothing the review reads since round #{details["rejected_round"]} rejected it; " \
+            "resume to review it as it is, or resume --from #{details["step"]} to run the step again"
+        when *WorkflowTransitions::REVIEW_STOPS then "step #{details["step"]}'s review round #{details["round"]} stopped#{": #{TerminalText.escape(details["problem"].to_s)}" if details["problem"]}"
         else details.to_s
         end
       end

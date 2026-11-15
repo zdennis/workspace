@@ -149,6 +149,30 @@ RSpec.describe Workspace::WorkflowRunChange do
       expect(delivered).to be_empty
     end
 
+    it "runs what the block registered to follow the lock once it is given up, with the run as stored, dropping one that raises" do
+      seen = []
+      result = change.call(run_id) do |run, ctx|
+        ctx.after_lock { |_stored| raise ArgumentError, "a notice that fails" }
+        ctx.after_lock { |stored| seen << [stored.note, locked?(run_id)] }
+        edited(run) { |work| work["note"] = "changed" }
+      end
+
+      expect(seen).to eq([["changed", false]])
+      expect(result.note).to eq("changed")
+    end
+
+    it "runs nothing registered to follow the lock when the block raises" do
+      seen = []
+
+      expect do
+        change.call(run_id) do |_run, ctx|
+          ctx.after_lock { |_stored| seen << :ran }
+          raise Workspace::Error.new("refused", code: "refused")
+        end
+      end.to raise_error(Workspace::Error)
+      expect(seen).to be_empty
+    end
+
     it "returns nil and runs no block when nonblocking finds the run busy" do
       ran = false
       inner = :not_called

@@ -1,0 +1,11 @@
+# The script the rpiv-auto-approve-v2 golden plays: the skeptic turns plan round 1 down, round 2 is missing the
+# skeptic's verdict until a rerun of that reviewer approves, and verify fails once and loops back to implement.
+steps:
+  plan:
+    - reviews: {supportive: approve, skeptical: reject, implementer: approve}
+    - reviews: {supportive: approve, implementer: reject}
+      reruns:
+        - {skeptical: approve}
+  verify:
+    - {check: fail, log: "1 failure"}
+    - {}

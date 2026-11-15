@@ -21,7 +21,7 @@ module Workspace
   #
   # A step is a miss when it has more than one delivered attempt (a rejected gate or a `resume --from` reran it,
   # or it looped) or its delivered attempt ended other than `passed` (an `overridden` one, a guard stop a person accepted, is a miss: the run can complete and be settled, never as a first try) (in a `completed` run, one with no outcome too: it was passed over by a `resume --from` later step). A step with no delivered attempt, or one
-  # delivered attempt still going, is not a miss; an attempt that never reached the agent is not delivered
+  # delivered attempt still going (or ended `checks_passed`, waiting for its review round to rewrite it as `passed` or `failed`), is not a miss; an attempt that never reached the agent is not delivered
   # ({WorkflowStats.kind_of}), so a redelivery is not a miss. A run is a first try when it completed with no miss.
   #
   # Settled runs are the denominator: every `completed` run; a `cancelled` run, and a run `waiting` on
@@ -153,7 +153,8 @@ module Workspace
     # A `cancelled` attempt (a cancel or kill closed it) is a person's stop, not a miss, like an old one left with no outcome.
     # The engine has stored `outcome` on passed and failed attempts since it first wrote attempts, so an old run is not misread.
     def missed?(attempts, completed)
-      delivered = attempts.reject { |attempt| WorkflowStats.kind_of(attempt) == :not_delivered }
+      # A `checks_passed` attempt waits for its review round to decide it: until it is rewritten it is neither a pass nor a miss.
+      delivered = attempts.reject { |attempt| WorkflowStats.kind_of(attempt) == :not_delivered || attempt.outcome == "checks_passed" }
       delivered.size > 1 || delivered.any? { |attempt| attempt.outcome != "passed" && attempt.outcome != "cancelled" && (completed || !attempt.outcome.nil?) }
     end
 

@@ -98,10 +98,12 @@ module Workspace
     # @param round [Integer] the round
     # @param reviews [Array<Hash{String=>Object}>] the round's verdict rows ("reviewer", "path" under the run's
     #   directory, "sha256")
+    # @param rerun [Integer, nil] the round's reruns of missing reviewers before this part ended; a positive one names
+    #   the copies `<step>.<n>.r<round>.rerunN.review.<reviewer>.md`, so a rerun never overwrites an earlier part's copy
     # @return [Array<Hash{String=>Object}>] entries as {#copy} gives them; a copy whose bytes hash differently from
     #   the row's `sha256` (the file was rewritten after the round read it) is kept, with `problem`
     #   `changed_since_read` and the hash the round read as `read_sha256`; never raises
-    def review(run:, step_id:, attempt:, round:, reviews:)
+    def review(run:, step_id:, attempt:, round:, reviews:, rerun: nil)
       run = WorkflowRun.from_h(run)
       artifacts = run.artifacts_dir.to_s
       read = []
@@ -109,7 +111,8 @@ module Workspace
         path = row["path"]
         next unless row["sha256"] && path.is_a?(String) && !path.empty? && !path.start_with?("/")
         read << row["sha256"]
-        ["review", "#{base(step_id, attempt)}.r#{round.to_i}.review.#{safe(row["reviewer"])}.md", File.join(artifacts, path)]
+        tag = (rerun.is_a?(Integer) && rerun.positive?) ? ".rerun#{rerun}" : ""
+        ["review", "#{base(step_id, attempt)}.r#{round.to_i}#{tag}.review.#{safe(row["reviewer"])}.md", File.join(artifacts, path)]
       end
       batch(run, attempt, wanted, 0).each_with_index.map do |entry, index|
         next entry unless entry["sha256"] && entry["sha256"] != read[index]

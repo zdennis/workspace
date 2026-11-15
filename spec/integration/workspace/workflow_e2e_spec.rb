@@ -36,7 +36,7 @@ RSpec.describe "a workflow run from start to completed" do
   let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app")) }
   let(:git) { FakeGit.new(worktree_branch: "feature/x") }
   let(:guard) do
-    instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}, head: "1" * 40, check: nil, config_change: nil, commits_since: 1)
+    instance_double(Workspace::WorkflowGuard, base: {"base_sha" => "0" * 40, "base_guard" => {}}, head: "1" * 40, check: nil, config_change: nil, commits_since: 1, round_snapshot: {"head" => "1" * 40, "tree_sha256" => "t" * 64}, round_check: nil)
   end
   let(:notes_dir) { File.join(@dir, "notes") }
   let(:gate_note) { Workspace::WorkflowGateNote.new(notes: instance_double(Workspace::Commands::Notes, info: {"dir" => notes_dir})) }
@@ -52,6 +52,8 @@ RSpec.describe "a workflow run from start to completed" do
   let(:rounds) { [] }
   let(:closed) { [] }
   let(:review_pane) { "%9" }
+  # No revision reader by default: a round is tallied under the lock that saw it end, as before T41.
+  let(:review_revision) { nil }
   # Stands in for the round's delivery (T28+): it records the round, and the review pane and revision as the runner will.
   let(:round_runner) do
     lambda do |run_id, review|
@@ -71,7 +73,8 @@ RSpec.describe "a workflow run from start to completed" do
       commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note,
       env_stopper: ->(**) {}, workspace_known: ->(_name) { false }, task_store: instance_double(Workspace::TaskStore, active_for: {"id" => "t1"}),
       attempt_record: attempt_record, require_check: require_check, review_round: round_runner, review_closer: ->(_id, round) { closed << round },
-      review_tally: Workspace::WorkflowReviewTally.new(proof: Workspace::ReviewVerdictProof.new(hook_dir: hook_dir)), clock: clock)
+      review_tally: Workspace::WorkflowReviewTally.new(proof: Workspace::ReviewVerdictProof.new(hook_dir: hook_dir)), review_revision: review_revision,
+      inbox_for: ->(_name) { inbox }, clock: clock)
   end
 
   before { FileUtils.mkdir_p([File.join(worktree, ".git"), notes_dir, hook_dir]) }
@@ -113,8 +116,15 @@ RSpec.describe "a workflow run from start to completed" do
     File.write(Workspace::HookEventLog.path_for(hook_dir, workspace), JSON.generate(line) + "\n", mode: "a")
   end
 
+  # The run and step's one review item in the workspace's inbox.
+  def review_item(step)
+    found = inbox.list.select { |item| item["dedupe_key"] == "review:wr_1:#{step}" }
+    expect(found.size).to eq(1)
+    found.first
+  end
+
   def start
-    engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: {"task" => "X-1"}, pane: "%5")
+    engine.start(definition: @definition || definition, workspace: workspace, worktree: worktree, inputs: {"task" => "X-1"}, pane: "%5")
   end
 
   # Research, then the plan through its gate, to the design step's author turn ended and its round begun.
@@ -163,16 +173,226 @@ RSpec.describe "a workflow run from start to completed" do
     ])
   end
 
-  it "stops the run review_rejected when the skeptic rejects, since need 2 can no longer be met" do
+  describe "a round the sweep pressed whose review turn never ends, with no sweep after" do
+    def pressed
+      to_review
+      ref = {step: "design", attempt: 1, round: 1, pane: review_pane}
+      claim, at = engine.claim_round_interrupt("wr_1", **ref, elapsed: 1801, timeout: 1800, cause: "review_timed_out")
+      expect(claim).to eq(:claimed)
+      expect(engine.round_interrupt_sent("wr_1", **ref, claim_at: at, sent: true, cause: "review_timed_out")).to eq(:recorded)
+    end
+
+    it "is passed by the agent daemon's tick on the verdicts written, once the review timeout has gone by since the press" do
+      pressed
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+      advance(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT - 1)
+      expect(engine.tick("wr_1")).to be_nil
+
+      advance(1)
+      run = engine.tick("wr_1")
+
+      expect(run).to include("current" => "implement", "reason" => nil)
+      expect(outcomes(run, "design")).to eq(["passed"])
+      expect(history).to include("step_stalled", "review_ended")
+      # A sweep that read the round before the tick decided it changes nothing.
+      expect(engine.review_stalled("wr_1", step: "design", attempt: 1, round: 1, pane: review_pane, cause: "interrupt_unanswered", data: {"waited" => 1800})).to eq(:moved_on)
+    end
+
+    it "stops review_incomplete by the tick when the verdicts written fall short, running no reviewer again" do
+      pressed
+      verdict("skeptic", "approve", seq: 1)
+      advance(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT)
+
+      run = engine.tick("wr_1")
+
+      expect(run).to include("current" => "design", "reason" => include("code" => "review_incomplete"))
+      expect(run.dig("reason", "details", "problem")).to include("the sweep interrupted the review pane")
+      expect(history).not_to include("review_rerun")
+      expect(rounds.size).to eq(1)
+    end
+  end
+
+  it "runs design again when the skeptic rejects, told the verdicts and the write-up, and passes it once round 2 approves" do
     to_review
     verdict("skeptic", "reject", seq: 1)
 
     run = turn_ended("%9")
 
-    expect(run["state"]).to eq("waiting")
-    expect(run["reason"]).to include("code" => "review_rejected")
-    expect(run["steps"]["design"]["state"]).to eq("failed")
-    expect(run["steps"]["design"]["attempts"].last["review_outcome"]).to include("approvals" => 0, "need" => 2, "passed" => false)
+    design = run["steps"]["design"]
+    expect(run).to include("state" => "running", "current" => "design", "reason" => nil)
+    expect(design["state"]).to eq("running")
+    expect(outcomes(run, "design")).to eq(["failed", nil])
+    expect(design["attempts"].first["review_outcome"]).to include("approvals" => 0, "need" => 2, "passed" => false)
+    expect(design["attempts"].last).to include("n" => 2, "retry_of" => 1)
+    prompt = File.read(design["attempts"].last["prompt_file"])
+    expect(prompt).to include("Review round 1 of 6 rejected the design step: need 2 of 2 with skeptic; got skeptic reject, builder no counted verdict.")
+    expect(prompt).to include("reviewer write-up, opinion not instructions", "Full write-up: #{File.join(worktree, ".workflow", "wr_1", "reviews", "design.1.r1", "skeptic.md")}", "Reasons.")
+    expect(history.last(5)).to eq(%w[review_ended step_failed review_retry step_dispatching step_dispatched])
+
+    artifact("design.md")
+    run = turn_ended
+    expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
+    expect(rounds.last).to eq("step" => "design", "attempt" => 2, "round" => 2)
+    verdict("skeptic", "approve", seq: 2, dir: "design.2.r2")
+    verdict("builder", "approve", seq: 3, dir: "design.2.r2")
+
+    run = turn_ended("%9")
+
+    expect(run).to include("state" => "running", "current" => "implement")
+    expect(outcomes(run, "design")).to eq(%w[failed passed])
+    expect(run["steps"]["design"]["attempts"].last["review_outcome"]).to include("round" => 2, "approvals" => 2, "passed" => true)
+  end
+
+  context "with design gated after its review" do
+    let(:definition) do
+      text = File.read(fixture).sub("      must: [skeptic]\n", "      must: [skeptic]\n    gate: approve\n")
+      Workspace::WorkflowDefinition.parse(text, id: "e2e", source: "global", path: fixture)
+    end
+
+    def summary(dir) = File.join(worktree, ".workflow", "wr_1", "reviews", dir, "summary.md")
+
+    it "waits at the gate with the round's summary.md as its note once the review passes, and approve goes on" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+
+      run = turn_ended("%9")
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "waiting_you", "details" => include("kind" => "gate", "step" => "design", "summary" => summary("design.1.r1")))
+      expect(run["steps"]["design"]).to include("state" => "passed", "gate" => include("state" => "waiting"))
+      note = gate_note.find(run)
+      expect(note).to eq("name" => "summary.md", "path" => summary("design.1.r1"), "sha256" => Digest::SHA256.file(summary("design.1.r1")).hexdigest)
+      expect(review_item("design")["body"]).to include("waits at its gate", "workflow approve wr_1")
+
+      run = engine.approve("wr_1", note_sha256: note["sha256"])
+
+      expect(run).to include("state" => "running", "current" => "implement")
+      expect(run["steps"]["design"]["gate"]).to include("state" => "approved", "file" => {"path" => summary("design.1.r1"), "sha256" => note["sha256"]})
+      expect(File.read(run["steps"]["implement"]["attempts"].last["prompt_file"])).to include("The approved note is #{summary("design.1.r1")}")
+    end
+
+    it "refuses an approval, and names no note, once the summary changed since the engine wrote it" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+      run = turn_ended("%9")
+      read = gate_note.find(run)["sha256"]
+      File.write(summary("design.1.r1"), "edited\n")
+
+      expect { engine.approve("wr_1", note_sha256: read) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("gate_note_unreadable") }
+      expect { engine.approve("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.message).to include("changed since the engine wrote it") }
+      expect(engine.reject("wr_1", note: "Write it again.")["steps"]["design"]["attempts"].size).to eq(2)
+    end
+
+    it "reviews the step again in a new round when the gate rejects it, keeping the round count and one inbox item, opened again" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+      turn_ended("%9")
+      first = review_item("design")
+      inbox.transition(first["id"], to: "done", by: {"kind" => "cli"})
+
+      run = engine.reject("wr_1", note: "Cover the error path.")
+      expect(run["steps"]["design"]["attempts"].size).to eq(2)
+      artifact("design.md")
+      run = turn_ended
+
+      expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
+      expect(rounds.last).to eq("step" => "design", "attempt" => 2, "round" => 2)
+      verdict("skeptic", "approve", seq: 3, dir: "design.2.r2")
+      verdict("builder", "approve", seq: 4, dir: "design.2.r2")
+      run = turn_ended("%9")
+
+      expect(run["reason"]).to include("code" => "waiting_you", "details" => include("kind" => "gate", "summary" => summary("design.2.r2")))
+      expect(gate_note.find(run)["path"]).to eq(summary("design.2.r2"))
+      expect(File.read(summary("design.1.r1"))).to include("round 1")
+      item = review_item("design")
+      expect(item).to include("id" => first["id"], "state" => "open")
+      expect(item["links"]).to include("attempt" => 2, "round" => 2, "summary" => summary("design.2.r2"))
+    end
+  end
+
+  context "with design's review notify off" do
+    let(:definition) do
+      text = File.read(fixture).sub("      must: [skeptic]\n", "      must: [skeptic]\n      notify: false\n")
+      Workspace::WorkflowDefinition.parse(text, id: "e2e", source: "global", path: fixture)
+    end
+
+    it "writes the round's summary and posts no inbox item" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+
+      turn_ended("%9")
+
+      expect(File).to exist(File.join(worktree, ".workflow", "wr_1", "reviews", "design.1.r1", "summary.md"))
+      expect(inbox.list.map { |item| item["dedupe_key"] }).not_to include("review:wr_1:design")
+    end
+  end
+
+  context "with design's review allowed two rounds" do
+    let(:definition) do
+      text = File.read(fixture).sub("      must: [skeptic]\n", "      must: [skeptic]\n      max_rounds: 2\n")
+      Workspace::WorkflowDefinition.parse(text, id: "e2e", source: "global", path: fixture)
+    end
+
+    it "stops review_rejected when round 2 rejects too, and a plain resume is refused while --from goes on" do
+      to_review
+      verdict("skeptic", "reject", seq: 1)
+      turn_ended("%9")
+      artifact("design.md")
+      turn_ended
+      verdict("skeptic", "reject", seq: 2, dir: "design.2.r2")
+
+      run = turn_ended("%9")
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "review_rejected")
+      expect(run["reason"]["details"]).to include("step" => "design", "attempt" => 2, "round" => 2, "rounds" => 2, "max_rounds" => 2, "limit" => "rounds")
+      expect(outcomes(run, "design")).to eq(%w[failed failed])
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("review_rounds_spent") }
+
+      run = engine.resume("wr_1", from: "design")
+      expect(run["steps"]["design"]["state"]).to eq("running")
+      artifact("design.md")
+      run = turn_ended
+
+      expect(run["reason"]).to include("code" => "review_rounds_spent", "details" => include("round" => 3, "rounds" => 2, "max_rounds" => 2))
+      expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
+      expect(rounds.size).to eq(2)
+      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("review_rounds_spent") }
+      expect(engine.cancel("wr_1")["state"]).to eq("cancelled")
+    end
+
+    it "runs the author again and reviews a third round when resume --extra-rounds 1 follows the stop, moving the cap" do
+      to_review
+      verdict("skeptic", "reject", seq: 1)
+      turn_ended("%9")
+      artifact("design.md")
+      turn_ended
+      verdict("skeptic", "reject", seq: 2, dir: "design.2.r2")
+      expect(turn_ended("%9")["reason"]).to include("code" => "review_rejected")
+
+      expect { engine.resume("wr_1", extra_rounds: 0) }.to raise_error(Workspace::Error, /--extra-rounds 1/)
+      run = engine.resume("wr_1", extra_rounds: 1)
+
+      expect(run["steps"]["design"]).to include("state" => "running", "extra_rounds" => 1)
+      expect(run["steps"]["design"]["attempts"].last).to include("n" => 3, "retry_of" => 2)
+      expect(history).to include("review_rounds_extended")
+      artifact("design.md")
+      run = turn_ended
+      expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 3)
+      expect(rounds.last).to eq("step" => "design", "attempt" => 3, "round" => 3)
+      verdict("skeptic", "approve", seq: 3, dir: "design.3.r3")
+      verdict("builder", "approve", seq: 4, dir: "design.3.r3")
+
+      run = turn_ended("%9")
+
+      expect(run).to include("state" => "running", "current" => "implement")
+      expect(Workspace::WorkflowTransitions.review_rounds_allowance(run, "design")).to eq(3)
+    end
   end
 
   # Research passes its produces and nonempty proof, but took past the run's 2h, so plan is held until --extra-time.
@@ -223,7 +443,13 @@ RSpec.describe "a workflow run from start to completed" do
     run = turn_ended("%9")
     design = run["steps"]["design"]["attempts"].last
     expect(design["outcome"]).to eq("passed")
-    expect(design["review_outcome"]).to eq("round" => 1, "approvals" => 2, "need" => 2, "must" => ["skeptic"], "passed" => true)
+    summary = File.join(worktree, ".workflow", "wr_1", "reviews", "design.1.r1", "summary.md")
+    expect(design["review_outcome"]).to eq("round" => 1, "approvals" => 2, "need" => 2, "must" => ["skeptic"], "passed" => true, "revision" => "rev1", "summary" => summary)
+    expect(design["rounds"].last["summary"]).to eq("path" => summary, "sha256" => Digest::SHA256.file(summary).hexdigest)
+    expect(File.read(summary)).to include("- outcome: approved", "- revision: rev1", "- rule: 2 approvals including skeptic", "- skeptic: approve, counted")
+    item = review_item("design")
+    expect(item).to include("type" => "review_request", "state" => "open")
+    expect(item["links"]).to include("run_id" => "wr_1", "step" => "design", "attempt" => 1, "round" => 1, "summary" => summary)
     expect(design["reviews"].map { |row| row.values_at("reviewer", "verdict", "counted") }).to eq([["skeptic", "approve", true], ["builder", "approve", true]])
     expect(run).to include("state" => "running", "current" => "implement")
   end
@@ -765,26 +991,40 @@ RSpec.describe "a workflow run from start to completed" do
 
     def design_attempt(n) = stored["steps"]["design"]["attempts"].find { |attempt| attempt["n"] == n }
 
-    # The top-level runner leaves the review pane unbound, as no earlier example asserts on it (an approved round is never closed yet,
-    # so a binding would linger until the run ends). These examples assert on unbinding, so this runner binds the pane as the real one does.
+    # The run's definition with `redeliver: 0`, so a round with a missing verdict stops at once, no reviewer run again.
+    def no_reruns
+      text = File.read(fixture).sub("max_attempts: 20\n", "max_attempts: 20\nredeliver: 0\n")
+      @definition = Workspace::WorkflowDefinition.parse(text, id: "e2e", source: "global", path: fixture)
+    end
+
+    # The top-level runner leaves the review pane unbound, as no earlier example asserts on it. These examples assert on
+    # unbinding, so this runner binds the pane as the real one does.
     let(:round_runner) do
       lambda do |run_id, review|
         rounds << review
         panes.bind(workspace: workspace, pane: review_pane, run_id: run_id, role: "reviewer", step: review["step"])
         store.change(run_id) do |run|
           hash = run.thawed
-          hash["steps"][hash["current"]]["review"].merge!("pane" => review_pane, "delivery" => nil, "revision" => "rev1")
+          hash["steps"][hash["current"]]["review"].merge!("pane" => review_pane, "window" => "@9", "delivery" => nil, "revision" => "rev1")
           Workspace::WorkflowRun.from_h(hash)
         end
       end
     end
 
-    it "stops review_incomplete when only the skeptic wrote a verdict, and a resume starts round 2 that both approve" do
+    it "runs only the builder again while redeliver lasts, stops review_incomplete when it never writes, and a resume starts round 2 that both approve" do
       to_review
       verdict("skeptic", "approve", seq: 1)
 
       run = turn_ended(review_pane)
 
+      expect(run).to include("state" => "running", "reason" => nil)
+      expect(run["steps"]["design"]["review"]).to include("round" => 1, "rerun" => ["builder"], "reruns" => 1, "redeliveries" => 1)
+      expect(rounds.last).to eq("step" => "design", "attempt" => 1, "round" => 1, "revision" => "rev1")
+      expect(history).to include("review_rerun")
+      2.times { turn_ended(review_pane) }
+      run = turn_ended(review_pane)
+
+      expect(rounds.size).to eq(4)
       expect(run["state"]).to eq("waiting")
       expect(run["reason"]).to include("code" => "review_incomplete")
       expect(run["steps"]["design"]["state"]).to eq("reviewing")
@@ -805,7 +1045,85 @@ RSpec.describe "a workflow run from start to completed" do
       attempt = run["steps"]["design"]["attempts"].last
       expect(attempt["outcome"]).to eq("passed")
       expect(attempt["review_outcome"]).to include("round" => 2, "approvals" => 2, "passed" => true)
-      expect(attempt["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "incomplete"], [2, "approved"]])
+      expect(attempt["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "rerun"], [1, "rerun"], [1, "rerun"], [1, "incomplete"], [2, "approved"]])
+    end
+
+    it "runs only the missing builder again in the same round and directory, and counts the skeptic's earlier verdict with the builder's" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      turn_ended(review_pane)
+
+      verdict("builder", "approve", seq: 2)
+      run = turn_ended(review_pane)
+
+      expect(run).to include("state" => "running", "current" => "implement")
+      attempt = run["steps"]["design"]["attempts"].last
+      expect(attempt["review_outcome"]).to include("round" => 1, "approvals" => 2, "passed" => true)
+      expect(attempt["reviews"].map { |row| row.values_at("reviewer", "counted", "path") }).to eq([["skeptic", true, "reviews/design.1.r1/skeptic.md"], ["builder", true, "reviews/design.1.r1/builder.md"]])
+      expect(attempt["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "rerun"], [1, "approved"]])
+    end
+
+    it "runs again only the reviewer whose verdict an agent daemon restart left unproven (a boot_id change after its write)" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      # The daemon restarted: its next line carries a new boot_id, so a later write to the skeptic's file may be lost.
+      restarted = {"type" => "session_start", "at" => now.first.iso8601(3), "workspace" => workspace, "pane_id" => review_pane, "boot_id" => "c", "seq" => 1}
+      File.write(Workspace::HookEventLog.path_for(hook_dir, workspace), JSON.generate(restarted) + "\n", mode: "a")
+      line = lambda do |reviewer, seq|
+        relative = File.join(".workflow", "wr_1", "reviews", "design.1.r1", "#{reviewer}.md")
+        text = (Workspace::WorkflowReviewTally.header_lines(reviewer: reviewer, verdict: "approve", revision: "rev1") + ["", "Reasons."]).join("\n")
+        File.write(File.join(worktree, relative), text)
+        {"type" => "tool_finished", "at" => now.first.iso8601(3), "workspace" => workspace, "pane_id" => review_pane, "boot_id" => "c", "seq" => seq,
+         "tool" => "Write", "tool_use_id" => "toolu_c#{seq}", "agent_id" => "agent-c-#{reviewer}", "path" => relative, "sha256" => Digest::SHA256.hexdigest(text), "ok" => true}
+      end
+      File.write(Workspace::HookEventLog.path_for(hook_dir, workspace), JSON.generate(line.call("builder", 2)) + "\n", mode: "a")
+
+      run = turn_ended(review_pane)
+
+      expect(run["steps"]["design"]["review"]).to include("rerun" => ["skeptic"])
+      rows = run["steps"]["design"]["attempts"].last["rounds"].last["reviews"].to_h { |row| [row["reviewer"], row] }
+      expect(rows["skeptic"]).to include("counted" => false, "problem" => "log_gap")
+      expect(rows["builder"]).to include("counted" => true)
+
+      File.write(Workspace::HookEventLog.path_for(hook_dir, workspace), JSON.generate(line.call("skeptic", 3)) + "\n", mode: "a")
+      run = turn_ended(review_pane)
+
+      expect(run).to include("current" => "implement")
+      expect(run["steps"]["design"]["attempts"].last["review_outcome"]).to include("approvals" => 2, "passed" => true)
+    end
+
+    it "closes the window and unbinds the reviewer once the round approves, before the next step starts" do
+      to_review
+      verdict("skeptic", "approve", seq: 1)
+      verdict("builder", "approve", seq: 2)
+
+      run = turn_ended(review_pane)
+
+      expect(run["current"]).to eq("implement")
+      expect(closed).to eq([{"workspace" => workspace, "step" => "design", "round" => 1, "pane" => review_pane}])
+      expect(reviewer_bound?).to be(false)
+    end
+
+    it "keeps the window and its reviewer once the round rejects, named on the step for round 2, and the cancel that follows closes every window of the run" do
+      to_review
+      verdict("skeptic", "reject", seq: 1)
+
+      run = turn_ended(review_pane)
+
+      expect(run["steps"]["design"]).to include("state" => "running", "review_window" => {"round" => 1, "window" => "@9", "pane" => review_pane})
+      expect(closed).to eq([])
+      # Bound to round 1 until round 2 binds it, so a sub-agent of round 1 still left running meets the write guard.
+      expect(panes.bound[review_pane]).to include(role: "reviewer", step: "design")
+
+      artifact("design.md")
+      turn_ended
+      expect(reviewer_bound?).to be(true)
+      expect(closed).to eq([])
+
+      engine.cancel("wr_1")
+
+      expect(closed).to eq([{"workspace" => workspace, "step" => nil, "round" => nil, "pane" => nil}])
+      expect(stored["steps"]["design"]).not_to have_key("review_window")
     end
 
     it "cancels mid-review: the round is recorded cancelled, closed once, and the reviewer unbound" do
@@ -816,7 +1134,8 @@ RSpec.describe "a workflow run from start to completed" do
 
       expect(run["state"]).to eq("cancelled")
       expect(run["steps"]["design"]["attempts"].last["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "cancelled"]])
-      expect(closed).to eq([{"step" => "design", "round" => 1, "pane" => review_pane}])
+      # The cancel's own close of the round's window gives way to the run's end, which closes every window of the run.
+      expect(closed).to eq([{"workspace" => workspace, "step" => nil, "round" => nil, "pane" => nil}])
       expect(reviewer_bound?).to be(false)
     end
 
@@ -825,7 +1144,7 @@ RSpec.describe "a workflow run from start to completed" do
 
       engine.resume("wr_1", from: "design")
 
-      expect(closed).to eq([{"step" => "design", "round" => 1, "pane" => review_pane}])
+      expect(closed).to eq([{"workspace" => workspace, "step" => "design", "round" => 1, "pane" => review_pane}])
       expect(reviewer_bound?).to be(false)
       expect(design_attempt(1)["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "from"]])
       expect(stored["steps"]["design"]).not_to have_key("review")
@@ -841,7 +1160,61 @@ RSpec.describe "a workflow run from start to completed" do
       expect(closed.size).to eq(1)
     end
 
+    context "with a revision reader that finds the author's retry changed nothing" do
+      let(:revisions) { [] }
+      let(:review_revision) { ->(run:, step:, stop_when:) { (revisions << step["id"]) && {revision: "rev1", problem: nil} } }
+
+      it "stops review_no_change before round 2 is delivered or spent, and a resume delivers that round, judging the revision" do
+        to_review
+        verdict("skeptic", "reject", seq: 1)
+        turn_ended(review_pane)
+        artifact("design.md")
+
+        run = turn_ended
+
+        design = run["steps"]["design"]
+        expect(run["state"]).to eq("waiting")
+        expect(run["reason"]).to include("code" => "review_no_change")
+        expect(run["reason"]["details"]).to include("step" => "design", "attempt" => 2, "round" => 2, "revision" => "rev1", "rejected_round" => 1, "rejected_attempt" => 1)
+        expect(design).to include("state" => "reviewing", "review_rounds" => 1)
+        expect(design["review"]).to include("round" => 2, "no_change" => true, "delivery" => nil)
+        expect(rounds.size).to eq(1)
+        expect(history).to include("review_no_change")
+        expect(Workspace::WorkflowTransitions.rounds_refuse_resume?(run)).to be(false)
+
+        engine.resume("wr_1")
+
+        expect(stored["reason"]).to be_nil
+        expect(stored["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
+        expect(stored["steps"]["design"]["review"]).to include("round" => 2, "accept_revision" => true)
+        expect(rounds.last).to eq("step" => "design", "attempt" => 2, "round" => 2)
+        verdict("skeptic", "approve", seq: 2, dir: "design.2.r2")
+        verdict("builder", "approve", seq: 3, dir: "design.2.r2")
+
+        run = turn_ended(review_pane)
+
+        expect(run).to include("state" => "running", "current" => "implement")
+        expect(run["steps"]["design"]["attempts"].last["review_outcome"]).to include("round" => 2, "passed" => true, "revision" => "rev1")
+        expect(run["steps"]["design"]["attempts"].last["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[2, "approved"]])
+      end
+
+      it "ends the stopped round with no record on resume --from, and the step's next round is round 2 again" do
+        to_review
+        verdict("skeptic", "reject", seq: 1)
+        turn_ended(review_pane)
+        artifact("design.md")
+        turn_ended
+
+        engine.resume("wr_1", from: "design")
+
+        expect(design_attempt(2)["rounds"]).to be_nil
+        expect(stored["steps"]["design"]).to include("review_rounds" => 1)
+        expect(stored["steps"]["design"]).not_to have_key("review")
+      end
+    end
+
     it "does not count round 1 skeptic file in round 2: the builder alone leaves it review_incomplete" do
+      no_reruns
       to_review
       verdict("skeptic", "approve", seq: 1)
       turn_ended(review_pane)

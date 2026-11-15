@@ -23,6 +23,22 @@ module Workspace
     # The largest verdict file read.
     MAX_BYTES = ReviewVerdictProof::MAX_BYTES
 
+    # The problems that keep every verdict of a round from counting (the round's own state, not a verdict's): a rerun
+    # of the reviewers can't get past them.
+    ROUND_PROBLEMS = %w[no_round_dir no_review_pane no_revision round_dir_missing round_dir_link].freeze
+
+    # The reviewers of an incomplete round to run again in the same round: each whose verdict did not count for a
+    # reason of its own (missing, broken, unproven, a log gap), in `from` order. None when a round problem
+    # ({ROUND_PROBLEMS}) kept every verdict from counting.
+    #
+    # @param rows [Array<Hash>] the round's verdict rows ({#call}'s :reviews)
+    # @return [Array<String>] reviewer names
+    def self.rerun_names(rows)
+      rows = Array(rows).grep(Hash)
+      return [] if rows.any? { |row| ROUND_PROBLEMS.include?(row["problem"]) }
+      rows.reject { |row| row["counted"] }.filter_map { |row| row["reviewer"] if row["reviewer"].is_a?(String) }
+    end
+
     # The header lines a reviewer writes first, which {.parse} reads back.
     #
     # @param reviewer [String]
@@ -55,7 +71,7 @@ module Workspace
     def self.header_value?(value) = value.is_a?(String) && !value.strip.empty? && !value.match?(/[[:cntrl:]]/)
     private_class_method :header_value?
 
-    # @param proof [#proven?] given `round_dir:`, `path:`, `review_pane:` and `workspace:`, answers `{ok:, agent_id:, sha256:, problem:}`
+    # @param proof [#proven?] given `round_dir:`, `path:`, `review_pane:` (the round's panes, an Array) and `workspace:`, answers `{ok:, agent_id:, sha256:, problem:}`
     # @param files [#read, #directory_problem, #make] the file reads and the directory make (default {Files})
     def initialize(proof:, files: Files.new)
       @proof = proof
@@ -64,7 +80,9 @@ module Workspace
 
     # @param run [WorkflowRun, Hash{String=>Object}] the run, on a step being reviewed
     # @param step [Hash{String=>Object}] the step's definition
-    # @param round [Hash{String=>Object}] the step's round ("round", "pane", "revision", ...)
+    # @param round [Hash{String=>Object}] the step's round ("round", "pane", "panes", "revision", ...): a verdict is
+    #   proved against every pane the round was delivered into ("panes", with "pane"), so a verdict written before a
+    #   rerun or a delivery again in a new window still counts
     # @return [Hash{Symbol=>Object}] :outcome (`:approved`, `:rejected` or `:incomplete`), :reviews (one row per
     #   reviewer in `from`: "reviewer", "path" (under the run's directory), "verdict", "revision", "agent_id",
     #   "sha256", "counted" and "problem"), :approvals (the counted approvals), :need, :must and, for an
@@ -99,6 +117,23 @@ module Workspace
       dir = round_dir(stored, stored["current"], round)
       return {code: "review_incomplete", problem: "the run has no artifacts directory to hold the round's verdicts"} unless dir
       @files.make(stored["artifacts_dir"], dir)
+    end
+
+    # The round's directory as its delivery needs it: there already as a plain directory (made by {#open_round} when
+    # the round began, with whatever an earlier delivery of the same round left in it), or made now when nothing is
+    # at its path (an engine whose round start made none). Anything else at the path, or a link on the way, is a problem.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the run, on the step being reviewed
+    # @param round [Integer] the round being delivered
+    # @return [Hash{Symbol=>String}, nil] nil when the directory is there; else :code and :problem as {#open_round}
+    def ensure_round(run:, round:)
+      stored = WorkflowRun.from_h(run).to_h
+      dir = round_dir(stored, stored["current"], round)
+      return {code: "review_incomplete", problem: "the run has no artifacts directory to hold the round's verdicts"} unless dir
+      found = @files.directory_problem(stored["artifacts_dir"], dir)
+      return nil unless found
+      return open_round(run: run, round: round) if found == "round_dir_missing" && !File.exist?(dir) && !File.symlink?(dir)
+      {code: "review_tampered", problem: "#{dir} or a directory above it is not a plain directory (#{found}), so the round's verdicts could land anywhere"}
     end
 
     # The file system half: reading a verdict, checking the round's directory and making it.
@@ -164,9 +199,14 @@ module Workspace
     # What keeps every verdict of the round from counting, before any file is read.
     def round_problem(stored, round, dir)
       return "no_round_dir" unless dir
-      return "no_review_pane" unless round["pane"].is_a?(String) && !round["pane"].empty?
+      return "no_review_pane" if review_panes(round).empty?
       return "no_revision" unless round["revision"].is_a?(String) && !round["revision"].empty?
       @files.directory_problem(stored["artifacts_dir"], dir)
+    end
+
+    # Every pane the round was delivered into, its current one last.
+    def review_panes(round)
+      (Array(round["panes"]) + [round["pane"]]).select { |pane| pane.is_a?(String) && !pane.empty? }.uniq
     end
 
     def row(name, dir, stored, round, shared)
@@ -191,7 +231,7 @@ module Workspace
       elsif header["revision"] != round["revision"] then "wrong_revision"
       end
       return fields.merge("problem" => problem) if problem
-      proven = @proof.proven?(round_dir: dir, path: path, review_pane: round["pane"], workspace: stored["workspace"])
+      proven = @proof.proven?(round_dir: dir, path: path, review_pane: review_panes(round), workspace: stored["workspace"])
       fields["agent_id"] = proven[:agent_id]
       return fields.merge("problem" => proven[:problem] || "unproven") unless proven[:ok]
       # The proof hashed the file again: bytes that changed since they were read here are not the ones it proved.

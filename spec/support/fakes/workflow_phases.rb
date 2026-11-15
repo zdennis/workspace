@@ -12,15 +12,17 @@ class RecordingComposer
 
   # @param text [String]
   # @param packs [Array<String>] the refs of the packs the answer names
-  def initialize(text: "composed", packs: [])
+  # @param answer [Hash, nil] answered as it is in place of the text and packs, as a composer that hashes its packs does
+  def initialize(text: "composed", packs: [], answer: nil)
     @text = text
     @packs = packs
+    @answer = answer
     @calls = []
   end
 
   def compose(packs:, cwd:, binding: nil, workflow: nil, step: nil, attempt: nil, skip: [])
     @calls << [:compose, {packs: packs, cwd: cwd, binding: binding, workflow: workflow, step: step, attempt: attempt, skip: skip}]
-    {"text" => @text, "packs" => @packs.map { |ref| {"ref" => ref} }}
+    @answer || {"text" => @text, "packs" => @packs.map { |ref| {"ref" => ref} }}
   end
 end
 
@@ -57,11 +59,17 @@ class RecordingRunChange
   # @param runs [Hash{String=>Hash}] the stored runs by id
   # @param finished [Array<String>] ids whose change raises `run_not_active`, as for a run cancelled meanwhile
   # @param busy [Array<String>] ids another process is changing, so a +nonblocking+ call answers nil
+  # @param raises [Hash{Integer=>Exception}] the error the Nth +call+ (from 1) raises before reading, as for a run
+  #   file that can't be read or written
+  # @param raises_after [Hash{Integer=>Exception}] the error the Nth +call+ raises once its run is stored, as for a
+  #   signal that comes just after a change commits
   # A block that raises leaves the stored run as it was, as the real store writes only when the block returns.
-  def initialize(runs, finished: [], busy: [])
+  def initialize(runs, finished: [], busy: [], raises: {}, raises_after: {})
     @runs = runs
     @finished = finished
     @busy = busy
+    @raises = raises
+    @raises_after = raises_after
     @calls = []
     @events = []
     @deliveries = []
@@ -72,6 +80,7 @@ class RecordingRunChange
 
   def call(run_id, nonblocking: false)
     @calls << [:call, run_id, {nonblocking: nonblocking}]
+    raise @raises[@calls.size] if @raises.key?(@calls.size)
     raise Workspace::Error.new("run #{run_id} has ended", code: "run_not_active") if @finished.include?(run_id)
     return nil if nonblocking && @busy.include?(run_id)
     stored = @runs.fetch(run_id)
@@ -84,6 +93,12 @@ class RecordingRunChange
     @reviews << ctx.review if ctx.review
     @review_ends << ctx.review_end if ctx.review_end
     @closes << ctx.close_review if ctx.close_review
+    ctx.after_locks.each do |each|
+      each.call(changed)
+    rescue
+      nil
+    end
+    raise @raises_after[@calls.size] if @raises_after.key?(@calls.size)
     changed
   end
 
@@ -121,6 +136,11 @@ class RecordingRunStore
     @calls << [:run, id]
     Workspace::WorkflowRun.from_h(@runs.fetch(id))
   end
+
+  # A fixed stamp, as the real store's digest of its directory.
+  def stamp = "st0re"
+
+  def stamps = [stamp]
 
   def going?(id)
     @calls << [:going?, id]
@@ -189,6 +209,16 @@ class RecordingWorkflowPrompt
     File.join(Workspace::WorkflowRun.from_h(run).artifacts_dir, "steps", "#{step["id"]}.#{attempt_number}.prompt.md")
   end
 
+  def review_path(run, step, attempt_number, round, rerun: nil)
+    tag = rerun ? ".rerun#{rerun}" : ""
+    File.join(Workspace::WorkflowRun.from_h(run).artifacts_dir, "steps", "#{step["id"]}.#{attempt_number}.r#{round}#{tag}.review.md")
+  end
+
+  def review_text(run, step, attempt_number, round, revision, only: nil, rerun: nil)
+    @calls << [:review_text, Workspace::WorkflowRun.from_h(run), step["id"], attempt_number, round, revision, {only: only, rerun: rerun}]
+    {"path" => review_path(run, step, attempt_number, round, rerun: only ? rerun : nil), "text" => "review prompt", "packs" => []}
+  end
+
   def step_binding(run, step, attempt_number, path)
     {"kind" => "run", "id" => Workspace::WorkflowRun.from_h(run).id, "step" => step["id"], "attempt" => attempt_number, "instructions" => path}
   end
@@ -203,7 +233,7 @@ end
 # Fake of Workspace::WorkflowDispatch for the phases above it: +dispatch+ registers a line naming the run's step on
 # +ctx+ and returns the run as it was given (with +appends+, with a new attempt on the current step and no reason);
 # +check_pane+ refuses the panes it was told are busy; +release+ records
-# the run's id; +drop_park+ returns the run without its park.
+# the run's id; +drop_park+ returns the run without its park; +hold_round+ and +hold_round_lock+ hold a round as told.
 class RecordingDispatch
   CONTROL_METHODS = %i[calls].freeze
 
@@ -212,11 +242,21 @@ class RecordingDispatch
   # @param busy [Array<String>] the panes +check_pane+ refuses with `pane_has_run`
   # @param appends [Boolean] whether +dispatch+ starts a new attempt, as a delivered line does
   # @param holds [String, nil] the reason +hold_round+ holds a round with (`budget_spent` or `run_timed_out`); nil lets it start
-  def initialize(busy: [], appends: false, holds: nil)
+  # @param lock_waits [String, nil] the lock +hold_round_lock+ makes a round wait for (`waiting_lock`); nil: the round holds its locks
+  def initialize(busy: [], appends: false, holds: nil, lock_waits: nil)
     @busy = busy
     @appends = appends
     @holds = holds
+    @lock_waits = lock_waits
     @calls = []
+  end
+
+  def hold_round_lock(run, round:, step_state:)
+    run = Workspace::WorkflowRun.from_h(run)
+    @calls << [:hold_round_lock, run.id, {round: round, step_state: step_state}]
+    return nil unless @lock_waits
+    Workspace::WorkflowRun.from_h(run.thawed.merge("state" => "waiting",
+      "reason" => {"code" => "waiting_lock", "since" => "2026-11-10T12:00:00Z", "details" => {"resource" => @lock_waits, "step" => run.current, "review_round" => round}}))
   end
 
   def hold_round(run, round:)
@@ -264,14 +304,17 @@ class RecordingRunResources
 
   # @param acquired [Hash] what +acquire+ answers, merged over a result that took nothing and waits for nothing
   # @param released [Array<String>] the lock names +release+ gives up
-  def initialize(acquired: {}, released: [])
+  # @param error [Exception, nil] raised by +acquire+, as for a lock store that can't be read
+  def initialize(acquired: {}, released: [], error: nil)
     @acquired = {status: :ok, acquired: [], released: [], handed_over: [], waiting: nil}.merge(acquired)
     @released = released
+    @error = error
     @calls = []
   end
 
   def acquire(run_id:, step:, uses:, worktree:, workflow: nil, workspace: nil, pane: nil)
     @calls << [:acquire, {run_id: run_id, step: step, uses: uses, worktree: worktree, workflow: workflow, workspace: workspace, pane: pane}]
+    raise @error if @error
     @acquired
   end
 
@@ -284,9 +327,12 @@ end
 # Fake of the Workspace::WorkflowPanes calls the phases make: bindings, pane runs and gone panes as scripted, a +kick+
 # that answers what it was given, and the calls that change or ask about a pane kept in +calls+.
 class RecordingWorkflowPanes
-  CONTROL_METHODS = %i[calls].freeze
+  CONTROL_METHODS = %i[calls gone_checks].freeze
 
   attr_reader :calls
+
+  # @return [Array<Array>] each +pane_gone?+ asked: the pane and the workspace it named
+  attr_reader :gone_checks
 
   # @param bound [Hash{String=>String}] the pane each run id is bound to
   # @param runs_on [Hash{String=>String}] the run id each pane is bound to as its author
@@ -295,7 +341,16 @@ class RecordingWorkflowPanes
   # @param kick [Hash] what +kick+ answers
   # @param same [Boolean] what +same_pane?+ answers
   # @param gone [Array<String>] the panes tmux no longer has
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], reviewing: {})
+  # @param restarted [Array<String>] the review panes whose tmux server was restarted since the round recorded it
+  # @param no_daemon [Boolean] +require_daemon+ refuses with `no_daemon`
+  # @param on_kick [#call, nil] called with +kick+'s keywords before it answers, as when something else happens while
+  #   the line is typed
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {})
+    @restarted = restarted
+    @no_daemon = no_daemon
+    @on_kick = on_kick
+    @turn_over = turn_over
+    @rows = rows
     @reviewing = reviewing
     @bound = bound
     @runs_on = runs_on
@@ -304,6 +359,7 @@ class RecordingWorkflowPanes
     @kick = kick
     @same = same
     @calls = []
+    @gone_checks = []
   end
 
   def pane_of(run_id) = @bound[run_id]
@@ -317,7 +373,18 @@ class RecordingWorkflowPanes
 
   def alive?(run_id) = !@dead.include?(run_id)
 
-  def pane_gone?(pane) = @gone.include?(pane)
+  def pane_gone?(pane, workspace: nil)
+    @gone_checks << [pane, workspace]
+    @gone.include?(pane)
+  end
+
+  # Whether +pane+'s turn is proven over: listed in +turn_over+.
+  def main_turn_over?(_workspace, pane) = @turn_over.include?(pane)
+
+  def daemon_running?(_workspace) = !@no_daemon
+
+  # The daemon's row of +pane+, from +rows+; nil for one it does not list.
+  def pane_row(_workspace, pane) = @rows[pane]
 
   def identity(run_id) = "identity-of-#{run_id}"
 
@@ -327,17 +394,39 @@ class RecordingWorkflowPanes
   end
 
   def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:, role: nil, round: nil, relative_to: nil)
-    @calls << [:bind, {workspace: workspace, pane: pane, run_id: run_id, step: step, attempt: attempt, instructions: instructions, artifacts: artifacts}]
+    fields = {workspace: workspace, pane: pane, run_id: run_id, step: step, attempt: attempt, instructions: instructions, artifacts: artifacts}
+    fields.merge!(role: role, round: round, relative_to: relative_to) if role
+    @calls << [:bind, fields]
     true
   end
 
-  def unbind(run_id, role: nil)
-    @calls << (role ? [:unbind, run_id, {role: role}] : [:unbind, run_id])
+  # Raises `no_daemon` when it was told the daemon can't be started.
+  def require_daemon(workspace)
+    @calls << [:require_daemon, workspace]
+    raise Workspace::Error.new("Could not start the agent daemon for '#{workspace}'.", code: "no_daemon", details: {"workspace" => workspace}) if @no_daemon
+  end
+
+  def close_review(workspace, run_id, step: nil, round: nil)
+    @calls << [:close_review, workspace, run_id, round ? {step: step, round: round} : {step: step}]
+    []
+  end
+
+  # :gone for a pane in +gone+, :server_restarted for one in +restarted+, else :live.
+  def review_pane_state(workspace, pane, server_pid)
+    @calls << [:review_pane_state, workspace, pane, server_pid]
+    return :gone if @gone.include?(pane)
+    @restarted.include?(pane) ? :server_restarted : :live
+  end
+
+  def unbind(run_id, role: nil, pane: nil)
+    given = {role: role, pane: pane}.compact
+    @calls << (given.empty? ? [:unbind, run_id] : [:unbind, run_id, given])
     true
   end
 
   def kick(workspace:, pane:, text:, fresh:, run_id: nil)
     @calls << [:kick, {workspace: workspace, pane: pane, text: text, fresh: fresh, run_id: run_id}]
+    @on_kick&.call(workspace: workspace, pane: pane, text: text, fresh: fresh, run_id: run_id)
     @kick
   end
 end
@@ -405,6 +494,11 @@ class RecordingLogTail
     @calls << [:block, path, {lines: lines}]
     "the last #{lines} lines of #{path}"
   end
+
+  def writeup(path)
+    @calls << [:writeup, path]
+    "the write-up at #{path}"
+  end
 end
 
 # Fake of Workspace::WorkflowProgress for the evaluation and decision phases: +pass_step+ and +fail_step+ mark the
@@ -464,6 +558,17 @@ class RecordingProgress
     Workspace::WorkflowRun.from_h(hash.merge("reason" => nil))
   end
 
+  # Registers the round on +ctx+ and counts one more of its `redeliveries`, as the real one does.
+  def redeliver_round(run, ctx:, new_server: false)
+    hash = Workspace::WorkflowRun.from_h(run).thawed
+    @calls << (new_server ? [:redeliver_round, hash["current"], {new_server: true}] : [:redeliver_round, hash["current"]])
+    round = hash["steps"][hash["current"]]["review"]
+    round.reject! { |key, _| %w[pane window server_pid].include?(key) } if new_server
+    round.merge!("delivery" => "delivering", "redeliveries" => round["redeliveries"].to_i + 1).delete("failure")
+    ctx.review({"step" => hash["current"], "round" => round["round"]})
+    Workspace::WorkflowRun.from_h(hash)
+  end
+
   def end_round(run, how:, ctx:, close: true)
     hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:end_round, hash["current"], {how: how, close: close}]
@@ -472,7 +577,7 @@ class RecordingProgress
     Workspace::WorkflowRun.from_h(hash)
   end
 
-  def finish(run, state)
+  def finish(run, state, ctx: nil)
     @finished << Workspace::WorkflowRun.from_h(run)
     hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:finish, hash["id"], state]
@@ -507,8 +612,8 @@ class RecordingProgress
   end
 end
 
-# Fake of Workspace::WorkflowReviewTally#call and #open_round: answers the outcome it was given and records the step
-# and round it was asked about; +open_round+ answers +opened+ (nil: the directory was made).
+# Fake of Workspace::WorkflowReviewTally#call, #open_round and #ensure_round: answers the outcome it was given and records the step
+# and round it was asked about; +open_round+ answers +opened+ (nil: the directory was made), +ensure_round+ +ensured+.
 class RecordingReviewTally
   CONTROL_METHODS = %i[calls].freeze
 
@@ -518,15 +623,25 @@ class RecordingReviewTally
   # @param reviews [Array<Hash>] the review rows it answers
   # @param problem [String, nil] why an incomplete round is incomplete
   # @param opened [Hash, nil] what +open_round+ answers (:code and :problem when the directory could not be made for the round)
-  def initialize(outcome: :approved, reviews: [], problem: nil, opened: nil)
+  # @param ensured [Hash, nil] what +ensure_round+ answers (nil: the directory is there)
+  # @param on_ensure [#call, nil] called before +ensure_round+ answers, as when another process acts meanwhile
+  def initialize(outcome: :approved, reviews: [], problem: nil, opened: nil, ensured: nil, on_ensure: nil)
+    @on_ensure = on_ensure
     @answer = {outcome: outcome, reviews: reviews, problem: problem}.compact
     @opened = opened
+    @ensured = ensured
     @calls = []
   end
 
   def open_round(run:, round:)
     @calls << [:open_round, Workspace::WorkflowRun.from_h(run).id, round]
     @opened
+  end
+
+  def ensure_round(run:, round:)
+    @calls << [:ensure_round, Workspace::WorkflowRun.from_h(run).id, round]
+    @on_ensure&.call
+    @ensured
   end
 
   def call(run:, step:, round:)
@@ -553,6 +668,49 @@ class RecordingReviewRevision
     @calls << [:call, Workspace::WorkflowRun.from_h(run).id, step["id"]]
     @stop_answers << stop_when&.call
     (@answers.size > 1) ? @answers.shift : @answers.first
+  end
+end
+
+# Fake of Workspace::WorkflowReviewSummary: answers the summary it was given for each +write+, and records each
+# +write+ and +notify+ with the run's reason code as it was when notified.
+class RecordingReviewSummary
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param written [Hash{String=>String}] what each +write+ answers ("path" and "sha256", or "problem")
+  def initialize(written = {"path" => "/runs/wr_1/reviews/plan.1.r1/summary.md", "sha256" => "s" * 64})
+    @written = written
+    @calls = []
+  end
+
+  def write(run, round:, outcome:, decided:, reviews:, problem: nil)
+    @calls << [:write, run["current"], {round: round, outcome: outcome, decided: decided, reviews: reviews, problem: problem}]
+    @written
+  end
+
+  def notify(run, step:, attempt:, round:, outcome:, summary:)
+    @calls << [:notify, step, {attempt: attempt, round: round, outcome: outcome, summary: summary, reason: run.dig("reason", "code")}]
+    "created"
+  end
+end
+
+# Fake of Workspace::WorkflowRoundRerun#check_revision: records each round it is asked about and answers what it was
+# given (`{}` delivers the round as registered, `{revision:}` with that revision, `{run:}` stops it).
+class RecordingRoundRerun
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  # @param answer [Hash{Symbol=>Object}] what each +check_revision+ answers
+  def initialize(answer = {})
+    @answer = answer
+    @calls = []
+  end
+
+  def check_revision(run_id, review)
+    @calls << [:check_revision, run_id, review]
+    @answer
   end
 end
 
@@ -603,7 +761,7 @@ class RecordingRequire
   end
 end
 
-# Fake of Workspace::WorkflowGuard#check, #config_change, #head and #tree_digest: answers what it was given
+# Fake of Workspace::WorkflowGuard#check, #config_change, #head, #tree_digest, #round_snapshot and #round_check: answers what it was given
 # (+head+ and +tree_digest+ answer the current value of +heads+ and +trees+, which a spec may change).
 class RecordingGuard
   CONTROL_METHODS = %i[calls heads trees].freeze
@@ -615,8 +773,10 @@ class RecordingGuard
   # @param head [String, nil] what +head+ answers
   # @param tree [String, nil] what +tree_digest+ answers
   # @param unread [Array<String>] the parts +base+ could not read ("head", "hooks_sha256", "hidden_sha256")
-  def initialize(found: nil, config: nil, head: "a" * 40, tree: "t" * 64, unread: [])
+  # @param round_found [Hash, nil] what +round_check+ answers
+  def initialize(found: nil, config: nil, head: "a" * 40, tree: "t" * 64, unread: [], round_found: nil)
     @found = found
+    @round_found = round_found
     @unread = unread
     @config = config
     @heads = [head]
@@ -637,6 +797,16 @@ class RecordingGuard
   def check(worktree, base, scope)
     @calls << [:check, worktree, scope]
     @found
+  end
+
+  def round_snapshot(worktree, base: nil)
+    @calls << [:round_snapshot, worktree]
+    {"head" => @heads.last, "tree_sha256" => @trees.last}
+  end
+
+  def round_check(worktree, snapshot, base: nil)
+    @calls << [:round_check, worktree, snapshot]
+    @round_found
   end
 
   # The last of +heads+ as the base commit, with a fixed snapshot (+unread+ names the parts given as unreadable, as
@@ -688,7 +858,7 @@ class RecordingInbox
 
   def upsert(record, reopen: false)
     @calls << [:upsert, record, {reopen: reopen}]
-    record
+    Workspace::InboxStore::Upsert.new(record, "created")
   end
 end
 
@@ -706,11 +876,13 @@ class RecordingEvaluation
   # @param check [Hash, nil] what +evaluate+ registers on its context
   # @param reason [Hash, nil] the reason +evaluate+ leaves on the run
   # @param review [Hash, nil] the review round +evaluate+ registers on its context
-  def initialize(runs, check: nil, reason: nil, review: nil)
+  # @param review_reason [Hash, nil] the reason +review_ended+ leaves on the run (a round it stops for a person)
+  def initialize(runs, check: nil, reason: nil, review: nil, review_reason: nil)
     @runs = runs
     @check = check
     @review = review
     @reason = reason
+    @review_reason = review_reason
     @calls = []
   end
 
@@ -735,6 +907,7 @@ class RecordingEvaluation
   def review_ended(run, ctx:)
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:review_ended, run.current]
+    return Workspace::WorkflowRun.from_h(run.thawed.merge("reason" => @review_reason)) if @review_reason
     ctx.review_end({"step" => run.current})
     run
   end

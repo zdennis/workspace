@@ -188,11 +188,14 @@ module Workspace
     # @param run [WorkflowRun, Hash{String=>Object}] left as it is; on the step being reviewed
     # @param round [Hash{String=>Object}] the step's `review` ("round", "pane", "started_at", "reviews", ...)
     # @return [Hash{String=>Object}] "round", "pane", "started_at", "ended_at", "session", "agent" and "usage"; when the
-    #   round read verdicts, also "reviews" and "evidence" (the copies; empty with no evidence collaborator)
+    #   round read verdicts, also "reviews" and "evidence" (the copies; empty with no evidence collaborator); when its
+    #   delivery recorded them, "packs" (one `{"reviewer", "ref", "sha256"}` per reviewer pack composed in)
     def finish_round(run:, round:)
       ended_at = round["ended_at"] || @clock.call.utc.iso8601
       record = {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => ended_at,
                 "session" => nil, "agent" => nil, "usage" => nil}
+      # The reviewer packs its delivery composed in, as an attempt keeps its own `packs`.
+      record["packs"] = round["packs"] if round["packs"].is_a?(Array)
       reviews = marked_reviews(round["reviews"])
       if reviews
         record["reviews"] = reviews
@@ -219,7 +222,7 @@ module Workspace
     def verdict_copies(run, round, reviews)
       attempt = run.current_step&.last_attempt
       return [] unless @evidence && attempt
-      @evidence.review(run: run, step_id: run.current, attempt: attempt.to_h, round: round["round"], reviews: reviews)
+      @evidence.review(run: run, step_id: run.current, attempt: attempt.to_h, round: round["round"], reviews: reviews, rerun: round["reruns"])
     rescue
       []
     end

@@ -178,6 +178,19 @@ RSpec.describe Workspace::PaneDispatch do
       expect(tmux).not_to have_received(:close_pane)
     end
 
+    it "closes nothing with keep, whether the agent is never ready or the wait raises" do
+      allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "timeout"))
+      expect(dispatch.await_ready("api", "%9", "claude", window: "@4", keep: true)).to have_attributes(closed: false, warning: nil)
+
+      allow(readiness).to receive(:wait).and_raise(Workspace::Error.new("tmux gone", code: "tmux_error"))
+      expect { dispatch.await_ready("api", "%9", "claude", window: "@4", keep: true) }.to raise_error(Workspace::Error) { |e|
+        expect(e.details).to include("pane_closed" => false)
+        expect(e.details).not_to have_key("warning")
+      }
+      expect(tmux).not_to have_received(:kill_window)
+      expect(tmux).not_to have_received(:close_pane)
+    end
+
     it "closes the window and names the pane in details when the wait raises" do
       allow(readiness).to receive(:wait).and_raise(Workspace::Error.new("tmux gone", code: "tmux_error"))
 

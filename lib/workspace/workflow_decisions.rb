@@ -25,8 +25,11 @@ module Workspace
     # @param gate_note [Workspace::WorkflowGateNote] finds and hashes the note a gate names
     # @param panes [Workspace::WorkflowPanes] finds, binds and unbinds the run's pane
     # @param guard [Workspace::WorkflowGuard] takes the checkout as it is now as the run's base, for `resume --accept-guard`
+    # @param holder_alive [#call, nil] given a review round's delivery `holder` ("pid", "started"), whether that process
+    #   still runs: a round whose mark lapsed is delivered again by a resume only once its holder is gone; nil takes
+    #   every holder as alive
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, clock: -> { Time.now })
+    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, holder_alive: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @progress = progress
@@ -36,6 +39,7 @@ module Workspace
       @gate_note = gate_note
       @panes = panes
       @guard = guard
+      @holder_alive = holder_alive
       @clock = clock
     end
 
@@ -116,6 +120,9 @@ module Workspace
     #   as `budget_extended`; applied only when the resume starts an attempt or a review round
     # @param extra_seconds [Integer, nil] raises the run's timeout by this many seconds, kept in the run (`extra_seconds`)
     #   and recorded as `time_extended`; applied only when the resume starts an attempt or a review round
+    # @param extra_rounds [Integer, nil] raises the allowance of review rounds of the step the resume goes to (the
+    #   current one, or +from+) by this much, kept in the step (`extra_rounds`) and recorded as `review_rounds_extended`;
+    #   applied when the resume acts, and needed when the step has spent its `max_rounds` (see {#refuse_rounds_spent})
     # @param accept_guard [Boolean] take a guard stop ({WorkflowTransitions.acceptable_guard}) as a person's decision:
     #   the checkout as it is now becomes the run's base (`base_sha`, `base_guard`), a `guard_overridden` event records
     #   +note+ (required), and the rest of the step's evaluation runs with the guard left out
@@ -129,10 +136,11 @@ module Workspace
     #   review round (one a hold kept back, or a fresh one after a stopped round) past the budget or the timeout;
     #   with +accept_guard+, `guard_base_unreadable` (retryable, nothing changed) when the checkout can't be read as a
     #   new base, and with +guard_retry+ `guard_cannot_pass` when the retry would stop on `no_commit` or
-    #   `operation_in_progress` again
+    #   `operation_in_progress` again; `review_rounds_spent` when it would start a review round past the step's
+    #   `max_rounds`, or start again a step a review rejected with every round spent
     def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
-      accept_guard: false, guard_retry: false, caller_pane: nil)
-      refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
+      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil)
+      refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry, extra_rounds: extra_rounds)
       follow = nil
       unchanged = nil
       run = @change.call(run_id) do |read, ctx|
@@ -141,7 +149,7 @@ module Workspace
           next accept_guard_stop(read, ctx, note: note, pane: pane, guard_retry: guard_retry, caller_pane: caller_pane,
             extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
         end
-        resumed = apply_resume(read, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
+        resumed = apply_resume(read, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
         unchanged = resumed.unchanged
         resumed.run
       end
@@ -160,16 +168,18 @@ module Workspace
     # @param extra_attempts [Integer, nil] see {#resume}; applied when the park is released
     # @param extra_tokens [Integer, nil] see {#resume}; applied when the park is released
     # @param extra_seconds [Integer, nil] see {#resume}; applied when the park is released
+    # @param extra_rounds [Integer, nil] see {#resume}; applied when the park is released
     # @return [Resumed] the run afterwards, and why nothing was stored when nothing was
     # @raise [Workspace::Error] see {#refuse_resume}; code `pane_has_run` for a +pane+ another run has;
-    #   `attempts_spent` or `budget_spent` as {#resume}; `step_reviewing` for a step being reviewed (a park
+    #   `attempts_spent`, `budget_spent` or `review_rounds_spent` as {#resume}; `step_reviewing` for a step being reviewed (a park
     #   would hold back the review pane's turn end, which decides the round)
-    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
+    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
       unchanged = nil
       run = @change.call(run_id) do |read|
         stored = read.thawed
         refuse_resume(stored, from: from)
         refuse_reviewing_park(stored, from)
+        refuse_rounds_spent(stored, from, extra_rounds)
         if WorkflowTransitions.parked(stored, @clock.call) == :waiting
           unchanged = "a resume is already parked for pane #{park_target(stored)}"
           next
@@ -179,7 +189,7 @@ module Workspace
         check_pane(pane, run_id) if pane && @panes.run_on(pane) != run_id
         refuse_budget(stored, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, from: from) if WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
         drop_park(stored, "expired")
-        store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over}.merge(extra_attempts ? {"extra_attempts" => extra_attempts} : {}).merge(extra_tokens ? {"extra_tokens" => extra_tokens} : {}).merge(extra_seconds ? {"extra_seconds" => extra_seconds} : {}),
+        store_park(stored, {"from" => from, "note" => note, "pane" => pane, "turn_over" => turn_over}.merge(extra_attempts ? {"extra_attempts" => extra_attempts} : {}).merge(extra_tokens ? {"extra_tokens" => extra_tokens} : {}).merge(extra_seconds ? {"extra_seconds" => extra_seconds} : {}).merge(extra_rounds ? {"extra_rounds" => extra_rounds} : {}),
           expires_at: (@clock.call + PARK_SECONDS).utc.iso8601)
         WorkflowRun.from_h(stored)
       end
@@ -202,7 +212,7 @@ module Workspace
         stored = read.thawed
         stored.delete("parked")
         resumed = apply_resume(stored, ctx: ctx, from: parked["from"], note: parked["note"], pane: parked["pane"], turn_over: parked["turn_over"],
-          extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"], extra_seconds: parked["extra_seconds"], budget: parked["retries"].to_i.zero?)
+          extra_attempts: parked["extra_attempts"], extra_tokens: parked["extra_tokens"], extra_seconds: parked["extra_seconds"], extra_rounds: parked["extra_rounds"], budget: parked["retries"].to_i.zero?)
         stored = resumed.run.thawed
         unchanged = resumed.unchanged
         follow = ctx
@@ -285,7 +295,7 @@ module Workspace
       run = @change.call(run_id) do |read, ctx|
         follow = ctx
         read = @progress.end_round(read, how: "cancelled", ctx: ctx) if read.current_step&.state == "reviewing"
-        ended = @progress.finish(@attempt_record.abandon(read), "cancelled").thawed
+        ended = @progress.finish(@attempt_record.abandon(read), "cancelled", ctx: ctx).thawed
         ended["cancelled_by"] = cause
         event(ended, "run_cancelled", "cause" => cause)
         WorkflowRun.from_h(ended)
@@ -315,9 +325,10 @@ module Workspace
     def adopt(run, changed) = run.replace(changed.thawed)
 
     # The flags of a guard acceptance that can't go together, refused before the run is read.
-    def refuse_guard_flags(from:, note:, accept_guard:, guard_retry:)
+    def refuse_guard_flags(from:, note:, accept_guard:, guard_retry:, extra_rounds: nil)
       raise UsageError, "--retry is for `workflow resume RUN --accept-guard --note WHY`." if guard_retry && !accept_guard
       return unless accept_guard
+      raise UsageError, "--extra-rounds adds review rounds to a resume; --accept-guard starts none." if extra_rounds
       raise UsageError, "--accept-guard needs --note WHY: the reason is recorded and given to the next attempt." if note.to_s.strip.empty?
       raise UsageError, "--retry runs the stopped step again; --from can't go with it." if guard_retry && from
       raise UsageError, "--accept-guard judges the stopped step again without its guard, or runs it again with --retry; --from can't go with it." if from
@@ -394,6 +405,45 @@ module Workspace
         code: "guard_cannot_pass", details: {"run_id" => run["id"], "step" => run["current"], "guard" => code, "accepted" => guard, "retry" => true})
     end
 
+    # A resume that would start a review round past the step's `max_rounds` (a stopped or held round of the step being
+    # reviewed), or start again a step whose last round rejected it with every round spent, is refused before anything
+    # changes: its next review could not start. +extra_rounds+ at least {WorkflowTransitions.review_extra_rounds_needed}
+    # lets it through ({#spend_rounds} adds them). `--from` is not refused for want of it, but a +extra_rounds+ that falls
+    # short of what a spent target step needs is. +extra_rounds+ for a step with no `review:` is a usage error.
+    def refuse_rounds_spent(run, from, extra_rounds = nil)
+      target = from || run["current"]
+      if extra_rounds && WorkflowTransitions.review_rounds_allowance(run, target).nil?
+        raise UsageError, "--extra-rounds adds review rounds, and step #{target} of run #{run["id"]} has no review: to extend."
+      end
+      return unless rounds_short?(run, from)
+      needed = WorkflowTransitions.review_extra_rounds_needed(run, target)
+      return if extra_rounds && extra_rounds >= needed
+      return if from && extra_rounds.nil?
+      rounds = run.dig("steps", target, "review_rounds").to_i
+      allowed = WorkflowTransitions.review_rounds_allowance(run, target)
+      raise Workspace::Error.new("Step #{target} of run #{run["id"]} has spent its review rounds (#{rounds} of #{allowed} max_rounds), so no further round can start. " \
+        "Pass --extra-rounds #{needed} to go on, or `workflow resume #{run["id"]} --from STEP` (the review of #{target} stops again (review_rounds_spent) once its author attempt passes), or `workflow cancel #{run["id"]}`.",
+        code: "review_rounds_spent", details: {"run_id" => run["id"], "step" => target, "rounds" => rounds, "max_rounds" => allowed, "needed" => needed})
+    end
+
+    # Whether the resume goes to a step with no round left: without +from+ when a plain resume is refused for it, with
+    # +from+ when the step it names has spent its rounds.
+    def rounds_short?(run, from)
+      from ? WorkflowTransitions.review_rounds_spent?(run, from) : WorkflowTransitions.rounds_refuse_resume?(run)
+    end
+
+    # Adds +extra+ to the review round allowance of the step the resume goes to and records it, only when that step
+    # has spent its rounds ({#refuse_rounds_spent} has said whether +extra+ is enough); otherwise the flag is ignored,
+    # as `--extra-attempts` is for a resume that starts no attempt.
+    def spend_rounds(run, extra, from)
+      return unless extra && rounds_short?(run, from)
+      target = from || run["current"]
+      state = run["steps"].fetch(target)
+      state["extra_rounds"] = state["extra_rounds"].to_i + extra
+      event(run, "review_rounds_extended", "step" => target, "extra" => extra, "extra_rounds" => state["extra_rounds"],
+        "max_rounds" => WorkflowTransitions.review_rounds_allowance(run, target))
+    end
+
     # A park is refused on a step being reviewed: while one stands, the review pane's turn end decides nothing.
     def refuse_reviewing_park(run, from)
       return unless step_state(run)["state"] == "reviewing"
@@ -415,13 +465,14 @@ module Workspace
     # @param extra_attempts [Integer, nil] see {#resume}
     # @param extra_tokens [Integer, nil] see {#resume}
     # @param extra_seconds [Integer, nil] see {#resume}
+    # @param extra_rounds [Integer, nil] see {#resume}
     # @param budget [Boolean] false for a parked resume typed again after a busy pane: its attempt was counted then,
     #   so the allowance and budget are not asked again
     # @return [Resumed] the run afterwards, and why nothing was done, or nil
     # @raise [Workspace::Error] as {#resume}
-    def apply_resume(run, ctx:, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, budget: true)
+    def apply_resume(run, ctx:, from:, note:, pane:, turn_over:, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, budget: true)
       work = WorkflowRun.from_h(run).thawed
-      unchanged = resume_in(work, ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, budget: budget)
+      unchanged = resume_in(work, ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds, budget: budget)
       Resumed.new(run: WorkflowRun.from_h(work), unchanged: unchanged)
     end
 
@@ -443,7 +494,7 @@ module Workspace
       refuse_over_limits(run, extra_tokens, extra_seconds)
     end
 
-    def resume_in(stored, ctx, from:, note:, pane:, turn_over:, extra_attempts:, extra_tokens:, extra_seconds:, budget:)
+    def resume_in(stored, ctx, from:, note:, pane:, turn_over:, extra_attempts:, extra_tokens:, extra_seconds:, extra_rounds:, budget:)
       refuse_resume(stored, from: from)
       state = step_state(stored)
       # Decided before anything is changed: a resume that does nothing moves no pane and keeps no note.
@@ -452,6 +503,7 @@ module Workspace
       # A wait whose pane would not take the retry is held before anything is written: no rebind, note, event or reset.
       held = held_by_pane(stored, pane, from)
       return held if held
+      refuse_rounds_spent(stored, from, extra_rounds)
       # A pane another run has is refused first, so a refusal after this point logs nothing.
       check_pane(pane, stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
       # Only a resume that starts an attempt is held to the budget (not a parked one typed again after a
@@ -461,6 +513,7 @@ module Workspace
       round = budget && WorkflowTransitions.starts_round?(stored, from: from)
       spend_attempts(stored, extra_attempts, needed: starting, target: WorkflowTransitions.target_step(stored, from: from))
       spend_limits(stored, extra_tokens, extra_seconds, needed: starting || round)
+      spend_rounds(stored, extra_rounds, from)
       # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if pane
@@ -482,7 +535,7 @@ module Workspace
       if held && !from
         event(stored, "run_resumed", "step" => stored["current"], "budget" => "released")
         stored["reason"] = nil
-        dispatch(stored, ctx, context: held["context"], budgeted: budget)
+        dispatch(stored, ctx, context: held["context"], budgeted: budget, retry_of: held.key?("retry_of") ? held.slice("text").merge("attempt" => held["retry_of"]) : nil)
         return nil
       end
       # A resume skips the wait of a retry; `--from` goes elsewhere and drops it.
@@ -494,9 +547,16 @@ module Workspace
         adopt(stored, @progress.start_retry(stored, waiting_retry, ctx: ctx, proven: !pane.nil?, budgeted: budget))
         return held_retry_sentence(stored)
       end
+      # The retry a rejection stopped by a limit kept: started by a plain resume, dropped by `--from`.
+      again = stored.delete("review_retry")
       if from
-        # The round under way ends first, its window closed, so no reviewer goes on judging work the run left.
-        stored.replace(@progress.end_round(stored, how: "from", ctx: ctx).thawed) if state["state"] == "reviewing"
+        # So is a review retry that waited for a lock, with the text it put in the pending context.
+        waited = stored.delete("retry_of_pending")
+        drop_retry_text(stored, waited) if waited.is_a?(Hash)
+        # The round under way ends first, its window closed, so no reviewer goes on judging work the run left; so
+        # does the window a rejected round kept, when the run goes to another step.
+        kept = state["review_window"].is_a?(Hash) && from != stored["current"]
+        stored.replace(@progress.end_round(stored, how: "from", ctx: ctx).thawed) if state["state"] == "reviewing" || kept
         event(stored, "run_resumed", "from" => from)
         stored["current"] = from
         dispatch(stored, ctx, budgeted: budget)
@@ -516,7 +576,14 @@ module Workspace
       # A round is not an attempt: a resume never starts the author again on a step being reviewed, only its round.
       when "reviewing" then stored.replace(@progress.restart_review(stored, ctx: ctx).thawed)
       when "passed" then adopt(stored, @progress.advance(stored, ctx: ctx))
-      else dispatch(stored, ctx, budgeted: budget)
+      else
+        # A step a review rejected starts the retry the rejection kept: its verdicts and write-ups, `retry_of` it.
+        if again.is_a?(Hash) && again["step"] == stored["current"] && again["text"].is_a?(String)
+          stored["pending_context"] << again["text"]
+          dispatch(stored, ctx, context: again["context"], budgeted: budget, retry_of: again.slice("text", "attempt"))
+        else
+          dispatch(stored, ctx, budgeted: budget)
+        end
       end
       nil
     end
@@ -673,7 +740,7 @@ module Workspace
     def last_failure(run) = "The last attempt of this step failed: #{WorkflowTransitions.failure_text(run["reason"]["details"])}."
 
     # Why {#resume} does nothing for the step as it stands; nil when it acts.
-    def left_alone(run, state, pane, turn_over) = WorkflowTransitions.left_alone(run, state, pane, turn_over, @clock.call, -> { bound_pane(run) })
+    def left_alone(run, state, pane, turn_over) = WorkflowTransitions.left_alone(run, state, pane, turn_over, @clock.call, -> { bound_pane(run) }, alive: @holder_alive)
 
     def rebind(run, pane)
       check_pane(pane, run["id"]) unless @panes.run_on(pane) == run["id"]

@@ -350,7 +350,7 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
       expect(context.delivery).to be_nil
       expect(attempt_record.calls).to eq([[:finish, "wr_1", "plan", 1]])
-      expect(dispatch.calls).to eq([[:hold_round, "wr_1", {round: 1}]])
+      expect(dispatch.calls).to eq([[:hold_round, "wr_1", {round: 1}], [:hold_round_lock, "wr_1", {round: 1, step_state: "reviewing"}]])
       expect(change.events.map { |event| event[1] }).to eq(%w[step_checks_passed review_started])
     end
 
@@ -362,6 +362,60 @@ RSpec.describe Workspace::WorkflowProgress do
 
       expect(run.step("plan").review_rounds).to eq(3)
       expect(run.step("plan").review["round"]).to eq(3)
+    end
+
+    describe "the checkout's snapshot" do
+      it "is stored on the round as it starts" do
+        guard = RecordingGuard.new(head: "b" * 40, tree: "c" * 64)
+        progress = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          guard: guard, clock: -> { now })
+
+        run = progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: ctx)
+
+        expect(run.step("plan").review["snapshot"]).to eq("head" => "b" * 40, "tree_sha256" => "c" * 64)
+        expect(guard.calls).to eq([[:round_snapshot, run.worktree]])
+      end
+
+      it "is not taken for a held round" do
+        guard = RecordingGuard.new
+        held = described_class.new(change: change, store: store, dispatch: RecordingDispatch.new(holds: "budget_spent"), attempt_record: attempt_record,
+          panes: panes, log_tail: log_tail, guard: guard, clock: -> { now })
+        held.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: ctx)
+
+        expect(guard.calls).to be_empty
+      end
+
+      it "is taken again for a redelivered round, so an edit between the deliveries is not a change" do
+        guard = RecordingGuard.new(head: "d" * 40, tree: "e" * 64)
+        again = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          guard: guard, clock: -> { now })
+        given = reviewing_hash
+        given["steps"]["plan"]["review"].merge!("delivery" => "failed", "snapshot" => {"head" => "a" * 40, "tree_sha256" => "t" * 64})
+
+        run = again.restart_review(given, ctx: ctx)
+
+        expect(run.step("plan").review["snapshot"]).to eq("head" => "d" * 40, "tree_sha256" => "e" * 64)
+        expect(guard.calls).to eq([[:round_snapshot, run.worktree]])
+      end
+
+      it "is taken for a held round when it starts" do
+        guard = RecordingGuard.new(head: "d" * 40, tree: "e" * 64)
+        again = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          guard: guard, clock: -> { now })
+        held = reviewing_hash("state" => "running", "reason" => nil)
+        held["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil, "held" => "budget_spent"}
+
+        run = again.restart_review(held, ctx: ctx)
+
+        expect(run.step("plan").review["snapshot"]).to eq("head" => "d" * 40, "tree_sha256" => "e" * 64)
+        expect(guard.calls).to eq([[:round_snapshot, run.worktree]])
+      end
+
+      it "is left out when no guard is set up" do
+        run = progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: ctx)
+
+        expect(run.step("plan").review).not_to have_key("snapshot")
+      end
     end
 
     describe "the round's directory" do
@@ -416,6 +470,45 @@ RSpec.describe Workspace::WorkflowProgress do
       end
     end
 
+    describe "a round past max_rounds" do
+      it "never starts: the step stays reviewing with the round held, nothing is registered and the run stops review_rounds_spent" do
+        given = run_hash(definition_steps: steps("review" => review.merge("max_rounds" => 2)))
+        # Two rounds spent on earlier attempts (a gate's reject, `--from` or an `on_fail` loop never reset the count).
+        given["steps"]["plan"]["review_rounds"] = 2
+        tally = RecordingReviewTally.new
+        progress = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          review_tally: tally, clock: -> { now })
+        context = ctx
+
+        run = progress.pass_step(given, ctx: context)
+
+        state = run.step("plan")
+        expect(state.state).to eq("reviewing")
+        expect(state.last_attempt.outcome).to eq("checks_passed")
+        expect(state.review_rounds).to eq(2)
+        expect(state.review).to eq("round" => 3, "delivery" => nil, "held" => "review_rounds_spent")
+        expect(run.state).to eq("waiting")
+        expect(run.reason).to eq("code" => "review_rounds_spent", "since" => "2026-11-10T12:00:00Z",
+          "details" => {"step" => "plan", "attempt" => 1, "round" => 3, "rounds" => 2, "max_rounds" => 2})
+        expect(context.review).to be_nil
+        expect(tally.calls).to be_empty
+        expect(dispatch.calls).to eq([[:release, "wr_1"]])
+        expect(change.events.map { |event| event[1] }).to eq(%w[step_checks_passed review_rounds_spent])
+      end
+
+      it "is not started by a resume of a stopped round either" do
+        given = reviewing_hash("state" => "waiting", "reason" => {"code" => "review_incomplete", "since" => "2026-11-10T11:50:00Z", "details" => {}})
+        given["steps"]["plan"]["review_rounds"] = 6
+        context = ctx
+
+        run = progress.restart_review(given, ctx: context)
+
+        expect(run.reason["code"]).to eq("review_rounds_spent")
+        expect(run.step("plan").review).to include("round" => 7, "held" => "review_rounds_spent")
+        expect(context.review).to be_nil
+      end
+    end
+
     it "passes an attempt a round already decided without reviewing it again" do
       given = run_hash(definition_steps: steps("review" => review))
       given["steps"]["plan"]["attempts"][0]["review_outcome"] = {"round" => 1, "passed" => true}
@@ -461,21 +554,102 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run.step("plan").to_h["gate"]).to eq("state" => "waiting", "since" => "2026-11-10T12:00:00Z")
     end
 
-    it "fails a rejected round's attempt and step and stops the run with review_rejected" do
-      reviews = [{"reviewer" => "skeptic", "verdict" => "reject", "isolation" => "review_pane"}]
+    describe "a rejected round" do
+      let(:rows) do
+        [{"reviewer" => "skeptic", "verdict" => "reject", "counted" => true, "path" => "reviews/plan.1.r1/skeptic.md"},
+          {"reviewer" => "tester", "verdict" => "approve", "counted" => true, "path" => "reviews/plan.1.r1/tester.md"}]
+      end
+      let(:tally) { {outcome: :rejected, reviews: rows, approvals: 1, need: 2, must: ["skeptic"]} }
 
-      run = progress.decide_review(reviewing_hash, {outcome: :rejected, reviews: [{"reviewer" => "skeptic", "verdict" => "reject"}]}, ctx: ctx)
+      def rejected_hash(rounds: 1, **overrides)
+        reviewing_hash(**overrides).tap do |hash|
+          hash["steps"]["plan"]["review_rounds"] = rounds
+          hash["steps"]["plan"]["review"].merge!("round" => rounds, "window" => "@7")
+        end
+      end
 
-      expect(run.step("plan").state).to eq("failed")
-      expect(run.step("plan").review).to be_nil
-      expect(run.step("plan").last_attempt.to_h).to include("outcome" => "failed", "code" => "review_rejected", "reviews" => reviews,
-        "review_outcome" => {"round" => 1, "approvals" => nil, "need" => nil, "must" => nil, "passed" => false})
-      expect(run.state).to eq("waiting")
-      expect(run.reason).to eq("code" => "review_rejected", "since" => "2026-11-10T12:00:00Z",
-        "details" => {"step" => "plan", "attempt" => 1, "round" => 1, "reviews" => reviews})
-      expect(dispatch.calls).to eq([[:release, "wr_1"]])
-      expect(run.step("plan").last_attempt.to_h["rounds"].map { |each| each.slice("round", "ended", "reviews") }).to eq([{"round" => 1, "ended" => "rejected", "reviews" => reviews}])
-      expect(attempt_record.calls).to eq([[:finish_round, "wr_1", 1]])
+      it "fails the attempt and starts the step again as a new attempt told the verdicts and each counted write-up" do
+        context = ctx
+
+        run = progress.decide_review(rejected_hash, tally, ctx: context)
+
+        expect(run.step("plan").last_attempt.to_h).to include("outcome" => "failed", "code" => "review_rejected",
+          "review_outcome" => {"round" => 1, "approvals" => 1, "need" => 2, "must" => ["skeptic"], "passed" => false})
+        line = "Review round 1 of 6 rejected the plan step: need 2 of 2 with skeptic; got skeptic reject, tester approve. Address every reviewer's concern and say how."
+        text = [line, "the write-up at /work/.workflow/wr_1/reviews/plan.1.r1/skeptic.md", "the write-up at /work/.workflow/wr_1/reviews/plan.1.r1/tester.md"].join("\n\n")
+        expect(run.pending_context).to eq([text])
+        expect(log_tail.calls).to eq([[:writeup, "/work/.workflow/wr_1/reviews/plan.1.r1/skeptic.md"], [:writeup, "/work/.workflow/wr_1/reviews/plan.1.r1/tester.md"]])
+        expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: {"text" => text, "attempt" => 1}}]])
+        expect(context.delivery).to eq("step" => "plan")
+        expect(run.reason).to be_nil
+        expect(change.events.map { |event| event[1] }).to eq(%w[review_ended step_failed review_retry])
+        expect(change.events.last).to eq(["wr_1", "review_retry", {"step" => "plan", "attempt" => 1, "round" => 1, "rounds" => 1, "max_rounds" => 6}])
+      end
+
+      it "starts the retry with the review's context and leaves out a verdict that did not count" do
+        given = rejected_hash
+        given["definition"]["steps"][0]["review"] = review.merge("context" => "continue")
+        rows[1].merge!("counted" => false, "problem" => "unproven")
+
+        progress.decide_review(given, tally, ctx: ctx)
+
+        expect(dispatch.calls.first[2][:context]).to eq("continue")
+        expect(dispatch.calls.first[2][:retry_of]["text"]).to include("got skeptic reject, tester no counted verdict.")
+        expect(log_tail.calls).to eq([[:writeup, "/work/.workflow/wr_1/reviews/plan.1.r1/skeptic.md"]])
+      end
+
+      it "keeps the window and its reviewer's binding (so the write guard still holds) for the next round, named on the step" do
+        context = ctx
+
+        run = progress.decide_review(rejected_hash, tally, ctx: context)
+
+        expect(panes.calls).to be_empty
+        expect(context.close_review).to be_nil
+        expect(run.step("plan").to_h["review_window"]).to eq("round" => 1, "window" => "@7", "pane" => "%9")
+      end
+
+      it "stops the run review_rejected once the step has spent max_rounds" do
+        run = progress.decide_review(rejected_hash(rounds: 6), tally, ctx: ctx)
+
+        expect(run.state).to eq("waiting")
+        expect(run.step("plan").state).to eq("failed")
+        expect(run.reason).to eq("code" => "review_rejected", "since" => "2026-11-10T12:00:00Z",
+          "details" => {"step" => "plan", "attempt" => 1, "round" => 6, "reviews" => run.step("plan").last_attempt.reviews,
+                        "rounds" => 6, "max_rounds" => 6, "limit" => "rounds"})
+        expect(dispatch.calls).to eq([[:release, "wr_1"]])
+        expect(run.pending_context).to be_empty
+        expect(run.step("plan").to_h["review_window"]).to include("window" => "@7")
+        expect(run.to_h["review_retry"]).to include("step" => "plan", "attempt" => 1, "round" => 6, "context" => nil)
+        expect(run.to_h["review_retry"]["text"]).to start_with("Review round 6 of 6 rejected the plan step")
+      end
+
+      it "closes the window a rejected round kept when a --from ends the step, which has no round of its own" do
+        rejected = progress.decide_review(rejected_hash(rounds: 6), tally, ctx: ctx)
+        context = ctx
+
+        run = progress.end_round(rejected, how: "from", ctx: context)
+
+        expect(context.close_review).to eq("workspace" => "app", "step" => "plan", "round" => 6, "pane" => "%9")
+        expect(panes.calls).to eq([[:unbind, "wr_1", {role: "reviewer"}]])
+        expect(run.step("plan").to_h).not_to have_key("review_window")
+      end
+
+      it "stops on the step's own max_attempts before its rounds, and on the run's before the step's" do
+        step_capped = rejected_hash(rounds: 6)
+        step_capped["definition"]["steps"][0]["max_attempts"] = 1
+
+        run = progress.decide_review(step_capped, tally, ctx: ctx)
+
+        expect(run.reason["details"]).to include("limit" => "step", "attempts" => 1, "max_attempts" => 1, "rounds" => 6)
+
+        run_capped = rejected_hash
+        run_capped["definition"]["max_attempts"] = 1
+        run_capped["definition"]["steps"][0]["max_attempts"] = 1
+
+        run = progress.decide_review(run_capped, tally, ctx: ctx)
+
+        expect(run.reason).to include("code" => "review_rejected", "details" => include("limit" => "run", "attempts" => 1, "max_attempts" => 1))
+      end
     end
 
     it "keeps an incomplete round's step reviewing and its attempt checks_passed, and stops with review_incomplete" do
@@ -489,6 +663,241 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run.state).to eq("waiting")
       expect(run.reason).to eq("code" => "review_incomplete", "since" => "2026-11-10T12:00:00Z",
         "details" => {"step" => "plan", "attempt" => 1, "round" => 1, "reviews" => [], "problem" => "no verdict from tester"})
+    end
+
+    describe "an incomplete round with deliveries left" do
+      let(:rows) do
+        [{"reviewer" => "skeptic", "verdict" => "approve", "counted" => true, "path" => "reviews/plan.1.r1/skeptic.md"},
+          {"reviewer" => "tester", "verdict" => nil, "counted" => false, "problem" => "missing", "path" => "reviews/plan.1.r1/tester.md"}]
+      end
+
+      def rerunnable(**overrides)
+        reviewing_hash(**overrides).tap do |hash|
+          hash["definition"]["redeliver"] = 2
+          hash["steps"]["plan"]["review"].merge!("revision" => "rev1", "window" => "@7", "clear_from" => "2026-11-10T11:30:00.000Z",
+            "cleared_at" => "2026-11-10T11:30:01.000Z", "delivered_at" => "2026-11-10T11:30:02.000Z")
+        end
+      end
+
+      it "runs only the reviewers whose verdicts did not count again in the same round, spending a delivery and keeping the counted rows" do
+        context = ctx
+
+        run = progress.decide_review(rerunnable, {outcome: :incomplete, reviews: rows, problem: "no counted verdict from tester (missing)"}, ctx: context)
+
+        state = run.step("plan")
+        expect(run.state).to eq("running")
+        expect(run.reason).to be_nil
+        expect(state.state).to eq("reviewing")
+        expect(state.to_h["review_rounds"]).to eq(1)
+        expect(state.review).to include("round" => 1, "delivery" => "delivering", "rerun" => %w[tester], "reruns" => 1, "redeliveries" => 1,
+          "pending" => %w[tester], "reviews" => [rows.first], "uncleared" => true, "revision" => "rev1", "window" => "@7", "pane" => "%9")
+        expect(state.review).not_to include("clear_from", "cleared_at", "delivered_at", "ended_at", "recorded")
+        expect(state.last_attempt.to_h["rounds"].map { |each| each.slice("round", "ended", "reviews") }).to eq([{"round" => 1, "ended" => "rerun", "reviews" => rows.map { |row| row.merge("isolation" => "review_pane") }}])
+        expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1, "revision" => "rev1")
+        expect(context.close_review).to be_nil
+        expect(change.events.map { |event| event[1] }).to eq(%w[review_ended review_rerun])
+        expect(change.events.last.last).to eq("step" => "plan", "attempt" => 1, "round" => 1, "reviewers" => %w[tester], "rerun" => 1, "redelivery" => 1)
+      end
+
+      it "stops review_incomplete once the round's deliveries are spent, naming no reviewer to run again" do
+        given = rerunnable
+        given["steps"]["plan"]["review"].merge!("redeliveries" => 2, "rerun" => %w[tester], "reruns" => 2)
+
+        run = progress.decide_review(given, {outcome: :incomplete, reviews: rows, problem: "no counted verdict from tester (missing)"}, ctx: ctx)
+
+        expect(run.reason).to include("code" => "review_incomplete")
+        expect(run.step("plan").review).not_to have_key("rerun")
+        expect(run.step("plan").review).to include("reruns" => 2)
+      end
+
+      it "drops the old server's panes with the pane and window when the round is delivered again on a restarted tmux server" do
+        given = rerunnable
+        given["steps"]["plan"]["review"].merge!("panes" => %w[%9], "server_pid" => "100", "delivery" => "failed")
+
+        run = progress.redeliver_round(given, ctx: ctx, new_server: true)
+
+        expect(run.step("plan").review).not_to include("pane", "panes", "window", "server_pid")
+      end
+
+      it "runs no reviewer again in a round the sweep interrupted for a time limit, and says why it stopped, its window kept" do
+        %w[interrupt run_interrupt].each do |key|
+          given = rerunnable
+          given["steps"]["plan"]["review"]["sweep"] = {key => {"state" => "sent", "at" => "2026-11-10T11:59:00Z"}}
+          context = ctx
+
+          run = progress.decide_review(given, {outcome: :incomplete, reviews: rows, problem: "no counted verdict from tester (missing)"}, ctx: context)
+
+          expect(run.reason).to include("code" => "review_incomplete")
+          expect(run.step("plan").review).not_to include("rerun")
+          expect(context.review).to be_nil
+          expect(context.close_review).to be_nil
+          problem = run.reason.dig("details", "problem")
+          expect(problem).to include("so the sweep interrupted the review pane", "did not decide it: no counted verdict from tester (missing)", "Its window is kept")
+          expect(problem).to include((key == "interrupt") ? "past its 1800 second review timeout" : "a resume needs --extra-time")
+        end
+      end
+
+      it "stops review_incomplete for a round problem no rerun gets past" do
+        broken = rows.map { |row| row.merge("counted" => false, "problem" => "no_review_pane") }
+
+        run = progress.decide_review(rerunnable, {outcome: :incomplete, reviews: broken, problem: "x"}, ctx: ctx)
+
+        expect(run.reason).to include("code" => "review_incomplete")
+      end
+    end
+
+    describe "a round stopped review_no_change ({WorkflowRoundRerun#stop_no_change})" do
+      let(:round_rerun) { Workspace::WorkflowRoundRerun.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, clock: -> { now }) }
+
+      def delivering
+        reviewing_hash.tap do |hash|
+          hash["steps"]["plan"]["review_rounds"] = 2
+          hash["steps"]["plan"]["review"].merge!("round" => 2, "delivery" => "delivering", "holder" => {"pid" => 1}).delete("pane")
+        end
+      end
+
+      it "on resume delivers the same round, spending it, its revision accepted and nothing recorded" do
+        stopped = round_rerun.stop_no_change(delivering, revision: "rev1", rejected: {"revision" => "rev1", "round" => 1, "attempt" => 1})
+        context = ctx
+
+        run = progress.restart_review(stopped, ctx: context)
+
+        state = run.step("plan")
+        expect(run.reason).to be_nil
+        expect(state.to_h["review_rounds"]).to eq(2)
+        expect(state.review).to include("round" => 2, "delivery" => "delivering", "accept_revision" => true, "redeliveries" => 0)
+        expect(state.review).not_to have_key("no_change")
+        expect(state.last_attempt.to_h["rounds"]).to be_nil
+        expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 2)
+      end
+
+      context "when the round's review.uses lock is taken as it is resumed" do
+        let(:dispatch) { RecordingDispatch.new(lock_waits: "test-db") }
+
+        it "waits as waiting_lock with the same round named and held, nothing spent, and its release comes back to that round" do
+          stopped = round_rerun.stop_no_change(delivering, revision: "rev1", rejected: {"revision" => "rev1", "round" => 1, "attempt" => 1})
+          context = ctx
+
+          run = progress.restart_review(stopped, ctx: context)
+
+          state = run.step("plan")
+          expect(run.reason).to include("code" => "waiting_lock")
+          expect(state.to_h["review_rounds"]).to eq(1)
+          expect(state.review).to include("round" => 2, "no_change" => true, "held" => "waiting_lock", "delivery" => nil)
+          expect(context.review).to be_nil
+          expect(dispatch.calls.map(&:first)).to include(:hold_round, :hold_round_lock)
+        end
+      end
+
+      context "when the token budget is spent as it is resumed" do
+        let(:dispatch) { RecordingDispatch.new(holds: "budget_spent") }
+
+        it "holds the same round, spending nothing" do
+          stopped = round_rerun.stop_no_change(delivering, revision: "rev1", rejected: {"revision" => "rev1", "round" => 1, "attempt" => 1})
+
+          run = progress.restart_review(stopped, ctx: ctx)
+
+          expect(run.reason).to include("code" => "budget_spent")
+          expect(run.to_h["budget_hold"]).to eq("review_round" => 2)
+          expect(run.step("plan").to_h["review_rounds"]).to eq(1)
+          expect(run.step("plan").review).to include("round" => 2, "no_change" => true, "held" => "budget_spent")
+        end
+      end
+
+      it "is ended with no record by a cancel or resume --from" do
+        stopped = round_rerun.stop_no_change(delivering, revision: "rev1", rejected: {"revision" => "rev1", "round" => 1, "attempt" => 1})
+
+        run = progress.end_round(stopped, how: "from", ctx: ctx)
+
+        expect(run.step("plan").last_attempt.to_h["rounds"]).to be_nil
+        expect(run.step("plan").review).to be_nil
+      end
+    end
+
+    describe "with a review summary" do
+      let(:summary) { RecordingReviewSummary.new }
+      let(:progress) do
+        described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          review_summary: summary, clock: -> { now })
+      end
+      let(:approved) { {outcome: :approved, reviews: [], approvals: 2, need: 2, must: []} }
+
+      # Decides with a context of its own and runs what it registered to follow the lock, as WorkflowRunChange#call does.
+      def decide(given, tally, subject = progress)
+        context = ctx
+        run = subject.decide_review(given, tally, ctx: context)
+        @registered = context.after_locks.size
+        context.after_locks.each { |each| each.call(run) }
+        run
+      end
+
+      def gated_hash = reviewing_hash.tap { |hash| hash["definition"]["steps"].find { |step| step["id"] == "plan" }["gate"] = "approve" }
+
+      it "writes the round's summary before the decision and posts the item after it, naming the summary in the outcome and the round's record" do
+        given = reviewing_hash
+        given["steps"]["plan"]["review"]["revision"] = "rev1"
+
+        run = decide(given, approved)
+
+        attempt = run.step("plan").attempts.first.to_h
+        expect(attempt["review_outcome"]).to include("summary" => "/runs/wr_1/reviews/plan.1.r1/summary.md")
+        expect(attempt["rounds"].last["summary"]).to eq("path" => "/runs/wr_1/reviews/plan.1.r1/summary.md", "sha256" => "s" * 64)
+        expect(summary.calls.map(&:first)).to eq(%i[write notify])
+        expect(@registered).to eq(1)
+        expect(summary.calls.first[2]).to include(round: 1, outcome: :approved, decided: include("revision" => "rev1", "need" => 2))
+        expect(summary.calls.last).to eq([:notify, "plan", {attempt: 1, round: 1, outcome: :approved, summary: {"path" => "/runs/wr_1/reviews/plan.1.r1/summary.md", "sha256" => "s" * 64}, reason: nil}])
+      end
+
+      it "names the summary on the gate a passing round waits at, and the item sees the gate" do
+        run = decide(gated_hash, approved)
+
+        expect(run.reason).to include("code" => "waiting_you", "details" => include("kind" => "gate", "summary" => "/runs/wr_1/reviews/plan.1.r1/summary.md"))
+        expect(summary.calls.last[2]).to include(reason: "waiting_you")
+      end
+
+      it "writes and posts for a round that stops, but not for a rerun of its missing reviewers" do
+        rows = [{"reviewer" => "skeptic", "counted" => true}, {"reviewer" => "tester", "counted" => false, "problem" => "missing"}]
+        rerunnable = reviewing_hash.tap { |hash| hash["definition"]["redeliver"] = 1 }
+
+        decide(rerunnable, {outcome: :incomplete, reviews: rows, problem: "x"})
+        expect(summary.calls).to be_empty
+
+        run = decide(reviewing_hash, {outcome: :incomplete, reviews: rows, problem: "x"})
+        expect(run.reason).to include("code" => "review_incomplete")
+        expect(summary.calls.map(&:first)).to eq(%i[write notify])
+        expect(summary.calls.first[2]).to include(outcome: :incomplete, problem: "x")
+        expect(run.step("plan").last_attempt.to_h["rounds"].last).to have_key("summary")
+      end
+
+      it "posts nothing under the run's lock: the item waits on the context until the lock is given up" do
+        context = ctx
+
+        progress.decide_review(reviewing_hash, approved, ctx: context)
+
+        expect(summary.calls.map(&:first)).to eq(%i[write])
+        expect(context.after_locks.size).to eq(1)
+      end
+
+      it "names no summary on the outcome when it could not be written, and still posts" do
+        unwritten = RecordingReviewSummary.new({"problem" => "no directory"})
+        subject = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          review_summary: unwritten, clock: -> { now })
+
+        run = decide(gated_hash, approved, subject)
+
+        expect(run.step("plan").last_attempt.to_h["review_outcome"]).not_to have_key("summary")
+        expect(run.reason["details"]).not_to have_key("summary")
+        expect(unwritten.calls.map(&:first)).to eq(%i[write notify])
+      end
+    end
+
+    it "records the revision a decided round judged in its review_outcome" do
+      given = reviewing_hash
+      given["steps"]["plan"]["review"]["revision"] = "rev1"
+
+      run = progress.decide_review(given, {outcome: :approved, reviews: [], approvals: 2, need: 2, must: []}, ctx: ctx)
+
+      expect(run.step("plan").last_attempt.to_h["review_outcome"]).to include("revision" => "rev1")
     end
 
     it "stops a stale round with review_stale, keeping the step reviewing and registering no further round" do
@@ -525,7 +934,7 @@ RSpec.describe Workspace::WorkflowProgress do
                                                           "session" => nil, "agent" => nil, "usage" => {"input_tokens" => 40, "output_tokens" => 2}, "ended" => "cancelled"}])
         expect(attempt_record.calls).to eq([[:finish_round, "wr_1", 1]])
         expect(panes.calls).to eq([[:unbind, "wr_1", {role: "reviewer"}]])
-        expect(context.close_review).to eq("step" => "plan", "round" => 1, "pane" => "%9")
+        expect(context.close_review).to eq("workspace" => "app", "step" => "plan", "round" => 1, "pane" => "%9")
         expect(change.events).to eq([["wr_1", "review_ended", {"step" => "plan", "attempt" => 1, "round" => 1, "outcome" => "cancelled"}]])
       end
 
@@ -597,7 +1006,7 @@ RSpec.describe Workspace::WorkflowProgress do
         expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 2)
         expect(context.close_review).to be_nil
         expect(panes.calls).to be_empty
-        expect(dispatch.calls).to eq([[:hold_round, "wr_1", {round: 2}]])
+        expect(dispatch.calls).to eq([[:hold_round, "wr_1", {round: 2}], [:hold_round_lock, "wr_1", {round: 2, step_state: "reviewing"}]])
       end
 
       it "delivers a round whose delivery failed again as the same round, its redelivery count started again" do
@@ -618,6 +1027,188 @@ RSpec.describe Workspace::WorkflowProgress do
       end
     end
 
+    describe "#redeliver_round" do
+      it "delivers the round again as the same round, spending one more of its redeliveries and keeping the window a failure kept" do
+        given = reviewing_hash
+        given["steps"]["plan"]["review"].merge!("delivery" => "failed", "redeliveries" => 1, "window" => "@7", "holder" => {"pid" => 1},
+          "failure" => {"code" => "agent_not_ready"}, "sweep" => {"interrupt" => {"state" => "sent", "at" => "2026-11-10T11:00:00Z"}})
+        context = ctx
+
+        run = progress.redeliver_round(given, ctx: context)
+
+        state = run.step("plan")
+        expect(state.review_rounds).to eq(1)
+        expect(state.review).to include("round" => 1, "delivery" => "delivering", "window" => "@7", "started_at" => "2026-11-10T12:00:00.000Z", "redeliveries" => 2)
+        expect(state.review).not_to include("failure", "holder", "sweep")
+        expect(state.last_attempt.to_h["rounds"].map { |each| each["ended"] }).to eq(["redelivered"])
+        expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
+        expect(change.events).to eq([["wr_1", "review_started", {"step" => "plan", "attempt" => 1, "round" => 1, "again" => true, "redelivery" => 2}]])
+        expect(dispatch.calls).to be_empty
+      end
+    end
+
+    describe "#redeliver_round with a new tmux server" do
+      it "drops the round's pane, window and server so a new window opens, and keeps the pane on the redelivered record" do
+        given = reviewing_hash
+        given["steps"]["plan"]["review"].merge!("window" => "@7", "server_pid" => "100")
+
+        run = progress.redeliver_round(given, ctx: ctx, new_server: true)
+
+        state = run.step("plan")
+        expect(state.review).not_to include("pane", "window", "server_pid")
+        expect(state.review).to include("delivery" => "delivering", "redeliveries" => 1)
+        expect(state.last_attempt.to_h["rounds"].last).to include("pane" => "%9", "ended" => "redelivered")
+      end
+    end
+
+    describe "the review window" do
+      it "unbinds the reviewer and registers the window to close when the round approves, a gate or not" do
+        context = ctx
+
+        progress.decide_review(reviewing_hash, {outcome: :approved, reviews: []}, ctx: context)
+
+        expect(panes.calls).to eq([[:unbind, "wr_1", {role: "reviewer"}]])
+        expect(context.close_review).to eq("workspace" => "app", "step" => "plan", "round" => 1, "pane" => "%9")
+      end
+
+      it "closes, on approval, the window an earlier round left, and forgets it" do
+        given = reviewing_hash
+        given["steps"]["plan"]["review_window"] = {"round" => 1, "window" => "@7"}
+        context = ctx
+
+        run = progress.decide_review(given, {outcome: :approved, reviews: []}, ctx: context)
+
+        expect(context.close_review).to include("step" => "plan", "round" => 1)
+        expect(run.step("plan").to_h).not_to have_key("review_window")
+      end
+
+      it "keeps, named on the step, the window of a round a resume ends for a fresh one" do
+        given = reviewing_hash("state" => "waiting", "reason" => {"code" => "review_incomplete", "since" => "2026-11-10T11:50:00Z", "details" => {}})
+        given["steps"]["plan"]["review"]["window"] = "@7"
+        context = ctx
+
+        run = progress.restart_review(given, ctx: context)
+
+        expect(run.step("plan").to_h["review_window"]).to eq("round" => 1, "window" => "@7", "pane" => "%9")
+        expect(context.close_review).to be_nil
+        expect(context.review).to include("round" => 2)
+      end
+
+      it "keeps the window and the reviewer of a round that stops for a person" do
+        context = ctx
+
+        progress.decide_review(reviewing_hash, {outcome: :incomplete, reviews: []}, ctx: context)
+
+        expect(panes.calls).to be_empty
+        expect(context.close_review).to be_nil
+      end
+
+      it "closes every window of a reviewed run as it ends, after a reject left its step failed" do
+        rejected = progress.decide_review(reviewing_hash, {outcome: :rejected, reviews: []}, ctx: ctx)
+        context = ctx
+
+        run = progress.finish(rejected, "cancelled", ctx: context)
+
+        expect(run.state).to eq("cancelled")
+        expect(context.close_review).to eq("workspace" => "app", "step" => nil, "round" => nil, "pane" => nil)
+      end
+
+      it "registers no close at the end of a run no step of which had a round, nor without a context" do
+        context = ctx
+
+        progress.finish(run_hash, "completed", ctx: context)
+        progress.finish(reviewing_hash, "cancelled")
+
+        expect(context.close_review).to be_nil
+      end
+
+      it "registers no close for a held first round, which never opened a window" do
+        held = reviewing_hash
+        held["steps"]["plan"].merge!("review_rounds" => 0, "review" => {"round" => 1, "delivery" => nil, "held" => "waiting_lock"})
+        context = ctx
+
+        run = progress.end_round(held, how: "from", ctx: context)
+
+        expect(run.step("plan").review).to be_nil
+        expect(context.close_review).to be_nil
+        expect(panes.calls).to be_empty
+      end
+    end
+
+    describe "the round's holder" do
+      let(:holder) { {"pid" => 4321, "started" => "Tue Nov 10 11:59:00 2026"} }
+
+      subject(:progress) do
+        described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+          holder: -> { holder }, clock: -> { now })
+      end
+
+      it "is the process that starts the round, stored on its delivery mark" do
+        run = progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: ctx)
+
+        expect(run.step("plan").review).to include("delivery" => "delivering", "holder" => holder)
+      end
+
+      it "is the process that delivers a failed round again, in place of the one before" do
+        given = reviewing_hash
+        given["steps"]["plan"]["review"].merge!("delivery" => "failed", "holder" => {"pid" => 1}, "failure" => {"code" => "no_daemon"})
+
+        run = progress.restart_review(given, ctx: ctx)
+
+        expect(run.step("plan").review).to include("delivery" => "delivering", "holder" => holder)
+        expect(run.step("plan").review).not_to have_key("failure")
+      end
+    end
+
+    describe "a round waiting for its review.uses" do
+      let(:dispatch) { RecordingDispatch.new(lock_waits: "review-db") }
+
+      it "waits on waiting_lock with the round named and held, spends no round and registers nothing" do
+        context = ctx
+
+        run = progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: context)
+
+        state = run.step("plan")
+        expect(run.state).to eq("waiting")
+        expect(run.reason).to include("code" => "waiting_lock", "details" => include("resource" => "review-db", "review_round" => 1))
+        expect(state.state).to eq("reviewing")
+        expect(state.review).to eq("round" => 1, "delivery" => nil, "held" => "waiting_lock")
+        expect(state.review_rounds).to be_nil
+        expect(context.review).to be_nil
+        expect(dispatch.calls).to eq([[:hold_round, "wr_1", {round: 1}], [:hold_round_lock, "wr_1", {round: 1, step_state: "reviewing"}]])
+      end
+
+      it "asks the lock again on a wake, still the same round, never ending it as a stopped one" do
+        waiting = progress.pass_step(run_hash(definition_steps: steps("review" => review)), ctx: ctx)
+        context = ctx
+
+        run = progress.restart_review(waiting, ctx: context)
+
+        expect(run.step("plan").review).to eq("round" => 1, "delivery" => nil, "held" => "waiting_lock")
+        expect(run.step("plan").last_attempt.to_h["rounds"]).to be_nil
+        expect(context.review).to be_nil
+      end
+
+      context "once the lock is free" do
+        let(:dispatch) { RecordingDispatch.new }
+
+        it "starts that round on the wake, spending it then" do
+          waiting = reviewing_hash("state" => "waiting", "reason" => {"code" => "waiting_lock", "since" => "2026-11-10T11:55:00Z", "details" => {"review_round" => 2}})
+          waiting["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil, "held" => "waiting_lock"}
+          context = ctx
+
+          run = progress.restart_review(waiting, ctx: context)
+
+          expect(run.step("plan").review_rounds).to eq(2)
+          expect(run.step("plan").review).to include("round" => 2, "delivery" => "delivering")
+          expect(run.reason).to be_nil
+          expect(run.state).to eq("running")
+          expect(run.step("plan").last_attempt.to_h["rounds"]).to be_nil
+          expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 2)
+        end
+      end
+    end
+
     describe "a round start past the token budget or the run's timeout" do
       %w[budget_spent run_timed_out].each do |code|
         context "held with #{code}" do
@@ -633,7 +1224,7 @@ RSpec.describe Workspace::WorkflowProgress do
             expect(run.reason).to include("code" => code, "details" => include("review_round" => 1))
             expect(run.to_h[(code == "budget_spent") ? "budget_hold" : "timeout_hold"]).to eq("review_round" => 1)
             expect(state.state).to eq("reviewing")
-            expect(state.review).to eq("round" => 1, "delivery" => nil)
+            expect(state.review).to eq("round" => 1, "delivery" => nil, "held" => code)
             expect(state.review_rounds).to be_nil
             expect(state.last_attempt.outcome).to eq("checks_passed")
             expect(context.review).to be_nil
@@ -653,7 +1244,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
           state = run.step("plan")
           expect(run.reason["code"]).to eq("budget_spent")
-          expect(state.review).to eq("round" => 2, "delivery" => nil)
+          expect(state.review).to eq("round" => 2, "delivery" => nil, "held" => "budget_spent")
           expect(state.review_rounds).to eq(1)
           expect(state.last_attempt.to_h["rounds"].map { |each| each["ended"] }).to eq(["resumed"])
         end
@@ -674,7 +1265,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
       it "starts the held round itself on the resume that released it, spending that round" do
         held = reviewing_hash("state" => "running", "reason" => nil)
-        held["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil}
+        held["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil, "held" => "budget_spent"}
         context = ctx
 
         run = progress.restart_review(held, ctx: context)
@@ -687,9 +1278,9 @@ RSpec.describe Workspace::WorkflowProgress do
         expect(change.events).to eq([["wr_1", "review_started", {"step" => "plan", "attempt" => 1, "round" => 2}]])
       end
 
-      it "ends a held round on cancel with no round record and no review_ended, still closing the window" do
+      it "ends a held round on cancel with no round record and no review_ended, closing a window an earlier round left by its mark" do
         held = reviewing_hash
-        held["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil}
+        held["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil, "held" => "budget_spent"}
         context = ctx
 
         run = progress.end_round(held, how: "cancelled", ctx: context)
@@ -698,7 +1289,8 @@ RSpec.describe Workspace::WorkflowProgress do
         expect(run.step("plan").last_attempt.to_h["rounds"]).to be_nil
         expect(attempt_record.calls).to be_empty
         expect(change.events).to be_empty
-        expect(context.close_review).to eq("step" => "plan", "round" => 2, "pane" => nil)
+        expect(context.close_review).to eq("workspace" => "app", "step" => "plan", "round" => 2, "pane" => nil)
+        expect(panes.calls).to eq([[:unbind, "wr_1", {role: "reviewer"}]])
       end
     end
   end

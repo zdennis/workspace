@@ -1316,4 +1316,243 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(snapshot_client).to have_received(:fetch).once
     expect(result["warnings"].size).to eq(1)
   end
+
+  describe "a run being reviewed (spec/fixtures/workflow_runs/reviewing.json)" do
+    let(:round_start) { "2026-10-04T12:59:00.000Z" }
+    let(:snapshot) { {"panes" => [{"pane_id" => "%9", "kind" => "claude", "state" => "working"}]} }
+
+    def load_fixture(round: {}, reason: nil, state: "running", &edit)
+      fixture = JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/reviewing.json")))
+      fixture["state"] = state
+      fixture["reason"] = reason
+      fixture["steps"]["build"]["review"] = {"round" => 1, "delivery" => nil, "started_at" => round_start, "pending" => ["skeptic"], "redeliveries" => 0, "pane" => "%9"}.merge(round)
+      edit&.call(fixture)
+      FileUtils.mkdir_p(File.join(@dir, "runs"))
+      File.write(File.join(@dir, "runs", "wr_simulated.json"), JSON.generate(fixture))
+      panes.bind(workspace: "simulation", pane: "%sim", run_id: "wr_simulated")
+    end
+
+    def review_status = status.run("wr_simulated")["runs"].first
+
+    before { allow(snapshot_client).to receive(:fetch).with("simulation", timeout: 1.0) { snapshot } }
+
+    it "shows round K of M, the approvals, the pending reviewers and the review pane, with no reason" do
+      load_fixture
+
+      shown = review_status
+
+      expect(shown["state"]).to eq("running")
+      expect(shown["current"]).to include("step" => "build", "state" => "reviewing", "reason" => nil, "flags" => [])
+      expect(shown["current"]["review"]).to eq({"round" => 1, "max_rounds" => 6, "extra_rounds" => 0, "need" => 1, "must" => [], "approvals" => 0, "pending" => ["skeptic"],
+                                                "pane" => "%9", "window" => nil, "delivery" => nil, "started_at" => round_start, "stopped" => false,
+                                                "held" => nil, "next_round" => nil, "rerun" => nil, "rounds_spent" => false, "reviews" => []})
+      expect(shown["steps"].first).to include("id" => "build", "state" => "reviewing", "review_rounds" => 1)
+      expect(shown["steps"].last).not_to have_key("review_rounds")
+    end
+
+    it "applies the 30 minute default to a stored review with no timeout, counted from the round's start" do
+      without_timeout = ->(fixture) { fixture["definition"]["steps"].first["review"].delete("timeout") }
+      load_fixture(round: {"started_at" => "2026-10-04T12:29:59.000Z"}, &without_timeout)
+      expect(review_status["current"]["flags"]).to eq(["timed_out"])
+
+      load_fixture(round: {"started_at" => "2026-10-04T12:30:00.000Z"}, &without_timeout)
+      expect(review_status["current"]["flags"]).to eq([])
+    end
+
+    it "flags a round past review.timeout, counted from the round's start, and a round being delivered" do
+      load_fixture(round: {"started_at" => "2026-10-04T12:20:00.000Z"})
+      expect(review_status["current"]["flags"]).to eq(["timed_out"])
+
+      load_fixture(round: {"delivery" => "delivering"})
+      expect(review_status["current"]["flags"]).to eq(["delivering"])
+    end
+
+    it "reads the review pane, not the author's, and reports its permission prompt as waiting_you" do
+      snapshot["panes"] = [{"pane_id" => "%9", "kind" => "claude", "state" => "waiting", "waiting_since" => "2026-10-04T12:59:30Z", "waiting_message" => "Run rm?"},
+        {"pane_id" => "%sim", "kind" => "claude", "state" => "working"}]
+      load_fixture
+
+      shown = review_status
+
+      expect(shown["state"]).to eq("waiting")
+      expect(shown["current"]["reason"]).to eq({"code" => "waiting_you", "since" => "2026-10-04T12:59:30Z",
+        "details" => {"kind" => "prompt", "step" => "build", "pane" => "%9", "message" => "Run rm?", "role" => "reviewer"},
+        "actions" => [action("focus", "simulation", "--pane", "%9")]})
+    end
+
+    describe "a round whose delivery failed after its line may have been typed" do
+      let(:typed) { {"delivery" => "failed", "kick_at" => "2026-10-04T12:59:01.000Z", "failure" => {"code" => "connection_failed", "message" => "gone", "at" => "2026-10-04T12:59:02Z", "typed" => true}} }
+
+      it "reads its review pane, so a permission prompt there is waiting_you for the reviewer, and needs-me lists the run" do
+        snapshot["panes"] = [{"pane_id" => "%9", "kind" => "claude", "state" => "waiting", "waiting_since" => "2026-10-04T12:59:30Z", "waiting_message" => "Run rm?"}]
+        load_fixture(round: typed)
+
+        shown = review_status
+
+        expect(shown["current"]["reason"]).to include("code" => "waiting_you", "details" => include("kind" => "prompt", "role" => "reviewer", "pane" => "%9"))
+        needs = Workspace::WorkflowNeedsMe.new(clock: -> { Time.utc(2026, 10, 4, 13) }).rows([shown])
+        expect(needs.map { |each| each["run"] }).to eq(["wr_simulated"])
+      end
+
+      it "reads no pane for a failed delivery that proves nothing was typed" do
+        load_fixture(round: {"delivery" => "failed", "pane" => "%9", "kick_at" => "2026-10-04T12:59:01.000Z", "failure" => {"code" => "pane_busy", "at" => "2026-10-04T12:59:02Z"}})
+        review_status
+        expect(snapshot_client).not_to have_received(:fetch)
+      end
+    end
+
+    it "does not take the author's prompt for the round's" do
+      snapshot["panes"] = [{"pane_id" => "%sim", "kind" => "claude", "state" => "waiting", "waiting_message" => "x"}, {"pane_id" => "%9", "kind" => "claude", "state" => "working"}]
+      load_fixture
+
+      expect(review_status["current"]["reason"]).to be_nil
+    end
+
+    it "reports an open question asked from the review pane" do
+      asks.push({"id" => "a1", "pane" => "%9", "asked_at" => "2026-10-04T12:59:40Z", "question" => "Which?"})
+      load_fixture
+
+      expect(review_status["current"]["reason"]).to include("code" => "waiting_you", "details" => include("kind" => "ask", "role" => "reviewer"))
+    end
+
+    it "reads no pane for a round with no pane recorded yet" do
+      load_fixture(round: {"delivery" => "delivering", "pane" => nil})
+      review_status
+      expect(snapshot_client).not_to have_received(:fetch)
+    end
+
+    describe "a stopped round" do
+      let(:rows) do
+        [{"reviewer" => "skeptic", "verdict" => "approve", "revision" => "r", "counted" => true, "problem" => nil, "isolation" => "review_pane", "sha256" => "x"},
+          {"reviewer" => "scribe", "verdict" => nil, "revision" => nil, "counted" => false, "problem" => "missing", "isolation" => "review_pane"}]
+      end
+
+      %w[review_incomplete review_tampered review_stale review_guard review_rejected review_no_change].each do |code|
+        it "offers resume, resume --from and cancel after #{code}" do
+          load_fixture(round: {"ended_at" => round_start, "recorded" => true, "reviews" => rows}, state: "waiting",
+            reason: {"code" => code, "since" => round_start, "details" => {"step" => "build", "attempt" => 1, "round" => 1}})
+
+          reason = review_status["current"]["reason"]
+
+          expect(reason["actions"]).to eq([action("workflow resume", "wr_simulated"), action("workflow resume", "wr_simulated", "--from", "build"),
+            action("workflow cancel", "wr_simulated")])
+        end
+      end
+
+      it "shows the round it stopped, the next one a resume starts, the verdicts with their isolation and who is still out" do
+        load_fixture(round: {"ended_at" => round_start, "recorded" => true, "reviews" => rows}, state: "waiting",
+          reason: {"code" => "review_incomplete", "since" => round_start, "details" => {"step" => "build"}}) do |fixture|
+          fixture["definition"]["steps"][0]["review"]["from"] = %w[skeptic scribe]
+          fixture["definition"]["reviewers"]["scribe"] = {"title" => "scribe", "prompt" => "p", "include" => [], "parallel" => true}
+        end
+
+        review = review_status["current"]["review"]
+
+        expect(review).to include("round" => 1, "stopped" => true, "next_round" => 2, "approvals" => 1, "pending" => ["scribe"], "pane" => "%9")
+        expect(review["reviews"].map { |row| row.slice("reviewer", "verdict", "problem", "isolation") }).to eq([
+          {"reviewer" => "skeptic", "verdict" => "approve", "problem" => nil, "isolation" => "review_pane"},
+          {"reviewer" => "scribe", "verdict" => nil, "problem" => "missing", "isolation" => "review_pane"}
+        ])
+        expect(review["reviews"].map(&:keys).uniq).to eq([%w[reviewer verdict revision counted problem isolation]])
+        expect(review).to include("rounds_spent" => false)
+        expect(snapshot_client).not_to have_received(:fetch)
+      end
+    end
+
+    it "shows a round an unchanged revision stopped as the round a resume delivers, not spent" do
+      load_fixture(round: {"round" => 2, "delivery" => nil, "no_change" => true, "revision" => "r"}, state: "waiting",
+        reason: {"code" => "review_no_change", "since" => round_start, "details" => {"step" => "build", "round" => 2, "revision" => "r", "rejected_round" => 1}})
+
+      shown = review_status
+
+      expect(shown["current"]["review"]).to include("round" => 2, "stopped" => false, "next_round" => 2, "rounds_spent" => false)
+      expect(shown["current"]["reason"]["actions"].first).to eq(action("workflow resume", "wr_simulated"))
+    end
+
+    it "names the reviewers a rerun of the round runs again" do
+      load_fixture(round: {"rerun" => ["skeptic"], "delivery" => "delivering"})
+
+      expect(review_status["current"]["review"]).to include("rerun" => ["skeptic"])
+    end
+
+    it "names no rerun for a round that stopped, whatever its stored round still says" do
+      load_fixture(round: {"rerun" => ["skeptic"], "ended_at" => round_start, "recorded" => true}, state: "waiting",
+        reason: {"code" => "review_incomplete", "since" => round_start, "details" => {"step" => "build", "round" => 1}})
+
+      expect(review_status["current"]["review"]).to include("rerun" => nil, "stopped" => true)
+    end
+
+    it "says plainly when the round a resume would start is past max_rounds, and offers the resume only with --extra-rounds" do
+      load_fixture(round: {"round" => 6, "ended_at" => round_start, "recorded" => true}, state: "waiting",
+        reason: {"code" => "review_incomplete", "since" => round_start, "details" => {"step" => "build", "round" => 6}}) do |fixture|
+        fixture["steps"]["build"]["review_rounds"] = 6
+      end
+
+      shown = review_status
+      expect(shown["current"]["review"]).to include("round" => 6, "max_rounds" => 6, "next_round" => 7, "rounds_spent" => true)
+      expect(shown["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_simulated", needs: [{"name" => "extra_rounds", "flag" => "--extra-rounds", "min" => 1}]), action("workflow resume", "wr_simulated", "--from", "build"), action("workflow cancel", "wr_simulated")])
+    end
+
+    it "offers the resume only with --extra-rounds after the last round rejected the step, and at the round held past max_rounds" do
+      load_fixture(state: "waiting", reason: {"code" => "review_rejected", "since" => round_start, "details" => {"step" => "build", "limit" => "rounds"}}) do |fixture|
+        fixture["steps"]["build"].merge!("state" => "failed", "review_rounds" => 6)
+        fixture["steps"]["build"].delete("review")
+      end
+
+      expect(review_status["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_simulated", needs: [{"name" => "extra_rounds", "flag" => "--extra-rounds", "min" => 1}]), action("workflow resume", "wr_simulated", "--from", "build"), action("workflow cancel", "wr_simulated")])
+
+      load_fixture(round: {"round" => 7, "delivery" => nil, "held" => "review_rounds_spent"}, state: "waiting",
+        reason: {"code" => "review_rounds_spent", "since" => round_start, "details" => {"step" => "build", "round" => 7, "rounds" => 6, "max_rounds" => 6}}) do |fixture|
+        fixture["steps"]["build"]["review_rounds"] = 6
+      end
+
+      shown = review_status
+      expect(shown["current"]["review"]).to include("held" => "review_rounds_spent", "next_round" => 7, "rounds_spent" => true)
+      expect(shown["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_simulated", needs: [{"name" => "extra_rounds", "flag" => "--extra-rounds", "min" => 1}]), action("workflow resume", "wr_simulated", "--from", "build"), action("workflow cancel", "wr_simulated")])
+    end
+
+    it "counts a step's extra_rounds in max_rounds and no longer asks for them" do
+      load_fixture(round: {"round" => 6, "ended_at" => round_start, "recorded" => true}, state: "waiting",
+        reason: {"code" => "review_incomplete", "since" => round_start, "details" => {"step" => "build", "round" => 6}}) do |fixture|
+        fixture["steps"]["build"].merge!("review_rounds" => 6, "extra_rounds" => 2)
+      end
+
+      shown = review_status
+      expect(shown["current"]["review"]).to include("max_rounds" => 8, "extra_rounds" => 2, "next_round" => 7, "rounds_spent" => false)
+      expect(shown["current"]["reason"]["actions"]).to include(action("workflow resume", "wr_simulated"))
+    end
+
+    it "sets no timed_out flag for a started_at that does not parse" do
+      load_fixture(round: {"started_at" => "not a time"})
+
+      expect(review_status["current"]["flags"]).to eq([])
+    end
+
+    it "gives no action to a review reason that is not a stop of a round" do
+      load_fixture(round: {"ended_at" => round_start}, state: "waiting", reason: {"code" => "review_custom_socket", "since" => round_start, "details" => {"step" => "build"}})
+
+      expect(review_status["current"]["reason"]["actions"]).to eq([action("workflow cancel", "wr_simulated")])
+    end
+
+    it "shows the round a held round will start" do
+      load_fixture(round: {"round" => 2, "delivery" => nil, "held" => "budget_spent", "pending" => nil, "pane" => nil, "started_at" => nil}, state: "waiting",
+        reason: {"code" => "budget_spent", "since" => round_start, "details" => {"step" => "build", "review_round" => 2}}) do |fixture|
+        fixture["steps"]["build"]["review_rounds"] = 1
+      end
+
+      shown = review_status["current"]
+
+      expect(shown["review"]).to include("round" => 2, "held" => "budget_spent", "next_round" => 2, "stopped" => false, "pending" => ["skeptic"], "pane" => nil)
+      expect(shown["reason"]["actions"].map { |each| each["action"] }).to eq(["workflow resume", "workflow cancel"])
+    end
+
+    it "shows no review for a step that is not being reviewed, and reads an old run with none" do
+      load_fixture { |fixture| fixture["steps"]["build"]["state"] = "passed" }
+      expect(review_status["current"]).not_to have_key("review")
+
+      FileUtils.cp(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/legacy_minimal.json"), File.join(@dir, "runs", "wr_legacy.json"))
+      old = status.run("wr_simulated")["runs"].first
+      expect(old["current"]).not_to have_key("review")
+    end
+  end
 end

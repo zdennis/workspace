@@ -55,7 +55,8 @@ module Workspace
     # @param ctx [Workspace::WorkflowRunChange::Context] the change's context, which gets the line to type
     # @param context [String, nil] the step's `context` for this attempt (`fresh` starts a new conversation)
     # @param budgeted [Boolean] false starts the attempt even when the token budget is used up
-    # @param retry_of [Hash{String=>Object}, nil] the retry's "pane", "identity" and "text", kept by a budget hold
+    # @param retry_of [Hash{String=>Object}, nil] the retry's "pane", "identity" and "text", kept by a budget hold, and
+    #   "attempt": the attempt of the step a review rejected, recorded as the new attempt's `retry_of`
     # @return [WorkflowRun] the run afterwards
     def dispatch(run, ctx:, context: nil, budgeted: true, retry_of: nil)
       work = WorkflowRun.from_h(run).thawed
@@ -136,6 +137,35 @@ module Workspace
       WorkflowRun.from_h(work)
     end
 
+    # Takes the `review.uses` of the step whose round is about to start, as {#dispatch} takes a step's `uses:`: the
+    # run then holds exactly those, so the step's own are given up. A lock another holder has keeps the round from
+    # starting: the run waits on `waiting_lock` (details naming the lock and `review_round`), the step stays as
+    # +step_state+ says, and a later {WorkflowRecovery#tick} or a person's resume asks again. A lock store that can't
+    # be read keeps it too, the run waiting for a person (`waiting_you`, kind `review`), with whatever locks the run
+    # holds kept, as a budget or timeout hold ({#hold_round}) keeps them: nothing is given up that a resume would
+    # have to queue for again. Runs under the run's lock.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run, at the step whose round would start; left as it is
+    # @param round [Integer] the round about to start
+    # @param step_state [String] the state the step keeps while the run waits (the caller's `reviewing`)
+    # @return [WorkflowRun, nil] the run waiting; nil when it holds what the round uses
+    def hold_round_lock(run, round:, step_state:)
+      work = WorkflowRun.from_h(run).thawed
+      review = WorkflowDefinition.review(step_def(work)) || {}
+      waiting = begin
+        acquire(work, {"id" => work["current"], "uses" => review["uses"]}, nil)
+      rescue Workspace::Error, SystemCallError => e
+        work["state"] = "waiting"
+        work["reason"] = reason("waiting_you", {"kind" => "review", "step" => work["current"], "review_round" => round,
+          "error" => e.respond_to?(:code) ? e.code : "error", "message" => e.message.lines.first.to_s.scrub.strip})
+        return WorkflowRun.from_h(work)
+      end
+      return nil unless waiting
+      wait_for_lock(work, step_state(work), waiting, step_state: step_state)
+      work["reason"]["details"]["review_round"] = round
+      WorkflowRun.from_h(work)
+    end
+
     # Takes a park off the run however it ended (its note moves to the pending context, see
     # {WorkflowRun#drop_park}) and writes `resume_parked_ended` when there was one.
     #
@@ -177,14 +207,24 @@ module Workspace
       if @panes.pane_of(run["id"]) && !@panes.alive?(run["id"])
         return not_delivered(run, state, nil, {code: "pane_gone", message: "pane #{pane} is no longer the pane the run was bound in"})
       end
+      pending_retry = retry_pending(run, retry_of, context)
+      retry_n = pending_retry&.fetch("attempt")
+      context ||= pending_retry&.fetch("context", nil)
       waiting = acquire(run, step, pane)
-      return wait_for_lock(run, state, waiting) if waiting
+      if waiting
+        # A review's retry waiting for a lock is still that retry when the wait ends (a tick or a resume dispatches it
+        # again): its attempt, its context and its text (which a `--from` takes out of the pending context).
+        pending_retry ? run["retry_of_pending"] = pending_retry : run.delete("retry_of_pending")
+        return wait_for_lock(run, state, waiting)
+      end
+      run.delete("retry_of_pending")
 
       # To the millisecond: the end of a turn is matched to the attempt by when that turn began.
       attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => run["pending_context"],
                  "delivery" => "delivering"}
       pending = state.delete("redelivery_pending")
       attempt["redelivery"] = pending if pending
+      attempt["retry_of"] = retry_n if retry_n
       run["pending_context"] = []
       attempt["prompt_file"], composed = @prompt.write(run, step, attempt["n"], attempt["context"])
       started = @attempt_record.start(run: run, attempt: attempt, composed: composed)
@@ -204,6 +244,16 @@ module Workspace
     rescue Workspace::Error, SystemCallError, EncodingError => e
       # The step could not be started (no pane, an unreadable pack, a checkout that is gone, text that can't be written as UTF-8).
       not_delivered(run, state, attempt, {code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.strip})
+    end
+
+    # The review retry this attempt is: given ("attempt", with its "text" and the +context+ it starts with), else the
+    # one kept while the step waited for a lock (for the same step only); nil for any other attempt.
+    def retry_pending(run, retry_of, context)
+      if retry_of.is_a?(Hash) && retry_of["attempt"].is_a?(Integer)
+        return {"step" => run["current"], "attempt" => retry_of["attempt"], "context" => context, "text" => retry_of["text"]}.compact
+      end
+      kept = run["retry_of_pending"]
+      (kept.is_a?(Hash) && kept["step"] == run["current"] && kept["attempt"].is_a?(Integer)) ? kept : nil
     end
 
     # The daemon's answer to a typed line, applied to the stored run.
@@ -286,7 +336,8 @@ module Workspace
     def hold_attempt(run, context, retry_of, budget:, time:)
       pane = retry_of&.fetch("pane", nil) || bound_pane(run)
       identity = retry_of&.fetch("identity", nil) || @panes.identity(run["id"])
-      hold(run, {"context" => context, "pane" => pane, "identity" => identity, "text" => retry_of&.fetch("text", nil)}.compact, budget: budget, time: time)
+      hold(run, {"context" => context, "pane" => pane, "identity" => identity, "text" => retry_of&.fetch("text", nil),
+                 "retry_of" => retry_of&.fetch("attempt", nil)}.compact, budget: budget, time: time)
     end
 
     # The hold itself, for an attempt or a review round: +hold+ is the record each spent limit stores.
@@ -338,13 +389,13 @@ module Workspace
       nil
     end
 
-    def wait_for_lock(run, state, waiting)
+    def wait_for_lock(run, state, waiting, step_state: "waiting")
       holder = waiting[:holder] || {}
       details = {"resource" => waiting[:name], "step" => run["current"], "position" => waiting[:position], "total" => waiting[:total],
                  "holder" => {"run_id" => holder["run_id"], "step" => holder["step"], "workspace" => holder["workspace"],
                               "worktree" => holder["worktree"], "pid" => holder["pid"], "kind" => holder["kind"]}.compact}
       since = (run.dig("reason", "code") == "waiting_lock" && run.dig("reason", "details", "resource") == waiting[:name]) ? run["reason"]["since"] : now_iso
-      state["state"] = "waiting"
+      state["state"] = step_state
       run["state"] = "waiting"
       run["reason"] = {"code" => "waiting_lock", "since" => since, "details" => details}
     end

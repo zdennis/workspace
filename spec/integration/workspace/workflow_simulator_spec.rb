@@ -319,4 +319,117 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
       end
     end
   end
+
+  describe "a reviewed step" do
+    let(:reviewed) do
+      Workspace::WorkflowDefinition.parse(<<~YAML, id: "demo", source: "file", path: nil)
+        schema_version: 1
+        id: demo
+        title: Demo
+        reviewers:
+          skeptic: {prompt: Find what is wrong.}
+          builder: {prompt: Check it can be built.}
+        steps:
+          design:
+            prompt: design it
+            produces: [design.md]
+            review:
+              from: [skeptic, builder]
+              need: 2
+              must: [skeptic]
+          build:
+            prompt: build it
+            produces: [build.md]
+      YAML
+    end
+
+    def types(result) = result["transitions"].map { |each| each["type"] }
+
+    def reviews_of(result)
+      result["steps"].first["attempts"].last["reviews"].map { |each| each.values_at("reviewer", "verdict", "counted") }
+    end
+
+    it "passes the step on the approvals the script gives, and lists them" do
+      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve, builder: approve}}]\n")
+
+      expect(result).to include("outcome" => "completed")
+      expect(types(result)).to include("review_started", "simulated_reviewers", "review_ended", "step_passed")
+      expect(reviews_of(result)).to eq([["skeptic", "approve", true], ["builder", "approve", true]])
+    end
+
+    it "runs the step again when a reviewer it must have rejects, and passes it when the next attempt's round approves" do
+      result = play(reviewed, "steps:\n  design:\n    - {reviews: {skeptic: reject, builder: approve}}\n    - {reviews: {skeptic: approve, builder: approve}}\n")
+
+      expect(result).to include("outcome" => "completed")
+      expect(types(result)).to include("review_retry")
+      attempts = result["steps"].first["attempts"]
+      expect(attempts.map { |each| each["outcome"] }).to eq(%w[failed passed])
+      expect(attempts.first["reviews"].map { |each| each.values_at("reviewer", "verdict", "counted") }).to eq([["skeptic", "reject", true], ["builder", "approve", true]])
+      expect(reviews_of(result)).to eq([["skeptic", "approve", true], ["builder", "approve", true]])
+    end
+
+    it "stops review_rejected once six rounds, the default max_rounds, reject" do
+      rejected = "    - {reviews: {skeptic: reject, builder: approve}}\n" * 6
+      result = play(reviewed, "steps:\n  design:\n#{rejected}")
+
+      expect(result).to include("outcome" => "stopped", "stopped" => {"step" => "design", "attempt" => 6, "reason" => "review_rejected"})
+      expect(result["steps"].first["attempts"].map { |each| each["outcome"] }).to eq(["failed"] * 6)
+      expect(types(result).count("review_retry")).to eq(5)
+    end
+
+    it "stops review_incomplete when a reviewer is left out of the map" do
+      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve}}]\n")
+
+      expect(result["stopped"]).to include("step" => "design", "reason" => "review_incomplete")
+      expect(result["outcome"]).to eq("stopped")
+      expect(reviews_of(result).last).to eq(["builder", nil, false])
+    end
+
+    it "stops review_incomplete when the script gives no reviews at all" do
+      expect(play(reviewed, "steps: {}\n")["stopped"]).to include("reason" => "review_incomplete")
+    end
+
+    it "treats an empty reviews map as none: no reviewer writes" do
+      result = play(reviewed, "steps:\n  design: [{reviews: {}}]\n")
+
+      expect(result["stopped"]).to include("reason" => "review_incomplete")
+    end
+
+    it "keeps the revision when revision_changes is false" do
+      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve, builder: approve}, revision_changes: false}]\n")
+
+      expect(result["outcome"]).to eq("completed")
+    end
+
+    it "stops review_stale when the script says the revision changed under the round" do
+      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve, builder: approve}, revision_changes: true}]\n")
+
+      expect(result["stopped"]).to include("step" => "design", "reason" => "review_stale")
+    end
+
+    it "runs only a missing reviewer again in the same round, writing what reruns gives, and counts the earlier verdict" do
+      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve}, reruns: [{builder: approve}]}]\n")
+
+      expect(result["outcome"]).to eq("completed")
+      expect(types(result)).to include("review_rerun")
+      expect(result["transitions"].find { |each| each["type"] == "simulated_reviewers" && each["rerun"] }).to include("rerun" => 1, "reviews" => {"builder" => "approve"})
+      expect(reviews_of(result)).to eq([["skeptic", "approve", true], ["builder", "approve", true]])
+    end
+
+    it "stops review_incomplete once the reruns the definition's redeliver allows leave a reviewer missing" do
+      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve}, reruns: [{}, {}, {}]}]\n")
+
+      expect(result["stopped"]).to include("reason" => "review_incomplete")
+      expect(types(result).count("review_rerun")).to eq(3)
+    end
+
+    it "stops review_no_change when the retry after a rejection changed nothing the review reads, spending no round" do
+      result = play(reviewed, "steps:\n  design:\n    - {reviews: {skeptic: reject, builder: approve}}\n    - {unchanged: true}\n")
+
+      expect(result).to include("outcome" => "stopped", "stopped" => {"step" => "design", "attempt" => 2, "reason" => "review_no_change"})
+      expect(types(result)).to include("review_no_change")
+      expect(types(result).count("review_started")).to eq(2)
+      expect(types(result).count("simulated_reviewers")).to eq(1)
+    end
+  end
 end

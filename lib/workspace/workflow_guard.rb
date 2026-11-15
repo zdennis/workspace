@@ -330,6 +330,44 @@ module Workspace
       nil
     end
 
+    # The checkout as a review round finds it: HEAD and {#tree_digest} of the tracked files. It is a pair of its own,
+    # not a {#base}: a round compares only what a reviewer must not change (a commit, a tracked edit), against the
+    # moment the round began, whatever the run's base was. {WorkflowReviewRevision} feeds the same two readings into
+    # its digest, so a round's snapshot and its revision agree on what the tracked tree is. A part git can't read
+    # is nil, and {#round_check} then can't compare it. An unborn branch is an answer, not an unread part: both
+    # readings are "none", so a first commit later is a change. Untracked files are not covered. Never raises.
+    #
+    # @param worktree [String] a checkout's top level
+    # @param base [WorkflowRun, Hash{String=>Object}, nil] the run, for the filter handling of {#tree_digest}
+    # @return [Hash{String=>String, nil}] "head" (the commit, "none" on an unborn branch, nil when git can't say) and "tree_sha256"
+    #   ("none" on an unborn branch)
+    def round_snapshot(worktree, base: nil)
+      sha, answered = head_read(worktree)
+      return {"head" => "none", "tree_sha256" => "none"} if answered && sha.nil?
+      {"head" => sha, "tree_sha256" => tree_digest(worktree, base: base)}
+    end
+
+    # Compares the checkout with a {#round_snapshot}. A part that differs is a change even when the other part can't
+    # be read now; a part unread in the snapshot or now is never a pass: with no change found elsewhere the answer
+    # is "unread". Never raises.
+    #
+    # @param worktree [String] a checkout's top level
+    # @param snapshot [Hash{String=>String, nil}] {#round_snapshot}'s answer
+    # @param base [WorkflowRun, Hash{String=>Object}, nil] the run, as for {#round_snapshot}
+    # @return [Hash{String=>Object}, nil] nil when the checkout is as the snapshot found it; else either
+    #   "changed" (the parts that differ: "head", "tree"), "snapshot_head" and "head"; or "unread"
+    #   (the parts that could not be compared, "head" and "tree"), when no part is seen to differ
+    def round_check(worktree, snapshot, base: nil)
+      now = round_snapshot(worktree, base: base)
+      parts = {"head" => "head", "tree" => "tree_sha256"}
+      changed = parts.select { |_, key| snapshot[key] && now[key] && snapshot[key] != now[key] }.keys
+      return {"changed" => changed, "snapshot_head" => snapshot["head"], "head" => now["head"]} if changed.any?
+      unread = parts.select { |_, key| snapshot[key].nil? || now[key].nil? }.keys
+      unread.any? ? {"unread" => unread} : nil
+    rescue
+      {"unread" => %w[head tree]}
+    end
+
     # A person accepted the tracked files as they were (`resume --accept-guard`): `base_guard.accepted_tree_sha256`
     # is {#tree_digest} then, and the tree still reads the same.
     def accepted_tree?(worktree, base)

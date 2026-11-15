@@ -202,6 +202,23 @@ RSpec.describe Workspace::LockHolder do
     end
   end
 
+  describe "#holder_alive?" do
+    it "matches the start time when one was recorded" do
+      allow(snapshot).to receive(:find).with(100).and_return({pid: 100, lstart: "different-start"})
+
+      expect(holder.holder_alive?(pid: 100, started: "start-100")).to be false
+    end
+
+    it "takes a running pid as alive when no start time was recorded, and a gone one as dead" do
+      allow(snapshot).to receive(:find).with(100).and_return({pid: 100, lstart: "start-100"})
+      allow(snapshot).to receive(:find).with(101).and_return(nil)
+
+      expect(holder.holder_alive?(pid: 100, started: nil)).to be true
+      expect(holder.holder_alive?(pid: 101, started: nil)).to be false
+      expect(holder.holder_alive?(pid: nil, started: nil)).to be false
+    end
+  end
+
   describe "#alive?" do
     it "is true when the pid is running with a matching start time" do
       allow(snapshot).to receive(:find).with(100).and_return({pid: 100, lstart: "start-100"})

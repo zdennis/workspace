@@ -684,4 +684,56 @@ RSpec.describe Workspace::InboxDerived do
       expect(result[:warnings]).to include(a_hash_including("code" => "daemons_unavailable", "workspace" => "api.worktree-c"))
     end
   end
+
+  describe "a step being reviewed" do
+    def reviewing_run(code:, details:)
+      run = workflow_run("r-review", workspace: "api.worktree-c", code: code, kind: nil, step: "build")
+      run["current"]["reason"]["details"] = details
+      run["current"]["state"] = "reviewing"
+      run
+    end
+
+    it "gives a stopped round a workflow_waiting_you row, fingerprinted by step and time, with the run linked" do
+      workflow_reply["runs"] = [reviewing_run(code: "review_incomplete", details: {"step" => "build", "round" => 1})]
+
+      row = read[:rows].find { |r| r["kind"] == "workflow_waiting_you" }
+
+      expect(row).to include("id" => "workflow:waiting_you:r-review", "fingerprint" => "build:review_incomplete:1:2026-10-16T11:30:00Z", "title" => "Workflow Fix login: step build, its review stopped (review_incomplete)")
+      expect(row["links"]).to include("run_id" => "r-review", "step" => "build", "attempt" => 1)
+    end
+
+    it "gives a later, different stop of the same step a new fingerprint, so an ack does not carry over" do
+      workflow_reply["runs"] = [reviewing_run(code: "review_incomplete", details: {"step" => "build", "round" => 1})]
+      first = read[:rows].find { |r| r["kind"] == "workflow_waiting_you" }["fingerprint"]
+      workflow_reply["runs"] = [reviewing_run(code: "review_stale", details: {"step" => "build", "round" => 1})]
+
+      expect(read[:rows].find { |r| r["kind"] == "workflow_waiting_you" }["fingerprint"]).not_to eq(first)
+    end
+
+    it "gives no row to a review code that is not a stop of a round" do
+      workflow_reply["runs"] = [reviewing_run(code: "review_custom_socket", details: {"step" => "build"})]
+
+      expect(read[:rows].map { |r| r["kind"] }).not_to include("workflow_waiting_you")
+    end
+
+    it "gives a review pane's permission prompt the run's row, since review panes get no pane row" do
+      workflow_reply["runs"] = [reviewing_run(code: "waiting_you", details: {"kind" => "prompt", "role" => "reviewer", "step" => "build", "pane" => "%9"})]
+
+      expect(read[:rows].map { |r| r["title"] }).to include("Workflow Fix login: step build, its review pane waits for an answer")
+    end
+
+    it "gives a review pane's prompt the run's row for a round whose delivery failed after its line may have been typed" do
+      run = reviewing_run(code: "waiting_you", details: {"kind" => "prompt", "role" => "reviewer", "step" => "build", "pane" => "%9"})
+      run["current"]["review"] = {"round" => 1, "delivery" => "failed", "pane" => "%9"}
+      workflow_reply["runs"] = [run]
+
+      expect(read[:rows].map { |r| r["title"] }).to include("Workflow Fix login: step build, its review pane waits for an answer")
+    end
+
+    it "escapes a run's text in the title" do
+      workflow_reply["runs"] = [reviewing_run(code: "review_incomplete", details: {"step" => "build"}).tap { |run| run["title"] = "bad\e[31m" }]
+
+      expect(read[:rows].find { |r| r["kind"] == "workflow_waiting_you" }["title"]).not_to include("\e")
+    end
+  end
 end

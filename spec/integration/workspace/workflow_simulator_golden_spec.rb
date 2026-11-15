@@ -5,7 +5,8 @@ require "json"
 
 # Pins the simulator's transcript over each shipped preset, with the simulator's fixed run id and clock,
 # so a change to how a run is stored or changed shows up as a difference here. Regenerate a fixture
-# deliberately with GOLDEN_UPDATE=1.
+# deliberately with GOLDEN_UPDATE=1. A preset with a `<preset>.script.yml` beside its fixture plays that script (v2's
+# reviewers write nothing without one); the others play an empty one.
 RSpec.describe Workspace::WorkflowSimulator, "golden transcripts of the presets" do
   let(:base) { Dir.mktmpdir("wf-golden") }
   let(:tmpdir) do
@@ -28,14 +29,15 @@ RSpec.describe Workspace::WorkflowSimulator, "golden transcripts of the presets"
       {"text" => File.read(file), "path" => file, "source" => "builtin"} if File.file?(file) && below.nil?
     end
     definition = Workspace::WorkflowDefinition.parse(File.read(path), id: preset, source: "builtin", path: path, parent_lookup: lookup)
-    script = Workspace::WorkflowSimScript.parse("steps: {}\n", definition: definition.to_h, source: "golden.yml")
+    scripted = File.join(fixtures, "#{preset}.script.yml")
+    script = Workspace::WorkflowSimScript.parse(File.file?(scripted) ? File.read(scripted) : "steps: {}\n", definition: definition.to_h, source: "golden.yml")
     inputs = definition.to_h["inputs"].select { |_, each| each["required"] }.transform_values { "golden" }
     result = simulator.call(definition: definition, script: script, inputs: inputs)
     text = JSON.pretty_generate(result) + "\n"
     text.gsub(base, "<TMP>").gsub(/\b[0-9a-f]{40,64}\b/, "<SHA>")
   end
 
-  %w[rpiv rpiv-auto-approve pr-feedback investigate explore].each do |preset|
+  %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2 pr-feedback investigate explore].each do |preset|
     it "reproduces the #{preset} transcript byte for byte" do
       text = transcript(preset)
       golden = File.join(fixtures, "#{preset}.json")

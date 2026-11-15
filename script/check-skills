@@ -150,7 +150,13 @@ NOT_CODES = %w[
   waiting_message review_request prompt_queued lock_busy
   input_not_empty parked_timeout
   waiting_lock waiting_you turn_ended_incomplete failed_check
+  max_rounds next_round rounds_spent next_action
 ].freeze
+
+# Stored run reason codes a review can stop on (not error codes), read from the one list the engine uses.
+REVIEW_STOPS = File.read(File.join(WORKTREE_ROOT, "lib/workspace/workflow_transitions.rb"))
+  .match(/REVIEW_STOPS = %w\[([^\]]*)\]/)&.[](1).to_s.split.freeze
+raise "empty REVIEW_STOPS" if REVIEW_STOPS.empty?
 
 def feature_names
   @feature_names ||= File.read(File.join(WORKTREE_ROOT, "lib/workspace/commands/capabilities.rb"))
@@ -340,7 +346,7 @@ FILES.each do |rel|
         mismatches << [rel, claim.line, w, "pattern matches no code in error_codes.rb"] unless REGISTRY.any? { |c| c.match?(re) }
       elsif REGISTRY.include?(w)
         totals[:codes] += 1
-      elsif NOT_CODES.include?(w) || feature_names.include?(w)
+      elsif NOT_CODES.include?(w) || REVIEW_STOPS.include?(w) || feature_names.include?(w)
         non_registry[w] << [rel, claim.line]
       else
         totals[:codes] += 1

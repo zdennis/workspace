@@ -86,7 +86,7 @@ RSpec.describe Workspace::WorkflowReviewTally do
       expect(result).not_to have_key(:problem)
       expect(row(result, "skeptic")).to eq("reviewer" => "skeptic", "path" => "reviews/plan.2.r1/skeptic.md", "verdict" => "approve", "revision" => "rev1",
         "agent_id" => "agent-skeptic", "sha256" => Digest::SHA256.file(File.join(round_dir, "skeptic.md")).hexdigest, "counted" => true, "problem" => nil)
-      expect(proof.calls).to contain_exactly(["skeptic.md", "%9", "app"], ["supportive.md", "%9", "app"], ["implementer.md", "%9", "app"])
+      expect(proof.calls).to contain_exactly(["skeptic.md", ["%9"], "app"], ["supportive.md", ["%9"], "app"], ["implementer.md", ["%9"], "app"])
     end
 
     it "approves with a verdict missing when the rest already decide it" do
@@ -195,6 +195,15 @@ RSpec.describe Workspace::WorkflowReviewTally do
 
       expect(tally.call(run: run_hash, step: step, round: round.except("pane"))[:reviews].map { |each| each["problem"] }.uniq).to eq(["no_review_pane"])
       expect(tally.call(run: run_hash, step: step, round: round.except("revision"))[:reviews].map { |each| each["problem"] }.uniq).to eq(["no_revision"])
+    end
+
+    it "proves each verdict against every pane the round was delivered into, so one written before a rerun's new pane counts" do
+      verdict("skeptic", "approve")
+      verdict("supportive", "approve")
+
+      tally.call(run: run_hash, step: step, round: round.merge("pane" => "%11", "panes" => %w[%9 %11]))
+
+      expect(proof.calls.map { |call| call[1] }.uniq).to eq([%w[%9 %11]])
     end
 
     it "needs every reviewer when need is not set" do
@@ -314,6 +323,17 @@ RSpec.describe Workspace::WorkflowReviewTally do
 
       expect(tally.open_round(run: run_hash, round: 1)).to include(code: "review_incomplete", problem: /could not make/)
       expect(tally.open_round(run: run_hash.merge("artifacts_dir" => nil), round: 1)).to include(code: "review_incomplete")
+    end
+  end
+
+  describe ".rerun_names" do
+    it "names the reviewers whose verdicts did not count, in order, and none when a round problem kept every verdict out" do
+      rows = [{"reviewer" => "a", "counted" => true}, {"reviewer" => "b", "counted" => false, "problem" => "missing"},
+        {"reviewer" => "c", "counted" => false, "problem" => "log_gap"}]
+
+      expect(described_class.rerun_names(rows)).to eq(%w[b c])
+      expect(described_class.rerun_names(rows.map { |row| row.merge("counted" => false, "problem" => "no_review_pane") })).to eq([])
+      expect(described_class.rerun_names(nil)).to eq([])
     end
   end
 end

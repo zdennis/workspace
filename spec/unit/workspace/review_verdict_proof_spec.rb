@@ -50,6 +50,14 @@ RSpec.describe Workspace::ReviewVerdictProof do
     expect(proven?).to eq(ok: true, agent_id: "agent-1", sha256: sha, problem: nil)
   end
 
+  it "proves a verdict against any of the round's panes, and refuses one from a pane not among them" do
+    sha = write_verdict
+    line(sha: sha, pane: "%9")
+
+    expect(proof.proven?(round_dir: round_dir, path: path, review_pane: %w[%9 %11], workspace: "app")).to include(ok: true)
+    expect(proof.proven?(round_dir: round_dir, path: path, review_pane: %w[%11], workspace: "app")).to include(problem: "other_pane")
+  end
+
   it "accepts an Edit after the Write, the last write's agent and hash counting" do
     line(sha: write_verdict("first\n"))
     sha = write_verdict

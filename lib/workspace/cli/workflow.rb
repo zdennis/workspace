@@ -81,7 +81,7 @@ module Workspace
           opts.separator "holds, in the same queue as `lock acquire` and `dev up`."
           opts.separator ""
           opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml (a project's own, in #{File.join(@config.workspace_projects_dir, "NAME", "workflows")}/ID.yml, are found first; never read from a repository), then the directories of the workflows.sources config key in list order (source:1, source:2, ...), then the presets that"
-          opts.separator "ship with workspace (rpiv: research, plan, implement, verify; rpiv-auto-approve: rpiv with reviewer agents in place of the plan gate; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix; explore: read-only research, a gate, then a report note). See docs/README.workflow.md."
+          opts.separator "ship with workspace (rpiv: research, plan, implement, verify; rpiv-auto-approve: rpiv with reviewer agents in place of the plan gate; rpiv-auto-approve-v2: rpiv with the engine's own plan reviewers in place of the gate; pr-feedback: triage review feedback, then fix; investigate: reproduce, diagnose, fix; explore: read-only research, a gate, then a report note). See docs/README.workflow.md."
           opts.separator ""
           HelpPages.overview_verbs(HelpPages::WORKFLOW).each { |line| opts.separator line }
           opts.separator "Run `workspace workflow VERB --help` for a verb's options."
@@ -108,6 +108,7 @@ module Workspace
           opts.on("--extra-attempts N", "resume, reject: add N to the run's attempt allowance when it has spent max_attempts (ignored by a resume that starts no attempt)") { |v| options[:extra_attempts] = v }
           opts.on("--extra-tokens N", "resume, reject: add N to the run's token budget when it has used budget.tokens (ignored by a resume that starts no attempt)") { |v| options[:extra_tokens] = v }
           opts.on("--extra-time DURATION", "resume, reject: add DURATION (30m, 2h) to the run's timeout when it has used its timeout: (ignored by a resume that starts no attempt)") { |v| options[:extra_time] = v }
+          opts.on("--extra-rounds N", "resume: add N to the review rounds the step may spend (its review.max_rounds) when it has spent them all") { |v| options[:extra_rounds] = v }
           opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
           opts.on("--step STEP", "approve, reject: the gated step you saw (current.step in status --json); refused unless the run waits there") { |v| options[:step] = v }
           opts.on("--attempt N", "approve, reject: that step's attempt you saw (current.attempt); needs --step") { |v| options[:attempt] = v }
@@ -217,6 +218,7 @@ module Workspace
         extra_attempts = workflow_extra_attempts(subcommand, options[:extra_attempts])
         extra_tokens = workflow_extra_tokens(subcommand, options[:extra_tokens])
         extra_seconds = workflow_extra_time(subcommand, options[:extra_time])
+        extra_rounds = workflow_extra_rounds(subcommand, options[:extra_rounds])
 
         start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout, "--force" => :force, "--ref" => :ref}
         if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
@@ -339,7 +341,7 @@ module Workspace
             row
           end
         when "resume"
-          workflow_action(invocation, "workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, caller_pane: ENV["TMUX_PANE"], accept_guard: options[:accept_guard] || false, guard_retry: options[:guard_retry] || false) }
+          workflow_action(invocation, "workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds, caller_pane: ENV["TMUX_PANE"], accept_guard: options[:accept_guard] || false, guard_retry: options[:guard_retry] || false) }
         when "cancel" then workflow_action(invocation, "workflow cancel", options) { @workflow_command.cancel(run: subject) }
         when "approve"
           workflow_action(invocation, "workflow approve", options) do
@@ -375,6 +377,14 @@ module Workspace
         return nil if text.nil?
         raise UsageError, "--extra-attempts is for `workflow resume` and `workflow reject`." unless %w[resume reject].include?(subcommand)
         raise UsageError, "--extra-attempts must be a whole number from 1 up, got #{text.to_s[0, 20].inspect}." unless text.match?(/\A[1-9]\d{0,5}\z/)
+        text.to_i
+      end
+
+      # `--extra-rounds` of resume, checked: a whole number from 1 up.
+      def workflow_extra_rounds(subcommand, text)
+        return nil if text.nil?
+        raise UsageError, "--extra-rounds is for `workflow resume`." unless subcommand == "resume"
+        raise UsageError, "--extra-rounds must be a whole number from 1 up, got #{text.to_s[0, 20].inspect}." unless text.match?(/\A[1-9]\d{0,3}\z/)
         text.to_i
       end
 

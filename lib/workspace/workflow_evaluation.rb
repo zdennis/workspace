@@ -46,12 +46,14 @@ module Workspace
     #   default: {NoReviewTally})
     # @param review_closer [#call, nil] given the run id and an ended round's "step", "round" and "pane", closes its review
     #   window with the lock given up; it must not raise (default: none, so the window stays open)
+    # @param round_rerun [Workspace::WorkflowRoundRerun, nil] has a round after a rejected one checked for an unchanged revision
+    #   before it is delivered (default: none, so every round registered is delivered)
     # @param review_revision [#call, nil] given `run:`, `step:` and `stop_when:`, the revision of what the round judges now
     #   ({WorkflowReviewRevision}), computed again with the lock given up when a round ends (default: none, and the
     #   round is tallied at once, under the lock that saw it end)
     # @param clock [#call] returns the current Time
     def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil,
-      review_revision: nil, clock: -> { Time.now })
+      review_revision: nil, round_rerun: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @progress = progress
@@ -65,6 +67,7 @@ module Workspace
       @review_tally = review_tally || NoReviewTally.new
       @review_closer = review_closer
       @review_revision = review_revision
+      @round_rerun = round_rerun
       @clock = clock
     end
 
@@ -176,6 +179,8 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def review_ended(run, ctx:)
       read = WorkflowRun.from_h(run)
+      guarded = round_guard(read, ctx)
+      return guarded if guarded
       return tally_round(read, ctx) unless @review_revision
       work = read.thawed
       state = step_state(work)
@@ -206,8 +211,7 @@ module Workspace
       run = finish_check(run_id, ctx.check) if ctx.check
       return finish_review_end(run_id, ctx.review_end) if ctx.review_end
       review = ctx.review
-      run = @review_round.call(run_id, review) || run if review && @review_round
-      run
+      review ? start_round(run_id, review, run) : run
     end
 
     # Runs what {#evaluate} registered with the run's lock given up, and whatever comes after it: a proof can be
@@ -224,7 +228,7 @@ module Workspace
         run, check, registered = apply_check(run_id, check, run_check(run_id, check))
         review = registered if registered
       end
-      (review && @review_round) ? (@review_round.call(run_id, review) || run) : run
+      review ? start_round(run_id, review, run) : run
     rescue Workspace::Error => e
       # Cancelled while the check ran: there is nothing left to decide.
       raise unless e.code == "run_not_active"
@@ -236,17 +240,31 @@ module Workspace
     # Puts the phase answer +changed+ (a WorkflowRun) into the run Hash being changed in place.
     def adopt(run, changed) = run.replace(changed.thawed)
 
+    # Runs the review round a change registered, with the lock given up, once {WorkflowRoundRerun#check_revision} has
+    # had a round after a rejected one judged against the revision the rejection judged: the same one stops the round
+    # `review_no_change` and nothing is delivered; another is handed to the delivery, which judges that revision.
+    def start_round(run_id, review, run)
+      return run unless @review_round
+      checked = @round_rerun ? @round_rerun.check_revision(run_id, review) : {}
+      return checked[:run] if checked[:run]
+      pending = checked[:revision] ? review.merge("revision" => checked[:revision]) : review
+      @review_round.call(run_id, pending) || run
+    rescue Workspace::Error => e
+      raise unless e.code == "run_not_active"
+      @store.run(run_id)
+    end
+
     # Computes the ended round's revision again with the lock given up, then, under the lock and only while the run
-    # still waits for this recompute ({#wanted_round?}), decides the round: a revision that can't be computed stops
+    # still waits for this recompute ({WorkflowTransitions.round_recompute_wanted?}), decides the round: a revision that can't be computed stops
     # `review_incomplete`, one that differs from the revision the round was delivered with stops `review_stale` (no
     # loop, no further round), and an unchanged one is tallied. What that decision registers is followed up in turn.
     def finish_review_end(run_id, pending)
       read = @store.run(run_id)
       step = read.definition["steps"].find { |each| each["id"] == pending["step"] }
-      answer = @review_revision.call(run: read, step: step, stop_when: -> { !still_wanted_round?(run_id, pending) })
+      answer = @review_revision.call(run: read, step: step, stop_when: -> { !round_still_wanted?(run_id, pending) })
       follow = nil
       run = @change.call(run_id) do |current, ctx|
-        next unless wanted_round?(current, pending)
+        next unless WorkflowTransitions.round_recompute_wanted?(current, pending)
         follow = ctx
         judge_round(current, answer, ctx)
       end
@@ -254,6 +272,25 @@ module Workspace
     rescue Workspace::Error => e
       raise unless e.code == "run_not_active"
       @store.run(run_id)
+    end
+
+    # The checkout against the snapshot the round began with, before anything is recomputed or tallied (a round with no
+    # snapshot, begun before the guard existed or by an engine built without one, is not checked). A changed
+    # checkout stops the round `review_guard` and an unreadable one `review_incomplete`, never a pass; neither loops
+    # through `on_fail`, and the round's record ends `review_guard` or `review_incomplete`.
+    #
+    # @return [WorkflowRun, nil] the run afterwards when the round was stopped; nil when it goes on
+    def round_guard(read, ctx)
+      snapshot = step_state(read.to_h)["review"]&.dig("snapshot")
+      return nil unless snapshot.is_a?(Hash)
+      found = @guard.round_check(read.worktree, snapshot, base: read)
+      return nil unless found
+      tally = if found["unread"]
+        {outcome: :incomplete, reviews: [], problem: "the checkout could not be compared with the round's start (#{found["unread"].join(", ")} unread)"}
+      else
+        {outcome: :review_guard, reviews: [], changed: found["changed"], snapshot_head: found["snapshot_head"], head: found["head"]}
+      end
+      @progress.decide_review(read, tally, ctx: ctx)
     end
 
     def judge_round(read, answer, ctx)
@@ -276,31 +313,37 @@ module Workspace
       @progress.decide_review(read, tally, ctx: ctx)
     end
 
-    # Whether a recompute's result still applies: the run is on the step, attempt and round the recompute started
-    # for, still `reviewing` with no stop and no park, and the round's mark is that recompute's own try (a tick that
-    # took it for lost started another).
-    def wanted_round?(run, pending)
-      run = WorkflowRun.from_h(run)
-      step = run.steps[pending["step"]]
-      round = step&.review
-      !run.parked && run.reason.nil? && !WorkflowRunStore::TERMINAL_STATES.include?(run.state) && run.current == pending["step"] &&
-        step.state == "reviewing" && step.last_attempt&.n == pending["attempt"] && round.is_a?(Hash) && round["round"] == pending["round"] &&
-        round.dig("recompute", "try") == pending["try"]
-    end
-
-    # {#wanted_round?} read from the store, for a command running outside the lock; a run that can't be read is still wanted.
-    def still_wanted_round?(run_id, pending)
-      wanted_round?(@store.run(run_id), pending)
+    # {WorkflowTransitions.round_recompute_wanted?} read from the store, for a command running outside the lock; a run that can't be read is still wanted.
+    def round_still_wanted?(run_id, pending)
+      WorkflowTransitions.round_recompute_wanted?(@store.run(run_id), pending)
     rescue Workspace::Error, SystemCallError
       true
     end
 
     # Whether a turn's end is the end of the running round's review turn: in the round's own pane, begun no earlier
-    # than the round, with the round not stopped and its end not already being judged.
+    # than the round, with the round not stopped and its end not already being judged. In a window cleared for the
+    # round (one an earlier round left, `clear_from`), a turn counts when it began at or after the confirmed clear
+    # (`cleared_at`, else, once the line is delivered, `clear_from`): a turn a person had there before ends with the
+    # clear and is not the reviewers', and while the line is still being typed no turn counts.
+    # A turn whose start the daemon does not know (it restarted during the round) counts once it stopped at or after
+    # the delivery (`delivered_at`); before a delivery is recorded it does not.
     def review_turn?(run, round, pane, turn_started, stopped_at)
       return false if run["reason"] || !round.is_a?(Hash) || round["recompute"] || pane.nil? || round["pane"] != pane
       started = Time.iso8601(round["started_at"].to_s)
+      return cleared_turn?(round, turn_started, stopped_at) if round["clear_from"]
       !(turn_started && turn_started < started) && !(stopped_at && stopped_at < started)
+    rescue ArgumentError
+      false
+    end
+
+    def cleared_turn?(round, turn_started, stopped_at)
+      if turn_started
+        # Until the line is delivered the clear is not known to have happened: a turn a person had in the window
+        # then, begun after the clear was decided, would otherwise count.
+        from = round["cleared_at"] || (round["delivered_at"] && round["clear_from"])
+        return !from.nil? && turn_started >= Time.iso8601(from.to_s)
+      end
+      !round["delivered_at"].nil? && !stopped_at.nil? && stopped_at >= Time.iso8601(round["delivered_at"].to_s)
     rescue ArgumentError
       false
     end

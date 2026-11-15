@@ -59,6 +59,17 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.round_delivery(round(delivery: "failed"), started)).to eq(:failed)
     end
 
+    it "takes a holder stored with no start time for alive only within a multiple of the window, so a reused pid does not hold the mark for ever" do
+      untimed = round(holder: {"pid" => 41, "started" => nil})
+      limit = described_class::UNTIMED_HOLDER_LIMIT
+      expect(limit).to eq(4 * window)
+
+      expect(described_class.round_delivery(untimed, started + limit, alive: ->(_) { true })).to eq(:delivering)
+      expect(described_class.round_delivery(untimed, started + limit + 1, alive: ->(_) { true })).to eq(:unknown)
+      timed = round(holder: {"pid" => 41, "started" => "Sat Oct  4 11:59:00 2026"})
+      expect(described_class.round_delivery(timed, started + limit + 1, alive: ->(_) { true })).to eq(:delivering)
+    end
+
     it "says nothing for a delivered round or none" do
       expect(described_class.round_delivery(round(delivery: nil), started + window + 1)).to be_nil
       expect(described_class.round_delivery(nil, started)).to be_nil
@@ -66,8 +77,30 @@ RSpec.describe Workspace::WorkflowTransitions do
 
     it "is due for a lapsed or failed delivery while redeliveries last, exhausted after" do
       expect(described_class.round_redelivery(reviewing, started)).to be_nil
-      expect(described_class.round_redelivery(reviewing, started + window + 1)).to eq(state: :due, round: 1, retries: 0, limit: 2, mark: :unknown)
-      expect(described_class.round_redelivery(reviewing({delivery: "failed", redeliveries: 2}), started)).to eq(state: :exhausted, round: 1, retries: 2, limit: 2, mark: :failed)
+      expect(described_class.round_redelivery(reviewing, started + window + 1)).to eq(state: :due, round: 1, retries: 0, limit: 2, mark: :unknown, wait: 0)
+      expect(described_class.round_redelivery(reviewing({delivery: "failed", redeliveries: 2}), started)).to eq(state: :exhausted, round: 1, retries: 2, limit: 2, mark: :failed, wait: 0)
+    end
+
+    it "waits out the undelivered line's backoff from a stored failure's time before a failed round is due" do
+      failed = reviewing({delivery: "failed", redeliveries: 1, failure: {"code" => "agent_not_ready", "at" => started.iso8601}})
+      backoff = described_class::REDELIVER_BACKOFF[1]
+
+      expect(described_class.round_redelivery(failed, started + 10)).to include(state: :waiting, wait: backoff - 10)
+      expect(described_class.round_redelivery(failed, started + backoff)).to include(state: :due, wait: 0)
+      expect(described_class.round_redelivery(reviewing({delivery: "failed", failure: {"at" => "garbled"}}), started)).to include(state: :due)
+    end
+
+    it "is exhausted at once for a failure no delivery again gets past" do
+      custom = reviewing({delivery: "failed", failure: {"code" => "review_custom_socket", "at" => started.iso8601}})
+
+      expect(described_class.round_redelivery(custom, started)).to include(state: :exhausted, retries: 0, limit: 2)
+    end
+
+    it "leaves a lapsed round with a live holder alone, and is due once the holder is gone" do
+      held = reviewing({holder: {"pid" => 41, "started" => "x"}})
+
+      expect(described_class.round_redelivery(held, started + window + 1, alive: ->(_) { true })).to be_nil
+      expect(described_class.round_redelivery(held, started + window + 1, alive: ->(_) { false })).to include(state: :due, mark: :unknown)
     end
 
     it "is nil for a stopped round, a parked run or a step not being reviewed" do
@@ -76,10 +109,21 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.round_redelivery(run_with(steps: {"plan" => step("running")}), started)).to be_nil
     end
 
-    it "does not wake a run whose round has to be delivered again, since nothing on a tick redelivers it yet" do
+    it "wakes a run whose round has to be delivered again, or stopped once its deliveries again are spent, as :review" do
       expect(described_class.wakeable?(reviewing, started)).to be_nil
-      expect(described_class.wakeable?(reviewing, started + window + 1)).to be_nil
-      expect(described_class.wakeable?(reviewing({delivery: "failed"}), started)).to be_nil
+      expect(described_class.wakeable?(reviewing, started + window + 1)).to eq(:review)
+      expect(described_class.wakeable?(reviewing({delivery: "failed"}), started)).to eq(:review)
+      expect(described_class.wakeable?(reviewing({delivery: "failed", redeliveries: 2}), started)).to eq(:review)
+    end
+
+    it "does not wake a round whose failure waits out its backoff, a stopped round, or a slow delivery whose holder lives" do
+      waiting = reviewing({delivery: "failed", failure: {"code" => "agent_not_ready", "at" => started.iso8601}})
+      expect(described_class.wakeable?(waiting, started + 1)).to be_nil
+      expect(described_class.wakeable?(reviewing({delivery: "failed"}, "reason" => {"code" => "review_incomplete"}, "state" => "waiting"), started)).to be_nil
+      held = reviewing({holder: {"pid" => 41, "started" => "x"}})
+      expect(described_class.wakeable?(held, started + window + 1, alive: ->(_) { true })).to be_nil
+      expect(described_class.wakeable?(held, started + window + 1)).to be_nil
+      expect(described_class.wakeable?(held, started + window + 1, alive: ->(_) { false })).to eq(:review)
     end
 
     describe ".lost_round?" do
@@ -108,6 +152,41 @@ RSpec.describe Workspace::WorkflowTransitions do
       end
     end
 
+    describe ".press_unanswered? and the :unanswered wake" do
+      let(:wait) { Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT }
+
+      def pressed(at, state: "sent", **round_fields)
+        reviewing({delivery: nil, pane: "%9", sweep: {"interrupt" => {"state" => state, "at" => at.iso8601}}}.merge(round_fields))
+      end
+
+      it "reads the newest confirmed press, never a pending claim" do
+        both = {"interrupt" => {"state" => "sent", "at" => started.iso8601}, "run_interrupt" => {"state" => "sent", "at" => (started + 60).iso8601}}
+        expect(described_class.round_last_press({"sweep" => both})).to eq(started + 60)
+        expect(described_class.round_last_press({"sweep" => {"interrupt" => {"state" => "pending", "at" => started.iso8601}}})).to be_nil
+        expect(described_class.round_last_press(nil)).to be_nil
+      end
+
+      it "waits the longer of the review timeout and the definition's stall after the press" do
+        run = pressed(started)
+        round = run["steps"]["plan"]["review"]
+        expect(described_class.press_unanswered?(run, round, started + wait - 1)).to be(false)
+        expect(described_class.press_unanswered?(run, round, started + wait)).to be(true)
+        run["definition"]["stall"] = 600
+        expect(described_class.press_unanswered?(run, round, started + wait - 1)).to be(false)
+        run["definition"]["stall"] = wait * 2
+        expect(described_class.press_unanswered?(run, round, started + wait)).to be(false)
+        expect(described_class.press_unanswered?(run, round, started + wait * 2)).to be(true)
+      end
+
+      it "wakes a delivered round pressed and unanswered as :unanswered, and not a pending press, a stopped round or one being judged" do
+        expect(described_class.wakeable?(pressed(started), started + wait - 1)).to be_nil
+        expect(described_class.wakeable?(pressed(started), started + wait)).to eq(:unanswered)
+        expect(described_class.wakeable?(pressed(started, state: "pending"), started + wait)).to be_nil
+        expect(described_class.wakeable?(pressed(started).merge("reason" => {"code" => "review_incomplete"}), started + wait)).to be_nil
+        expect(described_class.wakeable?(pressed(started, recompute: {"started_at" => (started + wait).iso8601, "try" => 1}), started + wait)).to be_nil
+      end
+    end
+
     it "starts no attempt on a resume of a step being reviewed" do
       expect(described_class.starts_attempt?(reviewing({delivery: nil}, "reason" => {"code" => "review_incomplete"}), from: nil, pane: nil)).to be(false)
       expect(described_class.starts_attempt?(reviewing, from: "plan", pane: nil)).to be(true)
@@ -133,6 +212,12 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.starts_round?(run_with(steps: {"plan" => step("failed")}), from: nil)).to be(false)
     end
 
+    it "starts no round on a resume of a round waiting for its review.uses, which was allowed when it was reached" do
+      waiting = reviewing({delivery: nil, held: "waiting_lock"}, "reason" => {"code" => "waiting_lock"})
+      expect(described_class.starts_round?(waiting, from: nil)).to be(false)
+      expect(described_class.starts_attempt?(waiting, from: nil, pane: nil)).to be(false)
+    end
+
     it "leaves a live round alone and lets a stopped or lapsed one be acted on" do
       run = reviewing(delivery: nil)
       expect(described_class.left_alone(run, run["steps"]["plan"], nil, nil, started, -> { "%3" })).to eq("the review round of step plan is still running")
@@ -140,6 +225,15 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.left_alone(stopped, stopped["steps"]["plan"], nil, nil, started, -> { "%3" })).to be_nil
       lapsed = reviewing
       expect(described_class.left_alone(lapsed, lapsed["steps"]["plan"], nil, nil, started + window + 1, -> { "%3" })).to be_nil
+    end
+
+    it "leaves a lapsed round alone while its holder lives, and lets it be acted on once the holder is gone" do
+      held = reviewing({holder: {"pid" => 41, "started" => "x"}})
+      later = started + window + 1
+
+      expect(described_class.left_alone(held, held["steps"]["plan"], nil, nil, later, -> { "%3" }, alive: ->(_) { true })).to eq("the review round of step plan is still running")
+      expect(described_class.left_alone(held, held["steps"]["plan"], nil, nil, later, -> { "%3" }, alive: ->(_) { false })).to be_nil
+      expect(described_class.left_alone(held, held["steps"]["plan"], nil, nil, started, -> { "%3" }, alive: ->(_) { false })).to eq("the review round of step plan is still running")
     end
   end
 
@@ -249,6 +343,83 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.target_step(run, from: "b")).to eq("b")
       expect(described_class.target_step(run.merge("backoff" => {"to" => "b"}))).to eq("b")
       expect(described_class.target_step(run)).to eq("a")
+    end
+  end
+
+  describe "review round counts" do
+    let(:run) do
+      run_with(steps: {"a" => step("failed", {"n" => 1}), "b" => step("pending")}).tap do |run|
+        run["definition"]["steps"].first["review"] = {"from" => %w[skeptic], "max_rounds" => 2}
+        run["definition"]["steps"].last["review"] = {"from" => %w[skeptic]}
+      end
+    end
+
+    it "allows a step its review's max_rounds, the default when the stored review names none, and nothing without a review" do
+      expect(described_class.review_rounds_allowance(run, "a")).to eq(2)
+      expect(described_class.review_rounds_allowance(run, "b")).to eq(Workspace::WorkflowReviewSpec::DEFAULT_MAX_ROUNDS)
+      run["definition"]["steps"].last.delete("review")
+      expect(described_class.review_rounds_allowance(run, "b")).to be_nil
+    end
+
+    it "is spent once the step's review_rounds reach its allowance, and never without a review" do
+      expect(described_class.review_rounds_spent?(run, "a")).to be false
+      run["steps"]["a"]["review_rounds"] = 2
+      expect(described_class.review_rounds_spent?(run, "a")).to be true
+      run["definition"]["steps"].first.delete("review")
+      expect(described_class.review_rounds_spent?(run, "a")).to be false
+    end
+  end
+
+  describe ".review_rounds_allowance and .review_extra_rounds_needed" do
+    let(:run) do
+      {"definition" => {"steps" => [{"id" => "a", "review" => {"from" => %w[x], "need" => 1, "max_rounds" => 2}}, {"id" => "b"}]},
+       "steps" => {"a" => {"review_rounds" => 3}, "b" => {}}}
+    end
+
+    it "adds the step's extra_rounds to max_rounds, and needs the overrun plus one" do
+      expect(described_class.review_rounds_allowance(run, "a")).to eq(2)
+      expect(described_class.review_extra_rounds_needed(run, "a")).to eq(2)
+      run["steps"]["a"]["extra_rounds"] = 2
+      expect(described_class.review_rounds_allowance(run, "a")).to eq(4)
+      expect(described_class.review_rounds_spent?(run, "a")).to be false
+      expect(described_class.review_extra_rounds_needed(run, "a")).to eq(0)
+    end
+
+    it "is nil for a step with no review" do
+      expect(described_class.review_extra_rounds_needed(run, "b")).to be_nil
+    end
+  end
+
+  describe ".rejection_limit and .rounds_refuse_resume?" do
+    let(:run) do
+      run_with(steps: {"a" => step("failed", {"n" => 1}), "b" => step("pending")}).tap do |run|
+        run["current"] = "a"
+        run["definition"]["max_attempts"] = 5
+        run["definition"]["steps"].first["review"] = {"from" => %w[skeptic], "max_rounds" => 2}
+        run["steps"]["a"]["review_rounds"] = 1
+      end
+    end
+
+    it "lets a rejected step try again with rounds and attempts left, and names the first limit spent: run, step, rounds" do
+      expect(described_class.rejection_limit(run)).to eq("rounds" => 1, "max_rounds" => 2)
+      run["steps"]["a"]["review_rounds"] = 2
+      expect(described_class.rejection_limit(run)).to include("limit" => "rounds")
+      run["definition"]["steps"].first["max_attempts"] = 1
+      expect(described_class.rejection_limit(run)).to include("limit" => "step", "attempts" => 1, "max_attempts" => 1)
+      run["definition"]["max_attempts"] = 1
+      expect(described_class.rejection_limit(run)).to include("limit" => "run", "attempts" => 1, "max_attempts" => 1)
+    end
+
+    it "refuses a plain resume only once the rounds are spent, of a rejected step or a round that would start" do
+      run["reason"] = {"code" => "review_rejected"}
+      expect(described_class.rounds_refuse_resume?(run)).to be false
+      run["steps"]["a"]["review_rounds"] = 2
+      expect(described_class.rounds_refuse_resume?(run)).to be true
+      run["reason"] = {"code" => "failed_check"}
+      expect(described_class.rounds_refuse_resume?(run)).to be false
+      run["steps"]["a"].merge!("state" => "reviewing", "review" => {"round" => 2, "ended_at" => "x"})
+      run["reason"] = {"code" => "review_incomplete"}
+      expect(described_class.rounds_refuse_resume?(run)).to be true
     end
   end
 
@@ -506,6 +677,156 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.failure_text({"cause" => "guard", "guard" => "head_moved", "base_sha" => "a" * 40, "head" => "b" * 40})).to eq("HEAD moved from #{"a" * 12} to #{"b" * 12} since the run started")
       expect(described_class.failure_text({"cause" => "reported", "summary" => "no"})).to eq("its agent reported failure: no")
       expect(described_class.failure_text({"exit_code" => 2, "log" => "l"})).to eq("its check exited 2 (log: l)")
+    end
+  end
+
+  describe "the round predicates" do
+    def reviewing(round = {})
+      {"id" => "wr_1", "state" => "running", "current" => "plan", "reason" => nil,
+       "steps" => {"plan" => {"state" => "reviewing", "attempts" => [{"n" => 2}],
+                              "review" => {"round" => 3, "delivery" => "delivering"}.merge(round)}}}
+    end
+
+    let(:delivery) { {"step" => "plan", "attempt" => 2, "round" => 3} }
+    let(:recompute) { delivery.merge("try" => 1) }
+
+    it "wants a delivery of the round the run waits on, and a recompute whose try is the round's mark" do
+      expect(described_class.round_delivery_wanted?(reviewing, delivery)).to be(true)
+      expect(described_class.round_recompute_wanted?(reviewing("delivery" => nil, "recompute" => {"try" => 1}), recompute)).to be(true)
+    end
+
+    it "wants neither once the run stopped, parked, ended or moved to another step, attempt or round" do
+      judged = reviewing("recompute" => {"try" => 1})
+      [[reviewing.merge("reason" => {"code" => "review_incomplete"}), judged.merge("reason" => {"code" => "review_incomplete"}), {}],
+        [reviewing.merge("parked" => {"pane" => "%1"}), judged.merge("parked" => {"pane" => "%1"}), {}],
+        [reviewing.merge("state" => "cancelled"), judged.merge("state" => "cancelled"), {}],
+        [reviewing.merge("current" => "verify"), judged.merge("current" => "verify"), {}],
+        [reviewing, judged, {"attempt" => 1}],
+        [reviewing, judged, {"round" => 2}]].each do |for_delivery, for_recompute, change|
+        expect(described_class.round_delivery_wanted?(for_delivery, delivery.merge(change))).to be(false)
+        expect(described_class.round_recompute_wanted?(for_recompute, recompute.merge(change))).to be(false)
+      end
+    end
+
+    it "wants no delivery of a round no longer delivering or being judged, and no recompute of another try or of none" do
+      expect(described_class.round_delivery_wanted?(reviewing("delivery" => "failed"), delivery)).to be(false)
+      expect(described_class.round_delivery_wanted?(reviewing("recompute" => {"try" => 1}), delivery)).to be(false)
+      expect(described_class.round_recompute_wanted?(reviewing("recompute" => {"try" => 2}), recompute)).to be(false)
+      expect(described_class.round_recompute_wanted?(reviewing, recompute.merge("try" => nil))).to be(false)
+      expect(described_class.round_recompute_wanted?(reviewing, delivery)).to be(false)
+    end
+  end
+
+  describe ".rejected_revision" do
+    def run_with(*attempts) = {"steps" => {"plan" => {"attempts" => attempts}}}
+
+    it "answers the revision of the step's last decided round when it rejected the step" do
+      run = run_with({"n" => 1, "review_outcome" => {"round" => 1, "passed" => false, "revision" => "rev1"}}, {"n" => 2})
+
+      expect(described_class.rejected_revision(run, "plan")).to eq("revision" => "rev1", "round" => 1, "attempt" => 1)
+    end
+
+    it "answers nil when the last decided round passed, none was decided, or the outcome has no revision (stored before it was kept)" do
+      passed = run_with({"n" => 1, "review_outcome" => {"round" => 1, "passed" => false, "revision" => "rev1"}},
+        {"n" => 2, "review_outcome" => {"round" => 2, "passed" => true, "revision" => "rev2"}}, {"n" => 3})
+
+      expect(described_class.rejected_revision(passed, "plan")).to be_nil
+      expect(described_class.rejected_revision(run_with({"n" => 1}), "plan")).to be_nil
+      expect(described_class.rejected_revision(run_with({"n" => 1, "review_outcome" => {"round" => 1, "passed" => false}}, {"n" => 2}), "plan")).to be_nil
+      expect(described_class.rejected_revision({"steps" => {}}, "plan")).to be_nil
+    end
+  end
+
+  describe ".round_may_have_typed?" do
+    it "is true only for a delivery that got as far as typing and then lapsed, failed after typing, or failed without proof nothing went out" do
+      typed = {"kick_at" => "2026-11-10T11:00:00.000Z"}
+
+      expect(described_class.round_may_have_typed?(typed, :unknown)).to be(true)
+      expect(described_class.round_may_have_typed?(typed.merge("failure" => {"code" => "unreadable_reply"}), :failed)).to be(true)
+      expect(described_class.round_may_have_typed?(typed.merge("failure" => {"code" => "error", "typed" => true}), :failed)).to be(true)
+      expect(described_class.round_may_have_typed?(typed.merge("failure" => {"code" => "pane_busy"}), :failed)).to be(false)
+      expect(described_class.round_may_have_typed?(typed.merge("failure" => {"code" => "not_delivered"}), :failed)).to be(false)
+      expect(described_class.round_may_have_typed?({"failure" => {"code" => "connection_failed"}}, :failed)).to be(false)
+      expect(described_class.round_may_have_typed?(nil, :unknown)).to be(false)
+    end
+  end
+
+  it "leaves a round whose end is being judged to .lost_round?, never a delivery again" do
+    run = {"current" => "plan", "definition" => {"redeliver" => 2},
+           "steps" => {"plan" => {"state" => "reviewing", "review" => {"round" => 1, "delivery" => "failed", "failure" => {"code" => "x", "at" => "2026-11-10T10:00:00Z"},
+                                                                       "recompute" => {"started_at" => "2026-11-10T11:59:00Z", "try" => 1}}}}}
+
+    expect(described_class.round_redelivery(run, Time.utc(2026, 11, 10, 12))).to be_nil
+  end
+
+  it "lists review_no_change among the review stops" do
+    expect(described_class::REVIEW_STOPS).to include("review_no_change")
+  end
+
+  describe "a round's time limit" do
+    def reviewed(review)
+      {"current" => "plan", "definition" => {"steps" => [{"id" => "plan", "review" => review}.compact]}}
+    end
+
+    let(:round) { {"round" => 1, "started_at" => "2026-10-04T11:30:00.000Z", "kick_at" => "2026-10-04T11:45:00.000Z"} }
+
+    it "reads the step's review.timeout, the default for a stored review without one" do
+      expect(described_class.review_timeout(reviewed({"from" => ["a"], "timeout" => 600}))).to eq(600)
+      expect(described_class.review_timeout(reviewed({"from" => ["a"]}))).to eq(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT)
+      expect(described_class.review_timeout(reviewed(nil))).to eq(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT)
+    end
+
+    it "measures every reading from the round's start, never from when its line went out" do
+      run = reviewed({"from" => ["a"], "timeout" => 1799})
+
+      expect(described_class.round_elapsed(round, now)).to eq(1800)
+      expect(described_class.round_timed_out?(run, round, now)).to be(true)
+      expect(described_class.typed_review_timed_out?(run, round, now)).to be(true)
+      expect(described_class.round_timed_out?(reviewed({"from" => ["a"], "timeout" => 1800}), round, now)).to be(false)
+      expect(described_class.typed_review_timed_out?(reviewed({"from" => ["a"], "timeout" => 1800}), round, now)).to be(false)
+    end
+
+    it "says a typed round's press was missed only past twice its review timeout, from the round's start" do
+      expect(described_class.typed_press_missed?(reviewed({"from" => ["a"], "timeout" => 900}), round, now)).to be(false)
+      expect(described_class.typed_press_missed?(reviewed({"from" => ["a"], "timeout" => 899}), round, now)).to be(true)
+      expect(described_class.typed_press_missed?(reviewed({"from" => ["a"], "timeout" => 60}), round.merge("started_at" => nil), now)).to be(true)
+    end
+
+    it "takes a start that can't be read as not timed out for the sweep and status, and as timed out for a typed round's wait" do
+      run = reviewed({"from" => ["a"], "timeout" => 60})
+      bad = round.merge("started_at" => "not a time")
+
+      expect(described_class.round_elapsed(bad, now)).to be_nil
+      expect(described_class.round_elapsed(nil, now)).to be_nil
+      expect(described_class.round_timed_out?(run, bad, now)).to be(false)
+      expect(described_class.typed_review_timed_out?(run, bad, now)).to be(true)
+    end
+  end
+
+  describe "a round's sweep marks" do
+    it "keeps them on the round, apart from the attempt's own" do
+      expect(described_class.round_sweep_marks({"sweep" => {"interrupt" => {"state" => "sent"}}})).to eq("interrupt" => {"state" => "sent"})
+      expect(described_class.round_sweep_marks({"sweep" => "junk"})).to eq({})
+      expect(described_class.round_sweep_marks(nil)).to eq({})
+    end
+
+    it "names the cause the round was interrupted for, a pending press too, the round's own first" do
+      mark = ->(state) { {"state" => state, "at" => "2026-10-04T11:59:30Z"} }
+
+      expect(described_class.round_interrupted({"sweep" => {"run_interrupt" => mark.call("sent"), "interrupt" => mark.call("pending")}}, now)).to eq("review_timed_out")
+      expect(described_class.round_interrupted({"sweep" => {"run_interrupt" => mark.call("sent")}}, now)).to eq("run_timed_out")
+      expect(described_class.round_interrupted({"sweep" => {"stalled" => {"review_timed_out" => "x"}}}, now)).to be_nil
+      expect(described_class.round_interrupted({}, now)).to be_nil
+    end
+
+    it "no longer counts a pending press older than the claim's hold, left by a sweep that died before it pressed" do
+      stale = {"state" => "pending", "at" => (now - described_class::INTERRUPT_CLAIM_SECONDS).utc.iso8601}
+      fresh = stale.merge("at" => (now - described_class::INTERRUPT_CLAIM_SECONDS + 1).utc.iso8601)
+
+      expect(described_class.round_interrupted({"sweep" => {"interrupt" => stale}}, now)).to be_nil
+      expect(described_class.round_interrupted({"sweep" => {"interrupt" => fresh}}, now)).to eq("review_timed_out")
+      expect(described_class.round_interrupted({"sweep" => {"interrupt" => {"state" => "pending", "at" => "junk"}}}, now)).to be_nil
+      expect(described_class::INTERRUPT_CLAIM_SECONDS).to eq(Workspace::WorkflowRecovery::INTERRUPT_CLAIM_SECONDS)
     end
   end
 end

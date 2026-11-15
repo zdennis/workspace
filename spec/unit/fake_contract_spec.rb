@@ -117,6 +117,18 @@ RSpec.describe "fake contracts" do
     end
   end
 
+  describe PersonAtTheRun do
+    it "accepts every call Workspace::WorkflowEngine accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowEngine, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe FakeWorkflowPanes do
+    it "accepts every call Workspace::WorkflowPanes accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowPanes, control: FakeWorkflowPanes::CONTROL_METHODS)).to be_empty
+    end
+  end
+
   describe RecordingAttemptRecord do
     it "accepts every call Workspace::WorkflowAttemptRecord accepts" do
       expect(FakeContract.problems(described_class, Workspace::WorkflowAttemptRecord, control: described_class::CONTROL_METHODS)).to be_empty
@@ -135,19 +147,37 @@ RSpec.describe "fake contracts" do
     end
   end
 
+  describe RecordingPaneReadiness do
+    it "accepts every call Workspace::PaneDispatch accepts" do
+      expect(FakeContract.problems(described_class, Workspace::PaneDispatch, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
   describe RecordingReviewTally do
     it "accepts every call Workspace::WorkflowReviewTally accepts" do
       expect(FakeContract.problems(described_class, Workspace::WorkflowReviewTally, control: described_class::CONTROL_METHODS)).to be_empty
     end
 
     it "accepts every call Workspace::WorkflowEvaluation::NoReviewTally accepts, which it stands in for too" do
-      expect(FakeContract.problems(described_class, Workspace::WorkflowEvaluation::NoReviewTally, control: described_class::CONTROL_METHODS + %i[open_round])).to be_empty
+      expect(FakeContract.problems(described_class, Workspace::WorkflowEvaluation::NoReviewTally, control: described_class::CONTROL_METHODS + %i[open_round ensure_round])).to be_empty
     end
   end
 
   describe RecordingReviewRevision do
     it "accepts every call Workspace::WorkflowReviewRevision accepts" do
       expect(FakeContract.problems(described_class, Workspace::WorkflowReviewRevision, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingReviewSummary do
+    it "accepts every call Workspace::WorkflowReviewSummary accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowReviewSummary, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
+  describe RecordingRoundRerun do
+    it "accepts every call Workspace::WorkflowRoundRerun accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkflowRoundRerun, control: described_class::CONTROL_METHODS)).to be_empty
     end
   end
 

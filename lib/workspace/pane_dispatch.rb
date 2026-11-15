@@ -152,24 +152,25 @@ module Workspace
     # @param pane [String] the pane id
     # @param kind [String] one of {AGENT_KINDS}
     # @param window [String, nil] the tmux window id (`@N`) made for the pane, closed instead of the pane
+    # @param keep [Boolean] close nothing whatever the outcome (a review window used again, whose agent may be at work)
     # @return [Spawned]
     # @raise [ArgumentError] for a kind that is not one of {AGENT_KINDS}
     # @raise [Workspace::Error] what {Workspace::AgentReadiness#wait} raises, with `pane_id` and `pane_closed` added
-    def await_ready(name, pane, kind, window: nil)
+    def await_ready(name, pane, kind, window: nil, keep: false)
       provider = AgentProvider.find(kind) || raise(ArgumentError, "unknown agent kind #{kind.inspect}")
       begin
         ready = @readiness.wait(@tmux.session_name_for(name), deadline: @readiness.deadline_in(@prompt_timeout), only_pane: pane, **(@agent_commands&.detector_options(name) || {}))
       rescue Workspace::Error => e
-        closed = close_unused(name, pane, window: window)
+        closed = keep ? false : close_unused(name, pane, window: window)
         details = e.details.merge("pane_id" => pane, "pane_closed" => closed)
-        left_open = left_open_warning(name, window, closed)
+        left_open = left_open_warning(name, window, closed) unless keep
         details["warning"] = left_open if left_open
         raise Workspace::Error.new(e.message, code: e.code, details: details, retry_with: e.retry)
       end
       return Spawned.new(pane: pane, ready: ready, label: provider.label, closed: false) if ready.ready?
       waiting = provider.waiting_screen(@tmux.capture_screen(pane))&.fetch(:reason)
-      closed = waiting ? false : close_unused(name, pane, window: window)
-      warning = left_open_warning(name, window, closed) unless waiting
+      closed = (waiting || keep) ? false : close_unused(name, pane, window: window)
+      warning = left_open_warning(name, window, closed) unless waiting || keep
       Spawned.new(pane: pane, ready: ready, label: provider.label, closed: closed, waiting: waiting, warning: warning)
     end
 

@@ -21,8 +21,24 @@ module Workspace
     # The daemon's `reason` for a failure that may have left the line in the input box; retrying could type it twice.
     REDELIVER_NEVER_REASONS = %w[prompt_unconfirmed].freeze
 
+    # Seconds a pending interrupt claim holds before another sweep may take it over: the process that took it died
+    # between the claim and the press. Past it a pending mark no longer counts as a press under way.
+    INTERRUPT_CLAIM_SECONDS = 60
+
     # How long a `turn_ended_background` hold lasts after the last Stop that listed tasks.
     BACKGROUND_HOLD = 90 * 60
+
+    # Seconds after a review round's start for which a holder stored with no start time (its `ps` failed) is still
+    # taken for a live process: by pid alone a reused pid would read alive for ever, so past this it reads gone.
+    UNTIMED_HOLDER_LIMIT = 4 * DELIVERY_WINDOW
+
+    # A review round's delivery failures no delivery again can get past: the round goes straight to its stop.
+    ROUND_REDELIVER_NEVER = %w[review_custom_socket].freeze
+
+    # A review round's delivery failures after which its line may have reached the review pane: the agent daemon
+    # went away or gave no answer while it typed (an agent daemon restart), or the delivering process was stopped.
+    # A delivery that knows it typed the line says so itself (`failure.typed`).
+    ROUND_MAY_HAVE_TYPED = %w[connection_failed unreadable_reply delivery_interrupted].freeze
 
     # Each guard code in words, for a failure or a warning.
     GUARD_TEXT = {
@@ -96,6 +112,75 @@ module Workspace
       allowance && (step_attempts_made(run, step) - allowance + 1)
     end
 
+    # The review rounds a step may spend in the run: its stored `review.max_rounds` ({WorkflowReviewSpec::DEFAULT_MAX_ROUNDS}
+    # when the stored review names none) plus the step's `extra_rounds` (`resume --extra-rounds`).
+    #
+    # @param run [Hash{String=>Object}] a stored run with a definition
+    # @param step [String] a step id
+    # @return [Integer, nil] nil for a step with no `review:`
+    def self.review_rounds_allowance(run, step)
+      review = WorkflowDefinition.review(run.dig("definition", "steps")&.find { |each| each["id"] == step })
+      return nil unless review
+      base = review["max_rounds"].is_a?(Integer) ? review["max_rounds"] : WorkflowReviewSpec::DEFAULT_MAX_ROUNDS
+      base + run.dig("steps", step, "extra_rounds").to_i
+    end
+
+    # The least `--extra-rounds` that lets one more round of the step start: rounds made minus the allowance, plus one.
+    #
+    # @param run [Hash{String=>Object}] a stored run with a definition
+    # @param step [String] a step id
+    # @return [Integer, nil] nil for a step with no `review:`
+    def self.review_extra_rounds_needed(run, step)
+      allowance = review_rounds_allowance(run, step)
+      allowance && (run.dig("steps", step, "review_rounds").to_i - allowance + 1)
+    end
+
+    # Whether the step has spent every review round it may: its `review_rounds` (every round started in the run, by
+    # any attempt, reached any way: a rejection's retry, a gate's reject, `resume --from`, an `on_fail` loop; never
+    # reset) at its {.review_rounds_allowance}. False for a step with no `review:`.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a step id
+    # @return [Boolean]
+    def self.review_rounds_spent?(run, step)
+      allowance = review_rounds_allowance(run, step)
+      !allowance.nil? && run.dig("steps", step, "review_rounds").to_i >= allowance
+    end
+
+    # Whether a plain resume (no `--from`) is refused because the current step has spent its review rounds: the
+    # resume would start a round past `max_rounds` (a stopped or held round of the step being reviewed), or run again a
+    # step whose last round rejected it. {WorkflowDecisions} refuses it (`review_rounds_spent`) and {WorkflowStatus}
+    # offers no plain resume then.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Boolean]
+    def self.rounds_refuse_resume?(run)
+      id = run["current"]
+      return false unless review_rounds_spent?(run, id)
+      state = run.dig("steps", id, "state")
+      return true if state == "failed" && run.dig("reason", "code") == "review_rejected"
+      state == "reviewing" && starts_round?(run, from: nil)
+    end
+
+    # What stops a rejected step from running again by itself: the run's `max_attempts` (`limit` "run"), then the
+    # step's own (`limit` "step", both with `attempts` and `max_attempts`), then its `max_rounds` (`limit` "rounds").
+    #
+    # @param run [Hash{String=>Object}] a stored run, at the rejected step
+    # @return [Hash{String=>Object}] `rounds` and `max_rounds`, and `limit` (with its counts) when one stops the retry
+    def self.rejection_limit(run)
+      id = run["current"]
+      rounds = {"rounds" => run.dig("steps", id, "review_rounds").to_i, "max_rounds" => review_rounds_allowance(run, id)}
+      if attempts_spent?(run)
+        rounds.merge("limit" => "run", "attempts" => attempts_made(run), "max_attempts" => attempt_allowance(run))
+      elsif step_attempts_spent?(run, id)
+        rounds.merge("limit" => "step", "attempts" => step_attempts_made(run, id), "max_attempts" => step_allowance(run, id))
+      elsif review_rounds_spent?(run, id)
+        rounds.merge("limit" => "rounds")
+      else
+        rounds
+      end
+    end
+
     # The step a resume or reject would start an attempt of: `from` (`resume --from`, or the `to` of a
     # reject), else the step a waiting retry goes to, else the current step.
     #
@@ -141,13 +226,15 @@ module Workspace
     # Whether a resume would start a review round, which the token budget and the run's timeout are asked about as
     # an attempt's start is: a round the budget or timeout held, or a fresh round after one that stopped for a
     # person. Not `--from` (it starts an attempt), nor a round whose delivery failed or lapsed (delivered again as
-    # the same round, which no limit holds back).
+    # the same round, which no limit holds back), nor a round waiting for its `review.uses` (`waiting_lock`: it was
+    # allowed when it was reached, as a step's lock wait is).
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param from [String, nil] the step a resume would start again at
     # @return [Boolean]
     def self.starts_round?(run, from:)
       return false if from
+      return false if run.dig("reason", "code") == "waiting_lock"
       return true if round_hold?(run)
       state = run["steps"].fetch(run["current"])
       return false unless state["state"] == "reviewing"
@@ -174,7 +261,8 @@ module Workspace
     # Where the delivery of a review round stands. A round is stored `delivering` when it starts, under the run's
     # lock, and its delivery (window, agent, revision, typing) runs outside it and can outlast {DELIVERY_WINDOW}; so
     # time alone does not end the mark: past the window it still holds while the process that delivers it (its
-    # `holder`, a pid and start time) is alive.
+    # `holder`, a pid and start time) is alive. A holder stored with no start time is judged by its pid only until
+    # {UNTIMED_HOLDER_LIMIT}, since a reused pid would hold the mark for ever.
     #
     # @param round [Hash{String=>Object}, nil] a step's `review`
     # @param now [Time]
@@ -185,33 +273,254 @@ module Workspace
       return nil unless round.is_a?(Hash)
       return :failed if round["delivery"] == "failed"
       return nil unless round["delivery"] == "delivering"
-      return :delivering unless now - Time.iso8601(round["started_at"].to_s) > DELIVERY_WINDOW
+      elapsed = now - Time.iso8601(round["started_at"].to_s)
+      return :delivering unless elapsed > DELIVERY_WINDOW
       holder = round["holder"]
-      (holder && (alive.nil? || alive.call(holder))) ? :delivering : :unknown
+      return :unknown unless holder
+      return :unknown if holder.is_a?(Hash) && holder["started"].nil? && elapsed > UNTIMED_HOLDER_LIMIT
+      (alive.nil? || alive.call(holder)) ? :delivering : :unknown
     rescue ArgumentError, TypeError
       :unknown
     end
 
     # Where a review round that has to be delivered again stands: the current step is `reviewing` with no stored
-    # reason and no park, and its round's delivery failed or lapsed ({.round_delivery}). Each delivery again spends
-    # one of the round's `redeliveries`, capped by the definition's `redeliver`.
+    # reason and no park, and its round's delivery failed or lapsed ({.round_delivery}). Each delivery again by
+    # {WorkflowRecovery#tick} spends one of the round's `redeliveries`, capped by the definition's `redeliver` (a
+    # person's resume starts the count again). A stored failure waits out {REDELIVER_BACKOFF} from its `at` first,
+    # as an undelivered line does; a lapsed mark is already past {DELIVERY_WINDOW}. A failure in
+    # {ROUND_REDELIVER_NEVER} is exhausted at once.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
     # @param alive [#call, nil] see {.round_delivery}
-    # @return [Hash, nil] nil when no delivery again applies; else :state (`:due` or `:exhausted`), :round,
-    #   :retries (spent), :limit and :mark (`:failed` or `:unknown`)
+    # @return [Hash, nil] nil when no delivery again applies; else :state (`:due`, `:waiting` for the backoff or
+    #   `:exhausted`), :round, :retries (spent), :limit, :mark (`:failed` or `:unknown`) and :wait (seconds left, 0 unless waiting)
     def self.round_redelivery(run, now, alive: nil)
       return nil if run["parked"] || run["reason"]
       state = run.dig("steps", run["current"])
       return nil unless state.is_a?(Hash) && state["state"] == "reviewing"
       round = state["review"]
+      # A round whose end is being judged (its revision computed again) is {.lost_round?}'s, not a delivery's.
+      return nil if round.is_a?(Hash) && round["recompute"]
       mark = round_delivery(round, now, alive: alive)
       return nil unless %i[failed unknown].include?(mark)
       retries = round["redeliveries"].is_a?(Integer) ? round["redeliveries"] : 0
       limit = WorkflowDefinition.redeliver(run["definition"])
-      {state: (retries >= limit) ? :exhausted : :due, round: round["round"], retries: retries, limit: limit, mark: mark}
+      info = {round: round["round"], retries: retries, limit: limit, mark: mark}
+      return info.merge(state: :exhausted, wait: 0) if retries >= limit || ROUND_REDELIVER_NEVER.include?(round.dig("failure", "code"))
+      wait = (mark == :failed) ? round_backoff(round, retries, now) : 0
+      (wait > 0) ? info.merge(state: :waiting, wait: wait) : info.merge(state: :due, wait: 0)
     end
+
+    # Whether a round whose delivery failed or lapsed ({.round_delivery}) may have had its line typed: the delivery got
+    # as far as typing it (`kick_at`), and then lapsed with its process gone, failed after typing (`failure.typed`),
+    # or failed in a way that does not prove the line never went out ({ROUND_MAY_HAVE_TYPED}). Its reviewers may
+    # have written their verdicts, so the round is judged before it is delivered again.
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @param mark [Symbol, nil] what {.round_delivery} answered
+    # @return [Boolean]
+    def self.round_may_have_typed?(round, mark)
+      return false unless round.is_a?(Hash) && round["kick_at"]
+      return true if mark == :unknown
+      failure = round["failure"]
+      mark == :failed && failure.is_a?(Hash) && (failure["typed"] == true || ROUND_MAY_HAVE_TYPED.include?(failure["code"]))
+    end
+
+    # {.round_may_have_typed?} over the round's own delivery mark ({.round_delivery}).
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @param now [Time]
+    # @param alive [#call, nil] see {.round_delivery}
+    # @return [Boolean]
+    def self.typed_round?(round, now, alive: nil)
+      round_may_have_typed?(round, round_delivery(round, now, alive: alive))
+    end
+
+    # Whether a round whose line may have been typed has waited long enough for its reviewers that it is judged
+    # whatever its review pane shows: {DELIVERY_WINDOW}, plus the definition's `stall` when set, from its failure
+    # (else from when its line went out, `kick_at`). A time that can't be read has waited long enough.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param round [Hash{String=>Object}] the current step's `review`
+    # @param now [Time]
+    # @return [Boolean]
+    def self.typed_wait_over?(run, round, now)
+      from = round.dig("failure", "at") || round["kick_at"]
+      now - Time.iso8601(from.to_s) >= DELIVERY_WINDOW + WorkflowDefinition.stall(run["definition"]).to_i
+    rescue ArgumentError, TypeError
+      true
+    end
+
+    # Whether a round whose line may have been typed, and whose review pane shows its agent at work, has run past the
+    # review's own `timeout` ({.round_timed_out?}'s one reading, from the round's `started_at`). A start that can't be
+    # read has run past it.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param round [Hash{String=>Object}] the current step's `review`
+    # @param now [Time]
+    # @return [Boolean]
+    def self.typed_review_timed_out?(run, round, now)
+      elapsed = round_elapsed(round, now)
+      elapsed.nil? || elapsed > review_timeout(run)
+    end
+
+    # The current step's `review.timeout` in seconds, {WorkflowReviewSpec::DEFAULT_TIMEOUT} when the stored review has
+    # none. The one reading of a round's time limit: `workflow status`'s `timed_out` flag, the sweep's interrupt and
+    # the wait for a round whose line may have been typed all take it, measured by {.round_elapsed}.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Numeric]
+    def self.review_timeout(run)
+      review = WorkflowDefinition.review(run.dig("definition", "steps")&.find { |each| each["id"] == run["current"] })
+      (review && review["timeout"].is_a?(Numeric)) ? review["timeout"] : WorkflowReviewSpec::DEFAULT_TIMEOUT
+    end
+
+    # Seconds a review round has run, from its `started_at` (a delivery again, or a rerun of missing reviewers, starts
+    # it again).
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @param now [Time]
+    # @return [Float, nil] nil when the round holds no start that can be read
+    def self.round_elapsed(round, now)
+      return nil unless round.is_a?(Hash) && round["started_at"]
+      now - Time.iso8601(round["started_at"].to_s)
+    rescue ArgumentError, TypeError
+      nil
+    end
+
+    # Whether a review round has run past its `review.timeout` ({.review_timeout}, {.round_elapsed}); false for one
+    # whose start can't be read.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param round [Hash{String=>Object}, nil] the current step's `review`
+    # @param now [Time]
+    # @return [Boolean]
+    def self.round_timed_out?(run, round, now)
+      elapsed = round_elapsed(round, now)
+      !elapsed.nil? && elapsed > review_timeout(run)
+    end
+
+    # The sweep's interrupt causes a review round's own marks (`review.sweep`) keep apart, each pressed once for the
+    # round: its `review.timeout` and the run's `timeout_action: interrupt`.
+    ROUND_INTERRUPT_KEYS = {"review_timed_out" => "interrupt", "run_timed_out" => "run_interrupt"}.freeze
+
+    # The marks the sweep left on a review round ("interrupt" for its `review.timeout`, "run_interrupt" for the run's
+    # deadline, each `state` `pending` or `sent` and `at`; "stalled" and "recovered", cause => time). Kept on the round
+    # itself, so the reviewed attempt's own marks (its author's interrupt) never stand for the round's; a delivery of
+    # the round again starts with none.
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @return [Hash{String=>Object}]
+    def self.round_sweep_marks(round)
+      marks = round.is_a?(Hash) ? round["sweep"] : nil
+      marks.is_a?(Hash) ? marks : {}
+    end
+
+    # The cause the sweep interrupted a review round's pane for (`review_timed_out` first): its keys went out, or are
+    # going out (a pending claim younger than {INTERRUPT_CLAIM_SECONDS}, so a turn the press ends before it is
+    # confirmed reads the same; an older one was left by a sweep that died before it pressed); nil when it pressed
+    # none. A round interrupted is decided on the verdicts already written: none is run again.
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @param now [Time]
+    # @return [String, nil]
+    def self.round_interrupted(round, now)
+      marks = round_sweep_marks(round)
+      ROUND_INTERRUPT_KEYS.find { |_, key| interrupt_mark_live?(marks[key], now) }&.first
+    end
+
+    # A round mark that stands for a press: `sent`, or `pending` and younger than {INTERRUPT_CLAIM_SECONDS}.
+    def self.interrupt_mark_live?(mark, now)
+      return false unless mark.is_a?(Hash)
+      return true if mark["state"] == "sent"
+      mark["state"] == "pending" && now - Time.iso8601(mark["at"].to_s) < INTERRUPT_CLAIM_SECONDS
+    rescue ArgumentError, TypeError
+      false
+    end
+    private_class_method :interrupt_mark_live?
+
+    # When the sweep's keys last went out for a review round: the newest `sent` mark of {ROUND_INTERRUPT_KEYS}. A
+    # `pending` claim is not a press: a sweep that pressed and died before it confirmed leaves one, which reads as no
+    # press once it is older than {INTERRUPT_CLAIM_SECONDS} ({.round_interrupted}), so a later sweep may press again
+    # and a turn that ends meanwhile may run missing reviewers again. That is accepted rather than recording the press
+    # before the keys go out, which would read a press that never happened as one.
+    #
+    # @param round [Hash{String=>Object}, nil] a step's `review`
+    # @return [Time, nil] nil when no press was confirmed
+    def self.round_last_press(round)
+      marks = round_sweep_marks(round)
+      ROUND_INTERRUPT_KEYS.values.filter_map do |key|
+        mark = marks[key]
+        next unless mark.is_a?(Hash) && mark["state"] == "sent"
+        begin
+          Time.iso8601(mark["at"].to_s)
+        rescue ArgumentError
+          nil
+        end
+      end.max
+    end
+
+    # How long a review pane the sweep pressed may go on working before its round is decided without its turn's end:
+    # the longer of the definition's `stall` and the round's `review.timeout` ({.review_timeout}), so a short `stall`
+    # never cuts short a review whose sub-agents still write.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Numeric]
+    def self.press_wait(run)
+      [WorkflowDefinition.stall(run["definition"]).to_i, review_timeout(run)].max
+    end
+
+    # Whether a review round the sweep pressed ({.round_last_press}) has gone {.press_wait} since its newest press
+    # with no turn's end deciding it. Its verdicts then decide it, or it stops `review_incomplete`, whether or not a
+    # sweep runs again ({WorkflowRecovery#tick}, and the sweep's `interrupt_unanswered`).
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param round [Hash{String=>Object}, nil] the current step's `review`
+    # @param now [Time]
+    # @return [Boolean]
+    def self.press_unanswered?(run, round, now)
+      last = round_last_press(round)
+      !last.nil? && now - last >= press_wait(run)
+    end
+
+    # A delivered review round (its `delivery` null) that is the run's, undecided, not being judged and with no stop,
+    # whose press is unanswered ({.press_unanswered?}): {.wakeable?}'s `:unanswered`, so a tick decides it when no
+    # sweep comes back to it.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Boolean]
+    def self.unanswered_round?(run, now)
+      return false if run["parked"] || run["reason"]
+      state = run.dig("steps", run["current"])
+      return false unless state.is_a?(Hash) && state["state"] == "reviewing"
+      round = state["review"]
+      return false unless round.is_a?(Hash) && round.key?("delivery") && round["delivery"].nil? && round["pane"].is_a?(String)
+      return false if round["recompute"] || round["ended_at"]
+      press_unanswered?(run, round, now)
+    end
+
+    # Whether a round whose line may have been typed, its review pane at work and never interrupted by the sweep, has
+    # run past twice its `review.timeout` ({.round_elapsed}): the sweep presses at the first, so past the second no
+    # sweep is coming and the round stops for a person. A start that can't be read has run past it.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param round [Hash{String=>Object}] the current step's `review`
+    # @param now [Time]
+    # @return [Boolean]
+    def self.typed_press_missed?(run, round, now)
+      elapsed = round_elapsed(round, now)
+      elapsed.nil? || elapsed > 2 * review_timeout(run)
+    end
+
+    # Seconds left before a failed round's delivery again; a failure time that can't be read waits no longer.
+    def self.round_backoff(round, retries, now)
+      (Time.iso8601(round.dig("failure", "at").to_s) + REDELIVER_BACKOFF[[retries, REDELIVER_BACKOFF.size - 1].min] - now).ceil.clamp(0..)
+    rescue ArgumentError, TypeError
+      0
+    end
+    private_class_method :round_backoff
 
     # Where the sweep's retry of an undelivered line stands. The step must wait on a failed delivery (reason
     # `waiting_you`, kind `dispatch`, a code in {REDELIVER_CODES}), with no park, its last attempt ended
@@ -295,20 +604,24 @@ module Workspace
     # (the process running it died), judged by the check's time limit plus a
     # minute, it has been held for background tasks longer than
     # {BACKGROUND_HOLD}, or the end of its review round was being judged and
-    # nothing reported back ({.lost_round?}).
+    # nothing reported back ({.lost_round?}), or its review round has to be
+    # delivered again, or stopped once its deliveries again are spent ({.round_redelivery}), or its delivered
+    # review round was pressed by the sweep and has not answered ({.unanswered_round?}).
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
-    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :check, or nil
-    def self.wakeable?(run, now)
+    # @param alive [#call, nil] given a review round's `holder`, whether it still runs (see {.round_delivery}); nil
+    #   takes every holder as alive, so a lapsed round with a holder is not woken
+    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :unanswered, :review, :check, or nil
+    def self.wakeable?(run, now, alive: nil)
       return :parked if run["parked"]
       return :backoff if backoff(run, now)&.fetch(:state) == :due
       return :lock if run.dig("reason", "code") == "waiting_lock"
       return :background if background_expired?(run["reason"], now)
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
-      # A review round due again ({.round_redelivery}) is not woken here until WorkflowRecovery#tick can redeliver it (T32);
-      # woken now, every tick would start an advance that does nothing.
       return :round if lost_round?(run, now)
+      return :unanswered if unanswered_round?(run, now)
+      return :review if %i[due exhausted].include?(round_redelivery(run, now, alive: alive)&.fetch(:state))
       :check if run["reason"].nil? && lost_check?(run, now)
     end
 
@@ -424,8 +737,9 @@ module Workspace
     # @param turn_over [Hash, nil] the turn's end seen (`step`, `attempt`)
     # @param now [Time]
     # @param bound_pane [#call] the run's bound pane, read only to word the refusal
+    # @param alive [#call, nil] given a review round's delivery `holder`, whether it still runs (see {.round_delivery})
     # @return [String, nil]
-    def self.left_alone(run, state, pane, turn_over, now, bound_pane)
+    def self.left_alone(run, state, pane, turn_over, now, bound_pane, alive: nil)
       case state["state"]
       when "running"
         # Another process is still typing this attempt's line; typing it again would start the step twice.
@@ -438,8 +752,9 @@ module Workspace
       when "checking"
         "the check of step #{run["current"]} is still running" unless lost_check?(run, now)
       when "reviewing"
-        # A round stopped for a person, or one whose delivery failed or lapsed, is the resume's to act on.
-        unless run["reason"] || %i[failed unknown].include?(round_delivery(state["review"], now))
+        # A round stopped for a person, or one whose delivery failed or lapsed (past the window with its holder gone),
+        # is the resume's to act on.
+        unless run["reason"] || %i[failed unknown].include?(round_delivery(state["review"], now, alive: alive))
           "the review round of step #{run["current"]} is still running"
         end
       end
@@ -537,6 +852,63 @@ module Workspace
       details = reason["details"]
       details.is_a?(Hash) && details["cause"] == "guard" && details["guard"] == "no_commit" && run["base_sha"].to_s.empty?
     end
+
+    # The reasons a review round stops the run with, the one list every reader of a stopped round matches against
+    # (`review_custom_socket` and the other review codes are errors, not stops).
+    REVIEW_STOPS = %w[review_incomplete review_rejected review_stale review_guard review_tampered review_rounds_spent review_no_change].freeze
+
+    # The revision of the step's last decided round when that round rejected the step: the `review_outcome` of the
+    # newest earlier attempt that has one, read only when it did not pass. A round about to judge this revision again
+    # would judge what was rejected unchanged (`review_no_change`). Nil for a step whose last decided round passed,
+    # with none decided, or for an outcome stored before it recorded its revision.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @param step [String] a step id
+    # @return [Hash{String=>Object}, nil] "revision", "round" and "attempt" of that rejected round
+    def self.rejected_revision(run, step)
+      attempts = run.to_h.dig("steps", step, "attempts")
+      return nil unless attempts.is_a?(Array)
+      decided = attempts[0...-1].reverse.find { |attempt| attempt.is_a?(Hash) && attempt["review_outcome"].is_a?(Hash) }
+      outcome = decided && decided["review_outcome"]
+      return nil unless outcome && outcome["passed"] == false && outcome["revision"].is_a?(String) && !outcome["revision"].empty?
+      {"revision" => outcome["revision"], "round" => outcome["round"], "attempt" => decided["n"]}
+    end
+
+    # Whether the run still waits for the delivery of the round +pending+ names: {.round_waits?}, and the round's mark
+    # `delivering` with its end not being judged (no `recompute`). The test every delivery that runs with the lock
+    # given up makes before it writes back.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @param pending [Hash{String=>Object}] "step", "attempt" and "round" of the delivery
+    # @return [Boolean]
+    def self.round_delivery_wanted?(run, pending)
+      round = round_waits?(run, pending)
+      round ? round["delivery"] == "delivering" && !round["recompute"] : false
+    end
+
+    # Whether the run still waits for the recompute of an ended round's revision +pending+ names: {.round_waits?}, and
+    # the round's `recompute` mark that recompute's own try (a tick that took it for lost started another).
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run
+    # @param pending [Hash{String=>Object}] "step", "attempt", "round" and "try" of the recompute; a nil "try" is never wanted
+    # @return [Boolean]
+    def self.round_recompute_wanted?(run, pending)
+      return false if pending["try"].nil?
+      round = round_waits?(run, pending)
+      round ? round.dig("recompute", "try") == pending["try"] : false
+    end
+
+    # The round when the run is still on the step, attempt and round +pending+ names, the step `reviewing`, with no
+    # stop, no park and not ended; else nil.
+    def self.round_waits?(run, pending)
+      run = WorkflowRun.from_h(run)
+      return nil if run.parked || run.reason || WorkflowRunStore::TERMINAL_STATES.include?(run.state) || run.current != pending["step"]
+      step = run.steps[pending["step"]]
+      round = step&.review
+      return nil unless step&.state == "reviewing" && step.last_attempt&.n == pending["attempt"] && round.is_a?(Hash) && round["round"] == pending["round"]
+      round
+    end
+    private_class_method :round_waits?
 
     # The guard stops `workflow resume --accept-guard` takes: every guard that fails a step. `config_changed` is
     # only ever a warning, so it is not among them.

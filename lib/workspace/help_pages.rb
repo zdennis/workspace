@@ -280,6 +280,8 @@ module Workspace
     WORKFLOW_NOTE = ["--note TEXT", "Added to the next attempt's instructions"].freeze
     EXTRA_ATTEMPTS_OPT = ["--extra-attempts N", "Add N (a whole number from 1 up) to the run's attempt allowance, for a run or step that has spent max_attempts; N must cover the overrun (1 for a run exactly spent), and the refusal names the least"].freeze
 
+    EXTRA_ROUNDS_OPT = ["--extra-rounds N", "Add N (a whole number from 1 up) to the review rounds the step may spend (its review.max_rounds), for a step that has spent them all; N must cover the overrun (1 for a step exactly spent), and the refusal names the least. Ignored, and nothing added, when the step still has rounds left or the resume does nothing. A usage error for a step with no review:"].freeze
+
     EXTRA_TOKENS_OPT = ["--extra-tokens N", "Add N (a whole number from 1 up) to the run's token budget, for a run that has used budget.tokens; N must cover the overrun, and the refusal names the least and a round figure"].freeze
 
     EXTRA_TIME_OPT = ["--extra-time DURATION", "Add DURATION (30m, 2h, or seconds) to the run's timeout, for a run that has used its timeout:; DURATION must cover the overrun, and the refusal names the least and a round figure"].freeze
@@ -330,7 +332,7 @@ module Workspace
           "project of the current workspace or --name; a worktree reads its parent project's), then",
           "~/.config/workspace/workflows/ID.yml, then each directory of the workflows.sources config key in list order",
           "(source:1, source:2, ...), then the presets that ship with workspace (rpiv, rpiv-auto-approve,",
-          "pr-feedback, investigate, explore). A file in an earlier place hides the same id in a later one; each row",
+          "rpiv-auto-approve-v2, pr-feedback, investigate, explore). A file in an earlier place hides the same id in a later one; each row",
           "says which (project, global, source:N or builtin). Nothing is read from a repository. See docs/README.workflow.md.",
           "",
           "A definition with extends: ID starts from another workflow's steps; show prints the result, with an",
@@ -623,7 +625,7 @@ module Workspace
           ["workspace workflow start rpiv --prompt \"add a hello script\" --branch hello-script", "choose the branch's name yourself"],
           ["workspace workflow start pr-feedback '#123'", "work through the review feedback on pull request 123 (needs gh)"],
           ["workspace workflow start rpiv PROJ-101 --note \"Keep the change small.\"", "tell every step something extra"],
-          ["workspace workflow start rpiv-auto-approve --prompt \"add a hello script\"", "a run no person watches: three reviewer sub-agents approve the plan in place of the gate"]
+          ["workspace workflow start rpiv-auto-approve-v2 --prompt \"add a hello script\"", "the recommended preset for a run no person watches: three reviewers the engine runs approve the plan in place of the gate"]
         ]
       },
       "status" => {
@@ -851,7 +853,7 @@ module Workspace
         ]
       },
       "resume" => {
-        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]",
+        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--extra-rounds N] [--json]",
           "workflow resume RUN --accept-guard --note WHY [--retry] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
         summary: "Get a run going again",
         about: [
@@ -874,7 +876,10 @@ module Workspace
           "On a step being reviewed (reviewing) it never runs the author again: a round still running is left",
           "alone, a round stopped for a person starts again as a fresh round (spending one of the step's",
           "rounds), and --from ends the round and closes its review window first. It is not parked then, and",
-          "--from from the run's own pane is refused (step_reviewing).",
+          "--from from the run's own pane is refused (step_reviewing). Once the step has spent its",
+          "review.max_rounds, a resume that would start another round, or run again a step its last round",
+          "rejected, is refused (review_rounds_spent) unless --extra-rounds N adds N to the step's rounds (N",
+          "must cover the overrun; the refusal names the least). --from still goes on, and cancel ends the run.",
           "",
           "A resume that would start an attempt is refused (attempts_spent) when the run has made all its",
           "max_attempts, or (step_attempts_spent) when the step it would run has made all its own max_attempts;",
@@ -902,7 +907,7 @@ module Workspace
           "with it. Later guarded steps measure from the new base. The note is recorded on a guard_overridden",
           "event and given to the next attempt, after a line naming the guard and the new base."
         ],
-        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT,
+        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT, EXTRA_ROUNDS_OPT,
           ["--accept-guard", "Accept the guard stop the run waits on (needs --note WHY)"],
           ["--retry", "With --accept-guard: run the stopped step again instead of passing it"], JSON_OPT],
         examples: [
@@ -910,6 +915,7 @@ module Workspace
           ["workspace workflow resume RUN --from implement", "start again at the implement step of rpiv"],
           ["workspace workflow resume RUN --note \"The migration is already applied.\"", "tell the next attempt something"],
           ["workspace workflow resume RUN --pane %19", "the run's pane is gone: carry on in another pane of the workspace"],
+          ["workspace workflow resume RUN --extra-rounds 2", "a review spent its max_rounds: allow two more rounds and go on"],
           ["workspace workflow resume RUN --accept-guard --note \"I rebased on purpose.\"", "accept a head_moved stop: the step's other checks run, measured from HEAD now"],
           ["workspace workflow resume RUN --accept-guard --retry --note \"Hooks were updated upstream.\"", "accept the stop and run the step again"]
         ]

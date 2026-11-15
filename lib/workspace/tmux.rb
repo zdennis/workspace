@@ -16,6 +16,8 @@ module Workspace
     DEFAULT_COMMAND_TIMEOUT = 10
     # The window option a review window is marked with.
     REVIEW_OPTION = "@workspace-review"
+    # The window option naming the workflow run store a review window's run belongs to ({WorkflowRunStore#stamp}).
+    REVIEW_STORE_OPTION = "@workspace-review-store"
     # What a tmux window id looks like.
     WINDOW_ID = /\A@\d+\z/
     # What tmux says on stderr when a session, or the whole server, isn't there.
@@ -296,6 +298,43 @@ module Workspace
       pid.empty? ? nil : pid
     end
 
+    # @param session_name [String] tmux session name
+    # @param timeout [Numeric, nil] seconds to wait, as for {#server_pid_for_pane} (past it Timeout::Error is raised)
+    # @return [String, nil] the pid of the tmux server that has the session; nil when none has it or tmux fails
+    def server_pid_for_session(session_name, timeout: nil)
+      stdout, ok = read_option_command(["tmux", "display-message", "-p", "-t", session_target(session_name), "\#{pid}"], timeout)
+      return nil unless ok
+      pid = stdout.strip
+      pid.empty? ? nil : pid
+    end
+
+    # Whether tmux renumbers a session's windows when one closes (`renumber-windows`, a session option). Closing
+    # a review window then shifts the index of every window opened after it, so a pane bound there reads as moved.
+    #
+    # @param session_name [String, nil] read that session's own setting; nil reads the global one
+    # @param timeout [Numeric, nil] seconds to wait; past it the answer is nil
+    # @return [Boolean, nil] nil when tmux can't say (no server, it fails or times out) or the session sets none of its own
+    def renumber_windows?(session_name = nil, timeout: nil)
+      scope = session_name ? ["-t", session_target(session_name)] : ["-g"]
+      stdout, ok = read_option_command(["tmux", "show-options", *scope, "-v", "renumber-windows"], timeout)
+      return nil unless ok
+      value = stdout.strip
+      value.empty? ? nil : value == "on"
+    rescue SystemCallError, Timeout::Error
+      nil
+    end
+
+    # One short tmux read: through {TimedProcess} with a +timeout+, else Open3. Answers [stdout, success].
+    def read_option_command(argv, timeout)
+      if timeout
+        stdout, _, success = TimedProcess.run(argv, chdir: Dir.pwd, timeout: timeout)
+        return [stdout, success]
+      end
+      stdout, _, status = Open3.capture3(*argv)
+      [stdout, status.success?]
+    end
+    private :read_option_command
+
     # @param pane_id [String] a tmux pane id (e.g. "%23")
     # @return [Integer, nil] the pid of the process the pane started, nil if tmux fails or says nothing
     def pane_pid(pane_id)
@@ -506,13 +545,20 @@ module Workspace
     #
     # @param pane_id [String] a tmux pane id (e.g. "%23")
     # @param project [String, nil] ask the tmux server on that project's custom socket (`tmux_options: -L ...`), if it has one
-    # @return [String, nil] the session name, or nil if the pane is gone or tmux did not answer within +command_timeout+
-    def session_name_for_pane(pane_id, project: nil)
+    # @param strict [Boolean] raise when tmux did not answer within +command_timeout+, so a wedged server is not read
+    #   as a gone pane (a caller that decides on a gone pane passes it)
+    # @return [String, nil] the session name, or nil if the pane is gone or (unless +strict+) tmux did not answer
+    #   within +command_timeout+
+    # @raise [Workspace::Error] with +strict+, when tmux did not answer in time
+    def session_name_for_pane(pane_id, project: nil, strict: false)
       stdout, ok = run_bounded(*(project && socket_arguments(project)), "display-message", "-p", "-t", pane_id, "\#{session_name}")
       return nil unless ok
       name = stdout.strip
       name.empty? ? nil : name
-    rescue Workspace::Error, SystemCallError
+    rescue Workspace::Error
+      raise if strict
+      nil
+    rescue SystemCallError
       nil
     end
 
@@ -631,9 +677,11 @@ module Workspace
     # @param env [Hash{String=>String}] extra environment for the command
     # @param option [String, nil] the value of the window's +@workspace-review+
     #   option; nil sets none
+    # @param store [String, nil] the value of its +@workspace-review-store+ option
+    #   (set in the same invocation, with +option+ only); nil sets none
     # @return [Hash, nil] +{pid:, pane:, window:}+ (pane and window ids), or nil
     #   if tmux failed or the mark did not land on the new window
-    def open_window(session_name, name:, cwd:, command:, env: {}, option: nil)
+    def open_window(session_name, name:, cwd:, command:, env: {}, option: nil, store: nil)
       @logger.debug { "tmux: open-window #{name} in #{session_name}: #{command.join(" ")}" }
       last = session_target(session_name, "{end}")
       args = ["tmux", "new-window", "-d", "-a", "-P", "-F", "\#{pane_pid} \#{pane_id} \#{window_id}", "-t", last,
@@ -641,6 +689,7 @@ module Workspace
       env.each { |key, value| args.push("-e", tmux_argument("#{key}=#{value}")) }
       args.push("--", *command.map { |arg| tmux_argument(arg) })
       args.push(";", "set-option", "-w", "-t", last, REVIEW_OPTION, tmux_argument(option)) if option
+      args.push(";", "set-option", "-w", "-t", last, REVIEW_STORE_OPTION, tmux_argument(store)) if option && store
       stdout, _, status = Open3.capture3(*args)
       return nil unless status.success?
       pid, pane, window = stdout.split
@@ -656,31 +705,51 @@ module Workspace
     # in one `list-windows`.
     #
     # @param session_name [String] tmux session name
-    # @return [Array<Hash>] +{window:, name:, review:, pane:, pid:}+ per marked window
-    #   (the window's active pane); empty when the session isn't there or tmux fails
-    def review_windows(session_name)
-      format = ["window_id", "window_name", "pane_id", "pane_pid", REVIEW_OPTION].map { |field| "\#{#{field}}" }.join("\t")
+    # @param timeout [Numeric, nil] seconds to wait, through {TimedProcess}; past it Timeout::Error is raised (nil
+    #   waits as long as tmux takes)
+    # @return [Array<Hash>] +{window:, name:, review:, pane:, pid:, store:}+ per marked window
+    #   (the window's active pane; +store+ its +@workspace-review-store+, nil when unset); empty when the session
+    #   isn't there or tmux fails
+    def review_windows(session_name, timeout: nil)
+      format = ["window_id", "window_name", "pane_id", "pane_pid", REVIEW_STORE_OPTION, REVIEW_OPTION].map { |field| "\#{#{field}}" }.join("\t")
       @logger.debug { "tmux: listing review windows in #{session_name}" }
-      stdout, _, status = Open3.capture3("tmux", "list-windows", "-t", session_target(session_name), "-F", format)
-      return [] unless status.success?
+      stdout, ok = read_option_command(["tmux", "list-windows", "-t", session_target(session_name), "-F", format], timeout)
+      return [] unless ok
 
       stdout.lines.filter_map do |line|
-        window, window_name, pane, pid, review = line.chomp.split("\t", 5)
+        window, window_name, pane, pid, store, review = line.chomp.split("\t", 6)
         next if window.nil? || review.nil? || review.empty?
-        {window: window, name: window_name.to_s, review: review, pane: pane, pid: pid.to_i}
+        {window: window, name: window_name.to_s, review: review, pane: pane, pid: pid.to_i, store: store.to_s.empty? ? nil : store}
       end
+    end
+
+    # Moves a review window's +@workspace-review+ mark to +mark+ (a later round
+    # taking over the window an earlier round of its step left), and reads it
+    # back.
+    #
+    # @param window [String] a tmux window id (e.g. "@4"); anything else is refused
+    # @param mark [String] the new value
+    # @return [Boolean] whether the window carries +mark+ now
+    def mark_review_window(window, mark)
+      return false unless window.to_s.match?(WINDOW_ID)
+      @logger.debug { "tmux: marking window #{window} #{mark}" }
+      _, _, status = Open3.capture3("tmux", "set-option", "-w", "-t", window, REVIEW_OPTION, tmux_argument(mark))
+      status.success? && read_window_option(window, REVIEW_OPTION) == mark
+    rescue SystemCallError
+      false
     end
 
     # Closes a whole window, with every pane in it.
     #
     # @param target [String] a tmux window id (e.g. "@4"); anything else is refused
+    # @param timeout [Numeric, nil] seconds to wait, through {TimedProcess}; past it the answer is false (nil waits
+    #   as long as tmux takes)
     # @return [Boolean] whether tmux closed it
-    def kill_window(target)
+    def kill_window(target, timeout: nil)
       return false unless target.to_s.match?(WINDOW_ID)
       @logger.debug { "tmux: killing window #{target}" }
-      _, _, status = Open3.capture3("tmux", "kill-window", "-t", target)
-      status.success?
-    rescue SystemCallError
+      read_option_command(["tmux", "kill-window", "-t", target], timeout).last
+    rescue SystemCallError, Timeout::Error
       false
     end
 
@@ -767,15 +836,17 @@ module Workspace
     # @param session_name [String] tmux session name
     # @param window [String, nil] window index (default "0"), or nil for
     #   every window in the session
+    # @param timeout [Numeric, nil] seconds to wait, through {TimedProcess}; past it Timeout::Error is raised (nil
+    #   waits as long as tmux takes)
     # @return [Array<Hash>] :id, :window, :index, :pid, :title, :command, :cwd, :window_name,
     #   :review (the window's +@workspace-review+ mark, nil when unset) per pane
-    def pane_details(session_name, window: "0")
+    def pane_details(session_name, window: "0", timeout: nil)
       scope = window.nil? ? ["-s", "-t", session_target(session_name)] : ["-t", session_target(session_name, window)]
       format = ["pane_id", "window_index", "pane_index", "pane_pid", "pane_current_command",
         "pane_current_path", "window_name", REVIEW_OPTION, "pane_title"].map { |f| "\#{#{f}}" }.join("\t")
       @logger.debug { "tmux: listing pane details for #{scope.last}" }
-      stdout, _, status = Open3.capture3("tmux", "list-panes", *scope, "-F", format)
-      return [] unless status.success?
+      stdout, ok = read_option_command(["tmux", "list-panes", *scope, "-F", format], timeout)
+      return [] unless ok
 
       stdout.lines.filter_map do |line|
         id, window_index, index, pid, command, cwd, window_name, review, title = line.chomp.split("\t", 9)

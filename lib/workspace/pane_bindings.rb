@@ -133,11 +133,14 @@ module Workspace
     # @param kind [String] one of {KINDS}
     # @param id [String] the subject's id
     # @param role [String, nil] "reviewer" or "author" removes only that role's bindings; nil removes both
+    # @param pane [String, nil] removes only the binding of that pane id, when it is to the subject; nil removes every one
     # @return [Array<String>] the keys removed (pane ids and slot keys)
-    def unbind_all(kind, id, role: nil)
+    def unbind_all(kind, id, role: nil, pane: nil)
       removed = []
       update do |all|
-        removed = all.select { |_, entry| entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id && (role.nil? || role_of(entry) == role_name(role)) }.keys
+        removed = all.select do |key, entry|
+          entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id && (role.nil? || role_of(entry) == role_name(role)) && (pane.nil? || key == pane)
+        end.keys
         removed.each { |key| all.delete(key) }
       end
       removed

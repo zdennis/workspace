@@ -1,7 +1,7 @@
 module Workspace
   # The one way a workflow run changes: under the run's lock, with the attempt record's reasons kept before and
   # after the change, `workflow_changed` written when what a reader sees moved, alerts fired once the lock is given
-  # up, and then the line of a step the change started typed, through +deliver+. It never runs a check, a review round or a window close: a
+  # up with what the block registered to follow it ({Context#after_lock}), and then the line of a step the change started typed, through +deliver+. It never runs a check, a review round or a window close: a
   # block that registers one reads it back from its {Context} and the caller runs it through
   # {WorkflowEvaluation#finish_follow_ups}.
   class WorkflowRunChange
@@ -51,6 +51,19 @@ module Workspace
       def close_review(found = nil)
         found ? @close_review = found : @close_review
       end
+
+      # Registers a block {WorkflowRunChange#call} runs once the lock is given up and the change stored, given the run
+      # as stored, as alerts fire: a notice to a person that must not hold the run's lock. A block that raises is
+      # dropped; it never fails the change.
+      #
+      # @yieldparam run [WorkflowRun] the run as stored
+      # @return [void]
+      def after_lock(&block)
+        (@after_lock ||= []) << block
+      end
+
+      # @return [Array<Proc>] the blocks registered with {#after_lock}, in order
+      def after_locks = @after_lock || []
     end
 
     # @param store [Workspace::WorkflowRunStore]
@@ -92,6 +105,7 @@ module Workspace
       return nil unless run
       changed(run.to_h) unless before == WorkflowTransitions.fingerprint(run.to_h)
       @alerts&.fire(alert_before, run)
+      ctx.after_locks.each { |each| after_lock(each, run) }
       ctx.delivery ? @deliver.call(run_id, ctx.delivery) : run
     end
 
@@ -106,6 +120,12 @@ module Workspace
     end
 
     private
+
+    def after_lock(block, run)
+      block.call(run)
+    rescue
+      nil
+    end
 
     def changed(run)
       @event_log&.record(type: "workflow_changed", project: run["workspace"],

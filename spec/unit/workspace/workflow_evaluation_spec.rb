@@ -234,6 +234,65 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(store.runs["wr_1"]["steps"]["plan"]["state"]).to eq("passed")
     end
 
+    describe "against the checkout the round began with" do
+      let(:snapshot) { {"head" => "a" * 40, "tree_sha256" => "t" * 64} }
+      let(:round) { super().merge("snapshot" => snapshot) }
+      let(:progress) { Workspace::WorkflowProgress.new(change: change, store: store, dispatch: RecordingDispatch.new, attempt_record: RecordingAttemptRecord.new, panes: panes, log_tail: RecordingLogTail.new, clock: -> { now }) }
+
+      it "goes on to the tally when nothing changed" do
+        stored(reviewing)
+
+        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9")
+
+        expect(guard.calls.map(&:first)).to eq([:round_check])
+        expect(guard.calls.last[2]).to eq(snapshot)
+        expect(tally.calls.size).to eq(1)
+      end
+
+      it "stops a changed checkout review_guard, the round recorded, with no tally, no loop and no round spent" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review_rounds"] = 1 })
+        changed = RecordingGuard.new(round_found: {"changed" => ["tree"], "snapshot_head" => "a" * 40, "head" => "a" * 40})
+
+        run = evaluation(review_tally: tally, guard: changed).turn_ended("wr_1", pane: "%9")
+
+        expect(tally.calls).to be_empty
+        expect(run.state).to eq("waiting")
+        expect(run.reason).to include("code" => "review_guard")
+        expect(run.reason["details"]).to include("step" => "plan", "attempt" => 1, "round" => 1, "changed" => ["tree"])
+        plan = run.step("plan")
+        expect(plan.state).to eq("reviewing")
+        expect(plan.review_rounds).to eq(1)
+        expect(plan.review).to include("recorded" => true)
+        expect(plan.last_attempt.to_h["rounds"].map { |each| each["ended"] }).to eq(["review_guard"])
+        expect(plan.last_attempt.to_h["outcome"]).to eq("checks_passed")
+        expect(change.reviews).to be_empty
+        expect(change.events.map { |each| each[1] }).to include("review_ended")
+      end
+
+      it "stops review_incomplete, not a pass, when the checkout can't be compared" do
+        stored(reviewing)
+        unread = RecordingGuard.new(round_found: {"unread" => ["tree"]})
+
+        run = evaluation(review_tally: tally, guard: unread).turn_ended("wr_1", pane: "%9")
+
+        expect(tally.calls).to be_empty
+        expect(run.reason["code"]).to eq("review_incomplete")
+        expect(run.reason["details"]["problem"]).to include("tree unread")
+      end
+
+      it "checks before the revision is computed again" do
+        stored(reviewing)
+        changed = RecordingGuard.new(round_found: {"changed" => ["head"], "snapshot_head" => "a" * 40, "head" => "b" * 40})
+        revision = RecordingReviewRevision.new({revision: "rev1", problem: nil})
+
+        run = evaluation(review_tally: tally, guard: changed, review_revision: revision).turn_ended("wr_1", pane: "%9")
+
+        expect(revision.calls).to be_empty
+        expect(change.review_ends).to be_empty
+        expect(run.reason["code"]).to eq("review_guard")
+      end
+    end
+
     it "ignores a turn's end in the author's pane, a turn begun before the round, and a stopped round" do
       stored(reviewing)
       evaluation(review_tally: tally).turn_ended("wr_1", pane: "%3")
@@ -245,6 +304,94 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
       expect(tally.calls).to be_empty
       expect(progress.calls).to be_empty
+    end
+
+    describe "in a window an earlier round left, being cleared for this one" do
+      let(:round) { super().merge("clear_from" => "2026-11-10T11:40:00.000Z") }
+
+      it "ignores the end of a turn a person had there before the clear, and one whose start is not known, costing no round" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review_rounds"] = 2 })
+
+        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 35), stopped_at: Time.utc(2026, 11, 10, 11, 41))
+        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 41))
+
+        expect(tally.calls).to be_empty
+        expect(progress.calls).to be_empty
+        expect(store.runs["wr_1"]["steps"]["plan"]).to include("state" => "reviewing", "review_rounds" => 2)
+        expect(store.runs["wr_1"]["reason"]).to be_nil
+      end
+
+      it "ignores a turn begun once the clear was under way while the line is still being typed, no clear confirmed" do
+        stored(reviewing)
+
+        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 5))
+
+        expect(tally.calls).to be_empty
+        expect(store.runs["wr_1"]["reason"]).to be_nil
+      end
+
+      it "decides the round on the reviewers' turn, begun once the clear was under way, once the line was delivered" do
+        stored(reviewing.tap { |hash| hash["steps"]["plan"]["review"]["delivered_at"] = "2026-11-10T11:40:10.000Z" })
+
+        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 5))
+
+        expect(tally.calls.size).to eq(1)
+      end
+
+      describe "for a round whose line may have been typed, waiting on a prompt in the review pane" do
+        let(:typed) { {"code" => "connection_failed", "message" => "daemon gone", "at" => "2026-11-10T11:41:30Z", "typed" => true} }
+
+        it "counts the reviewers' Stop once the person answers, the clear confirmed though the delivery never was" do
+          stored(reviewing.tap do |hash|
+            hash["steps"]["plan"]["review"].merge!("delivery" => "failed", "failure" => typed, "kick_at" => "2026-11-10T11:41:10.000Z",
+              "cleared_at" => "2026-11-10T11:41:00.000Z")
+          end)
+
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 41, 20), stopped_at: Time.utc(2026, 11, 10, 11, 55))
+
+          expect(tally.calls.size).to eq(1)
+        end
+
+        it "leaves such a Stop uncounted when neither the clear nor the delivery is known, for the sweep or the tick to judge" do
+          stored(reviewing.tap do |hash|
+            hash["steps"]["plan"]["review"].merge!("delivery" => "failed", "failure" => typed, "kick_at" => "2026-11-10T11:41:10.000Z")
+          end)
+
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 41, 20), stopped_at: Time.utc(2026, 11, 10, 11, 55))
+
+          expect(tally.calls).to be_empty
+          expect(store.runs["wr_1"]["reason"]).to be_nil
+        end
+      end
+
+      describe "once the daemon confirmed the clear and the delivery was recorded" do
+        let(:round) { super().merge("cleared_at" => "2026-11-10T11:41:00.000Z", "delivered_at" => "2026-11-10T11:42:00.000Z") }
+
+        it "ignores a person's turn begun before the confirmed clear, though after the clear began" do
+          stored(reviewing)
+
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 30))
+
+          expect(tally.calls).to be_empty
+        end
+
+        it "counts a Stop with no known start (the daemon restarted during the round) that came after the delivery" do
+          stored(reviewing)
+
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 50))
+
+          expect(tally.calls.size).to eq(1)
+        end
+
+        it "leaves uncounted such a Stop from before the delivery, and one with no time at all" do
+          stored(reviewing)
+
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 41, 30))
+          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9")
+
+          expect(tally.calls).to be_empty
+        end
+      end
     end
 
     it "takes a round as incomplete when no tally is set up" do
@@ -574,6 +721,43 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
       expect(progress.calls.map(&:first)).to eq([:fail_step])
       expect(progress.calls.first[2]).to include("cause" => "check", "code" => "check_failed")
+    end
+  end
+
+  describe "a review round registered with a round rerun collaborator" do
+    let(:review) { {"step" => "plan", "attempt" => 2, "round" => 2} }
+    let(:rounds) { [] }
+    let(:runner) { ->(run_id, pending) { rounds << [run_id, pending] && nil } }
+
+    def follow(rerun)
+      stored(run_hash(state: "reviewing"))
+      context = ctx
+      context.review(review)
+      evaluation(review_round: runner, round_rerun: rerun).finish_follow_ups("wr_1", context, Workspace::WorkflowRun.from_h(store.runs["wr_1"]))
+    end
+
+    it "asks it about the round before the delivery, and delivers the round as registered when it answers nothing" do
+      rerun = RecordingRoundRerun.new
+
+      follow(rerun)
+
+      expect(rerun.calls).to eq([[:check_revision, "wr_1", review]])
+      expect(rounds).to eq([["wr_1", review]])
+    end
+
+    it "hands the delivery the revision it computed" do
+      follow(RecordingRoundRerun.new({revision: "rev2"}))
+
+      expect(rounds).to eq([["wr_1", review.merge("revision" => "rev2")]])
+    end
+
+    it "delivers nothing and answers the run it stopped" do
+      stopped = Workspace::WorkflowRun.from_h(run_hash(:state => "reviewing", "reason" => {"code" => "review_no_change"}))
+
+      result = follow(RecordingRoundRerun.new({run: stopped}))
+
+      expect(rounds).to be_empty
+      expect(result).to equal(stopped)
     end
   end
 

@@ -19,6 +19,10 @@ module Workspace
     # Seconds to wait for the daemon when asking whether a pane is idle.
     IDLE_TIMEOUT = 1.0
 
+    # Seconds each tmux read of a review window (its pane state, listing, closing) may take, so a wedged tmux server
+    # does not hang the sweep, `doctor` or a round's delivery.
+    TMUX_READ_TIMEOUT = 5
+
     # Seconds since a pane's turn ended before that end counts as unhandled:
     # the `workflow advance` the daemon starts on it has taken the run's lock
     # long before.
@@ -264,10 +268,12 @@ module Workspace
     end
 
     # @param pane [String] a pane id
-    # @return [Boolean] whether tmux no longer has the pane; false when tmux can't be read
-    def pane_gone?(pane)
-      @tmux.session_name_for_pane(pane).nil?
-    rescue SystemCallError
+    # @param workspace [String, nil] the run's workspace, whose tmux socket is asked (its config's `socket_name`); nil asks the default one
+    # @return [Boolean] whether tmux no longer has the pane; false when tmux can't be read or does not answer in time
+    #   (a wedged server is not a gone pane)
+    def pane_gone?(pane, workspace: nil)
+      @tmux.session_name_for_pane(pane, project: workspace, strict: true).nil?
+    rescue Workspace::Error, SystemCallError
       false
     end
 
@@ -331,10 +337,86 @@ module Workspace
     #
     # @param run_id [String]
     # @param role [String, nil] "reviewer" or "author" removes only that role's binding; nil removes both
+    # @param pane [String, nil] removes only that pane's binding to the run; nil removes the run's every binding
     # @return [void]
-    def unbind(run_id, role: nil)
-      @bindings.unbind_all("run", run_id, role: role)
+    def unbind(run_id, role: nil, pane: nil)
+      @bindings.unbind_all("run", run_id, role: role, pane: pane)
     rescue SystemCallError
+      nil
+    end
+
+    # Starts the workspace's agent daemon when none runs, and refuses when it can't be: a review round's verdicts are
+    # proved from the daemon's hook log, so no round is delivered without one.
+    #
+    # @param workspace [String]
+    # @return [void]
+    # @raise [Workspace::Error] code `no_daemon`
+    def require_daemon(workspace)
+      ensure_daemon!(workspace)
+    end
+
+    # The `@workspace-review` mark of a run's review window: `RUN:STEP:ROUND`. Run and step ids hold no `:`.
+    #
+    # @param run_id [String]
+    # @param step [String]
+    # @param round [Integer]
+    # @return [String]
+    def self.review_mark(run_id, step, round) = "#{run_id}:#{step}:#{round}"
+
+    # @param mark [String, nil] a window's `@workspace-review` value
+    # @return [Array(String, String, Integer), nil] its run id, step and round; nil for a value not shaped as {.review_mark} makes it
+    def self.parse_review_mark(mark)
+      found = mark.to_s.match(/\A([^:\s]+):([^:\s]+):(\d+)\z/)
+      found && [found[1], found[2], found[3].to_i]
+    end
+
+    # Closes the review windows of a run, found by their `@workspace-review` mark (so a window whose pane was never
+    # recorded, or that a person renamed, is found too), and removes the reviewer binding of each pane it closed. A
+    # workspace on its own tmux socket has none (no round opens one there), and its session name is not looked up on
+    # the default server. Never raises.
+    #
+    # @param workspace [String] the run's workspace
+    # @param run_id [String]
+    # @param step [String, nil] only that step's windows; nil closes every window of the run
+    # @param round [Integer, nil] only windows marked for that round or an earlier one, so a late close of round K
+    #   leaves round K+1's window; nil closes every round's
+    # @return [Array<String>] the window ids closed
+    def close_review(workspace, run_id, step: nil, round: nil)
+      return [] if @tmux.custom_socket_option(workspace)
+      @tmux.review_windows(@tmux.session_name_for(workspace), timeout: TMUX_READ_TIMEOUT).filter_map do |window|
+        run, marked_step, marked_round = self.class.parse_review_mark(window[:review])
+        next if run != run_id || (step && marked_step != step) || (round.is_a?(Integer) && marked_round > round)
+        next unless @tmux.kill_window(window[:window], timeout: TMUX_READ_TIMEOUT)
+        unbind(run_id, role: "reviewer", pane: window[:pane]) if window[:pane]
+        window[:window]
+      end
+    rescue Workspace::Error, SystemCallError, Timeout::Error
+      []
+    end
+
+    # What became of a round's review pane, for the sweep, answered only on positive evidence: there on the tmux
+    # server the round recorded (`:live`); missing from the session's pane list while the session's server answers
+    # with that same pid (`:gone`); or the session's server, or the server that has the pane id now, answers with another pid
+    # (`:server_restarted`: a pane id the new server reused is not the review pane). Anything else is nil and the
+    # sweep leaves the round alone: no server recorded (nothing can tell a restarted server's reused pane id from
+    # the review pane), or tmux that can't be reached or read.
+    #
+    # @param workspace [String] the run's workspace
+    # @param pane [String] the round's review pane
+    # @param server_pid [String, nil] the tmux server's pid the round recorded
+    # @return [Symbol, nil] :live, :gone, :server_restarted, or nil when it can't be told
+    def review_pane_state(workspace, pane, server_pid)
+      return nil if server_pid.nil? || server_pid.to_s.empty?
+      now = @tmux.server_pid_for_pane(pane, timeout: TMUX_READ_TIMEOUT)
+      return (now.to_s == server_pid.to_s) ? :live : :server_restarted if now
+      session = @tmux.session_name_for(workspace)
+      current = @tmux.server_pid_for_session(session, timeout: TMUX_READ_TIMEOUT)
+      return nil unless current
+      return :server_restarted unless current.to_s == server_pid.to_s
+      # The same server: gone only when it lists the session's panes and this one is not among them.
+      listed = @tmux.pane_details(session, window: nil, timeout: TMUX_READ_TIMEOUT)
+      (listed.any? && listed.none? { |detail| detail[:id] == pane }) ? :gone : nil
+    rescue SystemCallError, Workspace::Error, Timeout::Error
       nil
     end
 
@@ -349,7 +431,8 @@ module Workspace
     #   more once the pane is no longer bound to it. It applies only to a fresh
     #   step: a `context: continue` line is typed without the daemon's restart,
     #   so this does not stop it
-    # @return [Hash] :ok, and :warning when the daemon gave one; when false, :code
+    # @return [Hash] :ok, :warning when the daemon gave one, and for a fresh line :cleared_at (when the daemon confirmed
+    #   the new conversation, ISO 8601, when it says); when false, :code
     #   (an error code) and :message, with :reason and :proof_missing when the daemon gave them
     def kick(workspace:, pane:, text:, fresh:, run_id: nil)
       ensure_daemon!(workspace)
@@ -464,7 +547,7 @@ module Workspace
     def restart(workspace, pane, text, run_id)
       message = AgentProtocol.restart_agent(workspace: workspace, pane: pane, prompt: text, force: false, wait: true, run_id: run_id)
       reply = request(workspace, message)
-      return {ok: true, warning: reply["warning"]}.compact if reply["ok"]
+      return {ok: true, warning: reply["warning"], cleared_at: reply["cleared_at"]}.compact if reply["ok"]
       {ok: false, code: reply["error"].to_s, message: [reply["message"], reply["fix"]].compact.join(" "), reason: reply["reason"],
        proof_missing: reply.dig("details", "proof_missing"), warning: reply["warning"]}.compact
     end

@@ -101,6 +101,45 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(change.events.last).to eq(["wr_1", "budget_spent", {"used" => 150, "allowance" => 100, "counted" => 1, "uncounted" => 0, "step" => "plan"}])
     end
 
+    it "records the attempt a review rejected as the new attempt's retry_of, and keeps it on a hold" do
+      failed = run_hash("steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed"}]}})
+
+      run = dispatch.dispatch(failed, ctx: ctx, retry_of: {"text" => "the verdicts", "attempt" => 1})
+
+      expect(run.step("plan").last_attempt.to_h).to include("n" => 2, "retry_of" => 1)
+
+      spent = run_hash("definition" => run_hash["definition"].merge("budget" => {"tokens" => 100}),
+        "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 150}}]}})
+
+      held = dispatch.dispatch(spent, ctx: ctx, retry_of: {"text" => "the verdicts", "attempt" => 1})
+
+      expect(held.budget_hold).to include("text" => "the verdicts", "retry_of" => 1)
+    end
+
+    it "keeps a review's retry_of through a lock wait, for the dispatch that ends it, and only for that step" do
+      waiting = RecordingRunResources.new(acquired: {waiting: {name: "devenv", position: 1, total: 1, holder: {"run_id" => "wr_9", "kind" => "run"}}})
+      failed = run_hash("steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed"}]}})
+      blocked = described_class.new(change: change, store: store, resources: waiting, panes: panes, prompt: prompt, attempt_record: attempt_record, guard: guard, clock: -> { now })
+
+      held = blocked.dispatch(failed, ctx: ctx, context: "fresh", retry_of: {"text" => "the verdicts", "attempt" => 1})
+
+      expect(held.reason["code"]).to eq("waiting_lock")
+      expect(held.to_h["retry_of_pending"]).to eq("step" => "plan", "attempt" => 1, "context" => "fresh", "text" => "the verdicts")
+
+      woken = ctx
+      run = dispatch.dispatch(held, ctx: woken)
+
+      expect(run.step("plan").last_attempt.to_h).to include("n" => 2, "retry_of" => 1)
+      expect(woken.delivery).to include("fresh" => true)
+      expect(run.to_h).not_to have_key("retry_of_pending")
+
+      plain = blocked.dispatch(held.thawed.merge("retry_of_pending" => {"step" => "build", "attempt" => 1}), ctx: ctx)
+      expect(plain.to_h).not_to have_key("retry_of_pending")
+
+      elsewhere = dispatch.dispatch(held.thawed.merge("retry_of_pending" => {"step" => "build", "attempt" => 1}), ctx: ctx)
+      expect(elsewhere.step("plan").last_attempt.to_h).not_to have_key("retry_of")
+    end
+
     it "starts the attempt over a spent budget when told not to hold it (a redelivery)" do
       spent = run_hash("definition" => run_hash["definition"].merge("budget" => {"tokens" => 100}),
         "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 150}}]}})
@@ -209,6 +248,69 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(dispatch.hold_round(waited, round: 1)).to be_nil
       expect(change.events).to be_empty
       expect(resources.calls).to be_empty
+    end
+  end
+
+  describe "#hold_round_lock" do
+    def reviewing(uses: ["review-db"])
+      review = {"from" => %w[skeptic], "need" => 1, "must" => []}
+      review["uses"] = uses if uses
+      run_hash("state" => "running",
+        "definition" => {"id" => "flow", "steps" => [{"id" => "plan", "prompt" => "Plan.", "produces" => ["plan.md"], "uses" => ["devenv"], "review" => review}]},
+        "steps" => {"plan" => {"state" => "reviewing", "review_rounds" => 0, "attempts" => [{"n" => 1, "outcome" => "checks_passed"}]}})
+    end
+
+    it "takes the review's uses in place of the step's, with no pane, and lets the round start" do
+      expect(dispatch.hold_round_lock(reviewing, round: 1, step_state: "reviewing")).to be_nil
+
+      expect(resources.calls).to eq([[:acquire, {run_id: "wr_1", step: "plan", uses: ["review-db"], worktree: @dir, workflow: "flow", workspace: "app", pane: nil}]])
+    end
+
+    it "gives up the step's own uses when the review names none" do
+      expect(dispatch.hold_round_lock(reviewing(uses: nil), round: 1, step_state: "reviewing")).to be_nil
+
+      expect(resources.calls.first.last).to include(uses: nil)
+    end
+
+    context "when a lock the review uses is taken" do
+      let(:resources) { RecordingRunResources.new(acquired: {waiting: {name: "review-db", position: 1, total: 1, holder: {"run_id" => "wr_9", "kind" => "run"}}}) }
+
+      it "waits on waiting_lock with the round named, the step left reviewing, and leaves the run given alone" do
+        given = reviewing
+        before = deep_copy(given)
+
+        run = dispatch.hold_round_lock(given, round: 2, step_state: "reviewing")
+
+        expect(given).to eq(before)
+        expect(run.state).to eq("waiting")
+        expect(run.step("plan").state).to eq("reviewing")
+        expect(run.reason).to include("code" => "waiting_lock", "since" => "2026-11-10T12:00:00Z")
+        expect(run.reason["details"]).to include("resource" => "review-db", "step" => "plan", "review_round" => 2, "holder" => {"run_id" => "wr_9", "kind" => "run"})
+        expect(event_log.events.map { |each| each["type"] }).to eq(["lock_wait_started"])
+      end
+
+      it "keeps the wait's since, and logs no second wait, when asked again for the same lock" do
+        waited = reviewing.merge("reason" => {"code" => "waiting_lock", "since" => "2026-11-10T11:00:00Z", "details" => {"resource" => "review-db"}})
+
+        run = dispatch.hold_round_lock(waited, round: 2, step_state: "reviewing")
+
+        expect(run.reason["since"]).to eq("2026-11-10T11:00:00Z")
+        expect(event_log.events).to be_empty
+      end
+    end
+
+    it "keeps the round from starting for a person when the lock store can't be read, giving up none of the run's locks" do
+      failing = RecordingRunResources.new(error: Errno::EACCES.new("locks.json"))
+      dispatch = described_class.new(change: change, store: store, resources: failing, panes: panes, prompt: prompt, attempt_record: attempt_record,
+        guard: guard, event_log: event_log, clock: -> { now })
+
+      run = dispatch.hold_round_lock(reviewing, round: 1, step_state: "reviewing")
+
+      expect(run.state).to eq("waiting")
+      expect(run.step("plan").state).to eq("reviewing")
+      expect(run.reason).to include("code" => "waiting_you")
+      expect(run.reason["details"]).to include("kind" => "review", "step" => "plan", "review_round" => 1, "error" => "error")
+      expect(failing.calls.map(&:first)).to eq([:acquire])
     end
   end
 

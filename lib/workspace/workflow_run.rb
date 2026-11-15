@@ -174,6 +174,21 @@ module Workspace
         to_h["review"]
       end
 
+      # @return [Boolean] whether the step's round was kept from starting by a hold (it has a `held` mark)
+      def review_held?
+        review.is_a?(Hash) && review.key?("held")
+      end
+
+      # @return [Boolean] whether the step's round ended without deciding (a tally or a refused round recorded `ended_at`)
+      def review_stopped?
+        review.is_a?(Hash) && !review["ended_at"].nil?
+      end
+
+      # @return [Boolean] whether the step is `reviewing` with a round under way: not held, not ended, delivery not failed
+      def review_live?
+        state == "reviewing" && review.is_a?(Hash) && !review_held? && !review_stopped? && review["delivery"] != "failed"
+      end
+
       # @return [Integer, nil] the review rounds the step has spent
       def review_rounds
         to_h["review_rounds"]

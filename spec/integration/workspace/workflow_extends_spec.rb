@@ -382,6 +382,42 @@ RSpec.describe "workflow extends" do
         .to eq(%w[research plan review_supportive review_skeptical review_implementer plan_review implement verify])
     end
   end
+
+  describe "the rpiv-auto-approve-v2 preset" do
+    let(:presets) { File.join(PROJECT_ROOT, "lib", "workflows") }
+    let(:real) { Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: presets)) }
+    let(:v2) { real.find("rpiv-auto-approve-v2") }
+    let(:rpiv) { real.find("rpiv") }
+
+    it "is rpiv with its plan step replaced by a reviewed one, and no steps added" do
+      steps = v2.to_h["steps"].to_h { |step| [step["id"], step] }
+      base = rpiv.to_h["steps"].to_h { |step| [step["id"], step] }
+
+      expect(v2.to_h["steps"].map { |s| s["id"] }).to eq(%w[research plan implement verify])
+      %w[research implement verify].each { |id| expect(steps[id]).to eq(base[id]) }
+      expect(steps["plan"]["gate"]).to be_nil
+      expect(base["plan"]["gate"]).to eq("approve")
+      expect(steps["plan"]["max_attempts"]).to eq(8)
+      expect(steps["plan"]["review"]).to include("from" => %w[supportive skeptical implementer], "need" => 2, "must" => ["skeptical"], "max_rounds" => 6, "timeout" => 1800.0, "context" => "fresh")
+      expect(steps["plan"]["prompt"]).not_to include("plan-approval.md")
+    end
+
+    it "carries its own caps, budget and reviewers over rpiv's inputs" do
+      data = v2.to_h
+
+      expect(data).to include("max_attempts" => 17, "timeout" => 28_800.0, "timeout_action" => "hold", "budget" => {"action" => "stop", "tokens" => 40_000_000})
+      expect(data["inputs"]).to eq(rpiv.to_h["inputs"])
+      expect(data["reviewers"].keys).to eq(%w[supportive skeptical implementer])
+      expect(v2.warnings).to eq([])
+    end
+
+    it "resolves its sha over rpiv's text, and leaves the old preset's pin alone" do
+      expect(v2.parents.map { |p| p["id"] }).to eq(["rpiv"])
+      expect(v2.resolved_sha256).not_to eq(v2.sha256)
+      expect(real.find("rpiv-auto-approve").parents.map { |p| p["id"] }).to eq(["rpiv"])
+    end
+  end
+
   describe "reviewers" do
     let(:reviewed_parent) {
       <<~YAML

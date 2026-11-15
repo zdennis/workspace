@@ -1295,4 +1295,82 @@ RSpec.describe Workspace::WorkflowGuard do
       ENV["GIT_CONFIG_GLOBAL"] = saved
     end
   end
+
+  describe "a review round's snapshot" do
+    let!(:snapshot) { guard.round_snapshot(repo) }
+
+    it "holds HEAD and the tracked tree's digest" do
+      expect(snapshot).to eq("head" => git("rev-parse", "HEAD").strip, "tree_sha256" => guard.tree_digest(repo))
+      expect(snapshot["tree_sha256"]).to match(/\A\h{64}\z/)
+    end
+
+    it "passes a checkout nothing changed in, and an untracked file" do
+      write("repro_spec.rb")
+
+      expect(guard.round_check(repo, snapshot)).to be_nil
+    end
+
+    it "fails a commit, naming HEAD" do
+      write("a.txt", "two\n")
+      git("commit", "-q", "-am", "more")
+
+      expect(guard.round_check(repo, snapshot)).to include("changed" => ["head"],
+        "snapshot_head" => snapshot["head"], "head" => git("rev-parse", "HEAD").strip)
+    end
+
+    it "fails a tracked edit, naming the tree" do
+      write("a.txt", "edited\n")
+
+      expect(guard.round_check(repo, snapshot)).to include("changed" => ["tree"])
+    end
+
+    it "fails an edit staged and unstaged alike, and one undone passes again" do
+      write("a.txt", "edited\n")
+      git("add", "a.txt")
+      expect(guard.round_check(repo, snapshot)).to include("changed" => ["tree"])
+
+      git("checkout", "HEAD", "--", "a.txt")
+      expect(guard.round_check(repo, snapshot)).to be_nil
+    end
+
+    it "is unread, never a pass, when the checkout can't be read" do
+      expect(guard.round_check(File.join(@dir, "gone"), snapshot)).to eq("unread" => %w[head tree])
+    end
+
+    it "is unread when the snapshot itself could not be read" do
+      expect(guard.round_snapshot(File.join(@dir, "gone"))).to eq("head" => nil, "tree_sha256" => nil)
+      expect(guard.round_check(repo, {"head" => nil, "tree_sha256" => nil})).to eq("unread" => %w[head tree])
+    end
+
+    describe "on an unborn branch" do
+      let(:fresh) { File.join(@dir, "fresh") }
+
+      before do
+        FileUtils.mkdir_p(fresh)
+        system("git", "-C", fresh, "init", "-q", out: File::NULL, err: File::NULL)
+        system("git", "-C", fresh, "config", "user.email", "t@example.com")
+        system("git", "-C", fresh, "config", "user.name", "T")
+      end
+
+      it "snapshots a value that compares, and passes while nothing changed" do
+        snap = guard.round_snapshot(fresh)
+
+        expect(snap).to eq("head" => "none", "tree_sha256" => "none")
+        expect(guard.round_check(fresh, snap)).to be_nil
+      end
+
+      it "counts a first commit as a change" do
+        snap = guard.round_snapshot(fresh)
+        File.write(File.join(fresh, "a.txt"), "one\n")
+        system("git", "-C", fresh, "add", "a.txt", out: File::NULL, err: File::NULL)
+        system("git", "-C", fresh, "commit", "-q", "-m", "first", out: File::NULL, err: File::NULL)
+
+        expect(guard.round_check(fresh, snap)).to include("changed" => include("head"), "snapshot_head" => "none")
+      end
+    end
+
+    it "still reports a change when the other part is unread" do
+      expect(guard.round_check(repo, {"head" => "0" * 40, "tree_sha256" => nil})).to include("changed" => ["head"])
+    end
+  end
 end

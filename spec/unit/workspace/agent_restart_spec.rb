@@ -60,6 +60,8 @@ RSpec.describe Workspace::AgentRestart do
 
     expect(result).to include("ok" => true, "status" => "restarted", "pane_id" => "%18",
       "context_before" => 42, "context_after" => 3, "delivery" => "submitted")
+    # When the new conversation was confirmed, so a caller can tell a turn begun before it from the prompt's.
+    expect(Time.iso8601(result["cleared_at"])).to eq(wall[0].utc.round(3))
     expect(tmux.delivered).to eq([
       {session: "workspace-wt-app", target: "%18", text: "/clear"},
       {session: "workspace-wt-app", target: "%18", text: "Read HANDOFF.md"}
