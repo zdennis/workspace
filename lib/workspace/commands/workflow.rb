@@ -708,6 +708,7 @@ module Workspace
 
       # `workflow sweep --install`, `--uninstall` or `--installed`: the opt-in launchd
       # entry that runs the sweep every five minutes. Changes nothing unless asked.
+      # A running agent daemon also runs the sweep for its own workspace every five minutes.
       #
       # @param action [Symbol] `:install`, `:uninstall` or `:status`
       # @param dry_run [Boolean] say what would be done and change nothing
@@ -933,7 +934,7 @@ module Workspace
         data = definition.to_h
         return unless data["timeout"] || Array(data["steps"]).any? { |step| step["timeout"] }
         return if @schedule.status["installed"]
-        @error_output.puts "Warning: #{data["id"]} sets a timeout, but the workflow sweep is not installed, so nothing enforces the timeout while no agent is working the run. Run `workspace workflow sweep --install` to install it."
+        @error_output.puts "Warning: #{data["id"]} sets a timeout, but the scheduled workflow sweep is not installed, so the timeout is enforced only while the workspace's agent daemon is running. Run `workspace workflow sweep --install` to install it."
       rescue Workspace::Error
         nil
       end

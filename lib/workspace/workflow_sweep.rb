@@ -4,7 +4,10 @@ module Workspace
   # One pass over the runs still going, acting on the ones that have stopped
   # without anything noticing. It needs no agent daemon: it reads the run files
   # and the panes, asks the daemon only for what a pane shows, and starts a
-  # daemon that is not running.
+  # daemon that is not running. A person can run it, the opt-in launchd entry
+  # runs it every five minutes, and a workspace's agent daemon runs it for its
+  # own workspace about every five minutes while a run is going
+  # ({WorkflowNudger}).
   #
   # For a run whose step reads `running`, in this order:
   #

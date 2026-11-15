@@ -33,7 +33,7 @@ RSpec.describe Workspace::Commands::Workflow, "#run sweep warning" do
     run_with(definition("timeout: 2h"))
 
     expect(error_output.string.lines.size).to eq(1)
-    expect(error_output.string).to start_with("Warning: flow sets a timeout").and include("nothing enforces the timeout while no agent is working the run", "workflow sweep --install")
+    expect(error_output.string).to start_with("Warning: flow sets a timeout").and include("enforced only while the workspace's agent daemon is running", "workflow sweep --install")
     expect(output.string).not_to include("Warning")
   end
 
