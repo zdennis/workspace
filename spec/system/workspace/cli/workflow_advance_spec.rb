@@ -17,6 +17,8 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    after { |example| EventKeysCheck.verify!(runs_dir, File.join(@dir, "archive")) unless example.metadata[:raw_events] }
+
     let(:runs_dir) { File.join(@dir, "runs") }
     let(:store) { PinnedFindStore.new(Workspace::WorkflowRunStore.new(dir: runs_dir, archive_dir: File.join(@dir, "archive"))) }
     let(:panes) { FakeWorkflowPanes.new }

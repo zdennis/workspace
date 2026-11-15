@@ -12,6 +12,8 @@ RSpec.describe Workspace::WorkflowEngine do
     end
   end
 
+  after { |example| EventKeysCheck.verify!(runs_dir, archive_dir) unless example.metadata[:raw_events] }
+
   let(:worktree) { File.join(@dir, "app") }
   let(:runs_dir) { File.join(@dir, "state", ".workflows", "runs") }
   let(:archive_dir) { File.join(@dir, "state", ".workflows", "archive") }
@@ -3000,6 +3002,9 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(context.first).to eq("Note from the person who resumed the run: go")
       expect(context.last).to include("spec line 6")
       expect(history_lines.find { |each| each["type"] == "run_resumed" }).to include("backoff" => "skipped")
+      resumed = history_lines.find { |each| each["type"] == "run_resumed" }
+      expect(resumed).to include("from_state", "to_state", "actor", "cause")
+      expect(resumed.values_at("actor", "cause")).not_to include(nil)
       expect(history_lines.reverse.find { |each| each["type"] == "step_dispatching" }).to include("step" => "build", "cause" => "resume")
     end
 
@@ -3176,6 +3181,9 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(engine.tick("wr_1", actor: "daemon")).to be_nil
         expect(engine.retry_backoff("wr_1", actor: "sweep", step: "verify", attempt: 1)).to eq(:moved_on)
         expect(history).to include("step_retry_blocked")
+        blocked = history_lines.find { |each| each["type"] == "step_retry_blocked" }
+        expect(blocked).to include("from_state", "to_state", "actor", "cause")
+        expect(blocked.values_at("actor", "cause")).not_to include(nil)
       end
 
       it "is not spent when tmux no longer has the pane, and a resume with another pane starts the retry" do
@@ -4935,6 +4943,9 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(lock_holder("test-db")).to be_nil
       expect(panes.bound).to eq({})
       expect(history.last).to eq("run_cancelled")
+      expect(history_lines.last).to include("actor" => "person")
+      expect(history_lines.last["cause"]).not_to be_nil
+      expect(history_lines.last).to include("from_state", "to_state", "actor", "cause")
       expect { engine.cancel("wr_1", actor: "person") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("run_not_active") }
       expect { engine.turn_ended("wr_1", actor: "agent") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("run_not_active") }
     end

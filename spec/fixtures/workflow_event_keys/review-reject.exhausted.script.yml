@@ -1,0 +1,7 @@
+# Every round is turned down, so the step runs out of rounds and the run waits for a person.
+steps:
+  draft:
+    - reviews: {skeptic: reject, fan: approve}
+    - reviews: {skeptic: reject, fan: approve}
+    - reviews: {skeptic: reject, fan: approve}
+    - reviews: {skeptic: reject, fan: approve}

@@ -1,0 +1,6 @@
+# build fails its check twice (each retry waits out the 30s backoff), then passes; ship ends the run.
+steps:
+  build:
+    - {check: fail, log: "one"}
+    - {check: fail, log: "two"}
+    - {}

@@ -16,6 +16,8 @@ RSpec.describe "a workflow run from start to completed" do
     end
   end
 
+  after { |example| EventKeysCheck.verify!(runs_dir, File.join(@dir, "state", ".workflows", "archive")) unless example.metadata[:raw_events] }
+
   let(:ids) { ["wr_1"] }
   let(:fixture) { File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "e2e.yml") }
   let(:definition) { Workspace::WorkflowDefinition.parse(File.read(fixture), id: "e2e", source: "global", path: fixture) }

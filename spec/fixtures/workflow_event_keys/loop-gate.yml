@@ -1,0 +1,26 @@
+schema_version: 0.1
+id: loop-gate
+title: Gate and loop back
+description: A plan gate a person rejects once, then approves, and a verify step that loops back to implement.
+instructions: Fixture for the event keys spec.
+max_attempts: 10
+steps:
+  plan:
+    title: Plan
+    prompt: Plan it.
+    produces: [plan.md]
+    gate: approve
+  implement:
+    title: Implement
+    prompt: Implement it.
+    produces: [implement.md]
+  verify:
+    title: Verify
+    prompt: Verify it.
+    produces: [verify.md]
+    status:
+      run: "true"
+    on_fail:
+      goto: implement
+      max: 2
+      context: continue

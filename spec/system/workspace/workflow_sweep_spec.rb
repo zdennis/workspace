@@ -10,6 +10,8 @@ RSpec.describe Workspace::WorkflowSweep do
     end
   end
 
+  after { |example| EventKeysCheck.verify!(runs_dir, archive_dir) unless example.metadata[:raw_events] }
+
   let(:worktree) { File.join(@dir, "app") }
   let(:runs_dir) { File.join(@dir, "state", ".workflows", "runs") }
   let(:archive_dir) { File.join(@dir, "state", ".workflows", "archive") }

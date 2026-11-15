@@ -1,0 +1,7 @@
+steps:
+  draft:
+    - reviews: {skeptic: reject, fan: approve}
+    - reviews: {fan: approve}
+      reruns:
+        - {skeptic: approve}
+    - reviews: {skeptic: approve, fan: approve}

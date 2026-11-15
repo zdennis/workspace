@@ -1,0 +1,9 @@
+# The person rejects the plan once and approves the rewrite; verify fails twice and loops back to implement each time.
+steps:
+  plan:
+    - {gate: reject, note: "needs more detail"}
+    - {gate: approve, note: "good"}
+  verify:
+    - {check: fail, log: "1 failure", report: fail, summary: "tests fail"}
+    - {check: fail}
+    - {}

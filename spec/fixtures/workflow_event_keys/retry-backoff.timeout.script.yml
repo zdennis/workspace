@@ -1,0 +1,4 @@
+# A timed-out check on the first attempt with no retry left to take.
+steps:
+  build:
+    - {check: timeout}

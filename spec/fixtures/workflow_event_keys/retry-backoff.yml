@@ -1,0 +1,25 @@
+schema_version: 0.1
+id: retry-backoff
+title: Retry with backoff
+description: A step whose check fails, waits out a backoff, retries, and finally runs out of retries.
+instructions: Fixture for the event keys spec.
+max_attempts: 6
+steps:
+  prep:
+    title: Prep
+    prompt: Prep it.
+    produces: [prep.md]
+  build:
+    title: Build
+    prompt: Build it.
+    produces: [build.md]
+    status:
+      run: "true"
+    on_fail:
+      goto: prep
+      max: 2
+      backoff: 30s
+  ship:
+    title: Ship
+    prompt: Ship it.
+    produces: [ship.md]

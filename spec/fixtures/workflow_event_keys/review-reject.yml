@@ -1,0 +1,25 @@
+schema_version: 0.1
+id: review-reject
+title: Review rejects
+description: A reviewed step whose first round is turned down, whose second is missing a verdict, and whose third passes.
+instructions: Fixture for the event keys spec.
+max_attempts: 8
+reviewers:
+  skeptic:
+    title: Skeptic
+    prompt: Assume it is wrong.
+  fan:
+    title: Fan
+    prompt: Assume it is right.
+steps:
+  draft:
+    title: Draft
+    prompt: Draft it.
+    produces: [draft.md]
+    review:
+      from: [skeptic, fan]
+      need: 2
+      subject: the draft
+      max_rounds: 4
+      timeout: 30m
+      context: fresh
