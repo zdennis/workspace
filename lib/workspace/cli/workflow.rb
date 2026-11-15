@@ -527,7 +527,7 @@ module Workspace
       def workflow_action_rows(invocation, action, options)
         @common.run_action(invocation, action, json: options[:json]) do
           outcome = yield
-          {exit_code: outcome[:exit_code], results: outcome[:results], status: outcome[:status]}
+          {exit_code: outcome[:exit_code], results: outcome[:results], status: outcome[:status], extra: outcome[:extra]}
         end
       end
     end

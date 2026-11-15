@@ -33,6 +33,7 @@ module Workspace
       # @param attempts [Workspace::WorkflowAttempts, nil] reads a run's recorded attempts (`attempts`)
       # @param audit [Workspace::WorkflowAudit, nil] checks a run's evidence copies against their hashes (`audit`)
       # @param sweep [Workspace::WorkflowSweep, nil] looks at the runs still going and acts on the stopped ones (`sweep`)
+      # @param sweep_actions [Workspace::WorkflowSweepActions, nil] turns the sweep's rows into `next_actions` (`sweep --json`)
       # @param needs_me [Workspace::WorkflowNeedsMe, nil] narrows the runs to the ones that wait for a person (`status --needs-me`)
       # @param stats [Workspace::WorkflowStats, nil] reads a workflow's runs into per-step figures (`stats`)
       # @param compare [Workspace::WorkflowCompare, nil] sets a workflow's runs side by side by definition or pack (`compare`)
@@ -48,7 +49,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -61,6 +62,7 @@ module Workspace
         @attempts = attempts
         @audit = audit
         @sweep = sweep
+        @sweep_actions = sweep_actions
         @schedule = schedule
         @needs_me = needs_me
         @branch_inputs = branch_inputs
@@ -703,7 +705,8 @@ module Workspace
         end
         rows = @sweep.call(run: run, workspace: name, dry_run: dry_run, allow: allow)
         print_sweep(rows, summary: !json)
-        {exit_code: ((rows.any? { |each| each["outcome"] == "failed" }) ? 1 : 0), results: rows, status: (dry_run ? "dry_run" : nil)}
+        {exit_code: ((rows.any? { |each| each["outcome"] == "failed" }) ? 1 : 0), results: rows, status: (dry_run ? "dry_run" : nil),
+         extra: {"next_actions" => @sweep_actions.call(rows, run: run, name: name)}}
       end
 
       # `workflow sweep --install`, `--uninstall` or `--installed`: the opt-in launchd

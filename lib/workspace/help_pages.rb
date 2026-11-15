@@ -810,14 +810,21 @@ module Workspace
           "To run it on a schedule even with no agent daemon, --install writes a per-user LaunchAgent (every 5",
           "minutes) and loads it; it is never done for you. --uninstall unloads and removes it, --installed says whether it is there and loaded.",
           "The entry records the absolute Ruby, program and PATH it was installed with, so run --install again",
-          "after a Ruby or install move. A plist that is not ours is never touched."
+          "after a Ruby or install move. A plist that is not ours is never touched.",
+          "",
+          "Next actions:",
+          "With --json, next_actions (always present, empty when nothing needs a person) lists what a person can run.",
+          "`workflow resume RUN` for a held step or a recorded stall (with the extra-tokens or extra-time need when a",
+          "limit is spent, or a pane need for a held retry), `workflow cancel RUN`, `launch WORKSPACE` for a stopped",
+          "workspace, `focus WORKSPACE --pane PANE` for a pane waiting on an answer, and `workflow sweep` after a",
+          "--dry-run. Each carries the result's reason (or cause) as why."
         ],
         options: [["--name WORKSPACE", "Only this workspace's runs (default: every run going)"],
           ["--dry-run", "Say what would be done and do nothing (also for --install and --uninstall; refused with --installed)"],
           ["--install", "Install and load the launchd entry that runs the sweep every 5 minutes (opt-in)"],
           ["--uninstall", "Unload and remove that entry"],
           ["--installed", "Say whether that entry is installed and loaded; changes nothing"],
-          ["--json", "Print one action document (see docs/README.json.md), one result per run looked at"]],
+          ["--json", "Print one action document (see docs/README.json.md), one result per run looked at, and next_actions"]],
         examples: [
           ["workspace workflow sweep --dry-run", "which stopped runs would a sweep act on?"],
           ["workspace workflow sweep", "act on every run that has stopped"],

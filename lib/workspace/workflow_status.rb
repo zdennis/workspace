@@ -148,6 +148,20 @@ module Workspace
       {"runs" => [present(@store.run(id), warnings)], "warnings" => warnings}
     end
 
+    # The needs a resume has when the run's token budget or time limit is used: the same hashes `workflow
+    # status` puts on its own resume action.
+    #
+    # @param run [WorkflowRun]
+    # @return [Array<Hash{String=>Object}>] `extra_tokens` and `extra_time` needs; empty when neither is spent
+    def limit_needs(run)
+      budget = WorkflowBudget.reading(run.to_h)
+      deadline = WorkflowDeadline.reading(run.to_h, @clock.call)
+      needs = []
+      needs << NextAction.need("extra_tokens", "--extra-tokens", "min" => budget["needed"], "suggested" => budget["suggested"]) if budget && budget["spent"]
+      needs << NextAction.need("extra_time", "--extra-time", "min" => deadline["needed"], "suggested" => deadline["suggested"]) if deadline && deadline["spent"]
+      needs
+    end
+
     private
 
     # Warns of unreadable run files, then shows each stored run; a malformed one is a warning.
@@ -564,15 +578,8 @@ module Workspace
       cancel = NextAction.build("workflow cancel", id)
       # An action that starts an attempt is refused once the budget is spent, so it needs --extra-attempts (at
       # least "min"). A plain resume starts one only for some steps; with a named pane (a gone pane) for more.
-      budget = WorkflowBudget.reading(run.to_h)
-      deadline = WorkflowDeadline.reading(run.to_h, @clock.call)
       # "min" is the larger of the run's shortfall and the shortfall of the step the action would start an attempt of.
-      limits = lambda do
-        needs = []
-        needs << NextAction.need("extra_tokens", "--extra-tokens", "min" => budget["needed"], "suggested" => budget["suggested"]) if budget && budget["spent"]
-        needs << NextAction.need("extra_time", "--extra-time", "min" => deadline["needed"], "suggested" => deadline["suggested"]) if deadline && deadline["spent"]
-        needs
-      end
+      limits = -> { limit_needs(run) }
       extra = lambda do |target|
         shortfalls = []
         shortfalls << WorkflowEngine.extra_attempts_needed(run.to_h) if WorkflowEngine.attempts_spent?(run.to_h)

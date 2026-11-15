@@ -414,6 +414,7 @@ require_relative "workspace/workflow_sim_script"
 require_relative "workspace/workflow_simulator"
 require_relative "workspace/workflow_run_health"
 require_relative "workspace/workflow_sweep_rows"
+require_relative "workspace/workflow_sweep_actions"
 require_relative "workspace/workflow_review_sweep"
 require_relative "workspace/workflow_sweep"
 require_relative "workspace/sweep_schedule"
@@ -1133,6 +1134,7 @@ module Workspace
       attempts: WorkflowAttempts.new,
       audit: WorkflowAudit.new(attempts: WorkflowAttempts.new, dir: config.workflow_evidence_dir),
       sweep: workflow_sweep,
+      sweep_actions: WorkflowSweepActions.new(store: workflow_store, panes: workflow_panes, status: workflow_status),
       schedule: sweep_schedule,
       needs_me: workflow_needs_me,
       stats: WorkflowStats.new(store: workflow_store, loader: workflow_run_loader),
