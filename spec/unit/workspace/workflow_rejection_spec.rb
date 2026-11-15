@@ -45,14 +45,14 @@ RSpec.describe Workspace::WorkflowRejection do
     it "adds the text to the pending context, writes review_retry and dispatches the step retry_of the rejected attempt" do
       given = run_hash
       again = {"step" => "design", "attempt" => 2, "round" => 2, "context" => "continue", "text" => "the verdicts"}
-      context = Workspace::WorkflowRunChange::Context.new("engine")
+      context = Workspace::WorkflowRunChange::Context.new("engine", "test")
 
       run = rejection.start(given, again, rounds: {"rounds" => 2, "max_rounds" => 6}, ctx: context)
 
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(given).to eq(run_hash)
       expect(run.pending_context).to eq(["from before", "the verdicts"])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: "continue", budgeted: true, retry_of: {"text" => "the verdicts", "attempt" => 2}}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "review_rejected", context: "continue", budgeted: true, retry_of: {"text" => "the verdicts", "attempt" => 2}}]])
       expect(change.events).to eq([["wr_1", "review_retry", {"step" => "design", "attempt" => 2, "round" => 2, "rounds" => 2, "max_rounds" => 6}]])
       expect(context.delivery).to eq("step" => "design")
     end

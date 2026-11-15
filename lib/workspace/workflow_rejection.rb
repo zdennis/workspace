@@ -45,7 +45,7 @@ module Workspace
       work["pending_context"] << again["text"]
       @change.event(work, "review_retry", "step" => work["current"], "attempt" => again["attempt"], "round" => again["round"],
         "rounds" => rounds["rounds"], "max_rounds" => rounds["max_rounds"])
-      @dispatch.dispatch(work, ctx: ctx, context: again["context"], retry_of: {"text" => again["text"], "attempt" => again["attempt"]})
+      @dispatch.dispatch(work, ctx: ctx, cause: "review_rejected", context: again["context"], retry_of: {"text" => again["text"], "attempt" => again["attempt"]})
     end
 
     private

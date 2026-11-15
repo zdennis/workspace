@@ -176,14 +176,14 @@ module Workspace
       }) { |created| created["artifacts_dir"] = @prompt.artifacts_dir(worktree, created["id"]) })
       started = {"workflow" => data["id"], "workspace" => workspace}
       unless dispatch
-        return @change.call(run.id, actor: actor) do |_read, ctx|
+        return @change.call(run.id, actor: actor, cause: "start") do |_read, ctx|
           ctx.event("run_started", started)
           nil
         end
       end
-      @change.call(run.id, actor: actor) do |read, ctx|
+      @change.call(run.id, actor: actor, cause: "start") do |read, ctx|
         ctx.event("run_started", started)
-        @dispatch.dispatch(read, ctx: ctx)
+        @dispatch.dispatch(read, ctx: ctx, cause: "first")
       end
     end
 

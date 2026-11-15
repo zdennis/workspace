@@ -51,7 +51,7 @@ RSpec.describe Workspace::WorkflowRunChange do
   describe "#call" do
     it "writes the run the block returns under the run's lock and returns it as stored" do
       held = nil
-      result = change.call(run_id, actor: "engine") do |run, _ctx|
+      result = change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
         held = locked?(run_id)
         edited(run) { |work| work["note"] = "changed" }
       end
@@ -65,7 +65,7 @@ RSpec.describe Workspace::WorkflowRunChange do
     it "gives the block the stored run as a frozen WorkflowRun, and stores it as read when the block returns nil" do
       given = nil
       before = File.read(File.join(@dir, "runs", "#{run_id}.json"))
-      result = change.call(run_id, actor: "engine") do |run, _ctx|
+      result = change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
         given = run
         nil
       end
@@ -80,18 +80,18 @@ RSpec.describe Workspace::WorkflowRunChange do
     it "refuses a block that returns something other than a run, and writes nothing" do
       before = File.read(File.join(@dir, "runs", "#{run_id}.json"))
 
-      expect { change.call(run_id, actor: "engine") { |run, _ctx| run.thawed } }.to raise_error(TypeError, /returned Hash/)
+      expect { change.call(run_id, actor: "engine", cause: "test") { |run, _ctx| run.thawed } }.to raise_error(TypeError, /returned Hash/)
       expect(File.read(File.join(@dir, "runs", "#{run_id}.json"))).to eq(before)
     end
 
     it "gives every call a Context of its own" do
       contexts = []
-      change.call(run_id, actor: "engine") do |_run, ctx|
+      change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
         ctx.deliver({"pane" => "%1"})
         contexts << ctx
         nil
       end
-      change.call(run_id, actor: "engine") do |_run, ctx|
+      change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
         contexts << ctx
         nil
       end
@@ -102,7 +102,7 @@ RSpec.describe Workspace::WorkflowRunChange do
 
     it "hands a registered review round back on the context and runs nothing for it" do
       seen = nil
-      result = change.call(run_id, actor: "engine") do |_run, ctx|
+      result = change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
         ctx.review({"round" => 1})
         seen = ctx
         nil
@@ -114,7 +114,7 @@ RSpec.describe Workspace::WorkflowRunChange do
     end
 
     it "types a registered line through deliver once the lock is given up, and returns what deliver returns" do
-      result = change.call(run_id, actor: "engine") do |_run, ctx|
+      result = change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
         ctx.deliver({"step" => "a", "pane" => "%1"})
         nil
       end
@@ -126,9 +126,9 @@ RSpec.describe Workspace::WorkflowRunChange do
     it "lets deliver make a change of its own after the first one is written" do
       nested = nil
       nested = described_class.new(store: store, attempt_record: attempt_record, alerts: alerts, event_log: event_log,
-        deliver: ->(id, _delivery) { nested.call(id, actor: "engine") { |run, _ctx| edited(run) { |work| work["typed"] = true } } })
+        deliver: ->(id, _delivery) { nested.call(id, actor: "engine", cause: "test") { |run, _ctx| edited(run) { |work| work["typed"] = true } } })
 
-      result = nested.call(run_id, actor: "engine") do |run, ctx|
+      result = nested.call(run_id, actor: "engine", cause: "test") do |run, ctx|
         ctx.deliver({"step" => "a"})
         edited(run) { |work| work["dispatched"] = true }
       end
@@ -139,7 +139,7 @@ RSpec.describe Workspace::WorkflowRunChange do
 
     it "never runs a check: one registered is only handed back through the Context" do
       registered = nil
-      result = change.call(run_id, actor: "engine") do |_run, ctx|
+      result = change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
         ctx.check({"step" => "a", "command" => "true"})
         registered = ctx.check
         nil
@@ -152,7 +152,7 @@ RSpec.describe Workspace::WorkflowRunChange do
 
     it "runs what the block registered to follow the lock once it is given up, with the run as stored, dropping one that raises" do
       seen = []
-      result = change.call(run_id, actor: "engine") do |run, ctx|
+      result = change.call(run_id, actor: "engine", cause: "test") do |run, ctx|
         ctx.after_lock { |_stored| raise ArgumentError, "a notice that fails" }
         ctx.after_lock { |stored| seen << [stored.note, locked?(run_id)] }
         edited(run) { |work| work["note"] = "changed" }
@@ -166,7 +166,7 @@ RSpec.describe Workspace::WorkflowRunChange do
       seen = []
 
       expect do
-        change.call(run_id, actor: "engine") do |_run, ctx|
+        change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
           ctx.after_lock { |_stored| seen << :ran }
           raise Workspace::Error.new("refused", code: "refused")
         end
@@ -177,8 +177,8 @@ RSpec.describe Workspace::WorkflowRunChange do
     it "returns nil and runs no block when nonblocking finds the run busy" do
       ran = false
       inner = :not_called
-      change.call(run_id, actor: "engine") do |_run, _ctx|
-        inner = change.call(run_id, actor: "engine", nonblocking: true) { ran = true }
+      change.call(run_id, actor: "engine", cause: "test") do |_run, _ctx|
+        inner = change.call(run_id, actor: "engine", cause: "test", nonblocking: true) { ran = true }
         nil
       end
 
@@ -187,8 +187,8 @@ RSpec.describe Workspace::WorkflowRunChange do
     end
 
     it "writes workflow_changed when what a reader sees moved, and nothing when it did not" do
-      change.call(run_id, actor: "engine") { |run, _ctx| edited(run) { |work| work["state"] = "waiting" } }
-      change.call(run_id, actor: "engine") { |run, _ctx| edited(run) { |work| work["note"] = "unseen" } }
+      change.call(run_id, actor: "engine", cause: "test") { |run, _ctx| edited(run) { |work| work["state"] = "waiting" } }
+      change.call(run_id, actor: "engine", cause: "test") { |run, _ctx| edited(run) { |work| work["note"] = "unseen" } }
 
       expect(event_log.events).to eq([{"type" => "workflow_changed", "project" => "app",
                                        "data" => {"run_id" => run_id, "workflow" => "wf", "workspace" => "app", "state" => "waiting", "step" => "a", "reason" => nil}}])
@@ -205,7 +205,7 @@ RSpec.describe Workspace::WorkflowRunChange do
         original.call(before, run)
       end
 
-      change.call(run_id, actor: "engine") { |run, _ctx| edited(run) { |work| work["steps"]["a"]["gate"] = {"state" => "waiting"} } }
+      change.call(run_id, actor: "engine", cause: "test") { |run, _ctx| edited(run) { |work| work["steps"]["a"]["gate"] = {"state" => "waiting"} } }
 
       expect(seen.first(2)).to eq([[:marks, true], [:fire, false, nil]])
       expect(spawned.size).to eq(1)
@@ -213,7 +213,7 @@ RSpec.describe Workspace::WorkflowRunChange do
     end
 
     it "keeps the attempt's reasons: a reason the block sets opens on the attempt that is open" do
-      change.call(run_id, actor: "engine") do |run, _ctx|
+      change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
         edited(run) do |work|
           work["state"] = "waiting"
           work["reason"] = {"code" => "waiting_you", "since" => now.iso8601, "details" => {}}
@@ -236,7 +236,7 @@ RSpec.describe Workspace::WorkflowRunChange do
         original.call(*args)
       end
       inside = nil
-      change.call(run_id, actor: "engine") do |run, _ctx|
+      change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
         change.event(run, "step_reported", "step" => "a")
         inside = lines
         edited(run) { |work| work["note"] = "changed" }
@@ -244,11 +244,11 @@ RSpec.describe Workspace::WorkflowRunChange do
 
       expect(inside).to eq([])
       expect(seen).to eq(["changed", true])
-      expect(lines).to eq([{"ts" => now.iso8601(3), "type" => "step_reported", "step" => "a", "from_state" => "running", "to_state" => "running", "actor" => "engine"}])
+      expect(lines).to eq([{"ts" => now.iso8601(3), "type" => "step_reported", "step" => "a", "from_state" => "running", "to_state" => "running", "actor" => "engine", "cause" => "test"}])
     end
 
     it "gives a queued line the change's from_state and to_state, and keeps a key the event has of its own" do
-      change.call(run_id, actor: "engine") do |run, _ctx|
+      change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
         change.event(run.to_h, "step_failed", "step" => "a", "to_state" => "own")
         change.event(run, "run_failed")
         edited(run) { |work| work["state"] = "failed" }
@@ -259,7 +259,7 @@ RSpec.describe Workspace::WorkflowRunChange do
     end
 
     it "writes the change's actor on every queued line, and keeps an actor the event has of its own" do
-      change.call(run_id, actor: "sweep") do |run, _ctx|
+      change.call(run_id, actor: "sweep", cause: "test") do |run, _ctx|
         change.event(run, "step_stalled", "step" => "a")
         change.event(run, "noted", "actor" => "own")
         nil
@@ -269,16 +269,34 @@ RSpec.describe Workspace::WorkflowRunChange do
     end
 
     it "accepts each of engine, agent, person, sweep and daemon, and refuses any other actor before it changes anything" do
-      %w[engine agent person sweep daemon].each { |actor| expect { change.call(run_id, actor: actor) { nil } }.not_to raise_error }
+      %w[engine agent person sweep daemon].each { |actor| expect { change.call(run_id, actor: actor, cause: "test") { nil } }.not_to raise_error }
       ran = false
-      expect { change.call(run_id, actor: "robot") { ran = true } }.to raise_error(ArgumentError, /unknown actor "robot"/)
-      expect { change.call(run_id, actor: nil) { ran = true } }.to raise_error(ArgumentError)
+      expect { change.call(run_id, actor: "robot", cause: "test") { ran = true } }.to raise_error(ArgumentError, /unknown actor "robot"/)
+      expect { change.call(run_id, actor: nil, cause: "test") { ran = true } }.to raise_error(ArgumentError)
+      expect(ran).to be(false)
+    end
+
+    it "writes the change's cause on every queued line, and keeps a cause the event has of its own" do
+      change.call(run_id, actor: "sweep", cause: "sweep_stall") do |run, _ctx|
+        change.event(run, "step_stalled", "step" => "a")
+        change.event(run, "step_failed", "cause" => "own")
+        nil
+      end
+
+      expect(lines.map { |line| line["cause"] }).to eq(%w[sweep_stall own])
+    end
+
+    it "refuses a missing, empty or non-string cause before it changes anything" do
+      ran = false
+      expect { change.call(run_id, actor: "engine") { ran = true } }.to raise_error(ArgumentError, /missing keyword: :cause/)
+      expect { change.call(run_id, actor: "engine", cause: "") { ran = true } }.to raise_error(ArgumentError, /needs a cause/)
+      expect { change.call(run_id, actor: "engine", cause: :tick) { ran = true } }.to raise_error(ArgumentError, /needs a cause/)
       expect(ran).to be(false)
     end
 
     it "writes no line when the block raises after queueing one" do
       expect do
-        change.call(run_id, actor: "engine") do |run, _ctx|
+        change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
           change.event(run, "attempts_extended", "step" => "a")
           raise Workspace::Error.new("refused", code: "refused")
         end
@@ -289,7 +307,7 @@ RSpec.describe Workspace::WorkflowRunChange do
 
     it "writes no line when the store can't write the run" do
       expect do
-        change.call(run_id, actor: "engine") do |run, _ctx|
+        change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
           change.event(run, "budget_extended", "step" => "a")
           edited(run) { |work| work["note"] = Float::NAN }
         end
@@ -302,7 +320,7 @@ RSpec.describe Workspace::WorkflowRunChange do
       other = Workspace::WorkflowRunStore.new(dir: File.join(@dir, "runs"), archive_dir: File.join(@dir, "archive"), clock: -> { now }, id_generator: -> { "wr_2" })
         .create({"workflow" => "wf", "state" => "running"})["id"]
       inside = nil
-      change.call(run_id, actor: "engine") do |_run, _ctx|
+      change.call(run_id, actor: "engine", cause: "test") do |_run, _ctx|
         change.event({"id" => other}, "noted")
         inside = lines(other)
         nil
@@ -314,7 +332,7 @@ RSpec.describe Workspace::WorkflowRunChange do
     it "writes queued lines before the step_dispatched line deliver writes" do
       typing = described_class.new(store: store, attempt_record: attempt_record, alerts: alerts, event_log: event_log,
         deliver: ->(id, delivery) { store.record_event(id, "step_dispatched", "step" => delivery["step"]) })
-      typing.call(run_id, actor: "engine") do |run, ctx|
+      typing.call(run_id, actor: "engine", cause: "test") do |run, ctx|
         typing.event(run, "step_dispatching", "step" => "a")
         ctx.deliver({"step" => "a"})
         nil
@@ -325,8 +343,8 @@ RSpec.describe Workspace::WorkflowRunChange do
 
     it "writes a line from an after-lock block at once, and keeps the outer queue past a nested change of the same run" do
       after = nil
-      change.call(run_id, actor: "engine") do |run, ctx|
-        change.call(run_id, actor: "engine", nonblocking: true) { nil }
+      change.call(run_id, actor: "engine", cause: "test") do |run, ctx|
+        change.call(run_id, actor: "engine", cause: "test", nonblocking: true) { nil }
         change.event(run, "late")
         ctx.after_lock do |stored|
           change.event(stored, "noticed")
@@ -340,11 +358,11 @@ RSpec.describe Workspace::WorkflowRunChange do
     end
 
     it "keeps the lines of changes one after the other in change order, each from_state the last to_state" do
-      change.call(run_id, actor: "engine") do |run, _ctx|
+      change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
         change.event(run, "first")
         edited(run) { |work| work["state"] = "waiting" }
       end
-      change.call(run_id, actor: "engine") do |run, _ctx|
+      change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
         change.event(run, "second")
         edited(run) { |work| work["state"] = "running" }
       end
@@ -354,8 +372,8 @@ RSpec.describe Workspace::WorkflowRunChange do
 
     it "writes no line for a nonblocking change that finds the run busy" do
       inner = :not_called
-      change.call(run_id, actor: "engine") do |run, _ctx|
-        inner = change.call(run_id, actor: "engine", nonblocking: true) { |busy, _inner_ctx| change.event(busy, "never") }
+      change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
+        inner = change.call(run_id, actor: "engine", cause: "test", nonblocking: true) { |busy, _inner_ctx| change.event(busy, "never") }
         nil
       end
 
@@ -368,7 +386,7 @@ RSpec.describe Workspace::WorkflowRunChange do
         raise IOError, "disk gone" if type == "broken"
         original.call(id, type, data)
       end
-      result = change.call(run_id, actor: "engine") do |run, _ctx|
+      result = change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
         change.event(run, "broken")
         change.event(run, "kept")
         edited(run) { |work| work["note"] = "stored" }
@@ -380,7 +398,7 @@ RSpec.describe Workspace::WorkflowRunChange do
     end
 
     it "writes Context#event lines as it writes queued ones" do
-      change.call(run_id, actor: "engine") do |_run, ctx|
+      change.call(run_id, actor: "engine", cause: "test") do |_run, ctx|
         ctx.event("step_reported", "step" => "a")
         nil
       end

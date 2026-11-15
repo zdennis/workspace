@@ -107,7 +107,8 @@
       "workspace": "simulation",
       "from_state": "waiting",
       "to_state": "running",
-      "actor": "person"
+      "actor": "person",
+      "cause": "start"
     },
     {
       "n": 2,
@@ -116,6 +117,8 @@
       "step": "research",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "first",
+      "retry_of": null,
       "from_state": "waiting",
       "to_state": "running",
       "actor": "person"
@@ -129,6 +132,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "first",
       "from_state": null,
       "to_state": null
     },
@@ -151,7 +155,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "running",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 6,
@@ -160,6 +165,8 @@
       "step": "plan",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
       "from_state": "running",
       "to_state": "running",
       "actor": "daemon"
@@ -173,6 +180,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "next_step",
       "from_state": null,
       "to_state": null
     },
@@ -196,7 +204,8 @@
       "exit_code": 0,
       "from_state": "running",
       "to_state": "running",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 10,
@@ -206,7 +215,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "running",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 11,
@@ -215,6 +225,8 @@
       "step": "review_supportive",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
       "from_state": "running",
       "to_state": "running",
       "actor": "daemon"
@@ -228,6 +240,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "next_step",
       "from_state": null,
       "to_state": null
     },
@@ -250,7 +263,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "running",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 15,
@@ -259,6 +273,8 @@
       "step": "review_skeptical",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
       "from_state": "running",
       "to_state": "running",
       "actor": "daemon"
@@ -272,6 +288,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "next_step",
       "from_state": null,
       "to_state": null
     },
@@ -294,7 +311,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "running",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 19,
@@ -303,6 +321,8 @@
       "step": "review_implementer",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
       "from_state": "running",
       "to_state": "running",
       "actor": "daemon"
@@ -316,6 +336,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "next_step",
       "from_state": null,
       "to_state": null
     },
@@ -338,7 +359,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "running",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 23,
@@ -347,6 +369,8 @@
       "step": "plan_review",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
       "from_state": "running",
       "to_state": "running",
       "actor": "daemon"
@@ -360,6 +384,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "next_step",
       "from_state": null,
       "to_state": null
     },
@@ -383,7 +408,8 @@
       "exit_code": 0,
       "from_state": "running",
       "to_state": "running",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 27,
@@ -393,7 +419,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "running",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 28,
@@ -402,6 +429,8 @@
       "step": "implement",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
       "from_state": "running",
       "to_state": "running",
       "actor": "daemon"
@@ -415,6 +444,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "next_step",
       "from_state": null,
       "to_state": null
     },
@@ -437,7 +467,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "running",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 32,
@@ -446,6 +477,8 @@
       "step": "verify",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
       "from_state": "running",
       "to_state": "running",
       "actor": "daemon"
@@ -459,6 +492,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "next_step",
       "from_state": null,
       "to_state": null
     },
@@ -482,7 +516,8 @@
       "exit_code": 0,
       "from_state": "running",
       "to_state": "completed",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 36,
@@ -492,7 +527,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "completed",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 37,
@@ -500,7 +536,8 @@
       "type": "run_completed",
       "from_state": "running",
       "to_state": "completed",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     }
   ]
 }

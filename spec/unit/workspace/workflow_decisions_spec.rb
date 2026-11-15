@@ -65,7 +65,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       decisions.approve("wr_1", actor: "person")
 
-      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "person"}]])
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "person", cause: "approve"}]])
     end
 
     it "records the gate's note and its sha256 when the caller read the same revision" do
@@ -120,7 +120,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       decisions.reject("wr_1", actor: "person", note: "no", to: "plan")
 
-      expect(change.calls.map(&:last)).to eq([{nonblocking: false, actor: "person"}])
+      expect(change.calls.map(&:last)).to eq([{nonblocking: false, actor: "person", cause: "reject"}])
     end
 
     it "sends the run back to an earlier step with the note and starts it" do
@@ -132,7 +132,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(run.steps["build"].gate).to include("state" => "rejected", "note" => "the plan misses a case", "attempt" => 1)
       expect(run.pending_context).to eq(["The build step was rejected at its gate: the plan misses a case"])
       expect(change.events).to eq([["wr_1", "gate_rejected", {"step" => "build", "to" => "plan", "note" => "the plan misses a case"}]])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "gate_rejected", context: nil, budgeted: true, retry_of: nil}]])
       expect(change.deliveries).to eq([{"step" => "plan"}])
     end
 
@@ -245,7 +245,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       decisions.resume("wr_1", actor: "person")
 
-      expect(change.calls.map(&:last)).to eq([{nonblocking: false, actor: "person"}])
+      expect(change.calls.map(&:last)).to eq([{nonblocking: false, actor: "person", cause: "resume"}])
     end
 
     def reviewing_run(reason: nil)
@@ -471,7 +471,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
         resumed = decisions.resume("wr_1", actor: "person", extra_attempts: 1)
 
-        expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "continue", budgeted: true, retry_of: {"text" => "Review round 1 of 2 rejected the plan step", "attempt" => 1}}])
+        expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: "continue", budgeted: true, retry_of: {"text" => "Review round 1 of 2 rejected the plan step", "attempt" => 1}}])
         expect(resumed.run.pending_context).to eq(["Review round 1 of 2 rejected the plan step"])
         expect(resumed.run.to_h).not_to have_key("review_retry")
       end
@@ -604,7 +604,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(resumed.unchanged).to be_nil
       expect(resumed.run.pending_context.first).to start_with("The last attempt of this step failed: ")
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "state" => "failed"}]])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
     end
 
     it "follows up a review round the change registered, once the change is done" do
@@ -636,7 +636,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       expect(resumed.run.current).to eq("build")
       expect(change.events).to eq([["wr_1", "run_resumed", {"from" => "build"}]])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
     end
 
     it "skips a retry's wait and starts the retry" do
@@ -646,7 +646,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       resumed = decisions.resume("wr_1", actor: "person")
 
       expect(resumed.unchanged).to be_nil
-      expect(progress.calls).to eq([[:retry_pane_problem, "plan", {proven: false, pane: nil}], [:start_retry, "plan", backoff, {proven: false, budgeted: true}]])
+      expect(progress.calls).to eq([[:retry_pane_problem, "plan", {proven: false, pane: nil}], [:start_retry, "plan", backoff, {cause: "resume", proven: false, budgeted: true}]])
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "state" => "failed", "backoff" => "skipped"}]])
       expect(resumed.run.backoff).to be_nil
     end
@@ -671,7 +671,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       expect(resumed.run.budget_hold).to be_nil
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "budget" => "released"}]])
-      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: nil}])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: "fresh", budgeted: true, retry_of: nil}])
     end
 
     it "releases a held retry of a step a review rejected as a retry_of that attempt" do
@@ -679,7 +679,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       decisions.resume("wr_1", actor: "person")
 
-      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: {"text" => "the verdicts", "attempt" => 1}}])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: "fresh", budgeted: true, retry_of: {"text" => "the verdicts", "attempt" => 1}}])
     end
 
     it "releases a run its timeout held into its step, with the held context, and with --extra-time records the extension" do
@@ -700,7 +700,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(resumed.run.extra_seconds).to eq(1801)
       expect(change.events).to eq([["wr_1", "time_extended", {"extra" => 1801, "extra_seconds" => 1801, "limit" => 3601}],
         ["wr_1", "run_resumed", {"step" => "plan", "budget" => "released"}]])
-      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: nil}])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: "fresh", budgeted: true, retry_of: nil}])
     end
 
     it "names both needs when the token budget and the timeout are both spent, and clears both holds with both flags" do
@@ -734,7 +734,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       resumed = decisions.resume("wr_1", actor: "person", pane: "%8")
       expect(resumed.run.pane).to eq("%8")
       expect(panes.calls).to eq([[:unbind, "wr_1"]])
-      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}])
     end
 
     it "takes over from a parked resume" do
@@ -863,7 +863,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(run.extra_attempts).to eq(1)
       expect(run.steps["plan"].attempts.last.outcome).to eq("failed")
       expect(progress.calls).to be_empty
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
       expect(change.deliveries).to eq([{"step" => "plan"}])
       expect(run.pending_context).to eq([accepted_line("tracked_changed", "b" * 40), "Note from the person who resumed the run: keep the edits"])
       expect(change.events.map { |event| event[1] }).to eq(%w[attempts_extended guard_overridden run_resumed])
@@ -983,7 +983,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       decisions_with(guard).resume("wr_1", actor: "person", accept_guard: true, guard_retry: true, note: "mine")
 
       expect(guard.calls.map(&:first)).to eq(%i[base check])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
     end
 
     it "moves the run to a pane given, refusing one another run holds before anything is changed" do
@@ -1193,7 +1193,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(resumed).to be_a(described_class::Resumed)
       expect(resumed.unchanged).to be_nil
       expect(resumed.run.parked).to be_nil
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "state" => "failed"}],
         ["wr_1", "resume_parked_ended", {"step" => "plan", "how" => "released"}]])
       expect(resumed.run.steps["plan"].last_attempt.to_h["after_park"]).to eq("expires_at" => "2026-11-10T13:00:00Z", "pane" => nil, "retries" => 0)
@@ -1220,7 +1220,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       resumed = decisions.release_park("wr_1", "p1", actor: "person")
 
       expect(resumed.run.pending_context.last).to eq("Note from the person who resumed the run: try again")
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: false, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: false, retry_of: nil}]])
     end
 
     context "on its first try, when the resume would start an attempt" do
@@ -1250,7 +1250,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         resumed = decisions.release_park("wr_1", "p1", actor: "person")
 
         expect(resumed.unchanged).to be_nil
-        expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: false, retry_of: nil}]])
+        expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: false, retry_of: nil}]])
       end
 
       it "refuses with budget_spent and leaves the run parked" do
@@ -1367,7 +1367,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       decisions.cancel("wr_1", actor: "person")
 
-      expect(change.calls.map(&:last)).to eq([{nonblocking: false, actor: "person"}])
+      expect(change.calls.map(&:last)).to eq([{nonblocking: false, actor: "person", cause: "cancel"}])
     end
 
     it "closes the open attempt, ends the run and records who ended it" do

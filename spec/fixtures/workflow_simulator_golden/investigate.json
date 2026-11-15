@@ -59,7 +59,8 @@
       "workspace": "simulation",
       "from_state": "waiting",
       "to_state": "running",
-      "actor": "person"
+      "actor": "person",
+      "cause": "start"
     },
     {
       "n": 2,
@@ -68,6 +69,8 @@
       "step": "reproduce",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "first",
+      "retry_of": null,
       "from_state": "waiting",
       "to_state": "running",
       "actor": "person"
@@ -81,6 +84,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "first",
       "from_state": null,
       "to_state": null
     },
@@ -103,7 +107,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "running",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 6,
@@ -112,6 +117,8 @@
       "step": "diagnose",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
       "from_state": "running",
       "to_state": "running",
       "actor": "daemon"
@@ -125,6 +132,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "next_step",
       "from_state": null,
       "to_state": null
     },
@@ -147,7 +155,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "waiting",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 10,
@@ -156,7 +165,8 @@
       "step": "diagnose",
       "from_state": "running",
       "to_state": "waiting",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 11,
@@ -173,7 +183,8 @@
       "step": "diagnose",
       "from_state": "waiting",
       "to_state": "running",
-      "actor": "person"
+      "actor": "person",
+      "cause": "approve"
     },
     {
       "n": 13,
@@ -182,6 +193,8 @@
       "step": "fix",
       "attempt": 1,
       "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
       "from_state": "waiting",
       "to_state": "running",
       "actor": "person"
@@ -195,6 +208,7 @@
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
+      "cause": "next_step",
       "from_state": null,
       "to_state": null
     },
@@ -217,7 +231,8 @@
       "attempt": 1,
       "from_state": "running",
       "to_state": "completed",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 17,
@@ -225,7 +240,8 @@
       "type": "run_completed",
       "from_state": "running",
       "to_state": "completed",
-      "actor": "daemon"
+      "actor": "daemon",
+      "cause": "turn_ended"
     }
   ]
 }

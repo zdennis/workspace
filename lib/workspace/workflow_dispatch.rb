@@ -53,14 +53,17 @@ module Workspace
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, at the step to start; left as it is
     # @param ctx [Workspace::WorkflowRunChange::Context] the change's context, which gets the line to type
+    # @param cause [String] why the attempt starts, written on `step_dispatching` and `step_dispatched`: `first`, `next_step`,
+    #   `loop`, `backoff_ended`, `review_rejected`, `resume`, `gate_rejected`, `redelivery`, or `lock_ended` when the
+    #   wait for a lock ends and no earlier cause was kept
     # @param context [String, nil] the step's `context` for this attempt (`fresh` starts a new conversation)
     # @param budgeted [Boolean] false starts the attempt even when the token budget is used up
     # @param retry_of [Hash{String=>Object}, nil] the retry's "pane", "identity" and "text", kept by a budget hold, and
     #   "attempt": the attempt of the step a review rejected, recorded as the new attempt's `retry_of`
     # @return [WorkflowRun] the run afterwards
-    def dispatch(run, ctx:, context: nil, budgeted: true, retry_of: nil)
+    def dispatch(run, ctx:, cause:, context: nil, budgeted: true, retry_of: nil)
       work = WorkflowRun.from_h(run).thawed
-      start_attempt(work, ctx: ctx, context: context, budgeted: budgeted, retry_of: retry_of)
+      start_attempt(work, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of)
       WorkflowRun.from_h(work)
     end
 
@@ -82,8 +85,8 @@ module Workspace
         {ok: false, code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.scrub.strip}
       end
       @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"],
-        "pane" => delivery["pane"], "delivered" => kick[:ok], "actor" => "engine", "from_state" => nil, "to_state" => nil, **kick.slice(:warning, :proof_missing).transform_keys(&:to_s))
-      @change.call(run_id, actor: "engine") { |run| settle(run, delivery, kick) }
+        "pane" => delivery["pane"], "delivered" => kick[:ok], "actor" => "engine", "cause" => delivery["cause"], "from_state" => nil, "to_state" => nil, **kick.slice(:warning, :proof_missing).transform_keys(&:to_s))
+      @change.call(run_id, actor: "engine", cause: "delivery") { |run| settle(run, delivery, kick) }
     rescue Workspace::Error => e
       # Cancelled while the line was on its way: the cancel stands.
       raise unless e.code == "run_not_active"
@@ -187,7 +190,7 @@ module Workspace
     def adopt(run, changed) = run.replace(changed.thawed)
 
     # The body of {#dispatch}, over a working copy of the run.
-    def start_attempt(run, ctx:, context:, budgeted:, retry_of:)
+    def start_attempt(run, ctx:, cause:, context:, budgeted:, retry_of:)
       adopt(run, drop_park(run, "moved_on")) if run.key?("parked")
       step = step_def(run)
       state = step_state(run)
@@ -215,9 +218,13 @@ module Workspace
         # A review's retry waiting for a lock is still that retry when the wait ends (a tick or a resume dispatches it
         # again): its attempt, its context and its text (which a `--from` takes out of the pending context).
         pending_retry ? run["retry_of_pending"] = pending_retry : run.delete("retry_of_pending")
+        # The cause this dispatch had is kept for the one that ends the wait (a tick says `lock_ended`).
+        run["dispatch_cause_pending"] = {"step" => run["current"], "cause" => kept_cause(run, cause)}
         return wait_for_lock(run, state, waiting)
       end
       run.delete("retry_of_pending")
+      cause = kept_cause(run, cause)
+      run.delete("dispatch_cause_pending")
 
       # To the millisecond: the end of a turn is matched to the attempt by when that turn began.
       attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => run["pending_context"],
@@ -237,13 +244,21 @@ module Workspace
       state["state"] = "running"
       run["state"] = "running"
       run["reason"] = nil
-      @change.event(run, "step_dispatching", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane)
+      @change.event(run, "step_dispatching", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane, "cause" => cause, "retry_of" => attempt["retry_of"])
       ctx.deliver({"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
                    "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh",
-                   "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"]})
+                   "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"], "cause" => cause})
     rescue Workspace::Error, SystemCallError, EncodingError => e
       # The step could not be started (no pane, an unreadable pack, a checkout that is gone, text that can't be written as UTF-8).
       not_delivered(run, state, attempt, {code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.strip})
+    end
+
+    # The cause a dispatch that ends a lock wait is written with: the one the waiting dispatch had, for the same step.
+    # A `lock_ended` dispatch with none kept (a run stored before it was kept) stays `lock_ended`.
+    def kept_cause(run, cause)
+      kept = run["dispatch_cause_pending"]
+      return cause unless cause == "lock_ended" && kept.is_a?(Hash) && kept["step"] == run["current"] && kept["cause"].is_a?(String)
+      kept["cause"]
     end
 
     # The review retry this attempt is: given ("attempt", with its "text" and the +context+ it starts with), else the
@@ -275,7 +290,7 @@ module Workspace
     # that dies here leaves an attempt with no reading, which that proof fails as unproven.
     def record_remote(run_id, delivery)
       reading = @guard.remote_head(delivery["worktree"])
-      @change.call(run_id, actor: "engine") do |run|
+      @change.call(run_id, actor: "engine", cause: "delivery") do |run|
         attempt = run.step(delivery["step"]).last_attempt
         next unless run.current == delivery["step"] && attempt.n == delivery["attempt"]
         run.with_attempt(delivery["step"], WorkflowRun::Attempt.from_h(attempt.to_h.merge("remote" => reading)))

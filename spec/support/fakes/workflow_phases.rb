@@ -79,14 +79,14 @@ class RecordingRunChange
     @closes = []
   end
 
-  def call(run_id, actor:, nonblocking: false)
+  def call(run_id, actor:, cause:, nonblocking: false)
     raise ArgumentError, "unknown actor #{actor.inspect}" unless Workspace::WorkflowRunChange::ACTORS.include?(actor)
-    @calls << [:call, run_id, {nonblocking: nonblocking, actor: actor}]
+    @calls << [:call, run_id, {nonblocking: nonblocking, actor: actor, cause: cause}]
     raise @raises[@calls.size] if @raises.key?(@calls.size)
     raise Workspace::Error.new("run #{run_id} has ended", code: "run_not_active") if @finished.include?(run_id)
     return nil if nonblocking && @busy.include?(run_id)
     stored = @runs.fetch(run_id)
-    ctx = Workspace::WorkflowRunChange::Context.new(actor)
+    ctx = Workspace::WorkflowRunChange::Context.new(actor, cause)
     read = Workspace::WorkflowRun.from_h(stored)
     changed = yield(read, ctx) || read
     raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(Workspace::WorkflowRun)
@@ -271,9 +271,9 @@ class RecordingDispatch
       "reason" => {"code" => @holds, "since" => "2026-11-10T12:00:00Z", "details" => {"step" => run.current, "review_round" => round}}))
   end
 
-  def dispatch(run, ctx:, context: nil, budgeted: true, retry_of: nil)
+  def dispatch(run, ctx:, cause:, context: nil, budgeted: true, retry_of: nil)
     run = Workspace::WorkflowRun.from_h(run)
-    @calls << [:dispatch, run.id, {context: context, budgeted: budgeted, retry_of: retry_of}]
+    @calls << [:dispatch, run.id, {cause: cause, context: context, budgeted: budgeted, retry_of: retry_of}]
     ctx.deliver("step" => run.current)
     return run unless @appends
     hash = run.thawed
@@ -587,10 +587,10 @@ class RecordingProgress
     Workspace::WorkflowRun.from_h(hash.merge("state" => state))
   end
 
-  def start_retry(run, waiting = nil, ctx:, proven: false, budgeted: true)
+  def start_retry(run, waiting = nil, ctx:, cause:, proven: false, budgeted: true)
     hash = Workspace::WorkflowRun.from_h(run).thawed
     waiting ||= hash.delete("backoff")
-    @calls << [:start_retry, hash["current"], waiting, {proven: proven, budgeted: budgeted}]
+    @calls << [:start_retry, hash["current"], waiting, {cause: cause, proven: proven, budgeted: budgeted}]
     Workspace::WorkflowRun.from_h(hash.merge("current" => waiting["to"], "reason" => nil))
   end
 
@@ -915,7 +915,7 @@ class RecordingEvaluation
     run
   end
 
-  def finish_check(run_id, check, _actor)
+  def finish_check(run_id, check, _actor, _cause)
     @calls << [:finish_check, run_id, check]
     Workspace::WorkflowRun.from_h(@runs.fetch(run_id))
   end
@@ -923,7 +923,7 @@ class RecordingEvaluation
   def finish_follow_ups(run_id, ctx, run)
     return run unless ctx
     @calls << [:close_review, run_id, ctx.close_review] if ctx.close_review
-    run = finish_check(run_id, ctx.check, ctx.actor) if ctx.check
+    run = finish_check(run_id, ctx.check, ctx.actor, ctx.cause) if ctx.check
     @calls << [:review_end, run_id, ctx.review_end] if ctx.review_end
     @calls << [:review_round, run_id, ctx.review] if ctx.review
     run

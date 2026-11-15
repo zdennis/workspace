@@ -47,7 +47,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
   def deep_copy(value) = Marshal.load(Marshal.dump(value))
 
-  def ctx = Workspace::WorkflowRunChange::Context.new("engine")
+  def ctx = Workspace::WorkflowRunChange::Context.new("engine", "test")
 
   describe "#report" do
     it "stores the agent's report on the attempt and answers a Reported value" do
@@ -707,7 +707,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(progress.calls).to be_empty
 
       store.runs["wr_1"] = run.thawed
-      evaluation(progress: progress).finish_check("wr_1", context.check, "daemon")
+      evaluation(progress: progress).finish_check("wr_1", context.check, "daemon", "turn_ended")
       expect(progress.calls).to eq([[:pass_overridden, "plan"]])
     end
 
@@ -717,7 +717,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       run = evaluation.evaluate_accepted(accepted_run(definition_step: step("guard" => "unchanged", "status" => {"command" => "test", "timeout" => 60})), ctx: context)
       store.runs["wr_1"] = run.thawed
 
-      evaluation(checker: RecordingChecker.new(result: {exit_code: 1, timed_out: false, error: nil})).finish_check("wr_1", context.check, "daemon")
+      evaluation(checker: RecordingChecker.new(result: {exit_code: 1, timed_out: false, error: nil})).finish_check("wr_1", context.check, "daemon", "turn_ended")
 
       expect(progress.calls.map(&:first)).to eq([:fail_step])
       expect(progress.calls.first[2]).to include("cause" => "check", "code" => "check_failed")
@@ -841,7 +841,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       stored(checking_run)
       require_check = RecordingRequire.new(outside: {"record" => {"exit_code" => 0}, "unmet" => nil})
 
-      run = evaluation(require_check: require_check).finish_check("wr_1", check, "daemon")
+      run = evaluation(require_check: require_check).finish_check("wr_1", check, "daemon", "turn_ended")
 
       expect(require_check.calls).to eq([[:run_outside, pending, {cwd: dir}], [:check, "plan", 1, {from: 1}]])
       expect(run.step("plan").last_attempt.proofs.last).to include("token" => "t1", "exit_code" => 0, "ended_at" => "2026-11-10T12:00:00Z")
@@ -855,7 +855,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       progress = RecordingProgress.new(review: {"round" => 1})
       require_check = RecordingRequire.new(outside: {"record" => {"exit_code" => 0}, "unmet" => nil})
 
-      evaluation(progress: progress, require_check: require_check, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", check, "daemon")
+      evaluation(progress: progress, require_check: require_check, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", check, "daemon", "turn_ended")
 
       expect(rounds).to eq([["wr_1", {"round" => 1}]])
     end
@@ -866,7 +866,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       progress = RecordingProgress.new(review: {"round" => 1})
       status_check = {"step" => "plan", "attempt" => 1, "command" => "rake", "timeout" => 5, "log" => "/tmp/x.log", "cwd" => dir, "role" => "test"}
 
-      evaluation(progress: progress, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", status_check, "daemon")
+      evaluation(progress: progress, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", status_check, "daemon", "turn_ended")
 
       expect(progress.calls).to eq([[:pass_step, "plan"]])
       expect(rounds).to eq([["wr_1", {"round" => 1}]])
@@ -876,7 +876,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       stored(checking_run)
       unmet = {"proof" => "command", "code" => "require_command", "detail" => "lint failed", "exit_code" => 1}
 
-      evaluation(require_check: RecordingRequire.new(outside: {"record" => {"exit_code" => 1}, "unmet" => unmet})).finish_check("wr_1", check, "daemon")
+      evaluation(require_check: RecordingRequire.new(outside: {"record" => {"exit_code" => 1}, "unmet" => unmet})).finish_check("wr_1", check, "daemon", "turn_ended")
 
       expect(progress.calls).to eq([[:fail_step, "plan", {"cause" => "require", "require" => "command", "detail" => "lint failed", "exit_code" => 1,
                                                           "code" => "require_command", "code_source" => "engine"}]])
@@ -885,7 +885,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
     it "drops a result the run moved on from" do
       stored(checking_run.merge("current" => "plan").tap { |run| run["steps"]["plan"]["state"] = "failed" })
 
-      run = evaluation.finish_check("wr_1", check, "daemon")
+      run = evaluation.finish_check("wr_1", check, "daemon", "turn_ended")
 
       expect(run.step("plan").state).to eq("failed")
       expect(change.events).to be_empty
@@ -896,7 +896,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       stored(checking_run)
       change = RecordingRunChange.new(store.runs, finished: ["wr_1"])
 
-      run = evaluation(change: change).finish_check("wr_1", check, "daemon")
+      run = evaluation(change: change).finish_check("wr_1", check, "daemon", "turn_ended")
 
       expect(run).to eq(Workspace::WorkflowRun.from_h(checking_run))
       expect(store.calls.last).to eq([:run, "wr_1"])
@@ -907,7 +907,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       checker = RecordingChecker.new
       status_check = {"step" => "plan", "attempt" => 1, "command" => "rake", "timeout" => 5, "log" => "/tmp/x.log", "cwd" => dir, "role" => "test"}
 
-      evaluation(checker: checker).finish_check("wr_1", status_check, "daemon")
+      evaluation(checker: checker).finish_check("wr_1", status_check, "daemon", "turn_ended")
 
       expect(checker.stop_answers).to eq([true])
     end

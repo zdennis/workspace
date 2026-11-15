@@ -37,7 +37,7 @@ RSpec.describe Workspace::WorkflowDispatch do
 
   def deep_copy(value) = Marshal.load(Marshal.dump(value))
 
-  def ctx = Workspace::WorkflowRunChange::Context.new("engine")
+  def ctx = Workspace::WorkflowRunChange::Context.new("engine", "test")
 
   describe "#dispatch" do
     it "stores the attempt as delivering, binds the pane and registers the line, returning a new run and leaving the one given alone" do
@@ -45,7 +45,7 @@ RSpec.describe Workspace::WorkflowDispatch do
       before = deep_copy(given)
       context = ctx
 
-      run = dispatch.dispatch(given, ctx: context)
+      run = dispatch.dispatch(given, ctx: context, cause: "first")
 
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(given).to eq(before)
@@ -55,15 +55,15 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(run.to_h).to include("state" => "running", "pane" => "%3", "reason" => nil, "pending_context" => [], "artifacts_dir" => File.join(@dir, ".workflow", "wr_1"))
       expect(run.step("plan").state).to eq("running")
       expect(context.delivery).to eq("step" => "plan", "attempt" => 1, "workspace" => "app", "pane" => "%3", "text" => "Read #{path} and follow it.",
-        "fresh" => false, "remote_baseline" => false, "worktree" => @dir)
+        "fresh" => false, "remote_baseline" => false, "worktree" => @dir, "cause" => "first")
       expect(panes.calls).to include([:bind, {workspace: "app", pane: "%3", run_id: "wr_1", step: "plan", attempt: 1, instructions: path, artifacts: File.join(@dir, ".workflow", "wr_1")}])
       expect(resources.calls.first).to eq([:acquire, {run_id: "wr_1", step: "plan", uses: ["devenv"], worktree: @dir, workflow: "flow", workspace: "app", pane: "%3"}])
       expect(attempt_record.calls).to eq([[:start, "wr_1", 1]])
-      expect(change.events).to eq([["wr_1", "step_dispatching", {"step" => "plan", "attempt" => 1, "pane" => "%3"}]])
+      expect(change.events).to eq([["wr_1", "step_dispatching", {"step" => "plan", "attempt" => 1, "pane" => "%3", "cause" => "first", "retry_of" => nil}]])
     end
 
     it "drops a park as moved_on, carrying its note into the attempt's context" do
-      run = dispatch.dispatch(run_hash("parked" => {"id" => "p1", "note" => "mind the flake"}), ctx: ctx)
+      run = dispatch.dispatch(run_hash("parked" => {"id" => "p1", "note" => "mind the flake"}), ctx: ctx, cause: "first")
 
       expect(run.parked).to be_nil
       expect(run.step("plan").last_attempt.context).to eq(["from before", "Note from the person who resumed the run: mind the flake"])
@@ -76,7 +76,7 @@ RSpec.describe Workspace::WorkflowDispatch do
         guard: guard, event_log: event_log, clock: -> { now })
       context = ctx
 
-      run = dispatch.dispatch(run_hash, ctx: context)
+      run = dispatch.dispatch(run_hash, ctx: context, cause: "first")
 
       expect(run.state).to eq("waiting")
       expect(run.reason).to eq("code" => "waiting_lock", "since" => "2026-11-10T12:00:00Z",
@@ -87,11 +87,37 @@ RSpec.describe Workspace::WorkflowDispatch do
                                        "data" => {"lock" => "devenv", "run_id" => "wr_1", "step" => "plan", "workspace" => "app", "position" => 1, "holder" => {"run_id" => "wr_9", "pane" => "%5"}}}])
     end
 
+    it "keeps the cause of a dispatch that waited for a lock for the one that ends the wait, and falls back to lock_ended without one" do
+      waiting = RecordingRunResources.new(acquired: {waiting: {name: "devenv", position: 1, total: 1, holder: {"run_id" => "wr_9", "kind" => "run"}}})
+      blocked = described_class.new(change: change, store: store, resources: waiting, panes: panes, prompt: prompt, attempt_record: attempt_record, guard: guard, clock: -> { now })
+
+      held = blocked.dispatch(run_hash, ctx: ctx, cause: "next_step")
+
+      expect(held.to_h["dispatch_cause_pending"]).to eq("step" => "plan", "cause" => "next_step")
+      again = blocked.dispatch(held, ctx: ctx, cause: "lock_ended")
+      expect(again.to_h["dispatch_cause_pending"]).to eq("step" => "plan", "cause" => "next_step")
+
+      change.events.clear
+      run = dispatch.dispatch(held, ctx: ctx, cause: "lock_ended")
+      expect(change.events.last).to include("wr_1", "step_dispatching")
+      expect(change.events.last.last).to include("cause" => "next_step")
+      expect(run.to_h).not_to have_key("dispatch_cause_pending")
+
+      change.events.clear
+      dispatch.dispatch(run_hash, ctx: ctx, cause: "lock_ended")
+      expect(change.events.last.last).to include("cause" => "lock_ended")
+
+      change.events.clear
+      other = held.thawed.merge("dispatch_cause_pending" => {"step" => "elsewhere", "cause" => "loop"})
+      dispatch.dispatch(other, ctx: ctx, cause: "lock_ended")
+      expect(change.events.last.last).to include("cause" => "lock_ended")
+    end
+
     it "holds the attempt when the token budget is spent, keeping the context for the resume" do
       spent = run_hash("definition" => run_hash["definition"].merge("budget" => {"tokens" => 100}),
         "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 150}}]}})
 
-      run = dispatch.dispatch(spent, ctx: ctx, context: "fresh")
+      run = dispatch.dispatch(spent, ctx: ctx, cause: "first", context: "fresh")
 
       expect(run.budget_hold).to eq("context" => "fresh", "pane" => "%3", "identity" => "identity-of-wr_1")
       expect(run.state).to eq("waiting")
@@ -104,14 +130,15 @@ RSpec.describe Workspace::WorkflowDispatch do
     it "records the attempt a review rejected as the new attempt's retry_of, and keeps it on a hold" do
       failed = run_hash("steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed"}]}})
 
-      run = dispatch.dispatch(failed, ctx: ctx, retry_of: {"text" => "the verdicts", "attempt" => 1})
+      run = dispatch.dispatch(failed, ctx: ctx, cause: "review_rejected", retry_of: {"text" => "the verdicts", "attempt" => 1})
 
       expect(run.step("plan").last_attempt.to_h).to include("n" => 2, "retry_of" => 1)
+      expect(change.events.last).to eq(["wr_1", "step_dispatching", {"step" => "plan", "attempt" => 2, "pane" => "%3", "cause" => "review_rejected", "retry_of" => 1}])
 
       spent = run_hash("definition" => run_hash["definition"].merge("budget" => {"tokens" => 100}),
         "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 150}}]}})
 
-      held = dispatch.dispatch(spent, ctx: ctx, retry_of: {"text" => "the verdicts", "attempt" => 1})
+      held = dispatch.dispatch(spent, ctx: ctx, cause: "first", retry_of: {"text" => "the verdicts", "attempt" => 1})
 
       expect(held.budget_hold).to include("text" => "the verdicts", "retry_of" => 1)
     end
@@ -121,22 +148,22 @@ RSpec.describe Workspace::WorkflowDispatch do
       failed = run_hash("steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed"}]}})
       blocked = described_class.new(change: change, store: store, resources: waiting, panes: panes, prompt: prompt, attempt_record: attempt_record, guard: guard, clock: -> { now })
 
-      held = blocked.dispatch(failed, ctx: ctx, context: "fresh", retry_of: {"text" => "the verdicts", "attempt" => 1})
+      held = blocked.dispatch(failed, ctx: ctx, cause: "first", context: "fresh", retry_of: {"text" => "the verdicts", "attempt" => 1})
 
       expect(held.reason["code"]).to eq("waiting_lock")
       expect(held.to_h["retry_of_pending"]).to eq("step" => "plan", "attempt" => 1, "context" => "fresh", "text" => "the verdicts")
 
       woken = ctx
-      run = dispatch.dispatch(held, ctx: woken)
+      run = dispatch.dispatch(held, ctx: woken, cause: "first")
 
       expect(run.step("plan").last_attempt.to_h).to include("n" => 2, "retry_of" => 1)
       expect(woken.delivery).to include("fresh" => true)
       expect(run.to_h).not_to have_key("retry_of_pending")
 
-      plain = blocked.dispatch(held.thawed.merge("retry_of_pending" => {"step" => "build", "attempt" => 1}), ctx: ctx)
+      plain = blocked.dispatch(held.thawed.merge("retry_of_pending" => {"step" => "build", "attempt" => 1}), ctx: ctx, cause: "first")
       expect(plain.to_h).not_to have_key("retry_of_pending")
 
-      elsewhere = dispatch.dispatch(held.thawed.merge("retry_of_pending" => {"step" => "build", "attempt" => 1}), ctx: ctx)
+      elsewhere = dispatch.dispatch(held.thawed.merge("retry_of_pending" => {"step" => "build", "attempt" => 1}), ctx: ctx, cause: "first")
       expect(elsewhere.step("plan").last_attempt.to_h).not_to have_key("retry_of")
     end
 
@@ -144,7 +171,7 @@ RSpec.describe Workspace::WorkflowDispatch do
       spent = run_hash("definition" => run_hash["definition"].merge("budget" => {"tokens" => 100}),
         "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 150}}]}})
 
-      run = dispatch.dispatch(spent, ctx: ctx, budgeted: false)
+      run = dispatch.dispatch(spent, ctx: ctx, cause: "first", budgeted: false)
 
       expect(run.budget_hold).to be_nil
       expect(run.step("plan").attempts.map(&:n)).to eq([1, 2])
@@ -158,7 +185,7 @@ RSpec.describe Workspace::WorkflowDispatch do
       end
 
       it "holds the attempt once the machine time is used, keeping the context for the resume" do
-        run = dispatch.dispatch(timed, ctx: ctx, context: "fresh")
+        run = dispatch.dispatch(timed, ctx: ctx, cause: "first", context: "fresh")
 
         expect(run.timeout_hold).to eq("context" => "fresh", "pane" => "%3", "identity" => "identity-of-wr_1")
         expect(run.budget_hold).to be_nil
@@ -170,18 +197,18 @@ RSpec.describe Workspace::WorkflowDispatch do
       end
 
       it "starts the attempt when told not to hold it (a redelivery), when the lock wait it ends was allowed, or when --extra-time covers it" do
-        expect(dispatch.dispatch(timed, ctx: ctx, budgeted: false).step("plan").attempts.map(&:n)).to eq([1, 2])
+        expect(dispatch.dispatch(timed, ctx: ctx, cause: "first", budgeted: false).step("plan").attempts.map(&:n)).to eq([1, 2])
         waited = timed.merge("reason" => {"code" => "waiting_lock", "since" => "2026-11-10T11:00:00Z", "details" => {}})
-        expect(dispatch.dispatch(waited, ctx: ctx).timeout_hold).to be_nil
+        expect(dispatch.dispatch(waited, ctx: ctx, cause: "first").timeout_hold).to be_nil
         extended = timed.merge("extra_seconds" => 3601)
-        expect(dispatch.dispatch(extended, ctx: ctx).state).to eq("running")
+        expect(dispatch.dispatch(extended, ctx: ctx, cause: "first").state).to eq("running")
       end
 
       it "holds under both limits when the token budget is spent too, naming the budget and carrying the timeout's details" do
         both = timed.merge("definition" => timed["definition"].merge("budget" => {"tokens" => 100}))
         both["steps"]["plan"]["attempts"][0]["usage"] = {"input_tokens" => 150}
 
-        run = dispatch.dispatch(both, ctx: ctx, context: "fresh")
+        run = dispatch.dispatch(both, ctx: ctx, cause: "first", context: "fresh")
 
         expect(run.reason).to include("code" => "budget_spent")
         expect(run.reason["details"]["run_timed_out"]).to include("kind" => "timeout", "limit" => 3600)
@@ -191,7 +218,7 @@ RSpec.describe Workspace::WorkflowDispatch do
     end
 
     it "leaves the run waiting for a person when the checkout is gone" do
-      run = dispatch.dispatch(run_hash("worktree" => File.join(@dir, "gone")), ctx: ctx)
+      run = dispatch.dispatch(run_hash("worktree" => File.join(@dir, "gone")), ctx: ctx, cause: "first")
 
       expect(run.state).to eq("waiting")
       expect(run.reason["details"]).to include("kind" => "dispatch", "error" => "error", "message" => "the checkout #{File.join(@dir, "gone")} is gone")
@@ -316,7 +343,7 @@ RSpec.describe Workspace::WorkflowDispatch do
 
   describe "#deliver" do
     let(:path) { File.join(@dir, ".workflow", "wr_1", "steps", "plan.1.prompt.md") }
-    let(:delivery) { {"step" => "plan", "attempt" => 1, "workspace" => "app", "pane" => "%3", "text" => "Read #{path} and follow it.", "fresh" => false, "worktree" => @dir} }
+    let(:delivery) { {"step" => "plan", "attempt" => 1, "workspace" => "app", "pane" => "%3", "text" => "Read #{path} and follow it.", "fresh" => false, "worktree" => @dir, "cause" => "next_step"} }
 
     def delivering(**attempt)
       run_hash("state" => "running", "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1, "context" => ["told"], "delivery" => "delivering"}.merge(attempt)]}})
@@ -327,7 +354,7 @@ RSpec.describe Workspace::WorkflowDispatch do
 
       dispatch.deliver("wr_1", delivery)
 
-      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "engine"}]])
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "engine", cause: "delivery"}]])
     end
 
     it "types the line and settles the mark, recording the answer in the run's history" do
@@ -338,7 +365,7 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(run.step("plan").last_attempt.to_h).to eq("n" => 1, "context" => ["told"])
       expect(panes.calls).to include([:kick, {workspace: "app", pane: "%3", text: "Read #{path} and follow it.", fresh: false, run_id: "wr_1"}])
-      expect(store.events).to eq([["wr_1", "step_dispatched", {"step" => "plan", "attempt" => 1, "pane" => "%3", "delivered" => true, "actor" => "engine", "from_state" => nil, "to_state" => nil}]])
+      expect(store.events).to eq([["wr_1", "step_dispatched", {"step" => "plan", "attempt" => 1, "pane" => "%3", "delivered" => true, "actor" => "engine", "cause" => "next_step", "from_state" => nil, "to_state" => nil}]])
     end
 
     it "reads the remote first for a step with a remote_unchanged proof" do

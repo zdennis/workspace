@@ -57,7 +57,7 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `gate_not_waiting`, `stale_revision`, `gate_note_unreadable`, and what +guard+ raises
     def approve(run_id, actor:, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
-      @change.call(run_id, actor: actor) do |read, ctx|
+      @change.call(run_id, actor: actor, cause: "approve") do |read, ctx|
         stored = read.thawed
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
@@ -86,7 +86,7 @@ module Workspace
     # @raise [Workspace::Error] code `gate_not_waiting`, `attempts_spent`, `budget_spent`, `run_timed_out`, and what +guard+ raises
     # @raise [Workspace::UsageError] when +to+ is not the gated step or one before it
     def reject(run_id, actor:, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
-      @change.call(run_id, actor: actor) do |read, ctx|
+      @change.call(run_id, actor: actor, cause: "reject") do |read, ctx|
         stored = read.thawed
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
@@ -102,7 +102,7 @@ module Workspace
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
         stored["pending_context"] << "The #{stored["current"]} step was rejected at its gate: #{note}"
         stored["current"] = target
-        @dispatch.dispatch(stored, ctx: ctx)
+        @dispatch.dispatch(stored, ctx: ctx, cause: "gate_rejected")
       end
     end
 
@@ -146,7 +146,7 @@ module Workspace
       refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry, extra_rounds: extra_rounds)
       follow = nil
       unchanged = nil
-      run = @change.call(run_id, actor: actor) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: "resume") do |read, ctx|
         follow = ctx
         if accept_guard
           next accept_guard_stop(read, ctx, note: note, pane: pane, guard_retry: guard_retry, caller_pane: caller_pane,
@@ -179,7 +179,7 @@ module Workspace
     #   would hold back the review pane's turn end, which decides the round)
     def park(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
       unchanged = nil
-      run = @change.call(run_id, actor: actor) do |read|
+      run = @change.call(run_id, actor: actor, cause: "park") do |read|
         stored = read.thawed
         refuse_resume(stored, from: from)
         refuse_reviewing_park(stored, from)
@@ -210,7 +210,7 @@ module Workspace
     def release_park(run_id, id, actor:)
       follow = nil
       unchanged = nil
-      run = @change.call(run_id, actor: actor) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: "release_park") do |read, ctx|
         parked = read.parked
         next unless parked && parked["id"] == id
         refuse_unrecoverable_guard(read.to_h)
@@ -242,7 +242,7 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def park_failed(run_id, id, code:, message:, actor:)
-      @change.call(run_id, actor: actor) do |read|
+      @change.call(run_id, actor: actor, cause: "park_failed") do |read|
         stored = read.thawed
         next unless stored.dig("parked", "id") == id
         if step_state(stored).dig("gate", "state") == "waiting"
@@ -299,7 +299,7 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def cancel(run_id, actor:, cause: "cancel")
       follow = nil
-      run = @change.call(run_id, actor: actor) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: cause) do |read, ctx|
         follow = ctx
         read = @progress.end_round(read, how: "cancelled", ctx: ctx) if read.current_step&.state == "reviewing"
         ended = @progress.finish(@attempt_record.abandon(read), "cancelled", ctx: ctx).thawed
@@ -383,7 +383,7 @@ module Workspace
       stored["pending_context"] << WorkflowRun.resume_note(note)
       if guard_retry
         event(stored, "run_resumed", "from" => step, "accept_guard" => guard)
-        dispatch(stored, ctx, budgeted: true)
+        dispatch(stored, ctx, "resume", budgeted: true)
       else
         event(stored, "run_resumed", "step" => step, "state" => "failed", "accept_guard" => guard)
         adopt(stored, @evaluation.evaluate_accepted(stored, ctx: ctx))
@@ -543,7 +543,7 @@ module Workspace
       if held && !from
         event(stored, "run_resumed", "step" => stored["current"], "budget" => "released")
         stored["reason"] = nil
-        dispatch(stored, ctx, context: held["context"], budgeted: budget, retry_of: held.key?("retry_of") ? held.slice("text").merge("attempt" => held["retry_of"]) : nil)
+        dispatch(stored, ctx, "resume", context: held["context"], budgeted: budget, retry_of: held.key?("retry_of") ? held.slice("text").merge("attempt" => held["retry_of"]) : nil)
         return nil
       end
       # A resume skips the wait of a retry; `--from` goes elsewhere and drops it.
@@ -552,7 +552,7 @@ module Workspace
       waiting_retry = nil unless waiting_retry.is_a?(Hash) && waiting_retry["to"].is_a?(String)
       if waiting_retry && !from
         event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"], "backoff" => "skipped")
-        adopt(stored, @progress.start_retry(stored, waiting_retry, ctx: ctx, proven: !pane.nil?, budgeted: budget))
+        adopt(stored, @progress.start_retry(stored, waiting_retry, ctx: ctx, cause: "resume", proven: !pane.nil?, budgeted: budget))
         return held_retry_sentence(stored)
       end
       # The retry a rejection stopped by a limit kept: started by a plain resume, dropped by `--from`.
@@ -567,7 +567,7 @@ module Workspace
         stored.replace(@progress.end_round(stored, how: "from", ctx: ctx).thawed) if state["state"] == "reviewing" || kept
         event(stored, "run_resumed", "from" => from)
         stored["current"] = from
-        dispatch(stored, ctx, budgeted: budget)
+        dispatch(stored, ctx, "resume", budgeted: budget)
         return nil
       end
       event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"])
@@ -575,7 +575,7 @@ module Workspace
       case state["state"]
       when "running"
         if pane
-          dispatch(stored, ctx, budgeted: budget)
+          dispatch(stored, ctx, "resume", budgeted: budget)
         else
           stored["reason"] = nil
           evaluate(stored, ctx)
@@ -588,9 +588,9 @@ module Workspace
         # A step a review rejected starts the retry the rejection kept: its verdicts and write-ups, `retry_of` it.
         if again.is_a?(Hash) && again["step"] == stored["current"] && again["text"].is_a?(String)
           stored["pending_context"] << again["text"]
-          dispatch(stored, ctx, context: again["context"], budgeted: budget, retry_of: again.slice("text", "attempt"))
+          dispatch(stored, ctx, "resume", context: again["context"], budgeted: budget, retry_of: again.slice("text", "attempt"))
         else
-          dispatch(stored, ctx, budgeted: budget)
+          dispatch(stored, ctx, "resume", budgeted: budget)
         end
       end
       nil
@@ -811,7 +811,7 @@ module Workspace
       adopt(run, @dispatch.drop_park(run, how, extra)) if run.key?("parked")
     end
 
-    def dispatch(run, ctx, **options) = adopt(run, @dispatch.dispatch(run, ctx: ctx, **options))
+    def dispatch(run, ctx, cause, **options) = adopt(run, @dispatch.dispatch(run, ctx: ctx, cause: cause, **options))
     def evaluate(run, ctx) = adopt(run, @evaluation.evaluate(run, ctx: ctx))
     def event(run, type, data = {}) = @change.event(run, type, data)
     def bound_pane(run) = @panes.pane_of(run["id"]) || run["pane"]

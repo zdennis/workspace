@@ -1543,6 +1543,18 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(panes.kicks.last).to include(pane: "%6")
       expect(events.first).to eq(["lock_acquired", "app", {"lock" => "test-db", "run_id" => "wr_2", "step" => "verify",
                                                            "workspace" => "app.worktree-b", "waited_seconds" => 30}])
+      dispatching = history_lines("wr_2").find { |each| each["type"] == "step_dispatching" }
+      expect(dispatching).to include("cause" => "first", "actor" => "daemon")
+      expect(run).not_to have_key("dispatch_cause_pending")
+    end
+
+    it "drops the cause kept for the wait when the run is cancelled" do
+      waiting = start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-b")
+      expect(waiting["dispatch_cause_pending"]).to eq("step" => "verify", "cause" => "first")
+
+      engine.cancel("wr_2", actor: "person")
+
+      expect(stored_run(store, "wr_2")).not_to have_key("dispatch_cause_pending")
     end
 
     it "says who holds the lock when it is an agent, by pid" do
@@ -2911,6 +2923,38 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(panes.kicks.size).to eq(2)
     end
 
+    it "writes the cause of the loop on the step it sends the run back to, and keeps the cause the step_failed line already had" do
+      looping = definition(<<~YAML)
+        steps:
+          build:
+            prompt: Build it.
+          verify:
+            prompt: Verify it.
+            status: bin/check
+            on_fail: {goto: build, max: 2}
+      YAML
+      start(looping, inputs: {})
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+
+      dispatching = history_lines.select { |line| line["type"] == "step_dispatching" }
+      expect(dispatching.map { |line| line.values_at("step", "cause", "retry_of") }).to eq([["build", "first", nil], ["verify", "next_step", nil], ["build", "loop", nil]])
+      failed = history_lines.find { |line| line["type"] == "step_failed" }
+      expect(failed).to include("cause" => "check", "actor" => "agent")
+      expect(history_lines.find { |line| line["type"] == "step_looped" }).to include("cause" => "turn_ended")
+    end
+
+    it "writes backoff_ended on the retry a tick starts once the backoff is over, and delivery on the settle of its line" do
+      to_failed_verify
+      now[0] += 120
+      engine.tick("wr_1", actor: "daemon")
+
+      lines = history_lines
+      expect(lines.find { |line| line["type"] == "step_retry_started" }).to include("cause" => "tick", "actor" => "daemon")
+      expect(lines.reverse.find { |line| line["type"] == "step_dispatching" }).to include("step" => "build", "cause" => "backoff_ended", "retry_of" => nil)
+      expect(lines.reverse.find { |line| line["type"] == "step_dispatched" }).to include("cause" => "backoff_ended", "actor" => "engine")
+    end
+
     it "starts the retry on a tick once the time has passed, with the log's last lines fenced and labelled as data" do
       to_failed_verify
       now[0] += 119
@@ -2956,6 +3000,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(context.first).to eq("Note from the person who resumed the run: go")
       expect(context.last).to include("spec line 6")
       expect(history_lines.find { |each| each["type"] == "run_resumed" }).to include("backoff" => "skipped")
+      expect(history_lines.reverse.find { |each| each["type"] == "step_dispatching" }).to include("step" => "build", "cause" => "resume")
     end
 
     it "drops the wait when a resume names another step, and tells that step nothing of the failure" do

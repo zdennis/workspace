@@ -54,9 +54,9 @@ RSpec.describe Workspace::WorkflowRecovery do
       run = recovery.tick("wr_1", actor: "sweep")
 
       expect(run).to be_a(Workspace::WorkflowRun)
-      expect(progress.calls).to eq([[:start_retry, "build", backoff_wait, {proven: false, budgeted: true}]])
+      expect(progress.calls).to eq([[:start_retry, "build", backoff_wait, {cause: "backoff_ended", proven: false, budgeted: true}]])
       expect(store.runs["wr_1"]).not_to have_key("backoff")
-      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: true, actor: "sweep"}]])
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: true, actor: "sweep", cause: "tick"}]])
     end
 
     it "hands the actor it was given to the change, whether the daemon's advance or the sweep" do
@@ -64,7 +64,7 @@ RSpec.describe Workspace::WorkflowRecovery do
 
       recovery.tick("wr_1", actor: "daemon")
 
-      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: true, actor: "daemon"}]])
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: true, actor: "daemon", cause: "tick"}]])
     end
 
     it "asks again for the lock a run waits on" do
@@ -72,7 +72,7 @@ RSpec.describe Workspace::WorkflowRecovery do
 
       recovery.tick("wr_1", actor: "sweep")
 
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "lock_ended", context: nil, budgeted: true, retry_of: nil}]])
       expect(change.deliveries).to eq([{"step" => "build"}])
     end
 
@@ -488,8 +488,8 @@ RSpec.describe Workspace::WorkflowRecovery do
       recovery.note_stall("wr_1", actor: "sweep", step: "build", attempt: 1, cause: "daemon_down")
       expect(recovery.note_recovery("wr_1", actor: "sweep", step: "build", attempt: 1, cause: "daemon_down", action: "daemon_respawned")).to eq(:recorded)
 
-      expect(event_types.last).to eq(["step_recovered", {"step" => "build", "attempt" => 1, "action" => "daemon_respawned"}])
-      expect(change.calls.first).to eq([:call, "wr_1", {nonblocking: false, actor: "sweep"}])
+      expect(event_types.last).to eq(["step_recovered", {"step" => "build", "attempt" => 1, "action" => "daemon_respawned", "cause" => "daemon_down"}])
+      expect(change.calls.first).to eq([:call, "wr_1", {nonblocking: false, actor: "sweep", cause: "daemon_down"}])
     end
   end
 
@@ -604,8 +604,10 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(progress.calls).to eq([[:fail_step, "build", {"cause" => "timeout", "timeout" => 600, "elapsed" => 700, "code" => "step_timed_out", "code_source" => "engine"}]])
       expect(event_types).to eq([
         ["step_stalled", {"step" => "build", "attempt" => 1, "cause" => "timed_out", "elapsed" => 700, "timeout" => 600}],
-        ["step_recovered", {"step" => "build", "attempt" => 1, "action" => "failed"}]
+        ["step_recovered", {"step" => "build", "attempt" => 1, "action" => "failed", "cause" => "timed_out"}]
       ])
+      stalled, recovered = event_types.map(&:last)
+      expect(recovered["cause"]).to eq(stalled["cause"])
       expect(store.runs["wr_1"]["steps"]["build"]["state"]).to eq("failed")
     end
   end
@@ -621,9 +623,9 @@ RSpec.describe Workspace::WorkflowRecovery do
       build = store.runs["wr_1"]["steps"]["build"]
       expect(build["attempts"].first).to include("redelivered" => true)
       expect(build["redelivery_pending"]).to eq(1)
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: false, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "redelivery", context: nil, budgeted: false, retry_of: nil}]])
       expect(event_types).to eq([["step_stalled", {"step" => "build", "attempt" => 1, "cause" => "undelivered", "code" => "pane_busy", "retry" => 1, "of" => 2}]])
-      expect(store.events).to eq([["wr_1", "step_recovered", {"step" => "build", "attempt" => 1, "action" => "redelivered", "actor" => "sweep", "from_state" => nil, "to_state" => nil}]])
+      expect(store.events).to eq([["wr_1", "step_recovered", {"step" => "build", "attempt" => 1, "action" => "redelivered", "actor" => "sweep", "cause" => "redelivery", "from_state" => nil, "to_state" => nil}]])
     end
 
     context "when the line was refused again" do

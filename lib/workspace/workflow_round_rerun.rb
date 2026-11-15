@@ -53,7 +53,7 @@ module Workspace
       return {} if answer[:problem] || !answer[:revision].is_a?(String)
       return {revision: answer[:revision]} unless answer[:revision] == rejected["revision"]
       stopped = false
-      after = @change.call(run_id, actor: "engine") do |current|
+      after = @change.call(run_id, actor: "engine", cause: "round_rerun") do |current|
         next unless WorkflowTransitions.round_delivery_wanted?(current, review)
         stopped = true
         stop_no_change(current, revision: answer[:revision], rejected: rejected)

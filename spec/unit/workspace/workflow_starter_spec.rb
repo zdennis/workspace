@@ -154,7 +154,7 @@ RSpec.describe Workspace::WorkflowStarter do
       run = starter.start(definition: definition, actor: "person", workspace: "app", worktree: worktree, inputs: {"task" => "x"}, pane: "%3", dispatch: false)
 
       expect(run.state).to eq("waiting")
-      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "person"}]])
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "person", cause: "start"}]])
       expect(dispatch.calls.map(&:first)).not_to include(:dispatch)
     end
 
