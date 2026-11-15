@@ -1,6 +1,8 @@
 module Workspace
   # Reads the `workflows:` block, as written by `workspace config set`.
   class WorkflowConfig
+    DEFAULT_STALL = 600
+
     # @param config_resolver [Workspace::ConfigResolver]
     def initialize(config_resolver:)
       @config_resolver = config_resolver
@@ -24,13 +26,26 @@ module Workspace
       ConfigSchema::DEFAULT_PACKS
     end
 
+    # The idle time after which a step of a definition with no `stall:` counts
+    # as stalled: `workflows.default_stall` from the global file, `600` when it
+    # is unset, holds a value `config set` would refuse or the file can't be
+    # parsed. `off` and `0` give nil.
+    #
+    # @return [Numeric, nil] seconds, or nil when the default is turned off
+    def default_stall
+      value = read("", upto: "global", key: "workflows.default_stall")
+      value.nil? ? DEFAULT_STALL : ConfigSchema.parse("workflows.default_stall", value)
+    rescue ArgumentError, Workspace::ConfigParseError
+      DEFAULT_STALL
+    end
+
     private
 
-    def read(workspace, upto: nil)
-      @config_resolver.view(workspace: workspace, upto: upto).raw("workflows.defaults.include")
+    def read(workspace, upto: nil, key: "workflows.defaults.include")
+      @config_resolver.view(workspace: workspace, upto: upto).raw(key)
     rescue Workspace::ConfigParseError
       raise if upto
-      read(workspace, upto: "global")
+      read(workspace, upto: "global", key: key)
     end
   end
 end

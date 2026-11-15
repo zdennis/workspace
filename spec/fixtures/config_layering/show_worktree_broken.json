@@ -2040,6 +2040,36 @@
       "problems": []
     },
     {
+      "key": "workflows.default_stall",
+      "scope": "global",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 600,
+      "effective": 600,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a",
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "How long a workflow step may sit idle, counted from when the agent's turn is proven over, before `workflow sweep` treats it as stalled, for a definition with no `stall:` of its own (default `10m`). `0` or `off` turns the default off",
+      "problems": [],
+      "unit": "seconds"
+    },
+    {
       "key": "events.rotate_size",
       "scope": "global",
       "type": "size",
