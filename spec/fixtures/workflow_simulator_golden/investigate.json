@@ -56,7 +56,9 @@
       "at": 0,
       "type": "run_started",
       "workflow": "investigate",
-      "workspace": "simulation"
+      "workspace": "simulation",
+      "from_state": "waiting",
+      "to_state": "running"
     },
     {
       "n": 2,

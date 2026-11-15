@@ -641,6 +641,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(panes.kicks).to eq([{workspace: "app.worktree-x", pane: "%5", text: "Read #{prompt} and follow it.", fresh: true, run_id: "wr_1"}])
       expect(stored_run(store, "wr_1")).to eq(run)
       expect(history).to eq(%w[run_started step_dispatching step_dispatched])
+      expect(history_lines.first).to include("type" => "run_started", "from_state" => "waiting", "to_state" => "running")
     end
 
     it "composes the default packs, then the workflow's and the step's layers, for the run's checkout" do

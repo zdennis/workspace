@@ -132,7 +132,9 @@
       "at": 0,
       "type": "run_started",
       "workflow": "rpiv-auto-approve-v2",
-      "workspace": "simulation"
+      "workspace": "simulation",
+      "from_state": "waiting",
+      "to_state": "running"
     },
     {
       "n": 2,

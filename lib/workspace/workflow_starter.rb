@@ -173,9 +173,17 @@ module Workspace
         @dispatch.check_pane(pane)
         check_checkout(worktree)
       }) { |created| created["artifacts_dir"] = @prompt.artifacts_dir(worktree, created["id"]) })
-      @change.event(run, "run_started", "workflow" => data["id"], "workspace" => workspace)
-      return @change.call(run.id) { |_run| } unless dispatch
-      @change.call(run.id) { |read, ctx| @dispatch.dispatch(read, ctx: ctx) }
+      started = {"workflow" => data["id"], "workspace" => workspace}
+      unless dispatch
+        return @change.call(run.id) do |_read, ctx|
+          ctx.event("run_started", started)
+          nil
+        end
+      end
+      @change.call(run.id) do |read, ctx|
+        ctx.event("run_started", started)
+        @dispatch.dispatch(read, ctx: ctx)
+      end
     end
 
     private

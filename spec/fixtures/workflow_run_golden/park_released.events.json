@@ -2,7 +2,9 @@
   "ts": "2026-10-04T12:00:00.000Z",
   "type": "run_started",
   "workflow": "flow",
-  "workspace": "app.worktree-x"
+  "workspace": "app.worktree-x",
+  "from_state": "waiting",
+  "to_state": "running"
 }
 {
   "ts": "2026-10-04T12:00:00.000Z",
