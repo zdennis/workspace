@@ -30,7 +30,8 @@ RSpec.describe Workspace::WorkflowStatus do
   subject(:status) do
     described_class.new(store: store, panes: panes, snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store },
       gate_note: Workspace::WorkflowGateNote.new(notes: notes), clock: -> { now.first },
-      snapshot_timeout: snapshot_timeout, list_grace: list_grace)
+      snapshot_timeout: snapshot_timeout, list_grace: list_grace,
+      recovery_entry: ->(_workspace, _pane) { @recovery_entry })
   end
 
   before do
@@ -1193,6 +1194,84 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(status.runs(workspace: "app")["runs"].map { |run| run["id"] }).to eq(%w[wr_2 wr_1])
     end
   end
+  describe "current.turn_failed" do
+    let(:since) { "2026-10-04T12:45:00Z" }
+    let(:entry) { nil }
+
+    before do
+      snapshot["panes"].first.merge!("state" => "idle", "turn_failed" => true, "turn_failed_since" => since, "session_id" => "s1")
+      @recovery_entry = entry
+    end
+
+    it "is absent when the pane's turn has not failed" do
+      create
+      snapshot["panes"].first.delete("turn_failed")
+      expect(current).not_to have_key("turn_failed")
+    end
+
+    it "has the JSON shape and no attempts without a recovery entry" do
+      create
+      expect(current["turn_failed"]).to eq("since" => since, "attempts" => nil, "max_attempts" => 12, "gave_up" => false)
+    end
+
+    context "with an entry of the pane's session" do
+      let(:entry) { {"session_id" => "s1", "phase" => "waiting", "attempts" => 4} }
+
+      it "shows its attempts" do
+        create
+        expect(current["turn_failed"]).to include("attempts" => 4, "gave_up" => false)
+      end
+    end
+
+    context "with an entry of another session" do
+      let(:entry) { {"session_id" => "other", "phase" => "gave_up", "attempts" => 12, "gave_up_at" => "2026-10-04T12:50:00Z"} }
+
+      it "ignores it" do
+        create
+        expect(current["turn_failed"]).to include("attempts" => nil, "gave_up" => false)
+      end
+    end
+
+    it "shows a give-up made at or after the failure, and ignores an older one" do
+      create
+      @recovery_entry = {"session_id" => "s1", "phase" => "gave_up", "attempts" => 12, "gave_up_at" => "2026-10-04T12:45:00Z"}
+      expect(current["turn_failed"]).to include("attempts" => 12, "gave_up" => true)
+      @recovery_entry = {"session_id" => "s1", "phase" => "gave_up", "attempts" => 12, "gave_up_at" => "2026-10-04T12:30:00Z"}
+      expect(current["turn_failed"]).to include("attempts" => nil, "gave_up" => false)
+    end
+
+    it "shows a failure with no turn_failed_since, taking the time from the entry of the session when it has one" do
+      create
+      snapshot["panes"].first.delete("turn_failed_since")
+      expect(current["turn_failed"]).to include("since" => nil, "attempts" => nil)
+      @recovery_entry = {"session_id" => "s1", "phase" => "waiting", "attempts" => 2, "failed_at" => "2026-10-04T12:44:00Z"}
+      expect(current["turn_failed"]).to include("since" => "2026-10-04T12:44:00Z", "attempts" => 2)
+    end
+
+    it "is absent for a run that has a reason" do
+      create(state: "waiting", step_state: "waiting", reason: {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "step" => "plan", "artifacts" => []}})
+      expect(current).not_to have_key("turn_failed")
+    end
+
+    it "is absent for a parked run" do
+      create(parked: {"id" => "abc", "from" => "plan", "note" => "n", "pane" => nil, "turn_over" => nil, "requested_at" => "2026-10-04T12:30:00Z", "expires_at" => "2026-10-04T13:30:00Z", "retries" => 0})
+      expect(current).not_to have_key("turn_failed")
+    end
+
+    it "is absent for a finished run" do
+      create
+      edit_run(store, "wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T12:50:00Z") }
+      expect(status.run("wr_1")["runs"].first["current"]).not_to have_key("turn_failed")
+    end
+
+    it "sits beside a stuck stall noted for the cause turn_failed" do
+      create
+      edit_run(store, "wr_1") { |run| run["sweep"] = {"step" => "plan", "attempt" => 2, "stalled" => {"turn_failed" => since}, "recovered" => {}} }
+      expect(current["stuck"]).to include("code" => "stalled", "cause" => "turn_failed", "since" => since)
+      expect(current["turn_failed"]).to include("since" => since)
+    end
+  end
+
   describe "current.stuck" do
     def mark(stalled: {}, recovered: {}, step: "plan", attempt: 2)
       edit_run(store, "wr_1") { |run| run["sweep"] = {"step" => step, "attempt" => attempt, "stalled" => stalled, "recovered" => recovered} }

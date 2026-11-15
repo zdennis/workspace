@@ -337,10 +337,9 @@ module Workspace
     def turn_failed(run, attempt, pass, pane, shown, elapsed, timeout, fail_on_timeout)
       return time_out(run, attempt, pass, elapsed, timeout, "the agent's turn failed") if fail_on_timeout
       entry = @recovery_entry.call(run.workspace, shown["pane_id"] || pane)
-      entry = nil unless entry.is_a?(Hash) && entry["session_id"] && entry["session_id"] == shown["session_id"]
-      since = shown["turn_failed_since"] || entry&.dig("failed_at")
+      since = RecoveryEntry.failure_since(shown["turn_failed_since"], entry, shown["session_id"])
       at = parse_time(since)
-      entry = nil if entry && stale_give_up?(entry, at)
+      entry = RecoveryEntry.trusted_for_failure(entry, session_id: shown["session_id"], failed_at: at)
       age = at && [@clock.call - at, 0].max
       gave_up = entry&.dig("phase") == "gave_up"
       threshold = pass[:turn_failed_after]
@@ -355,16 +354,6 @@ module Workspace
       end
       note(run, pass, "turn_failed", "#{what}, so nothing will end step #{run.current}. Resume the run once the agent can work again (`workspace workflow resume #{run.id}`).",
         "pane" => pane, "since" => since, "recovery_phase" => entry&.dig("phase"), "recovery_attempts" => entry&.dig("attempts"))
-    end
-
-    # An exhausted entry stays `gave_up` for its session, so a give-up from before an agent was brought back by hand
-    # would still read `gave_up` at its next failure. The give-up counts only when its `gave_up_at` is at or after
-    # the failure the pane shows (the final failure comes before the decision to give up); an entry with no
-    # `gave_up_at`, or a failure of no known time, is not trusted, and the threshold decides alone.
-    def stale_give_up?(entry, failed_at)
-      return false unless entry["phase"] == "gave_up"
-      gave_up_at = parse_time(entry["gave_up_at"])
-      gave_up_at.nil? || failed_at.nil? || gave_up_at < failed_at
     end
 
     def parse_time(text)

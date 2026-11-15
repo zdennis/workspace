@@ -134,6 +134,41 @@ module Workspace
       store_agent(entry, live)
     end
 
+    # @param entry [Object] a pane's {AgentRecoveryStore} entry, or nil
+    # @param session_id [String, nil] the session the pane shows
+    # @return [Hash, nil] the entry when it is of that session, else nil
+    def of_session(entry, session_id)
+      (entry.is_a?(Hash) && entry["session_id"] && entry["session_id"] == session_id) ? entry : nil
+    end
+
+    # The entry a reader may trust for a failed turn it sees on a pane: the entry must be of that session, and a
+    # `gave_up` entry counts only when its `gave_up_at` is at or after the failure (the final failure comes before
+    # the decision to give up). An exhausted entry stays `gave_up` for its session, so an older give-up, one with
+    # no `gave_up_at`, or a failure of no known time is not trusted.
+    #
+    # @param entry [Object] the pane's {AgentRecoveryStore} entry, or nil
+    # @param session_id [String, nil] the session the pane shows
+    # @param failed_at [Time, nil] when the pane's turn failed
+    # @return [Hash, nil] the entry, or nil when it is not to be trusted
+    def trusted_for_failure(entry, session_id:, failed_at:)
+      entry = of_session(entry, session_id)
+      return nil unless entry
+      return entry unless entry["phase"] == "gave_up"
+      gave_up_at = RecoveryVerdicts.time_of(entry["gave_up_at"])
+      (gave_up_at.nil? || failed_at.nil? || gave_up_at < failed_at) ? nil : entry
+    end
+
+    # When a pane's failed turn failed, as text: the time the pane shows, else the failure time of the entry of
+    # the pane's session. The one derivation {WorkflowSweep} and {WorkflowStatus} share.
+    #
+    # @param shown_since [String, nil] the pane row's `turn_failed_since`
+    # @param entry [Object] the pane's {AgentRecoveryStore} entry, or nil
+    # @param session_id [String, nil] the session the pane shows
+    # @return [String, nil]
+    def failure_since(shown_since, entry, session_id)
+      shown_since || of_session(entry, session_id)&.dig("failed_at")
+    end
+
     # @param entry [Hash] changed in place
     # @param reason [String] the give-up reason
     # @param clock [#now] stamps `gave_up_at`, so a reader can tell this give-up from a later failure

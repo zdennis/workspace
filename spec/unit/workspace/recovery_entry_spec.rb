@@ -147,4 +147,56 @@ RSpec.describe Workspace::RecoveryEntry do
       end
     end
   end
+
+  describe ".failure_since" do
+    it "prefers the time the pane shows, else the failure time of the entry of its session" do
+      entry = {"session_id" => "s1", "failed_at" => "2026-10-04T12:40:00Z"}
+      expect(described_class.failure_since("2026-10-04T12:45:00Z", entry, "s1")).to eq("2026-10-04T12:45:00Z")
+      expect(described_class.failure_since(nil, entry, "s1")).to eq("2026-10-04T12:40:00Z")
+      expect(described_class.failure_since(nil, entry, "s2")).to be_nil
+      expect(described_class.failure_since(nil, nil, "s1")).to be_nil
+    end
+  end
+
+  describe ".of_session" do
+    it "gives the entry only for its own session" do
+      entry = {"session_id" => "s1"}
+      expect(described_class.of_session(entry, "s1")).to be(entry)
+      expect(described_class.of_session(entry, "s2")).to be_nil
+      expect(described_class.of_session({}, nil)).to be_nil
+      expect(described_class.of_session(nil, "s1")).to be_nil
+    end
+  end
+
+  describe ".trusted_for_failure" do
+    let(:failed_at) { Time.utc(2026, 10, 4, 12, 45) }
+    let(:waiting) { {"session_id" => "s1", "phase" => "waiting", "attempts" => 2} }
+    let(:gave_up) { {"session_id" => "s1", "phase" => "gave_up", "gave_up_at" => "2026-10-04T12:46:00Z"} }
+
+    def trusted(entry, session_id: "s1", at: failed_at)
+      described_class.trusted_for_failure(entry, session_id: session_id, failed_at: at)
+    end
+
+    it "gives an entry of the shown session" do
+      expect(trusted(waiting)).to be(waiting)
+    end
+
+    it "gives nil for no entry, a non-hash, another session or a pane with no session" do
+      expect(trusted(nil)).to be_nil
+      expect(trusted("x")).to be_nil
+      expect(trusted(waiting, session_id: "other")).to be_nil
+      expect(trusted({"phase" => "waiting"}, session_id: nil)).to be_nil
+    end
+
+    it "trusts a give-up made at or after the failure" do
+      expect(trusted(gave_up)).to be(gave_up)
+      expect(trusted(gave_up.merge("gave_up_at" => "2026-10-04T12:45:00Z"))).not_to be_nil
+    end
+
+    it "does not trust a give-up from before the failure, with no time, or for a failure of no known time" do
+      expect(trusted(gave_up.merge("gave_up_at" => "2026-10-04T12:30:00Z"))).to be_nil
+      expect(trusted(gave_up.merge("gave_up_at" => nil))).to be_nil
+      expect(trusted(gave_up, at: nil)).to be_nil
+    end
+  end
 end

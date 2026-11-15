@@ -88,7 +88,8 @@ module Workspace
     # @param clock [#call] returns the current Time
     # @param snapshot_timeout [Numeric] seconds one daemon read may take
     # @param list_grace [Numeric] seconds a list's reads share past the timeout
-    def initialize(store:, panes:, snapshot_client:, ask_store_for:, gate_note:, clock: -> { Time.now }, snapshot_timeout: SNAPSHOT_TIMEOUT, list_grace: LIST_GRACE)
+    def initialize(store:, panes:, snapshot_client:, ask_store_for:, gate_note:, clock: -> { Time.now }, snapshot_timeout: SNAPSHOT_TIMEOUT, list_grace: LIST_GRACE,
+      recovery_entry: ->(*) {})
       @snapshot_timeout = snapshot_timeout
       @list_grace = list_grace
       @store = store
@@ -97,6 +98,7 @@ module Workspace
       @snapshot_client = snapshot_client
       @ask_store_for = ask_store_for
       @clock = clock
+      @recovery_entry = recovery_entry
     end
 
     # @param workspace [String, nil] only this workspace's runs
@@ -243,7 +245,7 @@ module Workspace
         "current" => {"step" => run.current, "attempt" => state.last_attempt&.n, "state" => state.state,
                       "reason" => shown_reason(run, reason, review_pane || pane),
                       "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state))
-            .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)).merge(finished ? {} : review_row(run, state)),
+            .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)).merge(finished ? {} : turn_failed_row(run, state, reason, shown, pane)).merge(finished ? {} : review_row(run, state)),
         "steps" => run.definition["steps"].map { |step| step_row(step, run.steps.fetch(step["id"]), run) },
         "base_sha" => run.base_sha, "pane" => pane, "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
         "artifacts_dir" => run.artifacts_dir, "events_path" => @store.events_path(run.id),
@@ -300,6 +302,19 @@ module Workspace
       end
       {"stuck" => {"code" => code, "cause" => cause, "since" => since.is_a?(String) ? since : nil,
                    "actions" => actions(run, {"code" => code, "details" => {}}, pane)}}
+    end
+
+    # A running step whose pane shows an agent turn that ended on an API error: `turn_failed` with `since`, the
+    # recovery `attempts` so far (nil with no recovery entry for the pane's session), `max_attempts` and `gave_up`.
+    # The entry is trusted by {RecoveryEntry.trusted_for_failure}, the rule {WorkflowSweep} uses. Separate from `stuck`, which needs a sweep mark.
+    def turn_failed_row(run, state, reason, shown, pane)
+      return {} if reason || live_park?(run) || run.parked || state.state != "running"
+      return {} unless shown.is_a?(Hash) && shown["turn_failed"]
+      entry = @recovery_entry.call(run.workspace, shown["pane_id"] || pane)
+      since = RecoveryEntry.failure_since(shown["turn_failed_since"], entry, shown["session_id"])
+      entry = RecoveryEntry.trusted_for_failure(entry, session_id: shown["session_id"], failed_at: RecoveryVerdicts.time_of(since))
+      {"turn_failed" => {"since" => since, "attempts" => entry&.dig("attempts"), "max_attempts" => AgentRecoveryStore::MAX_ATTEMPTS,
+                         "gave_up" => entry&.dig("phase") == "gave_up"}}
     end
 
     # The review round of a `reviewing` step, as `current.review` shows it (absent for any other step, and for a

@@ -1104,8 +1104,13 @@ module Workspace
       interrupter: workflow_interrupter,
       alerts: WorkflowAlerts.new(alert_config: alert_config, log_path: File.join(config.state_dir, "workflow-alerts.log"), error_output: error_output)
     )
+    workflow_recovery_entry = ->(workspace, pane) do
+      AgentRecoveryStore.new(path: config.agent_recovery_path(workspace)).get(pane)
+    rescue Workspace::Error
+      nil
+    end
     workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for,
-      gate_note: workflow_gate_note)
+      gate_note: workflow_gate_note, recovery_entry: workflow_recovery_entry)
     workflow_workspace_facts = WorkflowWorkspaceFacts.new(liveness: Liveness.new(tmux: tmux), project_config: project_config, config: config,
       agents: ProjectAgents.new(client: agent_snapshot_client))
     workflow_review_orphans = WorkflowReviewOrphans.new(tmux: tmux, store: workflow_store, panes: workflow_panes)
@@ -1116,11 +1121,7 @@ module Workspace
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
       interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall,
       turn_failed_after: -> { workflow_config.turn_failed_after },
-      recovery_entry: ->(workspace, pane) do
-        AgentRecoveryStore.new(path: config.agent_recovery_path(workspace)).get(pane)
-      rescue Workspace::Error
-        nil
-      end)
+      recovery_entry: workflow_recovery_entry)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do
         out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)
