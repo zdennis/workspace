@@ -7,10 +7,17 @@ module Workspace
   # starts `workspace workflow advance` as its own process and goes back to
   # serving hooks. The run's transitions (a check that takes twenty minutes,
   # a `/clear` and a typed line) happen there, never on the daemon's threads.
+  # While the workspace has a going run, its tick also starts
+  # `workspace workflow sweep --name WORKSPACE` the same way, at most once
+  # every {SWEEP_INTERVAL} seconds, so stalled and timed-out steps are
+  # recovered without the opt-in launchd sweep.
   #
   # Nothing here raises: a run that can't be woken shows as stuck in
   # `workflow status`, and the daemon keeps running.
   class WorkflowNudger
+    # Seconds between two sweeps the tick starts for one workspace.
+    SWEEP_INTERVAL = 300
+
     # @param store [Workspace::WorkflowRunStore]
     # @param panes [Workspace::WorkflowPanes] names the run a pane is bound to
     # @param executable [String] path to `bin/workspace`
@@ -31,6 +38,7 @@ module Workspace
       @spawner = spawner || method(:spawn_detached)
       @clock = clock
       @logger = logger
+      @last_sweep = {}
     end
 
     # @param workspace [String] the daemon's workspace
@@ -55,13 +63,16 @@ module Workspace
     # Wakes each of the workspace's runs that has a parked resume, waits for
     # a lock (a review round's `review.uses` too), or whose check or review
     # round never reported back, or whose review round has to be delivered again
-    # ({WorkflowEngine.wakeable?}).
+    # ({WorkflowEngine.wakeable?}). Then, when the workspace has a going run and
+    # no sweep started in the last {SWEEP_INTERVAL} seconds (or none yet), starts
+    # `workflow sweep` for it; a failure there never stops the advances.
     #
     # @param workspace [String] the daemon's workspace
     # @return [Array<String>] the runs that were woken
     def tick(workspace)
       now = @clock.call
-      @store.going.select { |run| run.workspace == workspace }.filter_map do |run|
+      runs = @store.going.select { |run| run.workspace == workspace }
+      woken = runs.filter_map do |run|
         next unless WorkflowEngine.wakeable?(run.to_h, now, alive: @holder_alive)
         advance(workspace, run.id)
         run.id
@@ -70,12 +81,25 @@ module Workspace
         @error_output.puts "workflow: could not look at run #{run.id} (#{e.class}: #{e.message}); its run file may be malformed"
         nil
       end
+      sweep(workspace, runs, now)
+      woken
     rescue => e
       @logger.debug { "workflow: tick failed (#{e.class}: #{e.message})" }
       []
     end
 
     private
+
+    def sweep(workspace, runs, now)
+      return if runs.empty?
+      last = @last_sweep[workspace]
+      return if last && now - last < SWEEP_INTERVAL
+      # Recorded before the spawn, so a spawn that raises is not retried on every tick.
+      @last_sweep[workspace] = now
+      @spawner.call([RbConfig.ruby, @executable, "workflow", "sweep", "--name", workspace], @log_path.call(workspace))
+    rescue => e
+      @logger.debug { "workflow: could not start the sweep for #{workspace} (#{e.class}: #{e.message})" }
+    end
 
     def advance(workspace, run_id, *flags)
       @spawner.call([RbConfig.ruby, @executable, "workflow", "advance", run_id, *flags], @log_path.call(workspace))
