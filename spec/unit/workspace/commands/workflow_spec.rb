@@ -3115,6 +3115,31 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(JSON.parse(output.string)).to include("ok" => true, "clean" => true, "files" => [])
     end
 
+    it "offers no next actions when clean" do
+      allow(audit_reader).to receive(:read).and_return("files" => [], "without_evidence" => [], "counts" => {}, "clean" => true, "directory" => nil)
+
+      audit_command.audit(run: "wr_2611010900abcd", json: true)
+
+      expect(JSON.parse(output.string)["next_actions"]).to eq([])
+    end
+
+    it "offers the files and one attempts command per mismatched step, and a hint line in text" do
+      rows = [row, row.merge("status" => "missing"), row.merge("step" => "build", "status" => "replaced"), row.merge("status" => "ok")]
+      allow(audit_reader).to receive(:read).and_return("files" => rows, "without_evidence" => [], "counts" => {"changed" => 1, "missing" => 1, "replaced" => 1, "ok" => 1}, "clean" => false, "directory" => nil)
+
+      expect(audit_command.audit(run: "wr_2611010900abcd", json: true)).to eq(exit_code: 1)
+
+      expect(JSON.parse(output.string)["next_actions"]).to eq([
+        {"action" => "workflow files", "args" => ["wr_2611010900abcd"], "needs" => [], "why" => "1 changed, 1 missing, 1 replaced; shows where the copies are"},
+        {"action" => "workflow attempts", "args" => ["wr_2611010900abcd", "--attempt-of", "plan"], "needs" => [], "why" => "step plan: 1 changed, 1 missing"},
+        {"action" => "workflow attempts", "args" => ["wr_2611010900abcd", "--attempt-of", "build"], "needs" => [], "why" => "step build: 1 replaced"}
+      ])
+      output.truncate(0)
+      output.rewind
+      audit_command.audit(run: "wr_2611010900abcd")
+      expect(output.string).to include("See where the copies are: workspace workflow files wr_2611010900abcd")
+    end
+
     it "says so for a run with no attempts, and refuses an unknown run" do
       allow(audit_reader).to receive(:read).and_return("files" => [], "without_evidence" => [], "counts" => {}, "clean" => true, "directory" => nil)
 

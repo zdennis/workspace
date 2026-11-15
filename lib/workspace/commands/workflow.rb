@@ -672,7 +672,7 @@ module Workspace
         result = @audit.read(@store.run(run).to_h, step: step)
         if json
           document("run" => run, "step" => step, "clean" => result["clean"], "counts" => result["counts"], "directory" => result["directory"],
-            "files" => result["files"], "without_evidence" => result["without_evidence"])
+            "files" => result["files"], "without_evidence" => result["without_evidence"], "next_actions" => audit_next_actions(run, result))
         else
           print_audit(run, step, result)
         end
@@ -1018,6 +1018,19 @@ module Workspace
         counts = result["counts"].map { |status, count| "#{count} #{status}" }.join(", ")
         @output.puts "#{files.size} #{(files.size == 1) ? "file" : "files"}#{": " + counts unless counts.empty?}. #{result["clean"] ? "No copy differs from its record." : "A copy differs from its record."}"
         @output.puts "Evidence kept in #{TerminalText.escape(result["directory"].to_s)}/" if result["directory"]
+        @output.puts "See where the copies are: workspace workflow files #{TerminalText.escape(run)}" unless result["clean"]
+      end
+
+      # What to run after a mismatch: the run's files, then each mismatched step's attempts. Empty when clean.
+      def audit_next_actions(run, result)
+        mismatched = result["files"].select { |each| WorkflowAudit::MISMATCHES.include?(each["status"]) }
+        return [] if mismatched.empty?
+        describe = ->(rows) { rows.map { |each| each["status"] }.tally.map { |status, count| "#{count} #{status}" }.join(", ") }
+        actions = [NextAction.build("workflow files", run, why: "#{describe.call(mismatched)}; shows where the copies are")]
+        mismatched.group_by { |each| each["step"] }.each do |step, rows|
+          actions << NextAction.build("workflow attempts", run, "--attempt-of", step, why: "step #{step}: #{describe.call(rows)}")
+        end
+        actions
       end
 
       # One text row of `audit`: step, attempt, kind, status, name, detail.

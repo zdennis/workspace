@@ -698,7 +698,10 @@ module Workspace
           "holds what was recorded, and the command exits 1. NOT COPIED, TOO LARGE: nothing was kept, which",
           "is not tampering. 'checkout copy differs' notes a prompt or check log edited since it was copied (a",
           "cancelled check may legitimately differ). An attempt from before evidence existed is listed as having none.",
-          "Reads the run file and the evidence directory and writes nothing."
+          "Reads the run file and the evidence directory and writes nothing.",
+          "",
+          "With --json, next_actions is empty when clean; after a mismatch it offers `workflow files RUN` and one",
+          "`workflow attempts RUN --attempt-of STEP` per mismatched step, each with a why naming the counts."
         ],
         options: [["--attempt-of STEP", "Only this step's attempts (an unknown step is refused as unknown_step)"], JSON_OPT],
         examples: [
