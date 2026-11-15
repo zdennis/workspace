@@ -1462,4 +1462,244 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(decisions.workspace_killed("app", actor: "person")).to eq("cancelled" => [], "failed" => [])
     end
   end
+
+  describe "#pause" do
+    it "stores the pause with who and why, and records run_paused" do
+      stored(run_hash)
+
+      run = decisions.pause("wr_1", actor: "person", text: "lunch")
+
+      expect(run.paused).to eq("since" => "2026-11-10T12:00:00Z", "by" => "person", "text" => "lunch")
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "person", cause: "pause"}]])
+      expect(change.events).to eq([["wr_1", "run_paused", {"step" => "plan", "text" => "lunch"}]])
+    end
+
+    it "keeps the stored reason under the pause" do
+      stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting"}))
+
+      run = decisions.pause("wr_1", actor: "person")
+
+      expect(run.reason).to eq(failed_check)
+      expect(change.events).to eq([["wr_1", "run_paused", {"step" => "plan"}]])
+    end
+
+    it "drops a parked resume as paused" do
+      stored(run_hash(extra: {"parked" => {"id" => "p0", "pane" => "%3", "requested_at" => "2026-11-10T11:00:00Z", "expires_at" => "2026-11-10T13:00:00Z", "retries" => 0}}))
+
+      run = decisions.pause("wr_1", actor: "person")
+
+      expect(run.parked).to be_nil
+      expect(dispatch.calls).to eq([[:drop_park, "wr_1", "paused", {}]])
+    end
+
+    it "refuses a run already paused and changes nothing" do
+      before = deep_copy(stored(run_hash(extra: {"paused" => {"since" => "2026-11-10T11:00:00Z", "by" => "person"}})))
+
+      error = error_for { decisions.pause("wr_1", actor: "person") }
+
+      expect(error.code).to eq("already_paused")
+      expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "since" => "2026-11-10T11:00:00Z", "by" => "person")
+      expect(error.message).to include("workspace workflow unpause wr_1")
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(change.events).to be_empty
+    end
+
+    context "when the run has finished" do
+      let(:finished) { ["wr_1"] }
+
+      it "refuses it as run_not_active" do
+        stored(run_hash)
+
+        expect(error_for { decisions.pause("wr_1", actor: "person") }.code).to eq("run_not_active")
+      end
+    end
+  end
+
+  describe "a paused run's resume and park" do
+    def paused_run = run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting", "paused" => {"since" => "2026-11-10T11:00:00Z", "by" => "person"}})
+
+    it "refuses a resume, a resume --from and a park with run_paused, naming workflow unpause" do
+      before = deep_copy(stored(paused_run))
+
+      [-> { decisions.resume("wr_1", actor: "person") }, -> { decisions.resume("wr_1", actor: "person", from: "plan") },
+        -> { decisions.park("wr_1", actor: "person") }].each do |command|
+        error = error_for { command.call }
+        expect(error.code).to eq("run_paused")
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "since" => "2026-11-10T11:00:00Z", "by" => "person")
+        expect(error.message).to include("Run `workspace workflow unpause wr_1` first.")
+      end
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(dispatch.calls).to be_empty
+    end
+
+    it "refuses in refuse_resume, before a daemon is started" do
+      expect(error_for { decisions.refuse_resume(paused_run) }.code).to eq("run_paused")
+    end
+  end
+
+  describe "#unpause" do
+    def pause_of = {"since" => "2026-11-10T11:00:00Z", "by" => "person"}
+
+    def paused(hash = run_hash, hold: nil)
+      hash["paused"] = pause_of
+      hash["pause_hold"] = hold if hold
+      stored(hash)
+    end
+
+    def unpaused_event(action, held = nil) = ["wr_1", "run_unpaused", {"step" => "plan", "action" => action, "held" => held}.compact]
+
+    def decisions_over(panes)
+      described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now })
+    end
+
+    it "refuses a run that is not paused and changes nothing" do
+      before = deep_copy(stored(run_hash))
+
+      error = error_for { decisions.unpause("wr_1", actor: "person") }
+
+      expect(error.code).to eq("not_paused")
+      expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "state" => "running")
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(change.events).to be_empty
+    end
+
+    it "answers a frozen Unpaused naming the branch taken and the kind of dispatch held" do
+      paused(run_hash(state: "passed", extra: {"state" => "waiting"}), hold: {"kind" => "attempt", "cause" => "next_step"})
+
+      unpaused = decisions.unpause("wr_1", actor: "person")
+
+      expect(unpaused).to be_a(described_class::Unpaused)
+      expect(unpaused).to be_frozen
+      expect(unpaused.run).to be_a(Workspace::WorkflowRun)
+      expect(unpaused.run.paused).to be_nil
+      expect([unpaused.action, unpaused.held]).to eq(["dispatch", "attempt"])
+    end
+
+    it "answers action none and no held kind when nothing was held or done" do
+      paused
+
+      unpaused = decisions.unpause("wr_1", actor: "person")
+
+      expect([unpaused.action, unpaused.held]).to eq(["none", nil])
+    end
+
+    it "starts a held attempt with what its dispatch was given" do
+      paused(run_hash(state: "passed", extra: {"state" => "waiting"}),
+        hold: {"kind" => "attempt", "cause" => "review_rejected", "context" => "fresh", "budgeted" => false, "pane" => "%3", "identity" => "id", "text" => "why", "retry_of" => 1})
+
+      run = decisions.unpause("wr_1", actor: "person").run
+
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "review_rejected", context: "fresh", budgeted: false,
+                                                         retry_of: {"pane" => "%3", "identity" => "id", "text" => "why", "attempt" => 1}}]])
+      expect(run.paused).to be_nil
+      expect(run.to_h).not_to have_key("pause_hold")
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "person", cause: "unpause"}]])
+      expect(change.events).to eq([unpaused_event("dispatch", "attempt")])
+    end
+
+    it "starts a held round through restart_review" do
+      hash = run_hash(state: "reviewing", extra: {"state" => "waiting"})
+      hash["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil, "held" => "paused"}
+      paused(hash, hold: {"kind" => "round", "review_round" => 2})
+
+      decisions.unpause("wr_1", actor: "person")
+
+      expect(progress.calls).to eq([[:restart_review, "plan"]])
+      expect(evaluation.calls).to eq([[:review_round, "wr_1", {"step" => "plan"}]])
+      expect(change.events).to eq([unpaused_event("round", "round")])
+    end
+
+    it "delivers a held rerun through restart_review" do
+      hash = run_hash(state: "reviewing", extra: {"state" => "waiting"})
+      hash["steps"]["plan"]["review"] = {"round" => 1, "delivery" => nil, "held" => Workspace::WorkflowRoundRerun::PAUSED_RERUN}
+      paused(hash, hold: {"kind" => "round", "cause" => "rerun", "step" => "plan", "attempt" => 1, "review_round" => 1, "rerun" => ["a"]})
+
+      decisions.unpause("wr_1", actor: "person")
+
+      expect(progress.calls).to eq([[:restart_review, "plan"]])
+      expect(change.events).to eq([unpaused_event("rerun", "round")])
+    end
+
+    it "types a held line for the same attempt, marking it delivering again from now" do
+      delivery = {"step" => "plan", "attempt" => 1, "pane" => "%3", "text" => "Read it."}
+      paused(run_hash, hold: {"kind" => "delivery", "step" => "plan", "attempt" => 1, "delivery" => delivery})
+
+      run = decisions.unpause("wr_1", actor: "person").run
+
+      expect(change.deliveries).to eq([delivery])
+      expect(run.steps["plan"].attempts.size).to eq(1)
+      expect(run.steps["plan"].last_attempt.to_h).to include("delivery" => "delivering", "delivering_since" => "2026-11-10T12:00:00.000Z")
+      expect(dispatch.calls).to be_empty
+      expect(change.events).to eq([unpaused_event("deliver", "delivery")])
+    end
+
+    it "drops a held line whose attempt has ended, typing nothing" do
+      hash = run_hash(state: "failed", extra: {"state" => "waiting"})
+      hash["steps"]["plan"]["attempts"].last["ended_at"] = "2026-11-10T11:30:00Z"
+      paused(hash, hold: {"kind" => "delivery", "step" => "plan", "attempt" => 1, "delivery" => {"step" => "plan"}})
+
+      run = decisions.unpause("wr_1", actor: "person").run
+
+      expect(change.deliveries).to be_empty
+      expect(run.to_h).not_to have_key("pause_hold")
+      expect(change.events).to eq([unpaused_event("none", "delivery")])
+    end
+
+    it "makes the run wait on pane_gone when the open attempt's pane is gone" do
+      paused
+
+      run = decisions_over(RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, gone: ["%3"], idle: ["%3"])).unpause("wr_1", actor: "person").run
+
+      expect(run.state).to eq("waiting")
+      expect(run.reason).to include("code" => "pane_gone", "details" => include("pane" => "%3", "step" => "plan", "kind" => "dispatch"))
+      expect(run.steps["plan"].state).to eq("running")
+      expect(evaluation.calls).to be_empty
+      expect(change.events).to eq([unpaused_event("pane_gone")])
+    end
+
+    it "decides the open attempt when its pane's turn is over" do
+      paused
+
+      decisions_over(RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, idle: ["%3"])).unpause("wr_1", actor: "person")
+
+      expect(evaluation.calls).to eq([[:evaluate, "plan"]])
+      expect(change.events).to eq([unpaused_event("evaluate")])
+    end
+
+    it "leaves alone an attempt whose line is still on its way" do
+      hash = run_hash
+      hash["steps"]["plan"]["attempts"].last.merge!("delivery" => "delivering", "started_at" => "2026-11-10T11:59:30Z")
+      paused(hash)
+
+      decisions_over(RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, idle: ["%3"])).unpause("wr_1", actor: "person")
+
+      expect(evaluation.calls).to be_empty
+      expect(change.events).to eq([unpaused_event("none")])
+    end
+
+    it "leaves an agent still working alone" do
+      paused
+
+      run = decisions.unpause("wr_1", actor: "person").run
+
+      expect(run.paused).to be_nil
+      expect(run.state).to eq("running")
+      expect(evaluation.calls).to be_empty
+      expect(dispatch.calls).to be_empty
+      expect(change.deliveries).to be_empty
+      expect(change.events).to eq([unpaused_event("none")])
+    end
+
+    it "leaves a gate waiting, its reason shown again" do
+      reason = {"code" => "waiting_you", "since" => "2026-11-10T11:50:00Z", "details" => {"kind" => "gate"}}
+      paused(run_hash(state: "passed", gate: waiting_gate, reason: reason, extra: {"state" => "waiting"}))
+
+      run = decisions.unpause("wr_1", actor: "person").run
+
+      expect(run.reason).to eq(reason)
+      expect(progress.calls).to be_empty
+      expect(change.events).to eq([unpaused_event("none")])
+    end
+  end
 end

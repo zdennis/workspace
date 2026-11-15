@@ -25,6 +25,12 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.delivery(attempt, started + described_class::DELIVERY_WINDOW + 1)).to eq(:unknown)
     end
 
+    it "measures the window from delivering_since when a held line was typed again" do
+      attempt = {"started_at" => started.iso8601(3), "delivering_since" => (started + 3600).iso8601(3), "delivery" => "delivering"}
+      expect(described_class.delivery(attempt, started + 3600 + described_class::DELIVERY_WINDOW)).to eq(:delivering)
+      expect(described_class.delivery(attempt, started + 3600 + described_class::DELIVERY_WINDOW + 1)).to eq(:unknown)
+    end
+
     it "is unknown when the attempt's start can't be read" do
       expect(described_class.delivery({"started_at" => "garbled", "delivery" => "delivering"}, started)).to eq(:unknown)
       expect(described_class.delivery({"started_at" => nil, "delivery" => "delivering"}, started)).to eq(:unknown)

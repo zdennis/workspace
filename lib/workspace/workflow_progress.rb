@@ -160,7 +160,7 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def advance(run, ctx:) = over(run) { |work| go_on(work, ctx) }
 
-    # Ends the run: drops its park, retry wait and budget and timeout holds, gives up its locks and frees its panes.
+    # Ends the run: drops its park, retry wait, budget and timeout holds, and its pause and what the pause held, gives up its locks and frees its panes.
     # A run any of whose steps had a review round registers all its review windows to close on +ctx+, in place of a
     # close of one step's window the change registered.
     #
@@ -585,6 +585,9 @@ module Workspace
       run.delete("backoff")
       run.delete("budget_hold")
       run.delete("timeout_hold")
+      # A run that ends ends its pause: no finished run reads `paused`, and what the pause held is not started.
+      run.delete("paused")
+      run.delete("pause_hold")
       @dispatch.release(run)
       @panes.unbind(run["id"])
       # Every window a round of the run left, of any step: the closer finds them by their mark, a step of nil naming

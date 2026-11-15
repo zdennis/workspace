@@ -149,6 +149,19 @@ module Workspace
       @decisions.refuse_resume(run, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
     end
 
+    # Stops a run from starting anything new until {#unpause}. See {WorkflowDecisions#pause}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Hash{String=>Object}] the run afterwards
+    def pause(run_id, actor:, text: nil) = @decisions.pause(run_id, actor: actor, text: text).to_h
+
+    # Ends a pause and does what it held. See {WorkflowDecisions#unpause}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Hash{String=>Object}] the run afterwards, with "unpaused": {"action", "held"} (what the unpause did, as on `run_unpaused`)
+    def unpause(run_id, actor:)
+      unpaused = @decisions.unpause(run_id, actor: actor)
+      unpaused.run.to_h.merge("unpaused" => {"action" => unpaused.action, "held" => unpaused.held})
+    end
+
     # Ends a run: gives up its resources and frees its pane. See {WorkflowDecisions#cancel}.
     # @return [Hash{String=>Object}] the run afterwards
     def cancel(run_id, actor:, cause: "cancel") = @decisions.cancel(run_id, actor: actor, cause: cause).to_h

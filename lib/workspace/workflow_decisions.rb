@@ -5,13 +5,18 @@ module Workspace
   # A person's commands on a run: passing or turning down a gate ({#approve}, {#reject}), getting a run that is
   # not moving going again ({#resume}, refused first by {#refuse_resume}), and ending it ({#cancel},
   # {#workspace_killed}). A resume that can't be typed yet is parked on the run ({#park}), then carried out
-  # ({#release_park}) or ended ({#park_failed}). A command that starts an attempt is held to the run's attempt
+  # ({#release_park}) or ended ({#park_failed}). A person can stop a run from starting anything new ({#pause}) and
+  # let it go on ({#unpause}), which does what the pause held. A command that starts an attempt is held to the run's attempt
   # allowance and token budget, which `--extra-attempts` and `--extra-tokens` raise. What follows goes through
   # {WorkflowProgress}, {WorkflowDispatch} and {WorkflowEvaluation}. Each method that takes a run leaves it as it
   # is and returns the run afterwards.
   class WorkflowDecisions
     # What a resume or a park did: the run afterwards, and why nothing was done (a sentence), or nil when it acted.
     Resumed = Data.define(:run, :unchanged)
+
+    # What an unpause did: the run afterwards, the branch it took (`action`, as on `run_unpaused`) and the kind of
+    # dispatch the pause held (`held`: `attempt`, `round` or `delivery`; nil when none).
+    Unpaused = Data.define(:run, :action, :held)
 
     # Seconds a parked resume waits for the turn to end.
     PARK_SECONDS = 3600
@@ -276,9 +281,11 @@ module Workspace
     #   unless +accept_guard+; code `guard_not_stopped` with +accept_guard+ for a run no guard stopped
     # @raise [Workspace::UsageError] for a step the workflow doesn't have, and for +accept_guard+ without a +note+,
     #   +guard_retry+ without +accept_guard+, or +accept_guard+ with +from+
+    # @raise [Workspace::Error] code `run_paused` for a paused run (unpause it first)
     def refuse_resume(run, from: nil, note: nil, accept_guard: false, guard_retry: false)
       refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
       run = WorkflowRun.from_h(run).to_h
+      refuse_paused(run)
       return refuse_not_guard_stopped(run) if accept_guard
       refuse_unrecoverable_guard(run)
       if from
@@ -329,7 +336,157 @@ module Workspace
       result
     end
 
+    # Pauses a run: from now on it starts nothing new (no attempt, retry, review round or typed line), each dispatch
+    # held being kept as its `pause_hold` ({WorkflowDispatch#hold_paused}). What is under way goes on: a turn that
+    # ends is decided, a round's verdicts are counted, a gate can be approved or rejected. The run's reason stays
+    # under the pause, shown again once it ends. A parked resume is dropped (`how: "paused"`).
+    #
+    # @param text [String, nil] why, kept with the pause and on `run_paused`
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [WorkflowRun] the run afterwards
+    # @raise [Workspace::Error] code `already_paused`, `unknown_run` or `run_not_active`
+    def pause(run_id, actor:, text: nil)
+      @change.call(run_id, actor: actor, cause: "pause") do |read|
+        refuse_already_paused(read.to_h)
+        stored = read.thawed
+        drop_park(stored, "paused")
+        adopt(stored, WorkflowRun.from_h(stored).with_paused(since: now_iso, by: actor, text: text))
+        event(stored, "run_paused", with_text({"step" => stored["current"]}, text))
+        WorkflowRun.from_h(stored)
+      end
+    end
+
+    # Ends a pause and does what it held, never through {#resume} (which would start nothing without a pane, or a
+    # new attempt with one). In this order, the first that applies:
+    #
+    # 1. a held attempt or review round (`pause_hold` kind `attempt` or `round`) is started as it would have been,
+    #    spending what it would have spent;
+    # 2. a held line (kind `delivery`) is typed for the same attempt, which adds no attempt;
+    # 3. with nothing held and the step's attempt open and `running`: a bound pane that is gone makes the run wait
+    #    on `pane_gone`;
+    # 4. a pane whose turn is proven over has the step decided now, as a resume with a turn's end does;
+    # 5. an agent still working is left alone, and so is anything else (a gate, a round under way, a retry's
+    #    backoff, a lost check): the reason the pause hid shows again and the next tick acts on it.
+    #
+    # `run_unpaused` names which (`action`: `dispatch`, `round`, `rerun`, `deliver`, `pane_gone`, `evaluate`, `none`).
+    #
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Unpaused] the run afterwards, the branch taken and the kind of dispatch held
+    # @raise [Workspace::Error] code `not_paused`, `unknown_run` or `run_not_active`; what a held attempt's start raises
+    def unpause(run_id, actor:)
+      follow = nil
+      action = nil
+      held = nil
+      run = @change.call(run_id, actor: actor, cause: "unpause") do |read, ctx|
+        follow = ctx
+        refuse_not_paused(read.to_h)
+        stored = read.drop_paused.thawed
+        hold = stored.delete("pause_hold")
+        held = hold.is_a?(Hash) ? hold["kind"] : nil
+        action = unpause_action(stored, hold.is_a?(Hash) ? hold : nil).to_s
+        event(stored, "run_unpaused", {"step" => stored["current"], "action" => action, "held" => held}.compact)
+        apply_unpause(stored, ctx, action.to_sym, hold)
+        WorkflowRun.from_h(stored)
+      end
+      Unpaused.new(run: @evaluation.finish_follow_ups(run_id, follow, run), action: action, held: held)
+    end
+
     private
+
+    def refuse_already_paused(run)
+      paused = run["paused"]
+      return unless paused
+      raise Workspace::Error.new("Run #{run["id"]} is already paused (since #{paused["since"]}, by #{paused["by"]}). Run `workspace workflow unpause #{run["id"]}` to let it go on.",
+        code: "already_paused", details: {"run_id" => run["id"], "step" => run["current"], "since" => paused["since"], "by" => paused["by"]})
+    end
+
+    def refuse_not_paused(run)
+      return if run["paused"]
+      raise Workspace::Error.new("Run #{run["id"]} is not paused, so there is nothing to unpause.",
+        code: "not_paused", details: {"run_id" => run["id"], "step" => run["current"], "state" => run["state"]})
+    end
+
+    # A resume or park of a paused run would start what the pause holds back.
+    def refuse_paused(run)
+      paused = run["paused"]
+      return unless paused
+      raise Workspace::Error.new("Run #{run["id"]} is paused (since #{paused["since"]}, by #{paused["by"]}), so it can't be resumed. Run `workspace workflow unpause #{run["id"]}` first.",
+        code: "run_paused", details: {"run_id" => run["id"], "step" => run["current"], "since" => paused["since"], "by" => paused["by"]})
+    end
+
+    # Which branch of {#unpause} applies to the run as it stands, its pause taken off; +hold+ is its `pause_hold`.
+    # A hold the run has moved past (its step or attempt no longer the one held) is dropped and the later branches apply.
+    def unpause_action(run, hold)
+      case hold&.fetch("kind", nil)
+      when "attempt" then return :dispatch
+      when "round" then return held_round_action(run, hold) || open_attempt_action(run)
+      when "delivery" then return held_delivery_matches?(run, hold) ? :deliver : open_attempt_action(run)
+      end
+      open_attempt_action(run)
+    end
+
+    # A held round start (`held: "paused"`, or a `no_change` round the pause held) or a held rerun
+    # (`held: "paused_rerun"`) of the round the hold names, on the step still being reviewed.
+    def held_round_action(run, hold)
+      state = step_state(run)
+      round = state["review"]
+      return nil unless state["state"] == "reviewing" && round.is_a?(Hash) && round["round"] == hold["review_round"]
+      if hold["cause"] == "rerun"
+        (round["held"] == WorkflowRoundRerun::PAUSED_RERUN) ? :rerun : nil
+      else
+        (round["held"] == "paused") ? :round : nil
+      end
+    end
+
+    def held_delivery_matches?(run, hold)
+      state = step_state(run)
+      attempt = state["attempts"].last
+      run["current"] == hold["step"] && state["state"] == "running" && attempt.is_a?(Hash) && attempt["n"] == hold["attempt"] &&
+        attempt["ended_at"].nil? && hold["delivery"].is_a?(Hash)
+    end
+
+    # Branches 3 to 5 of {#unpause}: the step's attempt open and `running`, nothing held. A line still on its way
+    # (another process typing it) is left alone.
+    def open_attempt_action(run)
+      state = step_state(run)
+      attempt = state["attempts"].last
+      return :none unless state["state"] == "running" && attempt.is_a?(Hash) && attempt["ended_at"].nil?
+      return :none if WorkflowTransitions.delivery(attempt, @clock.call) == :delivering
+      pane = bound_pane(run)
+      return :none unless pane
+      return :pane_gone if @panes.pane_gone?(pane, workspace: run["workspace"])
+      return :evaluate if @panes.idle?(run["workspace"], pane)
+      :none
+    end
+
+    def apply_unpause(run, ctx, action, hold)
+      case action
+      when :dispatch
+        dispatch(run, ctx, hold["cause"] || "resume", context: hold["context"], budgeted: hold.fetch("budgeted", true), retry_of: held_retry_of(hold))
+      when :round, :rerun
+        run.replace(@progress.restart_review(run, ctx: ctx).thawed)
+      when :deliver
+        attempt = step_state(run)["attempts"].last
+        attempt["delivery"] = "delivering"
+        attempt["delivering_since"] = @clock.call.utc.iso8601(3)
+        ctx.deliver(hold["delivery"])
+      when :pane_gone
+        pane = bound_pane(run)
+        run["state"] = "waiting"
+        run["reason"] = {"code" => "pane_gone", "since" => now_iso,
+                         "details" => {"kind" => "dispatch", "step" => run["current"], "pane" => pane, "workspace" => run["workspace"],
+                                       "error" => "pane_gone", "message" => "pane #{pane} is gone"}}
+      when :evaluate
+        run["reason"] = nil
+        evaluate(run, ctx)
+      end
+    end
+
+    # The `retry_of` a held attempt's start is given again, from what its hold kept ({WorkflowDispatch#dispatch}).
+    def held_retry_of(hold)
+      given = {"pane" => hold["pane"], "identity" => hold["identity"], "text" => hold["text"], "attempt" => hold["retry_of"]}.compact
+      given.empty? ? nil : given
+    end
 
     def adopt(run, changed) = run.replace(changed.thawed)
 
@@ -798,6 +955,7 @@ module Workspace
 
     # A gate event carries the person's note only when one was given.
     def with_note(data, note) = note.to_s.strip.empty? ? data : data.merge("note" => note)
+    def with_text(data, text) = text.to_s.strip.empty? ? data : data.merge("text" => text)
     def park_target(run) = run["parked"]["pane"] || bound_pane(run)
 
     # +request+ is what a resume would be given: "from", "note", "pane", "turn_over".

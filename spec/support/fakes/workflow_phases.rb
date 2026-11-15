@@ -363,7 +363,9 @@ class RecordingWorkflowPanes
   # @param no_daemon [Boolean] +require_daemon+ refuses with `no_daemon`
   # @param on_kick [#call, nil] called with +kick+'s keywords before it answers, as when something else happens while
   #   the line is typed
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {})
+  # @param idle [Array<String>] the panes whose agent the daemon says has ended its turn
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {}, idle: [])
+    @idle = idle
     @restarted = restarted
     @no_daemon = no_daemon
     @on_kick = on_kick
@@ -395,6 +397,9 @@ class RecordingWorkflowPanes
     @gone_checks << [pane, workspace]
     @gone.include?(pane)
   end
+
+  # Whether the daemon says +pane+'s agent ended its turn: listed in +idle+.
+  def idle?(_workspace, pane) = @idle.include?(pane)
 
   # Whether +pane+'s turn is proven over: listed in +turn_over+.
   def main_turn_over?(_workspace, pane) = @turn_over.include?(pane)

@@ -247,13 +247,15 @@ module Workspace
     # mark is cleared once the daemon answers or a turn's end shows the agent
     # had it. A mark older than {DELIVERY_WINDOW} was left by a process that
     # died while it waited: the line may or may not have reached the agent.
+    # The window runs from the attempt's `delivering_since` when it has one (a
+    # line a pause held, typed on the unpause), else from its start.
     #
     # @param attempt [Hash{String=>Object}, nil] a step's last attempt
     # @param now [Time]
     # @return [Symbol, nil] :delivering, :unknown, or nil when the line was delivered or never sent
     def self.delivery(attempt, now)
       return nil unless attempt && attempt["delivery"] == "delivering"
-      (now - Time.iso8601(attempt["started_at"]) > DELIVERY_WINDOW) ? :unknown : :delivering
+      (now - Time.iso8601(attempt["delivering_since"] || attempt["started_at"]) > DELIVERY_WINDOW) ? :unknown : :delivering
     rescue ArgumentError, TypeError
       :unknown
     end

@@ -6393,4 +6393,232 @@ steps:
       end
     end
   end
+
+  describe "pause and unpause" do
+    def paused_key = stored_run(store, "wr_1")["paused"]
+
+    def hold = stored_run(store, "wr_1")["pause_hold"]
+
+    def attempts(step) = stored_run(store, "wr_1")["steps"][step]["attempts"]
+
+    def error_of
+      yield
+      nil
+    rescue Workspace::Error => e
+      e
+    end
+
+    # The next change to a run is followed at once by a pause written straight to its file, so the line that change
+    # registered meets a paused run when it is about to be typed.
+    def pause_after_next_change
+      armed = true
+      store.on(:change) do |original, *args, **kw, &block|
+        result = original.call(*args, **kw, &block)
+        if armed
+          armed = false
+          original.call(args.first) { |run| run.with_paused(since: now.first.utc.iso8601, by: "person") }
+        end
+        result
+      end
+    end
+
+    it "decides a turn that ends while paused, holds the next dispatch, and starts it on unpause" do
+      to_verify
+      engine.pause("wr_1", actor: "person", text: "lunch")
+      check_results << {exit_code: 1, timed_out: false}
+
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+
+      expect(check_calls.size).to eq(1)
+      expect(attempts("verify").last).to include("outcome" => "failed")
+      expect(attempts("build").size).to eq(1)
+      expect(hold).to include("kind" => "attempt", "cause" => "loop", "context" => "fresh")
+      expect(paused_key).to include("by" => "person", "text" => "lunch")
+      expect(panes.kicks.size).to eq(3)
+
+      run = engine.unpause("wr_1", actor: "person")
+
+      expect(run).to include("state" => "running", "current" => "build")
+      expect(run).not_to include("paused", "pause_hold")
+      expect(attempts("build").size).to eq(2)
+      expect(run["unpaused"]).to eq("action" => "dispatch", "held" => "attempt")
+      expect(panes.kicks.size).to eq(4)
+      expect(history_lines.find { |line| line["type"] == "run_unpaused" }).to include("action" => "dispatch", "held" => "attempt")
+    end
+
+    it "types a line a pause kept from being typed once on unpause, adding no attempt" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+      pause_after_next_change
+      engine.approve("wr_1", actor: "person")
+
+      expect(panes.kicks.size).to eq(1)
+      expect(hold).to include("kind" => "delivery", "step" => "build", "attempt" => 1)
+      expect(attempts("build").last).not_to include("delivery")
+
+      engine.unpause("wr_1", actor: "person")
+
+      expect(panes.kicks.size).to eq(2)
+      expect(panes.kicks.last).to include(pane: "%5", text: format(Workspace::WorkflowDispatch::KICK, attempts("build").last["prompt_file"]))
+      expect(attempts("build").size).to eq(1)
+      expect(attempts("build").last).not_to include("delivery", "ended_at")
+      expect(attempts("build").last["delivering_since"]).to eq(now.first.utc.iso8601(3))
+      expect(hold).to be_nil
+    end
+
+    it "ends the attempt not_delivered when the held line's typing fails on unpause" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+      pause_after_next_change
+      engine.approve("wr_1", actor: "person")
+      panes.kick_result = {ok: false, code: "pane_busy", message: "busy"}
+
+      run = engine.unpause("wr_1", actor: "person")
+
+      expect(attempts("build").size).to eq(1)
+      expect(attempts("build").last).to include("outcome" => "not_delivered", "code" => "pane_busy")
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "waiting_you")
+    end
+
+    it "decides an open attempt whose pane is idle with no turn end seen" do
+      to_build
+      engine.pause("wr_1", actor: "person")
+      panes.idle << "%5"
+
+      run = engine.unpause("wr_1", actor: "person")
+
+      expect(attempts("build").last).to include("outcome" => "passed")
+      expect(run).to include("current" => "verify", "state" => "running")
+      expect(panes.kicks.size).to eq(3)
+    end
+
+    it "makes an open attempt whose pane is gone wait on pane_gone" do
+      to_build
+      engine.pause("wr_1", actor: "person")
+      panes.gone << "%5"
+
+      run = engine.unpause("wr_1", actor: "person")
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "pane_gone")
+      expect(attempts("build").last).not_to include("ended_at")
+      expect(panes.kicks.size).to eq(2)
+    end
+
+    it "leaves an agent still working alone" do
+      to_build
+      engine.pause("wr_1", actor: "person")
+      before = stored_run(store, "wr_1").except("paused", "reasons")
+
+      run = engine.unpause("wr_1", actor: "person")
+
+      expect(run.except("reasons", "unpaused")).to eq(before.merge("steps" => run["steps"]))
+      expect(run["unpaused"]).to eq("action" => "none", "held" => nil)
+      expect(stored_run(store, "wr_1")).not_to include("unpaused")
+      expect(attempts("build").size).to eq(1)
+      expect(attempts("build").last).not_to include("ended_at")
+      expect(panes.kicks.size).to eq(2)
+    end
+
+    it "starts a retry whose backoff fell due while paused on the first tick after unpause" do
+      waiting = definition("max_attempts: 3\nsteps:\n  build:\n    prompt: B\n  verify:\n    prompt: V\n    status: bin/check\n    on_fail: {goto: build, max: 2, backoff: 2m}\n")
+      start(waiting, inputs: {})
+      check_results << {exit_code: 1, timed_out: false}
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+      engine.pause("wr_1", actor: "person")
+      now[0] += 300
+
+      expect(engine.tick("wr_1", actor: "daemon")).to be_nil
+      expect(attempts("build").size).to eq(1)
+
+      run = engine.unpause("wr_1", actor: "person")
+      expect(run["reason"]).to include("code" => "retry_backoff")
+
+      engine.tick("wr_1", actor: "daemon")
+
+      expect(attempts("build").size).to eq(2)
+      expect(stored_run(store, "wr_1")).to include("current" => "build", "state" => "running")
+    end
+
+    it "finishes a run whose last step passes while paused, with no pause left and its history entry closed" do
+      start(definition("steps:\n  a:\n    prompt: A\n"), inputs: {})
+      engine.pause("wr_1", actor: "person")
+
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+
+      expect(run["state"]).to eq("completed")
+      expect(run).not_to include("paused", "pause_hold")
+      entry = attempts("a").last["reasons"].find { |each| each["code"] == "paused" }
+      expect(entry).to include("since" => now.first.utc.iso8601, "until" => now.first.utc.iso8601)
+    end
+
+    it "drops the pause and the hold of a run that is cancelled" do
+      to_build
+      engine.pause("wr_1", actor: "person")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+      expect(hold).not_to be_nil
+
+      run = engine.cancel("wr_1", actor: "person")
+
+      expect(run["state"]).to eq("cancelled")
+      expect(run).not_to include("paused", "pause_hold")
+    end
+
+    it "records an approval at a paused run's gate and keeps it paused, typing nothing" do
+      start
+      artifact("plan.md")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+      engine.pause("wr_1", actor: "person")
+
+      run = engine.approve("wr_1", actor: "person")
+
+      expect(run["steps"]["plan"]["gate"]).to include("state" => "approved")
+      expect(run["paused"]).to include("by" => "person")
+      expect(hold).to include("kind" => "attempt", "cause" => "next_step")
+      expect(attempts("build")).to be_empty
+      expect(panes.kicks.size).to eq(1)
+    end
+
+    it "refuses a second pause, an unpause of a run not paused, a resume of a paused run and a pause of a finished one" do
+      to_build
+      expect(error_of { engine.unpause("wr_1", actor: "person") }.code).to eq("not_paused")
+      engine.pause("wr_1", actor: "person")
+      before = stored_run(store, "wr_1")
+
+      expect(error_of { engine.pause("wr_1", actor: "person") }.code).to eq("already_paused")
+      expect(error_of { engine.resume("wr_1", actor: "person") }.code).to eq("run_paused")
+      expect(error_of { engine.park("wr_1", actor: "person") }.code).to eq("run_paused")
+      expect(stored_run(store, "wr_1")).to eq(before)
+
+      engine.cancel("wr_1", actor: "person")
+      expect(error_of { engine.pause("wr_1", actor: "person") }.code).to eq("run_not_active")
+    end
+
+    it "records run_paused and run_unpaused with the actor that made them" do
+      to_build
+      engine.pause("wr_1", actor: "person", text: "lunch")
+      engine.unpause("wr_1", actor: "sweep")
+
+      paused = history_lines.find { |line| line["type"] == "run_paused" }
+      unpaused = history_lines.find { |line| line["type"] == "run_unpaused" }
+      expect(paused).to include("actor" => "person", "cause" => "pause", "step" => "build", "text" => "lunch")
+      expect(unpaused).to include("actor" => "sweep", "cause" => "unpause", "step" => "build", "action" => "none")
+    end
+
+    it "does not count the time paused against the run's timeout" do
+      start(definition("timeout: 1h\nsteps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n"), inputs: {})
+      engine.pause("wr_1", actor: "person")
+      now[0] += 2 * 3600
+      engine.unpause("wr_1", actor: "person")
+
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+
+      expect(run).to include("state" => "running", "current" => "b")
+      expect(run).not_to include("timeout_hold")
+    end
+  end
 end
