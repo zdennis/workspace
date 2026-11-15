@@ -6,7 +6,7 @@ RSpec.describe Workspace::Commands::Workflow, "#sweep next_actions" do
 
   it "puts the sweep actions in extra.next_actions" do
     command = described_class.new(lint: nil, catalog: nil, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil,
-      tmux: nil, process_tree: nil, lock_holder: nil, sweep: sweep, sweep_actions: sweep_actions, output: StringIO.new)
+      process_tree: nil, lock_holder: nil, sweep: sweep, sweep_actions: sweep_actions, output: StringIO.new)
 
     result = command.sweep(json: true, name: "app")
 
@@ -16,7 +16,7 @@ RSpec.describe Workspace::Commands::Workflow, "#sweep next_actions" do
 
   it "builds no next actions for text output" do
     command = described_class.new(lint: nil, catalog: nil, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil,
-      tmux: nil, process_tree: nil, lock_holder: nil, sweep: sweep, sweep_actions: nil, output: StringIO.new)
+      process_tree: nil, lock_holder: nil, sweep: sweep, sweep_actions: nil, output: StringIO.new)
 
     expect(command.sweep(name: "app")[:extra]).to eq({})
   end

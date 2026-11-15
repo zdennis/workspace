@@ -40,7 +40,6 @@ module Workspace
       # @param simulator [Workspace::WorkflowSimulator, nil] plays a workflow with a scripted fake agent (`simulate`)
       # @param source_installer [Workspace::WorkflowSourceInstaller, nil] fetches, checks and caches the `workflows.sources` entries (`install`)
       # @param workflow_config [Workspace::WorkflowConfig, nil] reads `workflows.default_stall`, for the stall `show` reports
-      # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
       # @param lint [Workspace::WorkflowLint] the checks `validate` makes against the library and the project's commands
@@ -49,9 +48,8 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
-        @tmux = tmux
         @process_tree = process_tree
         @lock_holder = lock_holder
         @pid = pid
@@ -1504,7 +1502,7 @@ module Workspace
       def caller_in_pane?(workspace, caller_pane, target)
         return false unless target
         return true if caller_pane == target
-        pid = pane_pid(workspace, target)
+        pid = @panes.pane_pid(workspace, target)
         !pid.nil? && under?(pid)
       end
 
@@ -1565,13 +1563,6 @@ module Workspace
 
       def first_line(error)
         error.message.lines.first.to_s.scrub.strip
-      end
-
-      def pane_pid(workspace, pane)
-        detail = @tmux.pane_details(@tmux.session_name_for(workspace), window: nil).find { |each| each[:id] == pane }
-        (detail && detail[:pid].positive?) ? detail[:pid] : nil
-      rescue SystemCallError
-        nil
       end
 
       def under?(pane_pid)

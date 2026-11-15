@@ -250,6 +250,20 @@ module Workspace
       nil
     end
 
+    # The one reading of a pane's pid: the process tmux started in it, as the workspace's own session lists it.
+    # `approve` and `reject` look for it among this process's ancestors; `pause --interrupt` records it, and
+    # `unpause` and the tick compare it to tell a pane replaced under the same id.
+    #
+    # @param workspace [String] the workspace whose tmux session lists the pane
+    # @param pane [String] a pane id
+    # @return [Integer, nil] nil when the session does not list the pane or tmux can't be read
+    def pane_pid(workspace, pane)
+      detail = @tmux.pane_details(@tmux.session_name_for(workspace), window: nil).find { |each| each[:id] == pane }
+      (detail && detail[:pid].to_i.positive?) ? detail[:pid] : nil
+    rescue SystemCallError
+      nil
+    end
+
     # @param workspace [String]
     # @return [Boolean] whether the workspace has a tmux session
     def session_live?(workspace)

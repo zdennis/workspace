@@ -600,6 +600,50 @@ module Workspace
       "#{text} A check that finished while this was parked was not recorded; resume the run to run it again."
     end
 
+    # Seconds a parked resume waits for its turn to end, and a `continue_pending` mark for its pane to prove idle.
+    PARK_SECONDS = 3600
+
+    # The one line typed into a pane whose turn `pause --interrupt` stopped, once the run is unpaused and the pane
+    # is idle: the step and its instructions file, never the instructions again.
+    CONTINUE_LINE = "Continue step %s. Your instructions are still in %s."
+
+    # Whether a continue mark (`paused.interrupt` or `continue_pending`: "pane", "pid", "kind", "step", "attempt")
+    # still names the run's current step and its open, `running` attempt. A mark for an attempt that ended, or a
+    # step the run moved past, is ignored.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param mark [Hash{String=>Object}, nil]
+    # @return [Boolean]
+    def self.continue_mark?(run, mark)
+      return false unless mark.is_a?(Hash) && mark["step"] == run["current"]
+      state = run.dig("steps", run["current"])
+      return false unless state.is_a?(Hash) && state["state"] == "running"
+      attempt = Array(state["attempts"]).last
+      attempt.is_a?(Hash) && attempt["n"] == mark["attempt"] && attempt["ended_at"].nil?
+    end
+
+    # Where the run's `continue_pending` mark stands: `:due` while it names the open attempt ({.continue_mark?}) and
+    # its `since` is no more than {PARK_SECONDS} ago, `:expired` once it is older (or has no readable `since`), nil
+    # when there is no mark or it names an attempt the run moved past.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Symbol, nil] :due, :expired or nil
+    def self.continue_state(run, now)
+      mark = run["continue_pending"]
+      return nil unless continue_mark?(run, mark)
+      since = Time.iso8601(mark["since"].to_s)
+      (now - since > PARK_SECONDS) ? :expired : :due
+    rescue ArgumentError
+      :expired
+    end
+
+    # @param run [Hash{String=>Object}] a stored run on the step the line is for
+    # @return [String] {CONTINUE_LINE} for the run's current step and its last attempt's instructions file
+    def self.continue_line(run)
+      format(CONTINUE_LINE, run["current"], Array(run.dig("steps", run["current"], "attempts")).last&.fetch("prompt_file", nil))
+    end
+
     # Whether a run is one only a timer will wake: a resume is parked on it,
     # an `on_fail` retry's backoff is over,
     # it waits for a lock, its check was started and never reported back
@@ -608,16 +652,23 @@ module Workspace
     # {BACKGROUND_HOLD}, or the end of its review round was being judged and
     # nothing reported back ({.lost_round?}), or its review round has to be
     # delivered again, or stopped once its deliveries again are spent ({.round_redelivery}), or its delivered
-    # review round was pressed by the sweep and has not answered ({.unanswered_round?}).
+    # review round was pressed by the sweep and has not answered ({.unanswered_round?}), or a `continue_pending`
+    # mark still names its open attempt ({.continue_state}): `:continue` while it is due (the tick types the continue
+    # line once the pane proves idle), `:continue_expired` once it is older than {PARK_SECONDS} (the tick drops it).
+    # A paused run is never woken, so a pending mark waits for the next unpause.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
     # @param alive [#call, nil] given a review round's `holder`, whether it still runs (see {.round_delivery}); nil
     #   takes every holder as alive, so a lapsed round with a holder is not woken
-    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :unanswered, :review, :check, or nil
+    # @return [Symbol, nil] :parked, :continue, :continue_expired, :backoff (a retry's wait is over), :lock, :background, :round, :unanswered, :review, :check, or nil
     def self.wakeable?(run, now, alive: nil)
       return nil if run["paused"]
       return :parked if run["parked"]
+      case continue_state(run, now)
+      when :due then return :continue
+      when :expired then return :continue_expired
+      end
       return :backoff if backoff(run, now)&.fetch(:state) == :due
       return :lock if run.dig("reason", "code") == "waiting_lock"
       return :background if background_expired?(run["reason"], now)

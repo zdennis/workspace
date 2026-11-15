@@ -301,6 +301,36 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.wakeable?(parked.merge("paused" => paused), now)).to be_nil
       expect(described_class.wakeable?(lost_check.merge("paused" => paused), now)).to be_nil
     end
+
+    it "answers :continue while a continue_pending mark names the open attempt, and nil once paused again or the attempt moved on" do
+      mark = {"pane" => "%3", "pid" => 41, "kind" => "claude", "step" => "a", "attempt" => 1, "since" => (now - 60).iso8601}
+      open = run_with(:steps => {"a" => step("running", {"n" => 1})}, "continue_pending" => mark)
+
+      expect(described_class.wakeable?(open, now)).to eq(:continue)
+      expect(described_class.wakeable?(open.merge("paused" => {"since" => now.iso8601, "by" => "person"}), now)).to be_nil
+      expect(described_class.wakeable?(open.merge("continue_pending" => mark.merge("attempt" => 2)), now)).to be_nil
+      expect(described_class.wakeable?(run_with(:steps => {"a" => step("running", {"n" => 1, "ended_at" => now.iso8601})}, "continue_pending" => mark), now)).to be_nil
+      expect(described_class.wakeable?(run_with(:steps => {"a" => step("passed", {"n" => 1})}, "continue_pending" => mark), now)).to be_nil
+    end
+
+    it "answers :continue_expired, never :continue, once the mark is older than PARK_SECONDS or has no since" do
+      mark = {"pane" => "%3", "pid" => 41, "kind" => "claude", "step" => "a", "attempt" => 1, "since" => now.iso8601}
+      open = run_with(:steps => {"a" => step("running", {"n" => 1})}, "continue_pending" => mark)
+
+      expect(described_class.wakeable?(open, now + described_class::PARK_SECONDS)).to eq(:continue)
+      expect(described_class.wakeable?(open, now + described_class::PARK_SECONDS + 1)).to eq(:continue_expired)
+      expect(described_class.wakeable?(open.merge("continue_pending" => mark.except("since")), now)).to eq(:continue_expired)
+      expect(described_class.continue_state(open, now + described_class::PARK_SECONDS + 1)).to eq(:expired)
+      expect(described_class.continue_state(run_with(steps: {"a" => step("running", {"n" => 1})}), now)).to be_nil
+    end
+  end
+
+  describe ".continue_line" do
+    it "names the step and its last attempt's instructions file" do
+      run = run_with(steps: {"a" => step("running", {"n" => 1, "prompt_file" => "/x/a.1.md"})})
+
+      expect(described_class.continue_line(run)).to eq("Continue step a. Your instructions are still in /x/a.1.md.")
+    end
   end
 
   describe "attempt counts" do

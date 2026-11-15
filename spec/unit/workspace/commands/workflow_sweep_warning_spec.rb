@@ -23,7 +23,7 @@ RSpec.describe Workspace::Commands::Workflow, "#run sweep warning" do
   def run_with(definition, schedule: self.schedule)
     allow(catalog).to receive(:find).and_return(definition)
     command = described_class.new(lint: nil, catalog: catalog, engine: engine, status: nil, store: nil, panes: panes, files: nil, run_files: nil,
-      tmux: nil, process_tree: nil, lock_holder: nil, schedule: schedule, output: output, error_output: error_output)
+      process_tree: nil, lock_holder: nil, schedule: schedule, output: output, error_output: error_output)
     command.run(id: "flow", workspace: "app", worktree: "/src/app", dry_run: true)
   end
 

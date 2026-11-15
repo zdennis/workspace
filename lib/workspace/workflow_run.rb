@@ -10,7 +10,7 @@ module Workspace
     KEYS = %w[
       id schema_version workflow title definition definition_source definition_path definition_sha256
       workspace project worktree base_sha base_guard task inputs note state created_at started_at ended_at
-      current pane loops pending_context reason reasons artifacts_dir parked paused backoff budget_hold timeout_hold sweep
+      current pane loops pending_context reason reasons artifacts_dir parked paused continue_pending backoff budget_hold timeout_hold sweep
       extra_tokens extra_attempts extra_seconds guard_config_seen cancelled_by
     ].freeze
 

@@ -3409,7 +3409,7 @@ RSpec.describe Workspace::WorkflowEngine do
         let(:out) { StringIO.new }
         let(:command) do
           Workspace::Commands::Workflow.new(lint: nil, catalog: nil, engine: engine, status: shown_status, store: store, panes: panes, files: nil, run_files: nil,
-            tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: out)
+            process_tree: nil, lock_holder: nil, output: out)
         end
 
         before do
@@ -6607,6 +6607,216 @@ steps:
       unpaused = history_lines.find { |line| line["type"] == "run_unpaused" }
       expect(paused).to include("actor" => "person", "cause" => "pause", "step" => "build", "text" => "lunch")
       expect(unpaused).to include("actor" => "sweep", "cause" => "unpause", "step" => "build", "action" => "none")
+    end
+
+    it "reports interrupted false and keeps no mark when the engine was built with no key presser" do
+      to_build
+      panes.rows["%5"] = {"pane_id" => "%5", "kind" => "claude", "state" => "working"}
+      panes.pids["%5"] = 41
+
+      run = engine.pause("wr_1", actor: "person", interrupt: true)
+
+      expect(run["interrupted"]).to be(false)
+      expect(paused_key).to include("by" => "person")
+      expect(paused_key).not_to include("interrupt")
+      expect(history_lines.find { |line| line["type"] == "pause_interrupt_failed" }).to include("message" => include("cannot interrupt"))
+    end
+
+    describe "with interrupt" do
+      let(:presses) { [] }
+      subject(:engine) { build_engine(interrupter: ->(workspace, pane, keys) { presses << [workspace, pane, keys] }) }
+
+      def continue_line = "Continue step build. Your instructions are still in #{attempts("build").last["prompt_file"]}."
+
+      # The build step under way in %5, the daemon showing its agent working, then paused with --interrupt.
+      def interrupted_build
+        to_build
+        panes.rows["%5"] = {"pane_id" => "%5", "kind" => "claude", "state" => "working"}
+        panes.pids["%5"] = 41
+        engine.pause("wr_1", actor: "person", interrupt: true)
+      end
+
+      it "presses the interrupt keys once into the working pane and types one continue line on unpause, adding no attempt" do
+        run = interrupted_build
+
+        expect(run["interrupted"]).to be(true)
+        expect(presses).to eq([["app.worktree-x", "%5", ["Escape"]]])
+        expect(paused_key["interrupt"]).to include("pane" => "%5", "pid" => 41, "step" => "build", "attempt" => 1)
+        kicks = panes.kicks.size
+        panes.turn_over << "%5"
+
+        run = engine.unpause("wr_1", actor: "person")
+
+        expect(run["unpaused"]).to eq("action" => "continue", "held" => nil, "continued" => true)
+        expect(panes.kicks.size).to eq(kicks + 1)
+        expect(panes.kicks.last).to eq(workspace: "app.worktree-x", pane: "%5", text: continue_line, fresh: false, run_id: "wr_1")
+        expect(attempts("build").size).to eq(1)
+        expect(attempts("build").last).not_to include("ended_at", "delivery")
+        expect(run).not_to include("continue_pending", "extra_attempts")
+        expect(history_lines.find { |line| line["type"] == "step_continued" }).to include("delivered" => true, "cause" => "unpause", "pane" => "%5")
+        expect(presses.size).to eq(1)
+      end
+
+      it "presses nothing into an idle pane and reports interrupted false" do
+        to_build
+        panes.rows["%5"] = {"pane_id" => "%5", "kind" => "claude", "state" => "idle"}
+        panes.pids["%5"] = 41
+
+        run = engine.pause("wr_1", actor: "person", interrupt: true)
+
+        expect(run["interrupted"]).to be(false)
+        expect(presses).to be_empty
+        expect(paused_key).not_to include("interrupt")
+      end
+
+      it "leaves the line pending until the pane proves idle, then a tick types it once and drops the mark" do
+        interrupted_build
+        kicks = panes.kicks.size
+
+        run = engine.unpause("wr_1", actor: "person")
+
+        expect(run["unpaused"]).to include("action" => "continue_pending", "continued" => "pending")
+        expect(stored_run(store, "wr_1")["continue_pending"]).to include("pane" => "%5", "pid" => 41)
+        expect(engine.tick("wr_1", actor: "daemon")).to be_nil
+        expect(panes.kicks.size).to eq(kicks)
+
+        panes.turn_over << "%5"
+        engine.tick("wr_1", actor: "daemon")
+        engine.tick("wr_1", actor: "daemon")
+
+        expect(panes.kicks.size).to eq(kicks + 1)
+        expect(panes.kicks.last).to include(pane: "%5", text: continue_line, fresh: false)
+        expect(stored_run(store, "wr_1")).not_to include("continue_pending")
+        expect(attempts("build").size).to eq(1)
+      end
+
+      it "drops a pending mark when a turn of the attempt ends, typing nothing" do
+        interrupted_build
+        engine.unpause("wr_1", actor: "person")
+        kicks = panes.kicks.size
+
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+        panes.turn_over << "%5"
+        engine.tick("wr_1", actor: "daemon")
+
+        expect(stored_run(store, "wr_1")).not_to include("continue_pending")
+        expect(history_lines.map { |line| line["type"] }).not_to include("step_continued")
+        expect(attempts("build").first).to include("outcome" => "passed")
+        expect(panes.kicks.size).to eq(kicks + 1)
+        expect(panes.kicks.last[:text]).not_to start_with("Continue step")
+      end
+
+      it "keeps a pending mark through a second pause and types it after the next unpause" do
+        interrupted_build
+        engine.unpause("wr_1", actor: "person")
+        panes.rows["%5"] = {"pane_id" => "%5", "kind" => "claude", "state" => "idle"}
+        engine.pause("wr_1", actor: "person", interrupt: true)
+        panes.turn_over << "%5"
+
+        expect(engine.tick("wr_1", actor: "daemon")).to be_nil
+        expect(stored_run(store, "wr_1")["continue_pending"]).to include("pane" => "%5")
+
+        run = engine.unpause("wr_1", actor: "person")
+
+        expect(run["unpaused"]).to include("action" => "continue", "continued" => true)
+        expect(panes.kicks.last[:text]).to eq(continue_line)
+        expect(presses.size).to eq(1)
+      end
+
+      it "puts a refused line back as pending, and a later tick types it once the pane takes it" do
+        interrupted_build
+        panes.turn_over << "%5"
+        kicks = panes.kicks.size
+        panes.kick_result = {ok: false, code: "pane_busy", message: "a draft is in the box"}
+
+        run = engine.unpause("wr_1", actor: "person")
+
+        expect(run["unpaused"]).to include("action" => "continue", "continued" => "pending", "warning" => include("a draft is in the box"))
+        expect(stored_run(store, "wr_1")["continue_pending"]).to include("pane" => "%5", "since" => now.first.utc.iso8601)
+        engine.tick("wr_1", actor: "daemon")
+        expect(stored_run(store, "wr_1")["continue_pending"]).to include("pane" => "%5")
+
+        panes.kick_result = {ok: true}
+        engine.tick("wr_1", actor: "daemon")
+
+        expect(panes.kicks.size).to eq(kicks + 3)
+        expect(panes.kicks.last).to include(text: continue_line)
+        expect(stored_run(store, "wr_1")).not_to include("continue_pending")
+        expect(attempts("build").size).to eq(1)
+      end
+
+      it "types nothing when the run is paused again after the tick took the mark, and keeps it for the next unpause" do
+        interrupted_build
+        engine.unpause("wr_1", actor: "person")
+        panes.turn_over << "%5"
+        kicks = panes.kicks.size
+        pause_after_next_change
+
+        engine.tick("wr_1", actor: "daemon")
+
+        expect(panes.kicks.size).to eq(kicks)
+        expect(stored_run(store, "wr_1")["continue_pending"]).to include("pane" => "%5")
+        expect(history_lines.reverse.find { |line| line["type"] == "step_continued" }).to include("delivered" => false, "code" => "run_paused", "pending" => true)
+      end
+
+      it "types nothing when the run is cancelled after the tick took the mark" do
+        interrupted_build
+        engine.unpause("wr_1", actor: "person")
+        panes.turn_over << "%5"
+        kicks = panes.kicks.size
+        armed = true
+        store.on(:change) do |original, *args, **kw, &block|
+          result = original.call(*args, **kw, &block)
+          if armed
+            armed = false
+            engine.cancel("wr_1", actor: "person")
+          end
+          result
+        end
+
+        engine.tick("wr_1", actor: "daemon")
+
+        expect(panes.kicks.size).to eq(kicks)
+        expect(stored_run(store, "wr_1")["state"]).to eq("cancelled")
+        expect(history_lines.reverse.find { |line| line["type"] == "step_continued" }).to include("delivered" => false, "code" => "moved_on", "pending" => false)
+      end
+
+      it "keeps a pending line through a tick whose tmux names no pid for the pane" do
+        interrupted_build
+        engine.unpause("wr_1", actor: "person")
+        panes.turn_over << "%5"
+        panes.pids.delete("%5")
+
+        expect(engine.tick("wr_1", actor: "daemon")).to be_nil
+
+        expect(stored_run(store, "wr_1")["continue_pending"]).to include("pane" => "%5", "pid" => 41)
+        expect(history_lines.map { |line| line["type"] }).not_to include("continue_pending_ended")
+      end
+
+      it "drops a pending line whose pane never proves idle within the park limit" do
+        interrupted_build
+        engine.unpause("wr_1", actor: "person")
+        now[0] += Workspace::WorkflowTransitions::PARK_SECONDS + 1
+
+        expect(engine.tick("wr_1", actor: "daemon")).not_to be_nil
+
+        expect(stored_run(store, "wr_1")).not_to include("continue_pending")
+        expect(history_lines.find { |line| line["type"] == "continue_pending_ended" }).to include("how" => "expired")
+        expect(Workspace::WorkflowEngine.wakeable?(stored_run(store, "wr_1"), now.first)).to be_nil
+      end
+
+      it "types nothing when the pane's process changed, and decides the idle pane's attempt instead" do
+        interrupted_build
+        panes.pids["%5"] = 99
+        panes.idle << "%5"
+        panes.turn_over << "%5"
+
+        run = engine.unpause("wr_1", actor: "person")
+
+        expect(run["unpaused"]).to eq("action" => "evaluate", "held" => nil)
+        expect(panes.kicks.map { |kick| kick[:text] }).not_to include(a_string_starting_with("Continue step"))
+        expect(attempts("build").last).to include("outcome" => "passed")
+      end
     end
 
     it "does not count the time paused against the run's timeout" do

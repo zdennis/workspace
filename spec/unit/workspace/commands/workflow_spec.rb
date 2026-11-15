@@ -12,8 +12,9 @@ RSpec.describe Workspace::Commands::Workflow do
 
   # An author's pane is bound_on's answer wherever a spec stubs run_on.
   before { allow(panes).to receive(:bound_on) { |pane| (run = panes.run_on(pane)) && {run_id: run, role: "author"} } }
+  # tmux lists no pane by default, so no caller is found under one.
+  before { allow(panes).to receive(:pane_pid).and_return(nil) }
   let(:output) { StringIO.new }
-  let(:tmux) { instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []) }
   let(:process_tree) { instance_double(Workspace::ProcessTree) }
   let(:lock_holder) { instance_double(Workspace::LockHolder) }
   let(:workspace_facts) { nil }
@@ -21,7 +22,7 @@ RSpec.describe Workspace::Commands::Workflow do
   let(:workflow_config) { instance_double(Workspace::WorkflowConfig, default_stall: default_stall) }
   subject(:command) do
     described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workspace_facts: workspace_facts, workflow_config: workflow_config, store: store, panes: panes, files: nil, run_files: nil,
-      tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242,
+      process_tree: process_tree, lock_holder: lock_holder, pid: 4242,
       clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
   end
 
@@ -331,7 +332,7 @@ RSpec.describe Workspace::Commands::Workflow do
       let(:pr_from) { {"task" => "pull_request", "pr" => "pull_request"} }
       let(:filling) do
         described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
-          branch_inputs: branch_inputs, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+          branch_inputs: branch_inputs, process_tree: process_tree, lock_holder: lock_holder, output: output)
       end
 
       before do
@@ -449,7 +450,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     def build(out)
       described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
-        tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: out, error_output: error_output)
+        process_tree: process_tree, lock_holder: lock_holder, output: out, error_output: error_output)
     end
 
     before do
@@ -622,7 +623,7 @@ RSpec.describe Workspace::Commands::Workflow do
       let(:needs_me) { instance_double(Workspace::WorkflowNeedsMe) }
       let(:with_needs_me) do
         described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workspace_facts: workspace_facts, workflow_config: workflow_config, store: store, panes: panes, files: nil, run_files: nil,
-          needs_me: needs_me, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
+          needs_me: needs_me, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
       end
 
       before { allow(status).to receive(:runs).and_return("runs" => [waiting_run, finished_run], "warnings" => []) }
@@ -1215,7 +1216,7 @@ RSpec.describe Workspace::Commands::Workflow do
       end
 
       it "parks when only the process table puts the caller under the pane" do
-        allow(tmux).to receive(:pane_details).with("app", window: nil).and_return([{id: "%5", window: 0, index: 1, pid: 200}])
+        allow(panes).to receive(:pane_pid).with("app", "%5").and_return(200)
         allow(process_tree).to receive(:snapshot).and_return(instance_double(Workspace::ProcessTree::Snapshot, ancestors: [{pid: 4242}, {pid: 200}]))
 
         command.resume(run: "wr_1")
@@ -1340,7 +1341,8 @@ RSpec.describe Workspace::Commands::Workflow do
 
     before do
       allow(panes).to receive(:run_on).and_return(nil)
-      allow(tmux).to receive(:pane_details).with("app", window: nil).and_return([{id: "%5", window: 0, index: 1, pid: 200}, {id: "%6", window: 0, index: 2, pid: 210}])
+      allow(panes).to receive(:pane_pid).with("app", "%5").and_return(200)
+      allow(panes).to receive(:pane_pid).with("app", "%6").and_return(210)
       tree(under: false)
     end
 
@@ -1426,13 +1428,10 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "runs only the TMUX_PANE check when tmux or the process table can't be read" do
       guarded(:approve)
-      allow(tmux).to receive(:pane_details).and_return([])
+      allow(panes).to receive(:pane_pid).and_return(nil)
       expect(command.approve(run: "wr_1")).to include("outcome" => "approved")
 
-      allow(tmux).to receive(:pane_details).and_raise(Errno::ENOENT)
-      expect(command.approve(run: "wr_1")).to include("outcome" => "approved")
-
-      allow(tmux).to receive(:pane_details).and_return([{id: "%5", window: 0, index: 1, pid: 200}])
+      allow(panes).to receive(:pane_pid).with("app", "%5").and_return(200)
       allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps timed out")
       expect(command.approve(run: "wr_1")).to include("outcome" => "approved")
 
@@ -1540,7 +1539,7 @@ RSpec.describe Workspace::Commands::Workflow do
       let(:now) { Time.utc(2026, 10, 4, 13, 0, 0) }
       subject(:command) do
         described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
-          tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output, error_output: error_output)
+          process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output, error_output: error_output)
       end
 
       before do
@@ -1723,7 +1722,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       describe "from inside the target pane" do
         before do
-          allow(tmux).to receive(:pane_details).with("app", window: nil).and_return([{id: "%5", window: 0, index: 1, pid: 200}])
+          allow(panes).to receive(:pane_pid).with("app", "%5").and_return(200)
           allow(panes).to receive(:main_turn_over?).and_return(true)
           allow(panes).to receive(:pane_gone?).and_return(true)
           allow(panes).to receive(:agent_gone?).and_return(true)
@@ -2059,7 +2058,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     subject(:command) do
-      described_class.new(lint: nil, catalog: real_catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, error_output: error_output)
+      described_class.new(lint: nil, catalog: real_catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, error_output: error_output)
     end
 
     before { FileUtils.mkdir_p([global_dir, builtin_dir]) }
@@ -2134,7 +2133,7 @@ RSpec.describe Workspace::Commands::Workflow do
       Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: File.join(@root, "archive"), id_generator: -> { "wr_2610250930abcd" })
     end
     let(:files_command) do
-      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: Workspace::WorkflowRunFiles.new, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: Workspace::WorkflowRunFiles.new, process_tree: process_tree, lock_holder: lock_holder, output: output)
     end
     let(:artifacts) { File.join(@root, "app", ".workflow", "wr_2610250930abcd") }
 
@@ -2220,7 +2219,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     let(:real_store) { Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: @archive, id_generator: -> { "wr_2611010900abcd" }) }
     let(:attempts_command) do
-      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, attempts: Workspace::WorkflowAttempts.new, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, attempts: Workspace::WorkflowAttempts.new, process_tree: process_tree, lock_holder: lock_holder, output: output)
     end
     let(:attempt_one) do
       {"n" => 1, "started_at" => "2026-11-01T09:00:00Z", "ended_at" => "2026-11-01T09:02:05Z", "outcome" => "failed", "code" => "require_commits",
@@ -2441,7 +2440,7 @@ RSpec.describe Workspace::Commands::Workflow do
         clock: -> { Time.utc(2026, 10, 25, 9, 30, 0) }, id_generator: -> { "wr_2610250930abcd" })
     end
     let(:events_command) do
-      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output)
     end
 
     # The run the docs' example (docs/README.workflow.md, "workflow events --json") shows.
@@ -2527,7 +2526,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:lint) { instance_double(Workspace::WorkflowLint, call: {"warnings" => [], "not_checked" => []}) }
     before { allow(catalog).to receive(:scope_of).and_return(nil) }
     subject(:command) do
-      described_class.new(lint: lint, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
+      described_class.new(lint: lint, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
 
     after { FileUtils.remove_entry(dir) }
@@ -2708,7 +2707,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:files) { Workspace::WorkflowFiles.new(config: config, catalog: real_catalog) }
     let(:base_text) { "title: Base\nsteps:\n  plan:\n    prompt: Plan.\n" }
     subject(:command) do
-      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux,
+      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil,
         process_tree: process_tree, lock_holder: lock_holder, output: output, input: input, error_output: error_output)
     end
 
@@ -2814,7 +2813,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     let(:target) { File.join(global_dir, "flow.yml") }
     subject(:command) do
-      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
+      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
 
     after { FileUtils.remove_entry(dir) }
@@ -2927,7 +2926,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     let(:target) { File.join(global_dir, "flow.yml") }
     subject(:command) do
-      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input, error_output: error_output)
+      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input, error_output: error_output)
     end
 
     before do
@@ -3075,7 +3074,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:target) { File.join(global_dir, "flow.yml") }
     let(:body) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
     subject(:command) do
-      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
+      described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: input)
     end
 
     before do
@@ -3121,7 +3120,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "refuses with confirmation_required under no-input, before touching anything" do
       guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
-      cmd = described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: guarded)
+      cmd = described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: guarded)
       expect { cmd.remove(id: "flow") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("confirmation_required") }
       expect(File.exist?(target)).to be(true)
       expect(File.exist?(File.join(global_dir, ".flow.yml.lock"))).to be(false)
@@ -3138,7 +3137,7 @@ RSpec.describe Workspace::Commands::Workflow do
     it "names an unknown id or a lone preset before any prompt, even under no-input" do
       File.write(File.join(builtin_dir, "rpiv.yml"), body)
       guarded = Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true)
-      cmd = described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output, input: guarded)
+      cmd = described_class.new(lint: nil, catalog: real_catalog, files: files, engine: engine, status: status, store: store, panes: panes, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output, input: guarded)
       expect { cmd.remove(id: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
       expect { cmd.remove(id: "rpiv") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("builtin_workflow") }
       expect(output.string).to eq("")
@@ -3161,7 +3160,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:real_store) { Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: @archive, id_generator: -> { "wr_2611010900abcd" }) }
     let(:audit_reader) { instance_double(Workspace::WorkflowAudit) }
     let(:audit_command) do
-      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, audit: audit_reader, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, output: output)
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, audit: audit_reader, process_tree: process_tree, lock_holder: lock_holder, output: output)
     end
     let(:row) { {"step" => "plan", "attempt" => 1, "name" => "plan.1.check.log\e[2J", "kind" => "check_log", "status" => "changed", "recorded_sha256" => "a" * 64, "now_sha256" => "b" * 64, "source_status" => "differs"} }
 
@@ -3251,7 +3250,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:gate_file) { nil }
     subject(:command) do
       described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, needs_me: Workspace::WorkflowNeedsMe.new(clock: -> { now }),
-        tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output)
+        process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output)
     end
     let(:scope) { Workspace::StatusScope::Scope.new(kind: :needs_me) }
 
@@ -3423,7 +3422,7 @@ RSpec.describe Workspace::Commands::Workflow do
     let(:source_installer) { instance_double(Workspace::WorkflowSourceInstaller) }
     subject(:command) do
       described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workspace_facts: nil, store: store, panes: panes, files: nil, run_files: nil,
-        tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242,
+        process_tree: process_tree, lock_holder: lock_holder, pid: 4242,
         clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: uninstall_output, source_installer: source_installer)
     end
 

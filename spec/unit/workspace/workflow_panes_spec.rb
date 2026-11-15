@@ -904,6 +904,24 @@ RSpec.describe Workspace::WorkflowPanes do
     end
   end
 
+  describe "#pane_pid" do
+    it "answers the process tmux started in the pane, as the workspace's session lists it" do
+      allow(tmux).to receive(:session_name_for).with("app").and_return("app")
+      allow(tmux).to receive(:pane_details).with("app", window: nil).and_return([{id: "%5", window: 0, index: 1, pid: 41}, {id: "%7", window: 1, index: 0, pid: 0}])
+
+      expect(panes.pane_pid("app", "%5")).to eq(41)
+      expect(panes.pane_pid("app", "%6")).to be_nil
+      expect(panes.pane_pid("app", "%7")).to be_nil
+    end
+
+    it "answers nil when tmux can't be read" do
+      allow(tmux).to receive(:session_name_for).with("app").and_return("app")
+      allow(tmux).to receive(:pane_details).and_raise(Errno::ENOENT)
+
+      expect(panes.pane_pid("app", "%5")).to be_nil
+    end
+  end
+
   describe "#session_live?" do
     it "asks tmux for the session name it stored" do
       allow(tmux).to receive(:session_name_for).with("foo.js").and_return("foo_js")

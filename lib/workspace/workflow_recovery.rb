@@ -19,7 +19,8 @@ module Workspace
     # @param holder_alive [#call, nil] given a review round's delivery `holder`, whether that process still runs, so a
     #   lapsed round is delivered again only once its holder is gone (nil takes every holder as alive)
     # @param panes [Workspace::WorkflowPanes, nil] says whether a review pane's turn is proven over ({WorkflowPanes#main_turn_over?})
-    #   or the pane is gone, read with the run's lock not yet taken; nil takes every such pane as done
+    #   or the pane is gone, and whether a `continue_pending` pane is idle and still the process marked, read with the
+    #   run's lock not yet taken; nil takes every such pane as done and types no continue line
     # @param clock [#call] returns the current Time
     def initialize(change:, store:, dispatch:, progress:, evaluation:, holder_alive: nil, panes: nil, clock: -> { Time.now })
       @change = change
@@ -44,7 +45,11 @@ module Workspace
     # pressed for a time limit whose turn has not ended {WorkflowTransitions.press_wait} after the newest press
     # ({WorkflowTransitions.unanswered_round?}) is decided on the verdicts written (`step_stalled` cause
     # `interrupt_unanswered`), stopping `review_incomplete` when they fall short, so no scheduled sweep is needed for it
-    # to end. Does nothing while another process is changing the run.
+    # to end. A `continue_pending` mark an unpause left ({WorkflowDecisions#unpause}) gets its one continue line once
+    # the pane proves idle (read before the lock is taken): the mark is dropped under the lock and the line typed
+    # after it ({WorkflowDispatch#type_continue}, which puts the mark back when the line is refused); a pane whose
+    # process is no longer the one marked drops the mark with nothing typed, and so does a mark older than
+    # {WorkflowTransitions::PARK_SECONDS} (`how: "expired"`). Does nothing while another process is changing the run.
     #
     # @param run_id [String]
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
@@ -55,9 +60,18 @@ module Workspace
       alive = holder_alive_once
       # Read before the lock is taken: no tmux or daemon call is made under it.
       typed = typed_pane_over(run_id, alive)
+      ready = continue_ready(run_id)
+      continuing = nil
       run = @change.call(run_id, actor: actor, cause: "tick", nonblocking: true) do |read, ctx|
         stored = read.thawed
         case WorkflowTransitions.wakeable?(stored, @clock.call, alive: alive)
+        when :continue
+          continuing = take_continue(stored, ready)
+          acted = !continuing.nil?
+          continuing = nil if continuing == :dropped
+        when :continue_expired
+          acted = true
+          expire_continue(stored)
         when :backoff
           acted = true
           start_retry(stored, ctx, "backoff_ended")
@@ -89,6 +103,10 @@ module Workspace
         WorkflowRun.from_h(stored)
       end
       return nil unless run && acted
+      if continuing
+        @dispatch.type_continue(run_id, continuing, workspace: run.workspace, text: WorkflowTransitions.continue_line(run.to_h), actor: actor, cause: "tick")
+        return run
+      end
       @evaluation.finish_follow_ups(run_id, follow, run)
     end
 
@@ -476,6 +494,42 @@ module Workspace
     # (Claude Code at work, or sub-agents running: the line arrived), `:unreachable` (no agent daemon answers), else
     # `:unknown`; with the :pane, :round and
     # :started_at of the round it was read for. Nil for any other run. Never raises.
+    # Before the lock: whether the `continue_pending` mark's pane is ready for its continue line (`:ready`, the mark
+    # it was read for), its process is no longer the one marked (`:stale`), or neither yet (nil, which a pid tmux
+    # can't name is too).
+    def continue_ready(run_id)
+      return nil unless @panes
+      run = @store.run(run_id).to_h
+      mark = run["continue_pending"]
+      return nil if run["paused"] || WorkflowTransitions.continue_state(run, @clock.call) != :due
+      pid = @panes.pane_pid(run["workspace"], mark["pane"])
+      # tmux that lists nothing proves nothing: the mark waits, for the gone-pane path or its expiry to clear.
+      return nil if pid.nil?
+      return [:stale, mark] if pid != mark["pid"]
+      ready = (mark["kind"] == "claude") ? @panes.main_turn_over?(run["workspace"], mark["pane"]) : @panes.idle?(run["workspace"], mark["pane"])
+      ready ? [:ready, mark] : nil
+    rescue Workspace::Error, SystemCallError
+      nil
+    end
+
+    # Under the lock: drops the pending mark the read before it judged, when it is still the same mark. Answers the
+    # mark to type the line for, :dropped for a stale mark, or nil when nothing changed (the pane not yet idle).
+    def take_continue(run, ready)
+      verdict, mark = ready
+      return nil unless verdict && run["continue_pending"] == mark
+      run.delete("continue_pending")
+      how = (verdict == :stale) ? "pane_replaced" : "pane_idle"
+      @change.event(run, "continue_pending_ended", {"step" => mark["step"], "attempt" => mark["attempt"], "pane" => mark["pane"], "how" => how})
+      (verdict == :stale) ? :dropped : mark
+    end
+
+    # A pending continue line whose pane never proved idle within {WorkflowTransitions::PARK_SECONDS}: the mark goes
+    # and nothing is typed; a step that stays stuck is the sweep's stall to handle.
+    def expire_continue(run)
+      mark = run.delete("continue_pending")
+      @change.event(run, "continue_pending_ended", {"step" => mark["step"], "attempt" => mark["attempt"], "pane" => mark["pane"], "how" => "expired"})
+    end
+
     def typed_pane_over(run_id, alive)
       return nil unless @panes
       run = @store.run(run_id)

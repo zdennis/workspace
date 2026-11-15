@@ -37,7 +37,7 @@ RSpec.describe Workspace::CLI do
     let(:command) do
       Workspace::Commands::Workflow.new(lint: nil, catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
         status: instance_double(Workspace::WorkflowStatus), store: store, panes: panes, files: nil, run_files: nil,
-        tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: StringIO.new)
+        process_tree: nil, lock_holder: nil, output: StringIO.new)
     end
     let(:cli) { build_test_cli(workflow_command: command)[0] }
     # The daemon's nudger, with the process it would start run here instead.
@@ -62,7 +62,7 @@ RSpec.describe Workspace::CLI do
       let(:parking) do
         Workspace::Commands::Workflow.new(lint: nil, catalog: instance_double(Workspace::WorkflowCatalog), engine: engine,
           status: status, store: store, panes: panes, files: nil, run_files: nil,
-          tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: out)
+          process_tree: nil, lock_holder: nil, output: out)
       end
 
       before do
@@ -116,7 +116,7 @@ RSpec.describe Workspace::CLI do
       let(:parking) do
         Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: engine,
           status: status, store: store, panes: panes, files: nil, run_files: nil,
-          tmux: instance_double(Workspace::Tmux, session_name_for: "app", pane_details: []), process_tree: nil, lock_holder: nil, output: StringIO.new)
+          process_tree: nil, lock_holder: nil, output: StringIO.new)
       end
 
       before do
@@ -183,11 +183,11 @@ RSpec.describe Workspace::CLI do
       end
 
       it "parks with no caller_pane when the process table puts the caller under the pane (the workflow start route)" do
-        tmux = instance_double(Workspace::Tmux, session_name_for: "app", pane_details: [{id: "%5", window: 0, index: 1, pid: 200}])
+        panes.pids["%5"] = 200
         tree = instance_double(Workspace::ProcessTree)
         allow(tree).to receive(:snapshot).and_return(instance_double(Workspace::ProcessTree::Snapshot, ancestors: [{pid: 4242}, {pid: 200}]))
         under = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes,
-          files: nil, run_files: nil, tmux: tmux, process_tree: tree, lock_holder: nil, pid: 4242, output: StringIO.new)
+          files: nil, run_files: nil, process_tree: tree, lock_holder: nil, pid: 4242, output: StringIO.new)
 
         row = under.run(id: "flow", workspace: "app", worktree: @dir, pane: "%5")
 

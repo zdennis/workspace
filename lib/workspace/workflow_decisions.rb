@@ -14,12 +14,18 @@ module Workspace
     # What a resume or a park did: the run afterwards, and why nothing was done (a sentence), or nil when it acted.
     Resumed = Data.define(:run, :unchanged)
 
-    # What an unpause did: the run afterwards, the branch it took (`action`, as on `run_unpaused`) and the kind of
-    # dispatch the pause held (`held`: `attempt`, `round` or `delivery`; nil when none).
-    Unpaused = Data.define(:run, :action, :held)
+    # What a pause did: the run afterwards, and whether `--interrupt` pressed the agent's interrupt keys
+    # (`interrupted`; false when nothing was pressed or the press failed).
+    Paused = Data.define(:run, :interrupted)
+
+    # What an unpause did: the run afterwards, the branch it took (`action`, as on `run_unpaused`), the kind of
+    # dispatch the pause held (`held`: `attempt`, `round` or `delivery`; nil when none), and the continue line of a
+    # turn `pause --interrupt` stopped (`continued`: true when typed, false when the pane refused it, with the reason
+    # as `warning`; "pending" when the tick types it once the pane is idle; nil when none applies).
+    Unpaused = Data.define(:run, :action, :held, :continued, :warning)
 
     # Seconds a parked resume waits for the turn to end.
-    PARK_SECONDS = 3600
+    PARK_SECONDS = WorkflowTransitions::PARK_SECONDS
 
     # @param change [Workspace::WorkflowRunChange] changes the run under its lock and writes its history
     # @param store [Workspace::WorkflowRunStore] lists the runs going, for {#workspace_killed}
@@ -33,8 +39,11 @@ module Workspace
     # @param holder_alive [#call, nil] given a review round's delivery `holder` ("pid", "started"), whether that process
     #   still runs: a round whose mark lapsed is delivered again by a resume only once its holder is gone; nil takes
     #   every holder as alive
+    # @param interrupter [#call] presses keys in a pane (`workspace`, `pane`, `keys`), for `pause --interrupt`; raises
+    #   {Workspace::Error} when it can't, and the pause then drops its interrupt mark
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, holder_alive: nil, clock: -> { Time.now })
+    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, interrupter:, holder_alive: nil,
+      clock: -> { Time.now })
       @change = change
       @store = store
       @progress = progress
@@ -45,6 +54,7 @@ module Workspace
       @panes = panes
       @guard = guard
       @holder_alive = holder_alive
+      @interrupter = interrupter
       @clock = clock
     end
 
@@ -339,21 +349,36 @@ module Workspace
     # Pauses a run: from now on it starts nothing new (no attempt, retry, review round or typed line), each dispatch
     # held being kept as its `pause_hold` ({WorkflowDispatch#hold_paused}). What is under way goes on: a turn that
     # ends is decided, a round's verdicts are counted, a gate can be approved or rejected. The run's reason stays
-    # under the pause, shown again once it ends. A parked resume is dropped (`how: "paused"`).
+    # under the pause, shown again once it ends. A parked resume is dropped (`how: "paused"`). A pending continue
+    # line (`continue_pending`, left by an earlier unpause) is kept for the next unpause.
+    #
+    # With +interrupt+, the agent's interrupt keys ({AgentProvider#interrupt_keys}) are pressed once, with the run's
+    # lock given up, but only into the run's own bound pane while its attempt is open and `running` and the daemon
+    # shows the pane `working`. Only then is `paused.interrupt` written ("pane", "pid" (the pane's process),
+    # "kind", "step", "attempt"), which {#unpause} reads to type one continue line. A press that fails drops the mark
+    # again. The attempt stays open and `running`: no attempt is added and no delivery is marked.
     #
     # @param text [String, nil] why, kept with the pause and on `run_paused`
+    # @param interrupt [Boolean] also stop the agent's turn
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
-    # @return [WorkflowRun] the run afterwards
+    # @return [Paused] the run afterwards and whether the keys were pressed
     # @raise [Workspace::Error] code `already_paused`, `unknown_run` or `run_not_active`
-    def pause(run_id, actor:, text: nil)
-      @change.call(run_id, actor: actor, cause: "pause") do |read|
+    def pause(run_id, actor:, text: nil, interrupt: false)
+      press = nil
+      run = @change.call(run_id, actor: actor, cause: "pause") do |read|
         refuse_already_paused(read.to_h)
         stored = read.thawed
         drop_park(stored, "paused")
         adopt(stored, WorkflowRun.from_h(stored).with_paused(since: now_iso, by: actor, text: text))
-        event(stored, "run_paused", with_text({"step" => stored["current"]}, text))
+        press = interrupt_target(stored) if interrupt
+        stored["paused"]["interrupt"] = press.except("keys") if press
+        event(stored, "run_paused", with_text({"step" => stored["current"]}, text).merge(press ? {"interrupt" => true} : {}))
         WorkflowRun.from_h(stored)
       end
+      return Paused.new(run: run, interrupted: false) unless press
+      failure = press_keys(run, press)
+      return Paused.new(run: run, interrupted: true) unless failure
+      Paused.new(run: interrupt_failed(run_id, press, failure, actor), interrupted: false)
     end
 
     # Ends a pause and does what it held, never through {#resume} (which would start nothing without a pane, or a
@@ -364,31 +389,43 @@ module Workspace
     # 2. a held line (kind `delivery`) is typed for the same attempt, which adds no attempt;
     # 3. with nothing held and the step's attempt open and `running`: a bound pane that is gone makes the run wait
     #    on `pane_gone`;
-    # 4. a pane whose turn is proven over has the step decided now, as a resume with a turn's end does;
-    # 5. an agent still working is left alone, and so is anything else (a gate, a round under way, a retry's
+    # 4. a turn `pause --interrupt` stopped (`paused.interrupt`, or a `continue_pending` an earlier unpause left,
+    #    naming this step, attempt and pane, and the pane's process still the one marked) gets one continue line
+    #    ({WorkflowTransitions::CONTINUE_LINE}) once its pane is proven idle ({WorkflowPanes#main_turn_over?} for
+    #    Claude Code, {WorkflowPanes#idle?} for another agent), typed with the lock given up
+    #    ({WorkflowDispatch#type_continue}); a pane not yet proven idle (an Escape sends no Stop) has the mark moved to
+    #    `continue_pending` and the tick types the line ({WorkflowRecovery#tick}). A process that is not the one
+    #    marked (the pane was replaced) drops the mark and the next branch applies;
+    # 5. a pane whose turn is proven over has the step decided now, as a resume with a turn's end does;
+    # 6. an agent still working is left alone, and so is anything else (a gate, a round under way, a retry's
     #    backoff, a lost check): the reason the pause hid shows again and the next tick acts on it.
     #
-    # `run_unpaused` names which (`action`: `dispatch`, `round`, `rerun`, `deliver`, `pane_gone`, `evaluate`, `none`).
+    # `run_unpaused` names which (`action`: `dispatch`, `round`, `rerun`, `deliver`, `pane_gone`, `continue`,
+    # `continue_pending`, `evaluate`, `none`).
     #
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
-    # @return [Unpaused] the run afterwards, the branch taken and the kind of dispatch held
+    # @return [Unpaused] the run afterwards, the branch taken, the kind of dispatch held and the continue line's outcome
     # @raise [Workspace::Error] code `not_paused`, `unknown_run` or `run_not_active`; what a held attempt's start raises
     def unpause(run_id, actor:)
       follow = nil
       action = nil
       held = nil
+      mark = nil
       run = @change.call(run_id, actor: actor, cause: "unpause") do |read, ctx|
         follow = ctx
         refuse_not_paused(read.to_h)
+        mark = read.to_h.dig("paused", "interrupt") || read.to_h["continue_pending"]
         stored = read.drop_paused.thawed
+        stored.delete("continue_pending")
         hold = stored.delete("pause_hold")
         held = hold.is_a?(Hash) ? hold["kind"] : nil
-        action = unpause_action(stored, hold.is_a?(Hash) ? hold : nil).to_s
+        action = unpause_action(stored, hold.is_a?(Hash) ? hold : nil, mark).to_s
         event(stored, "run_unpaused", {"step" => stored["current"], "action" => action, "held" => held}.compact)
-        apply_unpause(stored, ctx, action.to_sym, hold)
+        apply_unpause(stored, ctx, action.to_sym, hold, mark)
         WorkflowRun.from_h(stored)
       end
-      Unpaused.new(run: @evaluation.finish_follow_ups(run_id, follow, run), action: action, held: held)
+      continued, warning = continue_after_unpause(run, action, mark, actor)
+      Unpaused.new(run: @evaluation.finish_follow_ups(run_id, follow, run), action: action, held: held, continued: continued, warning: warning)
     end
 
     private
@@ -416,13 +453,13 @@ module Workspace
 
     # Which branch of {#unpause} applies to the run as it stands, its pause taken off; +hold+ is its `pause_hold`.
     # A hold the run has moved past (its step or attempt no longer the one held) is dropped and the later branches apply.
-    def unpause_action(run, hold)
+    def unpause_action(run, hold, mark)
       case hold&.fetch("kind", nil)
       when "attempt" then return :dispatch
-      when "round" then return held_round_action(run, hold) || open_attempt_action(run)
-      when "delivery" then return held_delivery_matches?(run, hold) ? :deliver : open_attempt_action(run)
+      when "round" then return held_round_action(run, hold) || open_attempt_action(run, mark)
+      when "delivery" then return held_delivery_matches?(run, hold) ? :deliver : open_attempt_action(run, mark)
       end
-      open_attempt_action(run)
+      open_attempt_action(run, mark)
     end
 
     # A held round start (`held: "paused"`, or a `no_change` round the pause held) or a held rerun
@@ -445,9 +482,9 @@ module Workspace
         attempt["ended_at"].nil? && hold["delivery"].is_a?(Hash)
     end
 
-    # Branches 3 to 5 of {#unpause}: the step's attempt open and `running`, nothing held. A line still on its way
+    # Branches 3 to 6 of {#unpause}: the step's attempt open and `running`, nothing held. A line still on its way
     # (another process typing it) is left alone.
-    def open_attempt_action(run)
+    def open_attempt_action(run, mark)
       state = step_state(run)
       attempt = state["attempts"].last
       return :none unless state["state"] == "running" && attempt.is_a?(Hash) && attempt["ended_at"].nil?
@@ -455,11 +492,84 @@ module Workspace
       pane = bound_pane(run)
       return :none unless pane
       return :pane_gone if @panes.pane_gone?(pane, workspace: run["workspace"])
+      case continue_for(run, mark, pane)
+      when :same then return continue_ready?(run["workspace"], pane, mark["kind"]) ? :continue : :continue_pending
+      when :unread then return :continue_pending
+      end
       return :evaluate if @panes.idle?(run["workspace"], pane)
       :none
     end
 
-    def apply_unpause(run, ctx, action, hold)
+    # Whether the mark names this step's open attempt in the pane bound now, and that pane's process: `:same` (the
+    # one marked), `:unread` (tmux named no pid, which proves nothing, so the mark is kept), or nil (no such mark,
+    # or another process: the pane was replaced and the mark is dropped).
+    def continue_for(run, mark, pane)
+      return nil unless WorkflowTransitions.continue_mark?(run, mark) && mark["pane"] == pane && !mark["pid"].nil?
+      pid = @panes.pane_pid(run["workspace"], pane)
+      return :unread if pid.nil?
+      (pid == mark["pid"]) ? :same : nil
+    end
+
+    # Whether the pane's agent is proven idle, so a continue line can go: an Escape sends Claude Code no Stop, which
+    # {WorkflowPanes#main_turn_over?} allows for once the pane has been quiet a while; another agent goes by the daemon's state.
+    def continue_ready?(workspace, pane, kind)
+      (kind == "claude") ? @panes.main_turn_over?(workspace, pane) : @panes.idle?(workspace, pane)
+    end
+
+    # Where `pause --interrupt` presses: the run's own bound pane, its attempt open and `running` and the daemon
+    # showing it `working`, with keys known for its agent and a process tmux can name. Nil presses nothing.
+    def interrupt_target(run)
+      state = step_state(run)
+      attempt = state["attempts"].last
+      return nil unless state["state"] == "running" && attempt.is_a?(Hash) && attempt["ended_at"].nil?
+      pane = @panes.pane_of(run["id"])
+      return nil unless pane && @panes.run_on(pane) == run["id"]
+      row = @panes.pane_row(run["workspace"], pane)
+      return nil unless row.is_a?(Hash) && row["state"] == "working"
+      keys = AgentProvider.find(row["kind"].to_s)&.interrupt_keys.to_a
+      pid = @panes.pane_pid(run["workspace"], pane)
+      return nil if keys.empty? || pid.nil?
+      {"pane" => pane, "pid" => pid, "kind" => row["kind"], "step" => run["current"], "attempt" => attempt["n"], "keys" => keys}
+    end
+
+    # nil once the keys are pressed; otherwise why they were not.
+    def press_keys(run, press)
+      @interrupter.call(run.workspace, press["pane"], press["keys"])
+      nil
+    rescue Workspace::Error => e
+      e.message.lines.first.to_s.strip
+    end
+
+    # The press failed: the mark goes, so {#unpause} does not type a continue line into a turn nothing stopped.
+    def interrupt_failed(run_id, press, failure, actor)
+      @change.call(run_id, actor: actor, cause: "pause") do |read|
+        stored = read.thawed
+        stored["paused"].delete("interrupt") if stored["paused"].is_a?(Hash) && stored.dig("paused", "interrupt", "pid") == press["pid"]
+        event(stored, "pause_interrupt_failed", {"step" => press["step"], "attempt" => press["attempt"], "pane" => press["pane"], "message" => failure})
+        WorkflowRun.from_h(stored)
+      end
+    rescue Workspace::Error => e
+      raise unless e.code == "run_not_active"
+      @store.run(run_id)
+    end
+
+    # Types the continue line of branch 4 once the unpause's lock is given up: [continued, warning]. A line the pane
+    # refused (or a pause that came first) is put back as `continue_pending` by {WorkflowDispatch#type_continue},
+    # so it reads "pending", with the refusal as the warning; only a pane that is gone answers false.
+    def continue_after_unpause(run, action, mark, actor)
+      case action
+      when "continue"
+        kick = @dispatch.type_continue(run.id, mark.merge("since" => now_iso), workspace: run.workspace, text: WorkflowTransitions.continue_line(run.to_h),
+          actor: actor, cause: "unpause")
+        return [true, nil] if kick[:ok]
+        warning = "the continue line was not typed into pane #{mark["pane"]}: #{kick[:message] || kick[:code]}"
+        [kick[:pending] ? "pending" : false, warning]
+      when "continue_pending" then ["pending", nil]
+      else [nil, nil]
+      end
+    end
+
+    def apply_unpause(run, ctx, action, hold, mark)
       case action
       when :dispatch
         dispatch(run, ctx, hold["cause"] || "resume", context: hold["context"], budgeted: hold.fetch("budgeted", true), retry_of: held_retry_of(hold))
@@ -476,6 +586,8 @@ module Workspace
         run["reason"] = {"code" => "pane_gone", "since" => now_iso,
                          "details" => {"kind" => "dispatch", "step" => run["current"], "pane" => pane, "workspace" => run["workspace"],
                                        "error" => "pane_gone", "message" => "pane #{pane} is gone"}}
+      when :continue_pending
+        run["continue_pending"] = mark.merge("since" => now_iso)
       when :evaluate
         run["reason"] = nil
         evaluate(run, ctx)

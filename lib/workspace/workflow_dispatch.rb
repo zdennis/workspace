@@ -16,6 +16,10 @@ module Workspace
     # Restart errors that mean there is no pane to type into.
     PANE_GONE_CODES = %w[no_such_pane pane_gone no_session wrong_session].freeze
 
+    # Continue-line refusals that keep no `continue_pending`: a pane that is gone, or a run that ended or moved past
+    # the marked attempt.
+    CONTINUE_DROPPED = (PANE_GONE_CODES + %w[moved_on]).freeze
+
     # How many times a released resume that could not be typed is parked again.
     # Each failed delivery is an attempt row, but only the first release is held to `max_attempts`, so re-parks
     # can run up to PARK_RETRIES attempts past it.
@@ -106,6 +110,41 @@ module Workspace
       # Cancelled while the line was on its way: the cancel stands.
       raise unless e.code == "run_not_active"
       @store.run(run_id)
+    end
+
+    # Types the continue line ({WorkflowTransitions::CONTINUE_LINE}) into a pane whose turn `pause --interrupt`
+    # stopped, with the run's lock given up, and records `step_continued` (`delivered`; `code`, `message` and
+    # `pending` when the line was not typed). The run is read first, as {#deliver} does: one paused again since its
+    # caller's change types nothing (code `run_paused`), and so does one that has ended or moved past the marked
+    # attempt since (code `moved_on`). A line not typed for any reason but those in {CONTINUE_DROPPED} puts the mark back as `continue_pending` under the run's lock (its `since` kept, so
+    # {WorkflowTransitions.continue_state} still expires it), when the run is still on the marked attempt and holds no
+    # other mark, and a later tick tries again. It adds no attempt and spends nothing, and never raises for a refusal.
+    #
+    # @param run_id [String]
+    # @param mark [Hash{String=>Object}] the continue mark ("pane", "pid", "kind", "step", "attempt", "since")
+    # @param workspace [String]
+    # @param text [String] the line
+    # @param actor [String] who made the change that let the line go, one of {WorkflowRunChange::ACTORS}
+    # @param cause [String] that change's cause (`unpause` or `tick`)
+    # @return [Hash] the kick's answer: :ok, and when false :code, :message and :pending (whether the mark was put back)
+    def type_continue(run_id, mark, workspace:, text:, actor:, cause:)
+      run = @store.run(run_id)
+      kick = if WorkflowRunStore::TERMINAL_STATES.include?(run.state) || !WorkflowTransitions.continue_mark?(run.to_h, mark)
+        {ok: false, code: "moved_on", message: "the run has ended or moved past the attempt the line was for"}
+      elsif run.paused
+        {ok: false, code: "run_paused", message: "the run was paused again before the line was typed"}
+      else
+        begin
+          @panes.kick(workspace: workspace, pane: mark["pane"], text: text, fresh: false, run_id: run_id)
+        rescue => e
+          {ok: false, code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.scrub.strip}
+        end
+      end
+      kick = kick.merge(pending: !CONTINUE_DROPPED.include?(kick[:code].to_s) && keep_continue(run_id, mark, actor, cause)) unless kick[:ok]
+      line = {"step" => mark["step"], "attempt" => mark["attempt"], "pane" => mark["pane"], "delivered" => kick[:ok],
+              "actor" => actor, "cause" => cause, "from_state" => nil, "to_state" => nil}
+      @store.record_event(run_id, "step_continued", line.merge(kick.slice(:code, :message, :pending).transform_keys(&:to_s)))
+      kick
     end
 
     # Refuses a pane another run holds: one bound to a run still going, one a parked run waits for (a run
@@ -525,6 +564,22 @@ module Workspace
 
     def reason(code, details)
       {"code" => code, "since" => now_iso, "details" => details}
+    end
+
+    # Puts a continue mark back as `continue_pending`, so a later tick types the line; true when it did.
+    def keep_continue(run_id, mark, actor, cause)
+      kept = false
+      @change.call(run_id, actor: actor, cause: cause) do |read|
+        stored = read.thawed
+        next read unless WorkflowTransitions.continue_mark?(stored, mark) && !stored.key?("continue_pending")
+        stored["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
+        kept = true
+        WorkflowRun.from_h(stored)
+      end
+      kept
+    rescue Workspace::Error => e
+      raise unless %w[run_not_active unknown_run].include?(e.code)
+      false
     end
 
     def now_iso

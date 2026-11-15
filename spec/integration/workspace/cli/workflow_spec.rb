@@ -29,7 +29,7 @@ RSpec.describe Workspace::CLI do
         File.write(File.join(dir, "global", "bad.yml"), bad)
         catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: File.join(dir, "global"), builtin_workflows_dir: File.join(dir, "none")))
         out = StringIO.new
-        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: out))[0]
+        real_cli = build_test_cli(workflow_command: Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, process_tree: nil, lock_holder: nil, output: out))[0]
 
         real_cli.run(["workflow", "show", "bad", "--source", "--json"])
         doc = JSON.parse(out.string)
@@ -129,7 +129,7 @@ RSpec.describe Workspace::CLI do
         catalog = Workspace::WorkflowCatalog.new(config: config)
         text = "title: Ship\nsteps:\n  plan:\n    prompt: Plan.\n"
         command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
-          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
+          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
         real_cli, out = build_test_cli(workflow_command: command)
 
         real_cli.run(["workflow", "add", "ship", "-", "--json"])
@@ -156,7 +156,7 @@ RSpec.describe Workspace::CLI do
         config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"), workspace_projects_dir: File.join(dir, "no-projects"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
-          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
+          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new(text))
         real_cli, out = build_test_cli(workflow_command: command)
         old_sha = Digest::SHA256.hexdigest(old_text)
 
@@ -182,7 +182,7 @@ RSpec.describe Workspace::CLI do
         config = instance_double(Workspace::Config, workflows_dir: home, builtin_workflows_dir: File.join(dir, "builtin"), workspace_projects_dir: File.join(dir, "no-projects"))
         catalog = Workspace::WorkflowCatalog.new(config: config)
         command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, files: Workspace::WorkflowFiles.new(config: config, catalog: catalog),
-          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, tmux: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new("n\n"))
+          engine: nil, status: nil, store: nil, panes: nil, run_files: nil, process_tree: nil, lock_holder: nil, output: StringIO.new, input: StringIO.new("n\n"))
         real_cli, out = build_test_cli(workflow_command: command)
 
         expect { real_cli.run(["workflow", "remove", "ship"]) }.not_to raise_error
@@ -340,7 +340,7 @@ RSpec.describe Workspace::CLI do
         real_status = Workspace::WorkflowStatus.new(store: store, panes: instance_double(Workspace::WorkflowPanes), snapshot_client: instance_double(Workspace::AgentSnapshotClient),
           ask_store_for: ->(_) {}, gate_note: instance_double(Workspace::WorkflowGateNote))
         real = Workspace::Commands::Workflow.new(lint: nil, catalog: nil, engine: nil, status: real_status, store: store, panes: nil, files: nil, run_files: nil, needs_me: Workspace::WorkflowNeedsMe.new,
-          tmux: nil, process_tree: nil, lock_holder: nil, output: output)
+          process_tree: nil, lock_holder: nil, output: output)
         real_cli, = build_test_cli(workflow_command: real)
 
         expect { real_cli.run(["workflow", "status", "--needs-me", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }

@@ -410,6 +410,76 @@ RSpec.describe Workspace::WorkflowDispatch do
     end
   end
 
+  describe "#type_continue" do
+    let(:mark) { {"pane" => "%3", "pid" => 41, "kind" => "claude", "step" => "plan", "attempt" => 1, "since" => "2026-11-10T11:30:00Z"} }
+
+    # The plan step's attempt 1 open and running, as a continue mark names it.
+    def open_run(**overrides)
+      store.runs["wr_1"] = run_hash("state" => "running", "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00Z"}]}}, **overrides)
+    end
+
+    def over(panes) = described_class.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record, guard: guard, clock: -> { now })
+
+    it "types the line as it is, with no new conversation, and records step_continued, changing no run" do
+      open_run
+
+      kick = dispatch.type_continue("wr_1", mark, workspace: "app", text: "Continue step plan.", actor: "person", cause: "unpause")
+
+      expect(kick).to eq(ok: true)
+      expect(panes.calls).to eq([[:kick, {workspace: "app", pane: "%3", text: "Continue step plan.", fresh: false, run_id: "wr_1"}]])
+      expect(store.events).to eq([["wr_1", "step_continued", {"step" => "plan", "attempt" => 1, "pane" => "%3", "delivered" => true,
+                                                              "actor" => "person", "cause" => "unpause", "from_state" => nil, "to_state" => nil}]])
+      expect(change.calls).to be_empty
+    end
+
+    it "puts the mark back as continue_pending, its since kept, when the pane refuses the line or the kick raises" do
+      refusing = over(RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "busy"}))
+      raising = over(RecordingWorkflowPanes.new(on_kick: ->(**) { raise Workspace::Error.new("no daemon", code: "no_daemon") }))
+
+      open_run
+      expect(refusing.type_continue("wr_1", mark, workspace: "app", text: "go", actor: "daemon", cause: "tick")).to eq(ok: false, code: "pane_busy", message: "busy", pending: true)
+      expect(store.runs["wr_1"]["continue_pending"]).to eq(mark)
+      open_run
+      expect(raising.type_continue("wr_1", mark, workspace: "app", text: "go", actor: "daemon", cause: "tick")).to eq(ok: false, code: "no_daemon", message: "no daemon", pending: true)
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "daemon", cause: "tick"}]] * 2)
+      expect(store.events.map { |event| event.last.slice("delivered", "code", "pending") }).to eq([
+        {"delivered" => false, "code" => "pane_busy", "pending" => true}, {"delivered" => false, "code" => "no_daemon", "pending" => true}
+      ])
+    end
+
+    it "types nothing into a run paused again since its caller's change, and keeps the mark for the next unpause" do
+      open_run("paused" => {"since" => "2026-11-10T11:59:00Z", "by" => "person"})
+
+      kick = dispatch.type_continue("wr_1", mark, workspace: "app", text: "go", actor: "daemon", cause: "tick")
+
+      expect(kick).to include(ok: false, code: "run_paused", pending: true)
+      expect(panes.calls).to be_empty
+      expect(store.runs["wr_1"]["continue_pending"]).to eq(mark)
+    end
+
+    it "keeps no mark for a pane that is gone" do
+      open_run
+      gone = over(RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_gone", message: "gone"}))
+
+      expect(gone.type_continue("wr_1", mark, workspace: "app", text: "go", actor: "daemon", cause: "tick")).to include(pending: false)
+      expect(store.runs["wr_1"]).not_to have_key("continue_pending")
+    end
+
+    it "types nothing and keeps no mark when the attempt was decided or the run ended since its caller's change" do
+      open_run
+      store.runs["wr_1"]["steps"]["plan"]["attempts"].last["ended_at"] = "2026-11-10T11:50:00Z"
+      expect(dispatch.type_continue("wr_1", mark, workspace: "app", text: "go", actor: "daemon", cause: "tick")).to include(ok: false, code: "moved_on", pending: false)
+
+      open_run("state" => "cancelled")
+      expect(dispatch.type_continue("wr_1", mark, workspace: "app", text: "go", actor: "daemon", cause: "tick")).to include(ok: false, code: "moved_on", pending: false)
+
+      expect(panes.calls).to be_empty
+      expect(change.calls).to be_empty
+      expect(store.runs["wr_1"]).not_to have_key("continue_pending")
+      expect(store.events.map { |event| event.last["code"] }).to eq(%w[moved_on moved_on])
+    end
+  end
+
   describe "#deliver" do
     let(:path) { File.join(@dir, ".workflow", "wr_1", "steps", "plan.1.prompt.md") }
     let(:delivery) { {"step" => "plan", "attempt" => 1, "workspace" => "app", "pane" => "%3", "text" => "Read #{path} and follow it.", "fresh" => false, "worktree" => @dir, "cause" => "next_step"} }

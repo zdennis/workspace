@@ -39,7 +39,7 @@ RSpec.describe "workflow install over a real cache directory" do
   end
   let(:command) do
     Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double, files: double,
-      run_files: double, tmux: double, process_tree: double, lock_holder: double, source_installer: installer, output: out, error_output: err)
+      run_files: double, process_tree: double, lock_holder: double, source_installer: installer, output: out, error_output: err)
   end
 
   def step_yaml(extra = "") = "title: T\n#{extra}steps:\n  a:\n    prompt: P\n"
@@ -57,7 +57,7 @@ RSpec.describe "workflow install over a real cache directory" do
 
   it "refuses to run without an installer wired" do
     bare = Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double, files: double,
-      run_files: double, tmux: double, process_tree: double, lock_holder: double)
+      run_files: double, process_tree: double, lock_holder: double)
 
     expect { bare.install }.to raise_error(Workspace::Error, /not available/)
   end
@@ -244,7 +244,7 @@ RSpec.describe "workflow install over a real cache directory" do
         source_dirs: Workspace::WorkflowSourceDirs.new(config_resolver: dup_resolver, state_dir: state, home: @dir),
         fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner, home: @dir, clock: -> { Time.utc(2026, 11, 9) }))
       dup_command = Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double,
-        files: double, run_files: double, tmux: double, process_tree: double, lock_holder: double, source_installer: dup_installer, output: out, error_output: err)
+        files: double, run_files: double, process_tree: double, lock_holder: double, source_installer: dup_installer, output: out, error_output: err)
 
       row = dup_command.install
 
@@ -260,7 +260,7 @@ RSpec.describe "workflow install over a real cache directory" do
         source_dirs: Workspace::WorkflowSourceDirs.new(config_resolver: two_resolver, state_dir: state, home: @dir),
         fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner, home: @dir, clock: -> { Time.utc(2026, 11, 9) }))
       two_command = Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double,
-        files: double, run_files: double, tmux: double, process_tree: double, lock_holder: double, source_installer: two_installer, output: out, error_output: err)
+        files: double, run_files: double, process_tree: double, lock_holder: double, source_installer: two_installer, output: out, error_output: err)
 
       row = two_command.install
 
@@ -329,7 +329,7 @@ RSpec.describe "workflow install over a real cache directory" do
         source_dirs: Workspace::WorkflowSourceDirs.new(config_resolver: dup_resolver, state_dir: state, home: @dir),
         fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner, home: @dir))
       dup_command = Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double,
-        files: double, run_files: double, tmux: double, process_tree: double, lock_holder: double, source_installer: dup_installer, output: out, error_output: err)
+        files: double, run_files: double, process_tree: double, lock_holder: double, source_installer: dup_installer, output: out, error_output: err)
 
       row = dup_command.uninstall(dry_run: true)
 
@@ -351,7 +351,7 @@ RSpec.describe "workflow install over a real cache directory" do
         source_dirs: Workspace::WorkflowSourceDirs.new(config_resolver: bad_resolver, state_dir: state, home: @dir),
         fetcher: Workspace::WorkflowSourceFetcher.new(runner: runner, home: @dir))
       bad_command = Workspace::Commands::Workflow.new(lint: double, catalog: double, engine: double, status: double, store: double, panes: double,
-        files: double, run_files: double, tmux: double, process_tree: double, lock_holder: double, source_installer: bad_installer, output: out, error_output: err)
+        files: double, run_files: double, process_tree: double, lock_holder: double, source_installer: bad_installer, output: out, error_output: err)
 
       row = bad_command.uninstall(yes: true)
 
