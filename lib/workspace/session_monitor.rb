@@ -293,7 +293,7 @@ module Workspace
       @lock.synchronize do
         pane = @panes[pane_id]
         next unless pane
-        pane[:turn_failed] = {session_id: pane[:session_id]}
+        pane[:turn_failed] = {session_id: pane[:session_id], at: @clock.now}
         pane[:turn_ended] = true
       end
       nil
