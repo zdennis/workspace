@@ -1,0 +1,20 @@
+[38;5;231m⏺[39m [1mBash[0m(example-tool --check)
+  [38;5;246m⎿[39m  Running in the background (↓ to manage)
+
+[38;5;231m⏺[39m [1mAgent[0m(Write the example notes) [38;5;246mHaiku[39m
+  [38;5;246m⎿[39m  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+[38;5;231m⏺[39m The first part is done. The check is still running in the background.
+
+[38;5;246m✻[39m [38;5;246mWaiting for 1 background agent to finish[39m
+
+[38;5;231m⏺[39m Agent "Write the example notes" finished[38;5;246m · 11s[39m
+
+[38;5;246m✻[39m [38;5;246mChurned for 1m 8s · done 12:53 PM · 1 shell still running[39m
+
+[38;5;244m──────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ 
+[38;5;244m──────────────────────────────────────────────────────────────────────────────────────────
+[39m  [36m[Model][38;5;246m 📁 example | 🌿 main[39m
+  [32m█░░░░░░░░░[38;5;246m 11% ctx[39m
+  [38;5;211m⏵⏵ bypass permissions on[38;5;246m · [38;5;44m1 shell[39m
