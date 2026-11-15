@@ -53,10 +53,11 @@ module Workspace
     # @param attempt [Integer, nil] that step's attempt the caller saw (needs +step+)
     # @param note_sha256 [String, nil] the note's sha256 the caller read; refused when it changed
     # @param guard [#call, nil] called with the stored run after the step checks; raises to refuse
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `gate_not_waiting`, `stale_revision`, `gate_note_unreadable`, and what +guard+ raises
-    def approve(run_id, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
-      @change.call(run_id) do |read, ctx|
+    def approve(run_id, actor:, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
+      @change.call(run_id, actor: actor, cause: "approve") do |read, ctx|
         stored = read.thawed
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
@@ -80,11 +81,12 @@ module Workspace
     # @param extra_attempts [Integer, nil] added to the run's attempt allowance (see {#resume})
     # @param extra_tokens [Integer, nil] added to the run's token budget (see {#resume})
     # @param extra_seconds [Integer, nil] added to the run's timeout (see {#resume})
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `gate_not_waiting`, `attempts_spent`, `budget_spent`, `run_timed_out`, and what +guard+ raises
     # @raise [Workspace::UsageError] when +to+ is not the gated step or one before it
-    def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
-      @change.call(run_id) do |read, ctx|
+    def reject(run_id, actor:, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
+      @change.call(run_id, actor: actor, cause: "reject") do |read, ctx|
         stored = read.thawed
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
@@ -100,7 +102,7 @@ module Workspace
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
         stored["pending_context"] << "The #{stored["current"]} step was rejected at its gate: #{note}"
         stored["current"] = target
-        @dispatch.dispatch(stored, ctx: ctx)
+        @dispatch.dispatch(stored, ctx: ctx, cause: "gate_rejected")
       end
     end
 
@@ -130,6 +132,7 @@ module Workspace
     #   `produces`, `require:` and `status:` pass too
     # @param guard_retry [Boolean] with +accept_guard+: run the stopped step again instead, a new attempt held to the allowance and budget
     # @param caller_pane [String, nil] the pane the person ran the command in, recorded on `guard_overridden`
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Resumed] the run afterwards, and why nothing was done when it did nothing
     # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` or `budget_spent` when the resume would
     #   start an attempt the run has no allowance left for; `budget_spent` or `run_timed_out` when it would start a
@@ -138,12 +141,12 @@ module Workspace
     #   new base, and with +guard_retry+ `guard_cannot_pass` when the retry would stop on `no_commit` or
     #   `operation_in_progress` again; `review_rounds_spent` when it would start a review round past the step's
     #   `max_rounds`, or start again a step a review rejected with every round spent
-    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
+    def resume(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
       extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil)
       refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry, extra_rounds: extra_rounds)
       follow = nil
       unchanged = nil
-      run = @change.call(run_id) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: "resume") do |read, ctx|
         follow = ctx
         if accept_guard
           next accept_guard_stop(read, ctx, note: note, pane: pane, guard_retry: guard_retry, caller_pane: caller_pane,
@@ -169,13 +172,14 @@ module Workspace
     # @param extra_tokens [Integer, nil] see {#resume}; applied when the park is released
     # @param extra_seconds [Integer, nil] see {#resume}; applied when the park is released
     # @param extra_rounds [Integer, nil] see {#resume}; applied when the park is released
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Resumed] the run afterwards, and why nothing was stored when nothing was
     # @raise [Workspace::Error] see {#refuse_resume}; code `pane_has_run` for a +pane+ another run has;
     #   `attempts_spent`, `budget_spent` or `review_rounds_spent` as {#resume}; `step_reviewing` for a step being reviewed (a park
     #   would hold back the review pane's turn end, which decides the round)
-    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
+    def park(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
       unchanged = nil
-      run = @change.call(run_id) do |read|
+      run = @change.call(run_id, actor: actor, cause: "park") do |read|
         stored = read.thawed
         refuse_resume(stored, from: from)
         refuse_reviewing_park(stored, from)
@@ -200,12 +204,13 @@ module Workspace
     # (`retries` above 0) is not held to the allowance and budget a second time: its attempt was counted then.
     #
     # @param id [String] the park's id; any other changes nothing
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Resumed] the run afterwards, and why the resume did nothing (its note kept for the next attempt), or nil
     # @raise [Workspace::Error] see {#resume}; the run stays parked
-    def release_park(run_id, id)
+    def release_park(run_id, id, actor:)
       follow = nil
       unchanged = nil
-      run = @change.call(run_id) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: "release_park") do |read, ctx|
         parked = read.parked
         next unless parked && parked["id"] == id
         refuse_unrecoverable_guard(read.to_h)
@@ -233,10 +238,11 @@ module Workspace
     #
     # @param id [String] the park's id; any other changes nothing
     # @param code [String] why, stored as the reason's `error`, with +message+
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def park_failed(run_id, id, code:, message:)
-      @change.call(run_id) do |read|
+    def park_failed(run_id, id, code:, message:, actor:)
+      @change.call(run_id, actor: actor, cause: "park_failed") do |read|
         stored = read.thawed
         next unless stored.dig("parked", "id") == id
         if step_state(stored).dig("gate", "state") == "waiting"
@@ -288,11 +294,12 @@ module Workspace
     # recorded on the reviewed attempt), and its review window is closed once the lock is given up.
     #
     # @param cause [String] who ended it: "cancel", or "kill" when its workspace was killed
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def cancel(run_id, cause: "cancel")
+    def cancel(run_id, actor:, cause: "cancel")
       follow = nil
-      run = @change.call(run_id) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: cause) do |read, ctx|
         follow = ctx
         read = @progress.end_round(read, how: "cancelled", ctx: ctx) if read.current_step&.state == "reviewing"
         ended = @progress.finish(@attempt_record.abandon(read), "cancelled", ctx: ctx).thawed
@@ -306,11 +313,12 @@ module Workspace
     # Ends every run of a workspace that was killed, so none goes on holding a lock for a checkout that is gone.
     # Never raises: a run whose file is malformed is reported, and the others are still ended.
     #
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Array<String>}] "cancelled", the ids of the runs ended, and "failed", the ones that could not be
-    def workspace_killed(workspace)
+    def workspace_killed(workspace, actor:)
       result = {"cancelled" => [], "failed" => []}
       @store.going.select { |run| run.workspace == workspace }.each do |run|
-        cancel(run.id, cause: "kill")
+        cancel(run.id, actor: actor, cause: "kill")
         result["cancelled"] << run.id
       rescue
         result["failed"] << run.id
@@ -375,7 +383,7 @@ module Workspace
       stored["pending_context"] << WorkflowRun.resume_note(note)
       if guard_retry
         event(stored, "run_resumed", "from" => step, "accept_guard" => guard)
-        dispatch(stored, ctx, budgeted: true)
+        dispatch(stored, ctx, "resume", budgeted: true)
       else
         event(stored, "run_resumed", "step" => step, "state" => "failed", "accept_guard" => guard)
         adopt(stored, @evaluation.evaluate_accepted(stored, ctx: ctx))
@@ -535,7 +543,7 @@ module Workspace
       if held && !from
         event(stored, "run_resumed", "step" => stored["current"], "budget" => "released")
         stored["reason"] = nil
-        dispatch(stored, ctx, context: held["context"], budgeted: budget, retry_of: held.key?("retry_of") ? held.slice("text").merge("attempt" => held["retry_of"]) : nil)
+        dispatch(stored, ctx, "resume", context: held["context"], budgeted: budget, retry_of: held.key?("retry_of") ? held.slice("text").merge("attempt" => held["retry_of"]) : nil)
         return nil
       end
       # A resume skips the wait of a retry; `--from` goes elsewhere and drops it.
@@ -544,7 +552,7 @@ module Workspace
       waiting_retry = nil unless waiting_retry.is_a?(Hash) && waiting_retry["to"].is_a?(String)
       if waiting_retry && !from
         event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"], "backoff" => "skipped")
-        adopt(stored, @progress.start_retry(stored, waiting_retry, ctx: ctx, proven: !pane.nil?, budgeted: budget))
+        adopt(stored, @progress.start_retry(stored, waiting_retry, ctx: ctx, cause: "resume", proven: !pane.nil?, budgeted: budget))
         return held_retry_sentence(stored)
       end
       # The retry a rejection stopped by a limit kept: started by a plain resume, dropped by `--from`.
@@ -559,7 +567,7 @@ module Workspace
         stored.replace(@progress.end_round(stored, how: "from", ctx: ctx).thawed) if state["state"] == "reviewing" || kept
         event(stored, "run_resumed", "from" => from)
         stored["current"] = from
-        dispatch(stored, ctx, budgeted: budget)
+        dispatch(stored, ctx, "resume", budgeted: budget)
         return nil
       end
       event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"])
@@ -567,7 +575,7 @@ module Workspace
       case state["state"]
       when "running"
         if pane
-          dispatch(stored, ctx, budgeted: budget)
+          dispatch(stored, ctx, "resume", budgeted: budget)
         else
           stored["reason"] = nil
           evaluate(stored, ctx)
@@ -580,9 +588,9 @@ module Workspace
         # A step a review rejected starts the retry the rejection kept: its verdicts and write-ups, `retry_of` it.
         if again.is_a?(Hash) && again["step"] == stored["current"] && again["text"].is_a?(String)
           stored["pending_context"] << again["text"]
-          dispatch(stored, ctx, context: again["context"], budgeted: budget, retry_of: again.slice("text", "attempt"))
+          dispatch(stored, ctx, "resume", context: again["context"], budgeted: budget, retry_of: again.slice("text", "attempt"))
         else
-          dispatch(stored, ctx, budgeted: budget)
+          dispatch(stored, ctx, "resume", budgeted: budget)
         end
       end
       nil
@@ -803,7 +811,7 @@ module Workspace
       adopt(run, @dispatch.drop_park(run, how, extra)) if run.key?("parked")
     end
 
-    def dispatch(run, ctx, **options) = adopt(run, @dispatch.dispatch(run, ctx: ctx, **options))
+    def dispatch(run, ctx, cause, **options) = adopt(run, @dispatch.dispatch(run, ctx: ctx, cause: cause, **options))
     def evaluate(run, ctx) = adopt(run, @evaluation.evaluate(run, ctx: ctx))
     def event(run, type, data = {}) = @change.event(run, type, data)
     def bound_pane(run) = @panes.pane_of(run["id"]) || run["pane"]

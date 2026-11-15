@@ -56,7 +56,11 @@
       "at": 0,
       "type": "run_started",
       "workflow": "investigate",
-      "workspace": "simulation"
+      "workspace": "simulation",
+      "from_state": "waiting",
+      "to_state": "running",
+      "actor": "person",
+      "cause": "start"
     },
     {
       "n": 2,
@@ -64,7 +68,12 @@
       "type": "step_dispatching",
       "step": "reproduce",
       "attempt": 1,
-      "pane": "%sim"
+      "pane": "%sim",
+      "cause": "first",
+      "retry_of": null,
+      "from_state": "waiting",
+      "to_state": "running",
+      "actor": "person"
     },
     {
       "n": 3,
@@ -73,7 +82,11 @@
       "step": "reproduce",
       "attempt": 1,
       "pane": "%sim",
-      "delivered": true
+      "delivered": true,
+      "actor": "engine",
+      "cause": "first",
+      "from_state": null,
+      "to_state": null
     },
     {
       "n": 4,
@@ -91,7 +104,11 @@
       "at": 1,
       "type": "step_passed",
       "step": "reproduce",
-      "attempt": 1
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 6,
@@ -99,7 +116,12 @@
       "type": "step_dispatching",
       "step": "diagnose",
       "attempt": 1,
-      "pane": "%sim"
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "running",
+      "to_state": "running",
+      "actor": "daemon"
     },
     {
       "n": 7,
@@ -108,7 +130,11 @@
       "step": "diagnose",
       "attempt": 1,
       "pane": "%sim",
-      "delivered": true
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
     },
     {
       "n": 8,
@@ -126,13 +152,21 @@
       "at": 2,
       "type": "step_passed",
       "step": "diagnose",
-      "attempt": 1
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "waiting",
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 10,
       "at": 2,
       "type": "gate_waiting",
-      "step": "diagnose"
+      "step": "diagnose",
+      "from_state": "running",
+      "to_state": "waiting",
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 11,
@@ -146,7 +180,11 @@
       "n": 12,
       "at": 2,
       "type": "gate_approved",
-      "step": "diagnose"
+      "step": "diagnose",
+      "from_state": "waiting",
+      "to_state": "running",
+      "actor": "person",
+      "cause": "approve"
     },
     {
       "n": 13,
@@ -154,7 +192,12 @@
       "type": "step_dispatching",
       "step": "fix",
       "attempt": 1,
-      "pane": "%sim"
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "waiting",
+      "to_state": "running",
+      "actor": "person"
     },
     {
       "n": 14,
@@ -163,7 +206,11 @@
       "step": "fix",
       "attempt": 1,
       "pane": "%sim",
-      "delivered": true
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
     },
     {
       "n": 15,
@@ -181,12 +228,20 @@
       "at": 3,
       "type": "step_passed",
       "step": "fix",
-      "attempt": 1
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "completed",
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 17,
       "at": 3,
-      "type": "run_completed"
+      "type": "run_completed",
+      "from_state": "running",
+      "to_state": "completed",
+      "actor": "daemon",
+      "cause": "turn_ended"
     }
   ]
 }

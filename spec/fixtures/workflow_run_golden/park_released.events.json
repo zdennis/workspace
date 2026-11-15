@@ -1,41 +1,66 @@
 {
-  "ts": "2026-10-04T12:00:00Z",
+  "ts": "2026-10-04T12:00:00.000Z",
   "type": "run_started",
   "workflow": "flow",
-  "workspace": "app.worktree-x"
+  "workspace": "app.worktree-x",
+  "from_state": "waiting",
+  "to_state": "running",
+  "actor": "person",
+  "cause": "start"
 }
 {
-  "ts": "2026-10-04T12:00:00Z",
+  "ts": "2026-10-04T12:00:00.000Z",
   "type": "step_dispatching",
   "step": "build",
   "attempt": 1,
-  "pane": "%5"
+  "pane": "%5",
+  "cause": "first",
+  "retry_of": null,
+  "from_state": "waiting",
+  "to_state": "running",
+  "actor": "person"
 }
 {
-  "ts": "2026-10-04T12:00:00Z",
+  "ts": "2026-10-04T12:00:00.000Z",
   "type": "step_dispatched",
   "step": "build",
   "attempt": 1,
   "pane": "%5",
-  "delivered": true
+  "delivered": true,
+  "actor": "engine",
+  "cause": "first",
+  "from_state": null,
+  "to_state": null
 }
 {
-  "ts": "2026-10-04T12:00:00Z",
+  "ts": "2026-10-04T12:00:00.000Z",
   "type": "resume_parked",
   "step": "build",
   "pane": "%5",
   "from": null,
-  "has_note": false
+  "has_note": false,
+  "from_state": "waiting",
+  "to_state": "waiting",
+  "actor": "person",
+  "cause": "park"
 }
 {
-  "ts": "2026-10-04T12:00:05Z",
+  "ts": "2026-10-04T12:00:05.000Z",
   "type": "run_resumed",
   "step": "build",
-  "state": "running"
+  "state": "running",
+  "from_state": "waiting",
+  "to_state": "waiting",
+  "actor": "daemon",
+  "cause": "release_park"
 }
 {
-  "ts": "2026-10-04T12:00:05Z",
+  "ts": "2026-10-04T12:00:05.000Z",
   "type": "resume_parked_ended",
   "step": "build",
-  "how": "released"
+  "how": "released",
+  "from_state": "waiting",
+  "to_state": "waiting",
+  "actor": "daemon",
+  "cause": "release_park"
 }

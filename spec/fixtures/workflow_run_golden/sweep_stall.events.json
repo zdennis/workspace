@@ -1,36 +1,56 @@
 {
-  "ts": "2026-10-04T12:00:00Z",
+  "ts": "2026-10-04T12:00:00.000Z",
   "type": "run_started",
   "workflow": "flow",
-  "workspace": "app.worktree-x"
+  "workspace": "app.worktree-x",
+  "from_state": "waiting",
+  "to_state": "running",
+  "actor": "person",
+  "cause": "start"
 }
 {
-  "ts": "2026-10-04T12:00:00Z",
+  "ts": "2026-10-04T12:00:00.000Z",
   "type": "step_dispatching",
   "step": "build",
   "attempt": 1,
-  "pane": "%5"
+  "pane": "%5",
+  "cause": "first",
+  "retry_of": null,
+  "from_state": "waiting",
+  "to_state": "running",
+  "actor": "person"
 }
 {
-  "ts": "2026-10-04T12:00:00Z",
+  "ts": "2026-10-04T12:00:00.000Z",
   "type": "step_dispatched",
   "step": "build",
   "attempt": 1,
   "pane": "%5",
-  "delivered": true
+  "delivered": true,
+  "actor": "engine",
+  "cause": "first",
+  "from_state": null,
+  "to_state": null
 }
 {
-  "ts": "2026-10-04T12:25:00Z",
+  "ts": "2026-10-04T12:25:00.000Z",
   "type": "step_stalled",
   "step": "build",
   "attempt": 1,
   "cause": "idle_turn_over",
-  "idle_for": 1500
+  "idle_for": 1500,
+  "from_state": "running",
+  "to_state": "waiting",
+  "actor": "sweep"
 }
 {
-  "ts": "2026-10-04T12:25:00Z",
+  "ts": "2026-10-04T12:25:00.000Z",
   "type": "step_recovered",
   "step": "build",
   "attempt": 1,
-  "action": "evaluated"
+  "action": "evaluated",
+  "cause": "idle_turn_over",
+  "from_state": "running",
+  "to_state": "waiting",
+  "actor": "sweep"
 }

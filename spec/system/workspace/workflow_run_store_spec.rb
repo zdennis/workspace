@@ -63,6 +63,48 @@ RSpec.describe Workspace::WorkflowRunStore do
     expect(store.run("wr_1").to_h).not_to have_key("note")
   end
 
+  describe "#change with after_write" do
+    it "calls after_write with the run as stored, once the run file is written" do
+      create
+      seen = nil
+      store.change("wr_1", after_write: ->(stored) { seen = [stored.note, JSON.parse(File.read(File.join(runs_dir, "wr_1.json")))["note"]] }) do |run|
+        merged(run, "note" => "written")
+      end
+
+      expect(seen).to eq(%w[written written])
+    end
+
+    it "does not call after_write when the block raises" do
+      create
+      called = false
+
+      expect { store.change("wr_1", after_write: ->(_stored) { called = true }) { raise Workspace::Error, "no" } }.to raise_error(Workspace::Error, "no")
+      expect(called).to be(false)
+    end
+
+    it "calls after_write while the run's lock is still held" do
+      create
+      busy = :not_called
+      store.change("wr_1", after_write: ->(_stored) { busy = described_class.new(dir: runs_dir, archive_dir: archive_dir).change("wr_1", nonblocking: true) { nil } }) { nil }
+
+      expect(busy).to be_nil
+    end
+
+    it "calls after_write for a finished run before the archive move, so the lines it writes move with the run" do
+      create
+      seen = nil
+      after_write = lambda do |_stored|
+        seen = File.exist?(File.join(archive_dir, "wr_1.json"))
+        store.record_event("wr_1", "run_completed")
+      end
+      store.change("wr_1", after_write: after_write) { |run| merged(run, "state" => "completed") }
+
+      expect(seen).to be(false)
+      expect(File.exist?(File.join(runs_dir, "wr_1.events.jsonl"))).to be(false)
+      expect(store.events("wr_1")["events"].map { |event| event["type"] }).to eq(["run_completed"])
+    end
+  end
+
   describe "#stamp" do
     it "is the same for the same runs directory and differs for another, 16 hex digits" do
       other = described_class.new(dir: File.join(@dir, "elsewhere", "runs"), archive_dir: archive_dir)
@@ -100,8 +142,8 @@ RSpec.describe Workspace::WorkflowRunStore do
 
       expect(store.events("wr_1")).to eq(
         "events" => [
-          {"n" => 1, "ts" => "2026-10-04T12:00:00Z", "type" => "run_started", "step" => "plan"},
-          {"n" => 2, "ts" => "2026-10-04T12:00:00Z", "type" => "step_dispatched", "step" => "plan"}
+          {"n" => 1, "ts" => "2026-10-04T12:00:00.000Z", "type" => "run_started", "step" => "plan"},
+          {"n" => 2, "ts" => "2026-10-04T12:00:00.000Z", "type" => "step_dispatched", "step" => "plan"}
         ],
         "truncated" => false, "next_since" => 2, "warnings" => []
       )
@@ -444,9 +486,17 @@ RSpec.describe Workspace::WorkflowRunStore do
 
     lines = File.readlines(store.events_path("wr_1")).map { |line| JSON.parse(line) }
     expect(lines).to eq([
-      {"ts" => "2026-10-04T12:00:00Z", "type" => "run_started", "workflow" => "rpiv"},
-      {"ts" => "2026-10-04T12:00:05Z", "type" => "step_dispatched", "step" => "research", "attempt" => 1}
+      {"ts" => "2026-10-04T12:00:00.000Z", "type" => "run_started", "workflow" => "rpiv"},
+      {"ts" => "2026-10-04T12:00:05.000Z", "type" => "step_dispatched", "step" => "research", "attempt" => 1}
     ])
+  end
+
+  it "stamps events with millisecond resolution" do
+    create
+    now[0] = Time.utc(2026, 10, 4, 12, 0, 0, 123_000)
+    store.record_event("wr_1", "run_started")
+
+    expect(JSON.parse(File.readlines(store.events_path("wr_1")).last)["ts"]).to match(/\.\d{3}Z\z/).and eq("2026-10-04T12:00:00.123Z")
   end
 
   it "does not raise when the history can't be written" do

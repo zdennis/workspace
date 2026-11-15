@@ -1,14 +1,35 @@
 module Workspace
   # The one way a workflow run changes: under the run's lock, with the attempt record's reasons kept before and
-  # after the change, `workflow_changed` written when what a reader sees moved, alerts fired once the lock is given
+  # after the change, the history lines its block wrote ({#event}) queued and written with `from_state`, `to_state`, `actor` and `cause`
+  # once the run is stored and before the lock is given up, `workflow_changed` written when what a reader sees moved, alerts fired once the lock is given
   # up with what the block registered to follow it ({Context#after_lock}), and then the line of a step the change started typed, through +deliver+. It never runs a check, a review round or a window close: a
   # block that registers one reads it back from its {Context} and the caller runs it through
   # {WorkflowEvaluation#finish_follow_ups}.
   class WorkflowRunChange
+    # Who a change can be made by: the run's agent, a person, the sweep and the agent daemon, or the engine itself.
+    # The rule: a change carries the actor that began the action, including the checks and review-round decisions that
+    # follow it once the lock is given up, so a step's `step_passed` reads the same with or without a `status:` check.
+    # `engine` is kept only for changes no outside actor asks for: the settle after a line is typed, `record_remote`,
+    # a review round's delivery and a round's rerun.
+    ACTORS = %w[engine agent person sweep daemon].freeze
+
     # What one change hands out of its block: the step line to type after the lock, the check to run, the review round to
-    # run, the ended round whose revision is computed again and the review window to close.
+    # run, the ended round whose revision is computed again, the review window to close and the history lines queued.
     # A new one is made for every {WorkflowRunChange#call}, so no follow-up outlives the change that made it.
     class Context
+      # @return [String] who made the change, one of {ACTORS}
+      attr_reader :actor
+
+      # @return [String] why the change was made, a short snake_case code; the default `cause` of the lines it queues
+      attr_reader :cause
+
+      # @param actor [String] one of {ACTORS}
+      # @param cause [String] why the change is made
+      def initialize(actor, cause)
+        @actor = actor
+        @cause = cause
+      end
+
       # @return [Hash{String=>Object}, nil] the step line registered with {#deliver}
       attr_reader :delivery
 
@@ -64,6 +85,19 @@ module Workspace
 
       # @return [Array<Proc>] the blocks registered with {#after_lock}, in order
       def after_locks = @after_lock || []
+
+      # Queues a line of the run's history, written once the run is stored, with the change's `from_state` and
+      # `to_state`; dropped when the change raises.
+      #
+      # @param type [String]
+      # @param data [Hash{String=>Object}]
+      # @return [void]
+      def event(type, data = {})
+        (@events ||= []) << [type, data]
+      end
+
+      # @return [Array<Array(String, Hash)>] the lines queued with {#event}, in order
+      def events = @events || []
     end
 
     # @param store [Workspace::WorkflowRunStore]
@@ -82,23 +116,32 @@ module Workspace
     # Runs one change to a run under its lock and announces it, then types the line of a step the change started.
     #
     # @param run_id [String]
+    # @param actor [String] who makes the change, one of {ACTORS}; written on every history line the change queues
+    # @param cause [String] why the change is made, a short snake_case code (`approve`, `turn_ended`, `tick`, ...);
+    #   written on every history line the change queues that has no `cause` of its own
     # @param nonblocking [Boolean] return nil at once when another process is changing the run
     # @yieldparam run [WorkflowRun] the stored run, with its reason history kept
     # @yieldparam ctx [Context] this change's follow-ups
     # @yieldreturn [WorkflowRun, nil] the run to store; nil means no change: the run as given is stored
     # @return [WorkflowRun, Object, nil] the run afterwards, or what +deliver+ returned when a line was
     #   registered; nil when +nonblocking+ and the run is busy
+    # @raise [ArgumentError] when +actor+ is not one of {ACTORS}, or +cause+ is not a non-empty String
     # @raise [Workspace::Error] code `unknown_run`, `run_not_active`, and what the block raises
-    def call(run_id, nonblocking: false)
-      ctx = Context.new
+    def call(run_id, actor:, cause:, nonblocking: false)
+      raise ArgumentError, "unknown actor #{actor.inspect}, expected one of #{ACTORS.join(", ")}" unless ACTORS.include?(actor)
+      raise ArgumentError, "a run change needs a cause, got #{cause.inspect}" unless cause.is_a?(String) && !cause.empty?
+      ctx = Context.new(actor, cause)
       before = nil
       alert_before = nil
-      run = @store.change(run_id, nonblocking: nonblocking) do |read|
+      from_state = nil
+      after_write = ->(stored) { flush(run_id, ctx, from_state, stored.state) }
+      run = @store.change(run_id, nonblocking: nonblocking, after_write: after_write) do |read|
         before = WorkflowTransitions.fingerprint(read.to_h)
         alert_before = @alerts&.marks(read)
+        from_state = read.state
         was_open = @attempt_record.open_attempt(read.to_h)
         given = @attempt_record.reasons(run: read)
-        changed = yield(given, ctx) || given
+        changed = queueing(run_id, ctx) { yield(given, ctx) } || given
         raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(WorkflowRun)
         @attempt_record.reasons(run: changed, was_open: was_open)
       end
@@ -109,17 +152,46 @@ module Workspace
       ctx.delivery ? @deliver.call(run_id, ctx.delivery) : run
     end
 
-    # Appends one line to the run's history at once.
+    # Appends one line to the run's history. Inside the block of a {#call} for the same run on this thread, the line
+    # is queued ({Context#event}) and written once the run is stored, still under the lock; anywhere else (another
+    # run, an after-lock block, +deliver+) it is written at once. A change that raises writes none of its queued lines,
+    # by design: a block that raises after a side effect (a pane bound, say) leaves no line for that side effect.
     #
     # @param run [Hash{String=>Object}, WorkflowRun] the run, for its id
     # @param type [String]
     # @param data [Hash{String=>Object}]
     # @return [void]
     def event(run, type, data = {})
-      @store.record_event(run.is_a?(WorkflowRun) ? run.id : run["id"], type, data)
+      id = run.is_a?(WorkflowRun) ? run.id : run["id"]
+      ctx = queues[id]
+      ctx ? ctx.event(type, data) : @store.record_event(id, type, data)
     end
 
     private
+
+    # Thread-local, not fiber-local (+Thread.current[]+), so a block that runs its work in a fiber still queues. It
+    # assumes one WorkflowRunChange changes a given run on a thread at a time.
+    def queues
+      Thread.current.thread_variable_get(:workspace_run_change_queues) ||
+        Thread.current.thread_variable_set(:workspace_run_change_queues, {})
+    end
+
+    def queueing(run_id, ctx)
+      previous = queues[run_id]
+      queues[run_id] = ctx
+      yield
+    ensure
+      previous ? queues[run_id] = previous : queues.delete(run_id)
+    end
+
+    def flush(run_id, ctx, from_state, to_state)
+      stamps = {"from_state" => from_state, "to_state" => to_state, "actor" => ctx.actor, "cause" => ctx.cause}
+      ctx.events.each do |type, data|
+        @store.record_event(run_id, type, data.merge(stamps) { |_, own, _| own })
+      rescue
+        nil
+      end
+    end
 
     def after_lock(block, run)
       block.call(run)

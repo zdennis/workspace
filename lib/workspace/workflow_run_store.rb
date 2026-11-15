@@ -168,11 +168,14 @@ module Workspace
     #
     # @param id [String] a run id
     # @param nonblocking [Boolean] return nil at once when another process is changing the run
+    # @param after_write [#call, nil] given the run as stored, called once it is written and before a finished run
+    #   is archived (so the lines it writes move with the run), while the lock is still held; skipped when the block
+    #   or the write raises. It must not raise.
     # @yieldparam run [WorkflowRun] the stored run
     # @yieldreturn [WorkflowRun, nil] the run to store; nil stores the run as read
     # @return [WorkflowRun, nil] the run stored; nil when `nonblocking` and the run is busy
     # @raise [Workspace::Error] code `unknown_run`, or `run_not_active` for a finished run
-    def change(id, nonblocking: false)
+    def change(id, nonblocking: false, after_write: nil)
       raise_unknown(id) unless valid_id?(id)
       lock_path = File.join(@dir, "#{id}.lock")
       FileLock.new(lock_path).hold(nonblocking: nonblocking) do
@@ -195,6 +198,7 @@ module Workspace
         read_value = WorkflowRun.from_h(hash)
         stored = yield(read_value) || read_value
         write(stored.to_h)
+        after_write&.call(stored)
         archive(stored.to_h, lock_path) if TERMINAL_STATES.include?(stored.state)
         stored
       end
@@ -210,7 +214,7 @@ module Workspace
     # @param data [Hash{String=>Object}] details of it
     # @return [void]
     def record_event(id, type, data = {})
-      line = JSON.generate({"ts" => @clock.call.utc.iso8601, "type" => type}.merge(data)) + "\n"
+      line = JSON.generate({"ts" => @clock.call.utc.iso8601(3), "type" => type}.merge(data)) + "\n"
       File.open(events_path(id), File::WRONLY | File::APPEND | File::CREAT, 0o600) { |file| file.syswrite(line) }
     rescue SystemCallError, JSON::GeneratorError, EncodingError
       nil

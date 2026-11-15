@@ -1,0 +1,6 @@
+# build keeps failing: after the retries are spent the run waits for a person (step_retry_blocked or step_failed).
+steps:
+  build:
+    - {check: fail}
+    - {check: fail}
+    - {check: fail}

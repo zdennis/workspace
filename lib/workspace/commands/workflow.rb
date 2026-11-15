@@ -500,10 +500,10 @@ module Workspace
         end
         pane_id = pane ? @panes.locate(workspace, pane) : @panes.default_pane(workspace)
         if caller_in_pane?(workspace, caller_pane, pane_id) && @panes.parkable?(workspace, pane_id)
-          created = @engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id, note: note, dispatch: false)
+          created = @engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id, actor: "person", note: note, dispatch: false)
           return park_resume(WorkflowRun.from_h(created), from: nil, note: nil, pane: nil, target: pane_id, turn_over: nil).merge("inputs_from" => from)
         end
-        row(@engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id, note: note), "started").merge("inputs_from" => from)
+        row(@engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id, actor: "person", note: note), "started").merge("inputs_from" => from)
       end
 
       # Prints where runs stand: one run, or the runs of a scope.
@@ -769,7 +769,7 @@ module Workspace
             @panes.parkable?(stored.workspace, target)
           return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
         end
-        resumed = @engine.resume(run, from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
+        resumed = @engine.resume(run, actor: "person", from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
           accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane)
         row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.")
       end
@@ -778,7 +778,7 @@ module Workspace
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
       def cancel(run:)
-        row(@engine.cancel(run), "cancelled")
+        row(@engine.cancel(run, actor: "person"), "cancelled")
       end
 
       # Passes a gate. Refused from a pane a run is bound to, and from a
@@ -794,7 +794,7 @@ module Workspace
       # @raise [Workspace::Error] code `bound_pane`, or see {Workspace::WorkflowEngine#approve}
       def approve(run:, note: nil, step: nil, attempt: nil, note_sha256: nil, caller_pane: nil)
         guard = ->(stored) { refuse_caller!(WorkflowRun.from_h(stored), caller_pane, "workflow approve") }
-        row(@engine.approve(run, note: note, step: step, attempt: attempt, note_sha256: note_sha256, guard: guard), "approved")
+        row(@engine.approve(run, actor: "person", note: note, step: step, attempt: attempt, note_sha256: note_sha256, guard: guard), "approved")
       end
 
       # Turns a gate down, refused where {#approve} is.
@@ -812,7 +812,7 @@ module Workspace
       # @raise [Workspace::Error] code `bound_pane`, or see {Workspace::WorkflowEngine#reject}
       def reject(run:, note:, to: nil, step: nil, attempt: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, caller_pane: nil)
         guard = ->(stored) { refuse_caller!(WorkflowRun.from_h(stored), caller_pane, "workflow reject") }
-        row(@engine.reject(run, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds), "rejected")
+        row(@engine.reject(run, actor: "person", note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds), "rejected")
       end
 
       # What the agent daemon runs when a turn ends in a bound pane, and on
@@ -842,7 +842,7 @@ module Workspace
           refuse_caller!(stored, caller_pane, "workflow advance", "A guarded or checked step is decided by the agent daemon")
         end
         return release_parked(stored, caller_pane) if stored&.parked
-        turn_ended ? @engine.turn_ended(run, pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || []) : @engine.tick(run)
+        turn_ended ? @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || []) : @engine.tick(run, actor: "daemon")
         nil
       end
 
@@ -861,7 +861,7 @@ module Workspace
           raise UsageError, "--code #{refusal}"
         end
         run_id = bound_run!(pane)
-        reported = @engine.report(run_id, status: status, summary: summary, code: code)
+        reported = @engine.report(run_id, actor: "agent", status: status, summary: summary, code: code)
         @output.puts "Recorded #{status} for step #{reported["step"]} (attempt #{reported["attempt"]}) of run #{run_id}. " \
           "End your turn now; the step is decided when the turn ends."
         {"workspace" => @store.run(run_id).workspace, "outcome" => "recorded", "reason" => nil, "message" => nil, "run_id" => run_id,
@@ -1426,7 +1426,7 @@ module Workspace
       # the resume is stored and the daemon carries it out once this turn ends.
       def park_resume(stored, from:, note:, pane:, target:, turn_over:, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
         existing = WorkflowEngine.parked(stored.to_h, @clock.call) == :waiting
-        parked = @engine.park(stored.id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
+        parked = @engine.park(stored.id, actor: "person", from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
         if parked["unchanged"]
           message = "Nothing was done: #{parked["unchanged"]}."
           if existing
@@ -1502,7 +1502,7 @@ module Workspace
       # A release that raised would raise again on every tick, and with proof ahead of
       # expiry would never reach the limit, so any failure ends the park.
       def release_park(run)
-        released = @engine.release_park(run.id, run.parked["id"])
+        released = @engine.release_park(run.id, run.parked["id"], actor: "daemon")
         unchanged = released && released["unchanged"]
         @error_output.puts "workflow: the parked resume of run #{run.id} did nothing: #{unchanged}" if unchanged
         nil
@@ -1517,7 +1517,7 @@ module Workspace
       end
 
       def end_park(run, code, message)
-        @engine.park_failed(run.id, run.parked["id"], code: code, message: message)
+        @engine.park_failed(run.id, run.parked["id"], code: code, message: message, actor: "daemon")
         nil
       rescue Workspace::Error => e
         park_not_ended(run, e) unless RUN_ENDED_CODES.include?(e.code)

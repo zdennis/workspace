@@ -68,7 +68,7 @@ RSpec.describe Workspace::WorkflowEngine, "golden run files" do
   end
 
   def begin_run
-    engine.start(definition: flow, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+    engine.start(actor: "person", definition: flow, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
   end
 
   def tokens(text)
@@ -90,41 +90,41 @@ RSpec.describe Workspace::WorkflowEngine, "golden run files" do
 
   it "records a park" do
     begin_run
-    engine.turn_ended("wr_1", pane: "%5")
-    engine.park("wr_1", note: "later")
+    engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+    engine.park("wr_1", actor: "person", note: "later")
 
     golden("parked")
   end
 
   it "records a parked resume once it is released" do
     begin_run
-    engine.turn_ended("wr_1", pane: "%5")
-    id = engine.park("wr_1")["parked"]["id"]
+    engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+    id = engine.park("wr_1", actor: "person")["parked"]["id"]
     now[0] += 5
-    engine.release_park("wr_1", id)
+    engine.release_park("wr_1", id, actor: "daemon")
 
     golden("park_released")
   end
 
   it "records a resume of a step whose turn ended without its files" do
     begin_run
-    engine.turn_ended("wr_1", pane: "%5")
+    engine.turn_ended("wr_1", actor: "agent", pane: "%5")
     now[0] += 5
-    engine.resume("wr_1", note: "again")
+    engine.resume("wr_1", actor: "person", note: "again")
 
     golden("resumed")
   end
 
   it "records a cancel" do
     begin_run
-    engine.cancel("wr_1")
+    engine.cancel("wr_1", actor: "person")
 
     golden("cancelled")
   end
 
   it "records a killed workspace" do
     begin_run
-    engine.workspace_killed("app.worktree-x")
+    engine.workspace_killed("app.worktree-x", actor: "person")
 
     golden("workspace_killed")
   end

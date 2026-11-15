@@ -1228,8 +1228,8 @@ RSpec.describe Workspace::Commands::Kill, "task archiving" do
     order = []
     out = StringIO.new
     runs = double("workflow_runs")
-    allow(runs).to receive(:workspace_killed) do |workspace|
-      order << [:runs, workspace]
+    allow(runs).to receive(:workspace_killed) do |workspace, actor:|
+      order << [:runs, workspace, actor]
       {"cancelled" => %w[wr_1 wr_2], "failed" => ["wr_3"]}
     end
     allow(git).to receive(:remove_worktree) { order << :remove }
@@ -1239,7 +1239,7 @@ RSpec.describe Workspace::Commands::Kill, "task archiving" do
 
     with_runs.call(name, confirm: false)
 
-    expect(order).to eq([:remove, [:runs, name], :stop])
+    expect(order).to eq([:remove, [:runs, name, "person"], :stop])
     expect(out.string).to include("Cancelled workflow run wr_1.\nCancelled workflow run wr_2.\n" \
       "Warning: workflow run wr_3 could not be ended (its run file may be malformed). If it holds a lock, free it with `workspace lock clear NAME`.\n")
   end

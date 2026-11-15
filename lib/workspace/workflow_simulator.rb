@@ -92,7 +92,7 @@ module Workspace
         commands_config: SimCommands.new, lineage: SimLineage.new, git: SimGit.new, guard: guard, excludes: SimExcludes.new, gate_note: SimGateNote.new,
         attempt_record: records, require_check: SimRequire.new(script), review_round: round_runner(store, script), review_closer: ->(_run_id, _round) {},
         review_tally: WorkflowReviewTally.new(proof: SimVerdictProof.new), review_revision: SimRevision.new(script), clock: clock)
-      run = WorkflowRun.from_h(engine.start(definition: definition, workspace: WORKSPACE, worktree: checkout, inputs: inputs, pane: PANE))
+      run = WorkflowRun.from_h(engine.start(definition: definition, workspace: WORKSPACE, worktree: checkout, inputs: inputs, pane: PANE, actor: "person"))
       actions, capped = drive(engine, store, run.id, definition.to_h, script, clock, records)
       report(store, run.id, definition.to_h, clock, actions, capped)
     end
@@ -151,17 +151,17 @@ module Workspace
       when :backoff
         clock.advance_to(Time.iso8601(run.backoff["until"]))
         store.record_event(id, "simulated_wait", "step" => step, "until" => run.backoff["until"])
-        engine.tick(id)
+        engine.tick(id, actor: "daemon")
       when :gate
         number = run.step(step).last_attempt.n
         said = script.attempt(step, number)
         if said["gate"] == "reject"
           note = said["note"] || "rejected by the script"
           store.record_event(id, "simulated_person", "action" => "reject", "step" => step, "attempt" => number)
-          engine.reject(id, note: note)
+          engine.reject(id, actor: "person", note: note)
         else
           store.record_event(id, "simulated_person", "action" => "approve", "step" => step, "attempt" => number)
-          engine.approve(id, note: said["note"])
+          engine.approve(id, actor: "person", note: said["note"])
         end
       when :turn
         turn(engine, store, run, data, script, records, clock)
@@ -188,7 +188,7 @@ module Workspace
       end
       store.record_event(id, "simulated_reviewers", {"step" => step, "attempt" => number, "round" => round["round"], "reviews" => said}.merge(rerun.zero? ? {} : {"rerun" => rerun}))
       clock.advance(1)
-      engine.turn_ended(id, pane: REVIEW_PANE)
+      engine.turn_ended(id, actor: "daemon", pane: REVIEW_PANE)
     end
 
     def turn(engine, store, run, data, script, records, clock)
@@ -201,10 +201,10 @@ module Workspace
       files.each { |file| write(run, file, clock) }
       store.record_event(id, "simulated_agent", {"action" => "turn", "step" => step, "attempt" => number, "wrote" => files}.merge(said.slice("report", "summary", "code")))
       records.tokens[[step, number]] = said["tokens"].to_i
-      engine.report(id, status: said["report"], summary: said["summary"], code: said["code"]) if said["report"]
+      engine.report(id, actor: "agent", status: said["report"], summary: said["summary"], code: said["code"]) if said["report"]
       # The turn takes a second, so the next attempt starts after this one's files and an old file reads as stale.
       clock.advance(1)
-      engine.turn_ended(id, pane: PANE)
+      engine.turn_ended(id, actor: "daemon", pane: PANE)
     end
 
     def write(run, file, clock)

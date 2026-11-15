@@ -259,7 +259,7 @@ module Workspace
       wanted = false
       # Read before the lock is taken: no tmux call is made under the run's lock.
       server = server_pid(window[:pane])
-      after = @change.call(run.id) do |read|
+      after = @change.call(run.id, actor: "engine", cause: "review_round") do |read|
         unless wanted?(read, pending)
           moved = !left_to_round?(read, pending, window)
           next
@@ -296,7 +296,7 @@ module Workspace
     # gets the window closed.
     def delivered(run, pending, window, kick = {})
       moved = false
-      after = @change.call(run.id) do |read|
+      after = @change.call(run.id, actor: "engine", cause: "review_round") do |read|
         unless wanted?(read, pending)
           moved = !taken_over?(read, pending) && !ours_recorded?(read, pending, window)
           next
@@ -333,7 +333,7 @@ module Workspace
     def failed(run, pending, window, code, message, close: true, typed: false)
       close = false if (window && window[:reused]) || typed
       shut = close
-      after = @change.call(run.id) do |read|
+      after = @change.call(run.id, actor: "engine", cause: "review_round") do |read|
         unless wanted?(read, pending)
           shut = !left_to_round?(read, pending, window)
           next

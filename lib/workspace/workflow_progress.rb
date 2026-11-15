@@ -185,9 +185,10 @@ module Workspace
     # @param proven [Boolean] the pane is one a person named, so its identity is not compared (it must still
     #   exist and not belong to another run)
     # @param budgeted [Boolean] false starts the attempt even when the token budget is used up
+    # @param cause [String] why the retry starts, written on its `step_dispatching`: `backoff_ended`, or `resume` when a person skips the wait
     # @return [WorkflowRun] the run afterwards
-    def start_retry(run, waiting = nil, ctx:, proven: false, budgeted: true)
-      over(run) { |work| retry_in(work, waiting || work.delete("backoff"), ctx, proven, budgeted) }
+    def start_retry(run, waiting = nil, ctx:, cause:, proven: false, budgeted: true)
+      over(run) { |work| retry_in(work, waiting || work.delete("backoff"), ctx, proven, budgeted, cause) }
     end
 
     # Keeps a retry from starting without spending it: the wait is kept, marked `blocked` so a tick or the
@@ -534,7 +535,7 @@ module Workspace
       following = ids[ids.index(run["current"]) + 1]
       return complete(run, ctx) unless following
       run["current"] = following
-      dispatch(run, ctx, {})
+      dispatch(run, ctx, "next_step", {})
     end
 
     def complete(run, ctx)
@@ -555,6 +556,7 @@ module Workspace
       run["steps"].each_value { |each| each.delete("review_window") if each.is_a?(Hash) }
       run.delete("review_retry")
       run.delete("retry_of_pending")
+      run.delete("dispatch_cause_pending")
       ctx.close_review({"workspace" => run["workspace"], "step" => nil, "round" => nil, "pane" => nil}) if ctx && reviewed
       run["state"] = state
       run["reason"] = nil
@@ -584,7 +586,7 @@ module Workspace
         return wait_to_retry(run, step, on_fail, text, wait, attempt) if wait
         run["pending_context"] << text
         run["current"] = next_move[:to]
-        return dispatch(run, ctx, {context: on_fail["context"], retry_of: {"text" => text}})
+        return dispatch(run, ctx, "loop", {context: on_fail["context"], retry_of: {"text" => text}})
       end
       @dispatch.release(run)
       run["state"] = "waiting"
@@ -611,7 +613,7 @@ module Workspace
                                                "seconds" => wait, "loops" => run["loops"]})
     end
 
-    def retry_in(run, waiting, ctx, proven, budgeted)
+    def retry_in(run, waiting, ctx, proven, budgeted, cause)
       problem = retry_pane_problem(run, waiting, proven: proven)
       return hold_in(run, waiting, problem, bound_pane(run)) if problem
       to = waiting["to"]
@@ -619,7 +621,7 @@ module Workspace
       event(run, "step_retry_started", "from" => run["current"], "to" => to)
       run["current"] = to
       run["reason"] = nil
-      dispatch(run, ctx, {context: waiting["context"], budgeted: budgeted, retry_of: waiting.slice("pane", "identity", "text")})
+      dispatch(run, ctx, cause, {context: waiting["context"], budgeted: budgeted, retry_of: waiting.slice("pane", "identity", "text")})
     end
 
     def hold_in(run, waiting, problem, pane)
@@ -650,8 +652,8 @@ module Workspace
       adopt(run, WorkflowRun.from_h(run).with_attempt(step["id"], finished))
     end
 
-    def dispatch(run, ctx, options)
-      adopt(run, @dispatch.dispatch(run, ctx: ctx, **options))
+    def dispatch(run, ctx, cause, options)
+      adopt(run, @dispatch.dispatch(run, ctx: ctx, cause: cause, **options))
     end
 
     def event(run, type, data = {}) = @change.event(run, type, data)

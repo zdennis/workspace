@@ -81,11 +81,12 @@ module Workspace
     # @param turn_started [Time, nil] when the turn that ended began; one that began before the step's attempt did decides nothing
     # @param stopped_at [Time, nil] when the turn's end was seen; one from before the attempt began decides nothing
     # @param background [Array<Hash>] the background tasks the agent still listed when its turn ended
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def turn_ended(run_id, pane: nil, turn_started: nil, stopped_at: nil, background: [])
+    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [])
       follow = nil
-      run = @change.call(run_id) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: "turn_ended") do |read, ctx|
         stored = read.to_h
         next if stored["parked"]
         state = step_state(stored)
@@ -112,11 +113,12 @@ module Workspace
     # @param status [String] "pass" or "fail"
     # @param summary [String, nil] one line about the attempt
     # @param code [String, nil] a word the agent chose for why (stored; a failed step's `details.code`)
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Reported]
     # @raise [Workspace::Error] code `step_not_running` when the run's step is not being worked on
-    def report(run_id, status:, summary: nil, code: nil)
+    def report(run_id, actor:, status:, summary: nil, code: nil)
       result = nil
-      @change.call(run_id) do |read|
+      @change.call(run_id, actor: actor, cause: "report") do |read|
         stored = read.thawed
         state = step_state(stored)
         unless %w[running checking].include?(state["state"])
@@ -208,8 +210,8 @@ module Workspace
     def finish_follow_ups(run_id, ctx, run)
       return run unless ctx
       @review_closer.call(run_id, ctx.close_review) if ctx.close_review && @review_closer
-      run = finish_check(run_id, ctx.check) if ctx.check
-      return finish_review_end(run_id, ctx.review_end) if ctx.review_end
+      run = finish_check(run_id, ctx.check, ctx.actor, ctx.cause) if ctx.check
+      return finish_review_end(run_id, ctx.review_end, ctx.actor, ctx.cause) if ctx.review_end
       review = ctx.review
       review ? start_round(run_id, review, run) : run
     end
@@ -220,12 +222,14 @@ module Workspace
     #
     # @param run_id [String]
     # @param check [Hash{String=>Object}] the proof or check {#evaluate} registered on its context
+    # @param cause [String] the cause of that change; its results carry it too
+    # @param actor [String] the actor of the change that registered the check; its results carry it too
     # @return [WorkflowRun] the run afterwards; as stored when it was cancelled while the check ran
-    def finish_check(run_id, check)
+    def finish_check(run_id, check, actor, cause)
       run = nil
       review = nil
       while check
-        run, check, registered = apply_check(run_id, check, run_check(run_id, check))
+        run, check, registered = apply_check(run_id, check, run_check(run_id, check), actor, cause)
         review = registered if registered
       end
       review ? start_round(run_id, review, run) : run
@@ -258,12 +262,12 @@ module Workspace
     # still waits for this recompute ({WorkflowTransitions.round_recompute_wanted?}), decides the round: a revision that can't be computed stops
     # `review_incomplete`, one that differs from the revision the round was delivered with stops `review_stale` (no
     # loop, no further round), and an unchanged one is tallied. What that decision registers is followed up in turn.
-    def finish_review_end(run_id, pending)
+    def finish_review_end(run_id, pending, actor, cause)
       read = @store.run(run_id)
       step = read.definition["steps"].find { |each| each["id"] == pending["step"] }
       answer = @review_revision.call(run: read, step: step, stop_when: -> { !round_still_wanted?(run_id, pending) })
       follow = nil
-      run = @change.call(run_id) do |current, ctx|
+      run = @change.call(run_id, actor: actor, cause: cause) do |current, ctx|
         next unless WorkflowTransitions.round_recompute_wanted?(current, pending)
         follow = ctx
         judge_round(current, answer, ctx)
@@ -469,10 +473,10 @@ module Workspace
     end
 
     # @return [Array] the run afterwards, and what to run next outside the lock, or nil
-    def apply_check(run_id, check, result)
+    def apply_check(run_id, check, result, actor, cause)
       following = nil
       review = nil
-      run = @change.call(run_id) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: cause) do |read, ctx|
         next if read.parked
         stored = read.thawed
         state = step_state(stored)

@@ -84,57 +84,64 @@ module Workspace
     def check_plan(definition:, step:, worktree:) = @starter.check_plan(definition: definition, step: step, worktree: worktree)
 
     # Creates a run and starts its first step. See {WorkflowStarter#start}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run after its first transition, or as created
-    def start(definition:, workspace:, worktree:, inputs:, pane:, note: nil, dispatch: true)
-      @starter.start(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane, note: note, dispatch: dispatch).to_h
+    def start(definition:, workspace:, worktree:, inputs:, pane:, actor:, note: nil, dispatch: true)
+      @starter.start(definition: definition, actor: actor, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane, note: note, dispatch: dispatch).to_h
     end
 
     # The agent's turn ended in the run's pane: decides the current step. See {WorkflowEvaluation#turn_ended}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run afterwards
-    def turn_ended(run_id, pane: nil, turn_started: nil, stopped_at: nil, background: [])
-      @evaluation.turn_ended(run_id, pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background).to_h
+    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [])
+      @evaluation.turn_ended(run_id, actor: actor, pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background).to_h
     end
 
     # Records what the agent says about its current attempt. See {WorkflowEvaluation#report}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] "run_id", "step", "attempt" and "reported"
-    def report(run_id, status:, summary: nil, code: nil)
-      reported = @evaluation.report(run_id, status: status, summary: summary, code: code)
+    def report(run_id, actor:, status:, summary: nil, code: nil)
+      reported = @evaluation.report(run_id, actor: actor, status: status, summary: summary, code: code)
       {"run_id" => reported.run_id, "step" => reported.step, "attempt" => reported.attempt, "reported" => reported.reported}
     end
 
     # Passes a gate: the run goes on to the step after the gated one. See {WorkflowDecisions#approve}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run afterwards
-    def approve(run_id, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
-      @decisions.approve(run_id, note: note, step: step, attempt: attempt, note_sha256: note_sha256, guard: guard).to_h
+    def approve(run_id, actor:, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
+      @decisions.approve(run_id, actor: actor, note: note, step: step, attempt: attempt, note_sha256: note_sha256, guard: guard).to_h
     end
 
     # Turns a gate down: the gated step, or an earlier one, runs again. See {WorkflowDecisions#reject}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run afterwards
-    def reject(run_id, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
-      @decisions.reject(run_id, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds).to_h
+    def reject(run_id, actor:, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
+      @decisions.reject(run_id, actor: actor, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds).to_h
     end
 
     # Gets a run that is not moving going again. See {WorkflowDecisions#resume}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was done
-    def resume(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
+    def resume(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
       extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil)
-      resumed_h(@decisions.resume(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
+      resumed_h(@decisions.resume(run_id, actor: actor, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
         accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane))
     end
 
     # Stores a resume for later, with {#resume}'s arguments. See {WorkflowDecisions#park}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was stored
-    def park(run_id, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
-      resumed_h(@decisions.park(run_id, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds))
+    def park(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
+      resumed_h(@decisions.park(run_id, actor: actor, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds))
     end
 
     # Carries out the parked resume +id+. See {WorkflowDecisions#release_park}.
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when the resume did nothing
-    def release_park(run_id, id) = resumed_h(@decisions.release_park(run_id, id))
+    def release_park(run_id, id, actor:) = resumed_h(@decisions.release_park(run_id, id, actor: actor))
 
     # Ends a park that can't be released; the run waits for a person. See {WorkflowDecisions#park_failed}.
     # @return [Hash{String=>Object}] the run afterwards
-    def park_failed(run_id, id, code:, message:) = @decisions.park_failed(run_id, id, code: code, message: message).to_h
+    def park_failed(run_id, id, code:, message:, actor:) = @decisions.park_failed(run_id, id, code: code, message: message, actor: actor).to_h
 
     # What {#resume} refuses, checked without changing anything. See {WorkflowDecisions#refuse_resume}.
     # @return [void]
@@ -144,70 +151,76 @@ module Workspace
 
     # Ends a run: gives up its resources and frees its pane. See {WorkflowDecisions#cancel}.
     # @return [Hash{String=>Object}] the run afterwards
-    def cancel(run_id, cause: "cancel") = @decisions.cancel(run_id, cause: cause).to_h
+    def cancel(run_id, actor:, cause: "cancel") = @decisions.cancel(run_id, actor: actor, cause: cause).to_h
 
     # Ends every run of a workspace that was killed. See {WorkflowDecisions#workspace_killed}.
     # @return [Hash{String=>Array<String>}] "cancelled" and "failed" run ids
-    def workspace_killed(workspace) = @decisions.workspace_killed(workspace)
+    def workspace_killed(workspace, actor:) = @decisions.workspace_killed(workspace, actor: actor)
 
     # The periodic look at a run nothing else will wake. See {WorkflowRecovery#tick}.
     # @return [Hash{String=>Object}, nil] the run afterwards; nil when nothing was done
-    def tick(run_id) = @recovery.tick(run_id)&.to_h
+    def tick(run_id, actor:) = @recovery.tick(run_id, actor: actor)&.to_h
 
     # Records a stall the sweep found. See {WorkflowRecovery#note_stall}.
     # @return [Symbol] :recorded, :repeat, :moved_on or :busy
-    def note_stall(run_id, step:, attempt:, cause:, data: {}) = @recovery.note_stall(run_id, step: step, attempt: attempt, cause: cause, data: data)
+    def note_stall(run_id, actor:, step:, attempt:, cause:, data: {}) = @recovery.note_stall(run_id, actor: actor, step: step, attempt: attempt, cause: cause, data: data)
 
     # Records that the sweep put right a stall it noted. See {WorkflowRecovery#note_recovery}.
     # @return [Symbol] :recorded, :repeat, :moved_on
-    def note_recovery(run_id, step:, attempt:, cause:, action:) = @recovery.note_recovery(run_id, step: step, attempt: attempt, cause: cause, action: action)
+    def note_recovery(run_id, actor:, step:, attempt:, cause:, action:) = @recovery.note_recovery(run_id, actor: actor, step: step, attempt: attempt, cause: cause, action: action)
 
     # Decides a step whose agent ended its turn unseen. See {WorkflowRecovery#recover}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :evaluated, :timed_out, :moved_on or :busy
-    def recover(run_id, turn_over:, cause:, data: {}, fail_if_incomplete: nil)
-      @recovery.recover(run_id, turn_over: turn_over, cause: cause, data: data, fail_if_incomplete: fail_if_incomplete)
+    def recover(run_id, actor:, turn_over:, cause:, data: {}, fail_if_incomplete: nil)
+      @recovery.recover(run_id, actor: actor, turn_over: turn_over, cause: cause, data: data, fail_if_incomplete: fail_if_incomplete)
     end
 
     # Acts on a review round the sweep found stalled in its review pane. See {WorkflowRecovery#review_stalled}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :evaluated, :stopped, :redelivered, :moved_on or :busy
-    def review_stalled(run_id, step:, attempt:, round:, pane:, cause:, data: {})
-      @recovery.review_stalled(run_id, step: step, attempt: attempt, round: round, pane: pane, cause: cause, data: data)
+    def review_stalled(run_id, actor:, step:, attempt:, round:, pane:, cause:, data: {})
+      @recovery.review_stalled(run_id, actor: actor, step: step, attempt: attempt, round: round, pane: pane, cause: cause, data: data)
     end
 
     # Fails a step that ran past its `timeout:`. See {WorkflowRecovery#time_out}.
     # @return [Symbol] :timed_out or :moved_on
-    def time_out(run_id, step:, attempt:, elapsed:, timeout:) = @recovery.time_out(run_id, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout)
+    def time_out(run_id, actor:, step:, attempt:, elapsed:, timeout:) = @recovery.time_out(run_id, actor: actor, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout)
 
     # Types a step's line again after a failed delivery. See {WorkflowRecovery#redeliver}.
     # @return [Symbol] :redelivered, :waiting_lock, :not_delivered, :moved_on or :busy
-    def redeliver(run_id, step:, attempt:) = @recovery.redeliver(run_id, step: step, attempt: attempt)
+    def redeliver(run_id, actor:, step:, attempt:) = @recovery.redeliver(run_id, actor: actor, step: step, attempt: attempt)
 
     # Starts an `on_fail` retry whose backoff is over. See {WorkflowRecovery#retry_backoff}.
     # @return [Symbol] :retried, :blocked, :held, :moved_on or :busy
-    def retry_backoff(run_id, step:, attempt:) = @recovery.retry_backoff(run_id, step: step, attempt: attempt)
+    def retry_backoff(run_id, actor:, step:, attempt:) = @recovery.retry_backoff(run_id, actor: actor, step: step, attempt: attempt)
 
     # Takes the right to interrupt a step past its `timeout:`. See {WorkflowRecovery#claim_interrupt}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`]; or :repeat, :moved_on or :busy
-    def claim_interrupt(run_id, step:, attempt:, elapsed:, timeout:, cause: "timed_out")
-      @recovery.claim_interrupt(run_id, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout, cause: cause)
+    def claim_interrupt(run_id, actor:, step:, attempt:, elapsed:, timeout:, cause: "timed_out")
+      @recovery.claim_interrupt(run_id, actor: actor, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout, cause: cause)
     end
 
     # Ends a {#claim_interrupt}. See {WorkflowRecovery#interrupt_sent}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :recorded, :released, :taken_over or :moved_on
-    def interrupt_sent(run_id, step:, attempt:, claim_at:, sent:, record: true, cause: "timed_out")
-      @recovery.interrupt_sent(run_id, step: step, attempt: attempt, claim_at: claim_at, sent: sent, record: record, cause: cause)
+    def interrupt_sent(run_id, actor:, step:, attempt:, claim_at:, sent:, record: true, cause: "timed_out")
+      @recovery.interrupt_sent(run_id, actor: actor, step: step, attempt: attempt, claim_at: claim_at, sent: sent, record: record, cause: cause)
     end
 
     # Takes the right to interrupt a review round's pane past a time limit. See {WorkflowRecovery#claim_round_interrupt}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`]; or :repeat, :moved_on or :busy
-    def claim_round_interrupt(run_id, step:, attempt:, round:, pane:, elapsed:, timeout:, cause:)
-      @recovery.claim_round_interrupt(run_id, step: step, attempt: attempt, round: round, pane: pane, elapsed: elapsed, timeout: timeout, cause: cause)
+    def claim_round_interrupt(run_id, actor:, step:, attempt:, round:, pane:, elapsed:, timeout:, cause:)
+      @recovery.claim_round_interrupt(run_id, actor: actor, step: step, attempt: attempt, round: round, pane: pane, elapsed: elapsed, timeout: timeout, cause: cause)
     end
 
     # Ends a {#claim_round_interrupt}. See {WorkflowRecovery#round_interrupt_sent}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :recorded, :released, :taken_over or :moved_on
-    def round_interrupt_sent(run_id, step:, attempt:, round:, pane:, claim_at:, sent:, cause:)
-      @recovery.round_interrupt_sent(run_id, step: step, attempt: attempt, round: round, pane: pane, claim_at: claim_at, sent: sent, cause: cause)
+    def round_interrupt_sent(run_id, actor:, step:, attempt:, round:, pane:, claim_at:, sent:, cause:)
+      @recovery.round_interrupt_sent(run_id, actor: actor, step: step, attempt: attempt, round: round, pane: pane, claim_at: claim_at, sent: sent, cause: cause)
     end
 
     private

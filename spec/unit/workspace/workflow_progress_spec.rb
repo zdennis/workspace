@@ -28,7 +28,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
   def deep_copy(value) = Marshal.load(Marshal.dump(value))
 
-  def ctx = Workspace::WorkflowRunChange::Context.new
+  def ctx = Workspace::WorkflowRunChange::Context.new("engine", "test")
 
   describe "#pass_step" do
     it "ends the attempt as passed with what the record adds, and starts the next step, leaving the run given alone" do
@@ -46,7 +46,7 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run.current).to eq("build")
       expect(context.delivery).to eq("step" => "build")
       expect(attempt_record.calls).to eq([[:finish, "wr_1", "plan", 1]])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "next_step", context: nil, budgeted: true, retry_of: nil}]])
       expect(change.events).to eq([["wr_1", "step_passed", {"step" => "plan", "attempt" => 1}]])
     end
 
@@ -196,7 +196,7 @@ RSpec.describe Workspace::WorkflowProgress do
         "Its files are in /work/.workflow/wr_1. Fix what it found.\n\nthe last 20 lines of /work/check.log"
       expect(run.to_h["loops"]).to eq("plan->plan" => 1)
       expect(run.pending_context).to eq([text])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: {"text" => text}}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "loop", context: "fresh", budgeted: true, retry_of: {"text" => text}}]])
       expect(log_tail.calls).to eq([[:block, "/work/check.log", {lines: 20}]])
       expect(context.delivery).to eq("step" => "plan")
       expect(change.events.last).to eq(["wr_1", "step_looped", {"from" => "plan", "to" => "plan", "count" => 1}])
@@ -250,12 +250,12 @@ RSpec.describe Workspace::WorkflowProgress do
     it "takes the run's wait off it and starts the target step with the kept text" do
       context = ctx
 
-      run = progress.start_retry(run_hash("backoff" => waiting, "reason" => {"code" => "retry_backoff"}), ctx: context)
+      run = progress.start_retry(run_hash("backoff" => waiting, "reason" => {"code" => "retry_backoff"}), ctx: context, cause: "backoff_ended")
 
       expect(run.backoff).to be_nil
       expect(run.pending_context).to eq(["it failed"])
       expect(run.reason).to be_nil
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: {"pane" => "%3", "identity" => "id-3", "text" => "it failed"}}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "backoff_ended", context: "fresh", budgeted: true, retry_of: {"pane" => "%3", "identity" => "id-3", "text" => "it failed"}}]])
       expect(panes.calls).to eq([[:same_pane?, "%3", "id-3"]])
       expect(change.events).to eq([["wr_1", "step_retry_started", {"from" => "plan", "to" => "plan"}]])
     end
@@ -264,7 +264,7 @@ RSpec.describe Workspace::WorkflowProgress do
       panes = RecordingWorkflowPanes.new(gone: ["%3"])
       progress = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail, clock: -> { now })
 
-      run = progress.start_retry(run_hash("backoff" => waiting), ctx: ctx)
+      run = progress.start_retry(run_hash("backoff" => waiting), ctx: ctx, cause: "backoff_ended")
 
       expect(run.backoff).to eq(waiting.merge("blocked" => "pane_gone"))
       expect(run.reason["code"]).to eq("pane_gone")
@@ -272,9 +272,9 @@ RSpec.describe Workspace::WorkflowProgress do
     end
 
     it "starts a wait already taken off the run in a pane a person named, without comparing it" do
-      progress.start_retry(run_hash, waiting.merge("pane" => nil), ctx: ctx, proven: true, budgeted: false)
+      progress.start_retry(run_hash, waiting.merge("pane" => nil), ctx: ctx, cause: "backoff_ended", proven: true, budgeted: false)
 
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: "fresh", budgeted: false, retry_of: {"pane" => nil, "identity" => "id-3", "text" => "it failed"}}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "backoff_ended", context: "fresh", budgeted: false, retry_of: {"pane" => nil, "identity" => "id-3", "text" => "it failed"}}]])
       expect(panes.calls).to be_empty
     end
   end
@@ -579,7 +579,7 @@ RSpec.describe Workspace::WorkflowProgress do
         text = [line, "the write-up at /work/.workflow/wr_1/reviews/plan.1.r1/skeptic.md", "the write-up at /work/.workflow/wr_1/reviews/plan.1.r1/tester.md"].join("\n\n")
         expect(run.pending_context).to eq([text])
         expect(log_tail.calls).to eq([[:writeup, "/work/.workflow/wr_1/reviews/plan.1.r1/skeptic.md"], [:writeup, "/work/.workflow/wr_1/reviews/plan.1.r1/tester.md"]])
-        expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: {"text" => text, "attempt" => 1}}]])
+        expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "review_rejected", context: nil, budgeted: true, retry_of: {"text" => text, "attempt" => 1}}]])
         expect(context.delivery).to eq("step" => "plan")
         expect(run.reason).to be_nil
         expect(change.events.map { |event| event[1] }).to eq(%w[review_ended step_failed review_retry])

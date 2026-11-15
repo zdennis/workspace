@@ -145,9 +145,10 @@ module Workspace
     # @param pane [String] the pane id the steps run in
     # @param note [String, nil] added to every step's instructions
     # @param dispatch [Boolean] false stores the run waiting with `not_started` and types nothing
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run after its first transition, or as created
     # @raise [Workspace::Error] see {#preflight}
-    def start(definition:, workspace:, worktree:, inputs:, pane:, note: nil, dispatch: true)
+    def start(definition:, actor:, workspace:, worktree:, inputs:, pane:, note: nil, dispatch: true)
       checked = preflight(definition: definition, workspace: workspace, worktree: worktree, inputs: inputs, pane: pane)
       # The marker says this run's `produces` files must be non-empty regular files, not links;
       # a run stored without it keeps the exists-only check (see WorkflowProduced).
@@ -173,9 +174,17 @@ module Workspace
         @dispatch.check_pane(pane)
         check_checkout(worktree)
       }) { |created| created["artifacts_dir"] = @prompt.artifacts_dir(worktree, created["id"]) })
-      @change.event(run, "run_started", "workflow" => data["id"], "workspace" => workspace)
-      return @change.call(run.id) { |_run| } unless dispatch
-      @change.call(run.id) { |read, ctx| @dispatch.dispatch(read, ctx: ctx) }
+      started = {"workflow" => data["id"], "workspace" => workspace}
+      unless dispatch
+        return @change.call(run.id, actor: actor, cause: "start") do |_read, ctx|
+          ctx.event("run_started", started)
+          nil
+        end
+      end
+      @change.call(run.id, actor: actor, cause: "start") do |read, ctx|
+        ctx.event("run_started", started)
+        @dispatch.dispatch(read, ctx: ctx, cause: "first")
+      end
     end
 
     private

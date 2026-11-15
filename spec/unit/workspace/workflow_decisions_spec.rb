@@ -51,7 +51,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "passes the waiting gate with the note and goes on to the next step, answering a WorkflowRun" do
       stored(run_hash(state: "passed", gate: waiting_gate))
 
-      run = decisions.approve("wr_1", note: "looks right")
+      run = decisions.approve("wr_1", actor: "person", note: "looks right")
 
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(run.steps["plan"].gate).to eq("state" => "approved", "since" => "2026-11-10T11:50:00Z", "at" => "2026-11-10T12:00:00Z", "note" => "looks right")
@@ -60,12 +60,20 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(progress.calls).to eq([[:advance, "plan"]])
     end
 
+    it "hands the actor it was given to the change" do
+      stored(run_hash(state: "passed", gate: waiting_gate))
+
+      decisions.approve("wr_1", actor: "person")
+
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "person", cause: "approve"}]])
+    end
+
     it "records the gate's note and its sha256 when the caller read the same revision" do
       gate_note = RecordingGateNote.new(found: {"name" => "plan-note.md", "path" => "/notes/plan-note.md", "sha256" => "abc123"})
       stored(run_hash(state: "passed", gate: waiting_gate))
 
       run = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).approve("wr_1", note_sha256: "abc123")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).approve("wr_1", actor: "person", note_sha256: "abc123")
 
       expect(run.steps["plan"].gate["file"]).to eq("path" => "/notes/plan-note.md", "sha256" => "abc123")
       expect(run.pending_context).to eq(["The approved note is /notes/plan-note.md, sha256 abc123."])
@@ -78,7 +86,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       error = error_for do
         described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-          attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).approve("wr_1", note_sha256: "old")
+          attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).approve("wr_1", actor: "person", note_sha256: "old")
       end
 
       expect(error.code).to eq("stale_revision")
@@ -91,14 +99,14 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "refuses a sha256 for a gate that names no note" do
       stored(run_hash(state: "passed", gate: waiting_gate))
 
-      expect(error_for { decisions.approve("wr_1", note_sha256: "abc") }.code).to eq("gate_note_unreadable")
+      expect(error_for { decisions.approve("wr_1", actor: "person", note_sha256: "abc") }.code).to eq("gate_note_unreadable")
     end
 
     it "refuses a gate the run is not at before the guard is asked" do
       stored(run_hash(state: "passed", gate: waiting_gate))
       asked = []
 
-      error = error_for { decisions.approve("wr_1", step: "build", guard: ->(run) { asked << run }) }
+      error = error_for { decisions.approve("wr_1", actor: "person", step: "build", guard: ->(run) { asked << run }) }
 
       expect(error.code).to eq("gate_not_waiting")
       expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempt" => 1, "state" => "passed", "expected_step" => "build", "expected_attempt" => nil)
@@ -107,34 +115,42 @@ RSpec.describe Workspace::WorkflowDecisions do
   end
 
   describe "#reject" do
+    it "hands the actor it was given to the change" do
+      stored(run_hash(current: "build", state: "passed", gate: waiting_gate))
+
+      decisions.reject("wr_1", actor: "person", note: "no", to: "plan")
+
+      expect(change.calls.map(&:last)).to eq([{nonblocking: false, actor: "person", cause: "reject"}])
+    end
+
     it "sends the run back to an earlier step with the note and starts it" do
       stored(run_hash(current: "build", state: "passed", gate: waiting_gate))
 
-      run = decisions.reject("wr_1", note: "the plan misses a case", to: "plan")
+      run = decisions.reject("wr_1", actor: "person", note: "the plan misses a case", to: "plan")
 
       expect(run.current).to eq("plan")
       expect(run.steps["build"].gate).to include("state" => "rejected", "note" => "the plan misses a case", "attempt" => 1)
       expect(run.pending_context).to eq(["The build step was rejected at its gate: the plan misses a case"])
       expect(change.events).to eq([["wr_1", "gate_rejected", {"step" => "build", "to" => "plan", "note" => "the plan misses a case"}]])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "gate_rejected", context: nil, budgeted: true, retry_of: nil}]])
       expect(change.deliveries).to eq([{"step" => "plan"}])
     end
 
     it "refuses a --to past the gated step" do
       stored(run_hash(state: "passed", gate: waiting_gate))
 
-      expect { decisions.reject("wr_1", note: "no", to: "build") }.to raise_error(Workspace::UsageError, /--to must be plan or a step before it \(plan\)/)
+      expect { decisions.reject("wr_1", actor: "person", note: "no", to: "build") }.to raise_error(Workspace::UsageError, /--to must be plan or a step before it \(plan\)/)
       expect(dispatch.calls).to be_empty
     end
 
     it "refuses a run that has spent its attempts unless --extra-attempts covers it, and records what was added" do
       stored(run_hash(state: "passed", gate: waiting_gate, max_attempts: 1))
 
-      error = error_for { decisions.reject("wr_1", note: "again") }
+      error = error_for { decisions.reject("wr_1", actor: "person", note: "again") }
       expect(error.code).to eq("attempts_spent")
       expect(error.details).to eq("run_id" => "wr_1", "attempts" => 1, "max_attempts" => 1, "step" => "plan", "needed" => 1)
 
-      run = decisions.reject("wr_1", note: "again", extra_attempts: 1)
+      run = decisions.reject("wr_1", actor: "person", note: "again", extra_attempts: 1)
       expect(run.extra_attempts).to eq(1)
       expect(change.events.first).to eq(["wr_1", "attempts_extended", {"extra" => 1, "extra_attempts" => 1, "max_attempts" => 2}])
     end
@@ -150,11 +166,11 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "refuses a reject to the spent step with step_attempts_spent, and --extra-attempts raises both caps once" do
       capped(state: "passed", gate: waiting_gate)
 
-      error = error_for { decisions.reject("wr_1", note: "again") }
+      error = error_for { decisions.reject("wr_1", actor: "person", note: "again") }
       expect(error.code).to eq("step_attempts_spent")
       expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempts" => 1, "max_attempts" => 1, "needed" => 1)
 
-      run = decisions.reject("wr_1", note: "again", extra_attempts: 1)
+      run = decisions.reject("wr_1", actor: "person", note: "again", extra_attempts: 1)
       expect(run.extra_attempts).to eq(1)
       expect(run.steps["plan"].to_h["extra_attempts"]).to eq(1)
       expect(change.events.first).to eq(["wr_1", "attempts_extended", {"extra" => 1, "extra_attempts" => 1, "max_attempts" => 6, "step" => "plan", "step_extra_attempts" => 1, "step_max_attempts" => 2}])
@@ -165,13 +181,13 @@ RSpec.describe Workspace::WorkflowDecisions do
       hash["definition"]["steps"][1]["max_attempts"] = 1
       stored(hash)
 
-      expect(decisions.reject("wr_1", note: "again", to: "plan")).to be_a(Workspace::WorkflowRun)
+      expect(decisions.reject("wr_1", actor: "person", note: "again", to: "plan")).to be_a(Workspace::WorkflowRun)
     end
 
     it "names the run's cap first when both are spent" do
       capped(state: "passed", gate: waiting_gate, run_cap: 1)
 
-      expect(error_for { decisions.reject("wr_1", note: "x") }.code).to eq("attempts_spent")
+      expect(error_for { decisions.reject("wr_1", actor: "person", note: "x") }.code).to eq("attempts_spent")
     end
 
     it "names the step's need when --extra-attempts covers only the run's cap" do
@@ -181,32 +197,32 @@ RSpec.describe Workspace::WorkflowDecisions do
       hash["steps"]["plan"]["attempts"] << {"n" => 3}
       stored(hash)
 
-      expect(error_for { decisions.resume("wr_1") }.code).to eq("attempts_spent")
-      error = error_for { decisions.resume("wr_1", extra_attempts: 2) }
+      expect(error_for { decisions.resume("wr_1", actor: "person") }.code).to eq("attempts_spent")
+      error = error_for { decisions.resume("wr_1", actor: "person", extra_attempts: 2) }
       expect(error.code).to eq("step_attempts_spent")
       expect(error.details["needed"]).to eq(3)
-      expect(decisions.resume("wr_1", extra_attempts: 3).run.extra_attempts).to eq(3)
+      expect(decisions.resume("wr_1", actor: "person", extra_attempts: 3).run.extra_attempts).to eq(3)
     end
 
     it "refuses a resume of the spent step and accepts it once with --extra-attempts, naming the new need after" do
       capped(state: "failed", reason: failed_check)
 
-      error = error_for { decisions.resume("wr_1") }
+      error = error_for { decisions.resume("wr_1", actor: "person") }
       expect(error.code).to eq("step_attempts_spent")
       expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "attempts" => 1, "max_attempts" => 1, "needed" => 1)
-      expect(decisions.resume("wr_1", extra_attempts: 1).run.steps["plan"].to_h["extra_attempts"]).to eq(1)
+      expect(decisions.resume("wr_1", actor: "person", extra_attempts: 1).run.steps["plan"].to_h["extra_attempts"]).to eq(1)
     end
 
     it "checks --from against the step it goes to" do
       capped(state: "failed", reason: failed_check, current: "build")
 
-      expect(error_for { decisions.resume("wr_1", from: "plan") }.details).to include("step" => "plan")
+      expect(error_for { decisions.resume("wr_1", actor: "person", from: "plan") }.details).to include("step" => "plan")
     end
 
     it "refuses a park for the spent step" do
       capped(state: "failed", reason: failed_check)
 
-      expect(error_for { decisions.park("wr_1") }.code).to eq("step_attempts_spent")
+      expect(error_for { decisions.park("wr_1", actor: "person") }.code).to eq("step_attempts_spent")
     end
   end
 
@@ -214,7 +230,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "leaves alone a step an agent is working on and says why, in a frozen Resumed" do
       before = deep_copy(stored)
 
-      resumed = decisions.resume("wr_1")
+      resumed = decisions.resume("wr_1", actor: "person")
 
       expect(resumed).to be_a(described_class::Resumed)
       expect(resumed).to be_frozen
@@ -222,6 +238,14 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(resumed.run.to_h).to eq(before)
       expect(change.events).to be_empty
       expect(dispatch.calls).to be_empty
+    end
+
+    it "hands the actor it was given to the change" do
+      stored
+
+      decisions.resume("wr_1", actor: "person")
+
+      expect(change.calls.map(&:last)).to eq([{nonblocking: false, actor: "person", cause: "resume"}])
     end
 
     def reviewing_run(reason: nil)
@@ -238,7 +262,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "leaves a live review round alone" do
       before = deep_copy(stored(reviewing_run))
 
-      resumed = decisions.resume("wr_1")
+      resumed = decisions.resume("wr_1", actor: "person")
 
       expect(resumed.unchanged).to eq("the review round of step plan is still running")
       expect(resumed.run.to_h).to eq(before)
@@ -266,7 +290,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "takes over a round whose holder is gone, delivering it again" do
         stored(lapsed)
 
-        resumed = decisions.resume("wr_1")
+        resumed = decisions.resume("wr_1", actor: "person")
 
         expect(resumed.unchanged).to be_nil
         expect(seen).to eq([holder])
@@ -278,7 +302,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         alive << 41
         before = deep_copy(stored(lapsed))
 
-        resumed = decisions.resume("wr_1")
+        resumed = decisions.resume("wr_1", actor: "person")
 
         expect(resumed.unchanged).to eq("the review round of step plan is still running")
         expect(resumed.run.to_h).to eq(before)
@@ -288,7 +312,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "asks nothing of a holder whose mark has not lapsed" do
         stored(lapsed.tap { |run| run["steps"]["plan"]["review"]["started_at"] = "2026-11-10T11:59:30.000Z" })
 
-        expect(decisions.resume("wr_1").unchanged).to eq("the review round of step plan is still running")
+        expect(decisions.resume("wr_1", actor: "person").unchanged).to eq("the review round of step plan is still running")
         expect(seen).to be_empty
       end
     end
@@ -296,7 +320,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "restarts a stopped round and never starts the author again, nor asks the attempt allowance" do
       stored(reviewing_run(reason: review_incomplete).merge("definition" => run_hash(max_attempts: 1)["definition"]))
 
-      resumed = decisions.resume("wr_1")
+      resumed = decisions.resume("wr_1", actor: "person")
 
       expect(resumed.unchanged).to be_nil
       expect(progress.calls).to eq([[:restart_review, "plan"]])
@@ -322,7 +346,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "refuses a resume of a stopped round as review_rounds_spent, changing nothing" do
         before = deep_copy(stored(capped(reviewing_run(reason: review_incomplete))))
 
-        error = error_for { decisions.resume("wr_1") }
+        error = error_for { decisions.resume("wr_1", actor: "person") }
 
         expect(error.code).to eq("review_rounds_spent")
         expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "rounds" => 2, "max_rounds" => 2, "needed" => 1)
@@ -335,7 +359,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "names the least --extra-rounds, and refuses one that falls short" do
         stored(capped(reviewing_run(reason: review_incomplete), rounds: 3))
 
-        expect(error_for { decisions.resume("wr_1", extra_rounds: 1) }.details).to include("rounds" => 3, "needed" => 2)
+        expect(error_for { decisions.resume("wr_1", actor: "person", extra_rounds: 1) }.details).to include("rounds" => 3, "needed" => 2)
         expect(progress.calls).to be_empty
         expect(change.events).to be_empty
       end
@@ -343,7 +367,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "restarts a stopped round once --extra-rounds covers the overrun, keeping the extra in the step and recording it" do
         stored(capped(reviewing_run(reason: review_incomplete)))
 
-        decisions.resume("wr_1", extra_rounds: 1)
+        decisions.resume("wr_1", actor: "person", extra_rounds: 1)
 
         expect(progress.calls).to eq([[:restart_review, "plan"]])
         expect(store.runs["wr_1"]["steps"]["plan"]["extra_rounds"]).to eq(1)
@@ -356,7 +380,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         run["steps"]["plan"]["extra_rounds"] = 1
         stored(run)
 
-        decisions.resume("wr_1", extra_rounds: 2)
+        decisions.resume("wr_1", actor: "person", extra_rounds: 2)
 
         expect(store.runs["wr_1"]["steps"]["plan"]["extra_rounds"]).to eq(3)
       end
@@ -364,7 +388,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "runs the author again for a step a review rejected once --extra-rounds covers the overrun" do
         stored(rejected_run)
 
-        decisions.resume("wr_1", extra_rounds: 1)
+        decisions.resume("wr_1", actor: "person", extra_rounds: 1)
 
         expect(store.runs["wr_1"]["steps"]["plan"]["extra_rounds"]).to eq(1)
         expect(dispatch.calls).not_to be_empty
@@ -373,7 +397,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "ignores --extra-rounds on a step with rounds left: nothing added, no event, and a repeat does not stack" do
         stored(capped(reviewing_run(reason: review_incomplete), rounds: 1))
 
-        decisions.resume("wr_1", extra_rounds: 2)
+        decisions.resume("wr_1", actor: "person", extra_rounds: 2)
 
         expect(store.runs["wr_1"]["steps"]["plan"]).not_to have_key("extra_rounds")
         expect(change.events.map { |event| event[1] }).not_to include("review_rounds_extended")
@@ -383,26 +407,26 @@ RSpec.describe Workspace::WorkflowDecisions do
         run = capped(run_hash(state: "failed", extra: {"state" => "waiting"}))
         stored(run)
 
-        expect { decisions.resume("wr_1", from: "plan") }.not_to raise_error
-        error = error_for { decisions.resume("wr_1", from: "plan", extra_rounds: 0) }
+        expect { decisions.resume("wr_1", actor: "person", from: "plan") }.not_to raise_error
+        error = error_for { decisions.resume("wr_1", actor: "person", from: "plan", extra_rounds: 0) }
         expect(error.code).to eq("review_rounds_spent")
         expect(error.details).to include("step" => "plan", "needed" => 1)
       end
 
       it "with --from credits --extra-rounds only to a spent step" do
         stored(capped(run_hash(state: "failed", extra: {"state" => "waiting"})))
-        decisions.resume("wr_1", from: "plan", extra_rounds: 1)
+        decisions.resume("wr_1", actor: "person", from: "plan", extra_rounds: 1)
         expect(store.runs["wr_1"]["steps"]["plan"]["extra_rounds"]).to eq(1)
 
         stored(capped(run_hash(state: "failed", extra: {"state" => "waiting"}), rounds: 1))
-        decisions.resume("wr_1", from: "plan", extra_rounds: 1)
+        decisions.resume("wr_1", actor: "person", from: "plan", extra_rounds: 1)
         expect(store.runs["wr_1"]["steps"]["plan"]).not_to have_key("extra_rounds")
       end
 
       it "parks the resume with its extra rounds, and carries them out when the park is released" do
         stored(rejected_run)
 
-        decisions.park("wr_1", extra_rounds: 1)
+        decisions.park("wr_1", actor: "person", extra_rounds: 1)
 
         expect(store.runs["wr_1"]["parked"]).to include("extra_rounds" => 1)
       end
@@ -410,8 +434,8 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "is a usage error for a step with no review, and with --accept-guard" do
         stored(run_hash(state: "failed", extra: {"state" => "waiting"}))
 
-        expect { decisions.resume("wr_1", extra_rounds: 1) }.to raise_error(Workspace::UsageError, /has no review: to extend/)
-        expect { decisions.resume("wr_1", extra_rounds: 1, accept_guard: true, note: "x") }.to raise_error(Workspace::UsageError, /--extra-rounds/)
+        expect { decisions.resume("wr_1", actor: "person", extra_rounds: 1) }.to raise_error(Workspace::UsageError, /has no review: to extend/)
+        expect { decisions.resume("wr_1", actor: "person", extra_rounds: 1, accept_guard: true, note: "x") }.to raise_error(Workspace::UsageError, /--extra-rounds/)
       end
 
       it "refuses a resume of the round held at the cap" do
@@ -419,13 +443,13 @@ RSpec.describe Workspace::WorkflowDecisions do
         run["steps"]["plan"]["review"] = {"round" => 3, "delivery" => nil, "held" => "review_rounds_spent"}
         stored(run)
 
-        expect(error_for { decisions.resume("wr_1") }.code).to eq("review_rounds_spent")
+        expect(error_for { decisions.resume("wr_1", actor: "person") }.code).to eq("review_rounds_spent")
       end
 
       it "still restarts a stopped round while a round is left" do
         stored(capped(reviewing_run(reason: review_incomplete), rounds: 1))
 
-        decisions.resume("wr_1")
+        decisions.resume("wr_1", actor: "person")
 
         expect(progress.calls).to eq([[:restart_review, "plan"]])
       end
@@ -433,8 +457,8 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "refuses a plain resume of a step a review rejected with every round spent, and a park of one" do
         stored(rejected_run)
 
-        expect(error_for { decisions.resume("wr_1") }.code).to eq("review_rounds_spent")
-        expect(error_for { decisions.park("wr_1") }.code).to eq("review_rounds_spent")
+        expect(error_for { decisions.resume("wr_1", actor: "person") }.code).to eq("review_rounds_spent")
+        expect(error_for { decisions.park("wr_1", actor: "person") }.code).to eq("review_rounds_spent")
         expect(dispatch.calls).to be_empty
       end
 
@@ -445,9 +469,9 @@ RSpec.describe Workspace::WorkflowDecisions do
         run["review_retry"] = {"step" => "plan", "attempt" => 1, "round" => 1, "context" => "continue", "text" => "Review round 1 of 2 rejected the plan step"}
         stored(run)
 
-        resumed = decisions.resume("wr_1", extra_attempts: 1)
+        resumed = decisions.resume("wr_1", actor: "person", extra_attempts: 1)
 
-        expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "continue", budgeted: true, retry_of: {"text" => "Review round 1 of 2 rejected the plan step", "attempt" => 1}}])
+        expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: "continue", budgeted: true, retry_of: {"text" => "Review round 1 of 2 rejected the plan step", "attempt" => 1}}])
         expect(resumed.run.pending_context).to eq(["Review round 1 of 2 rejected the plan step"])
         expect(resumed.run.to_h).not_to have_key("review_retry")
       end
@@ -458,7 +482,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         run["steps"]["plan"]["review_window"] = {"round" => 2, "window" => "@7", "pane" => "%7"}
         stored(run)
 
-        resumed = decisions.resume("wr_1", from: "build")
+        resumed = decisions.resume("wr_1", actor: "person", from: "build")
 
         expect(progress.calls).to eq([[:end_round, "plan", {how: "from", close: true}]])
         expect(resumed.run.to_h).not_to have_key("review_retry")
@@ -472,7 +496,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         run["retry_of_pending"] = {"step" => "plan", "attempt" => 1, "context" => "fresh", "text" => "the verdicts"}
         stored(run)
 
-        resumed = decisions.resume("wr_1", from: "build")
+        resumed = decisions.resume("wr_1", actor: "person", from: "build")
 
         expect(resumed.run.to_h).not_to have_key("retry_of_pending")
         expect(resumed.run.pending_context).to eq(["keep me"])
@@ -481,7 +505,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "lets --from go on" do
         stored(rejected_run)
 
-        decisions.resume("wr_1", from: "plan")
+        decisions.resume("wr_1", actor: "person", from: "plan")
 
         expect(dispatch.calls.map(&:first)).to eq([:dispatch])
       end
@@ -490,7 +514,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "ends the round with its window closed before --from starts the step named, keeping review_rounds" do
       stored(reviewing_run(reason: review_incomplete))
 
-      resumed = decisions.resume("wr_1", from: "plan")
+      resumed = decisions.resume("wr_1", actor: "person", from: "plan")
 
       expect(progress.calls).to eq([[:end_round, "plan", {how: "from", close: true}]])
       expect(dispatch.calls.map(&:first)).to eq([:dispatch])
@@ -502,7 +526,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "ends a live round too when --from goes elsewhere" do
       stored(reviewing_run)
 
-      decisions.resume("wr_1", from: "plan")
+      decisions.resume("wr_1", actor: "person", from: "plan")
 
       expect(progress.calls).to eq([[:end_round, "plan", {how: "from", close: true}]])
     end
@@ -520,11 +544,11 @@ RSpec.describe Workspace::WorkflowDecisions do
         stored(held_round("budget_hold", "budget_spent", "budget" => {"tokens" => 100}))
         before = deep_copy(store.runs["wr_1"])
 
-        expect(error_for { decisions.resume("wr_1") }.code).to eq("budget_spent")
-        expect(error_for { decisions.resume("wr_1", extra_tokens: 50) }.code).to eq("budget_spent")
+        expect(error_for { decisions.resume("wr_1", actor: "person") }.code).to eq("budget_spent")
+        expect(error_for { decisions.resume("wr_1", actor: "person", extra_tokens: 50) }.code).to eq("budget_spent")
         expect(store.runs["wr_1"]).to eq(before)
 
-        resumed = decisions.resume("wr_1", extra_tokens: 51)
+        resumed = decisions.resume("wr_1", actor: "person", extra_tokens: 51)
 
         expect(resumed.unchanged).to be_nil
         expect(resumed.run.budget_hold).to be_nil
@@ -539,9 +563,9 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "refuses a resume until --extra-time covers the timeout, then starts that round" do
         stored(held_round("timeout_hold", "run_timed_out", "timeout" => 1800))
 
-        expect(error_for { decisions.resume("wr_1") }.code).to eq("run_timed_out")
+        expect(error_for { decisions.resume("wr_1", actor: "person") }.code).to eq("run_timed_out")
 
-        resumed = decisions.resume("wr_1", extra_seconds: 1801)
+        resumed = decisions.resume("wr_1", actor: "person", extra_seconds: 1801)
 
         expect(resumed.run.timeout_hold).to be_nil
         expect(resumed.run.extra_seconds).to eq(1801)
@@ -555,7 +579,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         it "starts the round anyway, since the round types into its own window" do
           stored(held_round("budget_hold", "budget_spent", "budget" => {"tokens" => 100}))
 
-          expect(decisions.resume("wr_1", extra_tokens: 51).unchanged).to be_nil
+          expect(decisions.resume("wr_1", actor: "person", extra_tokens: 51).unchanged).to be_nil
           expect(progress.calls).to eq([[:restart_review, "plan"]])
         end
       end
@@ -566,8 +590,8 @@ RSpec.describe Workspace::WorkflowDecisions do
         stopped["definition"]["budget"] = {"tokens" => 100}
         stored(stopped)
 
-        expect(error_for { decisions.resume("wr_1") }.code).to eq("budget_spent")
-        decisions.resume("wr_1", extra_tokens: 51)
+        expect(error_for { decisions.resume("wr_1", actor: "person") }.code).to eq("budget_spent")
+        decisions.resume("wr_1", actor: "person", extra_tokens: 51)
         expect(progress.calls).to eq([[:restart_review, "plan"]])
       end
     end
@@ -575,12 +599,12 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "runs a failed step again, telling it what failed" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting"}))
 
-      resumed = decisions.resume("wr_1")
+      resumed = decisions.resume("wr_1", actor: "person")
 
       expect(resumed.unchanged).to be_nil
       expect(resumed.run.pending_context.first).to start_with("The last attempt of this step failed: ")
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "state" => "failed"}]])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
     end
 
     it "follows up a review round the change registered, once the change is done" do
@@ -588,7 +612,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(reason: {"code" => "turn_ended_incomplete", "since" => "2026-11-10T11:58:00Z", "details" => {}}))
 
       described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", actor: "person")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:review_round, "wr_1", {"round" => 1}]])
     end
@@ -598,7 +622,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(reason: {"code" => "turn_ended_incomplete", "since" => "2026-11-10T11:58:00Z", "details" => {}}))
 
       resumed = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", actor: "person")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:finish_check, "wr_1", {"step" => "plan", "attempt" => 1}]])
       expect(resumed.run.reason).to be_nil
@@ -608,21 +632,21 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "starts again at the step --from names" do
       stored
 
-      resumed = decisions.resume("wr_1", from: "build")
+      resumed = decisions.resume("wr_1", actor: "person", from: "build")
 
       expect(resumed.run.current).to eq("build")
       expect(change.events).to eq([["wr_1", "run_resumed", {"from" => "build"}]])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
     end
 
     it "skips a retry's wait and starts the retry" do
       backoff = {"until" => "2026-11-10T13:00:00Z", "to" => "plan", "text" => "it failed", "pane" => "%3"}
       stored(run_hash(state: "failed", extra: {"backoff" => backoff, "state" => "waiting"}))
 
-      resumed = decisions.resume("wr_1")
+      resumed = decisions.resume("wr_1", actor: "person")
 
       expect(resumed.unchanged).to be_nil
-      expect(progress.calls).to eq([[:retry_pane_problem, "plan", {proven: false, pane: nil}], [:start_retry, "plan", backoff, {proven: false, budgeted: true}]])
+      expect(progress.calls).to eq([[:retry_pane_problem, "plan", {proven: false, pane: nil}], [:start_retry, "plan", backoff, {cause: "resume", proven: false, budgeted: true}]])
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "state" => "failed", "backoff" => "skipped"}]])
       expect(resumed.run.backoff).to be_nil
     end
@@ -632,7 +656,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(state: "failed", extra: {"backoff" => {"until" => "2026-11-10T13:00:00Z", "to" => "plan"}, "state" => "waiting"}))
 
       resumed = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", actor: "person")
 
       expect(resumed.unchanged).to eq("pane %3 is gone")
       expect(progress.calls.last).to eq([:hold_retry, "plan", {code: "pane_gone", message: "pane %3 is gone"}, {pane: "%3"}])
@@ -643,19 +667,19 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "releases a run its token budget held into its step, with the held context" do
       stored(run_hash(state: "failed", extra: {"budget_hold" => {"context" => "fresh", "pane" => "%3"}, "state" => "waiting"}))
 
-      resumed = decisions.resume("wr_1")
+      resumed = decisions.resume("wr_1", actor: "person")
 
       expect(resumed.run.budget_hold).to be_nil
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "budget" => "released"}]])
-      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: nil}])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: "fresh", budgeted: true, retry_of: nil}])
     end
 
     it "releases a held retry of a step a review rejected as a retry_of that attempt" do
       stored(run_hash(state: "failed", extra: {"budget_hold" => {"context" => "fresh", "pane" => "%3", "text" => "the verdicts", "retry_of" => 1}, "state" => "waiting"}))
 
-      decisions.resume("wr_1")
+      decisions.resume("wr_1", actor: "person")
 
-      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: {"text" => "the verdicts", "attempt" => 1}}])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: "fresh", budgeted: true, retry_of: {"text" => "the verdicts", "attempt" => 1}}])
     end
 
     it "releases a run its timeout held into its step, with the held context, and with --extra-time records the extension" do
@@ -663,20 +687,20 @@ RSpec.describe Workspace::WorkflowDecisions do
       timed["definition"]["timeout"] = 1800
       stored(timed)
 
-      error = error_for { decisions.resume("wr_1") }
+      error = error_for { decisions.resume("wr_1", actor: "person") }
       expect(error.code).to eq("run_timed_out")
       expect(error.message).to include("its time limit (1h 0m of 30m)", "--extra-time 45m", "(1801s is the least)")
       expect(error.details).to include("run_id" => "wr_1", "step" => "plan", "needed" => 1801, "suggested" => 2700, "limit" => 1800, "kind" => "timeout")
-      expect(error_for { decisions.resume("wr_1", extra_seconds: 1800) }.code).to eq("run_timed_out")
+      expect(error_for { decisions.resume("wr_1", actor: "person", extra_seconds: 1800) }.code).to eq("run_timed_out")
       expect(change.events).to be_empty
 
-      resumed = decisions.resume("wr_1", extra_seconds: 1801)
+      resumed = decisions.resume("wr_1", actor: "person", extra_seconds: 1801)
 
       expect(resumed.run.timeout_hold).to be_nil
       expect(resumed.run.extra_seconds).to eq(1801)
       expect(change.events).to eq([["wr_1", "time_extended", {"extra" => 1801, "extra_seconds" => 1801, "limit" => 3601}],
         ["wr_1", "run_resumed", {"step" => "plan", "budget" => "released"}]])
-      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: "fresh", budgeted: true, retry_of: nil}])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: "fresh", budgeted: true, retry_of: nil}])
     end
 
     it "names both needs when the token budget and the timeout are both spent, and clears both holds with both flags" do
@@ -686,14 +710,14 @@ RSpec.describe Workspace::WorkflowDecisions do
       both["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:10:00Z", "usage" => {"input_tokens" => 150})
       stored(both)
 
-      error = error_for { decisions.resume("wr_1", extra_tokens: 51) }
+      error = error_for { decisions.resume("wr_1", actor: "person", extra_tokens: 51) }
       expect(error.code).to eq("run_timed_out")
-      error = error_for { decisions.resume("wr_1") }
+      error = error_for { decisions.resume("wr_1", actor: "person") }
       expect(error.code).to eq("budget_spent")
       expect(error.message).to include("token budget (150 of 100 tokens) and its time limit", "--extra-tokens 100000 and --extra-time 45m", "the least is 51 for --extra-tokens, 1801s for --extra-time")
       expect(error.details["run_timed_out"]).to include("needed" => 1801)
 
-      resumed = decisions.resume("wr_1", extra_tokens: 51, extra_seconds: 1801)
+      resumed = decisions.resume("wr_1", actor: "person", extra_tokens: 51, extra_seconds: 1801)
 
       expect(resumed.run.budget_hold).to be_nil
       expect(resumed.run.timeout_hold).to be_nil
@@ -703,20 +727,20 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "moves the run to a pane a person names, and refuses one another run has before writing anything" do
       before = deep_copy(stored)
 
-      expect(error_for { decisions.resume("wr_1", pane: "%9") }.code).to eq("pane_has_run")
+      expect(error_for { decisions.resume("wr_1", actor: "person", pane: "%9") }.code).to eq("pane_has_run")
       expect(store.runs["wr_1"]).to eq(before)
       expect(change.events).to be_empty
 
-      resumed = decisions.resume("wr_1", pane: "%8")
+      resumed = decisions.resume("wr_1", actor: "person", pane: "%8")
       expect(resumed.run.pane).to eq("%8")
       expect(panes.calls).to eq([[:unbind, "wr_1"]])
-      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}])
     end
 
     it "takes over from a parked resume" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => {"id" => "p1", "pane" => "%3"}}))
 
-      resumed = decisions.resume("wr_1")
+      resumed = decisions.resume("wr_1", actor: "person")
 
       expect(dispatch.calls.first).to eq([:drop_park, "wr_1", "taken_over", {}])
       expect(resumed.run.parked).to be_nil
@@ -725,8 +749,8 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "refuses a resume that would start an attempt the run has none left for" do
       stored(run_hash(state: "failed", reason: failed_check, max_attempts: 1))
 
-      expect(error_for { decisions.resume("wr_1") }.code).to eq("attempts_spent")
-      expect(decisions.resume("wr_1", extra_attempts: 2).run.extra_attempts).to eq(2)
+      expect(error_for { decisions.resume("wr_1", actor: "person") }.code).to eq("attempts_spent")
+      expect(decisions.resume("wr_1", actor: "person", extra_attempts: 2).run.extra_attempts).to eq(2)
     end
   end
 
@@ -740,7 +764,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       [{}, {extra_attempts: 2}, {extra_tokens: 100}, {extra_seconds: 60}, {from: "plan"}, {from: "build"}].each do |options|
         [:resume, :park].each do |verb|
-          error = error_for { (verb == :resume) ? decisions.resume("wr_1", **options) : decisions.park("wr_1", **options) }
+          error = error_for { (verb == :resume) ? decisions.resume("wr_1", actor: "person", **options) : decisions.park("wr_1", actor: "person", **options) }
           expect(error.code).to eq("guard_cannot_pass")
           expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "guard" => "no_commit")
         end
@@ -753,7 +777,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "refuses to release a parked resume once the run is stopped that way" do
       before = deep_copy(stored(no_base(guard_stop("no_commit")).merge("state" => "waiting", "parked" => {"id" => "p1", "retries" => 0, "expires_at" => "2026-11-10T13:00:00Z"})))
 
-      error = error_for { decisions.release_park("wr_1", "p1") }
+      error = error_for { decisions.release_park("wr_1", "p1", actor: "person") }
 
       expect(error.code).to eq("guard_cannot_pass")
       expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "guard" => "no_commit")
@@ -768,7 +792,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
         expect { decisions.refuse_resume(store.runs["wr_1"]) }.not_to raise_error
         expect { decisions.refuse_resume(store.runs["wr_1"], from: "plan") }.not_to raise_error
-        expect(decisions.resume("wr_1")).to be_a(described_class::Resumed)
+        expect(decisions.resume("wr_1", actor: "person")).to be_a(described_class::Resumed)
       end
     end
 
@@ -806,7 +830,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "takes the checkout as the new base in one reading, records the note and has the rest of the step judged without the guard" do
       guard_stopped
 
-      resumed = decisions.resume("wr_1", accept_guard: true, note: "I rebased on purpose.", caller_pane: "%1")
+      resumed = decisions.resume("wr_1", actor: "person", accept_guard: true, note: "I rebased on purpose.", caller_pane: "%1")
 
       run = resumed.run
       expect(resumed.unchanged).to be_nil
@@ -828,18 +852,18 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "runs the stopped step again with --retry, as a new attempt held to max_attempts" do
       guard_stopped("tracked_changed", max_attempts: 1)
 
-      error = error_for { decisions.resume("wr_1", accept_guard: true, guard_retry: true, note: "keep the edits") }
+      error = error_for { decisions.resume("wr_1", actor: "person", accept_guard: true, guard_retry: true, note: "keep the edits") }
       expect(error.code).to eq("attempts_spent")
       expect(guard.calls).to be_empty
       expect(change.events).to be_empty
 
-      run = decisions.resume("wr_1", accept_guard: true, guard_retry: true, note: "keep the edits", extra_attempts: 1).run
+      run = decisions.resume("wr_1", actor: "person", accept_guard: true, guard_retry: true, note: "keep the edits", extra_attempts: 1).run
 
       expect(run.base_sha).to eq("b" * 40)
       expect(run.extra_attempts).to eq(1)
       expect(run.steps["plan"].attempts.last.outcome).to eq("failed")
       expect(progress.calls).to be_empty
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
       expect(change.deliveries).to eq([{"step" => "plan"}])
       expect(run.pending_context).to eq([accepted_line("tracked_changed", "b" * 40), "Note from the person who resumed the run: keep the edits"])
       expect(change.events.map { |event| event[1] }).to eq(%w[attempts_extended guard_overridden run_resumed])
@@ -850,7 +874,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "accepts no_commit with no base commit, taking HEAD as the base once there is one" do
       guard_stopped("no_commit", base_sha: nil)
 
-      run = decisions.resume("wr_1", accept_guard: true, note: "committed now").run
+      run = decisions.resume("wr_1", actor: "person", accept_guard: true, note: "committed now").run
 
       expect(run.base_sha).to eq("b" * 40)
       expect(change.events.first[2]).to include("old_base_sha" => nil, "new_base_sha" => "b" * 40)
@@ -861,7 +885,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       guard_stopped("no_commit", base_sha: nil)
       no_head = RecordingGuard.new(head: nil)
 
-      run = decisions_with(no_head).resume("wr_1", accept_guard: true, note: "empty repo").run
+      run = decisions_with(no_head).resume("wr_1", actor: "person", accept_guard: true, note: "empty repo").run
 
       expect(run.base_sha).to be_nil
       expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"]])
@@ -873,11 +897,11 @@ RSpec.describe Workspace::WorkflowDecisions do
       guard_stopped("no_commit", base_sha: nil)
       unborn = RecordingGuard.new(head: nil, tree: nil, found: {"code" => "no_commit", "paths" => []})
 
-      error = error_for { decisions_with(unborn).resume("wr_1", accept_guard: true, guard_retry: true, note: "mine") }
+      error = error_for { decisions_with(unborn).resume("wr_1", actor: "person", accept_guard: true, guard_retry: true, note: "mine") }
       expect(error.code).to eq("guard_cannot_pass")
       expect(change.events).to be_empty
 
-      run = decisions_with(unborn).resume("wr_1", accept_guard: true, note: "empty repo").run
+      run = decisions_with(unborn).resume("wr_1", actor: "person", accept_guard: true, note: "empty repo").run
       expect(run.base_sha).to be_nil
       expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"]])
       expect(change.events.map { |e| e[1] }).to include("guard_overridden")
@@ -888,7 +912,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       missing = {"code" => "turn_ended_incomplete", "since" => "2026-11-10T12:00:00Z", "details" => {"step" => "plan", "missing" => ["/work/app/.workflow/wr_1/plan.md"]}}
       evaluation = RecordingEvaluation.new(store.runs, reason: missing)
       run = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", accept_guard: true, note: "mine").run
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", actor: "person", accept_guard: true, note: "mine").run
 
       expect(run.reason).to eq(missing)
       expect(progress.calls).to be_empty
@@ -900,7 +924,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       guard_stopped
       evaluation = RecordingEvaluation.new(store.runs, check: {"step" => "plan", "attempt" => 1, "command" => "rake"})
       described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", accept_guard: true, note: "mine")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", actor: "person", accept_guard: true, note: "mine")
 
       expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"], [:finish_check, "wr_1", {"step" => "plan", "attempt" => 1, "command" => "rake"}]])
     end
@@ -908,7 +932,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "refuses with guard_base_unreadable when the tree can't be read, keeping the stored base" do
       before = deep_copy(guard_stopped("tracked_changed"))
 
-      error = error_for { decisions_with(RecordingGuard.new(head: "b" * 40, tree: nil)).resume("wr_1", accept_guard: true, note: "mine") }
+      error = error_for { decisions_with(RecordingGuard.new(head: "b" * 40, tree: nil)).resume("wr_1", actor: "person", accept_guard: true, note: "mine") }
 
       expect(error.code).to eq("guard_base_unreadable")
       expect(error.details["unread"]).to eq(["accepted_tree_sha256"])
@@ -921,7 +945,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "refuses with guard_base_unreadable, retryable, when #{unread.first} can't be read, keeping the stored base" do
         before = deep_copy(guard_stopped)
 
-        error = error_for { decisions_with(RecordingGuard.new(head: "b" * 40, unread: unread)).resume("wr_1", accept_guard: true, note: "mine") }
+        error = error_for { decisions_with(RecordingGuard.new(head: "b" * 40, unread: unread)).resume("wr_1", actor: "person", accept_guard: true, note: "mine") }
 
         expect(error.code).to eq("guard_base_unreadable")
         expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "guard" => "head_moved", "unread" => unread)
@@ -938,7 +962,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         guard = RecordingGuard.new(head: "b" * 40, found: {"code" => code, "paths" => []})
         before = deep_copy(store.runs["wr_1"])
 
-        error = error_for { decisions_with(guard).resume("wr_1", accept_guard: true, guard_retry: true, note: "mine") }
+        error = error_for { decisions_with(guard).resume("wr_1", actor: "person", accept_guard: true, guard_retry: true, note: "mine") }
 
         expect(error.code).to eq("guard_cannot_pass")
         expect(error.message).to match(message)
@@ -947,7 +971,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         expect(change.events).to be_empty
         expect(dispatch.calls).to be_empty
 
-        decisions_with(guard).resume("wr_1", accept_guard: true, note: "mine")
+        decisions_with(guard).resume("wr_1", actor: "person", accept_guard: true, note: "mine")
         expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"]])
       end
     end
@@ -956,23 +980,23 @@ RSpec.describe Workspace::WorkflowDecisions do
       guard_stopped("head_moved")
       guard = RecordingGuard.new(head: "b" * 40, found: {"code" => "tracked_changed", "paths" => ["a.rb"]})
 
-      decisions_with(guard).resume("wr_1", accept_guard: true, guard_retry: true, note: "mine")
+      decisions_with(guard).resume("wr_1", actor: "person", accept_guard: true, guard_retry: true, note: "mine")
 
       expect(guard.calls.map(&:first)).to eq(%i[base check])
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
     end
 
     it "moves the run to a pane given, refusing one another run holds before anything is changed" do
       guard_stopped
       before = deep_copy(store.runs["wr_1"])
 
-      error = error_for { decisions.resume("wr_1", accept_guard: true, note: "mine", pane: "%9") }
+      error = error_for { decisions.resume("wr_1", actor: "person", accept_guard: true, note: "mine", pane: "%9") }
       expect(error.code).to eq("pane_has_run")
       expect(store.runs["wr_1"]).to eq(before)
       expect(guard.calls).to be_empty
       expect(change.events).to be_empty
 
-      run = decisions.resume("wr_1", accept_guard: true, note: "mine", pane: "%7").run
+      run = decisions.resume("wr_1", actor: "person", accept_guard: true, note: "mine", pane: "%7").run
       expect(run.pane).to eq("%7")
       expect(panes.calls).to include([:unbind, "wr_1"])
       expect(dispatch.calls).to include([:check_pane, "%7", {run_id: "wr_1"}])
@@ -981,7 +1005,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "takes over from a parked resume" do
       guard_stopped["parked"] = {"id" => "p0", "pane" => "%3", "requested_at" => "2026-11-10T11:00:00Z", "expires_at" => "2026-11-10T13:00:00Z", "retries" => 0}
 
-      run = decisions.resume("wr_1", accept_guard: true, note: "mine").run
+      run = decisions.resume("wr_1", actor: "person", accept_guard: true, note: "mine").run
 
       expect(dispatch.calls.first).to eq([:drop_park, "wr_1", "taken_over", {}])
       expect(run.parked).to be_nil
@@ -990,7 +1014,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "refuses a run no guard stopped with guard_not_stopped, changing nothing" do
       before = deep_copy(stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting"})))
 
-      error = error_for { decisions.resume("wr_1", accept_guard: true, note: "why") }
+      error = error_for { decisions.resume("wr_1", actor: "person", accept_guard: true, note: "why") }
 
       expect(error.code).to eq("guard_not_stopped")
       expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "reason" => "failed_check", "guard" => nil)
@@ -1009,7 +1033,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         [{accept_guard: true, guard_retry: true, from: "plan", note: "why"}, "--retry runs the stopped step again; --from can't go with it."],
         [{accept_guard: true, from: "plan", note: "why"}, "--from can't go with it."]
       ].each do |options, message|
-        expect { decisions.resume("wr_1", **options) }.to raise_error(Workspace::UsageError, Regexp.new(Regexp.escape(message)))
+        expect { decisions.resume("wr_1", actor: "person", **options) }.to raise_error(Workspace::UsageError, Regexp.new(Regexp.escape(message)))
         expect { decisions.refuse_resume(store.runs["wr_1"], **options) }.to raise_error(Workspace::UsageError, Regexp.new(Regexp.escape(message)))
       end
       expect(change.events).to be_empty
@@ -1025,7 +1049,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       before = deep_copy(stored(run))
 
       [nil, "plan"].each do |from|
-        error = error_for { decisions.park("wr_1", from: from) }
+        error = error_for { decisions.park("wr_1", actor: "person", from: from) }
 
         expect(error.code).to eq("step_reviewing")
         expect(error.details).to eq("run_id" => "wr_1", "step" => "plan")
@@ -1038,7 +1062,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "stores the resume on the run for later, as a frozen Resumed, and types nothing" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting"}))
 
-      resumed = decisions.park("wr_1", note: "later", extra_tokens: 10)
+      resumed = decisions.park("wr_1", actor: "person", note: "later", extra_tokens: 10)
 
       expect(resumed).to be_a(described_class::Resumed)
       expect(resumed).to be_frozen
@@ -1053,7 +1077,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "leaves a live park as it is and says which pane it waits for" do
       before = deep_copy(stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => park_of("2026-11-10T12:30:00Z")})))
 
-      resumed = decisions.park("wr_1", from: "build")
+      resumed = decisions.park("wr_1", actor: "person", from: "build")
 
       expect(resumed.unchanged).to eq("a resume is already parked for pane %5")
       expect(resumed.run.to_h).to eq(before)
@@ -1063,7 +1087,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "replaces a park past its limit" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => park_of("2026-11-10T11:30:00Z")}))
 
-      resumed = decisions.park("wr_1", pane: "%8")
+      resumed = decisions.park("wr_1", actor: "person", pane: "%8")
 
       expect(dispatch.calls).to eq([[:check_pane, "%8", {run_id: "wr_1"}], [:drop_park, "wr_1", "expired", {}]])
       expect(resumed.run.parked).to include("pane" => "%8", "expires_at" => "2026-11-10T13:00:00Z")
@@ -1074,7 +1098,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "stores nothing for a step an agent is working on, and says why" do
       before = deep_copy(stored)
 
-      resumed = decisions.park("wr_1")
+      resumed = decisions.park("wr_1", actor: "person")
 
       expect(resumed.unchanged).to eq("an agent is working on step plan")
       expect(resumed.run.to_h).to eq(before)
@@ -1084,8 +1108,8 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "refuses what a resume refuses, and a pane another run has, before storing anything" do
       before = deep_copy(stored)
 
-      expect(error_for { decisions.park("wr_1", from: "ship") }).to be_a(Workspace::UsageError)
-      expect(error_for { decisions.park("wr_1", pane: "%9") }.code).to eq("pane_has_run")
+      expect(error_for { decisions.park("wr_1", actor: "person", from: "ship") }).to be_a(Workspace::UsageError)
+      expect(error_for { decisions.park("wr_1", actor: "person", pane: "%9") }.code).to eq("pane_has_run")
       expect(store.runs["wr_1"]).to eq(before)
       expect(change.events).to be_empty
     end
@@ -1101,12 +1125,12 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "refuses a run whose token budget is used up unless --extra-tokens covers it" do
         stored(spent)
 
-        error = error_for { decisions.park("wr_1", extra_tokens: 50) }
+        error = error_for { decisions.park("wr_1", actor: "person", extra_tokens: 50) }
         expect(error.code).to eq("budget_spent")
         expect(error.message).to include("(150 of 100 tokens)", "(51 is the least)")
         expect(store.runs["wr_1"]).not_to have_key("parked")
 
-        expect(decisions.park("wr_1", extra_tokens: 51).run.parked).to include("extra_tokens" => 51)
+        expect(decisions.park("wr_1", actor: "person", extra_tokens: 51).run.parked).to include("extra_tokens" => 51)
       end
 
       it "refuses a run whose timeout is used up unless --extra-time covers it, storing the seconds in the park" do
@@ -1114,18 +1138,18 @@ RSpec.describe Workspace::WorkflowDecisions do
         timed["definition"]["timeout"] = 1800
         stored(timed)
 
-        error = error_for { decisions.park("wr_1", extra_seconds: 100) }
+        error = error_for { decisions.park("wr_1", actor: "person", extra_seconds: 100) }
         expect(error.code).to eq("run_timed_out")
         expect(store.runs["wr_1"]).not_to have_key("parked")
 
-        expect(decisions.park("wr_1", extra_seconds: 1801).run.parked).to include("extra_seconds" => 1801)
+        expect(decisions.park("wr_1", actor: "person", extra_seconds: 1801).run.parked).to include("extra_seconds" => 1801)
       end
 
       it "refuses spent attempts first" do
         spent["definition"]["max_attempts"] = 1
         stored(spent)
 
-        expect(error_for { decisions.park("wr_1") }.code).to eq("attempts_spent")
+        expect(error_for { decisions.park("wr_1", actor: "person") }.code).to eq("attempts_spent")
       end
     end
 
@@ -1137,7 +1161,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         hash["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:10:00Z", "usage" => {"input_tokens" => 150})
         stored(hash)
 
-        resumed = decisions.park("wr_1")
+        resumed = decisions.park("wr_1", actor: "person")
 
         expect(resumed.unchanged).to be_nil
         expect(resumed.run.parked).to include("retries" => 0)
@@ -1156,7 +1180,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(state: "checking", extra: {"parked" => parked}))
 
       described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).release_park("wr_1", "p1")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).release_park("wr_1", "p1", actor: "person")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:review_round, "wr_1", {"round" => 1}]])
     end
@@ -1164,12 +1188,12 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "carries out the parked resume in the same change, and marks the attempt it started" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting", "parked" => parked}))
 
-      resumed = decisions.release_park("wr_1", "p1")
+      resumed = decisions.release_park("wr_1", "p1", actor: "person")
 
       expect(resumed).to be_a(described_class::Resumed)
       expect(resumed.unchanged).to be_nil
       expect(resumed.run.parked).to be_nil
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
       expect(change.events).to eq([["wr_1", "run_resumed", {"step" => "plan", "state" => "failed"}],
         ["wr_1", "resume_parked_ended", {"step" => "plan", "how" => "released"}]])
       expect(resumed.run.steps["plan"].last_attempt.to_h["after_park"]).to eq("expires_at" => "2026-11-10T13:00:00Z", "pane" => nil, "retries" => 0)
@@ -1179,11 +1203,11 @@ RSpec.describe Workspace::WorkflowDecisions do
       hash = run_hash(state: "failed", reason: failed_check, max_attempts: 5, extra: {"state" => "waiting"})
       hash["definition"]["steps"][0]["max_attempts"] = 1
       stored(hash)
-      parked_resume = decisions.park("wr_1", extra_attempts: 1)
+      parked_resume = decisions.park("wr_1", actor: "person", extra_attempts: 1)
       expect(parked_resume.run.parked).to include("extra_attempts" => 1)
       expect(store.runs["wr_1"]).not_to have_key("extra_attempts")
 
-      resumed = decisions.release_park("wr_1", parked_resume.run.parked["id"])
+      resumed = decisions.release_park("wr_1", parked_resume.run.parked["id"], actor: "person")
 
       expect(resumed.run.extra_attempts).to eq(1)
       expect(resumed.run.steps["plan"].to_h["extra_attempts"]).to eq(1)
@@ -1193,10 +1217,10 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "does not hold a park typed again after a busy pane to the allowance, since its attempt was counted then" do
       stored(run_hash(state: "failed", reason: failed_check, max_attempts: 1, extra: {"parked" => parked(retries: 1, note: "try again")}))
 
-      resumed = decisions.release_park("wr_1", "p1")
+      resumed = decisions.release_park("wr_1", "p1", actor: "person")
 
       expect(resumed.run.pending_context.last).to eq("Note from the person who resumed the run: try again")
-      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: false, retry_of: nil}]])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: false, retry_of: nil}]])
     end
 
     context "on its first try, when the resume would start an attempt" do
@@ -1211,7 +1235,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         spent_run(max_attempts: 1)
         before = deep_copy(store.runs["wr_1"]["parked"])
 
-        expect(error_for { decisions.release_park("wr_1", "p1") }.code).to eq("attempts_spent")
+        expect(error_for { decisions.release_park("wr_1", "p1", actor: "person") }.code).to eq("attempts_spent")
         expect(store.runs["wr_1"]["parked"]).to eq(before)
         expect(dispatch.calls).to be_empty
       end
@@ -1219,21 +1243,21 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "holds a run past its timeout on its first release, and starts the attempt unheld when typed again after a busy pane" do
         timed = spent_run
         timed["definition"]["timeout"] = 1800
-        expect(error_for { decisions.release_park("wr_1", "p1") }.code).to eq("run_timed_out")
+        expect(error_for { decisions.release_park("wr_1", "p1", actor: "person") }.code).to eq("run_timed_out")
         expect(dispatch.calls).to be_empty
 
         timed["parked"]["retries"] = 1
-        resumed = decisions.release_park("wr_1", "p1")
+        resumed = decisions.release_park("wr_1", "p1", actor: "person")
 
         expect(resumed.unchanged).to be_nil
-        expect(dispatch.calls).to eq([[:dispatch, "wr_1", {context: nil, budgeted: false, retry_of: nil}]])
+        expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: false, retry_of: nil}]])
       end
 
       it "refuses with budget_spent and leaves the run parked" do
         spent_run(tokens: 100)
         before = deep_copy(store.runs["wr_1"]["parked"])
 
-        expect(error_for { decisions.release_park("wr_1", "p1") }.code).to eq("budget_spent")
+        expect(error_for { decisions.release_park("wr_1", "p1", actor: "person") }.code).to eq("budget_spent")
         expect(store.runs["wr_1"]["parked"]).to eq(before)
         expect(dispatch.calls).to be_empty
       end
@@ -1242,7 +1266,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "keeps the note for the next attempt when the resume does nothing, and says why" do
       stored(run_hash(extra: {"parked" => parked(note: "look again")}))
 
-      resumed = decisions.release_park("wr_1", "p1")
+      resumed = decisions.release_park("wr_1", "p1", actor: "person")
 
       expect(resumed.unchanged).to eq("an agent is working on step plan")
       expect(resumed.run.parked).to be_nil
@@ -1256,7 +1280,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(state: "checking", extra: {"parked" => parked}))
 
       resumed = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).release_park("wr_1", "p1")
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).release_park("wr_1", "p1", actor: "person")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:finish_check, "wr_1", {"step" => "plan", "attempt" => 1}]])
       expect(resumed.unchanged).to be_nil
@@ -1265,7 +1289,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "changes nothing for a park of another id" do
       before = deep_copy(stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => parked})))
 
-      resumed = decisions.release_park("wr_1", "p2")
+      resumed = decisions.release_park("wr_1", "p2", actor: "person")
 
       expect(resumed.unchanged).to be_nil
       expect(resumed.run.to_h).to eq(before)
@@ -1281,7 +1305,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       waiting_lock = {"code" => "waiting_lock", "since" => "2026-11-10T11:55:00Z", "details" => {}}
       stored(run_hash(state: "pending", reason: waiting_lock, extra: {"parked" => parked}))
 
-      run = decisions.park_failed("wr_1", "p1", code: "parked_timeout", message: "too long")
+      run = decisions.park_failed("wr_1", "p1", code: "parked_timeout", message: "too long", actor: "person")
 
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(dispatch.calls).to eq([[:release, "wr_1"], [:drop_park, "wr_1", "failed", {}]])
@@ -1294,7 +1318,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "names a gone pane as pane_gone" do
       stored(run_hash(state: "failed", extra: {"parked" => parked.merge("pane" => nil)}))
 
-      run = decisions.park_failed("wr_1", "p1", code: "no_such_pane", message: "gone")
+      run = decisions.park_failed("wr_1", "p1", code: "no_such_pane", message: "gone", actor: "person")
 
       expect(run.reason["code"]).to eq("pane_gone")
       expect(run.reason["details"]["pane"]).to eq("%3")
@@ -1303,7 +1327,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "tells a failed step's next attempt what failed" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => parked}))
 
-      run = decisions.park_failed("wr_1", "p1", code: "pane_busy", message: "busy")
+      run = decisions.park_failed("wr_1", "p1", code: "pane_busy", message: "busy", actor: "person")
 
       expect(run.pending_context.first).to start_with("The last attempt of this step failed: ")
     end
@@ -1312,7 +1336,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       gate_reason = {"code" => "waiting_you", "since" => "2026-11-10T11:50:00Z", "details" => {"kind" => "gate"}}
       stored(run_hash(state: "passed", gate: waiting_gate, reason: gate_reason, extra: {"parked" => parked}))
 
-      run = decisions.park_failed("wr_1", "p1", code: "pane_gone", message: "gone")
+      run = decisions.park_failed("wr_1", "p1", code: "pane_gone", message: "gone", actor: "person")
 
       expect(dispatch.calls).to eq([[:drop_park, "wr_1", "failed", {"error" => "pane_gone", "message" => "gone"}]])
       expect(run.reason).to eq(gate_reason)
@@ -1325,23 +1349,31 @@ RSpec.describe Workspace::WorkflowDecisions do
       it "raises run_not_active" do
         stored(run_hash(state: "failed", extra: {"parked" => parked}))
 
-        expect(error_for { decisions.park_failed("wr_1", "p1", code: "pane_gone", message: "gone") }.code).to eq("run_not_active")
+        expect(error_for { decisions.park_failed("wr_1", "p1", code: "pane_gone", message: "gone", actor: "person") }.code).to eq("run_not_active")
       end
     end
 
     it "changes nothing for a park of another id" do
       before = deep_copy(stored(run_hash(state: "failed", extra: {"parked" => parked})))
 
-      expect(decisions.park_failed("wr_1", "p2", code: "pane_gone", message: "gone").to_h).to eq(before)
+      expect(decisions.park_failed("wr_1", "p2", code: "pane_gone", message: "gone", actor: "person").to_h).to eq(before)
       expect(dispatch.calls).to be_empty
     end
   end
 
   describe "#cancel" do
+    it "hands the actor it was given to the change, and kills as that actor too" do
+      stored
+
+      decisions.cancel("wr_1", actor: "person")
+
+      expect(change.calls.map(&:last)).to eq([{nonblocking: false, actor: "person", cause: "cancel"}])
+    end
+
     it "closes the open attempt, ends the run and records who ended it" do
       stored
 
-      run = decisions.cancel("wr_1")
+      run = decisions.cancel("wr_1", actor: "person")
 
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(attempt_record.calls).to eq([[:abandon, "wr_1"]])
@@ -1355,7 +1387,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "ends the run that the attempt record closed, not the one it was given" do
       stored
 
-      decisions.cancel("wr_1")
+      decisions.cancel("wr_1", actor: "person")
 
       expect(progress.finished.map { |run| run.steps["plan"].last_attempt.outcome }).to eq(["cancelled"])
     end
@@ -1366,7 +1398,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       run["steps"]["plan"]["review"] = {"round" => 1, "delivery" => nil, "started_at" => "2026-11-10T11:50:00.000Z", "pane" => "%7"}
       stored(run)
 
-      cancelled = decisions.cancel("wr_1")
+      cancelled = decisions.cancel("wr_1", actor: "person")
 
       expect(progress.calls).to eq([[:end_round, "plan", {how: "cancelled", close: true}], [:finish, "wr_1", "cancelled"]])
       expect(progress.finished.first.steps["plan"].to_h).not_to have_key("review")
@@ -1377,7 +1409,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "ends a run with no open attempt" do
       stored(run_hash.tap { |hash| hash["steps"]["plan"]["attempts"] = [] })
 
-      run = decisions.cancel("wr_1")
+      run = decisions.cancel("wr_1", actor: "person")
 
       expect(attempt_record.calls).to eq([[:abandon, "wr_1"]])
       expect(run.state).to eq("cancelled")
@@ -1391,7 +1423,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       stored(run_hash(id: "wr_1", extra: {"workspace" => "app.worktree-a"}))
       stored(run_hash(id: "wr_2", extra: {"workspace" => "app.worktree-b"}))
 
-      expect(decisions.workspace_killed("app.worktree-a")).to eq("cancelled" => ["wr_1"], "failed" => [])
+      expect(decisions.workspace_killed("app.worktree-a", actor: "person")).to eq("cancelled" => ["wr_1"], "failed" => [])
       expect(store.runs["wr_1"]).to include("state" => "cancelled", "cancelled_by" => "kill")
       expect(store.runs["wr_2"]["state"]).to eq("running")
     end
@@ -1403,14 +1435,14 @@ RSpec.describe Workspace::WorkflowDecisions do
         stored(run_hash(id: "wr_1", extra: {"workspace" => "app.worktree-a"}))
         stored(run_hash(id: "wr_2", extra: {"workspace" => "app.worktree-a"}))
 
-        expect(decisions.workspace_killed("app.worktree-a")).to eq("cancelled" => ["wr_2"], "failed" => ["wr_1"])
+        expect(decisions.workspace_killed("app.worktree-a", actor: "person")).to eq("cancelled" => ["wr_2"], "failed" => ["wr_1"])
       end
     end
 
     it "raises nothing when the runs can't be listed" do
       allow(store).to receive(:going).and_raise(NoMethodError, "undefined method for nil")
 
-      expect(decisions.workspace_killed("app")).to eq("cancelled" => [], "failed" => [])
+      expect(decisions.workspace_killed("app", actor: "person")).to eq("cancelled" => [], "failed" => [])
     end
   end
 end

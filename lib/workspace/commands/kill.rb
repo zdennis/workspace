@@ -393,7 +393,7 @@ module Workspace
       # must not stop the config, settings and session from being cleaned up.
       # WorkflowEngine#workspace_killed never raises.
       def end_workflow_runs(project, out)
-        ended = @workflow_runs&.workspace_killed(project)
+        ended = @workflow_runs&.workspace_killed(project, actor: "person")
         return unless ended
         ended["cancelled"].each { |run| out.puts "Cancelled workflow run #{run}." }
         ended["failed"].each do |run|

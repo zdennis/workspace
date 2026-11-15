@@ -16,6 +16,8 @@ RSpec.describe "a workflow run from start to completed" do
     end
   end
 
+  after { |example| EventKeysCheck.verify!(runs_dir, File.join(@dir, "state", ".workflows", "archive")) unless example.metadata[:raw_events] }
+
   let(:ids) { ["wr_1"] }
   let(:fixture) { File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "e2e.yml") }
   let(:definition) { Workspace::WorkflowDefinition.parse(File.read(fixture), id: "e2e", source: "global", path: fixture) }
@@ -90,7 +92,7 @@ RSpec.describe "a workflow run from start to completed" do
 
   def turn_ended(pane = "%5")
     advance
-    engine.turn_ended("wr_1", pane: pane)
+    engine.turn_ended("wr_1", actor: "agent", pane: pane)
   end
 
   def outcomes(run, step) = run["steps"][step]["attempts"].map { |attempt| attempt["outcome"] }
@@ -124,7 +126,7 @@ RSpec.describe "a workflow run from start to completed" do
   end
 
   def start
-    engine.start(definition: @definition || definition, workspace: workspace, worktree: worktree, inputs: {"task" => "X-1"}, pane: "%5")
+    engine.start(actor: "person", definition: @definition || definition, workspace: workspace, worktree: worktree, inputs: {"task" => "X-1"}, pane: "%5")
   end
 
   # Research, then the plan through its gate, to the design step's author turn ended and its round begun.
@@ -135,7 +137,7 @@ RSpec.describe "a workflow run from start to completed" do
     artifact("plan.md")
     plan_file("active")
     turn_ended
-    engine.approve("wr_1")
+    engine.approve("wr_1", actor: "person")
     artifact("design.md")
     turn_ended
   end
@@ -177,9 +179,9 @@ RSpec.describe "a workflow run from start to completed" do
     def pressed
       to_review
       ref = {step: "design", attempt: 1, round: 1, pane: review_pane}
-      claim, at = engine.claim_round_interrupt("wr_1", **ref, elapsed: 1801, timeout: 1800, cause: "review_timed_out")
+      claim, at = engine.claim_round_interrupt("wr_1", actor: "sweep", **ref, elapsed: 1801, timeout: 1800, cause: "review_timed_out")
       expect(claim).to eq(:claimed)
-      expect(engine.round_interrupt_sent("wr_1", **ref, claim_at: at, sent: true, cause: "review_timed_out")).to eq(:recorded)
+      expect(engine.round_interrupt_sent("wr_1", actor: "sweep", **ref, claim_at: at, sent: true, cause: "review_timed_out")).to eq(:recorded)
     end
 
     it "is passed by the agent daemon's tick on the verdicts written, once the review timeout has gone by since the press" do
@@ -187,16 +189,16 @@ RSpec.describe "a workflow run from start to completed" do
       verdict("skeptic", "approve", seq: 1)
       verdict("builder", "approve", seq: 2)
       advance(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT - 1)
-      expect(engine.tick("wr_1")).to be_nil
+      expect(engine.tick("wr_1", actor: "daemon")).to be_nil
 
       advance(1)
-      run = engine.tick("wr_1")
+      run = engine.tick("wr_1", actor: "daemon")
 
       expect(run).to include("current" => "implement", "reason" => nil)
       expect(outcomes(run, "design")).to eq(["passed"])
       expect(history).to include("step_stalled", "review_ended")
       # A sweep that read the round before the tick decided it changes nothing.
-      expect(engine.review_stalled("wr_1", step: "design", attempt: 1, round: 1, pane: review_pane, cause: "interrupt_unanswered", data: {"waited" => 1800})).to eq(:moved_on)
+      expect(engine.review_stalled("wr_1", actor: "sweep", step: "design", attempt: 1, round: 1, pane: review_pane, cause: "interrupt_unanswered", data: {"waited" => 1800})).to eq(:moved_on)
     end
 
     it "stops review_incomplete by the tick when the verdicts written fall short, running no reviewer again" do
@@ -204,7 +206,7 @@ RSpec.describe "a workflow run from start to completed" do
       verdict("skeptic", "approve", seq: 1)
       advance(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT)
 
-      run = engine.tick("wr_1")
+      run = engine.tick("wr_1", actor: "daemon")
 
       expect(run).to include("current" => "design", "reason" => include("code" => "review_incomplete"))
       expect(run.dig("reason", "details", "problem")).to include("the sweep interrupted the review pane")
@@ -266,7 +268,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(note).to eq("name" => "summary.md", "path" => summary("design.1.r1"), "sha256" => Digest::SHA256.file(summary("design.1.r1")).hexdigest)
       expect(review_item("design")["body"]).to include("waits at its gate", "workflow approve wr_1")
 
-      run = engine.approve("wr_1", note_sha256: note["sha256"])
+      run = engine.approve("wr_1", actor: "person", note_sha256: note["sha256"])
 
       expect(run).to include("state" => "running", "current" => "implement")
       expect(run["steps"]["design"]["gate"]).to include("state" => "approved", "file" => {"path" => summary("design.1.r1"), "sha256" => note["sha256"]})
@@ -281,9 +283,9 @@ RSpec.describe "a workflow run from start to completed" do
       read = gate_note.find(run)["sha256"]
       File.write(summary("design.1.r1"), "edited\n")
 
-      expect { engine.approve("wr_1", note_sha256: read) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("gate_note_unreadable") }
-      expect { engine.approve("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.message).to include("changed since the engine wrote it") }
-      expect(engine.reject("wr_1", note: "Write it again.")["steps"]["design"]["attempts"].size).to eq(2)
+      expect { engine.approve("wr_1", actor: "person", note_sha256: read) }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("gate_note_unreadable") }
+      expect { engine.approve("wr_1", actor: "person") }.to raise_error(Workspace::Error) { |error| expect(error.message).to include("changed since the engine wrote it") }
+      expect(engine.reject("wr_1", actor: "person", note: "Write it again.")["steps"]["design"]["attempts"].size).to eq(2)
     end
 
     it "reviews the step again in a new round when the gate rejects it, keeping the round count and one inbox item, opened again" do
@@ -294,7 +296,7 @@ RSpec.describe "a workflow run from start to completed" do
       first = review_item("design")
       inbox.transition(first["id"], to: "done", by: {"kind" => "cli"})
 
-      run = engine.reject("wr_1", note: "Cover the error path.")
+      run = engine.reject("wr_1", actor: "person", note: "Cover the error path.")
       expect(run["steps"]["design"]["attempts"].size).to eq(2)
       artifact("design.md")
       run = turn_ended
@@ -352,9 +354,9 @@ RSpec.describe "a workflow run from start to completed" do
       expect(run["reason"]).to include("code" => "review_rejected")
       expect(run["reason"]["details"]).to include("step" => "design", "attempt" => 2, "round" => 2, "rounds" => 2, "max_rounds" => 2, "limit" => "rounds")
       expect(outcomes(run, "design")).to eq(%w[failed failed])
-      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("review_rounds_spent") }
+      expect { engine.resume("wr_1", actor: "person") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("review_rounds_spent") }
 
-      run = engine.resume("wr_1", from: "design")
+      run = engine.resume("wr_1", actor: "person", from: "design")
       expect(run["steps"]["design"]["state"]).to eq("running")
       artifact("design.md")
       run = turn_ended
@@ -362,8 +364,8 @@ RSpec.describe "a workflow run from start to completed" do
       expect(run["reason"]).to include("code" => "review_rounds_spent", "details" => include("round" => 3, "rounds" => 2, "max_rounds" => 2))
       expect(run["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
       expect(rounds.size).to eq(2)
-      expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("review_rounds_spent") }
-      expect(engine.cancel("wr_1")["state"]).to eq("cancelled")
+      expect { engine.resume("wr_1", actor: "person") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("review_rounds_spent") }
+      expect(engine.cancel("wr_1", actor: "person")["state"]).to eq("cancelled")
     end
 
     it "runs the author again and reviews a third round when resume --extra-rounds 1 follows the stop, moving the cap" do
@@ -375,8 +377,8 @@ RSpec.describe "a workflow run from start to completed" do
       verdict("skeptic", "reject", seq: 2, dir: "design.2.r2")
       expect(turn_ended("%9")["reason"]).to include("code" => "review_rejected")
 
-      expect { engine.resume("wr_1", extra_rounds: 0) }.to raise_error(Workspace::Error, /--extra-rounds 1/)
-      run = engine.resume("wr_1", extra_rounds: 1)
+      expect { engine.resume("wr_1", actor: "person", extra_rounds: 0) }.to raise_error(Workspace::Error, /--extra-rounds 1/)
+      run = engine.resume("wr_1", actor: "person", extra_rounds: 1)
 
       expect(run["steps"]["design"]).to include("state" => "running", "extra_rounds" => 1)
       expect(run["steps"]["design"]["attempts"].last).to include("n" => 3, "retry_of" => 2)
@@ -404,8 +406,8 @@ RSpec.describe "a workflow run from start to completed" do
     expect(run).to include("state" => "waiting", "current" => "plan")
     expect(run["reason"]).to include("code" => "run_timed_out")
     expect(run["steps"]["plan"]["attempts"]).to eq([])
-    expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("run_timed_out") }
-    run = engine.resume("wr_1", extra_seconds: run["reason"]["details"]["suggested"])
+    expect { engine.resume("wr_1", actor: "person") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("run_timed_out") }
+    run = engine.resume("wr_1", actor: "person", extra_seconds: run["reason"]["details"]["suggested"])
     expect(run).to include("state" => "running", "current" => "plan")
   end
 
@@ -417,13 +419,13 @@ RSpec.describe "a workflow run from start to completed" do
     expect(run["state"]).to eq("waiting")
     expect(run["reason"]).to include("code" => "waiting_you")
     expect(run["steps"]["plan"]["gate"]).to include("state" => "waiting")
-    run = engine.reject("wr_1", note: "Split T1.")
+    run = engine.reject("wr_1", actor: "person", note: "Split T1.")
     expect(run).to include("state" => "running", "current" => "plan")
     expect(run["steps"]["plan"]["attempts"].size).to eq(2)
 
     artifact("plan.md")
     expect(turn_ended["reason"]).to include("code" => "waiting_you")
-    run = engine.approve("wr_1")
+    run = engine.approve("wr_1", actor: "person")
     expect(outcomes(run, "plan")).to eq(%w[passed passed])
     expect(run["current"]).to eq("design")
   end
@@ -461,8 +463,8 @@ RSpec.describe "a workflow run from start to completed" do
     expect(outcomes(run, "implement")).to eq(["passed"])
     expect(run).to include("state" => "waiting", "current" => "verify")
     expect(run["reason"]).to include("code" => "budget_spent")
-    expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
-    run = engine.resume("wr_1", extra_tokens: run["reason"]["details"]["suggested"])
+    expect { engine.resume("wr_1", actor: "person") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("budget_spent") }
+    run = engine.resume("wr_1", actor: "person", extra_tokens: run["reason"]["details"]["suggested"])
     expect(run).to include("state" => "running", "current" => "verify")
   end
 
@@ -484,8 +486,8 @@ RSpec.describe "a workflow run from start to completed" do
     run = turn_ended
     expect(run).to include("state" => "waiting", "current" => "verify")
     expect(run["reason"]).to include("code" => "failed_check")
-    expect { engine.resume("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("step_attempts_spent") }
-    run = engine.resume("wr_1", extra_attempts: 1)
+    expect { engine.resume("wr_1", actor: "person") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("step_attempts_spent") }
+    run = engine.resume("wr_1", actor: "person", extra_attempts: 1)
     expect(run["steps"]["verify"]).to include("state" => "running", "extra_attempts" => 1)
   end
 
@@ -503,7 +505,7 @@ RSpec.describe "a workflow run from start to completed" do
       turn_ended(review_pane)
       inbox.upsert({"type" => "note", "title" => "Implemented X-1", "dedupe_key" => "e2e:wr_1"}, reopen: true)
       run = turn_ended
-      engine.resume("wr_1", extra_tokens: run["reason"]["details"]["suggested"])
+      engine.resume("wr_1", actor: "person", extra_tokens: run["reason"]["details"]["suggested"])
     end
 
     it "cancels a run while verify holds the test-db lock, freeing the lock and the pane and closing the attempt" do
@@ -512,7 +514,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(test_db_holder).not_to be_nil
       expect(panes.bound.values.map { |entry| entry[:run_id] }).to include("wr_1")
 
-      run = engine.cancel("wr_1")
+      run = engine.cancel("wr_1", actor: "person")
 
       expect(run).to include("state" => "cancelled", "cancelled_by" => "cancel")
       expect(history).to include("run_cancelled")
@@ -529,7 +531,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(run["reason"]).to include("code" => "turn_ended_incomplete")
       kicks = panes.kicks.size
 
-      engine.resume("wr_1", note: "Please write research.md.", pane: "%5")
+      engine.resume("wr_1", actor: "person", note: "Please write research.md.", pane: "%5")
       expect(panes.kicks.size).to eq(kicks + 1)
       expect(File.read(File.join(worktree, ".workflow", "wr_1", "steps", "research.2.prompt.md"))).to include("Please write research.md.")
       expect(stored["steps"]["research"]["attempts"].size).to eq(2)
@@ -542,7 +544,7 @@ RSpec.describe "a workflow run from start to completed" do
 
     it "records an agent's fail report on research as a failed attempt that stops the run, research having no on_fail" do
       start
-      engine.report("wr_1", status: "fail", summary: "Cannot find the code.")
+      engine.report("wr_1", actor: "agent", status: "fail", summary: "Cannot find the code.")
       artifact("research.md")
       run = turn_ended
 
@@ -568,7 +570,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(run).to include("state" => "waiting", "current" => "verify")
       expect(run["reason"]).to include("code" => "failed_check")
 
-      run = engine.resume("wr_1", from: "implement", extra_attempts: 1)
+      run = engine.resume("wr_1", actor: "person", from: "implement", extra_attempts: 1)
       expect(run["current"]).to eq("implement")
       expect(run["steps"]["implement"]["attempts"].size).to eq(3)
 
@@ -590,7 +592,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(outcomes(run, "research")).to eq(["failed"])
       # The person puts the checkout back, so the guard passes again.
       allow(guard).to receive(:check).and_return(nil)
-      engine.resume("wr_1")
+      engine.resume("wr_1", actor: "person")
       expect(stored["steps"]["research"]["attempts"].size).to eq(2)
       artifact("research.md")
       run = turn_ended
@@ -623,7 +625,7 @@ RSpec.describe "a workflow run from start to completed" do
         stopped_by_head_moved
         person_accepts_new_head
 
-        run = engine.resume("wr_1", accept_guard: true, note: "I rebased on purpose.", caller_pane: "%1")
+        run = engine.resume("wr_1", actor: "person", accept_guard: true, note: "I rebased on purpose.", caller_pane: "%1")
 
         expect(outcomes(run, "research")).to eq(["overridden"])
         expect(run["base_sha"]).to eq(new_base)
@@ -639,7 +641,7 @@ RSpec.describe "a workflow run from start to completed" do
         artifact("plan.md")
         plan_file("active")
         turn_ended
-        engine.approve("wr_1")
+        engine.approve("wr_1", actor: "person")
         artifact("design.md")
         turn_ended
         verdict("skeptic", "approve", seq: 1)
@@ -647,7 +649,7 @@ RSpec.describe "a workflow run from start to completed" do
         turn_ended(review_pane)
         inbox.upsert({"type" => "note", "title" => "Implemented X-1", "dedupe_key" => "e2e:wr_1"}, reopen: true)
         run = turn_ended
-        engine.resume("wr_1", extra_tokens: run["reason"]["details"]["suggested"])
+        engine.resume("wr_1", actor: "person", extra_tokens: run["reason"]["details"]["suggested"])
         run = turn_ended
         expect(run["state"]).to eq("completed")
       end
@@ -657,7 +659,7 @@ RSpec.describe "a workflow run from start to completed" do
         expect(stored["reason"]).to include("code" => "failed_check")
         person_accepts_new_head
 
-        run = engine.resume("wr_1", accept_guard: true, note: "I rebased on purpose.", caller_pane: "%1")
+        run = engine.resume("wr_1", actor: "person", accept_guard: true, note: "I rebased on purpose.", caller_pane: "%1")
 
         expect(run).to include("current" => "research", "state" => "waiting", "base_sha" => new_base)
         expect(run["reason"]).to include("code" => "turn_ended_incomplete")
@@ -665,7 +667,7 @@ RSpec.describe "a workflow run from start to completed" do
         expect(overrides.size).to eq(1)
 
         artifact("research.md")
-        run = engine.resume("wr_1")
+        run = engine.resume("wr_1", actor: "person")
         expect(outcomes(run, "research")).to eq(["overridden"])
         expect(run["current"]).to eq("plan")
       end
@@ -674,7 +676,7 @@ RSpec.describe "a workflow run from start to completed" do
         stopped_by_head_moved
         person_accepts_new_head
 
-        run = engine.resume("wr_1", accept_guard: true, guard_retry: true, note: "Run it again.", caller_pane: "%1")
+        run = engine.resume("wr_1", actor: "person", accept_guard: true, guard_retry: true, note: "Run it again.", caller_pane: "%1")
 
         expect(run).to include("current" => "research", "state" => "running", "base_sha" => new_base)
         expect(run["steps"]["research"]["attempts"].size).to eq(2)
@@ -693,8 +695,8 @@ RSpec.describe "a workflow run from start to completed" do
         expect(run["reason"]).to include("code" => "turn_ended_incomplete")
         before = stored.to_h
 
-        expect { engine.resume("wr_1", accept_guard: true, note: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("guard_not_stopped") }
-        expect { engine.resume("wr_1", accept_guard: true, guard_retry: true, note: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("guard_not_stopped") }
+        expect { engine.resume("wr_1", actor: "person", accept_guard: true, note: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("guard_not_stopped") }
+        expect { engine.resume("wr_1", actor: "person", accept_guard: true, guard_retry: true, note: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("guard_not_stopped") }
 
         expect(stored.to_h).to eq(before)
         expect(history).not_to include("guard_overridden")
@@ -705,7 +707,7 @@ RSpec.describe "a workflow run from start to completed" do
         check_results << {exit_code: 1, timed_out: false}
         turn_ended
         before = stored.to_h
-        expect { engine.resume("wr_1", accept_guard: true, note: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("guard_not_stopped") }
+        expect { engine.resume("wr_1", actor: "person", accept_guard: true, note: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("guard_not_stopped") }
         expect(stored.to_h).to eq(before)
       end
     end
@@ -730,13 +732,13 @@ RSpec.describe "a workflow run from start to completed" do
       other = File.join(@dir, "other")
       FileUtils.mkdir_p(File.join(other, ".git"))
       ids.replace(%w[wr_2 wr_1])
-      engine.start(definition: definition, workspace: "app.worktree-y", worktree: other, inputs: {"task" => "X-2"}, pane: "%6")
+      engine.start(actor: "person", definition: definition, workspace: "app.worktree-y", worktree: other, inputs: {"task" => "X-2"}, pane: "%6")
       path = File.join(other, ".workflow", "wr_2", "build.md")
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "done\n")
       File.utime(now.first, now.first, path)
       advance
-      engine.turn_ended("wr_2", pane: "%6")
+      engine.turn_ended("wr_2", actor: "agent", pane: "%6")
     end
 
     def build_done
@@ -780,18 +782,18 @@ RSpec.describe "a workflow run from start to completed" do
       since = run["reason"]["since"]
 
       advance
-      engine.tick("wr_1")
+      engine.tick("wr_1", actor: "daemon")
       expect(lock_holder).to include("run_id" => "wr_2")
       expect(stored["reason"]).to include("code" => "waiting_lock", "since" => since)
       expect(stored["steps"]["verify"]["attempts"]).to eq([])
       expect(history.size).to eq(lines)
       expect(kick_count).to eq(kicks)
 
-      engine.cancel("wr_2")
+      engine.cancel("wr_2", actor: "person")
       # Giving up the lock hands it to the queued run, unclaimed, but the step has not started until a tick.
       expect(lock_holder).to include("run_id" => "wr_1", "unclaimed" => true)
       expect(stored["steps"]["verify"]["attempts"]).to eq([])
-      run = engine.tick("wr_1")
+      run = engine.tick("wr_1", actor: "daemon")
 
       expect(run).to include("state" => "running", "current" => "verify", "reason" => nil)
       expect(run["steps"]["verify"]["state"]).to eq("running")
@@ -804,11 +806,11 @@ RSpec.describe "a workflow run from start to completed" do
     it "parks a resume, parks it again when the pane is busy, and carries it out once the line lands" do
       incomplete_build
       expect(stored["reason"]).to include("code" => "turn_ended_incomplete")
-      id = engine.park("wr_1", pane: "%5", note: "Write build.md.")["parked"]["id"]
+      id = engine.park("wr_1", actor: "person", pane: "%5", note: "Write build.md.")["parked"]["id"]
       kicks = kick_count
       panes.queue_kicks({ok: false, code: "pane_busy", message: "busy"})
 
-      run = engine.release_park("wr_1", id)
+      run = engine.release_park("wr_1", id, actor: "daemon")
 
       expect(run["parked"]).to include("retries" => 1)
       expect(run["parked"]["id"]).not_to eq(id)
@@ -817,7 +819,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(kick_count).to eq(kicks + 1)
       expect(events("resume_parked").map { |event| event["retry"] }).to eq([nil, true])
 
-      run = engine.release_park("wr_1", run["parked"]["id"])
+      run = engine.release_park("wr_1", run["parked"]["id"], actor: "daemon")
 
       expect(run).not_to have_key("parked")
       expect(run).to include("state" => "running", "reason" => nil)
@@ -831,15 +833,15 @@ RSpec.describe "a workflow run from start to completed" do
     it "stops parking after PARK_RETRIES busy answers, leaving the run waiting_you with the pane's error" do
       limit = Workspace::WorkflowDispatch::PARK_RETRIES
       incomplete_build
-      id = engine.park("wr_1", pane: "%5")["parked"]["id"]
+      id = engine.park("wr_1", actor: "person", pane: "%5")["parked"]["id"]
       panes.queue_kicks(*Array.new(limit + 1) { {ok: false, code: "pane_busy", message: "busy"} })
 
       retries = Array.new(limit) do
-        run = engine.release_park("wr_1", id)
+        run = engine.release_park("wr_1", id, actor: "daemon")
         id = run["parked"]["id"]
         run["parked"]["retries"]
       end
-      run = engine.release_park("wr_1", id)
+      run = engine.release_park("wr_1", id, actor: "daemon")
 
       expect(retries).to eq((1..limit).to_a)
       expect(run).not_to have_key("parked")
@@ -851,9 +853,9 @@ RSpec.describe "a workflow run from start to completed" do
 
     it "ends a parked resume as failed when the daemon gives up on it, keeping the person's note for the next attempt" do
       incomplete_build
-      id = engine.park("wr_1", pane: "%5", note: "Try again.")["parked"]["id"]
+      id = engine.park("wr_1", actor: "person", pane: "%5", note: "Try again.")["parked"]["id"]
 
-      run = engine.park_failed("wr_1", id, code: "parked_timeout", message: "too long")
+      run = engine.park_failed("wr_1", id, code: "parked_timeout", message: "too long", actor: "daemon")
 
       expect(run).not_to have_key("parked")
       expect(run["state"]).to eq("waiting")
@@ -861,7 +863,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(run["reason"]["details"]).to include("error" => "parked_timeout", "message" => "too long")
       expect(run["pending_context"]).to eq(["Note from the person who resumed the run: Try again."])
       expect(events("resume_parked_ended").last).to include("how" => "failed")
-      expect(engine.park_failed("wr_1", id, code: "parked_timeout", message: "again")["reason"]).to eq(run["reason"])
+      expect(engine.park_failed("wr_1", id, code: "parked_timeout", message: "again", actor: "daemon")["reason"]).to eq(run["reason"])
     end
 
     it "waits out an on_fail backoff holding no attempt or lock, changes nothing a second before it ends, and retries a second later" do
@@ -875,19 +877,19 @@ RSpec.describe "a workflow run from start to completed" do
       before = stored
 
       advance(299)
-      expect(engine.tick("wr_1")).to be_nil
+      expect(engine.tick("wr_1", actor: "daemon")).to be_nil
       expect(stored).to eq(before)
       expect(kick_count).to eq(kicks)
 
       advance(1)
-      run = engine.tick("wr_1")
+      run = engine.tick("wr_1", actor: "daemon")
 
       expect(run).to include("state" => "running", "current" => "build", "reason" => nil)
       expect(run).not_to have_key("backoff")
       expect(run["steps"]["build"]["attempts"].map { |attempt| attempt["n"] }).to eq([1, 2])
       expect(kick_count).to eq(kicks + 1)
       expect(history.last(3)).to eq(%w[step_retry_started step_dispatching step_dispatched])
-      expect(engine.tick("wr_1")).to be_nil
+      expect(engine.tick("wr_1", actor: "daemon")).to be_nil
     end
 
     context "with the token budget spent by the time the backoff ends" do
@@ -903,7 +905,7 @@ RSpec.describe "a workflow run from start to completed" do
         kicks = kick_count
         advance(300)
 
-        run = engine.tick("wr_1")
+        run = engine.tick("wr_1", actor: "daemon")
 
         expect(run["reason"]).to include("code" => "budget_spent")
         expect(run["steps"]["build"]["attempts"].size).to eq(1)
@@ -912,11 +914,11 @@ RSpec.describe "a workflow run from start to completed" do
         expect(lock_holder).to be_nil
         held = stored
         advance
-        engine.tick("wr_1")
+        engine.tick("wr_1", actor: "daemon")
         expect(stored.except("updated_at")).to eq(held.except("updated_at"))
         expect(kick_count).to eq(kicks)
 
-        run = engine.resume("wr_1", extra_tokens: held["reason"]["details"]["suggested"])
+        run = engine.resume("wr_1", actor: "person", extra_tokens: held["reason"]["details"]["suggested"])
 
         expect(run).to include("state" => "running", "current" => "build", "reason" => nil)
         expect(run["steps"]["build"]["attempts"].map { |attempt| attempt["n"] }).to eq([1, 2])
@@ -930,11 +932,11 @@ RSpec.describe "a workflow run from start to completed" do
       lose_check
 
       advance(300)
-      expect(engine.tick("wr_1")).to be_nil
+      expect(engine.tick("wr_1", actor: "daemon")).to be_nil
       expect(stored["steps"]["verify"]["state"]).to eq("checking")
 
       advance(61)
-      run = engine.tick("wr_1")
+      run = engine.tick("wr_1", actor: "daemon")
 
       expect(run).to include("state" => "completed")
       expect(run["steps"]["verify"]["state"]).to eq("passed")
@@ -947,11 +949,11 @@ RSpec.describe "a workflow run from start to completed" do
       start
       build_done
       lose_check
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       lines = history.size
       advance(400)
 
-      expect { engine.tick("wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("run_not_active") }
+      expect { engine.tick("wr_1", actor: "daemon") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("run_not_active") }
 
       expect(stored["state"]).to eq("cancelled")
       expect(history.size).to eq(lines)
@@ -962,18 +964,18 @@ RSpec.describe "a workflow run from start to completed" do
 
     it "leaves a standing park and the due backoff alone on a tick, and a release of the park starts the retry" do
       to_backoff
-      id = engine.park("wr_1", pane: "%5")["parked"]["id"]
+      id = engine.park("wr_1", actor: "person", pane: "%5")["parked"]["id"]
       kicks = kick_count
       advance(300)
 
       expect(Workspace::WorkflowTransitions.wakeable?(stored, now.first)).to eq(:parked)
-      expect(engine.tick("wr_1")).to be_nil
+      expect(engine.tick("wr_1", actor: "daemon")).to be_nil
       expect(stored["parked"]["id"]).to eq(id)
       expect(stored["reason"]).to include("code" => "retry_backoff")
       expect(stored).to have_key("backoff")
       expect(kick_count).to eq(kicks)
 
-      run = engine.release_park("wr_1", id)
+      run = engine.release_park("wr_1", id, actor: "daemon")
 
       expect(run).to include("state" => "running", "current" => "build", "reason" => nil)
       expect(run).not_to have_key("parked")
@@ -1029,7 +1031,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(run["reason"]).to include("code" => "review_incomplete")
       expect(run["steps"]["design"]["state"]).to eq("reviewing")
 
-      engine.resume("wr_1")
+      engine.resume("wr_1", actor: "person")
 
       expect(stored["state"]).to eq("running")
       expect(stored["reason"]).to be_nil
@@ -1120,7 +1122,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(reviewer_bound?).to be(true)
       expect(closed).to eq([])
 
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
 
       expect(closed).to eq([{"workspace" => workspace, "step" => nil, "round" => nil, "pane" => nil}])
       expect(stored["steps"]["design"]).not_to have_key("review_window")
@@ -1130,7 +1132,7 @@ RSpec.describe "a workflow run from start to completed" do
       to_review
       expect(reviewer_bound?).to be(true)
 
-      run = engine.cancel("wr_1")
+      run = engine.cancel("wr_1", actor: "person")
 
       expect(run["state"]).to eq("cancelled")
       expect(run["steps"]["design"]["attempts"].last["rounds"].map { |round| round.values_at("round", "ended") }).to eq([[1, "cancelled"]])
@@ -1142,7 +1144,7 @@ RSpec.describe "a workflow run from start to completed" do
     it "restarts from design mid-review: the round ends and closes once, and design attempt 2 is reviewed as round 2" do
       to_review
 
-      engine.resume("wr_1", from: "design")
+      engine.resume("wr_1", actor: "person", from: "design")
 
       expect(closed).to eq([{"workspace" => workspace, "step" => "design", "round" => 1, "pane" => review_pane}])
       expect(reviewer_bound?).to be(false)
@@ -1182,7 +1184,7 @@ RSpec.describe "a workflow run from start to completed" do
         expect(history).to include("review_no_change")
         expect(Workspace::WorkflowTransitions.rounds_refuse_resume?(run)).to be(false)
 
-        engine.resume("wr_1")
+        engine.resume("wr_1", actor: "person")
 
         expect(stored["reason"]).to be_nil
         expect(stored["steps"]["design"]).to include("state" => "reviewing", "review_rounds" => 2)
@@ -1205,7 +1207,7 @@ RSpec.describe "a workflow run from start to completed" do
         artifact("design.md")
         turn_ended
 
-        engine.resume("wr_1", from: "design")
+        engine.resume("wr_1", actor: "person", from: "design")
 
         expect(design_attempt(2)["rounds"]).to be_nil
         expect(stored["steps"]["design"]).to include("review_rounds" => 1)
@@ -1218,7 +1220,7 @@ RSpec.describe "a workflow run from start to completed" do
       to_review
       verdict("skeptic", "approve", seq: 1)
       turn_ended(review_pane)
-      engine.resume("wr_1")
+      engine.resume("wr_1", actor: "person")
 
       verdict("builder", "approve", seq: 2, dir: "design.1.r2")
       run = turn_ended(review_pane)
@@ -1241,11 +1243,11 @@ RSpec.describe "a workflow run from start to completed" do
 
     it "ignores a late verdict and turn end after a cancel: the run stays cancelled, no round starts, nothing more is closed" do
       to_review
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       verdict("skeptic", "approve", seq: 1)
       verdict("builder", "approve", seq: 2)
 
-      expect { engine.turn_ended("wr_1", pane: review_pane) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
+      expect { engine.turn_ended("wr_1", actor: "agent", pane: review_pane) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
 
       expect(stored["state"]).to eq("cancelled")
       expect(rounds.size).to eq(1)

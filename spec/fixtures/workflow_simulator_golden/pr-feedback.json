@@ -44,7 +44,11 @@
       "at": 0,
       "type": "run_started",
       "workflow": "pr-feedback",
-      "workspace": "simulation"
+      "workspace": "simulation",
+      "from_state": "waiting",
+      "to_state": "running",
+      "actor": "person",
+      "cause": "start"
     },
     {
       "n": 2,
@@ -52,7 +56,12 @@
       "type": "step_dispatching",
       "step": "triage",
       "attempt": 1,
-      "pane": "%sim"
+      "pane": "%sim",
+      "cause": "first",
+      "retry_of": null,
+      "from_state": "waiting",
+      "to_state": "running",
+      "actor": "person"
     },
     {
       "n": 3,
@@ -61,7 +70,11 @@
       "step": "triage",
       "attempt": 1,
       "pane": "%sim",
-      "delivered": true
+      "delivered": true,
+      "actor": "engine",
+      "cause": "first",
+      "from_state": null,
+      "to_state": null
     },
     {
       "n": 4,
@@ -79,13 +92,21 @@
       "at": 1,
       "type": "step_passed",
       "step": "triage",
-      "attempt": 1
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "waiting",
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 6,
       "at": 1,
       "type": "gate_waiting",
-      "step": "triage"
+      "step": "triage",
+      "from_state": "running",
+      "to_state": "waiting",
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 7,
@@ -99,7 +120,11 @@
       "n": 8,
       "at": 1,
       "type": "gate_approved",
-      "step": "triage"
+      "step": "triage",
+      "from_state": "waiting",
+      "to_state": "running",
+      "actor": "person",
+      "cause": "approve"
     },
     {
       "n": 9,
@@ -107,7 +132,12 @@
       "type": "step_dispatching",
       "step": "fix",
       "attempt": 1,
-      "pane": "%sim"
+      "pane": "%sim",
+      "cause": "next_step",
+      "retry_of": null,
+      "from_state": "waiting",
+      "to_state": "running",
+      "actor": "person"
     },
     {
       "n": 10,
@@ -116,7 +146,11 @@
       "step": "fix",
       "attempt": 1,
       "pane": "%sim",
-      "delivered": true
+      "delivered": true,
+      "actor": "engine",
+      "cause": "next_step",
+      "from_state": null,
+      "to_state": null
     },
     {
       "n": 11,
@@ -134,12 +168,20 @@
       "at": 2,
       "type": "step_passed",
       "step": "fix",
-      "attempt": 1
+      "attempt": 1,
+      "from_state": "running",
+      "to_state": "completed",
+      "actor": "daemon",
+      "cause": "turn_ended"
     },
     {
       "n": 13,
       "at": 2,
-      "type": "run_completed"
+      "type": "run_completed",
+      "from_state": "running",
+      "to_state": "completed",
+      "actor": "daemon",
+      "cause": "turn_ended"
     }
   ]
 }

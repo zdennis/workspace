@@ -47,19 +47,20 @@ module Workspace
     # to end. Does nothing while another process is changing the run.
     #
     # @param run_id [String]
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun, nil] the run afterwards; nil when nothing was done
-    def tick(run_id)
+    def tick(run_id, actor:)
       follow = nil
       acted = false
       alive = holder_alive_once
       # Read before the lock is taken: no tmux or daemon call is made under it.
       typed = typed_pane_over(run_id, alive)
-      run = @change.call(run_id, nonblocking: true) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: "tick", nonblocking: true) do |read, ctx|
         stored = read.thawed
         case WorkflowTransitions.wakeable?(stored, @clock.call, alive: alive)
         when :backoff
           acted = true
-          start_retry(stored, ctx)
+          start_retry(stored, ctx, "backoff_ended")
         when :lock
           acted = true
           # A review round waiting for its `review.uses` asks for the lock again through the round's own start, never
@@ -67,7 +68,7 @@ module Workspace
           if stored.dig("steps", stored["current"], "state") == "reviewing"
             stored.replace(@progress.restart_review(stored, ctx: ctx).thawed)
           else
-            dispatch(stored, ctx)
+            dispatch(stored, ctx, "lock_ended")
           end
         when :background
           acted = true
@@ -99,11 +100,12 @@ module Workspace
     # @param attempt [Integer, nil] that step's last attempt the sweep saw
     # @param cause [String] `pane_gone`, `agent_gone` or `daemon_down`
     # @param data [Hash{String=>Object}] more for the `step_stalled` event
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :recorded, :repeat (this cause was recorded for the attempt already), :moved_on (the run
     #   is elsewhere now) or :busy (another process is changing the run)
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def note_stall(run_id, step:, attempt:, cause:, data: {})
-      sweep_change(run_id, step: step, attempt: attempt, running: false) { |stored| mark_stall(stored, cause, data) ? :recorded : :repeat }
+    def note_stall(run_id, actor:, step:, attempt:, cause:, data: {})
+      sweep_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, running: false) { |stored| mark_stall(stored, cause, data) ? :recorded : :repeat }
     end
 
     # Records that the sweep put right a stall it noted, once for each attempt and cause, and only for a cause
@@ -114,9 +116,10 @@ module Workspace
     # @param attempt [Integer, nil]
     # @param cause [String] the cause given to {#note_stall}
     # @param action [String] e.g. `daemon_respawned`
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :recorded, :repeat, :moved_on
-    def note_recovery(run_id, step:, attempt:, cause:, action:)
-      sweep_change(run_id, step: step, attempt: attempt, running: false, blocking: true) do |stored|
+    def note_recovery(run_id, actor:, step:, attempt:, cause:, action:)
+      sweep_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, running: false, blocking: true) do |stored|
         next :repeat unless WorkflowTransitions.sweep_marks(stored).dig("stalled", cause)
         mark_recovery(stored, cause, action) ? :recorded : :repeat
       end
@@ -132,9 +135,10 @@ module Workspace
     # @param data [Hash{String=>Object}] more for the `step_stalled` event
     # @param fail_if_incomplete [Hash, nil] "elapsed" and "timeout" of a step past its `timeout:` with `on_timeout: fail`:
     #   when the decision is a `turn_ended_incomplete` stop, the step is failed with `step_timed_out` instead
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :evaluated, :timed_out, :moved_on or :busy
-    def recover(run_id, turn_over:, cause:, data: {}, fail_if_incomplete: nil)
-      sweep_change(run_id, step: turn_over["step"], attempt: turn_over["attempt"], running: true) do |stored, ctx|
+    def recover(run_id, actor:, turn_over:, cause:, data: {}, fail_if_incomplete: nil)
+      sweep_change(run_id, actor: actor, cause: cause, step: turn_over["step"], attempt: turn_over["attempt"], running: true) do |stored, ctx|
         mark_stall(stored, cause, data)
         mark_recovery(stored, cause, "evaluated")
         evaluate(stored, ctx)
@@ -153,9 +157,10 @@ module Workspace
     # @param attempt [Integer, nil]
     # @param elapsed [Numeric] seconds since the attempt began
     # @param timeout [Numeric] the step's `timeout:`
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :timed_out or :moved_on
-    def time_out(run_id, step:, attempt:, elapsed:, timeout:)
-      sweep_change(run_id, step: step, attempt: attempt, running: :or_incomplete, blocking: true) do |stored, ctx|
+    def time_out(run_id, actor:, step:, attempt:, elapsed:, timeout:)
+      sweep_change(run_id, actor: actor, cause: "timeout", step: step, attempt: attempt, running: :or_incomplete, blocking: true) do |stored, ctx|
         fail_timed_out(stored, elapsed, timeout, ctx)
         :timed_out
       end
@@ -170,10 +175,11 @@ module Workspace
     # @param run_id [String]
     # @param step [String]
     # @param attempt [Integer, nil] the failed attempt the sweep saw
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :redelivered, :waiting_lock, :not_delivered, :moved_on or :busy
-    def redeliver(run_id, step:, attempt:)
+    def redeliver(run_id, actor:, step:, attempt:)
       outcome = :moved_on
-      run = @change.call(run_id, nonblocking: true) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: "redelivery", nonblocking: true) do |read, ctx|
         stored = read.thawed
         next unless sweep_target?(stored, step, attempt, false)
         info = WorkflowTransitions.redelivery(stored, @clock.call)
@@ -183,14 +189,14 @@ module Workspace
         # Stamped on the next attempt by {WorkflowDispatch#dispatch}, which may be one `tick` starts after a lock wait.
         step_state(stored)["redelivery_pending"] = info[:retries] + 1
         outcome = :started
-        @dispatch.dispatch(stored, ctx: ctx, budgeted: false)
+        @dispatch.dispatch(stored, ctx: ctx, cause: "redelivery", budgeted: false)
       end
       return :busy unless run
       return outcome unless outcome == :started
       # The line has been typed (or refused) by now: say what became of it.
       return :waiting_lock if run.reason&.dig("code") == "waiting_lock"
       return :not_delivered if run.step(step).last_attempt.outcome == "not_delivered"
-      @store.record_event(run_id, "step_recovered", "step" => step, "attempt" => attempt, "action" => "redelivered")
+      @store.record_event(run_id, "step_recovered", "step" => step, "attempt" => attempt, "action" => "redelivered", "actor" => actor, "cause" => "redelivery", "from_state" => nil, "to_state" => nil)
       :redelivered
     end
 
@@ -217,13 +223,14 @@ module Workspace
     # @param pane [String] the review pane the sweep read
     # @param cause [String] `idle_turn_over`, `interrupted`, `pane_gone`, `agent_gone`, `interrupt_unanswered` or `server_restarted`
     # @param data [Hash{String=>Object}] more for the `step_stalled` event
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :evaluated, :stopped (`server_restarted` with `redeliver` spent, or an `interrupt_unanswered`
     #   round that stands stopped for a person once its verdicts were read, the revision read again first when there is
     #   a revision reader), :redelivered, :moved_on or :busy
-    def review_stalled(run_id, step:, attempt:, round:, pane:, cause:, data: {})
+    def review_stalled(run_id, actor:, step:, attempt:, round:, pane:, cause:, data: {})
       outcome = :moved_on
       follow = nil
-      run = @change.call(run_id, nonblocking: true) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: cause, nonblocking: true) do |read, ctx|
         stored = read.thawed
         next unless round_target?(stored, step, attempt, round, pane)
         @change.event(stored, "step_stalled", {"step" => step, "attempt" => attempt, "round" => round, "pane" => pane, "cause" => cause}.merge(data))
@@ -258,14 +265,15 @@ module Workspace
     # @param run_id [String]
     # @param step [String] the failed step the sweep saw
     # @param attempt [Integer, nil] that step's last attempt the sweep saw
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :retried, :blocked (the pane is no longer the run's; the run waits for a person, nothing is
     #   spent), :held (the token budget is used; the run waits for a person), :moved_on or :busy
-    def retry_backoff(run_id, step:, attempt:)
+    def retry_backoff(run_id, actor:, step:, attempt:)
       outcome = :moved_on
-      run = @change.call(run_id, nonblocking: true) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: "backoff_ended", nonblocking: true) do |read, ctx|
         next unless sweep_target?(read.to_h, step, attempt, false)
         next unless WorkflowTransitions.backoff(read.to_h, @clock.call)&.fetch(:state) == :due
-        retried = @progress.start_retry(read, ctx: ctx)
+        retried = @progress.start_retry(read, ctx: ctx, cause: "backoff_ended")
         outcome = if retried.backoff&.dig("blocked") then :blocked
         elsif retried.budget_hold || retried.timeout_hold then :held
         else :retried
@@ -286,11 +294,12 @@ module Workspace
     # @param timeout [Numeric] the step's `timeout:`
     # @param cause [String] `timed_out` (the step's `timeout:`) or `run_timed_out` (the run's `timeout_action: interrupt`);
     #   each keeps its own mark, so both may be due on one attempt and each presses once
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`] to hand to {#interrupt_sent}; or :repeat, :moved_on or :busy
-    def claim_interrupt(run_id, step:, attempt:, elapsed:, timeout:, cause: "timed_out")
+    def claim_interrupt(run_id, actor:, step:, attempt:, elapsed:, timeout:, cause: "timed_out")
       at = nil
       key = interrupt_key(cause)
-      outcome = sweep_change(run_id, step: step, attempt: attempt, running: true) do |stored|
+      outcome = sweep_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, running: true) do |stored|
         marks = sweep_marks_for(stored)
         next :repeat if interrupt_held?(marks[key])
         at = now_iso
@@ -311,10 +320,11 @@ module Workspace
     # @param sent [Boolean] whether the keys were pressed
     # @param record [Boolean] write `step_recovered` (false when a {#time_out} follows and writes its own)
     # @param cause [String] the cause given to {#claim_interrupt}
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :recorded, :released, :taken_over or :moved_on
-    def interrupt_sent(run_id, step:, attempt:, claim_at:, sent:, record: true, cause: "timed_out")
+    def interrupt_sent(run_id, actor:, step:, attempt:, claim_at:, sent:, record: true, cause: "timed_out")
       key = interrupt_key(cause)
-      sweep_change(run_id, step: step, attempt: attempt, running: false, blocking: true) do |stored|
+      sweep_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, running: false, blocking: true) do |stored|
         marks = sweep_marks_for(stored)
         next :taken_over unless marks.dig(key, "at") == claim_at
         unless sent
@@ -343,12 +353,13 @@ module Workspace
     # @param elapsed [Numeric] seconds used: the round's since its start, or the run's machine time
     # @param timeout [Numeric] the limit passed: the round's `review.timeout` or the run's `timeout:`
     # @param cause [String] `review_timed_out` or `run_timed_out`
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`] to hand to {#round_interrupt_sent}; or
     #   :repeat, :moved_on or :busy
-    def claim_round_interrupt(run_id, step:, attempt:, round:, pane:, elapsed:, timeout:, cause:)
+    def claim_round_interrupt(run_id, actor:, step:, attempt:, round:, pane:, elapsed:, timeout:, cause:)
       at = nil
       key = WorkflowTransitions::ROUND_INTERRUPT_KEYS.fetch(cause)
-      outcome = round_change(run_id, step: step, attempt: attempt, round: round, pane: pane, strict: true) do |stored, found|
+      outcome = round_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, round: round, pane: pane, strict: true) do |stored, found|
         marks = (found["sweep"] ||= {})
         next :repeat if interrupt_held?(marks[key])
         at = now_iso
@@ -378,10 +389,11 @@ module Workspace
     # @param claim_at [String] the `at` {#claim_round_interrupt} gave; a claim another process took over since is left as it is
     # @param sent [Boolean] whether the keys were pressed
     # @param cause [String] the cause given to {#claim_round_interrupt}
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Symbol] :recorded, :released, :taken_over or :moved_on
-    def round_interrupt_sent(run_id, step:, attempt:, round:, pane:, claim_at:, sent:, cause:)
+    def round_interrupt_sent(run_id, actor:, step:, attempt:, round:, pane:, claim_at:, sent:, cause:)
       key = WorkflowTransitions::ROUND_INTERRUPT_KEYS.fetch(cause)
-      round_change(run_id, step: step, attempt: attempt, round: round, pane: pane, strict: false, blocking: true) do |stored, found|
+      round_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, round: round, pane: pane, strict: false, blocking: true) do |stored, found|
         marks = (found["sweep"] ||= {})
         next :taken_over unless marks.dig(key, "at") == claim_at
         unless sent
@@ -403,9 +415,10 @@ module Workspace
     # One change to the round the sweep read: the block gets the stored run and its round, changed in place, and
     # returns the outcome. +strict+ needs the round as {#round_target?} does (delivered, undecided, not being judged);
     # otherwise the run on that step, attempt and round in that pane with no stop is enough.
-    def round_change(run_id, step:, attempt:, round:, pane:, strict:, blocking: false)
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    def round_change(run_id, actor:, cause:, step:, attempt:, round:, pane:, strict:, blocking: false)
       outcome = :moved_on
-      run = @change.call(run_id, nonblocking: !blocking) do |read|
+      run = @change.call(run_id, actor: actor, cause: cause, nonblocking: !blocking) do |read|
         stored = read.thawed
         next unless strict ? round_target?(stored, step, attempt, round, pane) : same_round?(stored, step, attempt, round, pane)
         outcome = yield stored, step_state(stored)["review"]
@@ -431,10 +444,11 @@ module Workspace
     # with +running+, only while that step reads `running` with no park and no line still on its way, and no
     # reason: +running+ `:or_incomplete` allows a `turn_ended_incomplete` stop). Without +blocking+ a run another
     # process is changing is :busy.
-    def sweep_change(run_id, step:, attempt:, running:, blocking: false)
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    def sweep_change(run_id, actor:, cause:, step:, attempt:, running:, blocking: false)
       outcome = :moved_on
       follow = nil
-      run = @change.call(run_id, nonblocking: !blocking) do |read, ctx|
+      run = @change.call(run_id, actor: actor, cause: cause, nonblocking: !blocking) do |read, ctx|
         next unless sweep_target?(read.to_h, step, attempt, running)
         stored = read.thawed
         outcome = yield stored, ctx
@@ -638,7 +652,7 @@ module Workspace
       recovered = (sweep_marks_for(run)["recovered"] ||= {})
       return false if recovered.key?(cause)
       recovered[cause] = now_iso
-      @change.event(run, "step_recovered", sweep_event(run, "action" => action))
+      @change.event(run, "step_recovered", sweep_event(run, "action" => action, "cause" => cause))
       true
     end
 
@@ -661,9 +675,9 @@ module Workspace
       run["steps"].fetch(run["current"])
     end
 
-    def start_retry(run, ctx) = adopt(run, @progress.start_retry(run, ctx: ctx))
+    def start_retry(run, ctx, cause) = adopt(run, @progress.start_retry(run, ctx: ctx, cause: cause))
 
-    def dispatch(run, ctx, **options) = adopt(run, @dispatch.dispatch(run, ctx: ctx, **options))
+    def dispatch(run, ctx, cause, **options) = adopt(run, @dispatch.dispatch(run, ctx: ctx, cause: cause, **options))
 
     def evaluate(run, ctx) = adopt(run, @evaluation.evaluate(run, ctx: ctx))
 
