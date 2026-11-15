@@ -16,11 +16,14 @@ module Workspace
     PANE_GONE_CODES = %w[no_such_pane pane_gone no_session wrong_session].freeze
 
     # How many times a released resume that could not be typed is parked again.
-    # Each failed delivery is an attempt, and attempts count against `max_attempts`.
+    # Each failed delivery is an attempt row, but only the first release is held to `max_attempts`, so re-parks
+    # can run up to PARK_RETRIES attempts past it.
     PARK_RETRIES = 3
 
-    # Delivery failures that a later try can get past.
-    PARK_AGAIN_CODES = %w[pane_busy restart_in_progress].freeze
+    # Delivery failures that a later try can get past: a busy pane, a restart under way, a pane tmux still lists
+    # that the daemon did not find, and a `/clear` that was typed but not confirmed. A pane tmux confirms gone
+    # (reason `pane_gone`) is never parked again, whatever its code.
+    PARK_AGAIN_CODES = %w[pane_busy restart_in_progress no_such_pane clear_not_confirmed].freeze
 
     # @param change [Workspace::WorkflowRunChange] changes a run under its lock and writes its history
     # @param store [Workspace::WorkflowRunStore] answers which run holds a pane, and gets the delivery's history line
@@ -83,6 +86,10 @@ module Workspace
       rescue => e
         # Whatever went wrong, the mark is settled here: left set, it would hold off `resume` for nothing.
         {ok: false, code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.scrub.strip}
+      end
+      # The daemon answers `no_such_pane` from one look at its pane list: tmux is asked again, here and not under the run lock.
+      if %w[no_such_pane pane_gone].include?(kick[:code].to_s) && !@panes.pane_gone?(delivery["pane"], workspace: delivery["workspace"])
+        kick = kick.merge(pane_listed: true)
       end
       @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"],
         "pane" => delivery["pane"], "delivered" => kick[:ok], "actor" => "engine", "cause" => delivery["cause"], "from_state" => nil, "to_state" => nil, **kick.slice(:warning, :proof_missing).transform_keys(&:to_s))
@@ -303,6 +310,8 @@ module Workspace
     # After a release's line could not be typed: the failure stands unless a later try can help. The first
     # pass already moved the step and the pane, and {#not_delivered} put the note back, so the new park only waits.
     def park_again(run, after, kick)
+      # {#not_delivered} has already written the reason, so a pane tmux confirmed gone is read here.
+      return run if run.reason.is_a?(Hash) && run.reason["code"] == "pane_gone"
       return run unless after && PARK_AGAIN_CODES.include?(kick[:code].to_s) && after["retries"] < PARK_RETRIES
       return run unless WorkflowTransitions.parked({"parked" => after}, @clock.call) == :waiting
       parked = run.with_park({"from" => nil, "note" => nil, "pane" => nil, "turn_over" => nil}, id: SecureRandom.hex(8),
@@ -320,7 +329,8 @@ module Workspace
       release(run)
       state["state"] = "waiting"
       run["state"] = "waiting"
-      gone = PANE_GONE_CODES.include?(kick[:code].to_s)
+      # A pane tmux still lists (`pane_listed`, set by {#deliver}) is not gone, whatever code the daemon answered.
+      gone = PANE_GONE_CODES.include?(kick[:code].to_s) && !kick[:pane_listed]
       run["reason"] = reason(gone ? "pane_gone" : "waiting_you",
         {"kind" => "dispatch", "step" => run["current"], "pane" => run["pane"], "workspace" => run["workspace"],
          "error" => kick[:code].to_s, "message" => kick[:message]&.to_s&.scrub, "reason" => kick[:reason]&.to_s,

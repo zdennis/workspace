@@ -1535,15 +1535,22 @@ module Workspace
       rescue Workspace::Error => e
         unless RUN_ENDED_CODES.include?(e.code)
           @error_output.puts "workflow: the parked resume of run #{run.id} failed: #{first_line(e)}"
-          end_park(run, e.code.to_s, first_line(e))
+          end_park(run, e.code.to_s, first_line(e), **gone_answer(run, e.code.to_s))
         end
       rescue => e
         @error_output.puts "workflow: the parked resume of run #{run.id} failed: #{first_line(e)}"
         end_park(run, "error", first_line(e))
       end
 
-      def end_park(run, code, message)
-        @engine.park_failed(run.id, run.parked["id"], code: code, message: message, actor: "daemon")
+      # A no_such_pane is asked of tmux again, outside the run lock, before it reads as pane_gone.
+      def gone_answer(run, code)
+        return {} unless code == "no_such_pane"
+        target = run.parked["pane"] || @panes.pane_of(run.id) || run.pane
+        {gone: @panes.pane_gone?(target, workspace: run.workspace)}
+      end
+
+      def end_park(run, code, message, **gone)
+        @engine.park_failed(run.id, run.parked["id"], code: code, message: message, actor: "daemon", **gone)
         nil
       rescue Workspace::Error => e
         park_not_ended(run, e) unless RUN_ENDED_CODES.include?(e.code)

@@ -1139,6 +1139,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "leaves a run that waits for a person when the pane is gone, holding nothing" do
       locked = definition("steps:\n  a:\n    prompt: P\n    uses: [test-db]\n")
       panes.kick_result = {ok: false, code: "no_such_pane", message: "no pane %5 in tmux session app"}
+      panes.gone << "%5"
 
       run = start(locked, inputs: {})
 
@@ -1149,6 +1150,16 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["steps"]["a"]).to include("state" => "waiting")
       expect(run["steps"]["a"]["attempts"].last).to include("outcome" => "not_delivered")
       expect(lock_holder("test-db")).to be_nil
+    end
+
+    it "waits for a person, not as a gone pane, when no_such_pane comes for a pane tmux still lists" do
+      panes.kick_result = {ok: false, code: "no_such_pane", message: "no pane %5 in tmux session app"}
+
+      run = start(definition("steps:\n  a:\n    prompt: P\n"), inputs: {})
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "waiting_you")
+      expect(run["reason"]["details"]).to include("error" => "no_such_pane")
     end
 
     it "takes a pane whose last run ended and left its binding behind" do
@@ -3858,7 +3869,7 @@ RSpec.describe Workspace::WorkflowEngine do
         engine.release_park("wr_1", parked["id"], actor: "daemon")
       end
 
-      %w[pane_busy restart_in_progress].each do |code|
+      %w[pane_busy restart_in_progress no_such_pane clear_not_confirmed].each do |code|
         it "parks again on #{code} with the same limit, and keeps the note for the next attempt" do
           undelivered
           first = engine.park("wr_1", actor: "person", from: "work", note: "keep me", pane: "%5")["parked"]
@@ -3897,10 +3908,40 @@ RSpec.describe Workspace::WorkflowEngine do
         undelivered
         engine.park("wr_1", actor: "person")
 
+        run = release_failing("not_delivered")
+
+        expect(run).not_to have_key("parked")
+        expect(run["reason"]).to include("code" => "waiting_you")
+      end
+
+      it "does not park again on no_such_pane for a pane tmux no longer lists" do
+        undelivered
+        engine.park("wr_1", actor: "person")
+        panes.gone << "%5"
+
         run = release_failing("no_such_pane")
 
         expect(run).not_to have_key("parked")
         expect(run["reason"]).to include("code" => "pane_gone")
+      end
+
+      it "counts each re-park try as an attempt row, and the re-parks are not held to max_attempts again" do
+        undelivered("pane_busy", definition("max_attempts: 2
+steps:
+  work:
+    prompt: W
+"))
+        engine.park("wr_1", actor: "person")
+        before = attempts
+
+        3.times { |n| expect(release_failing("clear_not_confirmed")["parked"]).to include("retries" => n + 1) }
+
+        expect(attempts).to eq(before + 3)
+        expect(Workspace::WorkflowTransitions.attempts_spent?(stored_run(store, "wr_1"))).to be(true)
+        run = release_failing("clear_not_confirmed")
+        expect(run).not_to have_key("parked")
+        expect(run["reason"]).to include("code" => "waiting_you")
+        expect(attempts).to eq(before + 4)
       end
 
       it "does not park a failed delivery that no park released" do

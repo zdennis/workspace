@@ -133,6 +133,42 @@ RSpec.describe Workspace::IdlePromptCheck do
     end
   end
 
+  # Captured from Claude Code with identifying text replaced. A live spinner
+  # row has no `esc to interrupt` (`✽ Incubating… (8s · ↓ 381 tokens)`), so its
+  # ellipsis is what marks it; a finished-turn line has the same glyph-and-verb
+  # shape without one.
+  describe "finished-turn lines and live spinners as Claude Code draws them" do
+    def fixture(name)
+      File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "claude_screens", name))
+    end
+
+    it "reads a finished turn with its clock time as idle" do
+      expect(check.refusal(facts, fixture("done_line_idle.txt"))).to be_nil
+    end
+
+    it "reads a finished turn with a shell still running as idle" do
+      expect(check.refusal(facts, fixture("done_line_shell_running.txt"))).to be_nil
+    end
+
+    it "reads a live spinner as a turn started" do
+      expect(check.refusal(facts, fixture("live_spinner.txt"))).to include(reason: "turn_started")
+    end
+
+    it "reads a done-line with no clock time as idle" do
+      expect(check.refusal(facts, screen("✻ Brewed for 25s · done", ""))).to be_nil
+    end
+
+    it "still reads a spinner with a timer as busy" do
+      expect(check.refusal(facts, screen("✢ Brewing… (3s)", ""))).to include(reason: "turn_started")
+    end
+
+    it "reads `esc to interrupt` below a done-line as busy" do
+      above = ["✻ Brewed for 25s · done", "  esc to interrupt", ""]
+
+      expect(check.refusal(facts, screen(*above))).to include(reason: "turn_started")
+    end
+  end
+
   it "goes by the last input box on screen" do
     text = screen("✽ Frosting… (2s)", "") + Array.new(30) { "line" }.join("\n") + "\n" + screen
 

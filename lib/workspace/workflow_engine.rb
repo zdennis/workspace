@@ -141,7 +141,7 @@ module Workspace
 
     # Ends a park that can't be released; the run waits for a person. See {WorkflowDecisions#park_failed}.
     # @return [Hash{String=>Object}] the run afterwards
-    def park_failed(run_id, id, code:, message:, actor:) = @decisions.park_failed(run_id, id, code: code, message: message, actor: actor).to_h
+    def park_failed(run_id, id, code:, message:, actor:, gone: PANE_GONE_CODES.include?(code)) = @decisions.park_failed(run_id, id, code: code, message: message, actor: actor, gone: gone).to_h
 
     # What {#resume} refuses, checked without changing anything. See {WorkflowDecisions#refuse_resume}.
     # @return [void]

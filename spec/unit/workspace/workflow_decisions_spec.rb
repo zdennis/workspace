@@ -1324,6 +1324,23 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(run.reason["details"]["pane"]).to eq("%3")
     end
 
+    it "reads no_such_pane as waiting_you when the caller says the pane is not gone" do
+      stored(run_hash(state: "failed", extra: {"parked" => parked.merge("pane" => nil)}))
+
+      run = decisions.park_failed("wr_1", "p1", code: "no_such_pane", message: "gone", actor: "person", gone: false)
+
+      expect(run.reason["code"]).to eq("waiting_you")
+      expect(run.reason["details"]["error"]).to eq("no_such_pane")
+    end
+
+    it "reads any code as pane_gone when the caller says the pane is gone" do
+      stored(run_hash(state: "failed", extra: {"parked" => parked.merge("pane" => nil)}))
+
+      run = decisions.park_failed("wr_1", "p1", code: "pane_busy", message: "busy", actor: "person", gone: true)
+
+      expect(run.reason["code"]).to eq("pane_gone")
+    end
+
     it "tells a failed step's next attempt what failed" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => parked}))
 

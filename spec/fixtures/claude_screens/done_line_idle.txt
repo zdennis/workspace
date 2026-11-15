@@ -1,0 +1,16 @@
+[38;5;231m⏺[39m The change is made and the checks pass.
+
+  [1mWhat changed[0m
+  - [1mFirst item:[0m the example setting is now read once.
+  - [1mSecond item:[0m the example report lists [38;5;153mtwo[39m extra rows.
+
+  Nothing else was touched.
+
+[38;5;246m✻[39m [38;5;246mBrewed for 57s · done 12:51 PM[39m
+
+[38;5;244m──────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ 
+[38;5;244m──────────────────────────────────────────────────────────────────────────────────────────
+[39m  [36m[Model][38;5;246m 📁 example | 🌿 main[39m
+  [32m█░░░░░░░░░[38;5;246m 11% ctx[39m
+  [38;5;211m⏵⏵ bypass permissions on[38;5;246m (shift+tab to cycle)[39m

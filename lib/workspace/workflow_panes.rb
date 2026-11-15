@@ -529,7 +529,11 @@ module Workspace
 
     def type(workspace, pane, text)
       session = @tmux.session_name_for_pane(pane)
-      return {ok: false, code: "pane_gone", message: "pane #{pane} of '#{workspace}' is gone"} unless session
+      unless session
+        # The non-strict lookup can miss a pane tmux still lists, so the strict one decides.
+        return {ok: false, code: "pane_gone", message: "pane #{pane} of '#{workspace}' is gone"} if pane_gone?(pane, workspace: workspace)
+        return {ok: false, code: "no_such_pane", message: "pane #{pane} of '#{workspace}' could not be read, but tmux still lists it"}
+      end
       # A line typed into a turn that is under way is queued into that turn, whose end would
       # then be taken for an earlier one's; so is one typed at a permission prompt.
       if busy?(workspace, pane)

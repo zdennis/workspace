@@ -1660,6 +1660,19 @@ RSpec.describe Workspace::Commands::Workflow do
         end
       end
 
+      it "asks tmux again for a release that raised no_such_pane and passes the answer" do
+        allow(engine).to receive(:release_park).and_raise(Workspace::Error.new("No pane.", code: "no_such_pane"))
+        allow(panes).to receive(:main_turn_over?).and_return(true)
+
+        command.advance(run: "wr_1")
+        expect(panes).to have_received(:pane_gone?).with("%5", workspace: "app")
+        expect(engine).to have_received(:park_failed).with("wr_1", "p1", actor: "daemon", code: "no_such_pane", message: "No pane.", gone: false)
+
+        allow(panes).to receive(:pane_gone?).and_return(true)
+        command.advance(run: "wr_1")
+        expect(engine).to have_received(:park_failed).with("wr_1", "p1", actor: "daemon", code: "no_such_pane", message: "No pane.", gone: true)
+      end
+
       it "records nothing when the run ended under the release" do
         %w[run_not_active unknown_run].each do |code|
           allow(engine).to receive(:release_park).and_raise(Workspace::Error.new("gone", code: code))
