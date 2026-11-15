@@ -5,7 +5,7 @@ Read, start, pause and delete a workspace's plan: the counted task list in `IMPL
 ## Usage
 
 ```sh
-workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]
+workspace plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--summary] [--json]
 workspace plan path [--name WORKSPACE] [--json]
 workspace plan show [--name WORKSPACE]
 workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]
@@ -24,7 +24,7 @@ Without `--name`, the workspace is the one detected from the current directory. 
 
 | Subcommand | What it does |
 |------------|--------------|
-| `status` | Counts the plan and reports its state. A workspace with no plan is a row with `exists: false`, not an error. With no flag it reports the current workspace, and `--project [NAME]` every workspace of a project (see [Which workspaces `status` reports](#which-workspaces-status-reports)). `--all` lists every configured workspace whose checkout exists; `--file PATH` parses any file, with `workspace: null` and a state from the file alone (no session, pane or question is read); `--group GROUP` is the [merged view of a group](#a-groups-plans) |
+| `status` | Counts the plan and reports its state. A workspace with no plan is a row with `exists: false`, not an error. With no flag it reports the current workspace, and `--project [NAME]` every workspace of a project (see [Which workspaces `status` reports](#which-workspaces-status-reports)). `--all` lists every configured workspace whose checkout exists; `--file PATH` parses any file, with `workspace: null` and a state from the file alone (no session, pane or question is read); `--group GROUP` is the [merged view of a group](#a-groups-plans). A stalled or blocked plan also prints a `next:` line, and `--summary` leaves out the task rows (see [Next actions](#next-actions)) |
 | `path` | Prints the plan's absolute path alone, whether or not the file exists. Makes nothing |
 | `show` | Prints the plan file as it is. Fails with `no_plan` when there is none |
 | `init` | Writes a new plan into the notes directory, making the directory first. `--title` sets the title (default: the title of the workspace's task, else none). `--from FILE` imports an existing document as the plan: it gets new frontmatter unless it has its own (then `--title` is ignored). Fails with `plan_exists` when a plan is there; `--force` replaces it. The file is written whole or not at all |
@@ -211,6 +211,27 @@ A line at the left margin is a repository (name and main checkout; `(checkout mi
 
 With `--json` the document is the `plan status --json` one with a top-level `group` (`{"id":"group:billing","name":"Billing"}`), a `repositories` list (`{id, name, path, exists}` for every repository in the group, so one with no rows or a missing checkout can be told apart), and each row has one more field, `repository`: the id (the realpath of the git common dir) of the repository the workspace belongs to, the same `id` that `projects list` gives. `plans` lists the repositories in the order the group's file does. A repository with no configured workspaces has no row. An empty group is `"plans":[]`.
 
+## Next actions
+
+A row in the `stalled` or `blocked` state says what it needs. In text, `plan status` prints one more line under it with the first command that helps:
+
+```
+api.fix-auth  stalled  7/20 (40%)  T9 Add the token store
+  next: workspace plan show --name api.fix-auth
+```
+
+In `--json`, every row has `next_actions`, entries of `{"action","args","needs","why"}` as described in [next actions](README.json.md#next-actions), and the top level has a `next_actions` array with every row's, in row order. The list is a suggestion for a person; nothing here runs it.
+
+| State | Offered |
+|-------|---------|
+| `stalled` | `plan show --name WS`, then `plan start --name WS`, which sets the plan active and sends it to the owner pane again, launching the workspace if it is stopped |
+| `blocked` | `plan task set-state --name WS --task ID --state todo` for each blocked task with an id, with the task's reason as `why`, then `plan show --name WS` |
+| any other state | none (`[]`) |
+
+A `--file` row has no workspace, so it gets `[]` and no hint line: a command without `--name` would act on whichever plan the caller stands in.
+
+`--summary` is for a caller that wants the state and what to do about it, not each task. In `--json` it removes only `tasks` from each row; `counts`, `current`, `state`, `next_actions` and every other key stay. In text it leaves out the `next:` line, so each workspace is one line. `--summary` works with every scope, `--group` included.
+
 ## JSON output
 
 ```json
@@ -227,6 +248,7 @@ With `--json` the document is the `plan status --json` one with a top-level `gro
 | `updated_at`, `signature` | The file's modification time (UTC, to the second) and `mtime_ns:size`. The signature changes when the file does, so a reader can skip a re-read when it is the same |
 | `revision` | The SHA-256 of the file's bytes, all 64 hex digits (null without a file). Pass it as `--if-revision` to a [task verb](#task-verbs) to refuse an edit made on an old view |
 | `counts`, `percent`, `current` | See above; `current` is null when nothing is left |
+| `next_actions` | What a person can run for a stalled or blocked plan; empty otherwise and for `--file` (see [Next actions](#next-actions)) |
 | `tasks` | Every counted task: `id`, `title`, `state` (`todo`, `in_progress`, `done`, `skipped`, `blocked`), `reason`, `phase`, `line`, `owner` (the pane id in its owner comment, or null) and `owner_state` (that pane's state from the agent daemon, null when unknown or without an owner). The daemon is asked when the plan or any task has an owner |
 | `open_asks` | Open `workspace ask` questions in the workspace |
 | `warnings` | `{code, line, message}`; `line` is null for a warning about the whole file |
@@ -249,7 +271,7 @@ With `--json` the document is the `plan status --json` one with a top-level `gro
 {"schema_version":1,"ok":true,"action":"plan pause","status":"ok","results":[{"workspace":"api","outcome":"paused","reason":null,"message":null,"path":"/abs/IMPLEMENTATION_PLAN.md","pane":null,"interrupts":[{"pane":"%19","kind":"claude","outcome":"sent","message":null},{"pane":"%23","kind":"claude","outcome":"not_working","message":null}]}],"warnings":[],"summary":{"paused":1}}
 ```
 
-`plan` in [`capabilities`](README.capabilities.md) is `4` once `start`, `pause` and `delete` exist; each level is described there. `plan_tasks` is `1` once tasks have owners, `start --task` and `pause --interrupt` exist.
+`plan` in [`capabilities`](README.capabilities.md) is `4` once `start`, `pause` and `delete` exist; each level is described there. `plan` is `7` once `status` gives `next_actions` and takes `--summary`. `plan_tasks` is `1` once tasks have owners, `start --task` and `pause --interrupt` exist.
 
 ## Errors
 

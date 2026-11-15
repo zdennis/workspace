@@ -46,7 +46,7 @@ The first rule that holds wins.
 | `idle` | a run, a `spine/` or a plan exists and nothing is working or waiting | `person` |
 | `none` | no run, no plan, no `spine/` | `nothing` |
 
-`next` is `{event, action}`: the event that moves the goal on (`gate_approved`, `ask_answered`, `lock_released`, `turn_ended`, `workflow_resumed`, `launched`, ...) and the command that would cause it as `{action, args, needs}`, or null.
+`next` is `{event, action}`: the event that moves the goal on (`gate_approved`, `ask_answered`, `lock_released`, `turn_ended`, `workflow_resumed`, `launched`, ...) and the command that would cause it as a [next action](README.json.md#next-actions) (`{action, args, needs}`, with `why` when there is one), or null. It is a suggestion for a person; nothing runs it.
 
 `state` and `stage.status` are independent signals. `state` comes from the plan's or spine's own counts and the run; `stage.status` is the current stage's own status. They can disagree, for example `state: "done"` (the plan is done) beside a current stage that is `blocked`. Both are reported as they are, and a `stage_disagrees` warning (`details.stage`, `details.status`) says so whenever `state` is `done` and the current stage is not `completed` or `skipped`.
 

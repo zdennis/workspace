@@ -80,7 +80,7 @@ features (0 = not available):
   library_installed 1
   instructions      1
   restore           1
-  workflow          41
+  workflow          42
   window_state      1
   window_position   1
   cleanup_dry_run   1
@@ -97,7 +97,7 @@ features (0 = not available):
   handoff_wait      1
   dev_queue         2
   dev_down_holder   1
-  plan              6
+  plan              7
   ticket            2
   skills            1
   template          1

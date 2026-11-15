@@ -54,7 +54,7 @@ workspace step status [--json]
 | `workflow status` | The runs still going in this workspace, another's (`--name`), a project's (`--project`) or every workspace's (`--all`), or one run (`RUN`). Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck). See [Which runs `status` shows](#which-runs-status-shows). `--table` prints one row per run beside its workspace: [the status table](#the-status-table). `--needs-me` lists only the runs waiting for you: [what needs you](#what-needs-you) |
 | `workflow events` | A run's history (going or finished), one line per event, oldest first. `--since N` gives only the events after line N; at most 1000 at a time. See [Reading a run's events](#reading-a-runs-events) |
 | `workflow attempts` | What a run recorded about each attempt, going or finished: outcome, failure code, HEAD before and after, hashes, packs, outputs, check, agent, session, tokens and reasons. Reads the run file and writes nothing. See [Reading a run's attempts](#reading-a-runs-attempts) |
-| `workflow audit` | Check the evidence copies a run kept against the hashes recorded for them, going or finished. Exits 1 when a copy changed, is gone or was replaced. Reads the run file and the evidence directory and writes nothing. See [Auditing a run's evidence](#auditing-a-runs-evidence) |
+| `workflow audit` | Check the evidence copies a run kept against the hashes recorded for them, going or finished. Exits 1 when a copy changed, is gone or was replaced. Reads the run file and the evidence directory and writes nothing. With `--json`, `next_actions` says what to look at after a mismatch. See [Auditing a run's evidence](#auditing-a-runs-evidence) |
 | `workflow stats` | How each step of a workflow went across its runs, going and finished, in every workspace unless `--name` or `--project` narrows it: attempts, passes, failures, median time, resumes and tokens per run. `--last DURATION` keeps the runs started in that window. Reads the run files and writes nothing. See [Step statistics](#step-statistics) |
 | `workflow compare` | Sets a workflow's runs side by side, grouped by the definition they ran or by the text of one pack their agent was sent: runs, share that passed first time and resumes per run, always with a warning that it shows a direction and proves nothing. Reads the run files and writes nothing. See [Comparing runs](#comparing-runs) |
 | `workflow files` | The files a run keeps: each attempt's prompt, check log and proof logs and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
@@ -159,6 +159,8 @@ Every row of `workflow run` (dry run, started, parked) has `inputs_from`: `{"tas
 **The current workspace** is the one the working directory belongs to, found in three steps: a `.workspace` marker, then a key in the state file, then the configured checkout (main or worktree) that contains the directory, the deepest one if several do. The last step means a linked worktree with no config of its own, inside a main checkout that has one, resolves to the main workspace.
 
 **The current workflow** is the runs still going in the workspace, oldest first. A workspace whose runs have all finished has none: `runs` is empty and the exit code is 0, and the text output says `Finished runs show with --project or --all. Runs waiting for you show with --needs-me.` (The `--name` form prints no such hint.) A run's end is read with `--project`, `--all` or `workflow status RUN`.
+
+**The header.** The text output of `workflow status` (no `RUN`) opens with one line of counts when any run shows: `3 going, 2 waiting you (oldest 2h 14m)`. `going` counts the runs shown that have not finished; `waiting you` counts the ones `--needs-me` would list, and `oldest` is the longest wait among them. With none waiting the line is only `N going`. The header is not printed for `workflow status RUN`, `--table`, `--needs-me` or `--json`; the counts are there to read at a glance, and a script counts the `runs` itself.
 
 A project's runs are those whose workspace is one of its members, whose stored `project` is its name, or whose workspace is a worktree named `PROJECT.worktree-...`. These last two apply to going runs as well as finished ones, and they keep the runs of a worktree that was killed. So `--project` can list a same-named project's runs in any state.
 
@@ -913,8 +915,29 @@ Entries from a run stored before evidence existed have no `evidence` key: they a
 
 Exit status is 0 when no copy mismatched (including a run with nothing recorded) and 1 when any file is `changed`, `missing` or `replaced`. With `--json` the exit status is the same and the document is still printed: `{"schema_version":1,"ok":true,"run":ID,"step":STEP-or-null,"clean":bool,"counts":{status: n},"directory":"<evidence dir>/<RUN>","files":[...],"without_evidence":[{"step","attempt"}]}`. `ok` says the command ran, `clean` says no copy mismatched. Each `files` row has `step`, `attempt`, `name`, `kind` (`prompt`, `check_log`, `output`, `review`), `source`, `status`, `reason`, `recorded_sha256`, `now_sha256`, `bytes` and `source_status`; every key is always present. An agent under the same account could change a copy and the run file's hash together, so a clean audit shows no change since the copy, not that nothing was altered.
 
+With `--json`, `next_actions` is empty when no copy mismatched. After a mismatch it holds `workflow files RUN`, which shows where the copies are, and one `workflow attempts RUN --attempt-of STEP` for each mismatched step; each has a `why` that names the mismatches (such as `2 changed, 1 missing`). They are things to look at, not repairs: nothing here re-copies a file or cancels the run. See [Next actions](#next-actions). The text output prints a `See where the copies are:` line after a mismatch.
+
 Needs `workflow` 14 in `capabilities`; the `review` kind and `changed_since_read` need `workflow` 33.
 
+
+### Next actions
+
+`workflow audit --json` and `workflow sweep --json` carry a `next_actions` array, and `workflow status --json` carries the same shape as `actions` on each run. An entry is `{"action","args","needs"}` and, where the command can say why it offers it, `"why"` (see [next actions](README.json.md#next-actions)). `workspace ACTION ARGS...` runs as it stands when `needs` is empty. A next action is a suggestion for a person or for a caller acting for one. The sweep, the daemon and the engine never run one themselves, and a script should not run one unattended without checking it.
+
+What each offers:
+
+| From | Offered |
+|------|---------|
+| `audit`, after a mismatch | `workflow files RUN`, then `workflow attempts RUN --attempt-of STEP` for each mismatched step, each with the mismatch counts as `why`. Never a cancel or a reject. |
+| `sweep`, a run held (`held`) | `workflow resume RUN` |
+| `sweep`, a spent budget or time limit (`budget_spent`, `run_timed_out`) | `workflow resume RUN` with the `extra_tokens` or `extra_time` need `workflow status` gives its own resume |
+| `sweep`, a held retry (`retry_blocked`) | `workflow resume RUN` needing a `--pane` (and any spent limit), and `workflow cancel RUN` |
+| `sweep`, a stall or gone pane it recorded (`recorded`) | `workflow resume RUN` and `workflow cancel RUN` |
+| `sweep`, a stopped workspace (`workspace_stopped`) | `launch WORKSPACE`; none for a left-over review window or a row with no workspace |
+| `sweep`, a pane waiting on an answer (`prompt`) | `focus WORKSPACE --pane PANE`, the review pane while a round is under way |
+| `sweep --dry-run` | `workflow sweep` with the same scope, to apply what the dry run found |
+
+Rows that clear themselves, `refused`, `failed` and closed review windows give none. A row without a run id gets no action at all, and a row whose run or pane cannot be read gets none of the actions that need it. Each entry's `why` is the row's `reason` (or `cause`); the `--dry-run` entry says how many changes a real sweep would make.
 
 ### Alerts
 
@@ -981,6 +1004,8 @@ A change is made only while the run is still on that step, attempt and round, de
 A run with a live [park](#resuming-from-the-runs-own-pane), a step whose check is running, a run waiting at a gate or for a lock, and a run whose step is not being worked on are left alone. A step with no `stall` and an `on_timeout` of `warn` is never decided for being idle; set `stall` (such as `20m`), or `on_timeout: interrupt`. A step the agent finished while the daemon was down passes on the next sweep once it has been idle that long, and no sooner than 30 seconds after the attempt began.
 
 Every change goes through the run's lock, and is made only if the run is still on the step and attempt the sweep read, so a `resume`, a turn's end or a cancel that got there first stands, and the sweep reports `moved_on`. A cause is recorded once for each attempt: a second sweep writes no event and presses no key again, and a new attempt starts afresh. The marks are the run file's `sweep` key (`step`, `attempt`, `stalled`, `recovered`, `interrupt` for a step's press and `run_interrupt` for the run timeout's); a run stored before the sweep has none. A review round keeps its own marks in its `review.sweep` (`interrupt` for its `review.timeout`, `run_interrupt` for the run's, `stalled`, `recovered`), so an author's press on the reviewed attempt never stands for the round's; a delivery of the round again starts with none. The sweep leaves a run alone when it runs in the run's own pane or under it, as `resume` is refused there. A small window remains between reading the pane and taking the lock: a turn that begins in it is decided as if it had ended, which the second reading, the idle floor and the attempt check keep to a moment.
+
+With `--json`, the document also has `next_actions`: what a person can run about the rows the pass left alone (see [Next actions](#next-actions)). It is always present and is empty when nothing needs a person.
 
 A scheduler runs the sweep with a short `PATH`, which must include a Ruby new enough for workspace (`/usr/bin/ruby` can't load the code) and `tmux`; a missing program is a `failed` result with reason `tool_unavailable` that names it. A run file that can't be read is a `failed` result with reason `unreadable_run`.
 
