@@ -140,7 +140,7 @@ module Workspace
       due = time_limits(run, round, now)
       if turn_over?(shown, round, now)
         idle_for = shown["idle_seconds"].to_i
-        stall_after = WorkflowDefinition.stall(run.definition)
+        stall_after = WorkflowDefinition.stall(run.definition) || pass[:default_stall]
         if WorkflowTransitions.round_interrupted(round, now)
           return stall(run, round, pass, pane, "interrupted",
             "the review turn in pane #{pane} ended after the sweep interrupted it, and nothing decided #{what}", {"idle_for" => idle_for})

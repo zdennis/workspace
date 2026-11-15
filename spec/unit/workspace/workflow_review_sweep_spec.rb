@@ -156,6 +156,42 @@ RSpec.describe Workspace::WorkflowReviewSweep do
     end
   end
 
+  describe "the default stall the pass carries" do
+    def call_with(default, run) = sweep.call(run, run.step("build"), pass.merge(default_stall: default))
+
+    it "decides a round whose definition sets no stall once the pane has been idle for the default" do
+      review_pane("idle", idle_seconds: 600)
+
+      row = call_with(600, reviewing(definition: {"stall" => nil}))
+
+      expect(row).to include("outcome" => "evaluated", "cause" => "idle_turn_over")
+    end
+
+    it "leaves the round alone while the idle time is under the default" do
+      review_pane("idle", idle_seconds: 599)
+
+      expect(call_with(600, reviewing(definition: {"stall" => nil}))).to include("outcome" => "nothing", "reason" => "reviewing")
+    end
+
+    it "lets the definition's stall win over the default" do
+      review_pane("idle", idle_seconds: 700)
+
+      expect(call_with(600, reviewing)).to include("outcome" => "nothing", "reason" => "reviewing")
+    end
+
+    it "never decides by idleness with the default off" do
+      review_pane("idle", idle_seconds: 5000)
+
+      expect(call_with(nil, reviewing(definition: {"stall" => nil}))).to include("outcome" => "nothing", "reason" => "reviewing")
+    end
+
+    it "takes a pass with no default as off" do
+      review_pane("idle", idle_seconds: 5000)
+
+      expect(call(reviewing(definition: {"stall" => nil}))).to include("outcome" => "nothing", "reason" => "reviewing")
+    end
+  end
+
   describe "the press's own checks" do
     it "never presses a pane bound to the run as its author, as after a tmux restart that reused the review pane's id" do
       review_pane("working")
