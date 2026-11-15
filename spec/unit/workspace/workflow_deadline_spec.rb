@@ -123,4 +123,41 @@ RSpec.describe Workspace::WorkflowDeadline do
       expect(reading).to include("spent" => true, "needed" => 901, "suggested" => 1800)
     end
   end
+
+  describe ".active_seconds" do
+    let(:origin) { Time.utc(2026, 1, 1) }
+    let(:finish) { origin + 100 }
+
+    def stop(from, to = nil)
+      entry = {"since" => (origin + from).iso8601}
+      entry["until"] = (origin + to).iso8601 if to
+      entry
+    end
+
+    it "returns the whole span with no stops" do
+      expect(described_class.active_seconds(origin, finish, [])).to eq(100.0)
+    end
+
+    it "takes one closed stop out" do
+      expect(described_class.active_seconds(origin, finish, [stop(10, 30)])).to eq(80.0)
+    end
+
+    it "counts two overlapping stops once" do
+      expect(described_class.active_seconds(origin, finish, [stop(10, 30), stop(20, 50)])).to eq(60.0)
+    end
+
+    it "clamps a stop that starts before the origin" do
+      expect(described_class.active_seconds(origin, finish, [stop(-50, 20)])).to eq(80.0)
+    end
+
+    it "runs an open stop to the finish" do
+      expect(described_class.active_seconds(origin, finish, [stop(70)])).to eq(70.0)
+    end
+
+    it "ignores a stop with an unreadable time" do
+      stops = [{"since" => "nope", "until" => (origin + 10).iso8601}, {"since" => origin.iso8601, "until" => "nope"}]
+
+      expect(described_class.active_seconds(origin, finish, stops)).to eq(100.0)
+    end
+  end
 end
