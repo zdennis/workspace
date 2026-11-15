@@ -1122,6 +1122,7 @@ module Workspace
     branch_inputs = WorkflowBranchInputs.new(git: git, start_ref: start_ref, protected_branch: protected_branch, pull_request_status: PullRequestStatus.new)
     workflow_command = Commands::Workflow.new(
       source_installer: workflow_source_installer,
+      workflow_config: workflow_config,
       branch_inputs: branch_inputs,
       catalog: workflow_catalog,
       files: WorkflowFiles.new(config: config, catalog: workflow_catalog),

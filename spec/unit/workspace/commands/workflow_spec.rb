@@ -17,8 +17,10 @@ RSpec.describe Workspace::Commands::Workflow do
   let(:process_tree) { instance_double(Workspace::ProcessTree) }
   let(:lock_holder) { instance_double(Workspace::LockHolder) }
   let(:workspace_facts) { nil }
+  let(:default_stall) { 600 }
+  let(:workflow_config) { instance_double(Workspace::WorkflowConfig, default_stall: default_stall) }
   subject(:command) do
-    described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workspace_facts: workspace_facts, store: store, panes: panes, files: nil, run_files: nil,
+    described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workspace_facts: workspace_facts, workflow_config: workflow_config, store: store, panes: panes, files: nil, run_files: nil,
       tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242,
       clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
   end
@@ -157,6 +159,7 @@ RSpec.describe Workspace::Commands::Workflow do
         Inputs:
           task (required): What to build
           spec
+        Stall: 10m (default)
         Steps:
           plan         produces plan.md; gate: approve
           verify       uses test-db; check; on fail: back to plan, 2 time(s); continues the conversation
@@ -169,7 +172,55 @@ RSpec.describe Workspace::Commands::Workflow do
       command.show(id: "flow", json: true)
 
       expect(json).to eq("schema_version" => 1, "ok" => true,
-        "workflow" => definition.to_h.merge("inputs" => definition.to_h["inputs"].merge("task" => definition.to_h["inputs"]["task"].merge("fills_from_branch" => true))).merge("source" => "global", "project" => nil, "path" => "/defs/flow.yml", "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256))
+        "workflow" => definition.to_h.merge("effective_stall" => 600, "stall_source" => "default").merge("inputs" => definition.to_h["inputs"].merge("task" => definition.to_h["inputs"]["task"].merge("fills_from_branch" => true))).merge("source" => "global", "project" => nil, "path" => "/defs/flow.yml", "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256))
+    end
+  end
+
+  describe "#show stall" do
+    def stall_definition(stall)
+      Workspace::WorkflowDefinition.parse("#{"stall: #{stall}\n" if stall}steps:\n  a:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml").tap do |defn|
+        allow(catalog).to receive(:find).with("flow", project: anything).and_return(defn)
+      end
+    end
+
+    it "prints the definition's own stall" do
+      stall_definition("20m")
+      command.show(id: "flow")
+      expect(output.string).to include("Stall: 20m\nSteps:")
+    end
+
+    it "prints the default when the definition sets none" do
+      stall_definition(nil)
+      command.show(id: "flow")
+      expect(output.string).to include("Stall: 10m (default)\nSteps:")
+    end
+
+    context "when the default is off" do
+      let(:default_stall) { nil }
+
+      it "says so" do
+        stall_definition(nil)
+        command.show(id: "flow")
+        expect(output.string).to include("Stall: off (default)\nSteps:")
+      end
+
+      it "gives a null effective stall in JSON" do
+        stall_definition(nil)
+        command.show(id: "flow", json: true)
+        expect(json["workflow"]).to include("effective_stall" => nil, "stall_source" => "default")
+      end
+    end
+
+    it "gives the definition's stall in JSON" do
+      stall_definition("20m")
+      command.show(id: "flow", json: true)
+      expect(json["workflow"]).to include("stall" => 1200, "effective_stall" => 1200, "stall_source" => "definition")
+    end
+
+    it "gives the default in JSON" do
+      stall_definition(nil)
+      command.show(id: "flow", json: true)
+      expect(json["workflow"]).to include("stall" => nil, "effective_stall" => 600, "stall_source" => "default")
     end
   end
 
