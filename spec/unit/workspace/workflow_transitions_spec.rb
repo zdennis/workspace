@@ -825,7 +825,7 @@ RSpec.describe Workspace::WorkflowTransitions do
     it "measures every reading from the round's start, never from when its line went out" do
       run = reviewed({"from" => ["a"], "timeout" => 1799})
 
-      expect(described_class.round_elapsed(round, now)).to eq(1800)
+      expect(described_class.round_elapsed(run, round, now)).to eq(1800)
       expect(described_class.round_timed_out?(run, round, now)).to be(true)
       expect(described_class.typed_review_timed_out?(run, round, now)).to be(true)
       expect(described_class.round_timed_out?(reviewed({"from" => ["a"], "timeout" => 1800}), round, now)).to be(false)
@@ -842,10 +842,44 @@ RSpec.describe Workspace::WorkflowTransitions do
       run = reviewed({"from" => ["a"], "timeout" => 60})
       bad = round.merge("started_at" => "not a time")
 
-      expect(described_class.round_elapsed(bad, now)).to be_nil
-      expect(described_class.round_elapsed(nil, now)).to be_nil
+      expect(described_class.round_elapsed(run, bad, now)).to be_nil
+      expect(described_class.round_elapsed(run, nil, now)).to be_nil
       expect(described_class.round_timed_out?(run, bad, now)).to be(false)
       expect(described_class.typed_review_timed_out?(run, bad, now)).to be(true)
+    end
+
+    it "leaves out the spans the run was paused on the step, an open one running to now, and no other reason's" do
+      run = reviewed({"from" => ["a"], "timeout" => 1200}).merge(
+        "steps" => {"plan" => {"attempts" => [{"n" => 1, "reasons" => [{"code" => "paused", "since" => "2026-10-04T11:35:00Z", "until" => "2026-10-04T11:40:00Z"},
+          {"code" => "failed_check", "since" => "2026-10-04T11:41:00Z", "until" => "2026-10-04T11:44:00Z"}]}]}},
+        "reasons" => [{"code" => "paused", "since" => "2026-10-04T11:45:00Z", "until" => "2026-10-04T11:50:00Z", "step" => "plan"},
+          {"code" => "paused", "since" => "2026-10-04T11:30:00Z", "until" => "2026-10-04T11:59:00Z", "step" => "other"}]
+      )
+
+      expect(described_class.round_elapsed(run, round, now)).to eq(1800 - 600)
+      expect(described_class.round_timed_out?(run, round, now)).to be(false)
+
+      open = run.merge("paused" => {"since" => "2026-10-04T11:55:00Z", "by" => "person"})
+      expect(described_class.round_elapsed(open, round, now)).to eq(1800 - 600 - 300)
+      expect(described_class.round_elapsed(open, round, now + 3600)).to eq(1800 - 600 - 300)
+    end
+
+    it "measures a step's attempt from its start less the pause spans, nil for a start that can't be read" do
+      attempt = {"n" => 1, "started_at" => "2026-10-04T11:30:00Z", "reasons" => [{"code" => "paused", "since" => "2026-10-04T11:40:00Z", "until" => "2026-10-04T11:50:00Z"}]}
+      run = {"current" => "plan", "steps" => {"plan" => {"attempts" => [attempt]}}}
+
+      expect(described_class.step_elapsed(run, attempt, now)).to eq(1200)
+      expect(described_class.step_elapsed(run, attempt.merge("started_at" => "bad"), now)).to be_nil
+      expect(described_class.step_elapsed(run, nil, now)).to be_nil
+    end
+
+    it "lists a step's paused entries, its attempts' and the run's for it, plus the pause under way on the current step" do
+      run = {"current" => "plan", "paused" => {"since" => "2026-10-04T11:55:00Z"},
+             "steps" => {"plan" => {"attempts" => [{"reasons" => [{"code" => "paused", "since" => "a"}, {"code" => "parked", "since" => "b"}]}]}},
+             "reasons" => [{"code" => "paused", "since" => "c", "step" => "plan"}, {"code" => "paused", "since" => "d", "step" => "build"}]}
+
+      expect(described_class.pause_spans(run, "plan").map { |entry| entry["since"] }).to eq(["a", "c", "2026-10-04T11:55:00Z"])
+      expect(described_class.pause_spans(run, "build").map { |entry| entry["since"] }).to eq(["d"])
     end
   end
 

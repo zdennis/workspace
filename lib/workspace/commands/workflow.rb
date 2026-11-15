@@ -1074,7 +1074,7 @@ module Workspace
         "-"
       end
 
-      QUIET_SWEEP_REASONS = %w[healthy parked checking reviewing not_running finished held idle delivering prompt timed_out backoff pane_busy already_recorded].freeze
+      QUIET_SWEEP_REASONS = %w[healthy parked paused checking reviewing not_running finished held idle delivering prompt timed_out backoff pane_busy already_recorded].freeze
 
       def print_sweep(rows, summary:)
         shown = rows.reject { |each| each["outcome"] == "nothing" && QUIET_SWEEP_REASONS.include?(each["reason"]) }

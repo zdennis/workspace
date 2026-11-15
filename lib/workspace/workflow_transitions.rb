@@ -363,7 +363,7 @@ module Workspace
     # @param now [Time]
     # @return [Boolean]
     def self.typed_review_timed_out?(run, round, now)
-      elapsed = round_elapsed(round, now)
+      elapsed = round_elapsed(run, round, now)
       elapsed.nil? || elapsed > review_timeout(run)
     end
 
@@ -379,16 +379,49 @@ module Workspace
     end
 
     # Seconds a review round has run, from its `started_at` (a delivery again, or a rerun of missing reviewers, starts
-    # it again).
+    # it again), less the spans the run was paused on its step ({.pause_spans}).
     #
+    # @param run [Hash{String=>Object}] a stored run
     # @param round [Hash{String=>Object}, nil] a step's `review`
     # @param now [Time]
     # @return [Float, nil] nil when the round holds no start that can be read
-    def self.round_elapsed(round, now)
+    def self.round_elapsed(run, round, now)
       return nil unless round.is_a?(Hash) && round["started_at"]
-      now - Time.iso8601(round["started_at"].to_s)
+      WorkflowDeadline.active_seconds(Time.iso8601(round["started_at"].to_s), now, pause_spans(run, run["current"]))
     rescue ArgumentError, TypeError
       nil
+    end
+
+    # Seconds an attempt of the current step has run, from its `started_at`, less the spans the run was paused on the
+    # step ({.pause_spans}): the one reading of a step's `timeout` clock, for the sweep and `workflow status`.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param attempt [Hash{String=>Object}, nil] the current step's attempt
+    # @param now [Time]
+    # @return [Float, nil] nil when the attempt holds no start that can be read
+    def self.step_elapsed(run, attempt, now)
+      return nil unless attempt.is_a?(Hash) && attempt["started_at"]
+      WorkflowDeadline.active_seconds(Time.iso8601(attempt["started_at"].to_s), now, pause_spans(run, run["current"]))
+    rescue ArgumentError, TypeError
+      nil
+    end
+
+    # The `paused` reason entries that stop a step's clocks (its attempts' timeout and its review rounds'): every
+    # attempt's own, the run's own entries for that step, and the pause under way when the step is the current one
+    # (an open entry runs to now). Other reasons are not stops here.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String, nil] a step id
+    # @return [Array<Hash{String=>Object}>] entries with `since` and an optional `until`, for {WorkflowDeadline.active_seconds}
+    def self.pause_spans(run, step)
+      state = run.dig("steps", step)
+      attempts = state.is_a?(Hash) ? Array(state["attempts"]).grep(Hash) : []
+      entries = attempts.flat_map { |attempt| Array(attempt["reasons"]) }
+      entries += Array(run["reasons"]).grep(Hash).select { |entry| entry["step"] == step }
+      spans = entries.grep(Hash).select { |entry| entry["code"] == "paused" }
+      paused = run["paused"]
+      spans << {"since" => paused["since"]} if paused.is_a?(Hash) && step == run["current"]
+      spans
     end
 
     # Whether a review round has run past its `review.timeout` ({.review_timeout}, {.round_elapsed}); false for one
@@ -399,7 +432,7 @@ module Workspace
     # @param now [Time]
     # @return [Boolean]
     def self.round_timed_out?(run, round, now)
-      elapsed = round_elapsed(round, now)
+      elapsed = round_elapsed(run, round, now)
       !elapsed.nil? && elapsed > review_timeout(run)
     end
 
@@ -512,7 +545,7 @@ module Workspace
     # @param now [Time]
     # @return [Boolean]
     def self.typed_press_missed?(run, round, now)
-      elapsed = round_elapsed(round, now)
+      elapsed = round_elapsed(run, round, now)
       elapsed.nil? || elapsed > 2 * review_timeout(run)
     end
 

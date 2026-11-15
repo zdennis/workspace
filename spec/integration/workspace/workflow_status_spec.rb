@@ -376,6 +376,21 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(current["reason"]).to be_nil
   end
 
+  it "leaves the time the run was paused on the step out of its timeout, as the sweep does, and no other reason's" do
+    create(timeout: 1200)
+    span = {"since" => "2026-10-04T12:45:00Z", "until" => "2026-10-04T12:55:00Z"}
+    edit_run(store, "wr_1") { |run| run["steps"]["plan"]["attempts"].last["reasons"] = [span.merge("code" => "paused")] }
+    now[0] += 1
+    expect(current["flags"]).to eq([])
+
+    now[0] += 600
+    expect(current["flags"]).to eq(["timed_out"])
+
+    now[0] -= 600
+    edit_run(store, "wr_1") { |run| run["steps"]["plan"]["attempts"].last["reasons"] = [span.merge("code" => "failed_check")] }
+    expect(current["flags"]).to eq(["timed_out"])
+  end
+
   it "does not flag a step past its timeout that no agent is on any more: one at a gate, or one that failed" do
     now[0] += 3600
     create(timeout: 60, state: "waiting", step_state: "passed", reason: {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "artifacts" => []}})
@@ -1376,6 +1391,15 @@ RSpec.describe Workspace::WorkflowStatus do
 
       load_fixture(round: {"delivery" => "delivering"})
       expect(review_status["current"]["flags"]).to eq(["delivering"])
+    end
+
+    it "leaves the time the run was paused on the step out of the round's clock, and no other reason's" do
+      span = ->(code) { ->(fixture) { fixture["reasons"] << {"code" => code, "since" => "2026-10-04T12:25:00Z", "until" => "2026-10-04T12:45:00Z", "step" => "build"} } }
+      load_fixture(round: {"started_at" => "2026-10-04T12:20:00.000Z"}, &span.call("paused"))
+      expect(review_status["current"]["flags"]).to eq([])
+
+      load_fixture(round: {"started_at" => "2026-10-04T12:20:00.000Z"}, &span.call("waiting_you"))
+      expect(review_status["current"]["flags"]).to eq(["timed_out"])
     end
 
     it "reads the review pane, not the author's, and reports its permission prompt as waiting_you" do

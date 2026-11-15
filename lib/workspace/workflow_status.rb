@@ -540,8 +540,11 @@ module Workspace
       timeout = run.definition["steps"].find { |step| step["id"] == run.current }["timeout"]
       started = state.last_attempt&.started_at
       # A reviewing step's attempt has ended, so the step timeout no longer runs.
-      if timeout && started && !run.paused && %w[running checking].include?(state.state) && @clock.call - Time.iso8601(started) > timeout
-        flags << "timed_out"
+      if timeout && started && !run.paused && %w[running checking].include?(state.state)
+        # A start that is not a time makes the run malformed, as before; the clock itself is the sweep's.
+        Time.iso8601(started)
+        elapsed = WorkflowTransitions.step_elapsed(run.to_h, state.last_attempt&.to_h, @clock.call)
+        flags << "timed_out" if elapsed && elapsed > timeout
       end
       flags << "timed_out" if round_timed_out?(run, state) && !run.paused
       flags << "delivering" if round_live?(run) && WorkflowTransitions.round_delivery(state.review, @clock.call) == :delivering
