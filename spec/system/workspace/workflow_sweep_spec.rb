@@ -94,7 +94,7 @@ RSpec.describe Workspace::WorkflowSweep do
   end
 
   def begin_run(definition = flow)
-    engine.start(definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+    engine.start(actor: "person", definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
   end
 
   def artifact(name = "out.md", content: "done\n")
@@ -286,7 +286,7 @@ RSpec.describe Workspace::WorkflowSweep do
     it "does not decide a step again that a resume got to first (the run moved on between the read and the change)" do
       panes.on_row = -> do
         panes.on_row = nil
-        engine.resume("wr_1", from: "build")
+        engine.resume("wr_1", actor: "person", from: "build")
       end
       artifact
 
@@ -323,7 +323,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "leaves a live park alone" do
-      engine.park("wr_1", turn_over: {"step" => "build", "attempt" => 1})
+      engine.park("wr_1", actor: "person", turn_over: {"step" => "build", "attempt" => 1})
       before = [stored_run(store, "wr_1"), events]
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "parked")
@@ -332,12 +332,12 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "leaves a step that is checking alone" do
       definition = Workspace::WorkflowDefinition.parse("stall: 20m\nsteps:\n  build:\n    prompt: B\n    status: {run: \"true\"}\n", id: "chk", source: "global", path: "/d/chk.yml")
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       FileUtils.mkdir_p(File.join(runs_dir, ".."))
       ids.replace(%w[wr_2])
       checking = Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes, checker: ->(**) { {exit_code: 0, timed_out: false} },
         commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
-      checking.start(definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      checking.start(actor: "person", definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
       edit_run(store, "wr_2") { |run| run["steps"]["build"]["state"] = "checking" }
       advance(1500)
 
@@ -387,10 +387,10 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "leaves a run waiting at a gate alone" do
       definition = Workspace::WorkflowDefinition.parse("stall: 20m\nsteps:\n  build:\n    prompt: B\n    gate: approve\n", id: "g", source: "global", path: "/d/g.yml")
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       ids.replace(%w[wr_2])
-      engine.start(definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
-      engine.turn_ended("wr_2", pane: "%5")
+      engine.start(actor: "person", definition: definition, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      engine.turn_ended("wr_2", actor: "agent", pane: "%5")
 
       expect(only_row(sweep.call)).to include("run_id" => "wr_2", "outcome" => "nothing", "reason" => "not_running")
     end
@@ -428,7 +428,7 @@ RSpec.describe Workspace::WorkflowSweep do
     it "records again for a new attempt, since the marks belong to one attempt" do
       pane_shows("idle", idle_seconds: 120, kind: "shell")
       sweep.call
-      engine.resume("wr_1", from: "build")
+      engine.resume("wr_1", actor: "person", from: "build")
 
       expect(only_row(sweep.call)).to include("outcome" => "recorded", "attempt" => 2)
     end
@@ -520,7 +520,7 @@ RSpec.describe Workspace::WorkflowSweep do
       pane_shows("working", idle_seconds: 1)
       second = Dir.mktmpdir("wf-sweep2")
       allow(lock_namespace).to receive(:resolve).with(cwd: second).and_return(key: "ns", display: "app", dir: lock_dir)
-      engine.start(definition: flow, workspace: "app.worktree-x", worktree: second, inputs: {}, pane: "%6")
+      engine.start(actor: "person", definition: flow, workspace: "app.worktree-x", worktree: second, inputs: {}, pane: "%6")
 
       sweep.call
 
@@ -668,11 +668,11 @@ RSpec.describe Workspace::WorkflowSweep do
       run_flow
       advance(1900)
       pane_shows("working", idle_seconds: 2)
-      claim, at = engine.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 1900, timeout: 1800, cause: "run_timed_out")
+      claim, at = engine.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 1900, timeout: 1800, cause: "run_timed_out")
       expect(claim).to eq(:claimed)
-      other, = engine.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 1900, timeout: 600)
+      other, = engine.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 1900, timeout: 600)
       expect(other).to eq(:claimed)
-      expect(engine.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: at, sent: true, cause: "run_timed_out")).to eq(:recorded)
+      expect(engine.interrupt_sent("wr_1", actor: "sweep", step: "build", attempt: 1, claim_at: at, sent: true, cause: "run_timed_out")).to eq(:recorded)
       expect(stored_run(store, "wr_1")["sweep"].keys).to include("interrupt", "run_interrupt")
     end
   end
@@ -703,7 +703,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "interrupts the agent once for the attempt" do
-      engine.start(definition: flow(on_timeout: "interrupt"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      engine.start(actor: "person", definition: flow(on_timeout: "interrupt"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
       advance(3700)
       pane_shows("working", idle_seconds: 2)
 
@@ -719,7 +719,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "decides the step on a later pass once the interrupted agent is idle, with no stall configured" do
-      engine.start(definition: flow(stall: nil, on_timeout: "interrupt"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      engine.start(actor: "person", definition: flow(stall: nil, on_timeout: "interrupt"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
       advance(3700)
       pane_shows("working", idle_seconds: 2)
       sweep.call
@@ -733,7 +733,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "releases the claim when the keys can't be pressed, so the next pass tries again" do
-      engine.start(definition: flow(on_timeout: "interrupt"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      engine.start(actor: "person", definition: flow(on_timeout: "interrupt"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
       advance(3700)
       pane_shows("working", idle_seconds: 2)
       interrupt_error[0] = Workspace::Error.new("no such pane", code: "no_such_pane")
@@ -748,8 +748,8 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "fails the step after pressing the interrupt keys, and the failure follows on_fail" do
-      engine.start(definition: looping, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.start(actor: "person", definition: looping, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       advance(3700)
       pane_shows("working", idle_seconds: 2)
 
@@ -766,7 +766,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "stops the run for a person when on_fail has nothing left, naming step_timed_out" do
-      engine.start(definition: flow(on_timeout: "fail"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      engine.start(actor: "person", definition: flow(on_timeout: "fail"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
       advance(3700)
       pane_shows("working", idle_seconds: 2)
 
@@ -781,7 +781,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "decides an idle agent past its timeout rather than failing finished work" do
-      engine.start(definition: flow(stall: nil, on_timeout: "fail"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      engine.start(actor: "person", definition: flow(stall: nil, on_timeout: "fail"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
       FileUtils.mkdir_p(File.join(worktree, ".workflow", "wr_1"))
       advance(3700)
       File.write(File.join(worktree, ".workflow", "wr_1", "out.md"), "done\n")
@@ -792,7 +792,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "does nothing for a step with no timeout" do
-      engine.start(definition: flow(timeout: nil), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      engine.start(actor: "person", definition: flow(timeout: nil), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
       advance(90_000)
       pane_shows("working", idle_seconds: 2)
 
@@ -815,7 +815,7 @@ RSpec.describe Workspace::WorkflowSweep do
     it "presses nothing when the run moved on before the claim" do
       panes.on_row = -> do
         panes.on_row = nil
-        engine.resume("wr_1", from: "build")
+        engine.resume("wr_1", actor: "person", from: "build")
       end
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "moved_on")
@@ -862,12 +862,12 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "leaves a claim another process took over alone when a slow process reports back" do
-      claim, at = engine.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 3700, timeout: 3600)
+      claim, at = engine.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 3700, timeout: 3600)
       expect(claim).to eq(:claimed)
       edit_run(store, "wr_1") { |run| run["sweep"]["interrupt"] = {"state" => "pending", "at" => "2026-10-04T13:02:00Z"} }
 
-      expect(engine.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: at, sent: false)).to eq(:taken_over)
-      expect(engine.interrupt_sent("wr_1", step: "build", attempt: 1, claim_at: at, sent: true)).to eq(:taken_over)
+      expect(engine.interrupt_sent("wr_1", actor: "sweep", step: "build", attempt: 1, claim_at: at, sent: false)).to eq(:taken_over)
+      expect(engine.interrupt_sent("wr_1", actor: "sweep", step: "build", attempt: 1, claim_at: at, sent: true)).to eq(:taken_over)
       expect(stored_run(store, "wr_1")["sweep"]["interrupt"]).to eq("state" => "pending", "at" => "2026-10-04T13:02:00Z")
       expect(types).not_to include("step_recovered")
     end
@@ -919,7 +919,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
     def to_build
       begin_run(failing)
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       advance(3700)
     end
 
@@ -938,7 +938,7 @@ RSpec.describe Workspace::WorkflowSweep do
       to_build
       artifact_path = File.join(worktree, ".workflow", "wr_1", "out.md")
       File.write(artifact_path, "")
-      engine.resume("wr_1", turn_over: {"step" => "build", "attempt" => 1})
+      engine.resume("wr_1", actor: "person", turn_over: {"step" => "build", "attempt" => 1})
       expect(stored_run(store, "wr_1")["reason"]["details"]["invalid"]).not_to be_nil
 
       expect(only_row(sweep.call)).to include("outcome" => "timed_out")
@@ -961,10 +961,10 @@ RSpec.describe Workspace::WorkflowSweep do
         begin_run(flow(on_timeout: action))
         advance(3700)
         pane_shows("idle", idle_seconds: 600)
-        engine.resume("wr_1", turn_over: {"step" => "build", "attempt" => 1})
+        engine.resume("wr_1", actor: "person", turn_over: {"step" => "build", "attempt" => 1})
 
         expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "held")
-        engine.cancel("wr_1")
+        engine.cancel("wr_1", actor: "person")
       end
     end
 
@@ -973,7 +973,7 @@ RSpec.describe Workspace::WorkflowSweep do
       pane_shows("working", idle_seconds: 1)
       sweep.call
       expect(stored_run(store, "wr_1")["current"]).to eq("plan")
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       expect(stored_run(store, "wr_1")["current"]).to eq("build")
       advance(3700)
       pane_shows("working", idle_seconds: 1)
@@ -1045,7 +1045,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "does not count retried attempts against max_attempts" do
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       ids.replace(%w[wr_2])
       panes.kick_result = busy
       definition = Workspace::WorkflowDefinition.parse(<<~YAML, id: "tight", source: "global", path: "/defs/tight.yml")
@@ -1065,9 +1065,9 @@ RSpec.describe Workspace::WorkflowSweep do
       sweep.call
 
       expect(stored_run(store, "wr_2")["steps"]["plan"]["attempts"].map { |each| each["redelivered"] }).to eq([true, nil])
-      engine.turn_ended("wr_2", pane: "%5")
-      engine.report("wr_2", status: "fail")
-      engine.turn_ended("wr_2", pane: "%5")
+      engine.turn_ended("wr_2", actor: "agent", pane: "%5")
+      engine.report("wr_2", actor: "agent", status: "fail")
+      engine.turn_ended("wr_2", actor: "agent", pane: "%5")
 
       expect(stored_run(store, "wr_2")).to include("current" => "plan", "state" => "running")
       expect(stored_run(store, "wr_2")["steps"]["plan"]["attempts"].size).to eq(3)
@@ -1118,15 +1118,15 @@ RSpec.describe Workspace::WorkflowSweep do
     it "does not retry when a resume got there first" do
       advance(61)
       panes.kick_result = {ok: true}
-      engine.resume("wr_1")
+      engine.resume("wr_1", actor: "person")
 
-      expect(engine.redeliver("wr_1", step: "build", attempt: 1)).to eq(:moved_on)
+      expect(engine.redeliver("wr_1", actor: "sweep", step: "build", attempt: 1)).to eq(:moved_on)
       expect(attempts.size).to eq(2)
     end
 
     it "does not retry beside a live park" do
       advance(61)
-      engine.park("wr_1")
+      engine.park("wr_1", actor: "person")
 
       expect(only_row(sweep.call)).to include("reason" => "parked")
       expect(panes.kicks.size).to eq(1)
@@ -1170,7 +1170,7 @@ RSpec.describe Workspace::WorkflowSweep do
       advance(10_000)
       expect(only_row(sweep.call)).to include("cause" => "redelivery_exhausted")
 
-      engine.resume("wr_1")
+      engine.resume("wr_1", actor: "person")
       expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("waiting_you")
       expect(attempts.last["redelivery"]).to be_nil
       advance(59)
@@ -1192,7 +1192,7 @@ RSpec.describe Workspace::WorkflowSweep do
       end
 
       before do
-        engine.cancel("wr_1")
+        engine.cancel("wr_1", actor: "person")
         ids.replace(%w[wr_2])
         resources.on(:acquire) do |original, **args|
           next original.call(**args) unless lock_busy.first
@@ -1212,7 +1212,7 @@ RSpec.describe Workspace::WorkflowSweep do
           expect(stored_run(store, "wr_2")["steps"]["build"]["redelivery_pending"]).to eq(index + 1)
 
           lock_busy[0] = false
-          engine.tick("wr_2")
+          engine.tick("wr_2", actor: "daemon")
           expect(attempts2.last["redelivery"]).to eq(index + 1)
           expect(stored_run(store, "wr_2")["steps"]["build"]).not_to have_key("redelivery_pending")
         end
@@ -1226,17 +1226,17 @@ RSpec.describe Workspace::WorkflowSweep do
         advance(60)
         lock_busy[0] = true
         sweep.call
-        engine.resume("wr_2")
+        engine.resume("wr_2", actor: "person")
 
         expect(stored_run(store, "wr_2")["steps"]["build"]).not_to have_key("redelivery_pending")
         lock_busy[0] = false
-        engine.tick("wr_2")
+        engine.tick("wr_2", actor: "daemon")
         expect(attempts2.last["redelivery"]).to be_nil
       end
     end
 
     it "does not retry a connection_failed raised after the request was sent" do
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       ids.replace(%w[wr_2])
       panes.kick_result = {ok: false, code: "connection_failed", message: "no reply"}
       begin_run
@@ -1280,22 +1280,22 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "keeps time_out from failing the new attempt" do
       attempt = 1
-      engine.resume("wr_1", from: "build")
+      engine.resume("wr_1", actor: "person", from: "build")
 
-      expect(engine.time_out("wr_1", step: "build", attempt: attempt, elapsed: 4000, timeout: 3600)).to eq(:moved_on)
+      expect(engine.time_out("wr_1", actor: "sweep", step: "build", attempt: attempt, elapsed: 4000, timeout: 3600)).to eq(:moved_on)
       expect(stored_run(store, "wr_1")["steps"]["build"]["state"]).to eq("running")
     end
 
     it "keeps claim_interrupt from claiming the new attempt" do
-      engine.resume("wr_1", from: "build")
+      engine.resume("wr_1", actor: "person", from: "build")
 
-      expect(engine.claim_interrupt("wr_1", step: "build", attempt: 1, elapsed: 4000, timeout: 3600)).to eq(:moved_on)
+      expect(engine.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 4000, timeout: 3600)).to eq(:moved_on)
     end
 
     it "keeps note_stall from recording against the new attempt" do
-      engine.resume("wr_1", from: "build")
+      engine.resume("wr_1", actor: "person", from: "build")
 
-      expect(engine.note_stall("wr_1", step: "build", attempt: 1, cause: "pane_gone")).to eq(:moved_on)
+      expect(engine.note_stall("wr_1", actor: "sweep", step: "build", attempt: 1, cause: "pane_gone")).to eq(:moved_on)
       expect(types).not_to include("step_stalled")
     end
 
@@ -1303,7 +1303,7 @@ RSpec.describe Workspace::WorkflowSweep do
       pane_shows("idle", idle_seconds: 600)
       panes.on_row = -> do
         panes.on_row = nil
-        engine.resume("wr_1", turn_over: {"step" => "build", "attempt" => 1})
+        engine.resume("wr_1", actor: "person", turn_over: {"step" => "build", "attempt" => 1})
       end
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "moved_on")
@@ -1360,7 +1360,7 @@ RSpec.describe Workspace::WorkflowSweep do
       begin_run
       other = Dir.mktmpdir("wf-sweep3")
       allow(lock_namespace).to receive(:resolve).with(cwd: other).and_return(key: "ns", display: "app", dir: lock_dir)
-      engine.start(definition: flow, workspace: "other", worktree: other, inputs: {}, pane: "%6")
+      engine.start(actor: "person", definition: flow, workspace: "other", worktree: other, inputs: {}, pane: "%6")
       pane_shows("working", idle_seconds: 1)
 
       expect(sweep.call.map { |each| each["run_id"] }).to contain_exactly("wr_1", "wr_2")
@@ -1373,7 +1373,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "reports a finished run as finished" do
       begin_run
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
 
       expect(only_row(sweep.call(run: "wr_1"))).to include("outcome" => "nothing", "reason" => "finished")
     end
@@ -1411,9 +1411,9 @@ RSpec.describe Workspace::WorkflowSweep do
 
     before do
       begin_run(budgeted)
-      engine.turn_ended("wr_1", pane: "%5")
-      engine.report("wr_1", status: "fail", summary: "no")
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+      engine.report("wr_1", actor: "agent", status: "fail", summary: "no")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       edit_run(store, "wr_1") { |run| run["steps"]["build"]["attempts"].first["usage"] = {"input_tokens" => 5000} }
       advance(300)
     end
@@ -1449,9 +1449,9 @@ RSpec.describe Workspace::WorkflowSweep do
 
     before do
       begin_run(backing_off)
-      engine.turn_ended("wr_1", pane: "%5")
-      engine.report("wr_1", status: "fail", summary: "no")
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+      engine.report("wr_1", actor: "agent", status: "fail", summary: "no")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
     end
 
     it "is not stalled: nothing is recorded or acted on before the time, whatever the idle and timeout rules say" do
@@ -1494,7 +1494,7 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(only_row(sweep.call(allow: ->(_run) { "not this one" }))).to include("outcome" => "nothing", "reason" => "refused")
       expect(stored_run(store, "wr_1")).to include("state" => "waiting")
 
-      engine.resume("wr_1")
+      engine.resume("wr_1", actor: "person")
       expect(only_row(sweep.call)["outcome"]).to eq("nothing")
       expect(stored_run(store, "wr_1")["current"]).to eq("plan")
       expect(panes.kicks.size).to eq(3)
@@ -1564,7 +1564,7 @@ RSpec.describe Workspace::WorkflowSweep do
     it "leaves a retry that was held because its pane is gone to a person" do
       panes.gone << "%5"
       advance(300)
-      engine.tick("wr_1")
+      engine.tick("wr_1", actor: "daemon")
       held = stored_run(store, "wr_1")
       expect(held["backoff"]).to include("blocked" => "pane_gone")
 
@@ -1574,7 +1574,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "does nothing for a run cancelled during the wait" do
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       advance(300)
 
       expect(only_row(sweep.call(run: "wr_1"))).to include("outcome" => "nothing", "reason" => "finished")
@@ -1767,7 +1767,7 @@ RSpec.describe Workspace::WorkflowSweep do
       panes.rows["%9"] = {"pane_id" => "%9", "kind" => "shell", "state" => "idle", "idle_seconds" => Workspace::WorkflowPanes::AGENT_GONE_AFTER}
       advance(61)
 
-      engine.tick("wr_1")
+      engine.tick("wr_1", actor: "daemon")
 
       expect(stored_run(store, "wr_1")["reason"]).to include("code" => "review_incomplete")
     end
@@ -1783,7 +1783,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "closes a review window whose run is over, with a row of its own, and only reports it on a dry run" do
       review
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       tmux.review_window_list = [{window: "@9", name: "review-build", review: "wr_1:build:1", pane: "%9", pid: 9}]
 
       dry = sweep.call(dry_run: true)
@@ -1799,7 +1799,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "looks at every workspace's session on a bare sweep, and only the named workspace's with --name" do
       review
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       tmux = FakeTmux.new(sessions: %w[app other], session_name: "app")
       tmux.review_windows_by_session = {"app" => [{window: "@1", name: "review-build", review: "wr_1:build:1", pane: "%1", pid: 1}],
                                         "other" => [{window: "@2", name: "review-build", review: "wr_404:build:1", pane: "%2", pid: 2}]}
@@ -1822,7 +1822,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "leaves a window another run store stamped, as a scheduler's sweep with another state directory must" do
       review
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       tmux.review_window_list = [{window: "@9", name: "review-build", review: "wr_1:build:1", pane: "%9", pid: 9, store: "0ther0ther0ther0"}]
 
       expect(sweep.call).to eq([])
@@ -1831,7 +1831,7 @@ RSpec.describe Workspace::WorkflowSweep do
 
     it "asks allow before closing a left-over window of a run it has" do
       review
-      engine.cancel("wr_1")
+      engine.cancel("wr_1", actor: "person")
       tmux.review_window_list = [{window: "@9", name: "review-build", review: "wr_1:build:1", pane: "%9", pid: 9, store: store.stamp}]
 
       rows = sweep.call(allow: ->(_run) { "a person is looking at it" })

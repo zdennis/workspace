@@ -99,7 +99,7 @@ RSpec.describe Workspace::WorkflowEngine do
   def start(definition = three_steps, inputs: {"task" => "X-1"}, pane: "%5", workspace: "app.worktree-x", checkout: nil, **rest)
     path = (checkout || (pane == "%5" && workspace == "app.worktree-x")) ? worktree : FileUtils.mkdir_p("#{worktree}-#{pane.delete("%")}-#{workspace}").first
     allow(lock_namespace).to receive(:resolve).with(cwd: path).and_return(key: "ns", display: "app", dir: lock_dir)
-    engine.start(definition: definition, workspace: workspace, worktree: path, inputs: inputs, pane: pane, **rest)
+    engine.start(actor: "person", definition: definition, workspace: workspace, worktree: path, inputs: inputs, pane: pane, **rest)
   end
 
   def artifact(name, run_id = "wr_1")
@@ -133,13 +133,13 @@ RSpec.describe Workspace::WorkflowEngine do
   def to_build
     start
     artifact("plan.md")
-    engine.turn_ended("wr_1", pane: "%5")
-    engine.approve("wr_1")
+    engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+    engine.approve("wr_1", actor: "person")
   end
 
   def to_verify
     to_build
-    engine.turn_ended("wr_1", pane: "%5")
+    engine.turn_ended("wr_1", actor: "agent", pane: "%5")
   end
 
   describe "#start" do
@@ -211,7 +211,7 @@ RSpec.describe Workspace::WorkflowEngine do
         to_verify
         events.clear
 
-        run = engine.turn_ended("wr_1", pane: "%5")
+        run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
         log = File.join(worktree, ".workflow", "wr_1", "steps", "verify.1.check.log")
         env = ENV.keys.grep(/\AGIT_/).to_h { |name| [name, nil] }.merge("WORKSPACE_RUN_ID" => "wr_1", "WORKSPACE_RUN_ARTIFACTS" => File.join(worktree, ".workflow", "wr_1"),
@@ -226,7 +226,7 @@ RSpec.describe Workspace::WorkflowEngine do
       to_verify
       edit_run(store, "wr_1") { |stored| stored.delete("base_sha") }
 
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(check_calls.last[:env]).to include("WORKSPACE_RUN_BASE_SHA" => "")
     end
@@ -235,7 +235,7 @@ RSpec.describe Workspace::WorkflowEngine do
       to_verify
       events.clear
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run).to include("state" => "completed", "reason" => nil, "ended_at" => "2026-10-04T12:00:00Z")
       expect(lock_holder("test-db")).to be_nil
@@ -251,7 +251,7 @@ RSpec.describe Workspace::WorkflowEngine do
       to_build
       events.clear
 
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(lock_holder("test-db")).to include("run_id" => "wr_1", "step" => "verify")
       expect(events.map(&:first)).not_to include("lock_released", "lock_acquired")
@@ -261,7 +261,7 @@ RSpec.describe Workspace::WorkflowEngine do
       to_verify
       check_results << {exit_code: 1, timed_out: false}
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       log = File.join(worktree, ".workflow", "wr_1", "steps", "verify.1.check.log")
       expect(run).to include("state" => "running", "current" => "build", "loops" => {"verify->build" => 1}, "reason" => nil)
@@ -278,7 +278,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "delivers a retry as its own attempt: the prompt file and the binding carry the attempt number" do
       to_verify
       check_results << {exit_code: 1, timed_out: false}
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       second = File.join(worktree, ".workflow", "wr_1", "steps", "build.2.prompt.md")
       expect(File.exist?(second)).to be true
@@ -292,11 +292,11 @@ RSpec.describe Workspace::WorkflowEngine do
       to_verify
       3.times { check_results << {exit_code: 2, timed_out: false} }
       2.times do
-        engine.turn_ended("wr_1", pane: "%5")
-        engine.turn_ended("wr_1", pane: "%5")
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       end
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run).to include("state" => "waiting", "current" => "verify")
       expect(run["reason"]["code"]).to eq("failed_check")
@@ -319,11 +319,11 @@ RSpec.describe Workspace::WorkflowEngine do
       YAML
       start(capped, inputs: {})
       2.times { check_results << {exit_code: 1, timed_out: false} }
-      engine.turn_ended("wr_1")
-      engine.turn_ended("wr_1")
-      engine.turn_ended("wr_1")
+      engine.turn_ended("wr_1", actor: "agent")
+      engine.turn_ended("wr_1", actor: "agent")
+      engine.turn_ended("wr_1", actor: "agent")
 
-      run = engine.turn_ended("wr_1")
+      run = engine.turn_ended("wr_1", actor: "agent")
 
       expect(check_calls.map { |call| call[:command] }).to eq(%w[bin/check bin/check])
       expect(run["reason"]).to include("code" => "failed_check")
@@ -335,7 +335,7 @@ RSpec.describe Workspace::WorkflowEngine do
       start(plain, inputs: {})
       check_results << {exit_code: 1, timed_out: false}
 
-      run = engine.turn_ended("wr_1")
+      run = engine.turn_ended("wr_1", actor: "agent")
 
       expect(run).to include("state" => "waiting", "current" => "a")
       expect(run["reason"]["details"]).to include("cause" => "check", "exit_code" => 1, "code" => "check_failed", "code_source" => "engine")
@@ -359,12 +359,12 @@ RSpec.describe Workspace::WorkflowEngine do
         path = File.join(worktree, ".workflow", "wr_1", "steps", name)
         File.write(path, text)
         check_results << {exit_code: 1, timed_out: false}
-        engine.turn_ended("wr_1")
+        engine.turn_ended("wr_1", actor: "agent")
       end
 
       it "takes the failure code from the log's last line when the step's status sets report_code, and loops on it" do
         start(tally_def("    on_fail: {goto: plan, max: 2}", "      report_code: true\n      run: bin/check\n"), inputs: {})
-        engine.turn_ended("wr_1")
+        engine.turn_ended("wr_1", actor: "agent")
 
         run = with_log("tally.1.check.log", "the plan moved under the review\ncode: stale_plan_revision\n")
 
@@ -374,7 +374,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "ignores the log's last line when the step's status sets no report_code" do
         start(tally_def("    on_fail: {goto: plan, max: 2}", "      run: bin/check\n"), inputs: {})
-        engine.turn_ended("wr_1")
+        engine.turn_ended("wr_1", actor: "agent")
 
         run = with_log("tally.1.check.log", "code: stale_plan_revision\n")
 
@@ -383,12 +383,12 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "ignores a line that names a code the engine hands out itself, or no code at all" do
         start(tally_def("    on_fail: {goto: plan, max: 2}", "      report_code: true\n      run: bin/check\n"), inputs: {})
-        engine.turn_ended("wr_1")
+        engine.turn_ended("wr_1", actor: "agent")
 
         reserved = with_log("tally.1.check.log", "code: check_error\n")
 
         expect(reserved["steps"]["tally"]["attempts"].last).to include("code" => "check_failed")
-        engine.turn_ended("wr_1")
+        engine.turn_ended("wr_1", actor: "agent")
 
         absent = with_log("tally.1.check.log", "the check found nothing to name\n")
 
@@ -397,7 +397,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "stops instead of looping when the reported code is in on_fail's except, and counts no loop" do
         start(tally_def("    on_fail: {goto: plan, max: 2, except: [stale_plan_revision]}", "      report_code: true\n      run: bin/check\n"), inputs: {})
-        engine.turn_ended("wr_1")
+        engine.turn_ended("wr_1", actor: "agent")
 
         run = with_log("tally.1.check.log", "code: stale_plan_revision\n")
 
@@ -409,9 +409,9 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "fails a step its agent reported failed, without running the check" do
       to_verify
-      engine.report("wr_1", status: "fail", summary: "two specs still red")
+      engine.report("wr_1", actor: "agent", status: "fail", summary: "two specs still red")
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(check_calls).to eq([])
       expect(run["current"]).to eq("build")
@@ -423,7 +423,7 @@ RSpec.describe Workspace::WorkflowEngine do
       start(plain, inputs: {})
       check_results << {exit_code: nil, timed_out: true}
 
-      run = engine.turn_ended("wr_1")
+      run = engine.turn_ended("wr_1", actor: "agent")
 
       expect(run["reason"]["details"]).to include("cause" => "check", "timed_out" => true)
       expect(run["reason"]["details"]).not_to have_key("exit_code")
@@ -432,20 +432,20 @@ RSpec.describe Workspace::WorkflowEngine do
     it "decides nothing, and does not raise, when the run was cancelled while its check ran" do
       to_verify
       cancelling = lambda do |**|
-        engine.cancel("wr_1")
+        engine.cancel("wr_1", actor: "person")
         {exit_code: 0, timed_out: false}
       end
       slow = Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes, checker: cancelling,
         commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
 
-      expect(slow.turn_ended("wr_1", pane: "%5")).to include("state" => "cancelled")
+      expect(slow.turn_ended("wr_1", actor: "agent", pane: "%5")).to include("state" => "cancelled")
     end
 
     it "fails a step whose project lost its check command after the run started" do
       to_verify
       commands[:test] = nil
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(check_calls).to eq([])
       expect(run["current"]).to eq("build")
@@ -455,13 +455,13 @@ RSpec.describe Workspace::WorkflowEngine do
     it "drops a check's result when the run moved on while it ran" do
       to_verify
       slow = lambda do |**|
-        engine.resume("wr_1", from: "build")
+        engine.resume("wr_1", actor: "person", from: "build")
         {exit_code: 0, timed_out: false}
       end
       moved = Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes, checker: slow,
         commands_config: commands_config, lineage: lineage, git: git, guard: guard, excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, clock: -> { now.first })
 
-      run = moved.turn_ended("wr_1", pane: "%5")
+      run = moved.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run).to include("state" => "running", "current" => "build")
       expect(run["steps"]["verify"]["state"]).to eq("checking")
@@ -500,7 +500,7 @@ RSpec.describe Workspace::WorkflowEngine do
       start(guarded, inputs: {})
       commit_in_worktree
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run).to include("state" => "waiting")
       expect(run["reason"]["code"]).to eq("failed_check")
@@ -521,10 +521,10 @@ RSpec.describe Workspace::WorkflowEngine do
             on_fail: {goto: plan, max: 2, except: [guard]}
       YAML
       start(excepted, inputs: {})
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       commit_in_worktree
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run).to include("state" => "waiting", "current" => "tally", "loops" => {})
       expect(run["reason"]["code"]).to eq("failed_check")
@@ -550,7 +550,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       def to_second_step
         artifact("note.md")
-        engine.turn_ended("wr_1", pane: "%5")
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       end
 
       it "passes the step, records the warning on the attempt, and posts one inbox item" do
@@ -571,7 +571,7 @@ RSpec.describe Workspace::WorkflowEngine do
         set_config("alias.x", "status")
         to_second_step
 
-        run = engine.turn_ended("wr_1", pane: "%5")
+        run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
         expect(warnings(run).size).to eq(1)
         expect(run["state"]).to eq("completed")
         expect(inbox.list.size).to eq(1)
@@ -583,7 +583,7 @@ RSpec.describe Workspace::WorkflowEngine do
         to_second_step
         set_config("alias.y", "log")
 
-        run = engine.turn_ended("wr_1", pane: "%5")
+        run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
         expect(warnings(run).size).to eq(2)
         expect(inbox.list.size).to eq(1)
@@ -595,7 +595,7 @@ RSpec.describe Workspace::WorkflowEngine do
         to_second_step
         system("git", "-C", worktree, "config", "--unset", "alias.x", exception: true)
 
-        run = engine.turn_ended("wr_1", pane: "%5")
+        run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
         expect(warnings(run).size).to eq(1)
         expect(run).not_to have_key("guard_config_seen")
@@ -607,7 +607,7 @@ RSpec.describe Workspace::WorkflowEngine do
         set_config("alias.x", "status")
         artifact("note.md")
 
-        run = failing.turn_ended("wr_1", pane: "%5")
+        run = failing.turn_ended("wr_1", actor: "agent", pane: "%5")
 
         expect(run["current"]).to eq("fix")
         expect(run["steps"]["diagnose"]["attempts"].last).to include("outcome" => "passed", "warnings" => [include("code" => "config_changed")])
@@ -626,11 +626,11 @@ RSpec.describe Workspace::WorkflowEngine do
         set_config("alias.x", "status")
         artifact("note.md")
 
-        run = flaky_engine.turn_ended("wr_1", pane: "%5")
+        run = flaky_engine.turn_ended("wr_1", actor: "agent", pane: "%5")
         expect(run["current"]).to eq("fix")
         expect(run).not_to have_key("guard_config_seen")
 
-        run = flaky_engine.turn_ended("wr_1", pane: "%5")
+        run = flaky_engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
         expect(run["steps"]["fix"]["attempts"].last["warnings"].size).to eq(1)
       end
@@ -647,7 +647,7 @@ RSpec.describe Workspace::WorkflowEngine do
         start(guarded, inputs: {})
         set_config("core.hooksPath", "/tmp/planted-hooks")
 
-        run = engine.turn_ended("wr_1", pane: "%5")
+        run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
         expect(run["reason"]["details"]).to include("code" => "hooks_changed", "cause" => "guard")
         expect(warnings(run).map { |each| each["code"] }).to eq(["config_changed"])
@@ -661,7 +661,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
         expect(run["current"]).to eq("fix")
         expect(warnings(run)).to match([include("code" => "config_changed", "message" => a_string_matching(/may be no change/))])
-        run = engine.turn_ended("wr_1", pane: "%5")
+        run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
         expect(run["state"]).to eq("completed")
         expect(warnings(run).size).to eq(1)
       end
@@ -672,7 +672,7 @@ RSpec.describe Workspace::WorkflowEngine do
         set_config("alias.x", "status")
         artifact("note.md")
 
-        run = failing.turn_ended("wr_1", pane: "%5")
+        run = failing.turn_ended("wr_1", actor: "agent", pane: "%5")
 
         expect(run["current"]).to eq("fix")
         expect(warnings(run).size).to eq(1)
@@ -690,7 +690,7 @@ RSpec.describe Workspace::WorkflowEngine do
       File.write(File.join(worktree, "README"), "x\n")
       system("git", "-C", worktree, "add", "README", exception: true)
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run["reason"]["details"]).to include("code" => "tracked_changed", "paths" => ["README"])
     end
@@ -706,10 +706,10 @@ RSpec.describe Workspace::WorkflowEngine do
             on_fail: {goto: one, max: 1}
       YAML
       start(looping, inputs: {})
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       commit_in_worktree
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run["current"]).to eq("one")
       expect(run["steps"]["one"]["attempts"].last["context"].first).to match(/HEAD moved from \h{12} to \h{12} since the run started/)
@@ -719,7 +719,7 @@ RSpec.describe Workspace::WorkflowEngine do
       start(guarded, inputs: {})
       artifact("note.md")
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run["current"]).to eq("fix")
     end
@@ -727,9 +727,9 @@ RSpec.describe Workspace::WorkflowEngine do
     it "skips the guard when the agent reported a failure, with the agent's code" do
       start(guarded, inputs: {})
       commit_in_worktree
-      engine.report("wr_1", status: "fail", summary: "No repro.", code: "not_reproduced")
+      engine.report("wr_1", actor: "agent", status: "fail", summary: "No repro.", code: "not_reproduced")
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run["reason"]["details"]).to include("cause" => "reported", "summary" => "No repro.", "code" => "not_reproduced", "code_source" => "agent")
       expect(run["reason"]["details"]).not_to have_key("guard")
@@ -738,9 +738,9 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "gives a report with no code the engine's code `reported`" do
       start(guarded, inputs: {})
-      engine.report("wr_1", status: "fail", summary: "Stuck.")
+      engine.report("wr_1", actor: "agent", status: "fail", summary: "Stuck.")
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run["reason"]["details"]).to include("code" => "reported", "code_source" => "engine")
       expect(run["steps"]["diagnose"]["attempts"].last["reported"]).not_to have_key("code")
@@ -749,11 +749,11 @@ RSpec.describe Workspace::WorkflowEngine do
     it "checks only the config scope at a `guard: config` step, so a commit passes" do
       start(guarded, inputs: {})
       artifact("note.md")
-      engine.turn_ended("wr_1", pane: "%5")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       commit_in_worktree
       File.write(File.join(worktree, ".git", "hooks", "pre-commit"), "#!/bin/sh\n")
 
-      run = engine.turn_ended("wr_1", pane: "%5")
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
       expect(run["reason"]["details"]).to include("code" => "hooks_changed")
     end
@@ -768,7 +768,7 @@ RSpec.describe Workspace::WorkflowEngine do
                           "inputs" => {}, "loops" => {}, "pending_context" => [], "artifacts_dir" => File.join(worktree, ".workflow", "wr_1")})
       panes.bind(workspace: "app", pane: "%5", run_id: run["id"])
 
-      result = raising.turn_ended(run["id"], pane: "%5")
+      result = raising.turn_ended(run["id"], actor: "agent", pane: "%5")
 
       expect(result["state"]).to eq("waiting")
       expect(result["reason"]["details"]).to include("cause" => "check", "code" => "check_error", "code_source" => "engine")
@@ -778,9 +778,9 @@ RSpec.describe Workspace::WorkflowEngine do
     it "never records a new base_sha when a failed step is resumed" do
       start(guarded, inputs: {})
       commit_in_worktree
-      base = engine.turn_ended("wr_1", pane: "%5")["base_sha"]
+      base = engine.turn_ended("wr_1", actor: "agent", pane: "%5")["base_sha"]
 
-      engine.resume("wr_1")
+      engine.resume("wr_1", actor: "person")
 
       expect(stored_run(store, "wr_1")["base_sha"]).to eq(base)
     end

@@ -179,7 +179,7 @@ module Workspace
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: "retry_backoff", action: "retry") if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: "retry_backoff") if refusal
-      outcome = @engine.retry_backoff(run.id, step: run.current, attempt: WorkflowSweepRows.attempt_of(run))
+      outcome = @engine.retry_backoff(run.id, actor: "sweep", step: run.current, attempt: WorkflowSweepRows.attempt_of(run))
       return blocked_row(run) if outcome == :blocked
       return budget_row(run, cause: "retry_backoff", action: "retry") if outcome == :held
       WorkflowSweepRows.engine_row(run, outcome, "retried", cause: "retry_backoff", message: message, action: "retry")
@@ -224,7 +224,7 @@ module Workspace
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: "undelivered", action: "redeliver") if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: "undelivered") if refusal
-      outcome = @engine.redeliver(run.id, step: run.current, attempt: WorkflowSweepRows.attempt_of(run))
+      outcome = @engine.redeliver(run.id, actor: "sweep", step: run.current, attempt: WorkflowSweepRows.attempt_of(run))
       case outcome
       when :not_delivered
         WorkflowSweepRows.row(run, "nothing", reason: "not_delivered", cause: "undelivered", action: "redeliver", message: "#{message}, but it was not delivered again; the next retry waits out a longer backoff")
@@ -301,7 +301,7 @@ module Workspace
     def note(run, pass, cause, message, data = {})
       return WorkflowSweepRows.row(run, "nothing", reason: "already_recorded", message: message, cause: cause) if WorkflowEngine.sweep_marks(run.to_h).dig("stalled", cause)
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: cause, action: "record") if pass[:dry_run]
-      outcome = @engine.note_stall(run.id, step: run.current, attempt: WorkflowSweepRows.attempt_of(run), cause: cause, data: data)
+      outcome = @engine.note_stall(run.id, actor: "sweep", step: run.current, attempt: WorkflowSweepRows.attempt_of(run), cause: cause, data: data)
       WorkflowSweepRows.engine_row(run, outcome, "recorded", cause: cause, message: message, action: "record")
     end
 
@@ -315,12 +315,12 @@ module Workspace
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: "daemon_down", action: "respawn_daemon") if pass[:dry_run]
       started = (pass[:daemons][workspace] ||= @panes.respawn_daemon(workspace))
       attempt = WorkflowSweepRows.attempt_of(run)
-      @engine.note_stall(run.id, step: run.current, attempt: attempt, cause: "daemon_down", data: {"workspace" => workspace}) if notes
+      @engine.note_stall(run.id, actor: "sweep", step: run.current, attempt: attempt, cause: "daemon_down", data: {"workspace" => workspace}) if notes
       unless started[:ok]
         return WorkflowSweepRows.row(run, "failed", reason: "daemon_not_started", cause: "daemon_down", action: "respawn_daemon",
           message: "#{message}, and it could not be started#{": #{started[:detail]}" if started[:detail]}")
       end
-      @engine.note_recovery(run.id, step: run.current, attempt: attempt, cause: "daemon_down", action: "daemon_respawned") if notes
+      @engine.note_recovery(run.id, actor: "sweep", step: run.current, attempt: attempt, cause: "daemon_down", action: "daemon_respawned") if notes
       WorkflowSweepRows.row(run, "respawned", cause: "daemon_down", action: "respawn_daemon", message: "#{message}; it is running again, and the pane is read on the next pass")
     end
 
@@ -334,7 +334,7 @@ module Workspace
       unless fresh && fresh["kind"] == shown["kind"] && WorkflowPanes.turn_over?(fresh, @clock.call) && fresh["idle_seconds"].to_i >= WorkflowSweepRows::IDLE_FLOOR
         return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", message: "pane #{pane} no longer shows the agent's turn over; the next pass looks again", cause: cause)
       end
-      outcome = @engine.recover(run.id, turn_over: {"step" => run.current, "attempt" => attempt.n}, cause: cause,
+      outcome = @engine.recover(run.id, actor: "sweep", turn_over: {"step" => run.current, "attempt" => attempt.n}, cause: cause,
         data: {"idle_for" => idle_for}, fail_if_incomplete: fail_if_incomplete)
       WorkflowSweepRows.engine_row(run, outcome, (outcome == :timed_out) ? "timed_out" : "evaluated", cause: cause, message: message, action: "evaluate")
     end
@@ -360,17 +360,17 @@ module Workspace
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: cause) if refusal
       step_ref = {step: run.current, attempt: attempt.n}
-      claim, claim_at = @engine.claim_interrupt(run.id, **step_ref, elapsed: elapsed, timeout: timeout, cause: cause)
+      claim, claim_at = @engine.claim_interrupt(run.id, actor: "sweep", **step_ref, elapsed: elapsed, timeout: timeout, cause: cause)
       unless claim == :claimed
         return WorkflowSweepRows.row(run, "nothing", reason: "already_interrupted", message: message, cause: cause) if claim == :repeat
         return WorkflowSweepRows.engine_row(run, claim, "interrupted", cause: cause, message: message, action: action)
       end
       unless still_working?(run, pane, shown)
-        @engine.interrupt_sent(run.id, **step_ref, claim_at: claim_at, sent: false, cause: cause)
+        @engine.interrupt_sent(run.id, actor: "sweep", **step_ref, claim_at: claim_at, sent: false, cause: cause)
         return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", message: "pane #{pane} no longer shows the agent working in this run; nothing was pressed", cause: cause)
       end
       failure = press(run, pane, keys)
-      @engine.interrupt_sent(run.id, **step_ref, claim_at: claim_at, sent: failure.nil?, record: !then_fail, cause: cause)
+      @engine.interrupt_sent(run.id, actor: "sweep", **step_ref, claim_at: claim_at, sent: failure.nil?, record: !then_fail, cause: cause)
       return WorkflowSweepRows.row(run, "failed", reason: "interrupt_failed", message: "could not interrupt pane #{pane}: #{failure}", cause: cause, action: action) if failure
       return WorkflowSweepRows.row(run, "interrupted", message: message, cause: cause, action: action) unless then_fail
       time_out(run, attempt, pass, elapsed, timeout, "the agent was interrupted")
@@ -394,7 +394,7 @@ module Workspace
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: "timed_out", action: "fail") if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: "timed_out") if refusal
-      outcome = @engine.time_out(run.id, step: run.current, attempt: attempt.n, elapsed: elapsed, timeout: timeout)
+      outcome = @engine.time_out(run.id, actor: "sweep", step: run.current, attempt: attempt.n, elapsed: elapsed, timeout: timeout)
       WorkflowSweepRows.engine_row(run, outcome, "timed_out", cause: "timed_out", message: message, action: "fail")
     end
 

@@ -79,13 +79,14 @@ class RecordingRunChange
     @closes = []
   end
 
-  def call(run_id, nonblocking: false)
-    @calls << [:call, run_id, {nonblocking: nonblocking}]
+  def call(run_id, actor:, nonblocking: false)
+    raise ArgumentError, "unknown actor #{actor.inspect}" unless Workspace::WorkflowRunChange::ACTORS.include?(actor)
+    @calls << [:call, run_id, {nonblocking: nonblocking, actor: actor}]
     raise @raises[@calls.size] if @raises.key?(@calls.size)
     raise Workspace::Error.new("run #{run_id} has ended", code: "run_not_active") if @finished.include?(run_id)
     return nil if nonblocking && @busy.include?(run_id)
     stored = @runs.fetch(run_id)
-    ctx = Workspace::WorkflowRunChange::Context.new
+    ctx = Workspace::WorkflowRunChange::Context.new(actor)
     read = Workspace::WorkflowRun.from_h(stored)
     changed = yield(read, ctx) || read
     raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(Workspace::WorkflowRun)
@@ -914,7 +915,7 @@ class RecordingEvaluation
     run
   end
 
-  def finish_check(run_id, check)
+  def finish_check(run_id, check, _actor)
     @calls << [:finish_check, run_id, check]
     Workspace::WorkflowRun.from_h(@runs.fetch(run_id))
   end
@@ -922,7 +923,7 @@ class RecordingEvaluation
   def finish_follow_ups(run_id, ctx, run)
     return run unless ctx
     @calls << [:close_review, run_id, ctx.close_review] if ctx.close_review
-    run = finish_check(run_id, ctx.check) if ctx.check
+    run = finish_check(run_id, ctx.check, ctx.actor) if ctx.check
     @calls << [:review_end, run_id, ctx.review_end] if ctx.review_end
     @calls << [:review_round, run_id, ctx.review] if ctx.review
     run

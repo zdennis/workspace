@@ -69,9 +69,9 @@ RSpec.describe Workspace::WorkflowReviewSweep do
 
       expect(row).to include("outcome" => "interrupted", "cause" => "review_timed_out", "action" => "interrupt", "run_id" => "wr_1", "step" => "build", "attempt" => 1)
       expect(row["message"]).to include("review round 1 of step build is 1801 seconds in, past its 1800 second review timeout", "decided on its verdicts")
-      expect(claims).to eq([["wr_1", {step: "build", attempt: 1, round: 1, pane: "%9", elapsed: 1801.0, timeout: 1800, cause: "review_timed_out"}]])
+      expect(claims).to eq([["wr_1", {actor: "sweep", step: "build", attempt: 1, round: 1, pane: "%9", elapsed: 1801.0, timeout: 1800, cause: "review_timed_out"}]])
       expect(pressed).to eq([["app", "%9", Workspace::AgentProvider.find("claude").interrupt_keys]])
-      expect(confirms).to eq([["wr_1", {step: "build", attempt: 1, round: 1, pane: "%9", claim_at: "2026-11-10T12:00:00Z", sent: true, cause: "review_timed_out"}]])
+      expect(confirms).to eq([["wr_1", {actor: "sweep", step: "build", attempt: 1, round: 1, pane: "%9", claim_at: "2026-11-10T12:00:00Z", sent: true, cause: "review_timed_out"}]])
     end
 
     it "leaves a round still within its timeout alone" do
@@ -240,7 +240,7 @@ RSpec.describe Workspace::WorkflowReviewSweep do
 
       expect(row).to include("outcome" => "stopped", "cause" => "interrupt_unanswered", "action" => "evaluate")
       expect(row["message"]).to include("still works 1800 seconds after it was interrupted", "its window kept")
-      expect(engine).to have_received(:review_stalled).with("wr_1", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupt_unanswered", data: {"waited" => 1800})
+      expect(engine).to have_received(:review_stalled).with("wr_1", actor: "sweep", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupt_unanswered", data: {"waited" => 1800})
     end
 
     it "waits the review's timeout once more when the definition has no stall, or a shorter one" do
@@ -310,7 +310,7 @@ RSpec.describe Workspace::WorkflowReviewSweep do
       row = call(reviewing(started: 1900, round: {"sweep" => sent("interrupt")}))
 
       expect(row).to include("outcome" => "evaluated", "cause" => "interrupted", "action" => "evaluate")
-      expect(engine).to have_received(:review_stalled).with("wr_1", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupted", data: {"idle_for" => 10})
+      expect(engine).to have_received(:review_stalled).with("wr_1", actor: "sweep", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupted", data: {"idle_for" => 10})
     end
 
     it "is left for the next pass when the pane no longer shows the turn over" do

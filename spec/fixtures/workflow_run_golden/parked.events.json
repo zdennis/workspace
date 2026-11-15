@@ -4,7 +4,8 @@
   "workflow": "flow",
   "workspace": "app.worktree-x",
   "from_state": "waiting",
-  "to_state": "running"
+  "to_state": "running",
+  "actor": "person"
 }
 {
   "ts": "2026-10-04T12:00:00.000Z",
@@ -13,7 +14,8 @@
   "attempt": 1,
   "pane": "%5",
   "from_state": "waiting",
-  "to_state": "running"
+  "to_state": "running",
+  "actor": "person"
 }
 {
   "ts": "2026-10-04T12:00:00.000Z",
@@ -21,7 +23,10 @@
   "step": "build",
   "attempt": 1,
   "pane": "%5",
-  "delivered": true
+  "delivered": true,
+  "actor": "engine",
+  "from_state": null,
+  "to_state": null
 }
 {
   "ts": "2026-10-04T12:00:00.000Z",
@@ -31,5 +36,6 @@
   "from": null,
   "has_note": true,
   "from_state": "waiting",
-  "to_state": "waiting"
+  "to_state": "waiting",
+  "actor": "person"
 }

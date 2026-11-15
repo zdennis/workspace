@@ -47,7 +47,7 @@ RSpec.describe Workspace::CLI do
     describe "a parked resume made by the command" do
       let(:definition) { Workspace::WorkflowDefinition.parse("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n", id: "flow", source: "global", path: "/defs/flow.yml") }
       let(:dispatched) { store.events(run["id"])["events"].select { |entry| entry["type"] == "step_dispatched" } }
-      let(:run) { engine.start(definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5") }
+      let(:run) { engine.start(actor: "person", definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5") }
       let(:out) { StringIO.new }
       let(:status) do
         instance_double(Workspace::WorkflowStatus).tap do |double|
@@ -222,12 +222,12 @@ RSpec.describe Workspace::CLI do
     describe "a parked resume" do
       let(:definition) { Workspace::WorkflowDefinition.parse("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n", id: "flow", source: "global", path: "/defs/flow.yml") }
       let(:dispatched) { store.events(run["id"])["events"].select { |entry| entry["type"] == "step_dispatched" } }
-      let(:run) { engine.start(definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5") }
+      let(:run) { engine.start(actor: "person", definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5") }
 
       before do
         stub_env("TMUX_PANE" => nil)
         # The agent's own resume of its step, parked from inside the turn.
-        engine.park(run["id"], from: "a", note: "Again.")
+        engine.park(run["id"], actor: "person", from: "a", note: "Again.")
       end
 
       it "goes from the park through a Stop to the step's line being typed" do
@@ -271,9 +271,21 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    it "writes actor daemon for what `workflow advance` decides and actor agent for what `step done` reports" do
+      definition = Workspace::WorkflowDefinition.parse("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n", id: "flow", source: "global", path: "/defs/flow.yml")
+      run = engine.start(actor: "person", definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5")
+
+      command.step_done(pane: "%5", status: "pass")
+      nudger.turn_ended("app", "%5")
+
+      lines = store.events(run["id"])["events"]
+      expect(lines.select { |line| line["type"] == "step_reported" }.map { |line| line["actor"] }).to eq(["agent"])
+      expect(lines.select { |line| line["type"] == "step_passed" }.map { |line| line["actor"] }).to eq(["daemon"])
+    end
+
     it "moves the run to its next step when the turn ends in its pane, and not for a turn in another pane" do
       definition = Workspace::WorkflowDefinition.parse("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n", id: "flow", source: "global", path: "/defs/flow.yml")
-      run = engine.start(definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5")
+      run = engine.start(actor: "person", definition: definition, workspace: "app", worktree: @dir, inputs: {}, pane: "%5")
 
       expect(nudger.turn_ended("app", "%9")).to be_nil
       expect(stored_run(store, run["id"])).to include("current" => "a")

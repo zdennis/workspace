@@ -82,7 +82,7 @@ module Workspace
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: "lost_round", action: "judge_again") if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: "lost_round") if refusal
-      outcome = @engine.tick(run.id) ? :judged : :busy
+      outcome = @engine.tick(run.id, actor: "sweep") ? :judged : :busy
       WorkflowSweepRows.engine_row(run, outcome, "judged_again", cause: "lost_round", message: message, action: "judge_again")
     end
 
@@ -193,7 +193,7 @@ module Workspace
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: "round_maybe_typed", action: "evaluate") if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: "round_maybe_typed") if refusal
-      return WorkflowSweepRows.engine_row(run, :evaluated, "evaluated", cause: "round_maybe_typed", message: message, action: "evaluate") if @engine.tick(run.id)
+      return WorkflowSweepRows.engine_row(run, :evaluated, "evaluated", cause: "round_maybe_typed", message: message, action: "evaluate") if @engine.tick(run.id, actor: "sweep")
       WorkflowSweepRows.row(run, "nothing", reason: "reviewing", cause: "round_maybe_typed",
         message: "#{what} may have been typed and its review pane is still at work or waiting for an answer (or another process is changing the run); the next pass looks again")
     end
@@ -248,17 +248,17 @@ module Workspace
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: cause) if refusal
       ref = {step: run.current, attempt: WorkflowSweepRows.attempt_of(run), round: round["round"], pane: pane}
-      claim, claim_at = @engine.claim_round_interrupt(run.id, **ref, elapsed: used, timeout: limit, cause: cause)
+      claim, claim_at = @engine.claim_round_interrupt(run.id, actor: "sweep", **ref, elapsed: used, timeout: limit, cause: cause)
       unless claim == :claimed
         return WorkflowSweepRows.row(run, "nothing", reason: "already_interrupted", message: message, cause: cause) if claim == :repeat
         return WorkflowSweepRows.engine_row(run, claim, "interrupted", cause: cause, message: message, action: "interrupt")
       end
       unless still_working?(run, pane, shown)
-        @engine.round_interrupt_sent(run.id, **ref, claim_at: claim_at, sent: false, cause: cause)
+        @engine.round_interrupt_sent(run.id, actor: "sweep", **ref, claim_at: claim_at, sent: false, cause: cause)
         return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", message: "review pane #{pane} no longer shows the agent working in this run; nothing was pressed", cause: cause)
       end
       failure = press(run, pane, keys)
-      @engine.round_interrupt_sent(run.id, **ref, claim_at: claim_at, sent: failure.nil?, cause: cause)
+      @engine.round_interrupt_sent(run.id, actor: "sweep", **ref, claim_at: claim_at, sent: failure.nil?, cause: cause)
       return WorkflowSweepRows.row(run, "failed", reason: "interrupt_failed", message: "could not interrupt review pane #{pane}: #{failure}", cause: cause, action: "interrupt") if failure
       WorkflowSweepRows.row(run, "interrupted", message: "#{message}; interrupted, and the round is decided on its verdicts once the review turn ends", cause: cause, action: "interrupt")
     end
@@ -311,7 +311,7 @@ module Workspace
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: "round_undelivered", action: action) if pass[:dry_run]
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: "round_undelivered") if refusal
-      outcome = @engine.tick(run.id) ? :done : :busy
+      outcome = @engine.tick(run.id, actor: "sweep") ? :done : :busy
       WorkflowSweepRows.engine_row(run, outcome, exhausted ? "stopped" : "redelivered", cause: "round_undelivered", message: message, action: action)
     end
 
@@ -335,7 +335,7 @@ module Workspace
           return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", message: "review pane #{pane} no longer shows a shell; the next pass looks again", cause: cause)
         end
       end
-      outcome = @engine.review_stalled(run.id, step: run.current, attempt: WorkflowSweepRows.attempt_of(run), round: round["round"], pane: pane, cause: cause, data: data)
+      outcome = @engine.review_stalled(run.id, actor: "sweep", step: run.current, attempt: WorkflowSweepRows.attempt_of(run), round: round["round"], pane: pane, cause: cause, data: data)
       WorkflowSweepRows.engine_row(run, outcome, {evaluated: "evaluated", stopped: "stopped", redelivered: "redelivered"}.fetch(outcome, outcome.to_s), cause: cause, message: message, action: action)
     end
   end

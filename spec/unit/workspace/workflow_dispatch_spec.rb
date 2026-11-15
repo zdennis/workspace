@@ -37,7 +37,7 @@ RSpec.describe Workspace::WorkflowDispatch do
 
   def deep_copy(value) = Marshal.load(Marshal.dump(value))
 
-  def ctx = Workspace::WorkflowRunChange::Context.new
+  def ctx = Workspace::WorkflowRunChange::Context.new("engine")
 
   describe "#dispatch" do
     it "stores the attempt as delivering, binds the pane and registers the line, returning a new run and leaving the one given alone" do
@@ -322,6 +322,14 @@ RSpec.describe Workspace::WorkflowDispatch do
       run_hash("state" => "running", "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1, "context" => ["told"], "delivery" => "delivering"}.merge(attempt)]}})
     end
 
+    it "settles the mark as the engine, a change of its own after the lock" do
+      store.runs["wr_1"] = delivering
+
+      dispatch.deliver("wr_1", delivery)
+
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "engine"}]])
+    end
+
     it "types the line and settles the mark, recording the answer in the run's history" do
       store.runs["wr_1"] = delivering
 
@@ -330,7 +338,7 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(run.step("plan").last_attempt.to_h).to eq("n" => 1, "context" => ["told"])
       expect(panes.calls).to include([:kick, {workspace: "app", pane: "%3", text: "Read #{path} and follow it.", fresh: false, run_id: "wr_1"}])
-      expect(store.events).to eq([["wr_1", "step_dispatched", {"step" => "plan", "attempt" => 1, "pane" => "%3", "delivered" => true}]])
+      expect(store.events).to eq([["wr_1", "step_dispatched", {"step" => "plan", "attempt" => 1, "pane" => "%3", "delivered" => true, "actor" => "engine", "from_state" => nil, "to_state" => nil}]])
     end
 
     it "reads the remote first for a step with a remote_unchanged proof" do

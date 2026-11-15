@@ -31,8 +31,8 @@ class PersonAtTheRun < SimpleDelegator
     result
   end
 
-  def tick(run_id)
-    result = __getobj__.tick(run_id)
+  def tick(run_id, **rest)
+    result = __getobj__.tick(run_id, **rest)
     answer(run_id)
     result
   end
@@ -43,7 +43,7 @@ class PersonAtTheRun < SimpleDelegator
     while (code = @store.run(run_id).reason&.dig("code")) && @answers.first&.fetch(:on) == code
       given = @answers.shift.fetch(:resume, {})
       begin
-        __getobj__.resume(run_id, **given)
+        __getobj__.resume(run_id, actor: "person", **given)
         @answered << [code, given]
       rescue Workspace::Error => e
         @refused << [code, e.code]

@@ -47,13 +47,13 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
   def deep_copy(value) = Marshal.load(Marshal.dump(value))
 
-  def ctx = Workspace::WorkflowRunChange::Context.new
+  def ctx = Workspace::WorkflowRunChange::Context.new("engine")
 
   describe "#report" do
     it "stores the agent's report on the attempt and answers a Reported value" do
       stored
 
-      reported = evaluation.report("wr_1", status: "fail", summary: "tests fail", code: "flaky")
+      reported = evaluation.report("wr_1", actor: "agent", status: "fail", summary: "tests fail", code: "flaky")
 
       expect(reported).to be_a(described_class::Reported)
       expect(reported).to be_frozen
@@ -66,13 +66,13 @@ RSpec.describe Workspace::WorkflowEvaluation do
     it "leaves out a code the agent did not give" do
       stored
 
-      expect(evaluation.report("wr_1", status: "pass").reported).to eq("status" => "pass", "summary" => nil, "at" => "2026-11-10T12:00:00Z")
+      expect(evaluation.report("wr_1", actor: "agent", status: "pass").reported).to eq("status" => "pass", "summary" => nil, "at" => "2026-11-10T12:00:00Z")
     end
 
     it "refuses a step that is not being worked on" do
       stored(run_hash(state: "passed"))
 
-      expect { evaluation.report("wr_1", status: "pass") }.to raise_error(Workspace::Error) { |error|
+      expect { evaluation.report("wr_1", actor: "agent", status: "pass") }.to raise_error(Workspace::Error) { |error|
         expect(error.code).to eq("step_not_running")
         expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "state" => "passed")
       }
@@ -82,18 +82,18 @@ RSpec.describe Workspace::WorkflowEvaluation do
     it "refuses a step being reviewed, since its attempt has ended" do
       stored(run_hash(state: "reviewing"))
 
-      expect { evaluation.report("wr_1", status: "pass") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("step_not_running") }
+      expect { evaluation.report("wr_1", actor: "agent", status: "pass") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("step_not_running") }
     end
   end
 
   describe "#turn_ended" do
     it "decides nothing for a parked run, another pane, or a turn that began before the attempt" do
       stored(run_hash("parked" => {"id" => "p1"}))
-      expect(evaluation.turn_ended("wr_1")).to be_a(Workspace::WorkflowRun)
+      expect(evaluation.turn_ended("wr_1", actor: "agent")).to be_a(Workspace::WorkflowRun)
       stored
-      evaluation.turn_ended("wr_1", pane: "%9")
-      evaluation.turn_ended("wr_1", turn_started: Time.utc(2026, 11, 10, 10))
-      evaluation.turn_ended("wr_1", stopped_at: Time.utc(2026, 11, 10, 10))
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%9")
+      evaluation.turn_ended("wr_1", actor: "agent", turn_started: Time.utc(2026, 11, 10, 10))
+      evaluation.turn_ended("wr_1", actor: "agent", stopped_at: Time.utc(2026, 11, 10, 10))
 
       expect(store.runs["wr_1"]["reason"]).to be_nil
       expect(progress.calls).to be_empty
@@ -105,7 +105,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       produce
       progress = RecordingProgress.new(review: {"round" => 1})
 
-      evaluation(progress: progress, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).turn_ended("wr_1")
+      evaluation(progress: progress, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).turn_ended("wr_1", actor: "agent")
 
       expect(progress.calls).to eq([[:pass_step, "plan"]])
       expect(rounds).to eq([["wr_1", {"round" => 1}]])
@@ -114,7 +114,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
     it "holds the step on turn_ended_incomplete when a file it produces is missing" do
       stored
 
-      run = evaluation.turn_ended("wr_1", pane: "%3")
+      run = evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
 
       expect(run.state).to eq("waiting")
       expect(run.reason).to eq("code" => "turn_ended_incomplete", "since" => "2026-11-10T12:00:00Z",
@@ -126,13 +126,13 @@ RSpec.describe Workspace::WorkflowEvaluation do
       stored
       path = produce(at: Time.utc(2026, 11, 10, 10))
 
-      expect(evaluation.turn_ended("wr_1").reason["details"]).to include("missing" => [], "stale" => [path])
+      expect(evaluation.turn_ended("wr_1", actor: "agent").reason["details"]).to include("missing" => [], "stale" => [path])
     end
 
     it "holds a turn that ended with background tasks on turn_ended_background" do
       stored
 
-      run = evaluation.turn_ended("wr_1", background: [{"id" => "b1", "type" => "bash"}])
+      run = evaluation.turn_ended("wr_1", actor: "agent", background: [{"id" => "b1", "type" => "bash"}])
 
       expect(run.reason).to include("code" => "turn_ended_background", "seen_at" => "2026-11-10T12:00:00Z")
       expect(run.reason["details"]["tasks"]).to eq([{"id" => "b1", "type" => "bash"}])
@@ -141,7 +141,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
     it "fails the step with the agent's word when it reported fail" do
       stored(run_hash.tap { |run| run["steps"]["plan"]["attempts"].last["reported"] = {"status" => "fail", "summary" => "no", "code" => "flaky"} })
 
-      run = evaluation.turn_ended("wr_1")
+      run = evaluation.turn_ended("wr_1", actor: "agent")
 
       expect(progress.calls).to eq([[:fail_step, "plan", {"cause" => "reported", "summary" => "no", "code" => "flaky", "code_source" => "agent"}]])
       expect(run.step("plan").state).to eq("failed")
@@ -151,7 +151,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       stored
       produce
 
-      run = evaluation.turn_ended("wr_1")
+      run = evaluation.turn_ended("wr_1", actor: "agent")
 
       expect(progress.calls).to eq([[:pass_step, "plan"]])
       expect(run.step("plan").state).to eq("passed")
@@ -163,7 +163,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       produce
       log = File.join(artifacts, "steps", "plan.1.check.log")
 
-      run = evaluation.turn_ended("wr_1")
+      run = evaluation.turn_ended("wr_1", actor: "agent")
 
       expect(change.calls.size).to eq(2)
       expect(checker.calls).to eq([[:call, {command: "rake test", cwd: dir, timeout: 60, log: log, env: Workspace::WorkflowCheck.env_for(run)}]])
@@ -183,7 +183,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       File.write(log, "lots of output\ncode: plan_edited\n\n")
       checker = RecordingChecker.new(result: {exit_code: 1, timed_out: false, error: nil})
 
-      evaluation(checker: checker).turn_ended("wr_1")
+      evaluation(checker: checker).turn_ended("wr_1", actor: "agent")
 
       expect(progress.calls).to eq([[:fail_step, "plan", {"cause" => "check", "exit_code" => 1, "timed_out" => false, "log" => log,
                                                           "code" => "plan_edited", "code_source" => "check"}]])
@@ -196,7 +196,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       FileUtils.mkdir_p(File.dirname(log))
       File.write(log, "code: check_timed_out\n")
 
-      evaluation(checker: RecordingChecker.new(result: {exit_code: 2, timed_out: false, error: nil})).turn_ended("wr_1")
+      evaluation(checker: RecordingChecker.new(result: {exit_code: 2, timed_out: false, error: nil})).turn_ended("wr_1", actor: "agent")
 
       expect(progress.calls.last[2]).to include("code" => "check_failed", "code_source" => "engine")
     end
@@ -205,7 +205,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       stored(run_hash(definition_step: step("status" => {"command" => "lint"})))
       produce
 
-      evaluation(commands_config: RecordingCommandsConfig.new).turn_ended("wr_1")
+      evaluation(commands_config: RecordingCommandsConfig.new).turn_ended("wr_1", actor: "agent")
 
       expect(checker.calls).to be_empty
       expect(progress.calls).to eq([[:fail_step, "plan", {"cause" => "check", "timed_out" => false, "error" => "the project's lint command is not set",
@@ -227,7 +227,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
     it "decides the round when the review pane's turn ends, through the tally" do
       stored(reviewing)
 
-      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 31))
+      evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 31))
 
       expect(tally.calls).to eq([[:call, "wr_1", "plan", round]])
       expect(progress.calls).to eq([[:decide_review, "plan", {outcome: :approved, reviews: [{"reviewer" => "skeptic"}]}]])
@@ -242,7 +242,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       it "goes on to the tally when nothing changed" do
         stored(reviewing)
 
-        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9")
+        evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9")
 
         expect(guard.calls.map(&:first)).to eq([:round_check])
         expect(guard.calls.last[2]).to eq(snapshot)
@@ -253,7 +253,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
         stored(reviewing.tap { |hash| hash["steps"]["plan"]["review_rounds"] = 1 })
         changed = RecordingGuard.new(round_found: {"changed" => ["tree"], "snapshot_head" => "a" * 40, "head" => "a" * 40})
 
-        run = evaluation(review_tally: tally, guard: changed).turn_ended("wr_1", pane: "%9")
+        run = evaluation(review_tally: tally, guard: changed).turn_ended("wr_1", actor: "agent", pane: "%9")
 
         expect(tally.calls).to be_empty
         expect(run.state).to eq("waiting")
@@ -273,7 +273,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
         stored(reviewing)
         unread = RecordingGuard.new(round_found: {"unread" => ["tree"]})
 
-        run = evaluation(review_tally: tally, guard: unread).turn_ended("wr_1", pane: "%9")
+        run = evaluation(review_tally: tally, guard: unread).turn_ended("wr_1", actor: "agent", pane: "%9")
 
         expect(tally.calls).to be_empty
         expect(run.reason["code"]).to eq("review_incomplete")
@@ -285,7 +285,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
         changed = RecordingGuard.new(round_found: {"changed" => ["head"], "snapshot_head" => "a" * 40, "head" => "b" * 40})
         revision = RecordingReviewRevision.new({revision: "rev1", problem: nil})
 
-        run = evaluation(review_tally: tally, guard: changed, review_revision: revision).turn_ended("wr_1", pane: "%9")
+        run = evaluation(review_tally: tally, guard: changed, review_revision: revision).turn_ended("wr_1", actor: "agent", pane: "%9")
 
         expect(revision.calls).to be_empty
         expect(change.review_ends).to be_empty
@@ -295,12 +295,12 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
     it "ignores a turn's end in the author's pane, a turn begun before the round, and a stopped round" do
       stored(reviewing)
-      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%3")
-      evaluation(review_tally: tally).turn_ended("wr_1")
-      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 29))
-      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 29))
+      evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%3")
+      evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent")
+      evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 29))
+      evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 29))
       stored(reviewing("reason" => {"code" => "review_incomplete"}))
-      evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9")
+      evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9")
 
       expect(tally.calls).to be_empty
       expect(progress.calls).to be_empty
@@ -312,8 +312,8 @@ RSpec.describe Workspace::WorkflowEvaluation do
       it "ignores the end of a turn a person had there before the clear, and one whose start is not known, costing no round" do
         stored(reviewing.tap { |hash| hash["steps"]["plan"]["review_rounds"] = 2 })
 
-        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 35), stopped_at: Time.utc(2026, 11, 10, 11, 41))
-        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 41))
+        evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 35), stopped_at: Time.utc(2026, 11, 10, 11, 41))
+        evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 41))
 
         expect(tally.calls).to be_empty
         expect(progress.calls).to be_empty
@@ -324,7 +324,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       it "ignores a turn begun once the clear was under way while the line is still being typed, no clear confirmed" do
         stored(reviewing)
 
-        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 5))
+        evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 5))
 
         expect(tally.calls).to be_empty
         expect(store.runs["wr_1"]["reason"]).to be_nil
@@ -333,7 +333,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       it "decides the round on the reviewers' turn, begun once the clear was under way, once the line was delivered" do
         stored(reviewing.tap { |hash| hash["steps"]["plan"]["review"]["delivered_at"] = "2026-11-10T11:40:10.000Z" })
 
-        evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 5))
+        evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 5))
 
         expect(tally.calls.size).to eq(1)
       end
@@ -347,7 +347,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
               "cleared_at" => "2026-11-10T11:41:00.000Z")
           end)
 
-          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 41, 20), stopped_at: Time.utc(2026, 11, 10, 11, 55))
+          evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 41, 20), stopped_at: Time.utc(2026, 11, 10, 11, 55))
 
           expect(tally.calls.size).to eq(1)
         end
@@ -357,7 +357,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
             hash["steps"]["plan"]["review"].merge!("delivery" => "failed", "failure" => typed, "kick_at" => "2026-11-10T11:41:10.000Z")
           end)
 
-          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 41, 20), stopped_at: Time.utc(2026, 11, 10, 11, 55))
+          evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 41, 20), stopped_at: Time.utc(2026, 11, 10, 11, 55))
 
           expect(tally.calls).to be_empty
           expect(store.runs["wr_1"]["reason"]).to be_nil
@@ -370,7 +370,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
         it "ignores a person's turn begun before the confirmed clear, though after the clear began" do
           stored(reviewing)
 
-          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 30))
+          evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 40, 30))
 
           expect(tally.calls).to be_empty
         end
@@ -378,7 +378,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
         it "counts a Stop with no known start (the daemon restarted during the round) that came after the delivery" do
           stored(reviewing)
 
-          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 50))
+          evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 50))
 
           expect(tally.calls.size).to eq(1)
         end
@@ -386,8 +386,8 @@ RSpec.describe Workspace::WorkflowEvaluation do
         it "leaves uncounted such a Stop from before the delivery, and one with no time at all" do
           stored(reviewing)
 
-          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 41, 30))
-          evaluation(review_tally: tally).turn_ended("wr_1", pane: "%9")
+          evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", stopped_at: Time.utc(2026, 11, 10, 11, 41, 30))
+          evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9")
 
           expect(tally.calls).to be_empty
         end
@@ -397,7 +397,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
     it "takes a round as incomplete when no tally is set up" do
       stored(reviewing)
 
-      evaluation.turn_ended("wr_1", pane: "%9")
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%9")
 
       expect(progress.calls.first[2]).to include(outcome: :incomplete, reviews: [])
     end
@@ -412,7 +412,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
         end
       end.new
 
-      evaluation(progress: decided, review_tally: tally, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).turn_ended("wr_1", pane: "%9")
+      evaluation(progress: decided, review_tally: tally, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).turn_ended("wr_1", actor: "agent", pane: "%9")
 
       expect(rounds).to eq([["wr_1", {"round" => 2}]])
     end
@@ -422,7 +422,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       let(:progress) { Workspace::WorkflowProgress.new(change: change, store: store, dispatch: RecordingDispatch.new, attempt_record: RecordingAttemptRecord.new, panes: panes, log_tail: RecordingLogTail.new, clock: -> { now }) }
 
       def ended(revision, **overrides)
-        evaluation(review_tally: tally, review_revision: revision, **overrides).turn_ended("wr_1", pane: "%9")
+        evaluation(review_tally: tally, review_revision: revision, **overrides).turn_ended("wr_1", actor: "agent", pane: "%9")
       end
 
       it "computes it with the lock given up, and tallies an unchanged round" do
@@ -542,7 +542,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
         end.new
         cancelling.ids = ended_ids
 
-        run = evaluation(change: finished, review_tally: tally, review_revision: cancelling).turn_ended("wr_1", pane: "%9")
+        run = evaluation(change: finished, review_tally: tally, review_revision: cancelling).turn_ended("wr_1", actor: "agent", pane: "%9")
 
         expect(run.step("plan").review["recompute"]).to include("try" => 1)
         expect(tally.calls).to be_empty
@@ -707,7 +707,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(progress.calls).to be_empty
 
       store.runs["wr_1"] = run.thawed
-      evaluation(progress: progress).finish_check("wr_1", context.check)
+      evaluation(progress: progress).finish_check("wr_1", context.check, "daemon")
       expect(progress.calls).to eq([[:pass_overridden, "plan"]])
     end
 
@@ -717,7 +717,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       run = evaluation.evaluate_accepted(accepted_run(definition_step: step("guard" => "unchanged", "status" => {"command" => "test", "timeout" => 60})), ctx: context)
       store.runs["wr_1"] = run.thawed
 
-      evaluation(checker: RecordingChecker.new(result: {exit_code: 1, timed_out: false, error: nil})).finish_check("wr_1", context.check)
+      evaluation(checker: RecordingChecker.new(result: {exit_code: 1, timed_out: false, error: nil})).finish_check("wr_1", context.check, "daemon")
 
       expect(progress.calls.map(&:first)).to eq([:fail_step])
       expect(progress.calls.first[2]).to include("cause" => "check", "code" => "check_failed")
@@ -841,7 +841,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       stored(checking_run)
       require_check = RecordingRequire.new(outside: {"record" => {"exit_code" => 0}, "unmet" => nil})
 
-      run = evaluation(require_check: require_check).finish_check("wr_1", check)
+      run = evaluation(require_check: require_check).finish_check("wr_1", check, "daemon")
 
       expect(require_check.calls).to eq([[:run_outside, pending, {cwd: dir}], [:check, "plan", 1, {from: 1}]])
       expect(run.step("plan").last_attempt.proofs.last).to include("token" => "t1", "exit_code" => 0, "ended_at" => "2026-11-10T12:00:00Z")
@@ -855,7 +855,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       progress = RecordingProgress.new(review: {"round" => 1})
       require_check = RecordingRequire.new(outside: {"record" => {"exit_code" => 0}, "unmet" => nil})
 
-      evaluation(progress: progress, require_check: require_check, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", check)
+      evaluation(progress: progress, require_check: require_check, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", check, "daemon")
 
       expect(rounds).to eq([["wr_1", {"round" => 1}]])
     end
@@ -866,7 +866,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       progress = RecordingProgress.new(review: {"round" => 1})
       status_check = {"step" => "plan", "attempt" => 1, "command" => "rake", "timeout" => 5, "log" => "/tmp/x.log", "cwd" => dir, "role" => "test"}
 
-      evaluation(progress: progress, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", status_check)
+      evaluation(progress: progress, review_round: ->(run_id, review) { rounds << [run_id, review] && nil }).finish_check("wr_1", status_check, "daemon")
 
       expect(progress.calls).to eq([[:pass_step, "plan"]])
       expect(rounds).to eq([["wr_1", {"round" => 1}]])
@@ -876,7 +876,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       stored(checking_run)
       unmet = {"proof" => "command", "code" => "require_command", "detail" => "lint failed", "exit_code" => 1}
 
-      evaluation(require_check: RecordingRequire.new(outside: {"record" => {"exit_code" => 1}, "unmet" => unmet})).finish_check("wr_1", check)
+      evaluation(require_check: RecordingRequire.new(outside: {"record" => {"exit_code" => 1}, "unmet" => unmet})).finish_check("wr_1", check, "daemon")
 
       expect(progress.calls).to eq([[:fail_step, "plan", {"cause" => "require", "require" => "command", "detail" => "lint failed", "exit_code" => 1,
                                                           "code" => "require_command", "code_source" => "engine"}]])
@@ -885,7 +885,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
     it "drops a result the run moved on from" do
       stored(checking_run.merge("current" => "plan").tap { |run| run["steps"]["plan"]["state"] = "failed" })
 
-      run = evaluation.finish_check("wr_1", check)
+      run = evaluation.finish_check("wr_1", check, "daemon")
 
       expect(run.step("plan").state).to eq("failed")
       expect(change.events).to be_empty
@@ -896,7 +896,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       stored(checking_run)
       change = RecordingRunChange.new(store.runs, finished: ["wr_1"])
 
-      run = evaluation(change: change).finish_check("wr_1", check)
+      run = evaluation(change: change).finish_check("wr_1", check, "daemon")
 
       expect(run).to eq(Workspace::WorkflowRun.from_h(checking_run))
       expect(store.calls.last).to eq([:run, "wr_1"])
@@ -907,7 +907,7 @@ RSpec.describe Workspace::WorkflowEvaluation do
       checker = RecordingChecker.new
       status_check = {"step" => "plan", "attempt" => 1, "command" => "rake", "timeout" => 5, "log" => "/tmp/x.log", "cwd" => dir, "role" => "test"}
 
-      evaluation(checker: checker).finish_check("wr_1", status_check)
+      evaluation(checker: checker).finish_check("wr_1", status_check, "daemon")
 
       expect(checker.stop_answers).to eq([true])
     end

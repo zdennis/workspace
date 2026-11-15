@@ -45,7 +45,7 @@ RSpec.describe Workspace::WorkflowRejection do
     it "adds the text to the pending context, writes review_retry and dispatches the step retry_of the rejected attempt" do
       given = run_hash
       again = {"step" => "design", "attempt" => 2, "round" => 2, "context" => "continue", "text" => "the verdicts"}
-      context = Workspace::WorkflowRunChange::Context.new
+      context = Workspace::WorkflowRunChange::Context.new("engine")
 
       run = rejection.start(given, again, rounds: {"rounds" => 2, "max_rounds" => 6}, ctx: context)
 

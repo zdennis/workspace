@@ -131,7 +131,7 @@ RSpec.describe Workspace::WorkflowStarter do
 
   describe "#start" do
     it "stores the run waiting, writes run_started, dispatches its first step and returns the run as a WorkflowRun" do
-      run = starter.start(definition: definition, workspace: "app", worktree: worktree, inputs: {"task" => "x"}, pane: "%3", note: "Be brief.")
+      run = starter.start(definition: definition, actor: "person", workspace: "app", worktree: worktree, inputs: {"task" => "x"}, pane: "%3", note: "Be brief.")
 
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(run.id).to eq("wr_1")
@@ -151,17 +151,17 @@ RSpec.describe Workspace::WorkflowStarter do
     end
 
     it "with dispatch: false makes one change that starts nothing" do
-      run = starter.start(definition: definition, workspace: "app", worktree: worktree, inputs: {"task" => "x"}, pane: "%3", dispatch: false)
+      run = starter.start(definition: definition, actor: "person", workspace: "app", worktree: worktree, inputs: {"task" => "x"}, pane: "%3", dispatch: false)
 
       expect(run.state).to eq("waiting")
-      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false}]])
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "person"}]])
       expect(dispatch.calls.map(&:first)).not_to include(:dispatch)
     end
 
     it "keeps a run whose task store can't be read, with no task" do
       allow(task_store).to receive(:active_for).and_raise(Workspace::Error, "unreadable")
 
-      expect(starter.start(definition: definition, workspace: "app", worktree: worktree, inputs: {"task" => "x"}, pane: "%3").task).to be_nil
+      expect(starter.start(definition: definition, actor: "person", workspace: "app", worktree: worktree, inputs: {"task" => "x"}, pane: "%3").task).to be_nil
     end
   end
 end

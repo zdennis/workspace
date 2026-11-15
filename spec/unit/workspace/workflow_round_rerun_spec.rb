@@ -23,7 +23,7 @@ RSpec.describe Workspace::WorkflowRoundRerun do
                               {"n" => 2, "outcome" => "checks_passed"}]}}}
   end
 
-  def ctx = Workspace::WorkflowRunChange::Context.new
+  def ctx = Workspace::WorkflowRunChange::Context.new("engine")
 
   describe "#check_revision" do
     it "stops the round review_no_change when its revision is the one the rejection judged, under the lock" do

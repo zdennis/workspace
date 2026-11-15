@@ -1,15 +1,30 @@
 module Workspace
   # The one way a workflow run changes: under the run's lock, with the attempt record's reasons kept before and
-  # after the change, the history lines its block wrote ({#event}) queued and written with `from_state` and `to_state`
+  # after the change, the history lines its block wrote ({#event}) queued and written with `from_state`, `to_state` and `actor`
   # once the run is stored and before the lock is given up, `workflow_changed` written when what a reader sees moved, alerts fired once the lock is given
   # up with what the block registered to follow it ({Context#after_lock}), and then the line of a step the change started typed, through +deliver+. It never runs a check, a review round or a window close: a
   # block that registers one reads it back from its {Context} and the caller runs it through
   # {WorkflowEvaluation#finish_follow_ups}.
   class WorkflowRunChange
+    # Who a change can be made by: the run's agent, a person, the sweep and the agent daemon, or the engine itself.
+    # The rule: a change carries the actor that began the action, including the checks and review-round decisions that
+    # follow it once the lock is given up, so a step's `step_passed` reads the same with or without a `status:` check.
+    # `engine` is kept only for changes no outside actor asks for: the settle after a line is typed, `record_remote`,
+    # a review round's delivery and a round's rerun.
+    ACTORS = %w[engine agent person sweep daemon].freeze
+
     # What one change hands out of its block: the step line to type after the lock, the check to run, the review round to
     # run, the ended round whose revision is computed again, the review window to close and the history lines queued.
     # A new one is made for every {WorkflowRunChange#call}, so no follow-up outlives the change that made it.
     class Context
+      # @return [String] who made the change, one of {ACTORS}
+      attr_reader :actor
+
+      # @param actor [String] one of {ACTORS}
+      def initialize(actor)
+        @actor = actor
+      end
+
       # @return [Hash{String=>Object}, nil] the step line registered with {#deliver}
       attr_reader :delivery
 
@@ -96,15 +111,18 @@ module Workspace
     # Runs one change to a run under its lock and announces it, then types the line of a step the change started.
     #
     # @param run_id [String]
+    # @param actor [String] who makes the change, one of {ACTORS}; written on every history line the change queues
     # @param nonblocking [Boolean] return nil at once when another process is changing the run
     # @yieldparam run [WorkflowRun] the stored run, with its reason history kept
     # @yieldparam ctx [Context] this change's follow-ups
     # @yieldreturn [WorkflowRun, nil] the run to store; nil means no change: the run as given is stored
     # @return [WorkflowRun, Object, nil] the run afterwards, or what +deliver+ returned when a line was
     #   registered; nil when +nonblocking+ and the run is busy
+    # @raise [ArgumentError] when +actor+ is not one of {ACTORS}
     # @raise [Workspace::Error] code `unknown_run`, `run_not_active`, and what the block raises
-    def call(run_id, nonblocking: false)
-      ctx = Context.new
+    def call(run_id, actor:, nonblocking: false)
+      raise ArgumentError, "unknown actor #{actor.inspect}, expected one of #{ACTORS.join(", ")}" unless ACTORS.include?(actor)
+      ctx = Context.new(actor)
       before = nil
       alert_before = nil
       from_state = nil
@@ -159,9 +177,9 @@ module Workspace
     end
 
     def flush(run_id, ctx, from_state, to_state)
-      states = {"from_state" => from_state, "to_state" => to_state}
+      stamps = {"from_state" => from_state, "to_state" => to_state, "actor" => ctx.actor}
       ctx.events.each do |type, data|
-        @store.record_event(run_id, type, data.merge(states) { |_, own, _| own })
+        @store.record_event(run_id, type, data.merge(stamps) { |_, own, _| own })
       rescue
         nil
       end

@@ -28,7 +28,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
   def deep_copy(value) = Marshal.load(Marshal.dump(value))
 
-  def ctx = Workspace::WorkflowRunChange::Context.new
+  def ctx = Workspace::WorkflowRunChange::Context.new("engine")
 
   describe "#pass_step" do
     it "ends the attempt as passed with what the record adds, and starts the next step, leaving the run given alone" do

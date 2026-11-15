@@ -46,7 +46,8 @@
       "workflow": "explore",
       "workspace": "simulation",
       "from_state": "waiting",
-      "to_state": "running"
+      "to_state": "running",
+      "actor": "person"
     },
     {
       "n": 2,
@@ -56,7 +57,8 @@
       "attempt": 1,
       "pane": "%sim",
       "from_state": "waiting",
-      "to_state": "running"
+      "to_state": "running",
+      "actor": "person"
     },
     {
       "n": 3,
@@ -65,7 +67,10 @@
       "step": "survey",
       "attempt": 1,
       "pane": "%sim",
-      "delivered": true
+      "delivered": true,
+      "actor": "engine",
+      "from_state": null,
+      "to_state": null
     },
     {
       "n": 4,
@@ -85,7 +90,8 @@
       "step": "survey",
       "attempt": 1,
       "from_state": "running",
-      "to_state": "waiting"
+      "to_state": "waiting",
+      "actor": "daemon"
     },
     {
       "n": 6,
@@ -93,7 +99,8 @@
       "type": "gate_waiting",
       "step": "survey",
       "from_state": "running",
-      "to_state": "waiting"
+      "to_state": "waiting",
+      "actor": "daemon"
     },
     {
       "n": 7,
@@ -109,7 +116,8 @@
       "type": "gate_approved",
       "step": "survey",
       "from_state": "waiting",
-      "to_state": "running"
+      "to_state": "running",
+      "actor": "person"
     },
     {
       "n": 9,
@@ -119,7 +127,8 @@
       "attempt": 1,
       "pane": "%sim",
       "from_state": "waiting",
-      "to_state": "running"
+      "to_state": "running",
+      "actor": "person"
     },
     {
       "n": 10,
@@ -128,7 +137,10 @@
       "step": "report",
       "attempt": 1,
       "pane": "%sim",
-      "delivered": true
+      "delivered": true,
+      "actor": "engine",
+      "from_state": null,
+      "to_state": null
     },
     {
       "n": 11,
@@ -148,14 +160,16 @@
       "step": "report",
       "attempt": 1,
       "from_state": "running",
-      "to_state": "completed"
+      "to_state": "completed",
+      "actor": "daemon"
     },
     {
       "n": 13,
       "at": 2,
       "type": "run_completed",
       "from_state": "running",
-      "to_state": "completed"
+      "to_state": "completed",
+      "actor": "daemon"
     }
   ]
 }
