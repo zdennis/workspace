@@ -386,6 +386,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it.
 - `lib/workspace/prompt_input.rb` — Wraps input and refuses prompts under `--no-input`.
 - `lib/workspace/core/duration.rb` — Parses duration strings like `5m` and `1h`.
+- `lib/workspace/core/next_action.rb` — Builds the `{action, args, needs}` next-action entries that status documents carry.
 - `lib/workspace/core/file_lock.rb` — Advisory `flock` on a sidecar lock file.
 - `lib/workspace/core/atomic_file.rb` — Atomic file write through a temp file and rename.
 - `lib/workspace/core/locked_json_file.rb` — Locked read-modify-write of a JSON file through `AtomicFile`.

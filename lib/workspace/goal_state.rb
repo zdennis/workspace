@@ -159,8 +159,8 @@ module Workspace
                   "action" => Array(@reason["actions"]).first}]
       when "working" then ["agent", {"event" => "turn_ended", "action" => nil}]
       when "stuck"
-        ["person", {"event" => @run ? "workflow_resumed" : "agent_restarted", "action" => @run ? action("workflow resume", @run.id) : action("launch", @name)}]
-      when "stopped" then ["person", {"event" => "launched", "action" => action("launch", @name)}]
+        ["person", {"event" => @run ? "workflow_resumed" : "agent_restarted", "action" => @run ? NextAction.build("workflow resume", @run.id) : NextAction.build("launch", @name)}]
+      when "stopped" then ["person", {"event" => "launched", "action" => NextAction.build("launch", @name)}]
       else ["person", {"event" => (@run || !@plan_present) ? "stage_started" : "task_started", "action" => nil}]
       end
     end
@@ -178,14 +178,10 @@ module Workspace
       end
       ask = Array(@member["questions"]).first
       if ask
-        return ["person", {"event" => "ask_answered", "action" => action("ask answer", ask["id"].to_s, "--name", @name, needs: [{"name" => "answer", "flag" => nil}])}]
+        return ["person", {"event" => "ask_answered", "action" => NextAction.build("ask answer", ask["id"].to_s, "--name", @name, needs: [NextAction.need("answer", nil)])}]
       end
-      focus = @pane ? action("focus", @name, "--pane", @pane["pane_id"].to_s) : nil
+      focus = @pane ? NextAction.build("focus", @name, "--pane", @pane["pane_id"].to_s) : nil
       ["person", {"event" => "prompt_answered", "action" => focus}]
-    end
-
-    def action(name, *args, needs: [])
-      {"action" => name, "args" => args, "needs" => needs}
     end
   end
 end
