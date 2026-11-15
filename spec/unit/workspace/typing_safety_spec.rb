@@ -15,6 +15,12 @@ RSpec.describe Workspace::TypingSafety do
     expect(safety.check(facts(state: "working", open_tools: ["Bash"]), prompt_screen)).to be_nil
   end
 
+  it "takes text when a session name is drawn in the rule above the prompt, and still sees a draft there" do
+    named = "output\n──────────── Verify.1.prompt.md workflow step ─\n❯\u00A0\n────────────────────\n"
+    expect(safety.check(facts, named)).to be_nil
+    expect(safety.check(facts, named.sub("❯\u00A0", "❯ half a thought"))).to include(reason: "input_not_empty")
+  end
+
   it "refuses a pane the monitor hasn't seen, or whose agent it hasn't identified" do
     expect(safety.check(nil, prompt_screen)).to include(code: "pane_not_ready", reason: "unknown")
     expect(safety.check(facts(kind: "unknown"), prompt_screen)).to include(code: "pane_not_ready", reason: "unknown")
@@ -50,6 +56,7 @@ RSpec.describe Workspace::TypingSafety do
   it "refuses a draft in the input line, and a menu row under a rule" do
     expect(safety.check(facts, "────────\n❯ half a thought\n")).to include(reason: "input_not_empty")
     expect(safety.check(facts, "────────\n❯ 1. Yes\n")).to include(reason: "input_not_empty")
+    expect(safety.check(facts, "──────── name ─\n❯ 1. Yes\n")).to include(reason: "input_not_empty")
   end
 
   it "goes by the last input prompt on screen" do

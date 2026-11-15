@@ -38,6 +38,17 @@ RSpec.describe Workspace::PaneScreenRules do
 
       expect(pane[:waits].keys).to eq([nil])
     end
+
+    it "reads a named rule above the prompt as the ready prompt, and above a menu row as a menu" do
+      bound_wait
+      named = "#{rule} Verify.1.prompt.md workflow step ─"
+
+      described_class.end_answered_permission_waits(pane, claude, "  4. Type something.\n#{named}\n❯ 5. Chat about this\n")
+      expect(pane[:waits].keys).to eq([nil])
+
+      described_class.end_answered_permission_waits(pane, claude, ready.sub("#{rule}\n❯", "#{named}\n❯"))
+      expect(pane[:waits]).to be_empty
+    end
   end
 
   describe ".screen_wait" do
