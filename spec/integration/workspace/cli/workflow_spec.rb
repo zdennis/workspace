@@ -505,9 +505,30 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("Run wr_1 is not waiting at a gate")
     end
 
+    it "emits the error envelope and exit 1 for a refused pause and unpause under --json" do
+      {"pause" => "already_paused", "unpause" => "not_paused"}.each do |verb, code|
+        output.truncate(0)
+        output.rewind
+        workflow_command.error = Workspace::Error.new("Run wr_1 refused.", code: code, details: {"run_id" => "wr_1"})
+
+        expect { cli.run(["workflow", verb, "wr_1", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => code)
+      end
+    end
+
+    it "prints the action document for pause and unpause under --json" do
+      workflow_command.row = {"workspace" => "app", "outcome" => "unpaused", "reason" => nil, "message" => nil, "unpaused" => {"action" => "none", "held" => nil}, "run" => {"id" => "wr_1"}}
+
+      cli.run(%w[workflow unpause wr_1 --json])
+
+      document = JSON.parse(output.string)
+      expect(document).to include("ok" => true, "action" => "workflow unpause", "status" => "ok")
+      expect(document["results"].first).to include("outcome" => "unpaused", "unpaused" => {"action" => "none", "held" => nil})
+    end
+
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject/,
+        ["workflow"] => /Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, pause, unpause, approve or reject/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
         ["workflow", "files"] => /workflow files needs a RUN id/,

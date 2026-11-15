@@ -52,7 +52,7 @@ module HelpExamplesSpec
     "wait-until-content", "whereis",
     "workflow", "workflow list", "workflow show", "workflow validate", "workflow add", "workflow update", "workflow remove", "workflow install", "workflow uninstall",
     "workflow run", "workflow render", "workflow check", "workflow simulate", "workflow start", "workflow status", "workflow events", "workflow files", "workflow attempts", "workflow audit", "workflow stats", "workflow compare", "workflow sweep", "workflow resume",
-    "workflow cancel", "workflow approve", "workflow reject", "workflow advance"
+    "workflow cancel", "workflow pause", "workflow unpause", "workflow approve", "workflow reject", "workflow advance"
   ].freeze
 
   # Each alias must print the page of the command it names.

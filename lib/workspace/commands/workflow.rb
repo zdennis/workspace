@@ -783,6 +783,41 @@ module Workspace
         row(@engine.cancel(run, actor: "person"), "cancelled")
       end
 
+      # Stops a run from starting anything new until {#unpause}.
+      #
+      # @param run [String] a run id
+      # @param interrupt [Boolean] also press the agent's interrupt keys in the run's pane while it works
+      # @param reason [String, nil] why, shown with the pause
+      # @return [Hash{String=>Object}] the action row, with `interrupted` (true when the keys were pressed)
+      # @raise [Workspace::Error] code `already_paused`, `unknown_run` or `run_not_active`
+      def pause(run:, interrupt: false, reason: nil)
+        paused = @engine.pause(run, actor: "person", text: reason, interrupt: interrupt)
+        row(paused, "paused", message: pause_message(run, paused["interrupted"], interrupt, reason)).merge("interrupted" => paused["interrupted"] == true)
+      end
+
+      # Ends a pause and does what it held.
+      #
+      # @param run [String] a run id
+      # @return [Hash{String=>Object}] the action row, with `unpaused` (`action`, `held`, and `continued` or `warning` when they apply)
+      # @raise [Workspace::Error] code `not_paused`, `unknown_run` or `run_not_active`
+      def unpause(run:)
+        unpaused = @engine.unpause(run, actor: "person")
+        row(unpaused, "unpaused", message: unpause_message(unpaused["unpaused"])).merge("unpaused" => unpaused["unpaused"])
+      end
+
+      UNPAUSE_ACTIONS = {
+        "dispatch" => "Started the step that was held.",
+        "round" => "Started the review round that was held.",
+        "rerun" => "Ran the review round again, as it was held.",
+        "deliver" => "Typed the held line again.",
+        "continue" => "Typed a line telling the agent to continue.",
+        "continue_pending" => "A line telling the agent to continue will be typed once its pane is idle.",
+        "pane_gone" => "The run's pane is gone.",
+        "evaluate" => "Looked at the turn that ended while paused.",
+        "none" => "Nothing was held; the run goes on as before."
+      }.freeze
+      private_constant :UNPAUSE_ACTIONS
+
       # Passes a gate. Refused from a pane a run is bound to, and from a
       # process under the run's own pane, so an agent can't pass its own gate.
       #
@@ -1611,6 +1646,21 @@ module Workspace
         @output.puts message if message
         {"workspace" => run["workspace"], "outcome" => (undelivered && verb != "unchanged") ? "failed" : verb, "reason" => reason&.fetch("code"),
          "message" => (undelivered && verb != "unchanged") ? reason.dig("details", "message") : message, "run" => shown}
+      end
+
+      def pause_message(run, interrupted, interrupt, reason)
+        lines = ["Paused. Nothing new starts; a turn under way goes on and the run holds when it ends."]
+        lines[0] = "Paused and interrupted the agent. Nothing new starts." if interrupted
+        lines[0] = "Paused. The agent was not working, so it was not interrupted. Nothing new starts." if interrupt && !interrupted
+        lines << "Reason: #{TerminalText.escape(reason)}" unless reason.to_s.strip.empty?
+        lines << "Run `workspace workflow unpause #{run}` to let it go on."
+        lines.join("\n")
+      end
+
+      def unpause_message(unpaused)
+        lines = [UNPAUSE_ACTIONS.fetch(unpaused["action"], "Unpaused.")]
+        lines << "warning: #{TerminalText.escape(unpaused["warning"])}" if unpaused["warning"]
+        lines.join("\n")
       end
 
       def describe(run)

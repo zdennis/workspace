@@ -1355,6 +1355,31 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(command.reject(run: "wr_1", note: "Too big.", to: "plan", step: "plan", attempt: 2, extra_attempts: 3)).to include("outcome" => "rejected")
     end
 
+    it "pauses as the person, handing the engine the reason and --interrupt, and answers whether the keys were pressed" do
+      allow(engine).to receive(:pause).with("wr_1", actor: "person", text: "look first", interrupt: true)
+        .and_return("id" => "wr_1", "workspace" => "app", "interrupted" => true)
+      allow(engine).to receive(:pause).with("wr_1", actor: "person", text: nil, interrupt: false)
+        .and_return("id" => "wr_1", "workspace" => "app", "interrupted" => false)
+
+      expect(command.pause(run: "wr_1", interrupt: true, reason: "look first")).to include("outcome" => "paused", "interrupted" => true)
+      expect(command.pause(run: "wr_1")).to include("outcome" => "paused", "interrupted" => false)
+    end
+
+    it "unpauses as the person and answers what the unpause did" do
+      unpaused = {"action" => "dispatch", "held" => "attempt", "continued" => true}
+      allow(engine).to receive(:unpause).with("wr_1", actor: "person").and_return("id" => "wr_1", "workspace" => "app", "unpaused" => unpaused)
+
+      expect(command.unpause(run: "wr_1")).to include("outcome" => "unpaused", "unpaused" => unpaused)
+    end
+
+    it "lets the engine's refusals of a pause and an unpause through" do
+      allow(engine).to receive(:pause).and_raise(Workspace::Error.new("already", code: "already_paused"))
+      allow(engine).to receive(:unpause).and_raise(Workspace::Error.new("not", code: "not_paused"))
+
+      expect { command.pause(run: "wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("already_paused") }
+      expect { command.unpause(run: "wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("not_paused") }
+    end
+
     it "hands --extra-tokens of a reject to the engine" do
       allow(engine).to receive(:reject).and_return("id" => "wr_1", "workspace" => "app")
 
@@ -1531,6 +1556,34 @@ RSpec.describe Workspace::Commands::Workflow do
         command.resume(run: "wr_1", caller_pane: "%5")
 
         expect(engine).to have_received(:resume)
+      end
+    end
+
+    describe "#advance on a paused run" do
+      let(:now) { Time.utc(2026, 10, 4, 13, 0, 0) }
+      subject(:command) do
+        described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+          process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { now }, output: output, error_output: StringIO.new)
+      end
+
+      before do
+        stored["paused"] = {"since" => "2026-10-04T12:00:00Z", "by" => "person"}
+        allow(engine).to receive(:turn_ended)
+        allow(engine).to receive(:tick)
+      end
+
+      it "still hands a turn end to the engine, which evaluates it" do
+        command.advance(run: "wr_1", turn_ended: true, pane: "%5", stopped_at: now)
+
+        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: now, background: [])
+        expect(engine).not_to have_received(:tick)
+      end
+
+      it "hands a tick without a turn end to the engine's tick" do
+        command.advance(run: "wr_1")
+
+        expect(engine).to have_received(:tick).with("wr_1", actor: "daemon")
+        expect(engine).not_to have_received(:turn_ended)
       end
     end
 

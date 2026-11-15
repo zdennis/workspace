@@ -885,6 +885,8 @@ module Workspace
           "step into the run's pane again unless an agent is still working on it, or its check is running (then",
           "it does nothing and says so). Use it for a run `workflow status` shows as stuck.",
           "",
+          "While the run is paused, resume is refused with `run_paused`: run `workspace workflow unpause RUN` instead.",
+          "",
           "Run from the pane it would type into (an agent resuming its own run) it types nothing: the answer is",
           "`parked`, exit 0, and the caller should end its turn. The agent daemon carries it out once the turn",
           "is over, within 1 hour, else the run reads waiting_you / parked_timeout. It needs a daemon started",
@@ -948,6 +950,45 @@ module Workspace
           ["workspace workflow cancel RUN", "give up on a run that is going wrong; its locks are released"],
           ["workspace workflow cancel RUN", "end a run that waits at a gate you will not pass or for a lock you no longer need"],
           ["workspace workflow cancel RUN --json", "for a script: one action document"]
+        ]
+      },
+      "pause" => {
+        usage: ["workflow pause RUN [--interrupt] [--reason TEXT] [--json]"],
+        summary: "Hold a run: nothing new starts until you unpause it",
+        about: [RUN_ID, "",
+          "Pausing does not stop the agent's current turn unless you give --interrupt. When that turn ends, the run",
+          "holds instead of starting the next step. While paused, no step, retry or review round starts, and the",
+          "step's and round's time limits stop counting. Run `workflow unpause` to let it go on.",
+          "",
+          "While paused, `workflow resume` (also one made from the run's own pane, which would wait for the",
+          "agent's turn to end) is refused (run_paused): unpause first. A resume already waiting is dropped. A run that has ended is refused (run_not_active), and so is one",
+          "already paused (already_paused).",
+          "",
+          "With --interrupt, the agent's interrupt keys are pressed in the run's pane if the agent is working there, and",
+          "`interrupted` in --json says whether they were. `workflow unpause` then tells the agent to continue."],
+        options: [["--interrupt", "Also press the agent's interrupt keys in the run's pane if the agent is working"],
+          ["--reason TEXT", "Why (1 to 4000 characters); kept with the pause and shown in status"],
+          JSON_OPT],
+        examples: [
+          ["workspace workflow pause RUN", "hold a run while you look at what it did"],
+          ["workspace workflow pause RUN --interrupt --reason \"wrong branch\"", "stop the agent's turn too, and say why"],
+          ["workspace workflow pause RUN --json", "for a script: one action document with outcome `paused` and `interrupted`"]
+        ]
+      },
+      "unpause" => {
+        usage: ["workflow unpause RUN [--json]"],
+        summary: "Let a paused run go on, doing what the pause held",
+        about: [RUN_ID, "",
+          "Starts the step, line or review round the pause held back, or looks at a turn that ended while paused. If",
+          "`pause --interrupt` stopped the agent, it is told to continue once its pane is idle. An agent that is still",
+          "working is left alone. `unpaused` in --json says what was done: `action`, `held`, and `continued` or",
+          "`warning` when the agent was told to continue. It exits 0 even when that is still waiting for the pane, so a",
+          "script should check `continued` and `warning`. A run that is not paused is refused (not_paused), and so is",
+          "one that has ended (run_not_active)."],
+        options: [JSON_OPT],
+        examples: [
+          ["workspace workflow unpause RUN", "let a run you paused carry on"],
+          ["workspace workflow unpause RUN --json", "for a script: one action document with the `unpaused` block"]
         ]
       },
       "approve" => {

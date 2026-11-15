@@ -33,6 +33,8 @@ workspace workflow sweep --installed [--json]
 workspace workflow resume RUN --accept-guard --note TEXT [--retry] [--pane PANE] [--extra-attempts N] [--json]
 workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--extra-rounds N] [--json]
 workspace workflow cancel RUN [--json]
+workspace workflow pause RUN [--interrupt] [--reason TEXT] [--json]
+workspace workflow unpause RUN [--json]
 workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
 workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]
 
@@ -61,6 +63,8 @@ workspace step status [--json]
 | `workflow sweep` | One pass over the runs going: record a pane or agent that is gone, start an agent daemon that is not running, decide a step whose agent ended its turn unseen, and apply a step's `on_timeout`. Needs no agent daemon. See [Sweeping stopped runs](#sweeping-stopped-runs) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step; `--accept-guard --note TEXT` accepts a guard stop. Refused with `--from` at a waiting gate from a pane a run is bound to. Run from the pane it would type into, it is [parked](#resuming-from-the-runs-own-pane) (outcome `parked`) and carried out after the agent ends its turn |
 | `workflow cancel` | End a run and release what it holds |
+| `workflow pause` | Hold a run: nothing new starts until `workflow unpause`. See [Pausing a run](#pausing-a-run) |
+| `workflow unpause` | Let a paused run go on, doing what the pause held. See [Pausing a run](#pausing-a-run) |
 | `workflow approve` | Pass a gate. Refused from a pane a run is bound to, and from a process under the run's own pane, so an agent doesn't approve its own plan by mistake. Records the gate's note when it names one. See [Passing a gate](#passing-a-gate) |
 | `workflow reject` | Turn a gate down: the gated step, or an earlier one named with `--to`, runs again with the note in its instructions. Refused where `approve` is |
 | `step done` | For the agent: record what it says about its step, then end the turn. Optional |
@@ -73,6 +77,8 @@ workspace step status [--json]
 | `--artifacts DIR` | `check`: an existing directory standing for the run's artifacts (`WORKSPACE_RUN_ARTIFACTS`); default an empty temporary one |
 | `--script FILE` | `simulate`: the script of what the fake agent does and how each check comes out |
 | `--input KEY=VALUE` | `run`, `start`, `render`, `simulate`: a value for one of the workflow's inputs (repeatable) |
+| `--interrupt` | `pause`: also press the agent's interrupt keys in the run's pane while it works |
+| `--reason TEXT` | `pause`: why, 1 to 4000 characters |
 | `--note TEXT` | `run`, `start`: added to every step's instructions. `resume`, `approve`, `reject`: added to the next attempt's |
 | `--pane PANE` | `run`, `resume`: the pane to run in (`%19` or `0.1`), instead of the workspace's Claude pane |
 | `--from STEP` | `resume`: start again at this step |
@@ -820,6 +826,21 @@ A definition's `timeout:` (for example `8h`) caps the machine time a run may use
 Like the budget, the deadline is in `workflow status --json` only; the text status shows it in a held run's reason. `workflow status --json` gives a run with a `timeout:` a top-level `deadline`: `timeout`, `action`, `extra_seconds`, `limit` (timeout plus extra, in seconds), `used` (machine time in seconds) and `spent`. Each action that would start an attempt gets the need `{"name":"extra_time","flag":"--extra-time","min":N,"suggested":M}` (seconds) while the time is used, read from the run's own deadline, so it is there when the reason is `budget_spent` with the time spent too. A run held by its timeout is listed by `workflow status --needs-me`, has an inbox row (`workflow_run_timed_out`), counts as stuck in `workflow compare` after a miss, is not orphaned by `doctor` while its checkout exists, and sends the `failed` alert (`WORKSPACE_ALERT_REASON` is `run_timed_out`, the text says the time limit is used). `workflow sweep` reports it as `nothing` with the reason `run_timed_out`.
 
 `workflow resume` and `workflow reject` are refused with `run_timed_out` when they would start an attempt, unless `--extra-time DURATION` (`30m`, `2h`, or seconds, up to 365 days) covers the overrun: `details.needed` is the least in whole seconds and `details.suggested` rounds it up to 15 minutes, which the message gives as a duration to pass (`--extra-time 15m`). The run file keeps the total as `extra_seconds`, and the event log records `time_extended`. A resume ends the hold and starts the attempt with the context the hold kept. With the token budget spent as well, the refusal is `budget_spent`, names both needs (the time need under `details.run_timed_out`), and passing both flags clears both holds. A resume that starts no attempt ignores `--extra-time`.
+
+### Pausing a run
+
+`workflow pause RUN` holds a run: nothing new starts (no step, retry, review round or redelivered line) and the step and round clocks stop. The agent's current turn is not stopped unless `--interrupt` is given; when it ends, the run holds instead of starting the next step. `--reason TEXT` (1 to 4000 characters) is kept with the pause. `workflow resume` (also one made from the run's own pane) is refused with `run_paused` while paused. `workflow unpause RUN` starts what the pause held. Both print the usual action document (outcome `paused` / `unpaused`).
+
+`pause` adds `interrupted` to its row: `true` when the interrupt keys were pressed in a working pane, else `false`. `unpause` adds an `unpaused` block:
+
+| Key | Values |
+|---|---|
+| `action` | `dispatch` (a held attempt started), `round` (a held review round started), `rerun` (a held round ran again), `deliver` (a held line typed again), `continue` (a continue line typed after an interrupt), `continue_pending` (the line is kept until the pane is idle), `pane_gone`, `evaluate` (a turn that ended while paused was decided), `none` (nothing held) |
+| `held` | What the pause held: `attempt`, `round` or `delivery`, else `null` |
+| `continued` | Only with a continue line: `true` typed, `false` refused, `"pending"` kept for the daemon |
+| `warning` | Why a continue line was refused or is pending |
+
+`unpause` exits 0 even when the continue line is pending or refused: the daemon keeps and retries the line until it expires, so a script checks `continued` and `warning`. Refusals are `already_paused`, `not_paused` and `run_not_active`.
 
 ### Reading a run's attempts
 

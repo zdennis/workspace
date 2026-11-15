@@ -560,6 +560,48 @@ RSpec.describe Workspace::CLI::Workflow do
       end
     end
 
+    it "hands pause its --interrupt and --reason, and unpause only the run" do
+      cli.run(%w[workflow pause wr_1])
+      cli.run(["workflow", "pause", "wr_1", "--interrupt", "--reason", "look first"])
+      cli.run(%w[workflow unpause wr_1])
+
+      expect(workflow_command.calls).to eq([
+        [:pause, {run: "wr_1", interrupt: false, reason: nil}],
+        [:pause, {run: "wr_1", interrupt: true, reason: "look first"}],
+        [:unpause, {run: "wr_1"}]
+      ])
+    end
+
+    it "answers pause and unpause with one action document, outcome paused and unpaused" do
+      workflow_command.row = {"workspace" => "app", "outcome" => "paused", "reason" => "paused", "message" => nil, "interrupted" => true, "run" => {"id" => "wr_1"}}
+      cli.run(%w[workflow pause wr_1 --json])
+
+      expect(JSON.parse(output.string)).to include("ok" => true, "action" => "workflow pause")
+    end
+
+    {
+      %w[cancel wr_1 --interrupt] => "--interrupt is for `workflow pause RUN`.",
+      %w[unpause wr_1 --interrupt] => "--interrupt is for `workflow pause RUN`.",
+      %w[resume wr_1 --reason why] => "--reason is for `workflow pause RUN`.",
+      %w[unpause wr_1 --reason why] => "--reason is for `workflow pause RUN`.",
+      ["pause", "wr_1", "--reason", "  "] => "--reason must not be empty.",
+      ["pause", "wr_1", "--reason", "x" * 4001] => "--reason is at most 4000 characters, got 4001.",
+      %w[pause] => "workflow pause needs a RUN id.",
+      %w[unpause] => "workflow unpause needs a RUN id."
+    }.each do |args, message|
+      it "refuses `workflow #{args.join(" ")[0, 40]}` before the command is called" do
+        expect { cli.run(["workflow", *args]) }.to raise_error(Workspace::UsageError, Regexp.new(Regexp.escape(message)))
+        expect(workflow_command.calls).to be_empty
+      end
+    end
+
+    it "lets a refused pause or unpause reach the CLI's error funnel, which answers the error document and exit 1" do
+      workflow_command.error = Workspace::Error.new("Run wr_1 is already paused.", code: "already_paused")
+
+      expect { cli.run(%w[workflow pause wr_1 --json]) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("already_paused") }
+      expect { cli.run(%w[workflow unpause wr_1]) }.to raise_error(Workspace::Error)
+    end
+
     it "approves a gate, telling the command which pane it was run from" do
       cli.run(["workflow", "approve", "wr_1", "--note", "Go."])
       stub_env("TMUX_PANE" => "%5")
