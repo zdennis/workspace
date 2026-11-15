@@ -236,7 +236,8 @@ end
 # Fake of Workspace::WorkflowDispatch for the phases above it: +dispatch+ registers a line naming the run's step on
 # +ctx+ and returns the run as it was given (with +appends+, with a new attempt on the current step and no reason);
 # +check_pane+ refuses the panes it was told are busy; +release+ records
-# the run's id; +drop_park+ returns the run without its park; +hold_round+ and +hold_round_lock+ hold a round as told.
+# the run's id; +drop_park+ returns the run without its park; +hold_round+ and +hold_round_lock+ hold a round as told;
+# +hold_paused+ (and +hold_round+ before it) holds a paused run as the real one does: `pause_hold`, `waiting`, no reason; a first hold is kept.
 class RecordingDispatch
   CONTROL_METHODS = %i[calls].freeze
 
@@ -265,6 +266,7 @@ class RecordingDispatch
   def hold_round(run, round:)
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:hold_round, run.id, {round: round}]
+    return paused_hold(run, {"kind" => "round", "review_round" => round}) if run.paused
     return nil unless @holds
     hold = (@holds == "run_timed_out") ? "timeout_hold" : "budget_hold"
     Workspace::WorkflowRun.from_h(run.thawed.merge("state" => "waiting", hold => {"review_round" => round},
@@ -282,6 +284,12 @@ class RecordingDispatch
     Workspace::WorkflowRun.from_h(hash.merge("reason" => nil))
   end
 
+  def hold_paused(run, hold, release: true)
+    run = Workspace::WorkflowRun.from_h(run)
+    @calls << [:hold_paused, run.id, hold, {release: release}]
+    run.paused ? paused_hold(run, hold) : nil
+  end
+
   def check_pane(pane, run_id: nil)
     @calls << [:check_pane, pane, {run_id: run_id}]
     raise Workspace::Error.new("Pane #{pane} is busy.", code: "pane_has_run", details: {"pane" => pane}) if @busy.include?(pane)
@@ -295,6 +303,13 @@ class RecordingDispatch
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:drop_park, run.id, how, extra]
     run.drop_park
+  end
+
+  private
+
+  def paused_hold(run, hold)
+    return run if run.to_h["pause_hold"]
+    Workspace::WorkflowRun.from_h(run.thawed.merge("pause_hold" => hold, "state" => "waiting", "reason" => nil))
   end
 end
 

@@ -74,7 +74,9 @@ module Workspace
     # The agent's turn ended in the run's pane: decides whether the current step is done. A step with a
     # `status:` check has it run here, outside the run's lock, so a long check never blocks a `cancel`.
     # On a step being reviewed only the round's review pane counts: its turn's end decides the round
-    # ({#review_ended}), and a turn's end in the author's pane changes nothing.
+    # ({#review_ended}), and a turn's end in the author's pane changes nothing. A turn's end for an attempt whose line a
+    # pause kept from being typed (`pause_hold` kind `delivery` naming it) changes nothing either: the agent never got
+    # the step, so whatever turn ended (a person typing in the pane) is not the step's.
     #
     # @param run_id [String]
     # @param pane [String, nil] the pane the turn ended in; an event from a pane the run is not bound to changes nothing
@@ -90,6 +92,7 @@ module Workspace
         stored = read.to_h
         next if stored["parked"]
         state = step_state(stored)
+        next if held_delivery?(stored, state)
         if state["state"] == "reviewing"
           next unless review_turn?(stored, state["review"], pane, turn_started, stopped_at)
           judged = review_ended(read, ctx: ctx)
@@ -240,6 +243,12 @@ module Workspace
     end
 
     private
+
+    # Whether the current attempt's line is the one a pause holds untyped ({WorkflowDispatch#deliver}).
+    def held_delivery?(run, state)
+      hold = run["pause_hold"]
+      hold.is_a?(Hash) && hold["kind"] == "delivery" && hold["step"] == run["current"] && hold["attempt"] == state["attempts"].last&.fetch("n", nil)
+    end
 
     # Puts the phase answer +changed+ (a WorkflowRun) into the run Hash being changed in place.
     def adopt(run, changed) = run.replace(changed.thawed)

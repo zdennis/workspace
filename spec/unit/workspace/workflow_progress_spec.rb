@@ -354,6 +354,20 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(change.events.map { |event| event[1] }).to eq(%w[step_checks_passed review_started])
     end
 
+    it "holds round 1 on a paused run, marking it held by the pause and spending nothing" do
+      context = ctx
+      given = run_hash(definition_steps: steps("review" => review)).merge("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"})
+
+      run = progress.pass_step(given, ctx: context)
+
+      expect(run.step("plan").review).to eq("round" => 1, "delivery" => nil, "held" => "paused")
+      expect(run.step("plan").to_h["review_rounds"]).to be_nil
+      expect(run.to_h["pause_hold"]).to eq("kind" => "round", "review_round" => 1)
+      expect(run.state).to eq("waiting")
+      expect(context.review).to be_nil
+      expect(dispatch.calls).to eq([[:hold_round, "wr_1", {round: 1}]])
+    end
+
     it "counts each round the step starts, never resetting" do
       given = run_hash(definition_steps: steps("review" => review))
       given["steps"]["plan"]["review_rounds"] = 2
@@ -1044,6 +1058,82 @@ RSpec.describe Workspace::WorkflowProgress do
         expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
         expect(change.events).to eq([["wr_1", "review_started", {"step" => "plan", "attempt" => 1, "round" => 1, "again" => true, "redelivery" => 2}]])
         expect(dispatch.calls).to be_empty
+      end
+
+      it "changes nothing on a paused run and records no hold: the round's failed mark is what the tick acts on after the unpause" do
+        given = reviewing_hash.merge("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"})
+        given["steps"]["plan"]["review"].merge!("delivery" => "failed", "redeliveries" => 1)
+        context = ctx
+
+        run = progress.redeliver_round(given, ctx: context, new_server: true)
+
+        expect(run.to_h).to eq(given)
+        expect(context.review).to be_nil
+        expect(change.events).to be_empty
+      end
+
+      it "changes nothing on a paused run's round still open in restart_review, recording no hold and giving up no lock" do
+        given = reviewing_hash.merge("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"})
+        given["steps"]["plan"]["review"]["delivery"] = "failed"
+        context = ctx
+
+        run = progress.restart_review(given, ctx: context)
+
+        expect(run.to_h).to eq(given)
+        expect(context.review).to be_nil
+        expect(dispatch.calls).to be_empty
+        expect(change.events).to be_empty
+      end
+
+      context "with a rerun a pause held" do
+        def paused_rerun(**overrides)
+          reviewing_hash(**overrides).tap do |hash|
+            hash["steps"]["plan"]["review"] = {"round" => 1, "delivery" => nil, "held" => "paused_rerun", "pane" => "%9", "window" => "@7",
+                                               "rerun" => %w[tester], "pending" => %w[tester], "redeliveries" => 1, "reruns" => 1, "revision" => "rev2",
+                                               "snapshot" => {"head" => "a" * 40, "tree_sha256" => "t" * 64}}
+            hash["steps"]["plan"]["attempts"].last["rounds"] = [{"round" => 1, "ended" => "rerun"}]
+          end
+        end
+
+        it "is left as it is by restart_review while paused" do
+          given = paused_rerun("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"})
+
+          expect(progress.restart_review(given, ctx: ctx).to_h).to eq(given)
+          expect(dispatch.calls).to be_empty
+        end
+
+        it "is delivered by restart_review as the same round, keeping its redeliveries, revision and snapshot, with no second record" do
+          context = ctx
+          guard = RecordingGuard.new(head: "d" * 40, tree: "e" * 64)
+          progress = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail,
+            guard: guard, holder: -> { {"pid" => 7} }, clock: -> { now })
+
+          run = progress.restart_review(paused_rerun, ctx: context)
+
+          state = run.step("plan")
+          expect(run.state).to eq("running")
+          expect(state.review_rounds).to eq(1)
+          expect(state.review).to include("round" => 1, "delivery" => "delivering", "started_at" => "2026-11-10T12:00:00.000Z", "holder" => {"pid" => 7},
+            "rerun" => %w[tester], "pending" => %w[tester], "redeliveries" => 1, "reruns" => 1, "revision" => "rev2",
+            "snapshot" => {"head" => "a" * 40, "tree_sha256" => "t" * 64})
+          expect(state.review).not_to have_key("held")
+          expect(state.last_attempt.to_h["rounds"]).to eq([{"round" => 1, "ended" => "rerun"}])
+          expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1, "revision" => "rev2")
+          expect(change.events).to eq([["wr_1", "review_started", {"step" => "plan", "attempt" => 1, "round" => 1, "again" => true}]])
+          expect(guard.calls).to be_empty
+          expect(dispatch.calls).to be_empty
+        end
+
+        it "ends on a cancel with no second record and no review_ended, closing its window" do
+          context = ctx
+
+          run = progress.end_round(paused_rerun, how: "cancelled", ctx: context)
+
+          expect(run.step("plan").review).to be_nil
+          expect(run.step("plan").last_attempt.to_h["rounds"]).to eq([{"round" => 1, "ended" => "rerun"}])
+          expect(change.events).to be_empty
+          expect(context.close_review).to include("step" => "plan", "round" => 1)
+        end
       end
     end
 

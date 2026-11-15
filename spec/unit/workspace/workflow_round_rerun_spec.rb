@@ -148,6 +148,32 @@ RSpec.describe Workspace::WorkflowRoundRerun do
       expect(context.review).to eq("step" => "plan", "attempt" => 2, "round" => 2, "revision" => "rev2")
       expect(change.events.map { |event| event[1] }).to eq(%w[review_ended review_rerun])
     end
+
+    it "ends the part that ran on a paused run as a rerun does, and holds only the new round's delivery" do
+      rows = [{"reviewer" => "a", "counted" => true}, {"reviewer" => "b", "counted" => false}]
+      given = after_rejection(round: {"revision" => "rev2", "redeliveries" => 0, "pane" => "%9", "kick_at" => "2026-11-10T11:51:00Z"})
+        .merge("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"})
+      context = ctx
+
+      run = rerun(holder: -> { {"pid" => 7} }).rerun(given, reviews: rows, names: %w[b], ctx: context)
+
+      round = run.step("plan").review
+      expect(round).to include("round" => 2, "delivery" => nil, "held" => "paused_rerun", "redeliveries" => 1, "reruns" => 1, "rerun" => %w[b], "pending" => %w[b],
+        "reviews" => [rows.first], "uncleared" => true, "revision" => "rev2")
+      expect(round).not_to include("started_at", "holder", "kick_at")
+      expect(run.step("plan").last_attempt.to_h["rounds"].last).to include("ended" => "rerun")
+      expect(change.events.map { |event| event[1] }).to eq(%w[review_ended review_rerun])
+      expect(run.to_h["pause_hold"]).to eq("kind" => "round", "cause" => "rerun", "step" => "plan", "attempt" => 2, "review_round" => 2, "rerun" => %w[b], "revision" => "rev2")
+      expect(run.state).to eq("waiting")
+      expect(context.review).to be_nil
+      expect(dispatch.calls.last.last).to eq(release: false)
+
+      later = Time.utc(2026, 11, 10, 14)
+      unpaused = run.thawed.except("paused", "pause_hold")
+      expect(Workspace::WorkflowTransitions.lost_round?(unpaused, later)).to be(false)
+      expect(Workspace::WorkflowTransitions.unanswered_round?(unpaused, later)).to be(false)
+      expect(Workspace::WorkflowTransitions.round_redelivery(unpaused, later)).to be_nil
+    end
   end
 
   describe "#hold" do

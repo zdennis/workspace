@@ -113,6 +113,59 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(change.events.last.last).to include("cause" => "lock_ended")
     end
 
+    it "holds a paused run's attempt before anything is taken, recording what it would have started and typing nothing" do
+      paused = run_hash("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"}, "parked" => {"id" => "p1", "note" => "later"},
+        "definition" => run_hash["definition"].merge("budget" => {"tokens" => 100}),
+        "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 150}}]}})
+      context = ctx
+
+      run = dispatch.dispatch(paused, ctx: context, cause: "loop", context: "fresh", retry_of: {"text" => "fix it", "attempt" => 1})
+
+      expect(run.to_h["pause_hold"]).to eq("kind" => "attempt", "cause" => "loop", "context" => "fresh", "budgeted" => true, "pane" => "%3", "identity" => "identity-of-wr_1",
+        "text" => "fix it", "retry_of" => 1)
+      expect(run.state).to eq("waiting")
+      expect(run.reason).to be_nil
+      expect(run.budget_hold).to be_nil
+      expect(run.parked).to eq("id" => "p1", "note" => "later")
+      expect(run.pending_context).to eq(["from before"])
+      expect(run.step("plan").state).to eq("failed")
+      expect(run.step("plan").attempts.size).to eq(1)
+      expect(context.delivery).to be_nil
+      expect(resources.calls.map(&:first)).to eq([:release])
+      expect(panes.calls.map(&:first)).not_to include(:bind, :kick)
+      expect(attempt_record.calls).to be_empty
+      expect(change.events).to be_empty
+    end
+
+    it "keeps the pane and identity a backoff's retry names, and an unbudgeted dispatch's budgeted, on its pause hold" do
+      paused = run_hash("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"})
+
+      run = dispatch.dispatch(paused, ctx: ctx, cause: "redelivery", budgeted: false, retry_of: {"pane" => "%8", "identity" => "id-8", "text" => "again"})
+
+      expect(run.to_h["pause_hold"]).to eq("kind" => "attempt", "cause" => "redelivery", "budgeted" => false, "pane" => "%8", "identity" => "id-8", "text" => "again")
+    end
+
+    it "keeps the run's locks on a hold that asks it to, as a paused rerun's does" do
+      paused = run_hash("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"})
+
+      run = dispatch.hold_paused(paused, {"kind" => "round", "cause" => "rerun", "review_round" => 2}, release: false)
+
+      expect(run.to_h["pause_hold"]).to include("cause" => "rerun")
+      expect(resources.calls).to be_empty
+      expect(dispatch.hold_paused(run_hash, {"kind" => "round"})).to be_nil
+    end
+
+    it "keeps the first held dispatch, leaving a run that already holds one as it is" do
+      first = {"kind" => "delivery", "step" => "plan", "attempt" => 1, "delivery" => {"step" => "plan"}}
+      paused = run_hash("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"}, "pause_hold" => first, "state" => "running")
+
+      run = dispatch.dispatch(paused, ctx: ctx, cause: "next_step")
+
+      expect(run.to_h).to eq(paused)
+      expect(dispatch.hold_paused(paused, {"kind" => "round", "review_round" => 1}).to_h).to eq(paused)
+      expect(resources.calls).to be_empty
+    end
+
     it "holds the attempt when the token budget is spent, keeping the context for the resume" do
       spent = run_hash("definition" => run_hash["definition"].merge("budget" => {"tokens" => 100}),
         "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed", "usage" => {"input_tokens" => 150}}]}})
@@ -266,6 +319,22 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(run.reason["code"]).to eq("budget_spent")
       expect(run.budget_hold).to eq(run.timeout_hold)
       expect(run.reason["details"]["run_timed_out"]).to include("limit" => 3600)
+    end
+
+    it "holds a paused run's round ahead of its limits, recording pause_hold of kind round and giving up the locks" do
+      given = reviewing("budget" => {"tokens" => 100}).merge("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"})
+      before = deep_copy(given)
+
+      run = dispatch.hold_round(given, round: 2)
+
+      expect(given).to eq(before)
+      expect(run.to_h["pause_hold"]).to eq("kind" => "round", "review_round" => 2)
+      expect(run.budget_hold).to be_nil
+      expect(run.state).to eq("waiting")
+      expect(run.reason).to be_nil
+      expect(run.step("plan").state).to eq("reviewing")
+      expect(resources.calls.map(&:first)).to eq([:release])
+      expect(change.events).to be_empty
     end
 
     it "lets the round start within the limits, with no limits, and on a wake from a lock wait" do
@@ -462,6 +531,74 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(run.parked).to be_nil
       expect(run.reason).to include("code" => "waiting_you")
       expect(run.reason["details"]).to include("error" => "clear_not_confirmed")
+    end
+
+    context "when the run was paused after the line was registered" do
+      let(:panes) { RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "the agent is working"}) }
+
+      it "types nothing, keeps the attempt open and running with no delivery mark, and holds the registered line" do
+        store.runs["wr_1"] = run_hash
+        context = ctx
+        dispatch.dispatch(store.runs["wr_1"], ctx: context, cause: "next_step").then { |run| store.runs["wr_1"] = run.thawed }
+        registered = context.delivery
+        store.runs["wr_1"]["steps"]["plan"]["attempts"].last["after_park"] = {"expires_at" => (now + 600).utc.iso8601, "pane" => "%3", "retries" => 0}
+        store.runs["wr_1"]["paused"] = {"since" => "2026-11-10T12:00:00Z", "by" => "person"}
+        panes.calls.clear
+        change.events.clear
+
+        run = dispatch.deliver("wr_1", registered)
+
+        expect(panes.calls.map(&:first)).not_to include(:kick)
+        attempt = run.step("plan").last_attempt.to_h
+        expect(attempt).not_to include("delivery", "outcome", "ended_at", "code")
+        expect(run.step("plan").state).to eq("running")
+        expect(run.state).to eq("running")
+        expect(run.reason).to be_nil
+        expect(run.parked).to be_nil
+        expect(run.to_h["pause_hold"]).to eq("kind" => "delivery", "step" => "plan", "attempt" => 1, "delivery" => registered)
+        expect(store.events).to eq([["wr_1", "step_dispatched", {"step" => "plan", "attempt" => 1, "pane" => "%3", "delivered" => false, "actor" => "engine",
+                                                                 "cause" => "paused", "from_state" => nil, "to_state" => nil}]])
+        expect(change.events).to be_empty
+      end
+
+      it "leaves the held attempt running when a late answer for the line comes after the pause ends: no not_delivered, no park again" do
+        store.runs["wr_1"] = delivering("after_park" => {"expires_at" => (now + 600).utc.iso8601, "pane" => "%3", "retries" => 0})
+          .merge("paused" => {"since" => "2026-11-10T12:00:00Z", "by" => "person"})
+        dispatch.deliver("wr_1", delivery)
+        store.runs["wr_1"].delete("paused")
+
+        run = dispatch.deliver("wr_1", delivery)
+
+        expect(run.step("plan").last_attempt.to_h).not_to include("delivery", "outcome", "code")
+        expect(run.step("plan").state).to eq("running")
+        expect(run.reason).to be_nil
+        expect(run.parked).to be_nil
+      end
+
+      it "types nothing and keeps the first hold when the paused run already holds a dispatch" do
+        first = {"kind" => "round", "review_round" => 1}
+        store.runs["wr_1"] = delivering.merge("paused" => {"since" => "2026-11-10T12:00:00Z", "by" => "person"}, "pause_hold" => first)
+
+        run = dispatch.deliver("wr_1", delivery)
+
+        expect(panes.calls.map(&:first)).not_to include(:kick)
+        expect(run.to_h["pause_hold"]).to eq(first)
+        expect(store.events).to be_empty
+      end
+
+      it "types the line when the pause ended before the hold could be written" do
+        store.runs["wr_1"] = delivering
+        unpaused_store = store
+        allow(unpaused_store).to receive(:run).and_wrap_original do |original, id|
+          read = original.call(id)
+          Workspace::WorkflowRun.from_h(read.thawed.merge("paused" => {"since" => "2026-11-10T12:00:00Z", "by" => "person"}))
+        end
+
+        run = dispatch.deliver("wr_1", delivery)
+
+        expect(panes.calls.map(&:first)).to include(:kick)
+        expect(run.to_h).not_to have_key("pause_hold")
+      end
     end
 
     it "keeps a cancel that came while the line was on its way" do

@@ -107,7 +107,9 @@ module Workspace
     # as the same round, spending it again, with its unchanged revision accepted. A round that stopped for a person (a
     # stored reason, or a round already marked ended) is ended ({#end_round}, its window kept for the next round) and
     # a fresh round starts, which spends one of the step's rounds. A round whose delivery failed or lapsed is delivered again as the same
-    # round, its redelivery count started again. Never starts an attempt.
+    # round, its redelivery count started again. A rerun a pause held (`held: "paused_rerun"`) is delivered as the same
+    # round with no new record, its redeliveries, revision and snapshot kept: the one replay of that hold. Never starts an attempt. On a paused run a round start is held
+    # ({WorkflowDispatch#hold_round}), and a round still open is left as it is with no hold.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on a step being reviewed; left as it is
     # @param ctx [Workspace::WorkflowRunChange::Context] gets the round to run
@@ -117,7 +119,9 @@ module Workspace
     # Delivers the round of the step being reviewed again, as {WorkflowRecovery#tick} does for a delivery that failed
     # or lapsed ({WorkflowTransitions.round_redelivery}): the lapsed delivery is recorded (`ended: redelivered`), and the
     # same round is delivered with a new start and one more of its `redeliveries` spent, so the definition's
-    # `redeliver` caps how often a tick does it (a person's {#restart_review} starts the count again).
+    # `redeliver` caps how often a tick does it (a person's {#restart_review} starts the count again). A paused run
+    # changes nothing and records no hold: the round's own failed or lapsed mark already says it is to be delivered
+    # again, and the first tick after the unpause does it.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on a step being reviewed; left as it is
     # @param ctx [Workspace::WorkflowRunChange::Context] gets the round to run
@@ -126,6 +130,7 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def redeliver_round(run, ctx:, new_server: false)
       over(run) do |work|
+        next if work["paused"]
         # The panes of the old server go too: a pane id the new server reuses must prove no verdict.
         drop = new_server ? %w[pane panes window server_pid] : []
         deliver_again(work, ctx, step_state(work)["review"]["redeliveries"].to_i + 1, drop)
@@ -331,16 +336,23 @@ module Workspace
     end
 
     # A held round has no delivery and no start: its release goes through {#begin_round} for the same round. `held`
-    # is the reason that kept it (`budget_spent`, `run_timed_out`, `waiting_lock`, or `waiting_you` for a lock store
-    # that could not be read).
+    # is the reason that kept it (`budget_spent`, `run_timed_out`, `waiting_lock`, `waiting_you` for a lock store
+    # that could not be read, or `paused`).
     def hold_round(run, held, round)
       run.replace(held.thawed)
-      step_state(run)["review"] = {"round" => round, "delivery" => nil, "held" => run.dig("reason", "code")}
+      step_state(run)["review"] = {"round" => round, "delivery" => nil, "held" => held_code(run)}
     end
+
+    # What kept a held round: the pause ({WorkflowDispatch#hold_paused}, which stores no reason), else the reason.
+    def held_code(run) = run["paused"] ? "paused" : run.dig("reason", "code")
 
     # A round a hold kept from starting (its `held` mark, set by {#hold_round}): it never ran, so it has no record,
     # usage, review_ended or window of its own. Not read from `delivery: null`, which a delivered round has too.
-    def held_round?(round) = round.is_a?(Hash) && round.key?("held")
+    def held_round?(round) = round.is_a?(Hash) && round.key?("held") && !paused_rerun?(round)
+
+    # A rerun a pause held ({WorkflowRoundRerun#rerun}): the round ran, and only its rerun's delivery waits. Not a
+    # held round: it is never started as a fresh one, and its end adds no second record.
+    def paused_rerun?(round) = round.is_a?(Hash) && round["held"] == WorkflowRoundRerun::PAUSED_RERUN
 
     # Unbinds the reviewer and registers the window to close once the lock is given up. The closer finds the window
     # by its `@workspace-review` mark, so a round that recorded no pane yet is closed too.
@@ -456,13 +468,19 @@ module Workspace
         held = @dispatch.hold_round(run, round: round["round"]) || @dispatch.hold_round_lock(run, round: round["round"], step_state: state["state"])
         if held
           run.replace(held.thawed)
-          step_state(run)["review"] = round.merge("delivery" => nil, "held" => run.dig("reason", "code"))
+          step_state(run)["review"] = round.merge("delivery" => nil, "held" => held_code(run))
           return
         end
         state["review_rounds"] = round["round"]
         state["review"] = round.except("no_change", "held").merge("accept_revision" => true)
         run["reason"] = nil
         return deliver_again(run, ctx, 0, record: false)
+      end
+      # A rerun a pause held (its part that ran already recorded and spent) is delivered as the same round, never
+      # started as a fresh one; while paused nothing changes.
+      if paused_rerun?(round)
+        return if run["paused"]
+        return deliver_rerun(run, ctx)
       end
       # A held round (a budget, timeout or lock hold, `waiting_lock` included) starts through its one start, which asks
       # the lock again; it never counts as a stopped round, so no round is spent on a lock wait.
@@ -475,6 +493,9 @@ module Workspace
         end_round_in(run, "resumed", ctx, false)
         return begin_round(run, ctx)
       end
+      # A paused run changes nothing on a round still open, holding no lock back from its reviewers and recording no
+      # hold: the round's own marks say what it needs, and the first tick after the unpause acts on them.
+      return if run["paused"]
       # A person's resume starts the redelivery count again.
       deliver_again(run, ctx, 0)
     end
@@ -500,6 +521,22 @@ module Workspace
       ctx.review({"step" => run["current"], "attempt" => attempt, "round" => round["round"]})
     end
 
+    # The one delivery of a rerun a pause held ({WorkflowRoundRerun#rerun}), as that rerun would have made it: its
+    # `redeliveries` (spent when it was held), revision and checkout snapshot are the round's as stored, so the
+    # verdicts already written still match and `redeliver` still caps it; only `held` goes, and the delivery, its
+    # start and its holder are set.
+    def deliver_rerun(run, ctx)
+      state = step_state(run)
+      round = state["review"].except("held").merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3))
+      state["review"] = round
+      @rounds.hold(round)
+      run["state"] = "running"
+      run["reason"] = nil
+      details = {"step" => run["current"], "attempt" => state["attempts"].last["n"], "round" => round["round"]}
+      event(run, "review_started", details.merge("again" => true))
+      ctx.review(details.merge("revision" => round["revision"]).compact)
+    end
+
     def end_round_in(run, how, ctx, close)
       state = step_state(run)
       round = state["review"]
@@ -508,7 +545,7 @@ module Workspace
       return unless round.is_a?(Hash)
       attempt = state["attempts"].last
       # A round an unchanged revision stopped delivered nothing, as a held one: no record, no review_ended.
-      held = held_round?(round) || round["no_change"] == true
+      held = held_round?(round) || paused_rerun?(round) || round["no_change"] == true
       add_round_record(run, round, how) unless round["recorded"] || held
       state.delete("review")
       # A round a tally already ended wrote its `review_ended`.
