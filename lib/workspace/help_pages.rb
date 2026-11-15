@@ -33,7 +33,7 @@ module Workspace
 
     PLAN = {
       "status" => {
-        usage: ["plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]"],
+        usage: ["plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--summary] [--json]"],
         summary: "Count the plan and report its state",
         about: [
           "A workspace with no plan is a row, not an error. With no scope flag it is the current workspace's row",
@@ -47,6 +47,7 @@ module Workspace
           ["--all", "Every workspace"],
           ["--group GROUP", "Every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)"],
           ["--file PATH", "Read any file, with no workspace and a state from the file alone"],
+          ["--summary", "JSON: leave out each row's tasks; text: leave out the next-step hint"],
           JSON_OPT],
         examples: [
           ["workspace plan status", "the plan of the workspace you are in: state, counts and the current task"],

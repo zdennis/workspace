@@ -502,6 +502,54 @@ RSpec.describe Workspace::Commands::Plan do
       expect(document["next_actions"]).to eq(stalled_actions)
     end
 
+    describe "--summary" do
+      it "leaves out each row's tasks in JSON and keeps the rest, next_actions included" do
+        stall!
+
+        command.status(names: ["api"], json: true, summary: true)
+
+        row = document["plans"].first
+        expect(row).not_to have_key("tasks")
+        expect(row).to include("counts", "current", "percent", "state" => "stalled", "warnings" => [], "next_actions" => stalled_actions)
+        expect(document["next_actions"]).to eq(stalled_actions)
+      end
+
+      it "keeps the tasks without it" do
+        stall!
+
+        command.status(names: ["api"], json: true)
+
+        expect(document["plans"].first["tasks"].size).to eq(3)
+      end
+
+      it "leaves out the next: line in text and keeps the status line" do
+        stall!
+
+        command.status(names: ["api"], summary: true)
+
+        expect(output.string).to include("api  stalled")
+        expect(output.string).not_to include("next:")
+      end
+
+      it "prints the next: line in text without it" do
+        stall!
+
+        command.status(names: ["api"])
+
+        expect(output.string).to include("  next: workspace plan show")
+      end
+
+      it "leaves out tasks for a --file row too" do
+        path = File.join(@dir, "other.md")
+        File.write(path, plan_text)
+
+        command.status(file: path, json: true, summary: true)
+
+        expect(document["plans"].first).not_to have_key("tasks")
+        expect(document["plans"].first).to include("exists" => true, "state" => "idle")
+      end
+    end
+
     it "offers one set-state to todo per blocked task, then plan show" do
       write_plan("api", blocked_text)
 

@@ -63,16 +63,17 @@ module Workspace
       # @param project [ProjectCatalog::Project, nil] the project's configured workspaces whose checkout exists, in member order; ignored with +all+
       # @param file [String, nil] a file to read on its own, with no workspace and a state from the file alone
       # @param json [Boolean] print one JSON document instead of lines
+      # @param summary [Boolean] JSON leaves out each row's `tasks`; text leaves out the next-step hint
       # @return [Array<Hash>] the rows
       # @raise [Workspace::Error] as {Workspace::Commands::Notes#info} for a named workspace
-      def status(names: [], all: false, project: nil, file: nil, json: false)
+      def status(names: [], all: false, project: nil, file: nil, json: false, summary: false)
         rows = file ? [file_row(file)] : rows(names: names, all: all, project: project)
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "plans" => rows,
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "plans" => summary ? rows.map { |row| row.except("tasks") } : rows,
                                       "next_actions" => rows.flat_map { |row| row["next_actions"] }})
         else
           @output.puts "No plans in project #{project.name}." if project && !all && rows.empty?
-          rows.each { |row| print_row(row) }
+          rows.each { |row| print_row(row, summary: summary) }
         end
         rows
       end
@@ -84,9 +85,10 @@ module Workspace
       #
       # @param group [String] a group id, slug or name
       # @param json [Boolean] print one JSON document instead of lines
+      # @param summary [Boolean] as {#status}
       # @return [Array<Hash>] the rows
       # @raise [Workspace::Error] `unknown_group`
-      def status_group(group:, json: false)
+      def status_group(group:, json: false, summary: false)
         found = @groups.find(group)
         projects = @catalog.all
         by_repository = found.repositories.to_h { |repository| [repository, group_rows(repository, projects)] }
@@ -94,14 +96,14 @@ module Workspace
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "group" => {"id" => found.id, "name" => found.name},
                                       "repositories" => found.repositories.map { |r| {"id" => r.id, "name" => r.name, "path" => r.path, "exists" => r.exists} },
-                                      "plans" => rows, "next_actions" => rows.flat_map { |row| row["next_actions"] }})
+                                      "plans" => summary ? rows.map { |row| row.except("tasks") } : rows, "next_actions" => rows.flat_map { |row| row["next_actions"] }})
         else
           @output.puts "#{found.name} (#{found.id})"
           @output.puts "  no repositories: add one with 'workspace projects group add GROUP PATH'" if by_repository.empty?
           by_repository.each do |repository, repository_rows|
             @output.puts "#{repository.name}  #{repository.path}#{"  (checkout missing)" unless repository.exists}"
             @output.puts "  no workspaces" if repository_rows.empty?
-            repository_rows.each { |row| print_row(row, indent: "  ") }
+            repository_rows.each { |row| print_row(row, indent: "  ", summary: summary) }
           end
         end
         rows
@@ -343,7 +345,7 @@ module Workspace
         0
       end
 
-      def print_row(row, indent: "")
+      def print_row(row, indent: "", summary: false)
         label = row["workspace"] || row["path"]
         if row["exists"]
           counts = row["counts"]
@@ -351,7 +353,7 @@ module Workspace
           line = "#{label}  #{row["state"]}  #{counts["done"] + counts["skipped"]}/#{counts["total"]} (#{row["percent"]}%)"
           line += "  #{[current["id"], current["title"]].compact.join(" ")}" if current
           @output.puts "#{indent}#{line}"
-          hint = %w[stalled blocked].include?(row["state"]) && row["next_actions"].first
+          hint = !summary && %w[stalled blocked].include?(row["state"]) && row["next_actions"].first
           @output.puts "#{indent}  next: workspace #{TerminalText.escape(([hint["action"]] + hint["args"]).join(" "))}" if hint
         else
           @output.puts "#{indent}#{label}  no plan"
