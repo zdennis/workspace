@@ -378,8 +378,7 @@ init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, 
 - Only `CLI#run` calls `exit`; everything else raises `Workspace::Error` or `Workspace::UsageError`
 - IO injection: classes accept `output:`, `error_output:`, `input:` for testability
 - YARD docs on all public classes and methods
-- Tests use RSpec, run with `bundle exec rspec`. Serial is the default and the pre-commit gate.
-- For per-commit gating do NOT run the full suite — it takes too long. Run only the targeted spec files that were changed or are obviously impacted, plus `bundle exec standardrb lib/ spec/`. Use `script/parallel-spec` or the full serial suite only when a whole-suite run is explicitly asked for.
+- Tests use RSpec, run with `bundle exec rspec`. Serial is the default. CI runs the whole suite on every push; locally, a change runs only the specs it can break (see "Running specs for a change").
 - `script/parallel-spec [ARGS...]` runs the suite in parallel with parallel_tests (one process per performance core; about 44s against 232s serial). Each process gets its own short `HOME` and `XDG_*` directory under `/tmp`, and SimpleCov results merge into `coverage/`. Only a whole-suite run (no arguments) uses and refreshes the timings in `tmp/parallel_runtime_rspec.log` (untracked); with arguments, or before a log exists, files are grouped by size. Extra arguments go to `parallel_rspec`.
 - Lint with `bundle exec standardrb lib/ spec/`
 - `bin/` is for project executables (the public interface) — only `bin/workspace` belongs here
@@ -402,9 +401,25 @@ Place a new spec by the first rule that fits:
 - A stubbed process call (`allow(Open3).to receive(...)`, an injected runner lambda) starts nothing and is fine in any tier. `and_call_original` on a process call does start one, so that spec is system.
 - When a unit-shaped spec needs a few examples that start a process, put those examples in a separate file under `spec/system/` instead of moving the whole file.
 - A helper that memoizes a fixture built by running git, such as `RepoTemplate` in `spec/support/repo_template.rb`, is for system specs only: whether it spawns depends on which spec asked first.
-- Run one tier with `bundle exec rspec spec/unit` (seconds), `spec/integration`, or `spec/system`. The whole suite is still the pre-commit gate.
+- Run one tier with `bundle exec rspec spec/unit` (seconds), `spec/integration`, or `spec/system`. The whole suite runs in CI; "Running specs for a change" says what to run locally.
 
 `spec/support/spawn_guard.rb` enforces the rule. The tier comes from the directory as `type:` metadata, and a `type:` written on a group wins. In a unit or integration example every spawn point is blocked (`SpawnGuard::Violation`, an `Exception`, so `rescue => e` does not catch it) and recorded, and the example fails afterwards even if the code under test caught it with `rescue Exception`. Threads the example starts are checked too. Spawns at load time, in `before(:context)`, or in a thread that outlives its example are not checked, so do not write them. A spec that trips the guard moves to `spec/system/`; there are no exemptions.
+
+### Running specs for a change
+
+Do not run the whole suite while working or before a commit. GitHub Actions runs the whole suite and `standardrb` on every branch push (`.github/workflows/ci.yml`). Locally, run the specs the change can break:
+
+1. List the change set: `git diff --name-only main...HEAD` plus `git status --short` (uncommitted and untracked files).
+2. Run every changed or new spec file, and the specs that mirror each changed `lib/` file: `lib/workspace/foo.rb` maps to `spec/*/workspace/foo_spec.rb` and `spec/*/workspace/foo_*_spec.rb` (split and adversarial files share the prefix); `lib/workspace/commands/foo.rb` maps to `spec/*/workspace/commands/foo*_spec.rb`.
+3. Find the integration and system specs at risk. Take the constants each changed `lib/` file defines and grep for them: `grep -rlw WorkflowEngine spec/integration spec/system`. Then go one level out: grep `lib/` for the constant to find its direct callers, and grep the integration and system specs for those callers' constants. When the change alters a method signature, a `--json` field, an error code, printed text another class parses, or a file format, follow every caller, not one level. A change inside one private method's body needs only the first level.
+4. Some files reach many commands:
+   - `lib/workspace/cli.rb`, `help_pages.rb`, `json_envelope.rb`, `output_gate.rb`, `error_codes.rb`, or `build_cli` in `lib/workspace.rb`: add `spec/system/workspace/cli_spec.rb`, `spec/system/workspace_spec.rb`, and the specs that build the CLI (`grep -rlE 'build_cli|CLI\.new' spec/integration spec/system`).
+   - A file in `spec/support/`: every spec that uses the helper (grep its name).
+   - `lib/library/play/`, `lib/workflows/`, `lib/templates/`: grep the specs for the pack, preset or template name. `lib/skills/`: also run `script/check-skills`.
+   - `docs/` alone: no specs, unless a spec reads the file (grep `spec/` for its name). For `docs/README.config.md` run `script/generate-config-docs --check`.
+5. Run the set in one command: `bundle exec rspec FILE...`, or `script/parallel-spec FILE...` past about 20 files. Lint the changed Ruby files: `bundle exec standardrb FILE...`.
+6. Run the whole suite locally (`script/parallel-spec` with no arguments) only when the change can reach everything: `spec/spec_helper.rb`, `spec/support/spawn_guard.rb`, `Gemfile`, `Gemfile.lock`, `.rspec`, `lib/workspace.rb` outside `build_cli` (requires, encoding), a rename or move across many files, or when the person asks.
+7. Report which specs ran and why each was picked. When CI fails on a spec the selection missed, fix the failure and add the rule that would have caught it to this section.
 
 ## Orchestration
 
@@ -476,7 +491,7 @@ When the user asks to capture, add, view, list, or look up feature requests, alw
 
 Before every commit, run up to 3 review agents from `.claude/agents/` that best fit the change, in parallel, one Agent call each (never combine lenses into one agent). Each agent should only review files changed in the current commit. Pass this context when launching each agent.
 
-- `testing-craftsperson.md` — Test coverage, `bundle exec rspec`, and `bundle exec standardrb lib/ spec/`; pick it for almost every code change
+- `testing-craftsperson.md` — Test coverage, the specs the change can break (see "Running specs for a change"), and `standardrb` on the changed files; pick it for almost every code change
 - `staff-engineer.md` — Architecture and complexity
 - `ai-agent-operator.md` — Automation and scriptability (`--json`, exit codes, machine-read output)
 - `power-user.md` — Edge cases and extensibility

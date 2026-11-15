@@ -24,7 +24,7 @@ You care about whether changes are tested, whether tests are meaningful (not jus
 2. Check for corresponding test changes in `spec/`
 3. Verify new behavior has test coverage — both success and failure cases
 4. Look for untestable code patterns (hardcoded dependencies, mixed concerns)
-5. Run `bundle exec rspec` to confirm all tests pass
+5. Run the specs the change can break, chosen as "Running specs for a change" in `.claude/CLAUDE.md` says, and `bundle exec standardrb` on the changed Ruby files. List the specs you ran and why each was picked. Run the whole suite only when that section calls for it; CI runs it on push
 6. Run `bundle exec standardrb lib/ spec/` to confirm no lint offenses
 
 ## Output
