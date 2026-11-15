@@ -12,6 +12,9 @@ module Workspace
   #
   # The run-changing methods take the stored run, leave it as it is and return the run afterwards.
   class WorkflowRoundRerun
+    # The `held` mark of a round whose rerun a pause kept from being delivered.
+    PAUSED_RERUN = "paused_rerun"
+
     # @param change [Workspace::WorkflowRunChange] changes the run under its lock and writes its history
     # @param store [Workspace::WorkflowRunStore] reads the run while a revision is computed with its lock given up
     # @param dispatch [Workspace::WorkflowDispatch] gives up the run's locks when a round stops for a person
@@ -107,7 +110,11 @@ module Workspace
     # (`ended: rerun`, with every row it read), the counted rows stay on the round as its `reviews`, one of its
     # `redeliveries` is spent, and the delivery is registered on +ctx+ with the round's revision, so the verdicts
     # already written still match it. The window the round ran in is cleared before the line is typed (`uncleared`);
-    # the round's checkout snapshot and its `review.uses` stay as they were.
+    # the round's checkout snapshot and its `review.uses` stay as they were. On a paused run the part that ran is
+    # recorded and spent all the same, but nothing is delivered: the new round is stored with no delivery, no start
+    # and no holder, marked `held: "paused_rerun"` (so no tick, sweep or turn end takes it for a lapsed, lost or answered
+    # round), its locks are kept, and `pause_hold` (kind `round`, cause `rerun`) keeps what the unpause registers: "step", "attempt",
+    # "review_round", the reviewers under "rerun" and the round's "revision".
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on the step being reviewed; left as it is
     # @param reviews [Array<Hash>] the rows the round's tally read
@@ -132,11 +139,18 @@ module Workspace
         state["review"] = round.except("holder", "failure", "recompute", "delivered_at", "cleared_at", "clear_from", "kick_at", "ended_at", "recorded", "sweep")
           .merge("delivery" => "delivering", "started_at" => @clock.call.utc.iso8601(3), "redeliveries" => redeliveries, "reruns" => reruns,
             "rerun" => names, "pending" => names, "reviews" => kept, "uncleared" => true)
+        event(work, "review_rerun", details.merge("reviewers" => names, "rerun" => reruns, "redelivery" => redeliveries))
+        delivery = details.merge("revision" => round["revision"]).compact
+        if work["paused"]
+          state["review"] = state["review"].except("started_at").merge("delivery" => nil, "held" => PAUSED_RERUN)
+          held = {"kind" => "round", "cause" => "rerun", "step" => delivery["step"], "attempt" => delivery["attempt"], "review_round" => delivery["round"], "rerun" => names}
+          held["revision"] = delivery["revision"] if delivery.key?("revision")
+          next work.replace(@dispatch.hold_paused(work, held, release: false).thawed)
+        end
         hold(state["review"])
         work["state"] = "running"
         work["reason"] = nil
-        event(work, "review_rerun", details.merge("reviewers" => names, "rerun" => reruns, "redelivery" => redeliveries))
-        ctx.review(details.merge("revision" => round["revision"]).compact)
+        ctx.review(delivery)
       end
     end
 

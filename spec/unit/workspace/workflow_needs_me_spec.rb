@@ -54,6 +54,14 @@ RSpec.describe Workspace::WorkflowNeedsMe do
     end
   end
 
+  it "lists a paused run with unpause as its next command" do
+    unpause = {"action" => "workflow unpause", "args" => ["wr_1"], "needs" => []}
+    rows = needs_me.rows([run("wr_1", reason: reason("paused", actions: [unpause, cancel("wr_1")]))])
+
+    expect(rows.map { |row| row["code"] }).to eq(["paused"])
+    expect(rows.first["next_action"]).to eq(unpause)
+  end
+
   %w[turn_ended_background retry_backoff].each do |code|
     it "leaves out #{code}, which clears by itself" do
       expect(needs_me.rows([run("wr_1", reason: reason(code))])).to eq([])

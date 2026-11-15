@@ -9,6 +9,10 @@ module Workspace
   # own workspace about every five minutes while a run is going
   # ({WorkflowNudger}).
   #
+  # A paused run ({WorkflowEngine#pause}) is left alone ahead of everything but its end: a `paused` row (outcome
+  # `nothing`), no daemon started, no pane read and its file not written. A step's `timeout` and a review round's
+  # clock leave out the time the run was paused on that step ({WorkflowTransitions.pause_spans}).
+  #
   # For a run whose step reads `running`, in this order:
   #
   # - the run's pane is gone: records `step_stalled` (cause `pane_gone`); the
@@ -135,6 +139,7 @@ module Workspace
 
     def sweep_run(run, pass)
       return WorkflowSweepRows.row(run, "nothing", reason: "finished", message: "the run has ended") if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
+      return paused_row(run) if run.paused
       state = run.steps.fetch(run.current)
       running = state.state == "running"
       backoff = WorkflowEngine.backoff(run.to_h, @clock.call)
@@ -166,6 +171,17 @@ module Workspace
     rescue SystemCallError => e
       program = e.message[/ - (\S+)/, 1]
       WorkflowSweepRows.row(run, "failed", reason: "tool_unavailable", message: "could not run #{program || "a program the sweep needs"}: #{e.message.lines.first.to_s.strip}. Put it on PATH.")
+    end
+
+    # A person paused the run: nothing of it is looked at or changed until it is unpaused.
+    def paused_row(run)
+      pause = run.paused
+      round = (run.step(run.current)&.state == "reviewing") ? run.step(run.current).review : nil
+      what = (round.is_a?(Hash) && round["round"]) ? "review round #{round["round"]} of step #{run.current}" : "step #{run.current}"
+      by = [(" by #{pause["by"]}" if pause["by"]), (" since #{pause["since"]}" if pause["since"])].join
+      text = pause["text"] ? " (#{pause["text"]})" : ""
+      WorkflowSweepRows.row(run, "nothing", reason: "paused",
+        message: "the run is paused#{by}#{text}; #{what} waits until it is unpaused (`workspace workflow unpause #{run.id}`)")
     end
 
     # The step failed and its `on_fail` retry waits out a `backoff`: not a stall. Once the time has come the retry
@@ -249,12 +265,8 @@ module Workspace
     def sweep_running(run, state, pass)
       attempt = state.last_attempt
       return WorkflowSweepRows.row(run, "nothing", reason: "no_attempt", message: "step #{run.current} reads running and has no attempt; resume the run") unless attempt
-      begin
-        started = Time.iso8601(attempt.started_at.to_s)
-      rescue ArgumentError
-        return WorkflowSweepRows.row(run, "failed", reason: "unreadable_run", message: "the attempt has no readable start time")
-      end
-      elapsed = @clock.call - started
+      elapsed = WorkflowTransitions.step_elapsed(run.to_h, attempt.to_h, @clock.call)
+      return WorkflowSweepRows.row(run, "failed", reason: "unreadable_run", message: "the attempt has no readable start time") unless elapsed
       step = run.definition["steps"].find { |each| each["id"] == run.current }
       timeout = step["timeout"]
       timed_out = timeout.is_a?(Numeric) && elapsed > timeout

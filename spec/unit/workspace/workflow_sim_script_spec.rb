@@ -191,6 +191,20 @@ RSpec.describe Workspace::WorkflowSimScript do
       expect(problems("steps:\n  design: [{revision_changes: yes please}]\n")).to match([a_string_matching(/revision_changes must be true or false/)])
     end
 
+    it "reads pause as true or a reason, and unpause beside it" do
+      script = parse("steps:\n  design:\n    - {pause: true}\n    - {pause: \"hold on\", unpause: true}\n")
+
+      expect(script.attempt("design", 1)).to eq("pause" => true)
+      expect(script.attempt("design", 2)).to eq("pause" => "hold on", "unpause" => true)
+    end
+
+    it "refuses a pause that is neither true nor a reason, and an unpause that is not true or has no pause" do
+      expect(problems("steps:\n  design: [{pause: false}, {pause: \"\"}, {pause: true, unpause: no}, {unpause: true}]\n")).to match([
+        a_string_matching(/attempt 1: pause must be true or a non-empty reason/), a_string_matching(/attempt 2: pause must be true or a non-empty reason/),
+        a_string_matching(/attempt 3: unpause must be true/), a_string_matching(/attempt 4: unpause is set, and the attempt does not pause/)
+      ])
+    end
+
     it "reads reruns, one verdict map per rerun of the round's missing reviewers, and unchanged" do
       script = parse("steps:\n  design:\n    - {reviews: {skeptic: approve}, reruns: [{builder: approve}, {}], unchanged: false}\n")
 

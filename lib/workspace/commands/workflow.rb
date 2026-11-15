@@ -40,7 +40,6 @@ module Workspace
       # @param simulator [Workspace::WorkflowSimulator, nil] plays a workflow with a scripted fake agent (`simulate`)
       # @param source_installer [Workspace::WorkflowSourceInstaller, nil] fetches, checks and caches the `workflows.sources` entries (`install`)
       # @param workflow_config [Workspace::WorkflowConfig, nil] reads `workflows.default_stall`, for the stall `show` reports
-      # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
       # @param lint [Workspace::WorkflowLint] the checks `validate` makes against the library and the project's commands
@@ -49,9 +48,8 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
-        @tmux = tmux
         @process_tree = process_tree
         @lock_holder = lock_holder
         @pid = pid
@@ -785,6 +783,51 @@ module Workspace
         row(@engine.cancel(run, actor: "person"), "cancelled")
       end
 
+      # Stops a run from starting anything new until {#unpause}.
+      #
+      # @param run [String] a run id
+      # @param interrupt [Boolean] also press the agent's interrupt keys in the run's pane while it works
+      # @param reason [String, nil] why, shown with the pause
+      # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
+      # @return [Hash{String=>Object}] the action row, with `interrupted` (true when the keys were pressed) and, when
+      #   the press was tried and failed, `warning`
+      # @raise [Workspace::Error] code `already_paused`, `unknown_run` or `run_not_active`; `bound_pane` for
+      #   `--interrupt` from a pane bound to a run or a process under the run's own pane
+      def pause(run:, interrupt: false, reason: nil, caller_pane: nil)
+        refuse_pause_caller!(run, caller_pane, "workflow pause --interrupt", "An agent is interrupted by a person") if interrupt
+        paused = @engine.pause(run, actor: "person", text: reason, interrupt: interrupt)
+        warning = paused["interrupt_warning"]
+        extra = {"interrupted" => paused["interrupted"] == true}
+        extra["warning"] = warning if warning
+        row(paused.except("interrupt_warning"), "paused", message: pause_message(run, paused["interrupted"], interrupt, reason, warning)).merge(extra)
+      end
+
+      # Ends a pause and does what it held.
+      #
+      # @param run [String] a run id
+      # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
+      # @return [Hash{String=>Object}] the action row, with `unpaused` (`action`, `held`, and `continued` or `warning` when they apply)
+      # @raise [Workspace::Error] code `not_paused`, `unknown_run` or `run_not_active`; `bound_pane` from a pane bound
+      #   to a run or a process under the run's own pane, so an agent doesn't lift a person's hold
+      def unpause(run:, caller_pane: nil)
+        refuse_pause_caller!(run, caller_pane, "workflow unpause", "A pause is lifted by a person")
+        unpaused = @engine.unpause(run, actor: "person")
+        row(unpaused, "unpaused", message: unpause_message(unpaused["unpaused"])).merge("unpaused" => unpaused["unpaused"])
+      end
+
+      UNPAUSE_ACTIONS = {
+        "dispatch" => "Started the step that was held.",
+        "round" => "Started the review round that was held.",
+        "rerun" => "Ran the review round again, as it was held.",
+        "deliver" => "Typed the held line again.",
+        "continue" => "Typed a line telling the agent to continue.",
+        "continue_pending" => "A line telling the agent to continue will be typed once its pane is idle.",
+        "pane_gone" => "The run's pane is gone.",
+        "evaluate" => "Looked at the turn that ended while paused.",
+        "none" => "Nothing was held; the run goes on as before."
+      }.freeze
+      private_constant :UNPAUSE_ACTIONS
+
       # Passes a gate. Refused from a pane a run is bound to, and from a
       # process under the run's own pane, so an agent can't pass its own gate.
       #
@@ -1076,7 +1119,7 @@ module Workspace
         "-"
       end
 
-      QUIET_SWEEP_REASONS = %w[healthy parked checking reviewing not_running finished held idle delivering prompt timed_out backoff pane_busy already_recorded].freeze
+      QUIET_SWEEP_REASONS = %w[healthy parked paused checking reviewing not_running finished held idle delivering prompt timed_out backoff pane_busy already_recorded].freeze
 
       def print_sweep(rows, summary:)
         shown = rows.reject { |each| each["outcome"] == "nothing" && QUIET_SWEEP_REASONS.include?(each["reason"]) }
@@ -1504,7 +1547,7 @@ module Workspace
       def caller_in_pane?(workspace, caller_pane, target)
         return false unless target
         return true if caller_pane == target
-        pid = pane_pid(workspace, target)
+        pid = @panes.pane_pid(workspace, target)
         !pid.nil? && under?(pid)
       end
 
@@ -1567,13 +1610,6 @@ module Workspace
         error.message.lines.first.to_s.scrub.strip
       end
 
-      def pane_pid(workspace, pane)
-        detail = @tmux.pane_details(@tmux.session_name_for(workspace), window: nil).find { |each| each[:id] == pane }
-        (detail && detail[:pid].positive?) ? detail[:pid] : nil
-      rescue SystemCallError
-        nil
-      end
-
       def under?(pane_pid)
         @process_tree.snapshot.ancestors(@pid).any? { |process| process[:pid] == pane_pid }
       rescue Workspace::Error, SystemCallError
@@ -1620,6 +1656,29 @@ module Workspace
         @output.puts message if message
         {"workspace" => run["workspace"], "outcome" => (undelivered && verb != "unchanged") ? "failed" : verb, "reason" => reason&.fetch("code"),
          "message" => (undelivered && verb != "unchanged") ? reason.dig("details", "message") : message, "run" => shown}
+      end
+
+      # Refuses a pause verb from where the run's own agent runs. A finished run is left for the engine to refuse.
+      def refuse_pause_caller!(run, caller_pane, verb, subject)
+        stored = @store.run(run)
+        refuse_caller!(stored, caller_pane, verb, subject) unless WorkflowRunStore::TERMINAL_STATES.include?(stored.state)
+      end
+
+      def pause_message(run, interrupted, interrupt, reason, warning = nil)
+        lines = ["Paused. Nothing new starts; a turn under way goes on and the run holds when it ends."]
+        lines[0] = "Paused and interrupted the agent. Nothing new starts." if interrupted
+        lines[0] = "Paused, but the agent was not interrupted: no working agent was found in the run's own pane. Nothing new starts." if interrupt && !interrupted
+        lines[0] = "Paused, but the interrupt keys could not be pressed. Nothing new starts." if interrupt && !interrupted && warning
+        lines << "warning: #{TerminalText.escape(warning)}" if warning
+        lines << "Reason: #{TerminalText.escape(reason)}" unless reason.to_s.strip.empty?
+        lines << "Run `workspace workflow unpause #{run}` to let it go on."
+        lines.join("\n")
+      end
+
+      def unpause_message(unpaused)
+        lines = [UNPAUSE_ACTIONS.fetch(unpaused["action"], "Unpaused.")]
+        lines << "warning: #{TerminalText.escape(unpaused["warning"])}" if unpaused["warning"]
+        lines.join("\n")
       end
 
       def describe(run)

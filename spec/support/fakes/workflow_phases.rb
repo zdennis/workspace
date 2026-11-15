@@ -236,7 +236,8 @@ end
 # Fake of Workspace::WorkflowDispatch for the phases above it: +dispatch+ registers a line naming the run's step on
 # +ctx+ and returns the run as it was given (with +appends+, with a new attempt on the current step and no reason);
 # +check_pane+ refuses the panes it was told are busy; +release+ records
-# the run's id; +drop_park+ returns the run without its park; +hold_round+ and +hold_round_lock+ hold a round as told.
+# the run's id; +drop_park+ returns the run without its park; +hold_round+ and +hold_round_lock+ hold a round as told;
+# +hold_paused+ (and +hold_round+ before it) holds a paused run as the real one does: `pause_hold`, `waiting`, no reason; a first hold is kept.
 class RecordingDispatch
   CONTROL_METHODS = %i[calls].freeze
 
@@ -246,7 +247,9 @@ class RecordingDispatch
   # @param appends [Boolean] whether +dispatch+ starts a new attempt, as a delivered line does
   # @param holds [String, nil] the reason +hold_round+ holds a round with (`budget_spent` or `run_timed_out`); nil lets it start
   # @param lock_waits [String, nil] the lock +hold_round_lock+ makes a round wait for (`waiting_lock`); nil: the round holds its locks
-  def initialize(busy: [], appends: false, holds: nil, lock_waits: nil)
+  # @param continue_kick [Hash] what +type_continue+ answers
+  def initialize(busy: [], appends: false, holds: nil, lock_waits: nil, continue_kick: {ok: true})
+    @continue_kick = continue_kick
     @busy = busy
     @appends = appends
     @holds = holds
@@ -265,6 +268,7 @@ class RecordingDispatch
   def hold_round(run, round:)
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:hold_round, run.id, {round: round}]
+    return paused_hold(run, {"kind" => "round", "review_round" => round}) if run.paused
     return nil unless @holds
     hold = (@holds == "run_timed_out") ? "timeout_hold" : "budget_hold"
     Workspace::WorkflowRun.from_h(run.thawed.merge("state" => "waiting", hold => {"review_round" => round},
@@ -282,6 +286,17 @@ class RecordingDispatch
     Workspace::WorkflowRun.from_h(hash.merge("reason" => nil))
   end
 
+  def hold_paused(run, hold, release: true)
+    run = Workspace::WorkflowRun.from_h(run)
+    @calls << [:hold_paused, run.id, hold, {release: release}]
+    run.paused ? paused_hold(run, hold) : nil
+  end
+
+  def type_continue(run_id, mark, workspace:, text:, actor:, cause:)
+    @calls << [:type_continue, run_id, mark["pane"], {workspace: workspace, text: text, actor: actor, cause: cause}]
+    @continue_kick
+  end
+
   def check_pane(pane, run_id: nil)
     @calls << [:check_pane, pane, {run_id: run_id}]
     raise Workspace::Error.new("Pane #{pane} is busy.", code: "pane_has_run", details: {"pane" => pane}) if @busy.include?(pane)
@@ -295,6 +310,13 @@ class RecordingDispatch
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:drop_park, run.id, how, extra]
     run.drop_park
+  end
+
+  private
+
+  def paused_hold(run, hold)
+    return run if run.to_h["pause_hold"]
+    Workspace::WorkflowRun.from_h(run.thawed.merge("pause_hold" => hold, "state" => "waiting", "reason" => nil))
   end
 end
 
@@ -348,7 +370,11 @@ class RecordingWorkflowPanes
   # @param no_daemon [Boolean] +require_daemon+ refuses with `no_daemon`
   # @param on_kick [#call, nil] called with +kick+'s keywords before it answers, as when something else happens while
   #   the line is typed
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {})
+  # @param idle [Array<String>] the panes whose agent the daemon says has ended its turn
+  # @param pids [Hash{String=>Integer}] the process tmux started in each pane; nil for one it does not list
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {}, idle: [], pids: {})
+    @pids = pids
+    @idle = idle
     @restarted = restarted
     @no_daemon = no_daemon
     @on_kick = on_kick
@@ -381,6 +407,9 @@ class RecordingWorkflowPanes
     @gone.include?(pane)
   end
 
+  # Whether the daemon says +pane+'s agent ended its turn: listed in +idle+.
+  def idle?(_workspace, pane) = @idle.include?(pane)
+
   # Whether +pane+'s turn is proven over: listed in +turn_over+.
   def main_turn_over?(_workspace, pane) = @turn_over.include?(pane)
 
@@ -388,6 +417,9 @@ class RecordingWorkflowPanes
 
   # The daemon's row of +pane+, from +rows+; nil for one it does not list.
   def pane_row(_workspace, pane) = @rows[pane]
+
+  # The process tmux started in +pane+, from +pids+.
+  def pane_pid(_workspace, pane) = @pids[pane]
 
   def identity(run_id) = "identity-of-#{run_id}"
 

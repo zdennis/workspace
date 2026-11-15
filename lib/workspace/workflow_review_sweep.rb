@@ -6,6 +6,9 @@ module Workspace
   # everything after that is here. Each change goes through {WorkflowEngine} under the run's lock for the step,
   # attempt and round the sweep read, so a turn's end, a resume or a cancel that got there first stands.
   #
+  # A paused run never reaches these rows: {WorkflowSweep} gives it its `paused` row first, ahead of {#held_row}, and a
+  # round's time limits leave out the time the run was paused ({WorkflowTransitions.round_elapsed}).
+  #
   # For a round, in this order: one stopped for a person (any stored reason but `waiting_lock`) is left alone
   # ({#held_row}); one whose end was being judged when its process died is handed to {WorkflowEngine#tick} (cause
   # `lost_round`, {#lost_round}); then {#call}: a round waiting for its `review.uses` is left to {WorkflowEngine#tick};
@@ -219,7 +222,7 @@ module Workspace
     def time_limits(run, round, now)
       due = []
       if WorkflowTransitions.round_timed_out?(run.to_h, round, now)
-        due << ["review_timed_out", WorkflowTransitions.round_elapsed(round, now), WorkflowTransitions.review_timeout(run.to_h)]
+        due << ["review_timed_out", WorkflowTransitions.round_elapsed(run.to_h, round, now), WorkflowTransitions.review_timeout(run.to_h)]
       end
       deadline = WorkflowDeadline.reading(run, now)
       due << ["run_timed_out", deadline["used"], deadline["limit"]] if deadline && deadline["spent"] && deadline["action"] == "interrupt"

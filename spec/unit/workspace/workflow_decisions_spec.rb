@@ -12,9 +12,10 @@ RSpec.describe Workspace::WorkflowDecisions do
   let(:gate_note) { RecordingGateNote.new }
   let(:guard) { RecordingGuard.new(head: "b" * 40) }
   let(:panes) { RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, runs_on: {"%3" => "wr_1"}) }
+  let(:interrupter) { ->(*) { raise Workspace::Error, "no key presser in this spec" } }
 
   def decisions
-    described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+    described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
       attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now })
   end
 
@@ -72,7 +73,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       gate_note = RecordingGateNote.new(found: {"name" => "plan-note.md", "path" => "/notes/plan-note.md", "sha256" => "abc123"})
       stored(run_hash(state: "passed", gate: waiting_gate))
 
-      run = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      run = described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
         attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).approve("wr_1", actor: "person", note_sha256: "abc123")
 
       expect(run.steps["plan"].gate["file"]).to eq("path" => "/notes/plan-note.md", "sha256" => "abc123")
@@ -85,7 +86,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       before = deep_copy(stored(run_hash(state: "passed", gate: waiting_gate)))
 
       error = error_for do
-        described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+        described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
           attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).approve("wr_1", actor: "person", note_sha256: "old")
       end
 
@@ -283,7 +284,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       end
 
       def decisions
-        described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation, attempt_record: attempt_record,
+        described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation, attempt_record: attempt_record,
           gate_note: gate_note, panes: panes, guard: guard, holder_alive: ->(found) { (seen << found) && alive.include?(found["pid"]) }, clock: -> { now })
       end
 
@@ -611,7 +612,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       evaluation = RecordingEvaluation.new(store.runs, review: {"round" => 1})
       stored(run_hash(reason: {"code" => "turn_ended_incomplete", "since" => "2026-11-10T11:58:00Z", "details" => {}}))
 
-      described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
         attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", actor: "person")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:review_round, "wr_1", {"round" => 1}]])
@@ -621,7 +622,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       evaluation = RecordingEvaluation.new(store.runs, check: {"step" => "plan", "attempt" => 1})
       stored(run_hash(reason: {"code" => "turn_ended_incomplete", "since" => "2026-11-10T11:58:00Z", "details" => {}}))
 
-      resumed = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      resumed = described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
         attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", actor: "person")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:finish_check, "wr_1", {"step" => "plan", "attempt" => 1}]])
@@ -655,7 +656,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       progress = RecordingProgress.new(pane_problem: {code: "pane_gone", message: "pane %3 is gone"})
       stored(run_hash(state: "failed", extra: {"backoff" => {"until" => "2026-11-10T13:00:00Z", "to" => "plan"}, "state" => "waiting"}))
 
-      resumed = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      resumed = described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
         attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", actor: "person")
 
       expect(resumed.unchanged).to eq("pane %3 is gone")
@@ -824,7 +825,7 @@ RSpec.describe Workspace::WorkflowDecisions do
 
     def accepted_line(guard, sha) = "A person accepted the `#{guard}` stop on `plan`; the guard now measures from HEAD `#{sha[0, 12]}`."
 
-    def decisions_with(guard) = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+    def decisions_with(guard) = described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
       attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now })
 
     it "takes the checkout as the new base in one reading, records the note and has the rest of the step judged without the guard" do
@@ -911,7 +912,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       guard_stopped
       missing = {"code" => "turn_ended_incomplete", "since" => "2026-11-10T12:00:00Z", "details" => {"step" => "plan", "missing" => ["/work/app/.workflow/wr_1/plan.md"]}}
       evaluation = RecordingEvaluation.new(store.runs, reason: missing)
-      run = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      run = described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
         attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", actor: "person", accept_guard: true, note: "mine").run
 
       expect(run.reason).to eq(missing)
@@ -923,7 +924,7 @@ RSpec.describe Workspace::WorkflowDecisions do
     it "runs a check the evaluation registers outside the lock, through finish_follow_ups" do
       guard_stopped
       evaluation = RecordingEvaluation.new(store.runs, check: {"step" => "plan", "attempt" => 1, "command" => "rake"})
-      described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
         attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).resume("wr_1", actor: "person", accept_guard: true, note: "mine")
 
       expect(evaluation.calls).to eq([[:evaluate_accepted, "plan"], [:finish_check, "wr_1", {"step" => "plan", "attempt" => 1, "command" => "rake"}]])
@@ -1179,7 +1180,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       evaluation = RecordingEvaluation.new(store.runs, review: {"round" => 1})
       stored(run_hash(state: "checking", extra: {"parked" => parked}))
 
-      described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
         attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).release_park("wr_1", "p1", actor: "person")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:review_round, "wr_1", {"round" => 1}]])
@@ -1279,7 +1280,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       evaluation = RecordingEvaluation.new(store.runs, check: {"step" => "plan", "attempt" => 1})
       stored(run_hash(state: "checking", extra: {"parked" => parked}))
 
-      resumed = described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+      resumed = described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
         attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now }).release_park("wr_1", "p1", actor: "person")
 
       expect(evaluation.calls).to eq([[:evaluate, "plan"], [:finish_check, "wr_1", {"step" => "plan", "attempt" => 1}]])
@@ -1460,6 +1461,463 @@ RSpec.describe Workspace::WorkflowDecisions do
       allow(store).to receive(:going).and_raise(NoMethodError, "undefined method for nil")
 
       expect(decisions.workspace_killed("app", actor: "person")).to eq("cancelled" => [], "failed" => [])
+    end
+  end
+
+  describe "#pause" do
+    it "stores the pause with who and why, and records run_paused" do
+      stored(run_hash)
+
+      run = decisions.pause("wr_1", actor: "person", text: "lunch").run
+
+      expect(run.paused).to eq("since" => "2026-11-10T12:00:00Z", "by" => "person", "text" => "lunch")
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "person", cause: "pause"}]])
+      expect(change.events).to eq([["wr_1", "run_paused", {"step" => "plan", "text" => "lunch"}]])
+    end
+
+    it "keeps the stored reason under the pause" do
+      stored(run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting"}))
+
+      run = decisions.pause("wr_1", actor: "person").run
+
+      expect(run.reason).to eq(failed_check)
+      expect(change.events).to eq([["wr_1", "run_paused", {"step" => "plan"}]])
+    end
+
+    it "drops a parked resume as paused" do
+      stored(run_hash(extra: {"parked" => {"id" => "p0", "pane" => "%3", "requested_at" => "2026-11-10T11:00:00Z", "expires_at" => "2026-11-10T13:00:00Z", "retries" => 0}}))
+
+      run = decisions.pause("wr_1", actor: "person").run
+
+      expect(run.parked).to be_nil
+      expect(dispatch.calls).to eq([[:drop_park, "wr_1", "paused", {}]])
+    end
+
+    it "keeps a continue_pending an earlier unpause left, for the next unpause" do
+      pending_mark = {"pane" => "%3", "pid" => 41, "kind" => "claude", "step" => "plan", "attempt" => 1, "since" => "2026-11-10T11:30:00Z"}
+      stored(run_hash(extra: {"continue_pending" => pending_mark}))
+
+      run = decisions.pause("wr_1", actor: "person").run
+
+      expect(run.continue_pending).to eq(pending_mark)
+    end
+
+    it "refuses a run already paused and changes nothing" do
+      before = deep_copy(stored(run_hash(extra: {"paused" => {"since" => "2026-11-10T11:00:00Z", "by" => "person"}})))
+
+      error = error_for { decisions.pause("wr_1", actor: "person") }
+
+      expect(error.code).to eq("already_paused")
+      expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "since" => "2026-11-10T11:00:00Z", "by" => "person")
+      expect(error.message).to include("workspace workflow unpause wr_1")
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(change.events).to be_empty
+    end
+
+    context "when the run has finished" do
+      let(:finished) { ["wr_1"] }
+
+      it "refuses it as run_not_active" do
+        stored(run_hash)
+
+        expect(error_for { decisions.pause("wr_1", actor: "person") }.code).to eq("run_not_active")
+      end
+    end
+
+    describe "with interrupt" do
+      let(:presses) { [] }
+      let(:interrupter) { ->(workspace, pane, keys) { presses << [workspace, pane, keys] } }
+      let(:working) { {"%3" => {"pane_id" => "%3", "kind" => "claude", "state" => "working"}} }
+
+      def interrupting(panes, interrupter: self.interrupter)
+        described_class.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+          attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, interrupter: interrupter, clock: -> { now })
+      end
+
+      def panes_with(rows: working, pids: {"%3" => 41}, **rest)
+        RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, runs_on: {"%3" => "wr_1"}, rows: rows, pids: pids, **rest)
+      end
+
+      it "presses the agent's interrupt keys once in a working pane and marks the turn it stopped" do
+        stored(run_hash)
+
+        paused = interrupting(panes_with).pause("wr_1", actor: "person", interrupt: true)
+
+        expect(presses).to eq([["app", "%3", ["Escape"]]])
+        expect(paused.interrupted).to be(true)
+        expect(paused.run.paused["interrupt"]).to eq("pane" => "%3", "pid" => 41, "kind" => "claude", "step" => "plan", "attempt" => 1)
+        expect(paused.run.steps["plan"].attempts.size).to eq(1)
+        expect(paused.run.steps["plan"].last_attempt.to_h).not_to include("delivery", "ended_at")
+        expect(change.events).to eq([["wr_1", "run_paused", {"step" => "plan", "interrupt" => true}]])
+      end
+
+      it "presses nothing and marks nothing in an idle pane, with no pane, or without interrupt" do
+        [panes_with(rows: {"%3" => {"pane_id" => "%3", "kind" => "claude", "state" => "idle"}}),
+          RecordingWorkflowPanes.new(rows: working, pids: {"%3" => 41}),
+          panes_with(pids: {})].each do |panes|
+          store.runs.clear
+          stored(run_hash)
+          paused = interrupting(panes).pause("wr_1", actor: "person", interrupt: true)
+          expect(paused.interrupted).to be(false)
+          expect(paused.run.paused).not_to have_key("interrupt")
+        end
+        store.runs.clear
+        stored(run_hash)
+        expect(interrupting(panes_with).pause("wr_1", actor: "person").interrupted).to be(false)
+        expect(presses).to be_empty
+      end
+
+      it "presses nothing on a step that is not running" do
+        stored(run_hash(state: "passed", gate: waiting_gate))
+
+        paused = interrupting(panes_with).pause("wr_1", actor: "person", interrupt: true)
+
+        expect(presses).to be_empty
+        expect(paused.interrupted).to be(false)
+      end
+
+      it "drops the mark again when the press fails, recording why" do
+        stored(run_hash)
+        failing = ->(*) { raise Workspace::Error.new("the daemon refused", code: "pane_waiting") }
+
+        paused = interrupting(panes_with, interrupter: failing).pause("wr_1", actor: "person", interrupt: true)
+
+        expect(paused.interrupted).to be(false)
+        expect(paused.warning).to eq("the daemon refused")
+        expect(paused.run.paused).to include("by" => "person")
+        expect(paused.run.paused).not_to have_key("interrupt")
+        expect(change.events.last).to eq(["wr_1", "pause_interrupt_failed", {"step" => "plan", "attempt" => 1, "pane" => "%3", "message" => "the daemon refused"}])
+      end
+    end
+  end
+
+  describe "a paused run's resume and park" do
+    def paused_run = run_hash(state: "failed", reason: failed_check, extra: {"state" => "waiting", "paused" => {"since" => "2026-11-10T11:00:00Z", "by" => "person"}})
+
+    it "refuses a resume, a resume --from and a park with run_paused, naming workflow unpause" do
+      before = deep_copy(stored(paused_run))
+
+      [-> { decisions.resume("wr_1", actor: "person") }, -> { decisions.resume("wr_1", actor: "person", from: "plan") },
+        -> { decisions.park("wr_1", actor: "person") }].each do |command|
+        error = error_for { command.call }
+        expect(error.code).to eq("run_paused")
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "since" => "2026-11-10T11:00:00Z", "by" => "person")
+        expect(error.message).to include("Run `workspace workflow unpause wr_1` first.")
+      end
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(dispatch.calls).to be_empty
+    end
+
+    it "refuses in refuse_resume, before a daemon is started" do
+      expect(error_for { decisions.refuse_resume(paused_run) }.code).to eq("run_paused")
+    end
+  end
+
+  describe "#unpause" do
+    def pause_of = {"since" => "2026-11-10T11:00:00Z", "by" => "person"}
+
+    def paused(hash = run_hash, hold: nil)
+      hash["paused"] = pause_of
+      hash["pause_hold"] = hold if hold
+      stored(hash)
+    end
+
+    def unpaused_event(action, held = nil) = ["wr_1", "run_unpaused", {"step" => "plan", "action" => action, "held" => held}.compact]
+
+    def decisions_over(panes)
+      described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
+        attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, clock: -> { now })
+    end
+
+    it "refuses a run that is not paused and changes nothing" do
+      before = deep_copy(stored(run_hash))
+
+      error = error_for { decisions.unpause("wr_1", actor: "person") }
+
+      expect(error.code).to eq("not_paused")
+      expect(error.details).to eq("run_id" => "wr_1", "step" => "plan", "state" => "running")
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(change.events).to be_empty
+    end
+
+    it "answers a frozen Unpaused naming the branch taken and the kind of dispatch held" do
+      paused(run_hash(state: "passed", extra: {"state" => "waiting"}), hold: {"kind" => "attempt", "cause" => "next_step"})
+
+      unpaused = decisions.unpause("wr_1", actor: "person")
+
+      expect(unpaused).to be_a(described_class::Unpaused)
+      expect(unpaused).to be_frozen
+      expect(unpaused.run).to be_a(Workspace::WorkflowRun)
+      expect(unpaused.run.paused).to be_nil
+      expect([unpaused.action, unpaused.held]).to eq(["dispatch", "attempt"])
+    end
+
+    it "answers action none and no held kind when nothing was held or done" do
+      paused
+
+      unpaused = decisions.unpause("wr_1", actor: "person")
+
+      expect([unpaused.action, unpaused.held]).to eq(["none", nil])
+    end
+
+    it "starts a held attempt with what its dispatch was given" do
+      paused(run_hash(state: "passed", extra: {"state" => "waiting"}),
+        hold: {"kind" => "attempt", "cause" => "review_rejected", "context" => "fresh", "budgeted" => false, "pane" => "%3", "identity" => "id", "text" => "why", "retry_of" => 1})
+
+      run = decisions.unpause("wr_1", actor: "person").run
+
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "review_rejected", context: "fresh", budgeted: false,
+                                                         retry_of: {"pane" => "%3", "identity" => "id", "text" => "why", "attempt" => 1}}]])
+      expect(run.paused).to be_nil
+      expect(run.to_h).not_to have_key("pause_hold")
+      expect(change.calls).to eq([[:call, "wr_1", {nonblocking: false, actor: "person", cause: "unpause"}]])
+      expect(change.events).to eq([unpaused_event("dispatch", "attempt")])
+    end
+
+    it "starts a held round through restart_review" do
+      hash = run_hash(state: "reviewing", extra: {"state" => "waiting"})
+      hash["steps"]["plan"]["review"] = {"round" => 2, "delivery" => nil, "held" => "paused"}
+      paused(hash, hold: {"kind" => "round", "review_round" => 2})
+
+      decisions.unpause("wr_1", actor: "person")
+
+      expect(progress.calls).to eq([[:restart_review, "plan"]])
+      expect(evaluation.calls).to eq([[:review_round, "wr_1", {"step" => "plan"}]])
+      expect(change.events).to eq([unpaused_event("round", "round")])
+    end
+
+    it "delivers a held rerun through restart_review" do
+      hash = run_hash(state: "reviewing", extra: {"state" => "waiting"})
+      hash["steps"]["plan"]["review"] = {"round" => 1, "delivery" => nil, "held" => Workspace::WorkflowRoundRerun::PAUSED_RERUN}
+      paused(hash, hold: {"kind" => "round", "cause" => "rerun", "step" => "plan", "attempt" => 1, "review_round" => 1, "rerun" => ["a"]})
+
+      decisions.unpause("wr_1", actor: "person")
+
+      expect(progress.calls).to eq([[:restart_review, "plan"]])
+      expect(change.events).to eq([unpaused_event("rerun", "round")])
+    end
+
+    it "types a held line for the same attempt, marking it delivering again from now" do
+      delivery = {"step" => "plan", "attempt" => 1, "pane" => "%3", "text" => "Read it."}
+      paused(run_hash, hold: {"kind" => "delivery", "step" => "plan", "attempt" => 1, "delivery" => delivery})
+
+      run = decisions.unpause("wr_1", actor: "person").run
+
+      expect(change.deliveries).to eq([delivery])
+      expect(run.steps["plan"].attempts.size).to eq(1)
+      expect(run.steps["plan"].last_attempt.to_h).to include("delivery" => "delivering", "delivering_since" => "2026-11-10T12:00:00.000Z")
+      expect(dispatch.calls).to be_empty
+      expect(change.events).to eq([unpaused_event("deliver", "delivery")])
+    end
+
+    it "drops a held line whose attempt has ended, typing nothing" do
+      hash = run_hash(state: "failed", extra: {"state" => "waiting"})
+      hash["steps"]["plan"]["attempts"].last["ended_at"] = "2026-11-10T11:30:00Z"
+      paused(hash, hold: {"kind" => "delivery", "step" => "plan", "attempt" => 1, "delivery" => {"step" => "plan"}})
+
+      run = decisions.unpause("wr_1", actor: "person").run
+
+      expect(change.deliveries).to be_empty
+      expect(run.to_h).not_to have_key("pause_hold")
+      expect(change.events).to eq([unpaused_event("none", "delivery")])
+    end
+
+    it "makes the run wait on pane_gone when the open attempt's pane is gone" do
+      paused
+
+      run = decisions_over(RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, gone: ["%3"], idle: ["%3"])).unpause("wr_1", actor: "person").run
+
+      expect(run.state).to eq("waiting")
+      expect(run.reason).to include("code" => "pane_gone", "details" => include("pane" => "%3", "step" => "plan", "kind" => "dispatch"))
+      expect(run.steps["plan"].state).to eq("running")
+      expect(evaluation.calls).to be_empty
+      expect(change.events).to eq([unpaused_event("pane_gone")])
+    end
+
+    it "decides the open attempt when its pane's turn is over" do
+      paused
+
+      decisions_over(RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, idle: ["%3"])).unpause("wr_1", actor: "person")
+
+      expect(evaluation.calls).to eq([[:evaluate, "plan"]])
+      expect(change.events).to eq([unpaused_event("evaluate")])
+    end
+
+    it "leaves alone an attempt whose line is still on its way" do
+      hash = run_hash
+      hash["steps"]["plan"]["attempts"].last.merge!("delivery" => "delivering", "started_at" => "2026-11-10T11:59:30Z")
+      paused(hash)
+
+      decisions_over(RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, idle: ["%3"])).unpause("wr_1", actor: "person")
+
+      expect(evaluation.calls).to be_empty
+      expect(change.events).to eq([unpaused_event("none")])
+    end
+
+    it "leaves an agent still working alone" do
+      paused
+
+      run = decisions.unpause("wr_1", actor: "person").run
+
+      expect(run.paused).to be_nil
+      expect(run.state).to eq("running")
+      expect(evaluation.calls).to be_empty
+      expect(dispatch.calls).to be_empty
+      expect(change.deliveries).to be_empty
+      expect(change.events).to eq([unpaused_event("none")])
+    end
+
+    describe "after pause --interrupt" do
+      def mark(pid: 41, kind: "claude") = {"pane" => "%3", "pid" => pid, "kind" => kind, "step" => "plan", "attempt" => 1}
+
+      def interrupted(extra = {})
+        hash = run_hash
+        hash["steps"]["plan"]["attempts"].last["prompt_file"] = "/work/app/.workflow/wr_1/plan.1.md"
+        hash["paused"] = pause_of.merge("interrupt" => mark)
+        stored(hash.merge(extra))
+      end
+
+      def panes_with(**rest) = RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, pids: {"%3" => 41}, **rest)
+
+      it "types one continue line into the idle pane, adding no attempt and spending nothing" do
+        interrupted
+
+        unpaused = decisions_over(panes_with(turn_over: ["%3"], idle: ["%3"])).unpause("wr_1", actor: "person")
+
+        expect(dispatch.calls).to eq([[:type_continue, "wr_1", "%3", {workspace: "app", actor: "person", cause: "unpause",
+                                                                      text: "Continue step plan. Your instructions are still in /work/app/.workflow/wr_1/plan.1.md."}]])
+        expect([unpaused.action, unpaused.continued, unpaused.warning]).to eq(["continue", true, nil])
+        expect(unpaused.run.steps["plan"].attempts.size).to eq(1)
+        expect(unpaused.run.to_h).not_to have_key("continue_pending")
+        expect(unpaused.run.to_h).not_to have_key("extra_attempts")
+        expect(evaluation.calls).to be_empty
+        expect(change.events).to eq([unpaused_event("continue")])
+      end
+
+      def over_dispatch(dispatch)
+        described_class.new(interrupter: interrupter, change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation, attempt_record: attempt_record,
+          gate_note: gate_note, panes: panes_with(turn_over: ["%3"]), guard: guard, clock: -> { now })
+      end
+
+      it "reads a refused continue line the dispatch put back as pending, with the refusal as a warning, not an error" do
+        interrupted
+        dispatch = RecordingDispatch.new(continue_kick: {ok: false, code: "pane_busy", message: "the agent is in the middle of a turn", pending: true})
+
+        unpaused = over_dispatch(dispatch).unpause("wr_1", actor: "person")
+
+        expect([unpaused.action, unpaused.continued]).to eq(["continue", "pending"])
+        expect(unpaused.warning).to eq("the continue line was not typed into pane %3: the agent is in the middle of a turn")
+        expect(dispatch.calls.first[2]).to eq("%3")
+        expect(dispatch.calls.first.dig(3, :cause)).to eq("unpause")
+      end
+
+      it "hands the dispatch the mark with since now, and answers false for a line no tick will retry (a gone pane)" do
+        interrupted
+        marking = Class.new(RecordingDispatch) do
+          def marks = (@marks ||= [])
+
+          def type_continue(run_id, mark, **kw)
+            marks << mark
+            super
+          end
+        end
+        dispatch = marking.new(continue_kick: {ok: false, code: "pane_gone", message: "gone", pending: false})
+        marks = dispatch.marks
+
+        unpaused = over_dispatch(dispatch).unpause("wr_1", actor: "person")
+
+        expect(unpaused.continued).to be(false)
+        expect(marks).to eq([mark.merge("since" => "2026-11-10T12:00:00Z")])
+      end
+
+      it "goes by idle? for an agent other than Claude Code" do
+        interrupted("paused" => pause_of.merge("interrupt" => mark(kind: "codex")))
+
+        expect(decisions_over(panes_with(idle: ["%3"])).unpause("wr_1", actor: "person").action).to eq("continue")
+      end
+
+      it "types nothing before the pane proves idle and leaves the mark as continue_pending" do
+        interrupted
+
+        unpaused = decisions_over(panes_with(idle: ["%3"])).unpause("wr_1", actor: "person")
+
+        expect(dispatch.calls).to be_empty
+        expect(evaluation.calls).to be_empty
+        expect([unpaused.action, unpaused.continued]).to eq(["continue_pending", "pending"])
+        expect(unpaused.run.to_h["continue_pending"]).to eq(mark.merge("since" => "2026-11-10T12:00:00Z"))
+        expect(change.events).to eq([unpaused_event("continue_pending")])
+      end
+
+      it "reads a continue_pending a second pause kept, and types its line" do
+        hash = run_hash
+        hash["steps"]["plan"]["attempts"].last["prompt_file"] = "/p.md"
+        paused(hash.merge("continue_pending" => mark.merge("since" => "2026-11-10T11:30:00Z")))
+
+        unpaused = decisions_over(panes_with(turn_over: ["%3"])).unpause("wr_1", actor: "person")
+
+        expect(unpaused.action).to eq("continue")
+        expect(unpaused.run.to_h).not_to have_key("continue_pending")
+        expect(dispatch.calls.map(&:first)).to eq([:type_continue])
+      end
+
+      it "keeps a kept mark's first since, so pausing again and again does not hold off its expiry" do
+        paused(run_hash.merge("continue_pending" => mark.merge("since" => "2026-11-10T11:30:00Z")))
+
+        unpaused = decisions_over(RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, pids: {}, turn_over: ["%3"], idle: ["%3"])).unpause("wr_1", actor: "person")
+
+        expect(unpaused.run.to_h["continue_pending"]).to eq(mark.merge("since" => "2026-11-10T11:30:00Z"))
+      end
+
+      it "ignores a mark whose pane's process changed and falls through to the idle branch" do
+        interrupted
+
+        unpaused = decisions_over(RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, pids: {"%3" => 99}, turn_over: ["%3"], idle: ["%3"])).unpause("wr_1", actor: "person")
+
+        expect(unpaused.action).to eq("evaluate")
+        expect(dispatch.calls).to be_empty
+        expect(evaluation.calls).to eq([[:evaluate, "plan"]])
+        expect(unpaused.run.to_h).not_to have_key("continue_pending")
+      end
+
+      it "keeps the mark as continue_pending, typing nothing, when tmux names no pid for the pane" do
+        interrupted
+
+        unpaused = decisions_over(RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, pids: {}, turn_over: ["%3"], idle: ["%3"])).unpause("wr_1", actor: "person")
+
+        expect([unpaused.action, unpaused.continued]).to eq(["continue_pending", "pending"])
+        expect(unpaused.run.to_h["continue_pending"]).to eq(mark.merge("since" => "2026-11-10T12:00:00Z"))
+        expect(dispatch.calls).to be_empty
+        expect(evaluation.calls).to be_empty
+      end
+
+      it "ignores a mark for an attempt that has ended" do
+        hash = interrupted
+        hash["steps"]["plan"]["attempts"].last["ended_at"] = "2026-11-10T11:50:00Z"
+        hash["steps"]["plan"]["state"] = "failed"
+
+        unpaused = decisions_over(panes_with(turn_over: ["%3"])).unpause("wr_1", actor: "person")
+
+        expect(unpaused.action).to eq("none")
+        expect(dispatch.calls).to be_empty
+      end
+
+      it "makes the run wait on pane_gone when the marked pane is gone" do
+        interrupted
+
+        expect(decisions_over(panes_with(gone: ["%3"])).unpause("wr_1", actor: "person").action).to eq("pane_gone")
+        expect(dispatch.calls).to be_empty
+      end
+    end
+
+    it "leaves a gate waiting, its reason shown again" do
+      reason = {"code" => "waiting_you", "since" => "2026-11-10T11:50:00Z", "details" => {"kind" => "gate"}}
+      paused(run_hash(state: "passed", gate: waiting_gate, reason: reason, extra: {"state" => "waiting"}))
+
+      run = decisions.unpause("wr_1", actor: "person").run
+
+      expect(run.reason).to eq(reason)
+      expect(progress.calls).to be_empty
+      expect(change.events).to eq([unpaused_event("none")])
     end
   end
 end

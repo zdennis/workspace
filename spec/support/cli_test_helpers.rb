@@ -988,7 +988,7 @@ module CLITestHelpers
       raise @error if @error
     end
 
-    %i[add update remove run resume cancel approve reject step_done].each do |name|
+    %i[add update remove run resume cancel pause unpause approve reject step_done].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error

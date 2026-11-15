@@ -59,6 +59,105 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(change.calls).to eq([[:call, "wr_1", {nonblocking: true, actor: "sweep", cause: "tick"}]])
     end
 
+    it "leaves a paused run's file unchanged, though its backoff is over" do
+      paused = run_hash(state: "waiting", step_state: "failed", reason: {"code" => "retry_backoff"},
+        extra: {"backoff" => backoff_wait, "paused" => {"since" => "2026-11-10T11:30:00Z", "by" => "person", "text" => nil}})
+      stored(paused)
+      before = Marshal.load(Marshal.dump(paused))
+
+      expect(recovery.tick("wr_1", actor: "sweep")).to be_nil
+
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(progress.calls).to be_empty
+    end
+
+    describe "with a continue line pending" do
+      let(:mark) { {"pane" => "%3", "pid" => 41, "kind" => "claude", "step" => "build", "attempt" => 1, "since" => "2026-11-10T11:30:00Z"} }
+
+      def pending_run = stored(run_hash(attempt: {"prompt_file" => "/b.1.md"}, extra: {"continue_pending" => mark}))
+
+      def ticking(panes)
+        described_class.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, panes: panes, clock: -> { clock_at.first })
+      end
+
+      it "types the line once the pane proves idle, dropping the mark under the lock" do
+        pending_run
+
+        run = ticking(RecordingWorkflowPanes.new(turn_over: ["%3"], pids: {"%3" => 41})).tick("wr_1", actor: "daemon")
+
+        expect(run).to be_a(Workspace::WorkflowRun)
+        expect(store.runs["wr_1"]).not_to have_key("continue_pending")
+        expect(dispatch.calls).to eq([[:type_continue, "wr_1", "%3", {workspace: "app", actor: "daemon", cause: "tick",
+                                                                      text: "Continue step build. Your instructions are still in /b.1.md."}]])
+        expect(change.events).to eq([["wr_1", "continue_pending_ended", {"step" => "build", "attempt" => 1, "pane" => "%3", "how" => "pane_idle"}]])
+        expect(store.runs["wr_1"]["steps"]["build"]["attempts"].size).to eq(1)
+
+        expect(ticking(RecordingWorkflowPanes.new(turn_over: ["%3"], pids: {"%3" => 41})).tick("wr_1", actor: "daemon")).to be_nil
+        expect(dispatch.calls.size).to eq(1)
+      end
+
+      it "types nothing and keeps the mark while the pane is not yet proven idle" do
+        pending_run
+
+        expect(ticking(RecordingWorkflowPanes.new(idle: ["%3"], pids: {"%3" => 41})).tick("wr_1", actor: "daemon")).to be_nil
+
+        expect(store.runs["wr_1"]["continue_pending"]).to eq(mark)
+        expect(dispatch.calls).to be_empty
+      end
+
+      it "drops the mark with nothing typed when the pane's process is not the one marked" do
+        pending_run
+
+        ticking(RecordingWorkflowPanes.new(turn_over: ["%3"], pids: {"%3" => 99})).tick("wr_1", actor: "daemon")
+
+        expect(store.runs["wr_1"]).not_to have_key("continue_pending")
+        expect(dispatch.calls).to be_empty
+        expect(change.events.last.last).to include("how" => "pane_replaced")
+      end
+
+      it "keeps the mark, typing nothing, when tmux names no pid for the pane" do
+        pending_run
+
+        expect(ticking(RecordingWorkflowPanes.new(turn_over: ["%3"], pids: {})).tick("wr_1", actor: "daemon")).to be_nil
+
+        expect(store.runs["wr_1"]["continue_pending"]).to eq(mark)
+        expect(dispatch.calls).to be_empty
+        expect(change.events).to be_empty
+      end
+
+      it "drops a mark older than PARK_SECONDS as expired, typing nothing and reading no pane" do
+        pending_run
+        clock_at[0] = Time.iso8601(mark["since"]) + Workspace::WorkflowTransitions::PARK_SECONDS + 1
+        counting = Class.new(RecordingWorkflowPanes) do
+          def pid_reads = (@pid_reads ||= [])
+
+          def pane_pid(workspace, pane)
+            pid_reads << pane
+            super
+          end
+        end
+        panes = counting.new(turn_over: ["%3"], pids: {"%3" => 41})
+
+        run = ticking(panes).tick("wr_1", actor: "daemon")
+
+        expect(run).to be_a(Workspace::WorkflowRun)
+        expect(store.runs["wr_1"]).not_to have_key("continue_pending")
+        expect(dispatch.calls).to be_empty
+        expect(panes.pid_reads).to be_empty
+        expect(change.events).to eq([["wr_1", "continue_pending_ended", {"step" => "build", "attempt" => 1, "pane" => "%3", "how" => "expired"}]])
+        expect(store.runs["wr_1"]["steps"]["build"]["attempts"].last).not_to include("ended_at")
+      end
+
+      it "types nothing for a paused run" do
+        stored(run_hash(extra: {"continue_pending" => mark, "paused" => {"since" => "2026-11-10T11:40:00Z", "by" => "person"}}))
+
+        expect(ticking(RecordingWorkflowPanes.new(turn_over: ["%3"], pids: {"%3" => 41})).tick("wr_1", actor: "daemon")).to be_nil
+
+        expect(store.runs["wr_1"]["continue_pending"]).to eq(mark)
+        expect(dispatch.calls).to be_empty
+      end
+    end
+
     it "hands the actor it was given to the change, whether the daemon's advance or the sweep" do
       stored(run_hash(state: "waiting", step_state: "failed", reason: {"code" => "retry_backoff"}, extra: {"backoff" => backoff_wait}))
 

@@ -9,7 +9,7 @@ module Workspace
     # {Invocation} it is given, so `--help --json` captures what it prints.
     class Workflow
       # The verbs of `workflow`, in the order `workflow --help` lists them.
-      SUBCOMMANDS = %w[list show validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep resume cancel approve reject advance].freeze
+      SUBCOMMANDS = %w[list show validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep resume cancel pause unpause approve reject advance].freeze
 
       # @param workflow_command [Workspace::Commands::Workflow, nil] the `workflow` and `step` command; nil refuses both verbs
       # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] the `workflow start` command; nil refuses that verb
@@ -109,6 +109,8 @@ module Workspace
           opts.on("--extra-tokens N", "resume, reject: add N to the run's token budget when it has used budget.tokens (ignored by a resume that starts no attempt)") { |v| options[:extra_tokens] = v }
           opts.on("--extra-time DURATION", "resume, reject: add DURATION (30m, 2h) to the run's timeout when it has used its timeout: (ignored by a resume that starts no attempt)") { |v| options[:extra_time] = v }
           opts.on("--extra-rounds N", "resume: add N to the review rounds the step may spend (its review.max_rounds) when it has spent them all") { |v| options[:extra_rounds] = v }
+          opts.on("--interrupt", "pause: also press the agent's interrupt keys in the run's pane while it works") { options[:interrupt] = true }
+          opts.on("--reason TEXT", "pause: why (shown with the pause, at most 4000 characters)") { |v| options[:reason] = v }
           opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
           opts.on("--step STEP", "approve, reject: the gated step you saw (current.step in status --json); refused unless the run waits there") { |v| options[:step] = v }
           opts.on("--attempt N", "approve, reject: that step's attempt you saw (current.attempt); needs --step") { |v| options[:attempt] = v }
@@ -150,7 +152,6 @@ module Workspace
           opts.separator ""
           opts.separator "Examples:"
           opts.separator "  workspace workflow show    # list the workflows you can run"
-          opts.separator "  workspace workflow show rpiv    # see the inputs and steps of one before running it"
           opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --dry-run    # check a run in this workspace and start nothing"
           opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\"    # start it for real: step one is typed into the Claude pane"
           opts.separator "  workspace workflow start rpiv --prompt \"add a hello script\"    # make a worktree workspace from a sentence and run rpiv in it"
@@ -159,6 +160,7 @@ module Workspace
           opts.separator "  workspace workflow reject RUN --note \"Too big; split it.\"    # send the gated step back with a reason"
           opts.separator "  workspace workflow resume RUN --from implement    # start a stuck run again at one step"
           opts.separator "  workspace workflow cancel RUN    # end a run and release its locks"
+          opts.separator "  workspace workflow pause RUN    # hold a run: nothing new starts until `workflow unpause RUN`"
         end
       end
 
@@ -175,7 +177,7 @@ module Workspace
         return invocation.output.puts(parser.help) if options[:help]
 
         unless subcommand
-          raise UsageError, args.empty? ? "Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+          raise UsageError, args.empty? ? "Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
         end
         raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
         subject = args.shift
@@ -183,7 +185,7 @@ module Workspace
         start_ref = args.shift if subcommand == "start"
         render_step = args.shift if %w[render check].include?(subcommand)
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-        needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+        needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
                  "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
         raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
 
@@ -213,6 +215,7 @@ module Workspace
         raise UsageError, "--source N is not a position: use a whole number from 1." if subcommand == "install" && subject && !subject.match?(/\A[1-9][0-9]{0,5}\z/)
         raise UsageError, "--dry-run does not apply to `workflow install`." if subcommand == "install" && options[:dry_run]
         raise UsageError, "workflow uninstall takes no argument." if subcommand == "uninstall" && subject
+        workflow_pause_options(subcommand, options)
         workflow_accept_guard_options(subcommand, options)
         gate_options = workflow_gate_options(subcommand, options)
         extra_attempts = workflow_extra_attempts(subcommand, options[:extra_attempts])
@@ -343,6 +346,8 @@ module Workspace
         when "resume"
           workflow_action(invocation, "workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds, caller_pane: ENV["TMUX_PANE"], accept_guard: options[:accept_guard] || false, guard_retry: options[:guard_retry] || false) }
         when "cancel" then workflow_action(invocation, "workflow cancel", options) { @workflow_command.cancel(run: subject) }
+        when "pause" then workflow_action(invocation, "workflow pause", options) { @workflow_command.pause(run: subject, interrupt: options[:interrupt] || false, reason: options[:reason], caller_pane: ENV["TMUX_PANE"]) }
+        when "unpause" then workflow_action(invocation, "workflow unpause", options) { @workflow_command.unpause(run: subject, caller_pane: ENV["TMUX_PANE"]) }
         when "approve"
           workflow_action(invocation, "workflow approve", options) do
             @workflow_command.approve(run: subject, note: options[:note], **gate_options, note_sha256: options[:note_sha256], caller_pane: ENV["TMUX_PANE"])
@@ -407,6 +412,15 @@ module Workspace
         end
         raise UsageError, "--extra-time is at most 365 days (8760h), got #{text.to_s[0, 20].inspect}." if seconds > 365 * 86_400
         seconds.ceil
+      end
+
+      # `--interrupt` and `--reason` belong to pause alone; a reason is 1 to 4000 characters.
+      def workflow_pause_options(subcommand, options)
+        raise UsageError, "--interrupt is for `workflow pause RUN`." if options[:interrupt] && subcommand != "pause"
+        raise UsageError, "--reason is for `workflow pause RUN`." if options[:reason] && subcommand != "pause"
+        reason = options[:reason]
+        raise UsageError, "--reason must not be empty." if reason && reason.strip.empty?
+        raise UsageError, "--reason is at most 4000 characters, got #{reason.length}." if reason && reason.length > 4000
       end
 
       # `--accept-guard` and `--retry` belong to resume alone; how they go together is {Workspace::WorkflowDecisions#resume}'s to check.

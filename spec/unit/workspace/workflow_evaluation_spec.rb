@@ -99,6 +99,36 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(progress.calls).to be_empty
     end
 
+    it "decides nothing for an attempt whose line a pause holds untyped, and judges one the hold does not name" do
+      produce
+      paused = {"since" => "2026-11-10T11:30:00Z", "by" => "person"}
+      held = {"kind" => "delivery", "step" => "plan", "attempt" => 1, "delivery" => {"step" => "plan", "attempt" => 1}}
+      stored(run_hash("paused" => paused, "pause_hold" => held))
+      before = deep_copy(store.runs["wr_1"])
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(store.runs["wr_1"]).to eq(before)
+      expect(progress.calls).to be_empty
+
+      stored(run_hash("paused" => paused, "pause_hold" => held.merge("attempt" => 0)))
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+
+    it "drops a continue mark when a turn of the attempt ends, and decides the turn as any other" do
+      mark = {"pane" => "%3", "pid" => 41, "kind" => "claude", "step" => "plan", "attempt" => 1}
+      stored(run_hash("continue_pending" => mark, "paused" => {"since" => "2026-11-10T11:30:00Z", "by" => "person", "interrupt" => mark}))
+      produce
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(store.runs["wr_1"]).not_to have_key("continue_pending")
+      expect(store.runs["wr_1"]["paused"]).to eq("since" => "2026-11-10T11:30:00Z", "by" => "person")
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+
     it "follows up a review round the passing step registered, once the change is done" do
       rounds = []
       stored

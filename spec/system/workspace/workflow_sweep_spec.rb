@@ -767,6 +767,41 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(events("wr_1").map { |each| each["type"] }).to include("step_stalled", "step_recovered", "step_failed", "step_looped")
     end
 
+    it "gives a paused run a paused row, presses nothing and leaves its file as it was, past its timeout" do
+      begin_run(flow(timeout: "10m", on_timeout: "fail"))
+      pane_shows("working", idle_seconds: 2)
+      engine.pause("wr_1", actor: "person", text: "lunch")
+      advance(7200)
+      panes.daemon = false
+      before = stored_run(store, "wr_1")
+
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "nothing", "reason" => "paused", "step" => "build", "attempt" => 1)
+      expect(row["message"]).to include("by person", "(lunch)", "workspace workflow unpause wr_1")
+      expect(stored_run(store, "wr_1")).to eq(before)
+      expect(pressed).to be_empty
+      expect(panes.respawns).to be_empty
+    end
+
+    it "leaves the time a run was paused out of its step's timeout" do
+      begin_run(flow(timeout: "10m", on_timeout: "fail"))
+      pane_shows("working", idle_seconds: 2)
+      advance(60)
+      engine.pause("wr_1", actor: "person")
+      advance(7200)
+      engine.unpause("wr_1", actor: "person")
+      advance(60)
+      pane_shows("working", idle_seconds: 2)
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "healthy")
+      expect(pressed).to be_empty
+      expect(types).not_to include("step_stalled")
+
+      advance(481)
+      expect(only_row(sweep.call)).to include("outcome" => "timed_out", "cause" => "timed_out")
+    end
+
     it "stops the run for a person when on_fail has nothing left, naming step_timed_out" do
       engine.start(actor: "person", definition: flow(on_timeout: "fail"), workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
       advance(3700)
@@ -1695,6 +1730,27 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(stored_run(store, "wr_1")["reason"]).to be_nil
     end
 
+    it "reports no act on a paused round whose tmux server restarted or whose delivery again is due" do
+      review
+      engine.pause("wr_1", actor: "person")
+      panes.restarted << "%9"
+      before = stored_run(store, "wr_1")
+
+      row = only_row(sweep.call)
+
+      expect(row).to include("outcome" => "nothing", "reason" => "paused")
+      expect(row["message"]).to include("review round 1 of step build")
+      expect(stored_run(store, "wr_1")).to eq(before)
+
+      edit_run(store, "wr_1") { |run| run["steps"]["build"]["review"].merge!("delivery" => "delivering", "pane" => nil) }
+      advance(Workspace::WorkflowTransitions::DELIVERY_WINDOW + 1)
+      before = stored_run(store, "wr_1")
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "paused")
+      expect(stored_run(store, "wr_1")).to eq(before)
+      expect(panes.kicks.size).to eq(1)
+    end
+
     it "decides a round whose review turn ended unseen once its pane has been idle for the stall" do
       review
       advance(1500)
@@ -1853,6 +1909,22 @@ RSpec.describe Workspace::WorkflowSweep do
     describe "a round past a time limit" do
       # Bound once the run's author pane is, as a round's delivery binds it.
       def bind_reviewer = panes.bind(workspace: "app.worktree-x", pane: "%9", run_id: "wr_1", role: "reviewer")
+
+      it "leaves the time the run was paused out of the round's review.timeout" do
+        review
+        bind_reviewer
+        engine.pause("wr_1", actor: "person")
+        advance(7200)
+        engine.unpause("wr_1", actor: "person")
+        advance(60)
+        review_pane_shows("working", idle_seconds: 0)
+
+        expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "reviewing")
+        expect(pressed).to be_empty
+
+        advance(Workspace::WorkflowReviewSpec::DEFAULT_TIMEOUT - 59)
+        expect(only_row(sweep.call)).to include("outcome" => "interrupted", "cause" => "review_timed_out")
+      end
 
       it "claims, presses in the review pane and confirms once for a round past its review.timeout, then decides the turn the press ends on its verdicts" do
         review

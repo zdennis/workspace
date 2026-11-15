@@ -25,6 +25,12 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.delivery(attempt, started + described_class::DELIVERY_WINDOW + 1)).to eq(:unknown)
     end
 
+    it "measures the window from delivering_since when a held line was typed again" do
+      attempt = {"started_at" => started.iso8601(3), "delivering_since" => (started + 3600).iso8601(3), "delivery" => "delivering"}
+      expect(described_class.delivery(attempt, started + 3600 + described_class::DELIVERY_WINDOW)).to eq(:delivering)
+      expect(described_class.delivery(attempt, started + 3600 + described_class::DELIVERY_WINDOW + 1)).to eq(:unknown)
+    end
+
     it "is unknown when the attempt's start can't be read" do
       expect(described_class.delivery({"started_at" => "garbled", "delivery" => "delivering"}, started)).to eq(:unknown)
       expect(described_class.delivery({"started_at" => nil, "delivery" => "delivering"}, started)).to eq(:unknown)
@@ -284,6 +290,46 @@ RSpec.describe Workspace::WorkflowTransitions do
       waiting = run_with(:steps => {"a" => step("failed")}, "state" => "waiting", "backoff" => {"until" => now.iso8601, "to" => "a"})
       expect(described_class.wakeable?(waiting, now - 1)).to be_nil
       expect(described_class.wakeable?(waiting, now)).to eq(:backoff)
+    end
+
+    it "answers nil for a paused run, whatever its backoff, park or lock wait says" do
+      paused = {"since" => now.iso8601, "by" => "person", "text" => nil}
+      waiting = run_with(:steps => {"a" => step("failed")}, "state" => "waiting", "backoff" => {"until" => now.iso8601, "to" => "a"})
+      parked = run_with(:steps => {"a" => step("waiting")}, "parked" => {"expires_at" => now.iso8601}, "reason" => lock_wait)
+
+      expect(described_class.wakeable?(waiting.merge("paused" => paused), now)).to be_nil
+      expect(described_class.wakeable?(parked.merge("paused" => paused), now)).to be_nil
+      expect(described_class.wakeable?(lost_check.merge("paused" => paused), now)).to be_nil
+    end
+
+    it "answers :continue while a continue_pending mark names the open attempt, and nil once paused again or the attempt moved on" do
+      mark = {"pane" => "%3", "pid" => 41, "kind" => "claude", "step" => "a", "attempt" => 1, "since" => (now - 60).iso8601}
+      open = run_with(:steps => {"a" => step("running", {"n" => 1})}, "continue_pending" => mark)
+
+      expect(described_class.wakeable?(open, now)).to eq(:continue)
+      expect(described_class.wakeable?(open.merge("paused" => {"since" => now.iso8601, "by" => "person"}), now)).to be_nil
+      expect(described_class.wakeable?(open.merge("continue_pending" => mark.merge("attempt" => 2)), now)).to be_nil
+      expect(described_class.wakeable?(run_with(:steps => {"a" => step("running", {"n" => 1, "ended_at" => now.iso8601})}, "continue_pending" => mark), now)).to be_nil
+      expect(described_class.wakeable?(run_with(:steps => {"a" => step("passed", {"n" => 1})}, "continue_pending" => mark), now)).to be_nil
+    end
+
+    it "answers :continue_expired, never :continue, once the mark is older than PARK_SECONDS or has no since" do
+      mark = {"pane" => "%3", "pid" => 41, "kind" => "claude", "step" => "a", "attempt" => 1, "since" => now.iso8601}
+      open = run_with(:steps => {"a" => step("running", {"n" => 1})}, "continue_pending" => mark)
+
+      expect(described_class.wakeable?(open, now + described_class::PARK_SECONDS)).to eq(:continue)
+      expect(described_class.wakeable?(open, now + described_class::PARK_SECONDS + 1)).to eq(:continue_expired)
+      expect(described_class.wakeable?(open.merge("continue_pending" => mark.except("since")), now)).to eq(:continue_expired)
+      expect(described_class.continue_state(open, now + described_class::PARK_SECONDS + 1)).to eq(:expired)
+      expect(described_class.continue_state(run_with(steps: {"a" => step("running", {"n" => 1})}), now)).to be_nil
+    end
+  end
+
+  describe ".continue_line" do
+    it "names the step and its last attempt's instructions file" do
+      run = run_with(steps: {"a" => step("running", {"n" => 1, "prompt_file" => "/x/a.1.md"})})
+
+      expect(described_class.continue_line(run)).to eq("Continue step a. Your instructions are still in /x/a.1.md.")
     end
   end
 
@@ -779,7 +825,7 @@ RSpec.describe Workspace::WorkflowTransitions do
     it "measures every reading from the round's start, never from when its line went out" do
       run = reviewed({"from" => ["a"], "timeout" => 1799})
 
-      expect(described_class.round_elapsed(round, now)).to eq(1800)
+      expect(described_class.round_elapsed(run, round, now)).to eq(1800)
       expect(described_class.round_timed_out?(run, round, now)).to be(true)
       expect(described_class.typed_review_timed_out?(run, round, now)).to be(true)
       expect(described_class.round_timed_out?(reviewed({"from" => ["a"], "timeout" => 1800}), round, now)).to be(false)
@@ -796,10 +842,44 @@ RSpec.describe Workspace::WorkflowTransitions do
       run = reviewed({"from" => ["a"], "timeout" => 60})
       bad = round.merge("started_at" => "not a time")
 
-      expect(described_class.round_elapsed(bad, now)).to be_nil
-      expect(described_class.round_elapsed(nil, now)).to be_nil
+      expect(described_class.round_elapsed(run, bad, now)).to be_nil
+      expect(described_class.round_elapsed(run, nil, now)).to be_nil
       expect(described_class.round_timed_out?(run, bad, now)).to be(false)
       expect(described_class.typed_review_timed_out?(run, bad, now)).to be(true)
+    end
+
+    it "leaves out the spans the run was paused on the step, an open one running to now, and no other reason's" do
+      run = reviewed({"from" => ["a"], "timeout" => 1200}).merge(
+        "steps" => {"plan" => {"attempts" => [{"n" => 1, "reasons" => [{"code" => "paused", "since" => "2026-10-04T11:35:00Z", "until" => "2026-10-04T11:40:00Z"},
+          {"code" => "failed_check", "since" => "2026-10-04T11:41:00Z", "until" => "2026-10-04T11:44:00Z"}]}]}},
+        "reasons" => [{"code" => "paused", "since" => "2026-10-04T11:45:00Z", "until" => "2026-10-04T11:50:00Z", "step" => "plan"},
+          {"code" => "paused", "since" => "2026-10-04T11:30:00Z", "until" => "2026-10-04T11:59:00Z", "step" => "other"}]
+      )
+
+      expect(described_class.round_elapsed(run, round, now)).to eq(1800 - 600)
+      expect(described_class.round_timed_out?(run, round, now)).to be(false)
+
+      open = run.merge("paused" => {"since" => "2026-10-04T11:55:00Z", "by" => "person"})
+      expect(described_class.round_elapsed(open, round, now)).to eq(1800 - 600 - 300)
+      expect(described_class.round_elapsed(open, round, now + 3600)).to eq(1800 - 600 - 300)
+    end
+
+    it "measures a step's attempt from its start less the pause spans, nil for a start that can't be read" do
+      attempt = {"n" => 1, "started_at" => "2026-10-04T11:30:00Z", "reasons" => [{"code" => "paused", "since" => "2026-10-04T11:40:00Z", "until" => "2026-10-04T11:50:00Z"}]}
+      run = {"current" => "plan", "steps" => {"plan" => {"attempts" => [attempt]}}}
+
+      expect(described_class.step_elapsed(run, attempt, now)).to eq(1200)
+      expect(described_class.step_elapsed(run, attempt.merge("started_at" => "bad"), now)).to be_nil
+      expect(described_class.step_elapsed(run, nil, now)).to be_nil
+    end
+
+    it "lists a step's paused entries, its attempts' and the run's for it, plus the pause under way on the current step" do
+      run = {"current" => "plan", "paused" => {"since" => "2026-10-04T11:55:00Z"},
+             "steps" => {"plan" => {"attempts" => [{"reasons" => [{"code" => "paused", "since" => "a"}, {"code" => "parked", "since" => "b"}]}]}},
+             "reasons" => [{"code" => "paused", "since" => "c", "step" => "plan"}, {"code" => "paused", "since" => "d", "step" => "build"}]}
+
+      expect(described_class.pause_spans(run, "plan").map { |entry| entry["since"] }).to eq(["a", "c", "2026-10-04T11:55:00Z"])
+      expect(described_class.pause_spans(run, "build").map { |entry| entry["since"] }).to eq(["d"])
     end
   end
 

@@ -119,15 +119,17 @@ module Workspace
     # The fake agent and the fake person, one move at a time, until the run is finished or waits for a real person.
     def drive(engine, store, id, data, script, clock, records)
       actions = 0
+      marks = []
       loop do
         run = store.run(id)
         return [actions, false] if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
         return [actions, true] if actions >= @max_actions
-        move = next_move(run)
+        move = next_move(run, script, marks)
         return [actions, false] unless move
         actions += 1
         begin
           act(move, engine, store, run, data, script, clock, records)
+          marks << [move, run.current, run.step(run.current).last_attempt&.n] if %i[pause turn].include?(move)
         rescue Workspace::Error => e
           store.record_event(id, "simulated_refused", "code" => e.code, "message" => e.message.lines.first.to_s.strip)
           return [actions, false]
@@ -135,13 +137,22 @@ module Workspace
       end
     end
 
-    def next_move(run)
+    def next_move(run, script, marks)
       state = run.steps.fetch(run.current)
+      here = [run.current, state.last_attempt&.n]
+      return :unpause if run.paused && unpause?(script, marks)
+      return :pause if !run.paused && state.state == "running" && here.last && script.attempt(*here).key?("pause") && !marks.include?([:pause, *here])
       backoff = run.backoff
       return :backoff if backoff.is_a?(Hash) && backoff["to"].is_a?(String) && !backoff["blocked"]
       return :gate if state.gate_waiting?
       return :review if state.state == "reviewing" && run.reason.nil? && !run.parked && state.review.is_a?(Hash) && state.review["pane"] == REVIEW_PANE
       :turn if state.state == "running" && run.reason.nil? && !run.parked
+    end
+
+    # Whether the attempt that paused the run says to unpause, once its agent's turn has ended.
+    def unpause?(script, marks)
+      paused = marks.reverse.find { |each| each.first == :pause }
+      paused && marks.include?([:turn, *paused.drop(1)]) && script.attempt(*paused.drop(1))["unpause"] == true
     end
 
     def act(move, engine, store, run, data, script, clock, records)
@@ -163,11 +174,23 @@ module Workspace
           store.record_event(id, "simulated_person", "action" => "approve", "step" => step, "attempt" => number)
           engine.approve(id, actor: "person", note: said["note"])
         end
+      when :pause
+        text = said_text(script, run)
+        store.record_event(id, "simulated_person", "action" => "pause", "step" => step)
+        engine.pause(id, actor: "person", text: text)
+      when :unpause
+        store.record_event(id, "simulated_person", "action" => "unpause", "step" => step)
+        engine.unpause(id, actor: "person")
       when :turn
         turn(engine, store, run, data, script, records, clock)
       when :review
         review(engine, store, run, script, clock)
       end
+    end
+
+    def said_text(script, run)
+      text = script.attempt(run.current, run.step(run.current).last_attempt.n)["pause"]
+      text.is_a?(String) ? text : nil
     end
 
     # The round's reviewers write their verdicts, each as its own sub-agent would, and the review pane's turn ends. A reviewer
@@ -328,6 +351,11 @@ module Workspace
 
       def pane_row(_workspace, _pane)
         nil
+      end
+
+      # The fake agent acts only between its turns, so the pane is idle whenever the run is looked at.
+      def idle?(_workspace, _pane)
+        true
       end
 
       def daemon_running?(_workspace)

@@ -339,6 +339,19 @@ RSpec.describe Workspace::WorkflowRun do
       expect(described_class.from_h("parked" => {"id" => "p1"}, "pending_context" => []).drop_park.to_h).to eq("pending_context" => [])
     end
   end
+  describe "#with_paused and #drop_paused" do
+    it "stores the pause with its text only when given, and takes it off, leaving the run it was called on alone" do
+      given = described_class.from_h("id" => "wr_1")
+
+      paused = given.with_paused(since: "t0", by: "zach", text: "lunch")
+
+      expect(paused.paused).to eq("since" => "t0", "by" => "zach", "text" => "lunch")
+      expect(given.with_paused(since: "t0", by: "zach").paused).to eq("since" => "t0", "by" => "zach")
+      expect(paused.drop_paused.to_h).to eq("id" => "wr_1")
+      expect(given.paused).to be_nil
+    end
+  end
+
   describe Workspace::WorkflowRun::Step, "review predicates" do
     def step(state, review) = described_class.from_h({"state" => state, "review" => review}.compact)
 

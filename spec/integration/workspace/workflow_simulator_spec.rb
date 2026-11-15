@@ -114,6 +114,53 @@ RSpec.describe Workspace::WorkflowSimulator do
     expect(types(result)).to include("budget_spent")
   end
 
+  it "pauses during a step, ends its turn while paused, and unpauses to start the next step" do
+    result = play("steps:\n  build: [{pause: \"hold on\", unpause: true}]\n")
+
+    expect(result["outcome"]).to eq("completed")
+    expect(types(result)).to include("run_paused", "run_unpaused")
+    expect(types(result).index("run_paused")).to be < types(result).index("run_unpaused")
+    expect(result["transitions"].find { |each| each["type"] == "run_paused" }["text"]).to eq("hold on")
+  end
+
+  it "does not look up a pause for a step with no attempt yet" do
+    data = definition
+    script = Workspace::WorkflowSimScript.parse("steps:\n  build: [{pause: true}]\n", definition: data.to_h, source: "s.yml")
+    pending_start = Class.new(SimpleDelegator) do
+      def initialize(engine, store)
+        super(engine)
+        @store = store
+      end
+
+      def start(**args)
+        started = super
+        @store.change(started["id"]) do |read|
+          hash = read.thawed
+          step = hash["steps"][hash["current"]]
+          step["state"] = "pending"
+          step["attempts"] = []
+          Workspace::WorkflowRun.from_h(hash)
+        end
+        started
+      end
+    end
+    factory = ->(**parts) { pending_start.new(Workspace.build_workflow_engine(**parts), parts.fetch(:store)) }
+    simulator = described_class.new(engine_factory: factory, tmpdir: tmpdir, max_actions: max_actions)
+
+    result = simulator.call(definition: data, script: script)
+
+    expect(result["actions"]).to eq(0)
+    expect(types(result)).not_to include("run_paused")
+  end
+
+  it "stops a paused run when the script does not unpause" do
+    result = play("steps:\n  build: [{pause: true}]\n")
+
+    expect(result["outcome"]).to eq("stopped")
+    expect(types(result)).to include("run_paused")
+    expect(types(result)).not_to include("run_unpaused")
+  end
+
   context "with a cap of 1 action" do
     let(:max_actions) { 1 }
 

@@ -9,6 +9,7 @@ module Workspace
   # named in {CLEARS_BY_ITSELF}. Left out: `turn_ended_background` (a hold for background tasks), a
   # `retry_backoff` whose resume needs no other pane (the wait ends alone), and a `waiting_lock` for less
   # than {LOCK_WAIT_LIMIT} seconds, or with no `since` (a holder that does not let go in that time is stuck).
+  # A `paused` run is listed too: it waits for a person to `unpause`, and `paused` is not in {CLEARS_BY_ITSELF}.
   # A lock wait with nothing but `cancel` to offer has a null `next_action`. A run with no reason is listed when {WorkflowStatus} reports it `stuck`. A run that is working or
   # parked has neither and is not listed.
   class WorkflowNeedsMe

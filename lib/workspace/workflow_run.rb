@@ -10,7 +10,7 @@ module Workspace
     KEYS = %w[
       id schema_version workflow title definition definition_source definition_path definition_sha256
       workspace project worktree base_sha base_guard task inputs note state created_at started_at ended_at
-      current pane loops pending_context reason reasons artifacts_dir parked backoff budget_hold timeout_hold sweep
+      current pane loops pending_context reason reasons artifacts_dir parked paused continue_pending backoff budget_hold timeout_hold sweep
       extra_tokens extra_attempts extra_seconds guard_config_seen cancelled_by
     ].freeze
 
@@ -106,6 +106,21 @@ module Workspace
       hash = thawed
       note = (parked = hash.delete("parked")).is_a?(Hash) ? parked["note"] : nil
       hash["pending_context"] << self.class.resume_note(note) if note
+      self.class.new(hash)
+    end
+
+    # @param since [String] when the pause began (ISO 8601)
+    # @param by [String] who paused the run
+    # @param text [String, nil] the person's reason for the pause
+    # @return [WorkflowRun] this run with a pause; the stored reason stays under it
+    def with_paused(since:, by:, text: nil)
+      self.class.new(to_h.merge("paused" => {"since" => since, "by" => by}.merge(text ? {"text" => text} : {})))
+    end
+
+    # @return [WorkflowRun] this run with no pause
+    def drop_paused
+      hash = thawed
+      hash.delete("paused")
       self.class.new(hash)
     end
 
@@ -227,7 +242,7 @@ module Workspace
       KEYS = %w[
         n started_at ended_at outcome context prompt_file head definition_sha256 prompt_sha256 packs outputs
         agent session usage reasons check code proofs reported evidence remote warnings redelivered redelivery
-        delivery after_park reviews review_outcome retry_of rounds
+        delivery delivering_since after_park reviews review_outcome retry_of rounds
       ].freeze
 
       # @param hash [Hash{String=>Object}, nil]

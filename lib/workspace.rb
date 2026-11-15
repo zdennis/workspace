@@ -583,12 +583,16 @@ module Workspace
   #   the round as its `holder` (default: none stored)
   # @param holder_alive [#call, nil] given a round's `holder`, whether that process still runs, so a resume or a tick delivers a
   #   lapsed round again only once its holder is gone (default: none, every holder taken as alive)
+  # @param interrupter [#call] presses keys in a pane (`workspace`, `pane`, `keys`) for `pause --interrupt`, the one the
+  #   sweep presses through; raises {Workspace::Error} when it can't (default: one that always raises, so a pause
+  #   asked to interrupt reports `interrupted: false` and keeps no mark)
   # @param clock [#call] returns the current Time
   # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
   # @return [Workspace::WorkflowEngine]
   def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
     env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil, review_revision: nil,
-    review_runner: nil, round_rerun: nil, review_summary: nil, round_holder: nil, holder_alive: nil, clock: -> { Time.now }, prompt_writer: File.method(:write))
+    review_runner: nil, round_rerun: nil, review_summary: nil, round_holder: nil, holder_alive: nil, interrupter: ->(*) { raise Workspace::Error, "cannot interrupt: no key presser was given" }, clock: -> { Time.now },
+    prompt_writer: File.method(:write))
     attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
     require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
       commands_config: commands_config, checker: checker)
@@ -617,7 +621,7 @@ module Workspace
     starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
       lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
     decisions = WorkflowDecisions.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-      attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, holder_alive: holder_alive, clock: clock)
+      attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, holder_alive: holder_alive, interrupter: interrupter, clock: clock)
     recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, holder_alive: holder_alive, panes: panes, clock: clock)
     WorkflowEngine.new(starter: starter, evaluation: evaluation, decisions: decisions, recovery: recovery)
   end
@@ -1057,6 +1061,8 @@ module Workspace
     round_holder = WorkflowRoundHolder.new(lock_holder: lock_holder)
     review_shell = env["SHELL"].to_s
     review_shell = "/bin/sh" unless review_shell.start_with?("/") && File.executable?(review_shell)
+    # One key presser for `pause --interrupt` and the sweep's time limits.
+    workflow_interrupter = ->(workspace, pane, keys) { send_command.deliver(name: workspace, pane: pane, keys: keys) }
     workflow_engine = build_workflow_engine(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
@@ -1095,6 +1101,7 @@ module Workspace
       env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },
       event_log: event_log,
       task_store: task_store,
+      interrupter: workflow_interrupter,
       alerts: WorkflowAlerts.new(alert_config: alert_config, log_path: File.join(config.state_dir, "workflow-alerts.log"), error_output: error_output)
     )
     workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for,
@@ -1104,11 +1111,10 @@ module Workspace
     workflow_review_orphans = WorkflowReviewOrphans.new(tmux: tmux, store: workflow_store, panes: workflow_panes)
     workflow_config = WorkflowConfig.new(config_resolver: config_resolver)
     sweep_default_stall = -> { workflow_config.default_stall }
-    sweep_interrupter = ->(workspace, pane, keys) { send_command.deliver(name: workspace, pane: pane, keys: keys) }
-    workflow_review_sweep = WorkflowReviewSweep.new(engine: workflow_engine, panes: workflow_panes, interrupter: sweep_interrupter,
+    workflow_review_sweep = WorkflowReviewSweep.new(engine: workflow_engine, panes: workflow_panes, interrupter: workflow_interrupter,
       orphans: workflow_review_orphans, holder_alive: round_holder.method(:alive?))
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
-      interrupter: sweep_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall)
+      interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do
         out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)
@@ -1146,7 +1152,6 @@ module Workspace
       workspace_facts: workflow_workspace_facts,
       store: workflow_store,
       panes: workflow_panes,
-      tmux: tmux,
       process_tree: process_tree,
       lock_holder: lock_holder,
       output: output,

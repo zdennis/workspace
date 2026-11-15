@@ -5,7 +5,7 @@ require "json"
 
 # Pins the simulator's transcript over each shipped preset, with the simulator's fixed run id and clock,
 # so a change to how a run is stored or changed shows up as a difference here. Regenerate a fixture
-# deliberately with GOLDEN_UPDATE=1. A preset with a `<preset>.script.yml` beside its fixture plays that script (v2's
+# deliberately with GOLDEN_UPDATE=1. A fixture with a `<name>.script.yml` beside its fixture plays that script (v2's
 # reviewers write nothing without one); the others play an empty one.
 RSpec.describe Workspace::WorkflowSimulator, "golden transcripts of the presets" do
   let(:base) { Dir.mktmpdir("wf-golden") }
@@ -22,14 +22,14 @@ RSpec.describe Workspace::WorkflowSimulator, "golden transcripts of the presets"
 
   after { FileUtils.rm_rf(base) }
 
-  def transcript(preset)
+  def transcript(name, preset = name)
     path = File.join(PROJECT_ROOT, "lib", "workflows", "#{preset}.yml")
     lookup = lambda do |id, below: nil|
       file = File.join(PROJECT_ROOT, "lib", "workflows", "#{id}.yml")
       {"text" => File.read(file), "path" => file, "source" => "builtin"} if File.file?(file) && below.nil?
     end
     definition = Workspace::WorkflowDefinition.parse(File.read(path), id: preset, source: "builtin", path: path, parent_lookup: lookup)
-    scripted = File.join(fixtures, "#{preset}.script.yml")
+    scripted = File.join(fixtures, "#{name}.script.yml")
     script = Workspace::WorkflowSimScript.parse(File.file?(scripted) ? File.read(scripted) : "steps: {}\n", definition: definition.to_h, source: "golden.yml")
     inputs = definition.to_h["inputs"].select { |_, each| each["required"] }.transform_values { "golden" }
     result = simulator.call(definition: definition, script: script, inputs: inputs)
@@ -37,14 +37,15 @@ RSpec.describe Workspace::WorkflowSimulator, "golden transcripts of the presets"
     text.gsub(base, "<TMP>").gsub(/\b[0-9a-f]{40,64}\b/, "<SHA>")
   end
 
-  %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2 pr-feedback investigate explore].each do |preset|
-    it "reproduces the #{preset} transcript byte for byte" do
-      text = transcript(preset)
-      golden = File.join(fixtures, "#{preset}.json")
+  {"rpiv" => "rpiv", "rpiv-auto-approve" => "rpiv-auto-approve", "rpiv-auto-approve-v2" => "rpiv-auto-approve-v2", "pr-feedback" => "pr-feedback",
+   "investigate" => "investigate", "explore" => "explore", "rpiv-pause" => "rpiv"}.each do |name, preset|
+    it "reproduces the #{name} transcript byte for byte" do
+      text = transcript(name, preset)
+      golden = File.join(fixtures, "#{name}.json")
       File.write(golden, text) if ENV["GOLDEN_UPDATE"]
 
       expect(File.read(golden)).to eq(text)
-      expect(transcript(preset)).to eq(text)
+      expect(transcript(name, preset)).to eq(text)
     end
   end
 end

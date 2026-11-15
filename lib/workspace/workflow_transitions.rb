@@ -247,13 +247,15 @@ module Workspace
     # mark is cleared once the daemon answers or a turn's end shows the agent
     # had it. A mark older than {DELIVERY_WINDOW} was left by a process that
     # died while it waited: the line may or may not have reached the agent.
+    # The window runs from the attempt's `delivering_since` when it has one (a
+    # line a pause held, typed on the unpause), else from its start.
     #
     # @param attempt [Hash{String=>Object}, nil] a step's last attempt
     # @param now [Time]
     # @return [Symbol, nil] :delivering, :unknown, or nil when the line was delivered or never sent
     def self.delivery(attempt, now)
       return nil unless attempt && attempt["delivery"] == "delivering"
-      (now - Time.iso8601(attempt["started_at"]) > DELIVERY_WINDOW) ? :unknown : :delivering
+      (now - Time.iso8601(attempt["delivering_since"] || attempt["started_at"]) > DELIVERY_WINDOW) ? :unknown : :delivering
     rescue ArgumentError, TypeError
       :unknown
     end
@@ -361,7 +363,7 @@ module Workspace
     # @param now [Time]
     # @return [Boolean]
     def self.typed_review_timed_out?(run, round, now)
-      elapsed = round_elapsed(round, now)
+      elapsed = round_elapsed(run, round, now)
       elapsed.nil? || elapsed > review_timeout(run)
     end
 
@@ -377,16 +379,49 @@ module Workspace
     end
 
     # Seconds a review round has run, from its `started_at` (a delivery again, or a rerun of missing reviewers, starts
-    # it again).
+    # it again), less the spans the run was paused on its step ({.pause_spans}).
     #
+    # @param run [Hash{String=>Object}] a stored run
     # @param round [Hash{String=>Object}, nil] a step's `review`
     # @param now [Time]
     # @return [Float, nil] nil when the round holds no start that can be read
-    def self.round_elapsed(round, now)
+    def self.round_elapsed(run, round, now)
       return nil unless round.is_a?(Hash) && round["started_at"]
-      now - Time.iso8601(round["started_at"].to_s)
+      WorkflowDeadline.active_seconds(Time.iso8601(round["started_at"].to_s), now, pause_spans(run, run["current"]))
     rescue ArgumentError, TypeError
       nil
+    end
+
+    # Seconds an attempt of the current step has run, from its `started_at`, less the spans the run was paused on the
+    # step ({.pause_spans}): the one reading of a step's `timeout` clock, for the sweep and `workflow status`.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param attempt [Hash{String=>Object}, nil] the current step's attempt
+    # @param now [Time]
+    # @return [Float, nil] nil when the attempt holds no start that can be read
+    def self.step_elapsed(run, attempt, now)
+      return nil unless attempt.is_a?(Hash) && attempt["started_at"]
+      WorkflowDeadline.active_seconds(Time.iso8601(attempt["started_at"].to_s), now, pause_spans(run, run["current"]))
+    rescue ArgumentError, TypeError
+      nil
+    end
+
+    # The `paused` reason entries that stop a step's clocks (its attempts' timeout and its review rounds'): every
+    # attempt's own, the run's own entries for that step, and the pause under way when the step is the current one
+    # (an open entry runs to now). Other reasons are not stops here.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String, nil] a step id
+    # @return [Array<Hash{String=>Object}>] entries with `since` and an optional `until`, for {WorkflowDeadline.active_seconds}
+    def self.pause_spans(run, step)
+      state = run.dig("steps", step)
+      attempts = state.is_a?(Hash) ? Array(state["attempts"]).grep(Hash) : []
+      entries = attempts.flat_map { |attempt| Array(attempt["reasons"]) }
+      entries += Array(run["reasons"]).grep(Hash).select { |entry| entry["step"] == step }
+      spans = entries.grep(Hash).select { |entry| entry["code"] == "paused" }
+      paused = run["paused"]
+      spans << {"since" => paused["since"]} if paused.is_a?(Hash) && step == run["current"]
+      spans
     end
 
     # Whether a review round has run past its `review.timeout` ({.review_timeout}, {.round_elapsed}); false for one
@@ -397,7 +432,7 @@ module Workspace
     # @param now [Time]
     # @return [Boolean]
     def self.round_timed_out?(run, round, now)
-      elapsed = round_elapsed(round, now)
+      elapsed = round_elapsed(run, round, now)
       !elapsed.nil? && elapsed > review_timeout(run)
     end
 
@@ -510,7 +545,7 @@ module Workspace
     # @param now [Time]
     # @return [Boolean]
     def self.typed_press_missed?(run, round, now)
-      elapsed = round_elapsed(round, now)
+      elapsed = round_elapsed(run, round, now)
       elapsed.nil? || elapsed > 2 * review_timeout(run)
     end
 
@@ -598,6 +633,50 @@ module Workspace
       "#{text} A check that finished while this was parked was not recorded; resume the run to run it again."
     end
 
+    # Seconds a parked resume waits for its turn to end, and a `continue_pending` mark for its pane to prove idle.
+    PARK_SECONDS = 3600
+
+    # The one line typed into a pane whose turn `pause --interrupt` stopped, once the run is unpaused and the pane
+    # is idle: the step and its instructions file, never the instructions again.
+    CONTINUE_LINE = "Continue step %s. Your instructions are still in %s."
+
+    # Whether a continue mark (`paused.interrupt` or `continue_pending`: "pane", "pid", "kind", "step", "attempt")
+    # still names the run's current step and its open, `running` attempt. A mark for an attempt that ended, or a
+    # step the run moved past, is ignored.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param mark [Hash{String=>Object}, nil]
+    # @return [Boolean]
+    def self.continue_mark?(run, mark)
+      return false unless mark.is_a?(Hash) && mark["step"] == run["current"]
+      state = run.dig("steps", run["current"])
+      return false unless state.is_a?(Hash) && state["state"] == "running"
+      attempt = Array(state["attempts"]).last
+      attempt.is_a?(Hash) && attempt["n"] == mark["attempt"] && attempt["ended_at"].nil?
+    end
+
+    # Where the run's `continue_pending` mark stands: `:due` while it names the open attempt ({.continue_mark?}) and
+    # its `since` is no more than {PARK_SECONDS} ago, `:expired` once it is older (or has no readable `since`), nil
+    # when there is no mark or it names an attempt the run moved past.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Symbol, nil] :due, :expired or nil
+    def self.continue_state(run, now)
+      mark = run["continue_pending"]
+      return nil unless continue_mark?(run, mark)
+      since = Time.iso8601(mark["since"].to_s)
+      (now - since > PARK_SECONDS) ? :expired : :due
+    rescue ArgumentError
+      :expired
+    end
+
+    # @param run [Hash{String=>Object}] a stored run on the step the line is for
+    # @return [String] {CONTINUE_LINE} for the run's current step and its last attempt's instructions file
+    def self.continue_line(run)
+      format(CONTINUE_LINE, run["current"], Array(run.dig("steps", run["current"], "attempts")).last&.fetch("prompt_file", nil))
+    end
+
     # Whether a run is one only a timer will wake: a resume is parked on it,
     # an `on_fail` retry's backoff is over,
     # it waits for a lock, its check was started and never reported back
@@ -606,15 +685,23 @@ module Workspace
     # {BACKGROUND_HOLD}, or the end of its review round was being judged and
     # nothing reported back ({.lost_round?}), or its review round has to be
     # delivered again, or stopped once its deliveries again are spent ({.round_redelivery}), or its delivered
-    # review round was pressed by the sweep and has not answered ({.unanswered_round?}).
+    # review round was pressed by the sweep and has not answered ({.unanswered_round?}), or a `continue_pending`
+    # mark still names its open attempt ({.continue_state}): `:continue` while it is due (the tick types the continue
+    # line once the pane proves idle), `:continue_expired` once it is older than {PARK_SECONDS} (the tick drops it).
+    # A paused run is never woken, so a pending mark waits for the next unpause.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
     # @param alive [#call, nil] given a review round's `holder`, whether it still runs (see {.round_delivery}); nil
     #   takes every holder as alive, so a lapsed round with a holder is not woken
-    # @return [Symbol, nil] :parked, :backoff (a retry's wait is over), :lock, :background, :round, :unanswered, :review, :check, or nil
+    # @return [Symbol, nil] :parked, :continue, :continue_expired, :backoff (a retry's wait is over), :lock, :background, :round, :unanswered, :review, :check, or nil
     def self.wakeable?(run, now, alive: nil)
+      return nil if run["paused"]
       return :parked if run["parked"]
+      case continue_state(run, now)
+      when :due then return :continue
+      when :expired then return :continue_expired
+      end
       return :backoff if backoff(run, now)&.fetch(:state) == :due
       return :lock if run.dig("reason", "code") == "waiting_lock"
       return :background if background_expired?(run["reason"], now)

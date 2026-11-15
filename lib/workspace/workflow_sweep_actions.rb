@@ -47,6 +47,8 @@ module Workspace
 
     def reason_actions(row, id, why)
       case row["reason"]
+      when "paused"
+        [NextAction.build("workflow unpause", id, why: why)]
       when "held"
         [NextAction.build("workflow resume", id, why: why)]
       when "budget_spent", "run_timed_out"

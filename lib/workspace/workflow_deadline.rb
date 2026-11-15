@@ -53,14 +53,24 @@ module Workspace
       return 0.0 unless origin
       finish = time(hash["ended_at"]) || now
       return 0.0 unless finish > origin
-      stops = entries.reject { |entry| MACHINE_CODES.include?(entry["code"]) }.filter_map do |entry|
+      active_seconds(origin, finish, entries.reject { |entry| MACHINE_CODES.include?(entry["code"]) })
+    end
+
+    # @param origin [Time] where the span starts
+    # @param finish [Time] where the span ends
+    # @param stops [Array<Hash{String=>Object}>] reason entries with an ISO `since` and an optional `until`
+    #   (an open entry runs to `finish`); each is clamped to the span, and one with an unreadable time is ignored
+    # @return [Float] seconds from `origin` to `finish`, less the union of the stops
+    def self.active_seconds(origin, finish, stops)
+      spans = stops.filter_map do |entry|
         from = time(entry["since"]) or next
-        to = time(entry["until"]) || finish
+        to = entry["until"] ? time(entry["until"]) : finish
+        next unless to
         from = [from, origin].max
         to = [to, finish].min
         [from, to] if to > from
       end
-      (finish - origin) - union_length(stops)
+      (finish - origin) - union_length(spans)
     end
 
     def self.union_length(spans)

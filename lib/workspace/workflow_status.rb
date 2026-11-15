@@ -418,6 +418,7 @@ module Workspace
     # the pane shows comes first. A parked run hides it: the resume needs it,
     # and nobody has to act on it.
     def reason_for(run, working, pane, shown, warnings, review_pane: nil)
+      return paused_reason(run) if run.paused
       case WorkflowEngine.parked(run.to_h, @clock.call)
       when :waiting then return waiting_on_person(run, pane, shown, warnings)
       when :expired then return gate_waiting?(run) ? run.reason : park_timeout(run, pane)
@@ -431,6 +432,14 @@ module Workspace
                 "details" => {"step" => run.current, "pane" => pane, "workspace" => run.workspace}}
       end
       waiting_on_person(run, pane, shown, warnings) || lost_delivery(run, pane, shown) || hide_while_working(stored, shown)
+    end
+
+    # A pause comes before every other reason, a gate's `waiting_you` too; what it holds back shows as `details.held`.
+    def paused_reason(run)
+      pause = run.paused
+      held = run.reason
+      {"code" => "paused", "since" => pause["since"], "by" => pause["by"], "text" => pause["text"]}.compact
+        .merge(held ? {"details" => {"held" => held}} : {})
     end
 
     # The current attempt's `require:` proofs that ran outside the run's lock, with their results and logs.
@@ -531,14 +540,18 @@ module Workspace
       timeout = run.definition["steps"].find { |step| step["id"] == run.current }["timeout"]
       started = state.last_attempt&.started_at
       # A reviewing step's attempt has ended, so the step timeout no longer runs.
-      if timeout && started && %w[running checking].include?(state.state) && @clock.call - Time.iso8601(started) > timeout
-        flags << "timed_out"
+      if timeout && started && !run.paused && %w[running checking].include?(state.state)
+        # A start that is not a time makes the run malformed, as before; the clock itself is the sweep's.
+        Time.iso8601(started)
+        elapsed = WorkflowTransitions.step_elapsed(run.to_h, state.last_attempt&.to_h, @clock.call)
+        flags << "timed_out" if elapsed && elapsed > timeout
       end
-      flags << "timed_out" if round_timed_out?(run, state)
+      flags << "timed_out" if round_timed_out?(run, state) && !run.paused
       flags << "delivering" if round_live?(run) && WorkflowTransitions.round_delivery(state.review, @clock.call) == :delivering
       delivering = WorkflowEngine.delivery(state.last_attempt&.to_h, @clock.call) == :delivering
       flags << "delivering" if delivering
       flags << "parked" if live_park?(run)
+      flags << "paused" if run.paused
       # The agent is idle on a step that still reads as being worked on: its turn ended unseen.
       if state.state == "running" && reason.nil? && !delivering && !hidden_reason?(run.reason, shown) && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
         flags << "idle"
@@ -594,6 +607,7 @@ module Workspace
       resume = NextAction.build("workflow resume", id, needs: plain)
       from = ->(step) { NextAction.build("workflow resume", id, "--from", step.to_s, needs: extra.call(step.to_s)) }
       focus = NextAction.build("focus", run.workspace, "--pane", pane) if pane
+      return [NextAction.build("workflow unpause", id), cancel] if reason["code"] == "paused"
       # A held retry would block again on the same pane: the resume has to name another one.
       return [NextAction.build("workflow resume", id, needs: [NextAction.need("pane", "--pane")] + extra.call(here)), cancel] if run.backoff&.dig("blocked") && run.state == "waiting"
       case reason["code"]

@@ -4,9 +4,9 @@
 # (`stale`), and a kick that types nothing when it reports a failure.
 class FakeWorkflowPanes
   CONTROL_METHODS = %i[changed kicks bound stale idle turn_over gone agents_gone rows respawns restarted kick_result kick_result= bind_error bind_error=
-    daemon daemon= respawn_result respawn_result= on_row on_row= session session= queue_kicks].freeze
+    daemon daemon= respawn_result respawn_result= on_row on_row= session session= queue_kicks pids].freeze
 
-  attr_reader :changed, :kicks, :bound, :stale, :idle, :turn_over, :gone, :agents_gone, :rows, :respawns, :restarted
+  attr_reader :changed, :kicks, :bound, :stale, :idle, :turn_over, :gone, :agents_gone, :rows, :respawns, :restarted, :pids
   attr_accessor :kick_result, :bind_error, :daemon, :respawn_result, :on_row, :session
 
   def initialize
@@ -23,6 +23,7 @@ class FakeWorkflowPanes
     @agents_gone = []
     @daemon = true
     @rows = {}
+    @pids = {}
     @session = true
     @respawns = []
     @respawn_result = {ok: true}
@@ -71,6 +72,9 @@ class FakeWorkflowPanes
   end
 
   def session_live?(_workspace) = @session
+
+  # The process tmux started in +pane+, from +pids+.
+  def pane_pid(_workspace, pane) = @pids[pane]
 
   def respawn_daemon(workspace)
     @respawns << workspace

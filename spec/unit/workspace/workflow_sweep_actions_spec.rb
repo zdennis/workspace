@@ -27,6 +27,10 @@ RSpec.describe Workspace::WorkflowSweepActions do
     expect(call([row("held")])).to eq([{"action" => "workflow resume", "args" => ["wr_1"], "needs" => [], "why" => "held"}])
   end
 
+  it "unpauses a paused run" do
+    expect(call([row("paused")])).to eq([{"action" => "workflow unpause", "args" => ["wr_1"], "needs" => [], "why" => "paused"}])
+  end
+
   it "gives no action for a held or recorded row without a run id" do
     expect(call([row("held", "run_id" => nil), row(nil, "outcome" => "recorded", "run_id" => nil, "cause" => "pane_gone")])).to eq([])
   end

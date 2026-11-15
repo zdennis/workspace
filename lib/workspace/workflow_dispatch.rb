@@ -6,7 +6,8 @@ module Workspace
   # instructions, binds the pane and stores the attempt as `delivering` inside the run's lock; {#deliver}
   # types the line after the lock is given up and records the answer, parking a released resume again when
   # the pane was only busy. A run whose token budget or timeout is used up is held before the attempt, or before a
-  # review round ({#hold_round}). {#check_pane}
+  # review round ({#hold_round}). A paused run is held first, recording what was held as its `pause_hold`
+  # ({#hold_paused}); a line registered before the pause and not yet typed is kept there too, untyped. {#check_pane}
   # says whether another run holds a pane, through the store's occupancy queries.
   class WorkflowDispatch
     # The one line typed into the pane; the instructions themselves are in the file.
@@ -14,6 +15,10 @@ module Workspace
 
     # Restart errors that mean there is no pane to type into.
     PANE_GONE_CODES = %w[no_such_pane pane_gone no_session wrong_session].freeze
+
+    # Continue-line refusals that keep no `continue_pending`: a pane that is gone, or a run that ended or moved past
+    # the marked attempt.
+    CONTINUE_DROPPED = (PANE_GONE_CODES + %w[moved_on]).freeze
 
     # How many times a released resume that could not be typed is parked again.
     # Each failed delivery is an attempt row, but only the first release is held to `max_attempts`, so re-parks
@@ -73,13 +78,20 @@ module Workspace
     # Types the line of an attempt {#dispatch} stored, then records the daemon's answer under the run's lock,
     # if the run is still on that attempt and nothing else (a turn's end, a cancel, a resume) has settled it
     # meanwhile. A line that could not be typed makes the run wait as before; a late answer for an attempt
-    # already settled changes nothing.
+    # already settled changes nothing. A run paused since the line was registered types nothing: the line is kept
+    # as its `pause_hold` (kind `delivery`) and the attempt stays open and `running`, with no delivery mark. A pause
+    # that lands after that read gets its line typed, as one just after the line went out would: it takes effect at
+    # the next dispatch.
     #
     # @param run_id [String]
     # @param delivery [Hash{String=>Object}] the line {#dispatch} registered
     # @return [WorkflowRun] the run afterwards; as stored when it was cancelled while the line was on its way
     # @raise [Workspace::Error] code `unknown_run`
     def deliver(run_id, delivery)
+      if @store.run(run_id).paused
+        held = hold_delivery(run_id, delivery)
+        return held if held
+      end
       record_remote(run_id, delivery) if delivery["remote_baseline"]
       kick = begin
         @panes.kick(workspace: delivery["workspace"], pane: delivery["pane"], text: delivery["text"], fresh: delivery["fresh"], run_id: run_id)
@@ -98,6 +110,41 @@ module Workspace
       # Cancelled while the line was on its way: the cancel stands.
       raise unless e.code == "run_not_active"
       @store.run(run_id)
+    end
+
+    # Types the continue line ({WorkflowTransitions::CONTINUE_LINE}) into a pane whose turn `pause --interrupt`
+    # stopped, with the run's lock given up, and records `step_continued` (`delivered`; `code`, `message` and
+    # `pending` when the line was not typed). The run is read first, as {#deliver} does: one paused again since its
+    # caller's change types nothing (code `run_paused`), and so does one that has ended or moved past the marked
+    # attempt since (code `moved_on`). A line not typed for any reason but those in {CONTINUE_DROPPED} puts the mark back as `continue_pending` under the run's lock (its `since` kept, so
+    # {WorkflowTransitions.continue_state} still expires it), when the run is still on the marked attempt and holds no
+    # other mark, and a later tick tries again. It adds no attempt and spends nothing, and never raises for a refusal.
+    #
+    # @param run_id [String]
+    # @param mark [Hash{String=>Object}] the continue mark ("pane", "pid", "kind", "step", "attempt", "since")
+    # @param workspace [String]
+    # @param text [String] the line
+    # @param actor [String] who made the change that let the line go, one of {WorkflowRunChange::ACTORS}
+    # @param cause [String] that change's cause (`unpause` or `tick`)
+    # @return [Hash] the kick's answer: :ok, and when false :code, :message and :pending (whether the mark was put back)
+    def type_continue(run_id, mark, workspace:, text:, actor:, cause:)
+      run = @store.run(run_id)
+      kick = if WorkflowRunStore::TERMINAL_STATES.include?(run.state) || !WorkflowTransitions.continue_mark?(run.to_h, mark)
+        {ok: false, code: "moved_on", message: "the run has ended or moved past the attempt the line was for"}
+      elsif run.paused
+        {ok: false, code: "run_paused", message: "the run was paused again before the line was typed"}
+      else
+        begin
+          @panes.kick(workspace: workspace, pane: mark["pane"], text: text, fresh: false, run_id: run_id)
+        rescue => e
+          {ok: false, code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.scrub.strip}
+        end
+      end
+      kick = kick.merge(pending: !CONTINUE_DROPPED.include?(kick[:code].to_s) && keep_continue(run_id, mark, actor, cause)) unless kick[:ok]
+      line = {"step" => mark["step"], "attempt" => mark["attempt"], "pane" => mark["pane"], "delivered" => kick[:ok],
+              "actor" => actor, "cause" => cause, "from_state" => nil, "to_state" => nil}
+      @store.record_event(run_id, "step_continued", line.merge(kick.slice(:code, :message, :pending).transform_keys(&:to_s)))
+      kick
     end
 
     # Refuses a pane another run holds: one bound to a run still going, one a parked run waits for (a run
@@ -132,18 +179,37 @@ module Workspace
     # an attempt, with the same exemption (a round leaving a lock wait was allowed when it was reached). The hold
     # (`budget_hold`, `timeout_hold`) records `{"review_round" => round}` and no pane, so its release starts that
     # round, never an author attempt; the reason is `budget_spent` or `run_timed_out`, its details naming the round.
-    # The caller keeps the step `reviewing`. A redelivery of a round already started is not asked here.
+    # The caller keeps the step `reviewing`. A redelivery of a round already started is not asked here. A paused run
+    # holds the round first ({#hold_paused}, kind `round`), whatever its limits.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, at the step whose round would start; left as it is
     # @param round [Integer] the round about to start
     # @return [WorkflowRun, nil] the run held; nil when the round may start
     def hold_round(run, round:)
+      paused = hold_paused(run, {"kind" => "round", "review_round" => round})
+      return paused if paused
       work = WorkflowRun.from_h(run).thawed
       spent = budget_holds?(work)
       late = time_holds?(work)
       return nil unless spent || late
       hold(work, {"review_round" => round}, budget: spent, time: late)
       work["reason"]["details"]["review_round"] = round
+      WorkflowRun.from_h(work)
+    end
+
+    # Holds a dispatch of a paused run: +hold+ (its "kind", `attempt` or `round`, and what its replay needs) is stored
+    # as the run's `pause_hold`, in the `budget_hold` shape, the run's locks are given up, and the run waits with
+    # no stored reason (the pause is what it shows). Nothing is typed, and the step is left where it was. A run that
+    # already holds a dispatch keeps that one and is left as it is: there is only ever one held dispatch.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run; left as it is
+    # @param hold [Hash{String=>Object}] the record to store
+    # @param release [Boolean] false keeps the run's locks (a rerun's `review.uses`, which its replay then needs not take)
+    # @return [WorkflowRun, nil] the run held; nil when the run is not paused
+    def hold_paused(run, hold, release: true)
+      work = WorkflowRun.from_h(run).thawed
+      return nil unless work["paused"]
+      pause_hold(work, hold, release: release)
       WorkflowRun.from_h(work)
     end
 
@@ -198,6 +264,7 @@ module Workspace
 
     # The body of {#dispatch}, over a working copy of the run.
     def start_attempt(run, ctx:, cause:, context:, budgeted:, retry_of:)
+      return pause_attempt(run, cause, context, budgeted, retry_of) if run["paused"]
       adopt(run, drop_park(run, "moved_on")) if run.key?("parked")
       step = step_def(run)
       state = step_state(run)
@@ -365,6 +432,53 @@ module Workspace
                  "retry_of" => retry_of&.fetch("attempt", nil)}.compact, budget: budget, time: time)
     end
 
+    # A paused run's attempt is held before anything is taken or written, with the pane and identity a budget hold
+    # keeps, so its replay starts the attempt this dispatch would have.
+    def pause_attempt(run, cause, context, budgeted, retry_of)
+      pane = retry_of&.fetch("pane", nil) || bound_pane(run)
+      identity = retry_of&.fetch("identity", nil) || @panes.identity(run["id"])
+      pause_hold(run, {"kind" => "attempt", "cause" => cause, "context" => context, "budgeted" => budgeted, "pane" => pane, "identity" => identity,
+                       "text" => retry_of&.fetch("text", nil), "retry_of" => retry_of&.fetch("attempt", nil)}.compact)
+    end
+
+    # There is only ever one held dispatch: a run that already holds one keeps it and is left as it is.
+    def pause_hold(run, hold, release: true)
+      return true if run["pause_hold"]
+      release(run) if release
+      run["pause_hold"] = hold
+      run["state"] = "waiting"
+      run["reason"] = nil
+      true
+    end
+
+    # The line {#deliver} was about to type for a run paused since {#dispatch} registered it. Under the lock, a run
+    # still paused types nothing: when it is still on that attempt and `delivering`, the mark is taken off, the
+    # attempt stays open and `running` (it was not refused, so it is not `not_delivered`), and `pause_hold` keeps the
+    # line ("kind" `delivery`, "step", "attempt", "delivery") for the unpause to type. Nil when the pause has ended
+    # meanwhile, so the line is typed.
+    def hold_delivery(run_id, delivery)
+      held = false
+      paused = false
+      run = @change.call(run_id, actor: "engine", cause: "delivery") do |stored|
+        next unless (paused = !!stored.paused)
+        attempt = stored.step(delivery["step"])&.last_attempt
+        next unless stored.current == delivery["step"] && attempt&.n == delivery["attempt"] && attempt.to_h["delivery"] == "delivering"
+        # The first hold is kept; this line's mark lapses, and the tick after the unpause sees to it.
+        next if stored.to_h["pause_hold"]
+        held = true
+        work = stored.thawed
+        work["steps"].fetch(delivery["step"])["attempts"].last.delete("delivery")
+        work["pause_hold"] = {"kind" => "delivery", "step" => delivery["step"], "attempt" => delivery["attempt"], "delivery" => delivery}
+        WorkflowRun.from_h(work)
+      end
+      return nil unless paused
+      if held
+        @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"], "pane" => delivery["pane"],
+          "delivered" => false, "actor" => "engine", "cause" => "paused", "from_state" => nil, "to_state" => nil)
+      end
+      run
+    end
+
     # The hold itself, for an attempt or a review round: +hold+ is the record each spent limit stores.
     def hold(run, hold, budget:, time:)
       reading = WorkflowBudget.reading(run, live: false) if budget
@@ -450,6 +564,22 @@ module Workspace
 
     def reason(code, details)
       {"code" => code, "since" => now_iso, "details" => details}
+    end
+
+    # Puts a continue mark back as `continue_pending`, so a later tick types the line; true when it did.
+    def keep_continue(run_id, mark, actor, cause)
+      kept = false
+      @change.call(run_id, actor: actor, cause: cause) do |read|
+        stored = read.thawed
+        next read unless WorkflowTransitions.continue_mark?(stored, mark) && !stored.key?("continue_pending")
+        stored["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
+        kept = true
+        WorkflowRun.from_h(stored)
+      end
+      kept
+    rescue Workspace::Error => e
+      raise unless %w[run_not_active unknown_run].include?(e.code)
+      false
     end
 
     def now_iso

@@ -149,6 +149,26 @@ module Workspace
       @decisions.refuse_resume(run, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
     end
 
+    # Stops a run from starting anything new until {#unpause}. See {WorkflowDecisions#pause}.
+    # @param interrupt [Boolean] also press the agent's interrupt keys in the run's pane while it works
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Hash{String=>Object}] the run afterwards, with "interrupted": true when the keys were pressed, and
+    #   "interrupt_warning" when a press was tried and failed
+    def pause(run_id, actor:, text: nil, interrupt: false)
+      paused = @decisions.pause(run_id, actor: actor, text: text, interrupt: interrupt)
+      paused.run.to_h.merge("interrupted" => paused.interrupted).merge(paused.warning ? {"interrupt_warning" => paused.warning} : {})
+    end
+
+    # Ends a pause and does what it held. See {WorkflowDecisions#unpause}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Hash{String=>Object}] the run afterwards, with "unpaused": {"action", "held"} (what the unpause did, as on
+    #   `run_unpaused`), plus "continued" (true, false or "pending") and "warning" when a continue line applied
+    def unpause(run_id, actor:)
+      unpaused = @decisions.unpause(run_id, actor: actor)
+      shown = {"action" => unpaused.action, "held" => unpaused.held}.merge({"continued" => unpaused.continued, "warning" => unpaused.warning}.compact)
+      unpaused.run.to_h.merge("unpaused" => shown)
+    end
+
     # Ends a run: gives up its resources and frees its pane. See {WorkflowDecisions#cancel}.
     # @return [Hash{String=>Object}] the run afterwards
     def cancel(run_id, actor:, cause: "cancel") = @decisions.cancel(run_id, actor: actor, cause: cause).to_h
