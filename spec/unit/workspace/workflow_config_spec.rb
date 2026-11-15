@@ -72,4 +72,34 @@ RSpec.describe Workspace::WorkflowConfig do
       expect(config.default_stall).to eq(600)
     end
   end
+
+  describe "#turn_failed_after" do
+    def after(value)
+      global["workflows"] = {"turn_failed_after" => value}
+      config.turn_failed_after
+    end
+
+    it "is 1800 seconds when unset" do
+      expect(config.turn_failed_after).to eq(1800)
+    end
+
+    it "reads a duration" do
+      expect(after("10m")).to eq(600)
+    end
+
+    it "is nil for off and 0" do
+      expect(after("off")).to be_nil
+      expect(after("0")).to be_nil
+    end
+
+    it "is 1800 for a value `config set` would refuse" do
+      expect(after("soon")).to eq(1800)
+    end
+
+    it "is 1800 when the global file can't be parsed" do
+      allow(project_settings).to receive(:load_global).and_raise(Workspace::ConfigParseError.new("/c/config.yml", "bad"))
+
+      expect(config.turn_failed_after).to eq(1800)
+    end
+  end
 end

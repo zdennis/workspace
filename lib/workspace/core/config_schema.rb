@@ -646,6 +646,8 @@ module Workspace
       end,
       Key.new(name: "workflows.default_stall", scope: :global, type: :duration, settable: true, examples: ["10m", "off"], default: 600, parser: OPTIONAL_DURATION,
         doc: "How long a workflow step may sit idle, counted from when the agent's turn is proven over, before `workflow sweep` treats it as stalled, for a definition with no `stall:` of its own (default `10m`). `0` or `off` turns the default off"),
+      Key.new(name: "workflows.turn_failed_after", scope: :global, type: :duration, settable: true, examples: ["10m", "off"], default: 1800, parser: OPTIONAL_DURATION,
+        doc: "How long a pane whose agent turn ended on an API error (`turn_failed`) may sit before `workflow sweep` records its workflow step as stalled with cause `turn_failed` (default `30m`). `0` or `off` turns the time threshold off; recovery giving up still stalls the step"),
       Key.new(name: "events.rotate_size", scope: :global, type: :size, unit: "bytes", settable: true, examples: ["512KB", "5MB"], default: 5 * 1024 * 1024, restart: true, min: MIN_EVENTS_ROTATE_SIZE, parser: EVENTS_ROTATE_SIZE,
         doc: "Size at which a daemon's hook-event file rotates to `<workspace>.jsonl.1` (default `5MB`, at least `64KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes; see [`workspace events`](README.events.md)"),
       Key.new(name: "codex.hooks.install", scope: :global, type: :boolean, settable: true, default: true, parser: BOOLEAN,

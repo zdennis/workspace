@@ -2,6 +2,7 @@ module Workspace
   # Reads the `workflows:` block, as written by `workspace config set`.
   class WorkflowConfig
     DEFAULT_STALL = 600
+    DEFAULT_TURN_FAILED_AFTER = 1800
 
     # @param config_resolver [Workspace::ConfigResolver]
     def initialize(config_resolver:)
@@ -29,7 +30,7 @@ module Workspace
     # The idle time after which a step of a definition with no `stall:` counts
     # as stalled: `workflows.default_stall` from the global file, `600` when it
     # is unset, holds a value `config set` would refuse or the file can't be
-    # parsed. `off` and `0` give nil.
+    # can not be parsed. `off` and `0` give nil.
     #
     # @return [Numeric, nil] seconds, or nil when the default is turned off
     def default_stall
@@ -37,6 +38,20 @@ module Workspace
       value.nil? ? DEFAULT_STALL : ConfigSchema.parse("workflows.default_stall", value)
     rescue ArgumentError, Workspace::ConfigParseError
       DEFAULT_STALL
+    end
+
+    # How long a pane whose agent turn ended on an API error may sit before
+    # the sweep records its step as stalled with cause `turn_failed`:
+    # `workflows.turn_failed_after` from the global file, `1800` when it is
+    # unset, when it holds a value `config set` would refuse, or when the file
+    # can not be parsed. `off` and `0` give nil.
+    #
+    # @return [Numeric, nil] seconds, or nil when the time threshold is turned off
+    def turn_failed_after
+      value = read("", upto: "global", key: "workflows.turn_failed_after")
+      value.nil? ? DEFAULT_TURN_FAILED_AFTER : ConfigSchema.parse("workflows.turn_failed_after", value)
+    rescue ArgumentError, Workspace::ConfigParseError
+      DEFAULT_TURN_FAILED_AFTER
     end
 
     private
