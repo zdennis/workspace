@@ -1380,6 +1380,38 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { command.unpause(run: "wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("not_paused") }
     end
 
+    it "refuses unpause and pause --interrupt from a pane bound to the run, so its agent can't lift or force a hold, but lets a plain pause through" do
+      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      allow(engine).to receive(:pause).and_return("id" => "wr_1", "workspace" => "app", "interrupted" => false)
+      allow(engine).to receive(:unpause)
+
+      expect { command.unpause(run: "wr_1", caller_pane: "%5") }
+        .to raise_error(Workspace::Error, /A pause is lifted by a person: .*so `workflow unpause` is refused here/) { |error| expect(error.code).to eq("bound_pane") }
+      expect { command.pause(run: "wr_1", interrupt: true, caller_pane: "%5") }
+        .to raise_error(Workspace::Error, /so `workflow pause --interrupt` is refused here/) { |error| expect(error.code).to eq("bound_pane") }
+      expect(engine).not_to have_received(:unpause)
+      expect(command.pause(run: "wr_1", caller_pane: "%5")).to include("outcome" => "paused")
+    end
+
+    it "refuses unpause from a process under the run's pane" do
+      tree(under: true)
+      allow(lock_holder).to receive(:current).and_return(nil)
+      allow(engine).to receive(:unpause)
+
+      expect { command.unpause(run: "wr_1") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
+      expect(engine).not_to have_received(:unpause)
+    end
+
+    it "says the interrupt keys could not be pressed, with the failure as the row's warning" do
+      allow(engine).to receive(:pause).and_return("id" => "wr_1", "workspace" => "app", "interrupted" => false, "interrupt_warning" => "tmux said no")
+
+      row = command.pause(run: "wr_1", interrupt: true)
+
+      expect(row).to include("outcome" => "paused", "interrupted" => false, "warning" => "tmux said no")
+      expect(row["run"]).not_to have_key("interrupt_warning")
+      expect(output.string).to include("Paused, but the interrupt keys could not be pressed.", "warning: tmux said no")
+    end
+
     it "hands --extra-tokens of a reject to the engine" do
       allow(engine).to receive(:reject).and_return("id" => "wr_1", "workspace" => "app")
 

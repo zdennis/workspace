@@ -128,15 +128,22 @@ RSpec.describe Workspace::WorkflowRecovery do
       it "drops a mark older than PARK_SECONDS as expired, typing nothing and reading no pane" do
         pending_run
         clock_at[0] = Time.iso8601(mark["since"]) + Workspace::WorkflowTransitions::PARK_SECONDS + 1
-        panes = RecordingWorkflowPanes.new(turn_over: ["%3"], pids: {"%3" => 41})
-        allow(panes).to receive(:pane_pid).and_call_original
+        counting = Class.new(RecordingWorkflowPanes) do
+          def pid_reads = (@pid_reads ||= [])
+
+          def pane_pid(workspace, pane)
+            pid_reads << pane
+            super
+          end
+        end
+        panes = counting.new(turn_over: ["%3"], pids: {"%3" => 41})
 
         run = ticking(panes).tick("wr_1", actor: "daemon")
 
         expect(run).to be_a(Workspace::WorkflowRun)
         expect(store.runs["wr_1"]).not_to have_key("continue_pending")
         expect(dispatch.calls).to be_empty
-        expect(panes).not_to have_received(:pane_pid)
+        expect(panes.pid_reads).to be_empty
         expect(change.events).to eq([["wr_1", "continue_pending_ended", {"step" => "build", "attempt" => 1, "pane" => "%3", "how" => "expired"}]])
         expect(store.runs["wr_1"]["steps"]["build"]["attempts"].last).not_to include("ended_at")
       end

@@ -152,7 +152,6 @@ module Workspace
           opts.separator ""
           opts.separator "Examples:"
           opts.separator "  workspace workflow show    # list the workflows you can run"
-          opts.separator "  workspace workflow show rpiv    # see the inputs and steps of one before running it"
           opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --dry-run    # check a run in this workspace and start nothing"
           opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\"    # start it for real: step one is typed into the Claude pane"
           opts.separator "  workspace workflow start rpiv --prompt \"add a hello script\"    # make a worktree workspace from a sentence and run rpiv in it"
@@ -161,8 +160,7 @@ module Workspace
           opts.separator "  workspace workflow reject RUN --note \"Too big; split it.\"    # send the gated step back with a reason"
           opts.separator "  workspace workflow resume RUN --from implement    # start a stuck run again at one step"
           opts.separator "  workspace workflow cancel RUN    # end a run and release its locks"
-          opts.separator "  workspace workflow pause RUN    # hold a run: nothing new starts until you unpause it"
-          opts.separator "  workspace workflow unpause RUN    # let a paused run go on, doing what the pause held"
+          opts.separator "  workspace workflow pause RUN    # hold a run: nothing new starts until `workflow unpause RUN`"
         end
       end
 
@@ -348,8 +346,8 @@ module Workspace
         when "resume"
           workflow_action(invocation, "workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds, caller_pane: ENV["TMUX_PANE"], accept_guard: options[:accept_guard] || false, guard_retry: options[:guard_retry] || false) }
         when "cancel" then workflow_action(invocation, "workflow cancel", options) { @workflow_command.cancel(run: subject) }
-        when "pause" then workflow_action(invocation, "workflow pause", options) { @workflow_command.pause(run: subject, interrupt: options[:interrupt] || false, reason: options[:reason]) }
-        when "unpause" then workflow_action(invocation, "workflow unpause", options) { @workflow_command.unpause(run: subject) }
+        when "pause" then workflow_action(invocation, "workflow pause", options) { @workflow_command.pause(run: subject, interrupt: options[:interrupt] || false, reason: options[:reason], caller_pane: ENV["TMUX_PANE"]) }
+        when "unpause" then workflow_action(invocation, "workflow unpause", options) { @workflow_command.unpause(run: subject, caller_pane: ENV["TMUX_PANE"]) }
         when "approve"
           workflow_action(invocation, "workflow approve", options) do
             @workflow_command.approve(run: subject, note: options[:note], **gate_options, note_sha256: options[:note_sha256], caller_pane: ENV["TMUX_PANE"])

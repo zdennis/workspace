@@ -152,10 +152,11 @@ module Workspace
     # Stops a run from starting anything new until {#unpause}. See {WorkflowDecisions#pause}.
     # @param interrupt [Boolean] also press the agent's interrupt keys in the run's pane while it works
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
-    # @return [Hash{String=>Object}] the run afterwards, with "interrupted": true when the keys were pressed
+    # @return [Hash{String=>Object}] the run afterwards, with "interrupted": true when the keys were pressed, and
+    #   "interrupt_warning" when a press was tried and failed
     def pause(run_id, actor:, text: nil, interrupt: false)
       paused = @decisions.pause(run_id, actor: actor, text: text, interrupt: interrupt)
-      paused.run.to_h.merge("interrupted" => paused.interrupted)
+      paused.run.to_h.merge("interrupted" => paused.interrupted).merge(paused.warning ? {"interrupt_warning" => paused.warning} : {})
     end
 
     # Ends a pause and does what it held. See {WorkflowDecisions#unpause}.

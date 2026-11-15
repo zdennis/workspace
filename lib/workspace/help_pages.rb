@@ -965,7 +965,8 @@ module Workspace
           "already paused (already_paused).",
           "",
           "With --interrupt, the agent's interrupt keys are pressed in the run's pane if the agent is working there, and",
-          "`interrupted` in --json says whether they were. `workflow unpause` then tells the agent to continue."],
+          "`interrupted` in --json says whether they were. `workflow unpause` then tells the agent to continue.",
+          "--interrupt is refused (bound_pane) from a pane bound to a run and from a process under the run's own pane."],
         options: [["--interrupt", "Also press the agent's interrupt keys in the run's pane if the agent is working"],
           ["--reason TEXT", "Why (1 to 4000 characters); kept with the pause and shown in status"],
           JSON_OPT],
@@ -984,10 +985,12 @@ module Workspace
           "working is left alone. `unpaused` in --json says what was done: `action`, `held`, and `continued` or",
           "`warning` when the agent was told to continue. It exits 0 even when that is still waiting for the pane, so a",
           "script should check `continued` and `warning`. A run that is not paused is refused (not_paused), and so is",
-          "one that has ended (run_not_active)."],
+          "one that has ended (run_not_active). It is refused (bound_pane) from a pane bound to a run and from a",
+          "process under the run's own pane, so the run's agent cannot lift a person's pause."],
         options: [JSON_OPT],
         examples: [
           ["workspace workflow unpause RUN", "let a run you paused carry on"],
+          ["workspace workflow unpause RUN && workspace workflow status RUN", "carry on, then see what the unpause started"],
           ["workspace workflow unpause RUN --json", "for a script: one action document with the `unpaused` block"]
         ]
       },

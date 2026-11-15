@@ -656,18 +656,24 @@ RSpec.describe Workspace::WorkflowDispatch do
         expect(store.events).to be_empty
       end
 
-      it "types the line when the pause ended before the hold could be written" do
-        store.runs["wr_1"] = delivering
-        unpaused_store = store
-        allow(unpaused_store).to receive(:run).and_wrap_original do |original, id|
-          read = original.call(id)
-          Workspace::WorkflowRun.from_h(read.thawed.merge("paused" => {"since" => "2026-11-10T12:00:00Z", "by" => "person"}))
+      context "when the pause ends between the read and the hold" do
+        let(:store) do
+          Class.new(RecordingRunStore) do
+            def run(id)
+              read = super
+              Workspace::WorkflowRun.from_h(read.thawed.merge("paused" => {"since" => "2026-11-10T12:00:00Z", "by" => "person"}))
+            end
+          end.new(going: going, parked_on: parked_on, backoff_on: backoff_on)
         end
 
-        run = dispatch.deliver("wr_1", delivery)
+        it "types the line when the pause ended before the hold could be written" do
+          store.runs["wr_1"] = delivering
 
-        expect(panes.calls.map(&:first)).to include(:kick)
-        expect(run.to_h).not_to have_key("pause_hold")
+          run = dispatch.deliver("wr_1", delivery)
+
+          expect(panes.calls.map(&:first)).to include(:kick)
+          expect(run.to_h).not_to have_key("pause_hold")
+        end
       end
     end
 

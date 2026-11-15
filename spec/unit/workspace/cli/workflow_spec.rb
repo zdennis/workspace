@@ -560,15 +560,15 @@ RSpec.describe Workspace::CLI::Workflow do
       end
     end
 
-    it "hands pause its --interrupt and --reason, and unpause only the run" do
+    it "hands pause its --interrupt and --reason, and unpause the run, each with the caller's pane" do
       cli.run(%w[workflow pause wr_1])
       cli.run(["workflow", "pause", "wr_1", "--interrupt", "--reason", "look first"])
       cli.run(%w[workflow unpause wr_1])
 
       expect(workflow_command.calls).to eq([
-        [:pause, {run: "wr_1", interrupt: false, reason: nil}],
-        [:pause, {run: "wr_1", interrupt: true, reason: "look first"}],
-        [:unpause, {run: "wr_1"}]
+        [:pause, {run: "wr_1", interrupt: false, reason: nil, caller_pane: ENV["TMUX_PANE"]}],
+        [:pause, {run: "wr_1", interrupt: true, reason: "look first", caller_pane: ENV["TMUX_PANE"]}],
+        [:unpause, {run: "wr_1", caller_pane: ENV["TMUX_PANE"]}]
       ])
     end
 

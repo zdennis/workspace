@@ -126,10 +126,31 @@ RSpec.describe Workspace::WorkflowSimulator do
   it "does not look up a pause for a step with no attempt yet" do
     data = definition
     script = Workspace::WorkflowSimScript.parse("steps:\n  build: [{pause: true}]\n", definition: data.to_h, source: "s.yml")
-    state = instance_double(Workspace::WorkflowRun::Step, state: "pending", last_attempt: nil, gate_waiting?: false)
-    run = instance_double(Workspace::WorkflowRun, current: "build", steps: {"build" => state}, paused: nil, backoff: nil)
+    pending_start = Class.new(SimpleDelegator) do
+      def initialize(engine, store)
+        super(engine)
+        @store = store
+      end
 
-    expect(simulator.send(:next_move, run, script, [])).to be_nil
+      def start(**args)
+        started = super
+        @store.change(started["id"]) do |read|
+          hash = read.thawed
+          step = hash["steps"][hash["current"]]
+          step["state"] = "pending"
+          step["attempts"] = []
+          Workspace::WorkflowRun.from_h(hash)
+        end
+        started
+      end
+    end
+    factory = ->(**parts) { pending_start.new(Workspace.build_workflow_engine(**parts), parts.fetch(:store)) }
+    simulator = described_class.new(engine_factory: factory, tmpdir: tmpdir, max_actions: max_actions)
+
+    result = simulator.call(definition: data, script: script)
+
+    expect(result["actions"]).to eq(0)
+    expect(types(result)).not_to include("run_paused")
   end
 
   it "stops a paused run when the script does not unpause" do

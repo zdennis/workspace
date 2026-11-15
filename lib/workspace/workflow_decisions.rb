@@ -15,8 +15,10 @@ module Workspace
     Resumed = Data.define(:run, :unchanged)
 
     # What a pause did: the run afterwards, and whether `--interrupt` pressed the agent's interrupt keys
-    # (`interrupted`; false when nothing was pressed or the press failed).
-    Paused = Data.define(:run, :interrupted)
+    # (`interrupted`; false when nothing was pressed or the press failed), and why a press failed (`warning`).
+    Paused = Data.define(:run, :interrupted, :warning) do
+      def initialize(run:, interrupted:, warning: nil) = super
+    end
 
     # What an unpause did: the run afterwards, the branch it took (`action`, as on `run_unpaused`), the kind of
     # dispatch the pause held (`held`: `attempt`, `round` or `delivery`; nil when none), and the continue line of a
@@ -378,7 +380,7 @@ module Workspace
       return Paused.new(run: run, interrupted: false) unless press
       failure = press_keys(run, press)
       return Paused.new(run: run, interrupted: true) unless failure
-      Paused.new(run: interrupt_failed(run_id, press, failure, actor), interrupted: false)
+      Paused.new(run: interrupt_failed(run_id, press, failure, actor), interrupted: false, warning: failure)
     end
 
     # Ends a pause and does what it held, never through {#resume} (which would start nothing without a pane, or a
@@ -559,7 +561,7 @@ module Workspace
     def continue_after_unpause(run, action, mark, actor)
       case action
       when "continue"
-        kick = @dispatch.type_continue(run.id, mark.merge("since" => now_iso), workspace: run.workspace, text: WorkflowTransitions.continue_line(run.to_h),
+        kick = @dispatch.type_continue(run.id, mark.merge("since" => mark["since"] || now_iso), workspace: run.workspace, text: WorkflowTransitions.continue_line(run.to_h),
           actor: actor, cause: "unpause")
         return [true, nil] if kick[:ok]
         warning = "the continue line was not typed into pane #{mark["pane"]}: #{kick[:message] || kick[:code]}"
@@ -587,7 +589,7 @@ module Workspace
                          "details" => {"kind" => "dispatch", "step" => run["current"], "pane" => pane, "workspace" => run["workspace"],
                                        "error" => "pane_gone", "message" => "pane #{pane} is gone"}}
       when :continue_pending
-        run["continue_pending"] = mark.merge("since" => now_iso)
+        run["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
       when :evaluate
         run["reason"] = nil
         evaluate(run, ctx)

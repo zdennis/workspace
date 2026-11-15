@@ -844,7 +844,7 @@ Without `--interrupt` the agent keeps working until its turn ends, and the run t
 
 `workflow status` shows a paused run with the reason `paused` (see [the reasons table](#where-a-run-is-stuck)) and lists it under `--needs-me`, with `workflow unpause` as its first action. `pause` stops the `timeout:` clocks: the run's, the step's and the review round's do not count the time paused. A resume already waiting for the agent's pane (see [Resuming from the run's own pane](#resuming-from-the-runs-own-pane)) is dropped when the run is paused. `workflow resume` (including a resume made from the run's own pane) is refused with `run_paused` while the run is paused. Both verbs print the usual action document (outcome `paused` or `unpaused`).
 
-`pause` adds `interrupted` to its row: `true` when the interrupt keys were pressed in a working pane, else `false`. `unpause` starts what the pause held and adds an `unpaused` block:
+`pause` adds `interrupted` to its row: `true` when the interrupt keys were pressed in a working pane, else `false`. When the keys were tried and could not be pressed, the row also has `warning` with the reason. `unpause` starts what the pause held and adds an `unpaused` block:
 
 | Key | Values |
 |---|---|
@@ -853,12 +853,13 @@ Without `--interrupt` the agent keeps working until its turn ends, and the run t
 | `continued` | Only with a continue line: `true` typed, `false` refused, `"pending"` kept for the daemon |
 | `warning` | Why a continue line was refused or is pending |
 
-`unpause` exits 0 even when the continue line is pending or refused: the daemon keeps and retries the line for up to an hour, so a script checks `continued` and `warning`. Refusals:
+`unpause` answers `outcome: failed`, with `reason` and `message` set, when the step it started could not be typed into the pane; the run is unpaused all the same and waits on that reason. `unpause` exits 0 even when the continue line is pending or refused: the daemon keeps and retries the line for up to an hour, so a script checks `continued` and `warning`. Refusals:
 
 - `already_paused`: `workflow pause` on a run that is already paused.
 - `not_paused`: `workflow unpause` on a run that is not paused.
 - `run_not_active`: the run has finished or was cancelled.
 - `run_paused`: `workflow resume` (or a resume from the run's own pane) on a paused run; unpause it first.
+- `bound_pane`: `workflow unpause`, or `workflow pause --interrupt`, from a pane bound to a run or a process under the run's own pane, so the run's agent cannot lift a person's hold. A plain `pause` is allowed there.
 
 ### Reading a run's attempts
 

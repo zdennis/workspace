@@ -1583,6 +1583,7 @@ RSpec.describe Workspace::WorkflowDecisions do
         paused = interrupting(panes_with, interrupter: failing).pause("wr_1", actor: "person", interrupt: true)
 
         expect(paused.interrupted).to be(false)
+        expect(paused.warning).to eq("the daemon refused")
         expect(paused.run.paused).to include("by" => "person")
         expect(paused.run.paused).not_to have_key("interrupt")
         expect(change.events.last).to eq(["wr_1", "pause_interrupt_failed", {"step" => "plan", "attempt" => 1, "pane" => "%3", "message" => "the daemon refused"}])
@@ -1812,9 +1813,16 @@ RSpec.describe Workspace::WorkflowDecisions do
 
       it "hands the dispatch the mark with since now, and answers false for a line no tick will retry (a gone pane)" do
         interrupted
-        dispatch = RecordingDispatch.new(continue_kick: {ok: false, code: "pane_gone", message: "gone", pending: false})
-        marks = []
-        allow(dispatch).to receive(:type_continue).and_wrap_original { |original, run_id, mark, **kw| marks << mark && original.call(run_id, mark, **kw) }
+        marking = Class.new(RecordingDispatch) do
+          def marks = (@marks ||= [])
+
+          def type_continue(run_id, mark, **kw)
+            marks << mark
+            super
+          end
+        end
+        dispatch = marking.new(continue_kick: {ok: false, code: "pane_gone", message: "gone", pending: false})
+        marks = dispatch.marks
 
         unpaused = over_dispatch(dispatch).unpause("wr_1", actor: "person")
 
@@ -1850,6 +1858,14 @@ RSpec.describe Workspace::WorkflowDecisions do
         expect(unpaused.action).to eq("continue")
         expect(unpaused.run.to_h).not_to have_key("continue_pending")
         expect(dispatch.calls.map(&:first)).to eq([:type_continue])
+      end
+
+      it "keeps a kept mark's first since, so pausing again and again does not hold off its expiry" do
+        paused(run_hash.merge("continue_pending" => mark.merge("since" => "2026-11-10T11:30:00Z")))
+
+        unpaused = decisions_over(RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, pids: {}, turn_over: ["%3"], idle: ["%3"])).unpause("wr_1", actor: "person")
+
+        expect(unpaused.run.to_h["continue_pending"]).to eq(mark.merge("since" => "2026-11-10T11:30:00Z"))
       end
 
       it "ignores a mark whose pane's process changed and falls through to the idle branch" do

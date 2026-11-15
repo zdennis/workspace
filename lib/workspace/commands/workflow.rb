@@ -788,19 +788,29 @@ module Workspace
       # @param run [String] a run id
       # @param interrupt [Boolean] also press the agent's interrupt keys in the run's pane while it works
       # @param reason [String, nil] why, shown with the pause
-      # @return [Hash{String=>Object}] the action row, with `interrupted` (true when the keys were pressed)
-      # @raise [Workspace::Error] code `already_paused`, `unknown_run` or `run_not_active`
-      def pause(run:, interrupt: false, reason: nil)
+      # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
+      # @return [Hash{String=>Object}] the action row, with `interrupted` (true when the keys were pressed) and, when
+      #   the press was tried and failed, `warning`
+      # @raise [Workspace::Error] code `already_paused`, `unknown_run` or `run_not_active`; `bound_pane` for
+      #   `--interrupt` from a pane bound to a run or a process under the run's own pane
+      def pause(run:, interrupt: false, reason: nil, caller_pane: nil)
+        refuse_pause_caller!(run, caller_pane, "workflow pause --interrupt", "An agent is interrupted by a person") if interrupt
         paused = @engine.pause(run, actor: "person", text: reason, interrupt: interrupt)
-        row(paused, "paused", message: pause_message(run, paused["interrupted"], interrupt, reason)).merge("interrupted" => paused["interrupted"] == true)
+        warning = paused["interrupt_warning"]
+        extra = {"interrupted" => paused["interrupted"] == true}
+        extra["warning"] = warning if warning
+        row(paused.except("interrupt_warning"), "paused", message: pause_message(run, paused["interrupted"], interrupt, reason, warning)).merge(extra)
       end
 
       # Ends a pause and does what it held.
       #
       # @param run [String] a run id
+      # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [Hash{String=>Object}] the action row, with `unpaused` (`action`, `held`, and `continued` or `warning` when they apply)
-      # @raise [Workspace::Error] code `not_paused`, `unknown_run` or `run_not_active`
-      def unpause(run:)
+      # @raise [Workspace::Error] code `not_paused`, `unknown_run` or `run_not_active`; `bound_pane` from a pane bound
+      #   to a run or a process under the run's own pane, so an agent doesn't lift a person's hold
+      def unpause(run:, caller_pane: nil)
+        refuse_pause_caller!(run, caller_pane, "workflow unpause", "A pause is lifted by a person")
         unpaused = @engine.unpause(run, actor: "person")
         row(unpaused, "unpaused", message: unpause_message(unpaused["unpaused"])).merge("unpaused" => unpaused["unpaused"])
       end
@@ -1648,10 +1658,18 @@ module Workspace
          "message" => (undelivered && verb != "unchanged") ? reason.dig("details", "message") : message, "run" => shown}
       end
 
-      def pause_message(run, interrupted, interrupt, reason)
+      # Refuses a pause verb from where the run's own agent runs. A finished run is left for the engine to refuse.
+      def refuse_pause_caller!(run, caller_pane, verb, subject)
+        stored = @store.run(run)
+        refuse_caller!(stored, caller_pane, verb, subject) unless WorkflowRunStore::TERMINAL_STATES.include?(stored.state)
+      end
+
+      def pause_message(run, interrupted, interrupt, reason, warning = nil)
         lines = ["Paused. Nothing new starts; a turn under way goes on and the run holds when it ends."]
         lines[0] = "Paused and interrupted the agent. Nothing new starts." if interrupted
-        lines[0] = "Paused. The agent was not working, so it was not interrupted. Nothing new starts." if interrupt && !interrupted
+        lines[0] = "Paused, but the agent was not interrupted: no working agent was found in the run's own pane. Nothing new starts." if interrupt && !interrupted
+        lines[0] = "Paused, but the interrupt keys could not be pressed. Nothing new starts." if interrupt && !interrupted && warning
+        lines << "warning: #{TerminalText.escape(warning)}" if warning
         lines << "Reason: #{TerminalText.escape(reason)}" unless reason.to_s.strip.empty?
         lines << "Run `workspace workflow unpause #{run}` to let it go on."
         lines.join("\n")
