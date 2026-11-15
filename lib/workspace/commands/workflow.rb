@@ -532,6 +532,7 @@ module Workspace
         return status_table(result, scope, run, json) if table
         return document("generated_at" => @clock.call.utc.iso8601, "runs" => result["runs"], "warnings" => result["warnings"]) if json
         @output.puts status_empty_text(scope, hint) if result["runs"].empty? && !run
+        @output.puts status_header(result["runs"]) if !run && !result["runs"].empty?
         result["runs"].each { |each| describe(each) }
         result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
       end
@@ -1209,6 +1210,15 @@ module Workspace
         [row["run"], row["workspace"], row["step"].to_s, wait_text(row["waiting_seconds"]), why, command]
       end
 
+      def status_header(runs)
+        going = runs.count { |each| !WorkflowRunStore::TERMINAL_STATES.include?(each["state"]) }
+        header = "#{going} going"
+        rows = @needs_me ? @needs_me.rows(runs) : []
+        return header if rows.empty?
+        oldest = rows.first["waiting_seconds"]
+        "#{header}, #{rows.size} waiting you#{" (oldest #{wait_text(oldest)})" if oldest}"
+      end
+
       def wait_text(seconds)
         return "-" unless seconds
         days, rest = seconds.divmod(86_400)
@@ -1298,7 +1308,7 @@ module Workspace
         case scope&.kind
         when :workspace
           text = "No workflow runs in #{scope.workspace} still going."
-          hint ? "#{text}\nFinished runs show with --project or --all." : text
+          hint ? "#{text}\nFinished runs show with --project or --all. Runs waiting for you show with --needs-me." : text
         when :project then "No workflow runs in project #{scope.project.name}."
         else "No workflow runs."
         end

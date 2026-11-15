@@ -158,7 +158,7 @@ Every row of `workflow run` (dry run, started, parked) has `inputs_from`: `{"tas
 
 **The current workspace** is the one the working directory belongs to, found in three steps: a `.workspace` marker, then a key in the state file, then the configured checkout (main or worktree) that contains the directory, the deepest one if several do. The last step means a linked worktree with no config of its own, inside a main checkout that has one, resolves to the main workspace.
 
-**The current workflow** is the runs still going in the workspace, oldest first. A workspace whose runs have all finished has none: `runs` is empty and the exit code is 0, and the text output says `Finished runs show with --project or --all.` (The `--name` form prints no such hint.) A run's end is read with `--project`, `--all` or `workflow status RUN`.
+**The current workflow** is the runs still going in the workspace, oldest first. A workspace whose runs have all finished has none: `runs` is empty and the exit code is 0, and the text output says `Finished runs show with --project or --all. Runs waiting for you show with --needs-me.` (The `--name` form prints no such hint.) A run's end is read with `--project`, `--all` or `workflow status RUN`.
 
 A project's runs are those whose workspace is one of its members, whose stored `project` is its name, or whose workspace is a worktree named `PROJECT.worktree-...`. These last two apply to going runs as well as finished ones, and they keep the runs of a worktree that was killed. So `--project` can list a same-named project's runs in any state.
 
