@@ -239,9 +239,10 @@ module Workspace
     # @param id [String] the park's id; any other changes nothing
     # @param code [String] why, stored as the reason's `error`, with +message+
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @param gone [Boolean] whether the pane is confirmed gone; by default whether +code+ is one of {WorkflowDispatch::PANE_GONE_CODES}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def park_failed(run_id, id, code:, message:, actor:)
+    def park_failed(run_id, id, code:, message:, actor:, gone: WorkflowDispatch::PANE_GONE_CODES.include?(code))
       @change.call(run_id, actor: actor, cause: "park_failed") do |read|
         stored = read.thawed
         next unless stored.dig("parked", "id") == id
@@ -256,7 +257,7 @@ module Workspace
         end
         drop_park(stored, "failed")
         stored["state"] = "waiting"
-        stored["reason"] = {"code" => WorkflowDispatch::PANE_GONE_CODES.include?(code) ? "pane_gone" : "waiting_you", "since" => now_iso,
+        stored["reason"] = {"code" => gone ? "pane_gone" : "waiting_you", "since" => now_iso,
                             "details" => {"kind" => "dispatch", "step" => stored["current"], "pane" => target, "workspace" => stored["workspace"], "error" => code, "message" => message}}
         WorkflowRun.from_h(stored)
       end
