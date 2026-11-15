@@ -328,6 +328,108 @@ RSpec.describe Workspace::WorkflowReviewSweep do
     end
   end
 
+  describe "a round whose review pane's turn failed on an API error" do
+    let(:failed_pass) { pass.merge(turn_failed_after: 900) }
+
+    def failed_pane(ago: 901)
+      review_pane("idle", idle_seconds: ago)
+      panes.rows["%9"] = panes.rows["%9"].merge("turn_failed" => true, "turn_failed_since" => (now - ago).utc.iso8601)
+    end
+
+    def call_failed(run, with: failed_pass) = sweep.call(run, run.step("build"), with)
+
+    it "is decided on its verdicts as cause turn_failed once the turn stayed failed for the threshold, typing nothing" do
+      failed_pane
+
+      row = call_failed(reviewing(started: 1000))
+
+      expect(row).to include("outcome" => "evaluated", "cause" => "turn_failed", "action" => "evaluate")
+      expect(row["message"]).to include("failed on an API error 901 seconds ago")
+      expect(engine).to have_received(:review_stalled).with("wr_1", actor: "sweep", step: "build", attempt: 1, round: 1, pane: "%9", cause: "turn_failed", data: {"since" => (now - 901).utc.iso8601})
+      expect(pressed).to be_empty
+    end
+
+    it "names the failed turn and decides nothing before the threshold" do
+      failed_pane(ago: 899)
+
+      expect(call_failed(reviewing(started: 1000))).to include("outcome" => "nothing", "reason" => "reviewing")
+      expect(call_failed(reviewing(started: 1000))["message"]).to include("failed on an API error")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+
+    it "decides nothing with the threshold off" do
+      failed_pane
+
+      expect(call_failed(reviewing(started: 1000), with: pass.merge(turn_failed_after: nil))).not_to include("cause" => "turn_failed")
+      expect(call(reviewing(started: 1000))).not_to include("cause" => "turn_failed")
+      expect(engine).not_to have_received(:review_stalled).with(anything, hash_including(cause: "turn_failed"))
+    end
+
+    it "counts a missing or unparseable turn_failed_since as not yet" do
+      failed_pane
+      panes.rows["%9"] = panes.rows["%9"].merge("turn_failed_since" => "garbage")
+      expect(call_failed(reviewing(started: 1000))).to include("outcome" => "nothing", "reason" => "reviewing")
+
+      panes.rows["%9"] = panes.rows["%9"].merge("turn_failed_since" => nil)
+      expect(call_failed(reviewing(started: 1000))).to include("outcome" => "nothing", "reason" => "reviewing")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+
+    it "leaves a time limit that is due to the decisions it had, below the threshold or with no parseable since" do
+      failed_pane(ago: 100)
+      expect(call_failed(reviewing(started: 1801))).to include("outcome" => "nothing", "reason" => "not_working", "cause" => "review_timed_out")
+
+      panes.rows["%9"] = panes.rows["%9"].merge("turn_failed_since" => "garbage")
+      expect(call_failed(reviewing(started: 1801))).to include("reason" => "not_working", "cause" => "review_timed_out")
+
+      panes.rows["%9"] = panes.rows["%9"].merge("state" => "working")
+      expect(call_failed(reviewing(started: 1801))).to include("outcome" => "interrupted", "cause" => "review_timed_out")
+    end
+
+    it "waits out the delivery grace" do
+      failed_pane
+      run = reviewing(started: 1000, round: {"delivered_at" => (now - 5).utc.iso8601(3)})
+
+      expect(call_failed(run)).to include("outcome" => "nothing", "reason" => "reviewing")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+
+    it "is left for the next pass when the pane no longer shows a failed turn by the time it is read again" do
+      failed_pane
+      reads = []
+      panes.on_row = lambda do
+        reads << true
+        panes.rows["%9"] = panes.rows["%9"].merge("turn_failed" => false, "state" => "working") if reads.size == 2
+      end
+
+      row = call_failed(reviewing(started: 1000))
+
+      expect(row).to include("outcome" => "nothing", "reason" => "pane_changed", "cause" => "turn_failed")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+
+    it "advances the run when the verdicts written are enough" do
+      failed_pane
+      allow(engine).to receive(:review_stalled).and_return(:evaluated)
+
+      expect(call_failed(reviewing(started: 1000))).to include("outcome" => "evaluated", "cause" => "turn_failed")
+    end
+
+    it "stops the round review_incomplete when the verdicts fall short" do
+      failed_pane
+      allow(engine).to receive(:review_stalled).and_return(:stopped)
+
+      expect(call_failed(reviewing(started: 1000))).to include("outcome" => "stopped", "cause" => "turn_failed")
+    end
+
+    it "only reports on a dry run" do
+      failed_pane
+
+      expect(call_failed(reviewing(started: 1000), with: failed_pass.merge(dry_run: true))).to include("outcome" => "dry_run", "cause" => "turn_failed")
+      expect(engine).not_to have_received(:review_stalled)
+    end
+  end
+
   describe "#held_row" do
     it "names the round a person decides" do
       run = reviewing.to_h.merge("state" => "waiting", "reason" => {"code" => "review_incomplete"})

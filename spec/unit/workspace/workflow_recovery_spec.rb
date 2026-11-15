@@ -673,6 +673,31 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(progress.calls.last[2][:problem]).to include("was restarted, and the round was delivered again 2 times")
     end
 
+    describe "for a review pane whose turn failed on an API error" do
+      it "reads the verdicts and advances the round when they are enough, writing step_stalled with the failure's start" do
+        stored(delivered)
+
+        expect(stall("turn_failed", data: {"since" => "2026-11-10T11:40:00Z"})).to eq(:evaluated)
+        expect(evaluation.calls).to eq([[:review_ended, "build"], [:review_end, "wr_1", {"step" => "build"}]])
+        expect(event_types).to eq([["step_stalled", {"step" => "build", "attempt" => 1, "round" => 1, "pane" => "%9", "cause" => "turn_failed", "since" => "2026-11-10T11:40:00Z"}]])
+      end
+
+      context "when the verdicts fall short" do
+        let(:evaluation) { RecordingEvaluation.new(store.runs, review_reason: {"code" => "review_incomplete"}) }
+
+        it "stops the round review_incomplete with its window kept" do
+          stored(delivered)
+
+          stall("turn_failed", data: {"since" => "2026-11-10T11:40:00Z"})
+
+          expect(store.runs["wr_1"]["reason"]).to eq({"code" => "review_incomplete"})
+          expect(store.runs["wr_1"]["steps"]["build"]["review"]).to include("pane" => "%9", "window" => "@4")
+          expect(evaluation.calls).to eq([[:review_ended, "build"]])
+          expect(progress.calls).to be_empty
+        end
+      end
+    end
+
     it "changes nothing for a round that moved on: another round, another pane, still delivering, being judged, or stopped" do
       [delivered("round" => 2), delivered("pane" => "%8"), delivered("delivery" => "delivering"), delivered("recompute" => {"try" => 1}),
         delivered.merge("reason" => {"code" => "review_incomplete"})].each do |hash|
