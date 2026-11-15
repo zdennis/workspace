@@ -70,6 +70,9 @@ RSpec.describe Workspace::AgentProvider do
 
       expect(claude.ready_pattern).to match(("─" * 20) + "\n❯ Try something")
       expect(claude.ready_pattern).to match(("─" * 20) + "\n❯\u00A0\n")
+      expect(claude.ready_pattern).to match(("─" * 20) + " my-session ─\n❯\u00A0\n")
+      expect(claude.ready_pattern).not_to match("──── a │ title ─\n❯ 1. Yes")
+      expect(claude.ready_pattern).not_to match("──── name\n❯ ")
       expect(claude.ready_pattern).not_to match("Do you trust the files in this folder?\n│ ❯ 1. Yes │")
       expect(described_class.find("codex").ready_pattern).to be_nil
     end

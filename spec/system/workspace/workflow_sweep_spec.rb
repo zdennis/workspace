@@ -42,10 +42,10 @@ RSpec.describe Workspace::WorkflowSweep do
     end
   end
   # The sweep with its review rows over the same parts (+orphans+, +holder_alive+ as build_cli gives them).
-  def sweep_with(orphans: nil, holder_alive: nil)
+  def sweep_with(orphans: nil, holder_alive: nil, default_stall: -> {})
     reviews = Workspace::WorkflowReviewSweep.new(engine: engine, panes: panes, interrupter: interrupter, orphans: orphans,
       holder_alive: holder_alive, clock: -> { now.first })
-    described_class.new(store: store, engine: engine, panes: panes, interrupter: interrupter, reviews: reviews, clock: -> { now.first })
+    described_class.new(store: store, engine: engine, panes: panes, interrupter: interrupter, reviews: reviews, default_stall: default_stall, clock: -> { now.first })
   end
 
   subject(:sweep) { sweep_with }
@@ -181,15 +181,75 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(types).not_to include("step_stalled")
     end
 
-    it "does nothing when the definition sets no stall" do
+    it "does nothing when the definition sets no stall and there is no default" do
       FileUtils.rm_rf(runs_dir)
       ids.replace(%w[wr_1 wr_2])
       now[0] = Time.utc(2026, 10, 4, 12, 0, 0)
       begin_run(flow(stall: nil))
       advance(1500)
 
-      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "idle")
+      row = only_row(sweep_with(default_stall: -> {}).call)
+      expect(row).to include("outcome" => "nothing", "reason" => "idle")
+      expect(row["message"]).to include("no default stall")
       expect(types).not_to include("step_stalled")
+    end
+
+    describe "the default stall" do
+      def start_flow(stall:, idle:)
+        FileUtils.rm_rf(runs_dir)
+        ids.replace(%w[wr_1 wr_2])
+        begin_run(flow(stall: stall))
+        advance(1500)
+        pane_shows("idle", idle_seconds: idle)
+        artifact
+      end
+
+      it "decides a step with no stall once the pane has been idle for the default" do
+        start_flow(stall: nil, idle: 600)
+
+        row = only_row(sweep_with(default_stall: -> { 600 }).call)
+
+        expect(row).to include("outcome" => "evaluated", "cause" => "idle_turn_over")
+        expect(types.last(5)).to start_with("step_stalled", "step_recovered")
+        expect(events.find { |each| each["type"] == "step_stalled" }).to include("cause" => "idle_turn_over", "idle_for" => 600)
+        expect(events.find { |each| each["type"] == "step_recovered" }).to include("action" => "evaluated")
+        expect(stored_run(store, "wr_1")["definition"]).not_to have_key("default_stall")
+      end
+
+      it "leaves a step alone one second short of the default" do
+        start_flow(stall: nil, idle: 599)
+
+        row = only_row(sweep_with(default_stall: -> { 600 }).call)
+
+        expect(row).to include("outcome" => "nothing", "reason" => "idle")
+        expect(row["message"]).to include("default stall (10m)")
+        expect(types).not_to include("step_stalled")
+      end
+
+      it "lets the definition's stall win over the default" do
+        start_flow(stall: "20m", idle: 700)
+        sweeper = sweep_with(default_stall: -> { 600 })
+
+        row = only_row(sweeper.call)
+        expect(row).to include("outcome" => "nothing", "reason" => "idle")
+        expect(row["message"]).to include("definition's stall (20m)")
+        expect(types).not_to include("step_stalled")
+
+        pane_shows("idle", idle_seconds: 1200)
+        expect(only_row(sweeper.call)).to include("outcome" => "evaluated", "cause" => "idle_turn_over")
+      end
+
+      it "asks for the default once for each pass" do
+        start_flow(stall: nil, idle: 100)
+        calls = 0
+
+        sweep_with(default_stall: -> {
+          calls += 1
+          600
+        }).call
+
+        expect(calls).to eq(1)
+      end
     end
 
     it "does nothing while the agent is working" do

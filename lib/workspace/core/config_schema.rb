@@ -163,7 +163,14 @@ module Workspace
 
     DURATION = ->(value) { Duration.parse(value) }
     POSITIVE_DURATION = ->(value) { Duration.parse_positive(value) }
-    private_constant :DURATION, :POSITIVE_DURATION
+    # A duration where `off` and a zero both mean "none": nil.
+    OPTIONAL_DURATION = lambda do |value|
+      # An unquoted `off` in a hand-edited YAML file is the boolean false.
+      return nil if value == false || value.to_s.strip.casecmp?("off")
+      seconds = Duration.parse(value)
+      seconds.zero? ? nil : seconds
+    end
+    private_constant :DURATION, :POSITIVE_DURATION, :OPTIONAL_DURATION
 
     COMMAND = lambda do |value|
       command = value.to_s.strip
@@ -637,6 +644,8 @@ module Workspace
         Key.new(name: "workflows.by_ref.#{kind}", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["rpiv"], parser: WORKFLOW_ID,
           doc: "Id of the workflow `workflow start` runs when it is given no id and the reference is #{WORKFLOW_REF_LABELS.fetch(kind)}; it wins over `workflows.default` (no default)")
       end,
+      Key.new(name: "workflows.default_stall", scope: :global, type: :duration, settable: true, examples: ["10m", "off"], default: 600, parser: OPTIONAL_DURATION,
+        doc: "How long a workflow step may sit idle, counted from when the agent's turn is proven over, before `workflow sweep` treats it as stalled, for a definition with no `stall:` of its own (default `10m`). `0` or `off` turns the default off"),
       Key.new(name: "events.rotate_size", scope: :global, type: :size, unit: "bytes", settable: true, examples: ["512KB", "5MB"], default: 5 * 1024 * 1024, restart: true, min: MIN_EVENTS_ROTATE_SIZE, parser: EVENTS_ROTATE_SIZE,
         doc: "Size at which a daemon's hook-event file rotates to `<workspace>.jsonl.1` (default `5MB`, at least `64KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes; see [`workspace events`](README.events.md)"),
       Key.new(name: "codex.hooks.install", scope: :global, type: :boolean, settable: true, default: true, parser: BOOLEAN,

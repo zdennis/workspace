@@ -4,7 +4,10 @@ module Workspace
   # One pass over the runs still going, acting on the ones that have stopped
   # without anything noticing. It needs no agent daemon: it reads the run files
   # and the panes, asks the daemon only for what a pane shows, and starts a
-  # daemon that is not running.
+  # daemon that is not running. A person can run it, the opt-in launchd entry
+  # runs it every five minutes, and a workspace's agent daemon runs it for its
+  # own workspace about every five minutes while a run is going
+  # ({WorkflowNudger}).
   #
   # For a run whose step reads `running`, in this order:
   #
@@ -78,13 +81,16 @@ module Workspace
     # @param panes [Workspace::WorkflowPanes] says whether a run's pane and daemon are there and what the pane shows
     # @param interrupter [#call] presses keys in a pane (`workspace`, `pane`, `keys`); raises {Workspace::Error} when it can't
     # @param reviews [Workspace::WorkflowReviewSweep] the rows of a run being reviewed and of left-over review windows
+    # @param default_stall [#call] returns the idle seconds that decide a step whose definition sets no `stall:`, or nil
+    #   for none; called once for each pass
     # @param clock [#call] returns the current Time
-    def initialize(store:, engine:, panes:, interrupter:, reviews:, clock: -> { Time.now })
+    def initialize(store:, engine:, panes:, interrupter:, reviews:, default_stall: -> {}, clock: -> { Time.now })
       @store = store
       @engine = engine
       @panes = panes
       @interrupter = interrupter
       @reviews = reviews
+      @default_stall = default_stall
       @clock = clock
     end
 
@@ -104,7 +110,7 @@ module Workspace
     def call(run: nil, workspace: nil, dry_run: false, allow: nil)
       runs = run ? [@store.run(run)] : @store.going
       runs = runs.select { |each| each.workspace == workspace } if workspace
-      pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}}
+      pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, default_stall: @default_stall.call}
       rows = runs.map { |each| sweep_run(each, pass) }
       rows += unreadable_rows unless run || workspace
       # Every session of the default tmux server unless a workspace or a run narrows the pass.
@@ -228,6 +234,17 @@ module Workspace
       end
     end
 
+    # What the idle row says about the stall that decides the step: the definition's, the default or none.
+    def idle_message(defined, default)
+      if defined
+        "the agent's turn is over; the step is decided once it has been idle for the definition's stall (#{Duration.humanize(defined)})"
+      elsif default
+        "the agent's turn is over; the definition sets no stall, so the step is decided once it has been idle for the default stall (#{Duration.humanize(default)})"
+      else
+        "the agent's turn is over; the definition sets no stall and no default stall is set, so only a timeout decides the step"
+      end
+    end
+
     # The step reads `running` and its pane is there.
     def sweep_running(run, state, pass)
       attempt = state.last_attempt
@@ -256,7 +273,8 @@ module Workspace
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "pane #{pane} waits for an answer") if shown["state"] == "waiting"
 
-      stall = WorkflowDefinition.stall(run.definition)
+      defined_stall = WorkflowDefinition.stall(run.definition)
+      stall = defined_stall || pass[:default_stall]
       idle_for = shown["idle_seconds"].to_i
       deadline = WorkflowDeadline.reading(run, @clock.call)
       run_spent = deadline && deadline["spent"]
@@ -266,7 +284,7 @@ module Workspace
         cause = if marks.dig("interrupt", "state") == "sent" || marks.dig("run_interrupt", "state") == "sent" then "interrupted"
         elsif (stall && idle_for >= stall) || (timed_out && on_timeout != "warn") || run_spent then "idle_turn_over"
         end
-        return WorkflowSweepRows.row(run, "nothing", reason: "idle", message: "the agent's turn is over; the step is decided once it has been idle for the definition's stall") unless cause
+        return WorkflowSweepRows.row(run, "nothing", reason: "idle", message: idle_message(defined_stall, pass[:default_stall])) unless cause
         return evaluate(run, attempt, pass, pane, shown, cause, idle_for, (timed_out && on_timeout == "fail") ? {"elapsed" => elapsed, "timeout" => timeout} : nil)
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "healthy", message: nil) unless timed_out || run_due

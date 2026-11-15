@@ -8,14 +8,23 @@ RSpec.describe Workspace::WorkflowNudger do
   let(:now) { Time.utc(2026, 10, 4, 12, 30, 0) }
   subject(:nudger) do
     described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(workspace) { "/log/#{workspace}.log" },
-      spawner: ->(argv, log) { spawned << [argv, log] }, clock: -> { now }, error_output: error_output)
+      spawner: ->(argv, log) { spawned << [argv, log] }, clock: -> { clock_time[:now] }, error_output: error_output)
   end
+  let(:clock_time) { {now: now} }
   let(:error_output) { StringIO.new }
 
   def run(id, workspace, reason: nil, state: "running", check_started: nil, timeout: 600)
     {"id" => id, "workspace" => workspace, "current" => "verify", "reason" => reason && {"code" => reason},
      "definition" => {"steps" => [{"id" => "verify", "status" => {"run" => "bin/check", "timeout" => timeout}}]},
      "steps" => {"verify" => {"state" => state, "attempts" => [{"n" => 1, "check" => check_started && {"started_at" => check_started}}.compact]}}}
+  end
+
+  def advances
+    spawned.map(&:first).select { |argv| argv[3] == "advance" }
+  end
+
+  def sweeps
+    spawned.select { |argv, _log| argv[3] == "sweep" }
   end
 
   def going(runs)
@@ -101,7 +110,7 @@ RSpec.describe Workspace::WorkflowNudger do
       ])
 
       expect(nudger.tick("app")).to eq(%w[wr_1 wr_6 wr_7])
-      expect(spawned.map(&:first)).to eq(%w[wr_1 wr_6 wr_7].map { |id| [RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", id] })
+      expect(advances).to eq(%w[wr_1 wr_6 wr_7].map { |id| [RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", id] })
     end
 
     describe "a review round" do
@@ -138,7 +147,7 @@ RSpec.describe Workspace::WorkflowNudger do
         going([reviewing("wr_1", {"delivery" => nil, "held" => "waiting_lock"}, reason: "waiting_lock")])
 
         expect(nudger.tick("app")).to eq(%w[wr_1])
-        expect(spawned.map(&:first)).to eq([[RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1"]])
+        expect(advances).to eq([[RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1"]])
       end
     end
 
@@ -159,7 +168,7 @@ RSpec.describe Workspace::WorkflowNudger do
       ])
 
       expect(nudger.tick("app")).to eq(%w[wr_1])
-      expect(spawned.map(&:first)).to eq([[RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1"]])
+      expect(advances).to eq([[RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1"]])
     end
 
     it "picks up a parked run a turn's end could not wake, its pane being bound to no run" do
@@ -179,6 +188,59 @@ RSpec.describe Workspace::WorkflowNudger do
 
       expect(nudger.tick("app")).to eq(%w[wr_1 wr_3])
       expect(error_output.string).to match(/\Aworkflow: could not look at run wr_2 \(ArgumentError: .*\); its run file may be malformed\n\z/)
+    end
+
+    describe "the sweep" do
+      let(:sweep_argv) { [RbConfig.ruby, "/ws/bin/workspace", "workflow", "sweep", "--name", "app"] }
+
+      before { going([run("wr_1", "app", reason: "waiting_you")]) }
+
+      it "starts on the first tick with a going run, logging beside the advances" do
+        expect(nudger.tick("app")).to eq([])
+        expect(sweeps).to eq([[sweep_argv, "/log/app.log"]])
+      end
+
+      it "runs again only once 300 seconds have passed" do
+        nudger.tick("app")
+        clock_time[:now] = now + 299
+        nudger.tick("app")
+        expect(sweeps.size).to eq(1)
+
+        clock_time[:now] = now + 300
+        nudger.tick("app")
+        expect(sweeps.size).to eq(2)
+      end
+
+      it "does not start with no going run" do
+        going([])
+        nudger.tick("app")
+        expect(sweeps).to eq([])
+      end
+
+      it "does not start for a going run of another workspace" do
+        going([run("wr_1", "other", reason: "waiting_lock")])
+        nudger.tick("app")
+        expect(sweeps).to eq([])
+      end
+
+      it "still wakes the runs, and does not retry within 300 seconds, when starting the sweep raises" do
+        attempts = 0
+        failing = described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(w) { "/log/#{w}.log" },
+          spawner: ->(argv, log) {
+            if argv[3] == "sweep"
+              attempts += 1
+              raise Errno::ENOENT
+            end
+            spawned << [argv, log]
+          }, clock: -> { clock_time[:now] })
+        going([run("wr_1", "app", reason: "waiting_lock")])
+
+        expect(failing.tick("app")).to eq(%w[wr_1])
+        clock_time[:now] = now + 15
+        expect(failing.tick("app")).to eq(%w[wr_1])
+        expect(attempts).to eq(1)
+        expect(advances.size).to eq(2)
+      end
     end
 
     it "does not raise when the store can't be read" do

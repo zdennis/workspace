@@ -17,8 +17,8 @@ module Workspace
     private_constant :READY_TAIL_LINES
 
     # An AskUserQuestion menu draws a rule above its last row, so with the
-    # cursor there it reads like the ready prompt.
-    MENU_ROW_PATTERN = /─{3,}\n❯[ \t ]?\d+\. /
+    # cursor there it reads like the ready prompt, named rule included.
+    MENU_ROW_PATTERN = /─{3,}(?:[^\n│]*─)?\n❯[ \t ]?\d+\. /
     private_constant :MENU_ROW_PATTERN
 
     module_function

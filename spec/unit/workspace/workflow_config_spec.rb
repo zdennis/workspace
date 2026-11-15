@@ -36,4 +36,40 @@ RSpec.describe Workspace::WorkflowConfig do
 
     expect(config.default_packs(workspace: "app.worktree-x")).to eq(%w[binding review])
   end
+
+  describe "#default_stall" do
+    def stall(value)
+      global["workflows"] = {"default_stall" => value}
+      config.default_stall
+    end
+
+    it "is 600 seconds when unset" do
+      expect(config.default_stall).to eq(600)
+    end
+
+    it "reads a duration" do
+      expect(stall("15m")).to eq(900)
+    end
+
+    it "is nil for off and 0" do
+      expect(stall("off")).to be_nil
+      expect(stall("0")).to be_nil
+    end
+
+    it "is nil for an unquoted off, which YAML reads as false, and 600 for true" do
+      expect(stall(false)).to be_nil
+      expect(stall(true)).to eq(600)
+    end
+
+    it "is 600 for a value `config set` would refuse" do
+      expect(stall("soon")).to eq(600)
+      expect(stall("-1")).to eq(600)
+    end
+
+    it "is 600 when the global file can't be parsed" do
+      allow(project_settings).to receive(:load_global).and_raise(Workspace::ConfigParseError.new("/c/config.yml", "bad"))
+
+      expect(config.default_stall).to eq(600)
+    end
+  end
 end

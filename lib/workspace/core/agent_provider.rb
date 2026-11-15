@@ -98,8 +98,10 @@ module Workspace
     # A modal dialog's own menu items (e.g. "Do you trust the files in this
     # folder?") also use `❯` to mark the selected option, but sit inside a
     # `│`-bordered box, not directly under a bare horizontal rule, so this
-    # pattern does not match them.
-    CLAUDE_READY_PATTERN = /─{3,}\n❯[ \t\u00A0]?/
+    # pattern does not match them. A session with a name draws it in the
+    # rule, near its right end (`──── my-session ─`), so the rule may carry
+    # text that ends in a dash, though never a `│`.
+    CLAUDE_READY_PATTERN = /─{3,}(?:[^\n│]*─)?\n❯[ \t\u00A0]?/
 
     # Matches the context line of the current codex-cli status footer, e.g.
     #   Context 0% used · Context 100% left

@@ -537,7 +537,7 @@ module Workspace
         add_row("workflow-sweep", "ok", "workflow sweep: installed#{" (launchctl could not say whether it is loaded)" if status["loaded"].nil?}")
       else
         why = status["installed"] ? "installed but not loaded" : "not installed"
-        add_row("workflow-sweep", "warn", "the workflow sweep is #{why}. This matters only for workflows that set a timeout: (on the run or on a step); without the sweep, nothing enforces it while no agent is working the run",
+        add_row("workflow-sweep", "warn", "the workflow sweep is #{why}. This matters only for workflows that set a timeout: (on the run or on a step); without the scheduled sweep, it is enforced only while the workspace's agent daemon is running (the daemon sweeps its workspace every 5 minutes while a run is going)",
           fix: "only if you use workflow timeouts: workspace workflow sweep --install", fix_command: "workspace workflow sweep --install")
       end
     rescue Workspace::Error => e

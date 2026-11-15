@@ -38,6 +38,7 @@ module Workspace
       # @param compare [Workspace::WorkflowCompare, nil] sets a workflow's runs side by side by definition or pack (`compare`)
       # @param simulator [Workspace::WorkflowSimulator, nil] plays a workflow with a scripted fake agent (`simulate`)
       # @param source_installer [Workspace::WorkflowSourceInstaller, nil] fetches, checks and caches the `workflows.sources` entries (`install`)
+      # @param workflow_config [Workspace::WorkflowConfig, nil] reads `workflows.default_stall`, for the stall `show` reports
       # @param tmux [Workspace::Tmux] names the pid of a run's pane, for approve and reject
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
@@ -47,7 +48,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -68,6 +69,7 @@ module Workspace
         @step_check = step_check
         @simulator = simulator
         @source_installer = source_installer
+        @workflow_config = workflow_config
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -97,7 +99,7 @@ module Workspace
         definition = @catalog.find(id, project: project)
         data = definition.to_h
         if json
-          return document("workflow" => with_branch_fills(data).merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge("project" => (definition.source == "project") ? project : nil).merge(extends_field(definition)))
+          return document("workflow" => with_branch_fills(data).merge(stall_fields(data)).merge("source" => definition.source, "path" => definition.path, "sha256" => definition.sha256, "resolved_sha256" => definition.resolved_sha256).merge("project" => (definition.source == "project") ? project : nil).merge(extends_field(definition)))
         end
         @output.puts "#{data["id"]}: #{data["title"]} (#{definition.source}, #{definition.path})"
         @output.puts data["description"] if data["description"]
@@ -106,6 +108,7 @@ module Workspace
         @output.puts "Applies to: #{data["applies_to"].join(", ")}" if data["applies_to"].any?
         @output.puts "Inputs:" if data["inputs"].any?
         data["inputs"].each { |name, spec| @output.puts "  #{name}#{" (required)" if spec["required"]}#{": #{spec["description"]}" if spec["description"]}" }
+        @output.puts stall_line(data)
         @output.puts "Steps:"
         data["steps"].each { |step| @output.puts "  #{step["id"].ljust(12)} #{step_traits(step)}".rstrip }
       end
@@ -705,6 +708,7 @@ module Workspace
 
       # `workflow sweep --install`, `--uninstall` or `--installed`: the opt-in launchd
       # entry that runs the sweep every five minutes. Changes nothing unless asked.
+      # A running agent daemon also runs the sweep for its own workspace every five minutes.
       #
       # @param action [Symbol] `:install`, `:uninstall` or `:status`
       # @param dry_run [Boolean] say what would be done and change nothing
@@ -906,6 +910,22 @@ module Workspace
 
       private
 
+      # The stall `show` reports: the definition's own, else the global default (read now, not at build time).
+      def stall_fields(data)
+        return {"effective_stall" => data["stall"], "stall_source" => "definition"} if data["stall"]
+        {"effective_stall" => default_stall, "stall_source" => "default"}
+      end
+
+      def stall_line(data)
+        return "Stall: #{Duration.humanize(data["stall"])}" if data["stall"]
+        seconds = default_stall
+        "Stall: #{seconds ? Duration.humanize(seconds) : "off"} (default)"
+      end
+
+      def default_stall
+        @workflow_config ? @workflow_config.default_stall : WorkflowConfig::DEFAULT_STALL
+      end
+
       # Says on stderr that no sweep will check a time limit when the definition has a run `timeout` or a step
       # `timeout` and the sweep schedule is not installed. Reads the schedule's state only; with no schedule wired
       # or one that cannot answer it says nothing.
@@ -914,7 +934,7 @@ module Workspace
         data = definition.to_h
         return unless data["timeout"] || Array(data["steps"]).any? { |step| step["timeout"] }
         return if @schedule.status["installed"]
-        @error_output.puts "Warning: #{data["id"]} sets a timeout, but the workflow sweep is not installed, so nothing enforces the timeout while no agent is working the run. Run `workspace workflow sweep --install` to install it."
+        @error_output.puts "Warning: #{data["id"]} sets a timeout, but the scheduled workflow sweep is not installed, so the timeout is enforced only while the workspace's agent daemon is running. Run `workspace workflow sweep --install` to install it."
       rescue Workspace::Error
         nil
       end
