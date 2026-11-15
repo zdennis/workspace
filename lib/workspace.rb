@@ -1114,7 +1114,13 @@ module Workspace
     workflow_review_sweep = WorkflowReviewSweep.new(engine: workflow_engine, panes: workflow_panes, interrupter: workflow_interrupter,
       orphans: workflow_review_orphans, holder_alive: round_holder.method(:alive?))
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
-      interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall)
+      interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall,
+      turn_failed_after: -> { workflow_config.turn_failed_after },
+      recovery_entry: ->(workspace, pane) do
+        AgentRecoveryStore.new(path: config.agent_recovery_path(workspace)).get(pane)
+      rescue Workspace::Error
+        nil
+      end)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do
         out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)

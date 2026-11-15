@@ -62,9 +62,10 @@ RSpec.describe Workspace::RecoveryEntry do
   describe ".give_up" do
     it "ends the wait with the reason" do
       entry = {"phase" => "waiting", "next_attempt_at" => "x", "defer_since" => "y"}
-      described_class.give_up(entry, "deferred")
+      described_class.give_up(entry, "deferred", clock: clock)
 
-      expect(entry).to eq("phase" => "gave_up", "give_up_reason" => "deferred", "next_attempt_at" => nil, "defer_since" => nil)
+      expect(entry).to eq("phase" => "gave_up", "give_up_reason" => "deferred", "gave_up_at" => stamp(now), "next_attempt_at" => nil,
+        "defer_since" => nil)
     end
   end
 
@@ -86,11 +87,11 @@ RSpec.describe Workspace::RecoveryEntry do
         "defer_since" => nil)
     end
 
-    it "gives up with the attempts used up, without reading the clock" do
+    it "gives up with the attempts used up, stamping when" do
       entry = {"attempts" => 3}
 
-      expect(described_class.schedule_next(entry, max_attempts: 3, clock: nil)).to be(true)
-      expect(entry).to include("phase" => "gave_up", "give_up_reason" => "attempts_exhausted")
+      expect(described_class.schedule_next(entry, max_attempts: 3, clock: clock)).to be(true)
+      expect(entry).to include("phase" => "gave_up", "give_up_reason" => "attempts_exhausted", "gave_up_at" => stamp(now))
     end
   end
 

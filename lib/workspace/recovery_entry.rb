@@ -36,7 +36,7 @@ module Workspace
         return false if same && entry["phase"] == "gave_up" && entry["give_up_reason"] != "not_retryable"
         entry.clear unless same
         fill(entry, session_id, error, transcript_path)
-        give_up(entry, "not_retryable")
+        give_up(entry, "not_retryable", clock: clock)
         return true
       end
 
@@ -136,9 +136,10 @@ module Workspace
 
     # @param entry [Hash] changed in place
     # @param reason [String] the give-up reason
+    # @param clock [#now] stamps `gave_up_at`, so a reader can tell this give-up from a later failure
     # @return [void]
-    def give_up(entry, reason)
-      entry.merge!("phase" => "gave_up", "give_up_reason" => reason, "next_attempt_at" => nil, "defer_since" => nil)
+    def give_up(entry, reason, clock:)
+      entry.merge!("phase" => "gave_up", "give_up_reason" => reason, "gave_up_at" => AgentRecoveryStore.stamp(clock.now), "next_attempt_at" => nil, "defer_since" => nil)
     end
 
     # @param entry [Hash] changed in place
@@ -149,7 +150,7 @@ module Workspace
     end
 
     # Waits for the next attempt, or gives up once the attempts are used up.
-    # The clock is read only when an attempt is scheduled.
+    # The clock stamps the attempt it schedules, or the give-up.
     #
     # @param entry [Hash] changed in place
     # @param max_attempts [Integer] attempts after which the desk gives up
@@ -157,7 +158,7 @@ module Workspace
     # @return [Boolean] whether this gave up, the attempts being used up
     def schedule_next(entry, max_attempts:, clock:)
       if entry["attempts"].to_i >= max_attempts
-        give_up(entry, "attempts_exhausted")
+        give_up(entry, "attempts_exhausted", clock: clock)
         return true
       end
       next_at = AgentRecoveryStore.stamp(clock.now + AgentRecoveryStore.wait_before(entry["attempts"].to_i + 1))

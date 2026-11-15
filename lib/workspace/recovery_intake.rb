@@ -227,7 +227,7 @@ module Workspace
         entry.clear
         return false
       end
-      RecoveryEntry.give_up(entry, "fresh_conversation")
+      RecoveryEntry.give_up(entry, "fresh_conversation", clock: @clock)
       true
     end
 
@@ -270,7 +270,7 @@ module Workspace
           entry.clear
           deleted = true
         else
-          RecoveryEntry.give_up(entry, "unconfirmed")
+          RecoveryEntry.give_up(entry, "unconfirmed", clock: @clock)
           gave_up = true
         end
       end

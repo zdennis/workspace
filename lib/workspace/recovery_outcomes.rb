@@ -94,7 +94,7 @@ module Workspace
         if RecoveryEntry.unreported?(entry)
           entry.clear
         else
-          RecoveryEntry.give_up(entry, "unconfirmed")
+          RecoveryEntry.give_up(entry, "unconfirmed", clock: @clock)
           gave_up = true
         end
       end
@@ -194,7 +194,7 @@ module Workspace
         if since.nil?
           entry["defer_since"] = AgentRecoveryStore.stamp(@clock.now)
         elsif @clock.now - since >= DEFER_LIMIT
-          RecoveryEntry.give_up(entry, "deferred")
+          RecoveryEntry.give_up(entry, "deferred", clock: @clock)
           gave_up = true
         end
       end
@@ -205,7 +205,7 @@ module Workspace
       gave_up = false
       stored = @store.update(pane_id) do |entry|
         next unless RecoveryEntry.same_wait?(entry, seen)
-        RecoveryEntry.give_up(entry, reason)
+        RecoveryEntry.give_up(entry, reason, clock: @clock)
         gave_up = true
       end
       report_give_up(pane_id, stored) if gave_up
@@ -222,13 +222,13 @@ module Workspace
         entry.merge!("phase" => "watching", "stopped" => false, "last_signal_at" => nil, "draft_text" => nil)
         RecoveryEntry.store_agent(entry, live)
       when "fresh_agent"
-        RecoveryEntry.give_up(entry, "fresh_conversation")
+        RecoveryEntry.give_up(entry, "fresh_conversation", clock: @clock)
         return :gave_up
       else
         RecoveryEntry.apply_read(entry, live)
         entry["draft_text"] = attempt.message if DRAFT_OUTCOMES.include?(outcome)
         if RecoveryEntry.agent_gone?(entry, live)
-          RecoveryEntry.give_up(entry, "unconfirmed")
+          RecoveryEntry.give_up(entry, "unconfirmed", clock: @clock)
           return :gave_up
         end
         return :gave_up if RecoveryEntry.schedule_next(entry, max_attempts: @max_attempts, clock: @clock)
@@ -250,7 +250,7 @@ module Workspace
         return :resolved
       end
       if opened && opened != entry["session_id"]
-        RecoveryEntry.give_up(entry, "fresh_conversation")
+        RecoveryEntry.give_up(entry, "fresh_conversation", clock: @clock)
         return :gave_up
       end
       return nil unless failed
@@ -262,7 +262,7 @@ module Workspace
         max_attempts: @max_attempts, clock: @clock)
       return :rescheduled unless RecoveryEntry.agent_gone?(entry, live)
 
-      RecoveryEntry.give_up(entry, "unconfirmed")
+      RecoveryEntry.give_up(entry, "unconfirmed", clock: @clock)
       :gave_up
     end
 
