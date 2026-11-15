@@ -12,6 +12,9 @@ module Workspace
   #       - {check: fail}                                     # attempt 2
   #       - {}                                                # attempt 3 passes
   #
+  # An attempt may `pause: true` (or `pause: "reason"`) the run while its step is running, before the agent's turn
+  # ends, and `unpause: true` once the turn has ended; without `unpause` a paused run is where the simulation stops.
+  #
   # An attempt the script has no entry for does the plain thing: writes every `produces` file, reports
   # nothing, passes its check and proofs, approves its gate and uses no tokens.
   class WorkflowSimScript
@@ -25,7 +28,7 @@ module Workspace
     MAX_PROBLEMS = 50
 
     TOP_KEYS = %w[inputs steps].freeze
-    ATTEMPT_KEYS = %w[writes report summary code check log require gate note tokens reviews reruns unchanged revision_changes].freeze
+    ATTEMPT_KEYS = %w[writes report summary code check log require gate note tokens reviews reruns unchanged revision_changes pause unpause].freeze
     REPORTS = %w[pass fail].freeze
     CHECKS = %w[pass fail timeout error].freeze
     PROOFS = %w[pass fail].freeze
@@ -151,6 +154,7 @@ module Workspace
           problems << "#{where}: code #{refusal}"
         end
       end
+      check_pause(where, entry, problems)
       check_writes(where, step, entry, problems)
       check_reviews(where, step, entry, problems)
       check_require(where, step, entry, problems)
@@ -165,6 +169,16 @@ module Workspace
       problems << "#{where}: #{key} must be one of #{allowed.join(", ")}" unless allowed.include?(entry[key])
     end
     private_class_method :one_of
+
+    def self.check_pause(where, entry, problems)
+      if entry.key?("pause") && !(entry["pause"] == true || (entry["pause"].is_a?(String) && !entry["pause"].empty? && entry["pause"].size <= MAX_TEXT))
+        problems << "#{where}: pause must be true or a non-empty reason of at most #{MAX_TEXT} characters (omit the key for no pause)"
+      end
+      return unless entry.key?("unpause")
+      problems << "#{where}: unpause must be true" unless entry["unpause"] == true
+      problems << "#{where}: unpause is set, and the attempt does not pause" unless entry.key?("pause")
+    end
+    private_class_method :check_pause
 
     def self.check_writes(where, step, entry, problems)
       return unless entry.key?("writes")

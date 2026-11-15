@@ -1,0 +1,5 @@
+# The script the rpiv-pause golden plays (the rpiv preset): the person pauses the run while research is
+# running, the agent's turn ends while it is paused (plan is held), and unpausing starts plan.
+steps:
+  research:
+    - {pause: "hold on while I read the brief", unpause: true}

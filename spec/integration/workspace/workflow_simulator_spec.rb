@@ -114,6 +114,32 @@ RSpec.describe Workspace::WorkflowSimulator do
     expect(types(result)).to include("budget_spent")
   end
 
+  it "pauses during a step, ends its turn while paused, and unpauses to start the next step" do
+    result = play("steps:\n  build: [{pause: \"hold on\", unpause: true}]\n")
+
+    expect(result["outcome"]).to eq("completed")
+    expect(types(result)).to include("run_paused", "run_unpaused")
+    expect(types(result).index("run_paused")).to be < types(result).index("run_unpaused")
+    expect(result["transitions"].find { |each| each["type"] == "run_paused" }["text"]).to eq("hold on")
+  end
+
+  it "does not look up a pause for a step with no attempt yet" do
+    data = definition
+    script = Workspace::WorkflowSimScript.parse("steps:\n  build: [{pause: true}]\n", definition: data.to_h, source: "s.yml")
+    state = instance_double(Workspace::WorkflowRun::Step, state: "pending", last_attempt: nil, gate_waiting?: false)
+    run = instance_double(Workspace::WorkflowRun, current: "build", steps: {"build" => state}, paused: nil, backoff: nil)
+
+    expect(simulator.send(:next_move, run, script, [])).to be_nil
+  end
+
+  it "stops a paused run when the script does not unpause" do
+    result = play("steps:\n  build: [{pause: true}]\n")
+
+    expect(result["outcome"]).to eq("stopped")
+    expect(types(result)).to include("run_paused")
+    expect(types(result)).not_to include("run_unpaused")
+  end
+
   context "with a cap of 1 action" do
     let(:max_actions) { 1 }
 
