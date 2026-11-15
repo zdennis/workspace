@@ -445,8 +445,17 @@ RSpec.describe Workspace::WorkflowPanes do
         .to eq(ok: false, code: "not_delivered", message: "tmux could not paste into %5")
 
       allow(tmux).to receive(:session_name_for_pane).with("%5").and_return(nil)
+      allow(tmux).to receive(:session_name_for_pane).with("%5", project: "app", strict: true).and_return(nil)
       expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false))
         .to eq(ok: false, code: "pane_gone", message: "pane %5 of 'app' is gone")
+    end
+
+    it "says no_such_pane, not pane_gone, when the plain lookup misses a pane the strict lookup lists" do
+      allow(tmux).to receive(:session_name_for_pane).with("%5").and_return(nil)
+      allow(tmux).to receive(:session_name_for_pane).with("%5", project: "app", strict: true).and_return("app")
+
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false))
+        .to eq(ok: false, code: "no_such_pane", message: "pane %5 of 'app' could not be read, but tmux still lists it")
     end
 
     it "has the daemon clear the conversation and type the line for a fresh step, and waits for the outcome" do

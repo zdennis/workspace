@@ -84,6 +84,10 @@ module Workspace
         # Whatever went wrong, the mark is settled here: left set, it would hold off `resume` for nothing.
         {ok: false, code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.scrub.strip}
       end
+      # The daemon answers `no_such_pane` from one look at its pane list: tmux is asked again, here and not under the run lock.
+      if %w[no_such_pane pane_gone].include?(kick[:code].to_s) && !@panes.pane_gone?(delivery["pane"], workspace: delivery["workspace"])
+        kick = kick.merge(pane_listed: true)
+      end
       @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"],
         "pane" => delivery["pane"], "delivered" => kick[:ok], "actor" => "engine", "cause" => delivery["cause"], "from_state" => nil, "to_state" => nil, **kick.slice(:warning, :proof_missing).transform_keys(&:to_s))
       @change.call(run_id, actor: "engine", cause: "delivery") { |run| settle(run, delivery, kick) }
@@ -320,7 +324,8 @@ module Workspace
       release(run)
       state["state"] = "waiting"
       run["state"] = "waiting"
-      gone = PANE_GONE_CODES.include?(kick[:code].to_s)
+      # A pane tmux still lists (`pane_listed`, set by {#deliver}) is not gone, whatever code the daemon answered.
+      gone = PANE_GONE_CODES.include?(kick[:code].to_s) && !kick[:pane_listed]
       run["reason"] = reason(gone ? "pane_gone" : "waiting_you",
         {"kind" => "dispatch", "step" => run["current"], "pane" => run["pane"], "workspace" => run["workspace"],
          "error" => kick[:code].to_s, "message" => kick[:message]&.to_s&.scrub, "reason" => kick[:reason]&.to_s,

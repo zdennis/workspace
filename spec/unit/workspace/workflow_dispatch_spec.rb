@@ -392,6 +392,33 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(change.events).to eq([["wr_1", "resume_parked", {"step" => "plan", "pane" => "%3", "from" => nil, "has_note" => false, "retry" => true}]])
     end
 
+    it "records waiting_you when the daemon says no_such_pane but tmux still lists the pane" do
+      panes = RecordingWorkflowPanes.new(kick: {ok: false, code: "no_such_pane", message: "no pane"}, gone: [])
+      dispatch = described_class.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
+        guard: guard, clock: -> { now })
+      store.runs["wr_1"] = delivering
+
+      run = dispatch.deliver("wr_1", delivery)
+
+      expect(panes.gone_checks).to eq([["%3", "app"]])
+      expect(run.reason).to include("code" => "waiting_you")
+      expect(run.reason["details"]).to include("error" => "no_such_pane")
+      expect(run.reason["details"]).not_to have_key("pane_listed")
+      expect(run.step("plan").last_attempt.to_h).to include("outcome" => "not_delivered", "code" => "no_such_pane")
+    end
+
+    it "records pane_gone when the daemon says no_such_pane and tmux agrees" do
+      panes = RecordingWorkflowPanes.new(kick: {ok: false, code: "no_such_pane", message: "no pane"}, gone: ["%3"])
+      dispatch = described_class.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
+        guard: guard, clock: -> { now })
+      store.runs["wr_1"] = delivering
+
+      run = dispatch.deliver("wr_1", delivery)
+
+      expect(run.reason).to include("code" => "pane_gone")
+      expect(panes.gone_checks.size).to eq(1)
+    end
+
     it "keeps a cancel that came while the line was on its way" do
       store.runs["wr_1"] = delivering.merge("state" => "cancelled")
       finished << "wr_1"

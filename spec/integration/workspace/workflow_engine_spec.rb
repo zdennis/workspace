@@ -1139,6 +1139,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "leaves a run that waits for a person when the pane is gone, holding nothing" do
       locked = definition("steps:\n  a:\n    prompt: P\n    uses: [test-db]\n")
       panes.kick_result = {ok: false, code: "no_such_pane", message: "no pane %5 in tmux session app"}
+      panes.gone << "%5"
 
       run = start(locked, inputs: {})
 
@@ -1149,6 +1150,16 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run["steps"]["a"]).to include("state" => "waiting")
       expect(run["steps"]["a"]["attempts"].last).to include("outcome" => "not_delivered")
       expect(lock_holder("test-db")).to be_nil
+    end
+
+    it "waits for a person, not as a gone pane, when no_such_pane comes for a pane tmux still lists" do
+      panes.kick_result = {ok: false, code: "no_such_pane", message: "no pane %5 in tmux session app"}
+
+      run = start(definition("steps:\n  a:\n    prompt: P\n"), inputs: {})
+
+      expect(run["state"]).to eq("waiting")
+      expect(run["reason"]).to include("code" => "waiting_you")
+      expect(run["reason"]["details"]).to include("error" => "no_such_pane")
     end
 
     it "takes a pane whose last run ended and left its binding behind" do
@@ -3896,6 +3907,7 @@ RSpec.describe Workspace::WorkflowEngine do
       it "does not park again on any other code" do
         undelivered
         engine.park("wr_1", actor: "person")
+        panes.gone << "%5"
 
         run = release_failing("no_such_pane")
 
