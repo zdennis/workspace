@@ -35,6 +35,18 @@ RSpec.describe Workspace::CLI::Workflow do
     e.status
   end
 
+  describe "workflow sweep --json" do
+    it "puts the command's extra into the action document" do
+      actions = [{"action" => "workflow resume", "args" => ["wr_1"], "needs" => [], "why" => "held"}]
+      command = double("workflow command")
+      allow(command).to receive(:sweep).and_return(exit_code: 0, results: [], status: nil, extra: {"next_actions" => actions})
+
+      run("sweep", "--json", workflow_command: command)
+
+      expect(JSON.parse(out.string)).to include("action" => "workflow sweep", "next_actions" => actions)
+    end
+  end
+
   describe "workflow help" do
     it "prints the overview with the directories the definitions are read from" do
       run("--help")

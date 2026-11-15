@@ -20,21 +20,21 @@ RSpec.describe Workspace::CLI do
       cli.run(["plan", "status"])
 
       expect(detector).to have_received(:detect).with("/some/dir")
-      expect(plan_command).to have_received(:status).with(names: ["detected-ws"], json: false)
+      expect(plan_command).to have_received(:status).with(names: ["detected-ws"], json: false, summary: nil)
     end
 
     it "passes --name and --json to status, in any order" do
       cli.run(["plan", "--json", "status", "--name", "api.worktree-x"])
 
-      expect(plan_command).to have_received(:status).with(names: ["api.worktree-x"], json: true)
+      expect(plan_command).to have_received(:status).with(names: ["api.worktree-x"], json: true, summary: nil)
     end
 
     it "passes --all and --file to status without looking for a workspace" do
       cli.run(["plan", "status", "--all", "--json"])
       cli.run(["plan", "status", "--file", "/x/plan.md"])
 
-      expect(plan_command).to have_received(:status).with(all: true, json: true)
-      expect(plan_command).to have_received(:status).with(file: "/x/plan.md", json: false)
+      expect(plan_command).to have_received(:status).with(all: true, json: true, summary: nil)
+      expect(plan_command).to have_received(:status).with(file: "/x/plan.md", json: false, summary: nil)
       expect(detector).not_to have_received(:detect)
     end
 
@@ -50,15 +50,15 @@ RSpec.describe Workspace::CLI do
         cli.run(["plan", "status", "--project"])
         cli.run(["plan", "status", "--project", "my-app", "--json"])
 
-        expect(plan_command).to have_received(:status).with(project: project, json: false)
-        expect(plan_command).to have_received(:status).with(project: project, json: true)
+        expect(plan_command).to have_received(:status).with(project: project, json: false, summary: nil)
+        expect(plan_command).to have_received(:status).with(project: project, json: true, summary: nil)
       end
 
       it "reads --project followed by another flag as a bare project" do
         cli.run(["plan", "status", "--project", "--json"])
 
         expect(catalog).not_to have_received(:find)
-        expect(plan_command).to have_received(:status).with(project: project, json: true)
+        expect(plan_command).to have_received(:status).with(project: project, json: true, summary: nil)
       end
 
       it "refuses it beside each other scope with the fuller message, before looking anything up" do
@@ -159,8 +159,8 @@ RSpec.describe Workspace::CLI do
       cli.run(["plan", "status", "--group", "billing", "--json"])
       cli.run(["plan", "status", "--group=ops"])
 
-      expect(plan_command).to have_received(:status_group).with(group: "billing", json: true)
-      expect(plan_command).to have_received(:status_group).with(group: "ops", json: false)
+      expect(plan_command).to have_received(:status_group).with(group: "billing", json: true, summary: nil)
+      expect(plan_command).to have_received(:status_group).with(group: "ops", json: false, summary: nil)
       expect(detector).not_to have_received(:detect)
     end
 

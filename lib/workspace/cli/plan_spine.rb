@@ -12,7 +12,7 @@ module Workspace
     class PlanSpine
       # The flags each `plan` verb takes (`task` lists every flag of its verbs, which {PLAN_TASK_FLAGS} narrows).
       PLAN_FLAGS = {
-        "status" => %i[name project all file group json],
+        "status" => %i[name project all file group summary json],
         "path" => %i[name json],
         "show" => %i[name],
         "init" => %i[name title from force json],
@@ -96,6 +96,7 @@ module Workspace
           opts.on("--all", "status: every workspace") { take_plan_flag(options, :all, true) }
           opts.on("--group GROUP", "status: every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)") { |v| take_plan_flag(options, :group, v) }
           opts.on("--file PATH", "status: read any file, with no workspace and a state from the file alone") { |v| take_plan_flag(options, :file, v) }
+          opts.on("--summary", "status: JSON leaves out each row's tasks; text leaves out the next-step hint") { take_plan_flag(options, :summary, true) }
           opts.on("--title TITLE", "init: the plan's title (default: the workspace task's title); task add: the task's title; task set-title: the new title") { |v| take_plan_flag(options, :title, v) }
           opts.on("--from FILE", "init: import this document as the plan") { |v| take_plan_flag(options, :from, v) }
           opts.on("--force", "init: replace a plan that is already there") { take_plan_flag(options, :force, true) }
@@ -168,15 +169,15 @@ module Workspace
         end
         raise Error, "plan is not available: no plan command was wired" unless @plan_command && @plan_dispatch_command && @plan_task_command
 
-        return @plan_command.status_group(group: options[:group], json: options[:json]) if options[:group]
-        return @plan_command.status(file: options[:file], json: options[:json]) if options[:file]
+        return @plan_command.status_group(group: options[:group], json: options[:json], summary: options[:summary]) if options[:group]
+        return @plan_command.status(file: options[:file], json: options[:json], summary: options[:summary]) if options[:file]
 
         if subcommand == "status"
           scope = @status_scope.resolve(name: options[:name], project: options[:project], all: options[:all], working_dir: @working_dir)
           case scope.kind
-          when :all then return @plan_command.status(all: true, json: options[:json])
-          when :project then return @plan_command.status(project: scope.project, json: options[:json])
-          else return @plan_command.status(names: [scope.workspace], json: options[:json])
+          when :all then return @plan_command.status(all: true, json: options[:json], summary: options[:summary])
+          when :project then return @plan_command.status(project: scope.project, json: options[:json], summary: options[:summary])
+          else return @plan_command.status(names: [scope.workspace], json: options[:json], summary: options[:summary])
           end
         end
 

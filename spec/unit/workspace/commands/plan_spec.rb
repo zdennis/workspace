@@ -467,6 +467,177 @@ RSpec.describe Workspace::Commands::Plan do
     end
   end
 
+  describe "next actions" do
+    let(:blocked_text) { "## Tasks\n- [!] T1 a -- waiting on keys\n- [!] T2 b\n- [x] T4 d\n" }
+    let(:stalled_actions) do
+      [{"action" => "plan show", "args" => ["--name", "api"], "needs" => [],
+        "why" => "the plan has work left but its agent has been idle past the stall limit"},
+        {"action" => "plan start", "args" => ["--name", "api"], "needs" => [],
+         "why" => "sets the plan active and re-sends it to the owner pane, launching the workspace if it is stopped"}]
+    end
+
+    def stall!
+      write_plan("api", plan_text)
+      allow(plan_config).to receive(:stall_seconds_for).with("api").and_return(60)
+      allow(snapshot_client).to receive(:fetch).and_return("panes" => [{"pane_id" => "%19", "state" => "idle", "state_since" => "2026-10-12T13:58:00Z"}])
+    end
+
+    it "is empty at the top level and on each row when nothing is stalled or blocked" do
+      write_plan("api", plan_text)
+      allow(snapshot_client).to receive(:fetch).and_return("panes" => [{"pane_id" => "%19", "state" => "working"}])
+
+      command.status(names: ["api", "api.worktree-x"], json: true)
+
+      expect(document["next_actions"]).to eq([])
+      expect(document["plans"].map { |row| row["next_actions"] }).to eq([[], []])
+    end
+
+    it "offers plan show then plan start for a stalled plan" do
+      stall!
+
+      command.status(names: ["api"], json: true)
+
+      expect(document["plans"].first["state"]).to eq("stalled")
+      expect(document["plans"].first["next_actions"]).to eq(stalled_actions)
+      expect(document["next_actions"]).to eq(stalled_actions)
+    end
+
+    describe "--summary" do
+      it "leaves out each row's tasks in JSON and keeps the rest, next_actions included" do
+        stall!
+
+        command.status(names: ["api"], json: true, summary: true)
+
+        row = document["plans"].first
+        expect(row).not_to have_key("tasks")
+        expect(row).to include("counts", "current", "percent", "state" => "stalled", "warnings" => [], "next_actions" => stalled_actions)
+        expect(document["next_actions"]).to eq(stalled_actions)
+      end
+
+      it "keeps the tasks without it" do
+        stall!
+
+        command.status(names: ["api"], json: true)
+
+        expect(document["plans"].first["tasks"].size).to eq(3)
+      end
+
+      it "leaves out the next: line in text and keeps the status line" do
+        stall!
+
+        command.status(names: ["api"], summary: true)
+
+        expect(output.string).to include("api  stalled")
+        expect(output.string).not_to include("next:")
+      end
+
+      it "prints the next: line in text without it" do
+        stall!
+
+        command.status(names: ["api"])
+
+        expect(output.string).to include("  next: workspace plan show")
+      end
+
+      it "leaves out tasks for a --file row too" do
+        path = File.join(@dir, "other.md")
+        File.write(path, plan_text)
+
+        command.status(file: path, json: true, summary: true)
+
+        expect(document["plans"].first).not_to have_key("tasks")
+        expect(document["plans"].first).to include("exists" => true, "state" => "idle")
+      end
+    end
+
+    it "offers one set-state to todo per blocked task, then plan show" do
+      write_plan("api", blocked_text)
+
+      command.status(names: ["api"], json: true)
+
+      expected = [
+        {"action" => "plan task set-state", "args" => ["--name", "api", "--task", "T1", "--state", "todo"], "needs" => [], "why" => "waiting on keys"},
+        {"action" => "plan task set-state", "args" => ["--name", "api", "--task", "T2", "--state", "todo"], "needs" => [], "why" => "T2 is blocked"},
+        {"action" => "plan show", "args" => ["--name", "api"], "needs" => [], "why" => "read the plan to see what blocks it"}
+      ]
+      expect(document["plans"].first["state"]).to eq("blocked")
+      expect(document["plans"].first["next_actions"]).to eq(expected)
+      expect(document["next_actions"]).to eq(expected)
+    end
+
+    it "lists every row's actions at the top level in row order" do
+      stall!
+      write_plan("api.worktree-x", blocked_text)
+
+      command.status(names: ["api", "api.worktree-x"], json: true)
+
+      expect(document["next_actions"]).to eq(document["plans"].flat_map { |row| row["next_actions"] })
+      expect(document["next_actions"].first(2)).to eq(stalled_actions)
+      expect(document["next_actions"].size).to eq(5)
+    end
+
+    it "gives a row for a workspace that cannot be read no actions" do
+      allow(notes).to receive(:info).with(name: "api").and_raise(Workspace::Error.new("no notes", code: "unknown_workspace"))
+
+      command.status(all: true, json: true)
+
+      expect(document["plans"].first["next_actions"]).to eq([])
+    end
+
+    it "gives a blocked --file plan no actions and no hint line" do
+      path = File.join(@dir, "blocked.md")
+      File.write(path, blocked_text)
+
+      command.status(file: path, json: true)
+
+      expect(document["plans"].first).to include("state" => "blocked", "next_actions" => [])
+      expect(document["next_actions"]).to eq([])
+
+      output.truncate(0)
+      output.rewind
+      expect { command.status(file: path) }.not_to raise_error
+      expect(output.string).not_to include("next:")
+    end
+
+    it "builds only states that IdPatterns::TASK_STATES allows" do
+      stall!
+      write_plan("api.worktree-x", blocked_text)
+
+      command.status(names: ["api", "api.worktree-x"], json: true)
+
+      states = document["next_actions"].filter_map do |action|
+        action["args"][action["args"].index("--state") + 1] if action["args"].include?("--state")
+      end
+      expect(states).not_to be_empty
+      expect(states - Workspace::IdPatterns::TASK_STATES).to eq([])
+    end
+
+    it "prints the first action under a stalled row" do
+      stall!
+
+      command.status(names: ["api"])
+
+      expect(output.string.lines.first(2)).to eq(["api  stalled  1/3 (33%)  T2 Second\n", "  next: workspace plan show --name api\n"])
+    end
+
+    it "prints the first action under a blocked row" do
+      write_plan("api", "## Tasks\n- [!] T1 a\n")
+
+      command.status(names: ["api"])
+
+      expect(output.string).to include("  next: workspace plan task set-state --name api --task T1 --state todo\n")
+    end
+
+    it "prints no hint under a row in another state" do
+      write_plan("api", plan_text)
+      allow(snapshot_client).to receive(:fetch).and_return("panes" => [{"pane_id" => "%19", "state" => "working"}])
+
+      command.status(names: ["api"])
+
+      expect(output.string).not_to include("next:")
+    end
+  end
+
   describe "#path" do
     it "prints the plan's absolute path alone" do
       command.path(name: "api")

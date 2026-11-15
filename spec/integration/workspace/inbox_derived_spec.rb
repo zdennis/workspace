@@ -397,7 +397,7 @@ RSpec.describe Workspace::InboxDerived do
         "fingerprint" => "plan:1:2026-10-16T11:00:00Z", "title" => "Workflow Fix login: the check of step plan failed (tests_failed)",
         "body" => nil, "created_at" => "2026-10-16T11:00:00Z",
         "links" => a_hash_including("run_id" => "r-1", "step" => "plan", "attempt" => 1,
-          "next_action" => {"action" => "workflow resume", "args" => ["r-1"], "needs" => []})
+          "next_action" => Workspace::NextAction.build("workflow resume", "r-1"))
       ))
     end
 

@@ -33,18 +33,21 @@ module Workspace
 
     PLAN = {
       "status" => {
-        usage: ["plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--json]"],
+        usage: ["plan status [--name WORKSPACE | --project [NAME] | --all | --file PATH | --group GROUP] [--summary] [--json]"],
         summary: "Count the plan and report its state",
         about: [
           "A workspace with no plan is a row, not an error. With no scope flag it is the current workspace's row",
           "(outside any workspace: not_in_workspace). Give at most one of --name, --project, --all, --file and",
-          "--group."
+          "--group.",
+          "A stalled or blocked row prints a 'next:' line with the first command that helps. In --json every row has",
+          "next_actions (empty for other states and for --file), and the top level lists them all in row order."
         ],
         options: [NAME_OPT,
           ["--project [NAME]", "Every workspace of a project (NAME, or the project of the current workspace)"],
           ["--all", "Every workspace"],
           ["--group GROUP", "Every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)"],
           ["--file PATH", "Read any file, with no workspace and a state from the file alone"],
+          ["--summary", "JSON: leave out each row's tasks; text: leave out the next-step hint"],
           JSON_OPT],
         examples: [
           ["workspace plan status", "the plan of the workspace you are in: state, counts and the current task"],
@@ -698,7 +701,10 @@ module Workspace
           "holds what was recorded, and the command exits 1. NOT COPIED, TOO LARGE: nothing was kept, which",
           "is not tampering. 'checkout copy differs' notes a prompt or check log edited since it was copied (a",
           "cancelled check may legitimately differ). An attempt from before evidence existed is listed as having none.",
-          "Reads the run file and the evidence directory and writes nothing."
+          "Reads the run file and the evidence directory and writes nothing.",
+          "",
+          "With --json, next_actions is empty when clean; after a mismatch it offers `workflow files RUN` and one",
+          "`workflow attempts RUN --attempt-of STEP` per mismatched step, each with a why naming the counts."
         ],
         options: [["--attempt-of STEP", "Only this step's attempts (an unknown step is refused as unknown_step)"], JSON_OPT],
         examples: [
@@ -807,14 +813,21 @@ module Workspace
           "To run it on a schedule even with no agent daemon, --install writes a per-user LaunchAgent (every 5",
           "minutes) and loads it; it is never done for you. --uninstall unloads and removes it, --installed says whether it is there and loaded.",
           "The entry records the absolute Ruby, program and PATH it was installed with, so run --install again",
-          "after a Ruby or install move. A plist that is not ours is never touched."
+          "after a Ruby or install move. A plist that is not ours is never touched.",
+          "",
+          "Next actions:",
+          "With --json, next_actions (always present, empty when nothing needs a person) lists what a person can run.",
+          "`workflow resume RUN` for a held step or a recorded stall (with the extra-tokens or extra-time need when a",
+          "limit is spent, or a pane need for a held retry), `workflow cancel RUN`, `launch WORKSPACE` for a stopped",
+          "workspace, `focus WORKSPACE --pane PANE` for a pane waiting on an answer, and `workflow sweep` after a",
+          "--dry-run. Each carries the result's reason (or cause) as why."
         ],
         options: [["--name WORKSPACE", "Only this workspace's runs (default: every run going)"],
           ["--dry-run", "Say what would be done and do nothing (also for --install and --uninstall; refused with --installed)"],
           ["--install", "Install and load the launchd entry that runs the sweep every 5 minutes (opt-in)"],
           ["--uninstall", "Unload and remove that entry"],
           ["--installed", "Say whether that entry is installed and loaded; changes nothing"],
-          ["--json", "Print one action document (see docs/README.json.md), one result per run looked at"]],
+          ["--json", "Print one action document (see docs/README.json.md), one result per run looked at, and next_actions"]],
         examples: [
           ["workspace workflow sweep --dry-run", "which stopped runs would a sweep act on?"],
           ["workspace workflow sweep", "act on every run that has stopped"],

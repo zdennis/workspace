@@ -76,6 +76,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_sweep.rb` — `workflow sweep`: one pass over going runs to recover stalled or timed-out steps.
 - `lib/workspace/workflow_review_sweep.rb` — The sweep's rows for a reviewing step and left-over review windows.
 - `lib/workspace/workflow_sweep_rows.rb` — Helpers the two sweep classes share for building rows.
+- `lib/workspace/workflow_sweep_actions.rb` — Turns a sweep's rows into the `next_actions` of `workflow sweep --json`.
 - `lib/workspace/sweep_schedule.rb` — The opt-in launchd entry that runs `workflow sweep`.
 - `lib/workspace/workflow_check.rb` — Runs a step's `status:` command with a time limit, logging output.
 - `lib/workspace/status_scope.rb` — The one rule for which workspaces a status command reports on.
@@ -386,6 +387,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it.
 - `lib/workspace/prompt_input.rb` — Wraps input and refuses prompts under `--no-input`.
 - `lib/workspace/core/duration.rb` — Parses duration strings like `5m` and `1h`.
+- `lib/workspace/core/next_action.rb` — Builds the `{action, args, needs}` next-action entries that status documents carry.
 - `lib/workspace/core/file_lock.rb` — Advisory `flock` on a sidecar lock file.
 - `lib/workspace/core/atomic_file.rb` — Atomic file write through a temp file and rename.
 - `lib/workspace/core/locked_json_file.rb` — Locked read-modify-write of a JSON file through `AtomicFile`.

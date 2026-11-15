@@ -836,6 +836,17 @@ RSpec.describe Workspace::WorkflowStatus do
         expect(needs.map { |each| each["name"] }).to eq(%w[extra_tokens extra_time])
       end
 
+      it "gives limit_needs for a spent deadline, a spent budget, and none when neither is spent" do
+        timed_run
+        expect(status.limit_needs(store.run("wr_1"))).to eq([{"name" => "extra_time", "flag" => "--extra-time", "min" => 601, "suggested" => 900}])
+        budgeted_run = create(state: "waiting", step_state: "pending", reason: nil, bound: false,
+          definition: {"max_attempts" => 6, "budget" => {"tokens" => 1000, "action" => "stop"}, "steps" => [{"id" => "research", "title" => "Research", "timeout" => nil}, {"id" => "plan", "title" => "Plan", "timeout" => nil}]},
+          steps: {"research" => {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed", "usage" => {"input_tokens" => 1500}}]}, "plan" => {"state" => "pending", "attempts" => []}})
+        expect(status.limit_needs(store.run(budgeted_run["id"]))).to eq([{"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}])
+        calm = create(state: "running")
+        expect(status.limit_needs(store.run(calm["id"]))).to eq([])
+      end
+
       it "is listed by --needs-me" do
         timed_run
 

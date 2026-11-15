@@ -148,6 +148,20 @@ module Workspace
       {"runs" => [present(@store.run(id), warnings)], "warnings" => warnings}
     end
 
+    # The needs a resume has when the run's token budget or time limit is used: the same hashes `workflow
+    # status` puts on its own resume action.
+    #
+    # @param run [WorkflowRun]
+    # @return [Array<Hash{String=>Object}>] `extra_tokens` and `extra_time` needs; empty when neither is spent
+    def limit_needs(run)
+      budget = WorkflowBudget.reading(run.to_h)
+      deadline = WorkflowDeadline.reading(run.to_h, @clock.call)
+      needs = []
+      needs << NextAction.need("extra_tokens", "--extra-tokens", "min" => budget["needed"], "suggested" => budget["suggested"]) if budget && budget["spent"]
+      needs << NextAction.need("extra_time", "--extra-time", "min" => deadline["needed"], "suggested" => deadline["suggested"]) if deadline && deadline["spent"]
+      needs
+    end
+
     private
 
     # Warns of unreadable run files, then shows each stored run; a malformed one is a warning.
@@ -561,47 +575,40 @@ module Workspace
     # A `focus` needs a pane to name: with none it is left out.
     def build_actions(run, reason, pane)
       id = run.id
-      cancel = action("workflow cancel", id)
+      cancel = NextAction.build("workflow cancel", id)
       # An action that starts an attempt is refused once the budget is spent, so it needs --extra-attempts (at
       # least "min"). A plain resume starts one only for some steps; with a named pane (a gone pane) for more.
-      budget = WorkflowBudget.reading(run.to_h)
-      deadline = WorkflowDeadline.reading(run.to_h, @clock.call)
       # "min" is the larger of the run's shortfall and the shortfall of the step the action would start an attempt of.
-      limits = lambda do
-        needs = []
-        needs << need("extra_tokens", "--extra-tokens").merge("min" => budget["needed"], "suggested" => budget["suggested"]) if budget && budget["spent"]
-        needs << need("extra_time", "--extra-time").merge("min" => deadline["needed"], "suggested" => deadline["suggested"]) if deadline && deadline["spent"]
-        needs
-      end
+      limits = -> { limit_needs(run) }
       extra = lambda do |target|
         shortfalls = []
         shortfalls << WorkflowEngine.extra_attempts_needed(run.to_h) if WorkflowEngine.attempts_spent?(run.to_h)
         shortfalls << WorkflowTransitions.step_extra_attempts_needed(run.to_h, target) if WorkflowTransitions.step_attempts_spent?(run.to_h, target)
-        (shortfalls.empty? ? [] : [need("extra_attempts", "--extra-attempts").merge("min" => shortfalls.max)]) + limits.call
+        (shortfalls.empty? ? [] : [NextAction.need("extra_attempts", "--extra-attempts", "min" => shortfalls.max)]) + limits.call
       end
       here = WorkflowTransitions.target_step(run.to_h)
       # A review round is not an attempt: a resume that starts one needs only the token and time limits.
       round = WorkflowTransitions.starts_round?(run.to_h, from: nil) ? limits.call : []
       plain = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: nil) ? extra.call(here) : round
       with_pane = WorkflowEngine.starts_attempt?(run.to_h, from: nil, pane: "%0") ? extra.call(here) : round
-      resume = action("workflow resume", id, needs: plain)
-      from = ->(step) { action("workflow resume", id, "--from", step.to_s, needs: extra.call(step.to_s)) }
-      focus = action("focus", run.workspace, "--pane", pane) if pane
+      resume = NextAction.build("workflow resume", id, needs: plain)
+      from = ->(step) { NextAction.build("workflow resume", id, "--from", step.to_s, needs: extra.call(step.to_s)) }
+      focus = NextAction.build("focus", run.workspace, "--pane", pane) if pane
       # A held retry would block again on the same pane: the resume has to name another one.
-      return [action("workflow resume", id, needs: [need("pane", "--pane")] + extra.call(here)), cancel] if run.backoff&.dig("blocked") && run.state == "waiting"
+      return [NextAction.build("workflow resume", id, needs: [NextAction.need("pane", "--pane")] + extra.call(here)), cancel] if run.backoff&.dig("blocked") && run.state == "waiting"
       case reason["code"]
       when "waiting_lock"
         holder = reason.dig("details", "holder") || {}
         resource = reason.dig("details", "resource")
-        [(action("workflow status", holder["run_id"]) if holder["run_id"]),
-          (action("dev down", "--name", run.workspace) if holder["kind"] == "process"),
-          (action("lock status", resource, "--name", run.workspace) if resource.is_a?(String) && resource.match?(/\A[A-Za-z0-9][\w.-]*\z/)), cancel].compact
+        [(NextAction.build("workflow status", holder["run_id"]) if holder["run_id"]),
+          (NextAction.build("dev down", "--name", run.workspace) if holder["kind"] == "process"),
+          (NextAction.build("lock status", resource, "--name", run.workspace) if resource.is_a?(String) && resource.match?(/\A[A-Za-z0-9][\w.-]*\z/)), cancel].compact
       when "waiting_you"
         case reason.dig("details", "kind")
         when "gate"
           at = ["--step", run.current, "--attempt", run.steps.fetch(run.current).last_attempt&.n.to_s]
-          [action("workflow approve", id, *at), action("workflow reject", id, *at, needs: [need("note", "--note")] + extra.call(run.current)), cancel]
-        when "ask" then [action("ask answer", reason.dig("details", "ask").to_s, "--name", run.workspace, needs: [need("answer", nil)]), focus]
+          [NextAction.build("workflow approve", id, *at), NextAction.build("workflow reject", id, *at, needs: [NextAction.need("note", "--note")] + extra.call(run.current)), cancel]
+        when "ask" then [NextAction.build("ask answer", reason.dig("details", "ask").to_s, "--name", run.workspace, needs: [NextAction.need("answer", nil)]), focus]
         when "prompt" then [focus]
         # Resume decides the step as a turn's end would; --from types the line again.
         when "delivery" then [focus, resume, from.call(reason.dig("details", "step")), cancel]
@@ -614,9 +621,9 @@ module Workspace
       when "failed_check"
         # Only a no_commit with no base_sha can never pass; any other guard stop resumes once the checkout is put back.
         # A guard stop `resume --accept-guard` takes can also be accepted as it is, or accepted and the step run again
-        # from a new baseline; the person writes the note (`needs: ["note"]`).
-        accept = WorkflowTransitions.guard_acceptable?(run) ? [action("workflow resume", id, "--accept-guard", needs: [need("note", "--note")]),
-          action("workflow resume", id, "--accept-guard", "--retry", needs: [need("note", "--note")] + extra.call(here))] : []
+        # from a new baseline; the person writes the note (a `note` need, passed with `--note`).
+        accept = WorkflowTransitions.guard_acceptable?(run) ? [NextAction.build("workflow resume", id, "--accept-guard", needs: [NextAction.need("note", "--note")]),
+          NextAction.build("workflow resume", id, "--accept-guard", "--retry", needs: [NextAction.need("note", "--note")] + extra.call(here))] : []
         if WorkflowTransitions.guard_unrecoverable?(run)
           [cancel] + accept
         else
@@ -629,19 +636,11 @@ module Workspace
         step = reason.dig("details", "step") || run.current
         # The resume then needs --extra-rounds, at least what lets one more round start.
         spent = WorkflowTransitions.rounds_refuse_resume?(run.to_h)
-        rounds = need("extra_rounds", "--extra-rounds").merge("min" => WorkflowTransitions.review_extra_rounds_needed(run.to_h, step)) if spent
-        [(spent ? action("workflow resume", id, needs: [rounds] + plain) : resume), from.call(step), cancel]
-      when "pane_gone" then [action("launch", run.workspace), action("workflow resume", id, needs: with_pane), cancel]
+        rounds = NextAction.need("extra_rounds", "--extra-rounds", "min" => WorkflowTransitions.review_extra_rounds_needed(run.to_h, step)) if spent
+        [(spent ? NextAction.build("workflow resume", id, needs: [rounds] + plain) : resume), from.call(step), cancel]
+      when "pane_gone" then [NextAction.build("launch", run.workspace), NextAction.build("workflow resume", id, needs: with_pane), cancel]
       else [cancel]
       end
-    end
-
-    def action(name, *args, needs: [])
-      {"action" => name, "args" => args, "needs" => needs}
-    end
-
-    def need(name, flag)
-      {"name" => name, "flag" => flag}
     end
   end
 end

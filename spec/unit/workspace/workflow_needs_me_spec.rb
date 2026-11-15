@@ -27,6 +27,11 @@ RSpec.describe Workspace::WorkflowNeedsMe do
                          "next_action" => approve, "actions" => [approve, cancel("wr_1")]}])
   end
 
+  it "passes the first action on as the builder's hash, key order included" do
+    rows = needs_me.rows([run("wr_1", reason: reason("failed_check", details: {"code" => "test"}))])
+    expect(rows.first["next_action"].to_a).to eq(Workspace::NextAction.build("workflow resume", "wr_1").to_a)
+  end
+
   it "names a failed check's code as the detail" do
     rows = needs_me.rows([run("wr_1", reason: reason("failed_check", details: {"code" => "test"}))])
     expect(rows.first).to include("code" => "failed_check", "detail" => "test", "next_action" => resume("wr_1"))

@@ -553,6 +553,7 @@ RSpec.describe Workspace::Commands::Workflow do
       command.status(scope: workspace_scope("app"))
 
       expect(output.string).to eq(<<~TEXT)
+        1 going
         wr_1  flow  app  waiting  step plan (attempt 1), reviewing
           review_incomplete: step plan's review round 2 stopped: a verdict is missing
           review: round 2 of 6, stopped; a resume starts round 3; 1 of 2 approvals, waiting for sk\\e[31meptic, review pane %9
@@ -602,6 +603,7 @@ RSpec.describe Workspace::Commands::Workflow do
       command.status(scope: workspace_scope("app"))
 
       expect(output.string).to eq(<<~TEXT)
+        1 going
         wr_1  flow  app  waiting  step plan (attempt 1), passed
           waiting_you: step plan passed and waits for approval (/src/app/.workflow/wr_1/plan.md)
           flag: timed_out
@@ -610,6 +612,71 @@ RSpec.describe Workspace::Commands::Workflow do
             workspace ask answer a1 --name app -- ANSWER
         Warning: The daemon did not answer.
       TEXT
+    end
+
+    describe "header line" do
+      let(:waiting_run) do
+        shown("state" => "waiting", "current" => {"step" => "plan", "attempt" => 1, "state" => "passed", "flags" => [], "reason" => reason("waiting_you", {"kind" => "gate", "step" => "plan", "artifacts" => []}, [])})
+      end
+      let(:finished_run) { shown("id" => "wr_2", "state" => "completed") }
+      let(:needs_me) { instance_double(Workspace::WorkflowNeedsMe) }
+      let(:with_needs_me) do
+        described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workspace_facts: workspace_facts, workflow_config: workflow_config, store: store, panes: panes, files: nil, run_files: nil,
+          needs_me: needs_me, tmux: tmux, process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
+      end
+
+      before { allow(status).to receive(:runs).and_return("runs" => [waiting_run, finished_run], "warnings" => []) }
+
+      it "counts going runs and the runs waiting for you, with the oldest wait" do
+        allow(needs_me).to receive(:rows).with([waiting_run, finished_run]).and_return([{"waiting_seconds" => 840}])
+
+        with_needs_me.status
+
+        expect(output.string.lines.first).to eq("1 going, 1 waiting you (oldest 14m)\n")
+      end
+
+      it "leaves out the oldest wait when it is unknown" do
+        allow(needs_me).to receive(:rows).and_return([{"waiting_seconds" => nil}])
+
+        with_needs_me.status
+
+        expect(output.string.lines.first).to eq("1 going, 1 waiting you\n")
+      end
+
+      it "leaves out the waiting part when no run waits" do
+        allow(needs_me).to receive(:rows).and_return([])
+
+        with_needs_me.status
+
+        expect(output.string.lines.first).to eq("1 going\n")
+      end
+
+      it "prints 0 going when only finished runs show" do
+        allow(status).to receive(:runs).and_return("runs" => [finished_run], "warnings" => [])
+        allow(needs_me).to receive(:rows).and_return([])
+
+        with_needs_me.status
+
+        expect(output.string.lines.first).to eq("0 going\n")
+      end
+
+      it "prints only the going count when no needs-me reader is wired" do
+        expect { command.status }.not_to raise_error
+
+        expect(output.string.lines.first).to eq("1 going\n")
+      end
+
+      it "prints no header for one run, as JSON, or when no run shows" do
+        allow(status).to receive(:run).with("wr_1").and_return("runs" => [waiting_run], "warnings" => [])
+        command.status(run: "wr_1")
+        expect(output.string.lines.first).to start_with("wr_1  ")
+
+        output.truncate(0)
+        output.rewind
+        allow(status).to receive(:runs).and_return("runs" => [], "warnings" => [])
+        command.status
+        expect(output.string).to eq("No workflow runs.\n")
+      end
     end
 
     it "words every reason for a person" do
@@ -657,7 +724,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
         command.status
 
-        expect(output.string.lines[1]).to eq("  #{text}\n")
+        expect(output.string.lines[2]).to eq("  #{text}\n")
       end
     end
 
@@ -680,7 +747,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       expect(output.string).to eq(<<~TEXT)
         No workflow runs in app still going.
-        Finished runs show with --project or --all.
+        Finished runs show with --project or --all. Runs waiting for you show with --needs-me.
         No workflow runs in app still going.
         No workflow runs in project my-app.
         No workflow runs.
@@ -773,7 +840,7 @@ RSpec.describe Workspace::Commands::Workflow do
       it "prints the empty wording, with the hint" do
         command.status(scope: workspace_scope("app"))
 
-        expect(output.string).to eq("No workflow runs in app still going.\nFinished runs show with --project or --all.\n")
+        expect(output.string).to eq("No workflow runs in app still going.\nFinished runs show with --project or --all. Runs waiting for you show with --needs-me.\n")
       end
     end
 
@@ -3113,6 +3180,31 @@ RSpec.describe Workspace::Commands::Workflow do
 
       expect(audit_command.audit(run: "wr_2611010900abcd", json: true)).to eq(exit_code: 0)
       expect(JSON.parse(output.string)).to include("ok" => true, "clean" => true, "files" => [])
+    end
+
+    it "offers no next actions when clean" do
+      allow(audit_reader).to receive(:read).and_return("files" => [], "without_evidence" => [], "counts" => {}, "clean" => true, "directory" => nil)
+
+      audit_command.audit(run: "wr_2611010900abcd", json: true)
+
+      expect(JSON.parse(output.string)["next_actions"]).to eq([])
+    end
+
+    it "offers the files and one attempts command per mismatched step, and a hint line in text" do
+      rows = [row, row.merge("status" => "missing"), row.merge("step" => "build", "status" => "replaced"), row.merge("status" => "ok")]
+      allow(audit_reader).to receive(:read).and_return("files" => rows, "without_evidence" => [], "counts" => {"changed" => 1, "missing" => 1, "replaced" => 1, "ok" => 1}, "clean" => false, "directory" => nil)
+
+      expect(audit_command.audit(run: "wr_2611010900abcd", json: true)).to eq(exit_code: 1)
+
+      expect(JSON.parse(output.string)["next_actions"]).to eq([
+        {"action" => "workflow files", "args" => ["wr_2611010900abcd"], "needs" => [], "why" => "1 changed, 1 missing, 1 replaced; shows where the copies are"},
+        {"action" => "workflow attempts", "args" => ["wr_2611010900abcd", "--attempt-of", "plan"], "needs" => [], "why" => "step plan: 1 changed, 1 missing"},
+        {"action" => "workflow attempts", "args" => ["wr_2611010900abcd", "--attempt-of", "build"], "needs" => [], "why" => "step build: 1 replaced"}
+      ])
+      output.truncate(0)
+      output.rewind
+      audit_command.audit(run: "wr_2611010900abcd")
+      expect(output.string).to include("See where the copies are: workspace workflow files wr_2611010900abcd")
     end
 
     it "says so for a run with no attempts, and refuses an unknown run" do

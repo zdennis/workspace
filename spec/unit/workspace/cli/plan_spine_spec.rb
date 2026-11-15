@@ -39,7 +39,19 @@ RSpec.describe Workspace::CLI::PlanSpine do
       run("plan", "status", "--json")
 
       expect(status_scope).to have_received(:resolve).with(name: nil, project: nil, all: nil, working_dir: "/src/app")
-      expect(plan_command).to have_received(:status).with(names: ["app"], json: true)
+      expect(plan_command).to have_received(:status).with(names: ["app"], json: true, summary: nil)
+    end
+
+    it "passes --summary through to plan status" do
+      run("plan", "status", "--summary", "--json")
+
+      expect(plan_command).to have_received(:status).with(names: ["app"], json: true, summary: true)
+    end
+
+    it "passes --summary through for --file" do
+      run("plan", "status", "--file", "p.md", "--summary", "--json")
+
+      expect(plan_command).to have_received(:status).with(file: "p.md", json: true, summary: true)
     end
 
     it "launches a workspace with no session for plan start through the launcher, with the invocation it was given" do

@@ -33,6 +33,7 @@ module Workspace
       # @param attempts [Workspace::WorkflowAttempts, nil] reads a run's recorded attempts (`attempts`)
       # @param audit [Workspace::WorkflowAudit, nil] checks a run's evidence copies against their hashes (`audit`)
       # @param sweep [Workspace::WorkflowSweep, nil] looks at the runs still going and acts on the stopped ones (`sweep`)
+      # @param sweep_actions [Workspace::WorkflowSweepActions, nil] turns the sweep's rows into `next_actions` (`sweep --json`)
       # @param needs_me [Workspace::WorkflowNeedsMe, nil] narrows the runs to the ones that wait for a person (`status --needs-me`)
       # @param stats [Workspace::WorkflowStats, nil] reads a workflow's runs into per-step figures (`stats`)
       # @param compare [Workspace::WorkflowCompare, nil] sets a workflow's runs side by side by definition or pack (`compare`)
@@ -48,7 +49,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, tmux:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
         clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
         @tmux = tmux
         @process_tree = process_tree
@@ -61,6 +62,7 @@ module Workspace
         @attempts = attempts
         @audit = audit
         @sweep = sweep
+        @sweep_actions = sweep_actions
         @schedule = schedule
         @needs_me = needs_me
         @branch_inputs = branch_inputs
@@ -530,6 +532,7 @@ module Workspace
         return status_table(result, scope, run, json) if table
         return document("generated_at" => @clock.call.utc.iso8601, "runs" => result["runs"], "warnings" => result["warnings"]) if json
         @output.puts status_empty_text(scope, hint) if result["runs"].empty? && !run
+        @output.puts status_header(result["runs"]) if !run && !result["runs"].empty?
         result["runs"].each { |each| describe(each) }
         result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
       end
@@ -672,7 +675,7 @@ module Workspace
         result = @audit.read(@store.run(run).to_h, step: step)
         if json
           document("run" => run, "step" => step, "clean" => result["clean"], "counts" => result["counts"], "directory" => result["directory"],
-            "files" => result["files"], "without_evidence" => result["without_evidence"])
+            "files" => result["files"], "without_evidence" => result["without_evidence"], "next_actions" => audit_next_actions(run, result))
         else
           print_audit(run, step, result)
         end
@@ -703,7 +706,8 @@ module Workspace
         end
         rows = @sweep.call(run: run, workspace: name, dry_run: dry_run, allow: allow)
         print_sweep(rows, summary: !json)
-        {exit_code: ((rows.any? { |each| each["outcome"] == "failed" }) ? 1 : 0), results: rows, status: (dry_run ? "dry_run" : nil)}
+        {exit_code: ((rows.any? { |each| each["outcome"] == "failed" }) ? 1 : 0), results: rows, status: (dry_run ? "dry_run" : nil),
+         extra: (json ? {"next_actions" => @sweep_actions.call(rows, run: run, name: name)} : {})}
       end
 
       # `workflow sweep --install`, `--uninstall` or `--installed`: the opt-in launchd
@@ -1018,6 +1022,19 @@ module Workspace
         counts = result["counts"].map { |status, count| "#{count} #{status}" }.join(", ")
         @output.puts "#{files.size} #{(files.size == 1) ? "file" : "files"}#{": " + counts unless counts.empty?}. #{result["clean"] ? "No copy differs from its record." : "A copy differs from its record."}"
         @output.puts "Evidence kept in #{TerminalText.escape(result["directory"].to_s)}/" if result["directory"]
+        @output.puts "See where the copies are: workspace workflow files #{TerminalText.escape(run)}" unless result["clean"]
+      end
+
+      # What to run after a mismatch: the run's files, then each mismatched step's attempts. Empty when clean.
+      def audit_next_actions(run, result)
+        mismatched = result["files"].select { |each| WorkflowAudit::MISMATCHES.include?(each["status"]) }
+        return [] if mismatched.empty?
+        describe = ->(rows) { rows.map { |each| each["status"] }.tally.map { |status, count| "#{count} #{status}" }.join(", ") }
+        actions = [NextAction.build("workflow files", run, why: "#{describe.call(mismatched)}; shows where the copies are")]
+        mismatched.group_by { |each| each["step"] }.each do |step, rows|
+          actions << NextAction.build("workflow attempts", run, "--attempt-of", step, why: "step #{step}: #{describe.call(rows)}")
+        end
+        actions
       end
 
       # One text row of `audit`: step, attempt, kind, status, name, detail.
@@ -1193,6 +1210,15 @@ module Workspace
         [row["run"], row["workspace"], row["step"].to_s, wait_text(row["waiting_seconds"]), why, command]
       end
 
+      def status_header(runs)
+        going = runs.count { |each| !WorkflowRunStore::TERMINAL_STATES.include?(each["state"]) }
+        header = "#{going} going"
+        rows = @needs_me ? @needs_me.rows(runs) : []
+        return header if rows.empty?
+        oldest = rows.first["waiting_seconds"]
+        "#{header}, #{rows.size} waiting you#{" (oldest #{wait_text(oldest)})" if oldest}"
+      end
+
       def wait_text(seconds)
         return "-" unless seconds
         days, rest = seconds.divmod(86_400)
@@ -1282,7 +1308,7 @@ module Workspace
         case scope&.kind
         when :workspace
           text = "No workflow runs in #{scope.workspace} still going."
-          hint ? "#{text}\nFinished runs show with --project or --all." : text
+          hint ? "#{text}\nFinished runs show with --project or --all. Runs waiting for you show with --needs-me." : text
         when :project then "No workflow runs in project #{scope.project.name}."
         else "No workflow runs."
         end
