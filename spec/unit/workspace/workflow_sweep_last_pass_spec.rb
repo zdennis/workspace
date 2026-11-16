@@ -12,15 +12,17 @@ RSpec.describe Workspace::WorkflowSweep, "last pass and log trim" do
   let(:row) { {"outcome" => "nothing"} }
   let(:paths) { {log_path: log_path, last_path: last_path} }
 
-  def build(**opts)
-    described_class.new(store: store, engine: nil, panes: nil, interrupter: ->(*) {}, reviews: reviews, clock: -> { now }, **opts)
+  def build(results: nil, **opts)
+    sweep = described_class.new(store: store, engine: nil, panes: nil, interrupter: ->(*) {}, reviews: reviews, clock: -> { now }, **opts)
+    outcomes = results&.each
+    allow(sweep).to receive(:sweep_run) { outcomes ? outcomes.next : row }
+    sweep
   end
 
   def record = JSON.parse(File.read(last_path))
 
   before do
     allow(store).to receive(:run).and_return(run)
-    allow_any_instance_of(described_class).to receive(:sweep_run) { row }
   end
 
   after { FileUtils.remove_entry(dir) }
@@ -58,10 +60,8 @@ RSpec.describe Workspace::WorkflowSweep, "last pass and log trim" do
 
   it "counts acted rows and lists failed ones with a shortened message" do
     rows = [{"outcome" => "retried"}, {"outcome" => "failed", "run_id" => "r1", "reason" => "boom", "message" => "x" * 500}, {"outcome" => "nothing"}]
-    i = -1
     allow(store).to receive(:going).and_return([run, run, run])
-    allow_any_instance_of(described_class).to receive(:sweep_run) { rows[i += 1] }
-    build(**paths).call
+    build(results: rows, **paths).call
 
     expect(record["last"]["acted"]).to eq(2)
     expect(record["last"]["errors"].size).to eq(1)
