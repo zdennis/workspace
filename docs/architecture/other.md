@@ -2,7 +2,7 @@
 
 Everything else: config, git, library, skills, rename, ticket and pull-request commands, the core layer, and spec tooling. Full per-file detail, moved verbatim from `.claude/CLAUDE.md`; the one-line index there links here.
 
-- `lib/workspace/config.rb` — Path constants and configuration
+- `lib/workspace/config.rb` — Path constants and configuration (including `workflow_event_errors_path`, the log of workflow history lines that could not be written)
 - `lib/workspace/commands/notes.rb` — `notes dir`: the one answer to where a workspace's notes are, through `NotesDir`; `--create` makes the directory and lists it in `info/exclude`; `workspace ui open notes [WS] [--path REL]` sends the person to the Notes view, or one note, through `Commands::Ui` (`workspace-ui://notes/<ws>[/<rel>]`; `--path` is checked by `NotePath.resolve`, refused as `invalid_note_path`)
 - `lib/workspace/commands/promote.rb` — `promote [BRANCH] [--name WS] [--dry-run] [--json]`: moves a main checkout's changes and branch commits into a new `.worktrees/<branch>` through `CheckoutMove`, makes it a workspace through `start` (no launch, plan or spine), carries notes through `NotesCarry`, then makes the spine and plan asked for and not carried; refuses `agent_working` (the caller's `$TMUX_PANE` aside); writes `workspace_promoted`; docs in `docs/README.promote.md`
 - `lib/workspace/checkout_move.rb` — The git half of `promote`: checks (`plan`, read-only), one tagged stash pinned to `refs/workspace/promote/<id>`, switch, `worktree add`, `stash apply --index` checked against trees recorded before; a failure is undone in reverse (`move_failed`) or kept under the ref (`move_incomplete`); INT, TERM and HUP wait for the step under way through `DeferredSignals`

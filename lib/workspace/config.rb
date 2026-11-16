@@ -261,6 +261,13 @@ module Workspace
       File.join(state_dir, ".workflows", "runs")
     end
 
+    # The log of workflow history lines that could not be written, one JSON line each.
+    #
+    # @return [String] path to the event errors log
+    def workflow_event_errors_path
+      File.join(state_dir, ".workflows", "event-errors.log")
+    end
+
     # Finished runs are moved here, so the runs directory holds only runs still going.
     #
     # @return [String] path to the directory holding finished workflow runs

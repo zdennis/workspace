@@ -29,7 +29,9 @@ module Workspace
     # @param evidence [#remove, nil] given the id of an archived run that is pruned, removes its evidence
     # @param archive_limit [Integer] how many archived runs are kept
     # @param globber [#call] lists the paths matching a glob pattern, as +Dir.glob+ does
-    def initialize(dir:, archive_dir:, clock: -> { Time.now }, id_generator: nil, evidence: nil, archive_limit: ARCHIVE_LIMIT, globber: Dir.method(:glob))
+    # @param event_errors_path [String, nil] the log a failed {#record_event} writes a line to; nil keeps no log
+    def initialize(dir:, archive_dir:, clock: -> { Time.now }, id_generator: nil, evidence: nil, archive_limit: ARCHIVE_LIMIT, globber: Dir.method(:glob), event_errors_path: nil)
+      @event_errors_path = event_errors_path
       @globber = globber
       @archive_limit = archive_limit
       @evidence = evidence
@@ -207,7 +209,8 @@ module Workspace
     end
 
     # Appends one line to a run's history. Never raises: the history is a
-    # record, and a run must not stop because it can't be written.
+    # record, and a run must not stop because it can't be written. A line that
+    # can't be written is logged to the event errors log (see {#event_errors}).
     #
     # @param id [String] a run id
     # @param type [String] what happened, e.g. "step_dispatched"
@@ -216,8 +219,24 @@ module Workspace
     def record_event(id, type, data = {})
       line = JSON.generate({"ts" => @clock.call.utc.iso8601(3), "type" => type}.merge(data)) + "\n"
       File.open(events_path(id), File::WRONLY | File::APPEND | File::CREAT, 0o600) { |file| file.syswrite(line) }
-    rescue SystemCallError, JSON::GeneratorError, EncodingError
-      nil
+    rescue SystemCallError, JSON::GeneratorError, EncodingError => e
+      log_event_error(id, type, e)
+    end
+
+    # A run's lost history lines, from the event errors log.
+    #
+    # @param id [String] a run id
+    # @return [Array<Hash{String=>Object}>] the entries (`ts`, `run_id`, `type`, `errno`, `message`), oldest first; empty when there is no log; a line that is not JSON is skipped
+    def event_errors(id)
+      return [] unless @event_errors_path && File.file?(@event_errors_path)
+      File.foreach(@event_errors_path).filter_map do |line|
+        entry = JSON.parse(line)
+        entry if entry.is_a?(Hash) && entry["run_id"] == id
+      rescue JSON::ParserError, EncodingError
+        nil
+      end
+    rescue SystemCallError
+      []
     end
 
     # @param id [String] a run id
@@ -267,6 +286,20 @@ module Workspace
     end
 
     private
+
+    # Writes one line to the event errors log for an event that was not written.
+    # Never raises: the log is a last resort. The message is cut to 500
+    # characters so one append stays whole beside concurrent writers.
+    def log_event_error(id, type, error)
+      return unless @event_errors_path
+      errno = error.is_a?(SystemCallError) ? error.class.name.sub("Errno::", "") : error.class.name
+      line = JSON.generate({"ts" => @clock.call.utc.iso8601(3), "run_id" => id, "type" => type, "errno" => errno, "message" => error.message[0, 500]}) + "\n"
+      FileUtils.mkdir_p(File.dirname(@event_errors_path))
+      File.open(@event_errors_path, File::WRONLY | File::APPEND | File::CREAT, 0o600) { |file| file.syswrite(line) }
+      nil
+    rescue SystemCallError, JSON::GeneratorError, EncodingError
+      nil
+    end
 
     # +path+ with its links resolved up to the deepest part that is there; the rest kept as written.
     def real_path(path)

@@ -169,6 +169,14 @@ RSpec.describe Workspace::Config do
     end
   end
 
+  describe "#workflow_event_errors_path" do
+    it "is event-errors.log beside the runs directory" do
+      config = described_class.new
+
+      expect(config.workflow_event_errors_path).to eq(File.join(config.state_dir, ".workflows", "event-errors.log"))
+    end
+  end
+
   describe "#task_dir" do
     it "is a dotted directory under the state directory, which no workspace's state directory can be" do
       config = described_class.new

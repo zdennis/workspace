@@ -1001,7 +1001,7 @@ module Workspace
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
     workflow_deny = WorkflowDeny.new(bound_run: bound_run, logger: logger, event_log: event_log,
-      run_store: WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir))
+      run_store: WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, event_errors_path: config.workflow_event_errors_path))
     review_write_guard = ReviewWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, env: env, event_log: event_log, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     recovery_stop_marker = RecoveryStopMarker.new(state_dir: config.state_dir)
@@ -1048,7 +1048,7 @@ module Workspace
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
     workflow_evidence = WorkflowEvidence.new(dir: config.workflow_evidence_dir)
-    workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, evidence: workflow_evidence)
+    workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, evidence: workflow_evidence, event_errors_path: config.workflow_event_errors_path)
     workflow_run_loader = WorkflowRunLoader.new(store: workflow_store)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
       snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new, error_output: error_output)
