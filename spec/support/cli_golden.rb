@@ -16,7 +16,7 @@ module HelpExamplesSpec
     "binding", "binding set", "binding show", "binding clear",
     "capabilities", "capture", "cleanup", "current", "deactivate", "dir", "doctor",
     "config", "config show", "config set", "config get", "config unset", "config edit", "config keys", "config validate",
-    "daemon", "daemon status", "daemon restart", "daemon log", "daemon list",
+    "daemon", "daemon status", "daemon restart", "daemon log", "daemon list", "daemon watch",
     "dev", "dev up", "dev down", "dev status", "dev wait", "dev leave", "dev __run",
     "event-log", "event-log show", "event-log compact",
     "events", "finish", "focus",

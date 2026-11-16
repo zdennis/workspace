@@ -277,6 +277,28 @@ module Workspace
           ["workspace daemon list --json", "one JSON document with a row per daemon"],
           ["workspace daemon list --json | jq -r '.daemons[].workspace'", "the workspaces that have a daemon running"]
         ]
+      },
+      "watch" => {
+        usage: ["daemon watch [WORKSPACE] [--name NAME] [--run RUN] [--since CURSOR] [--json]"],
+        summary: "Follow a workspace's workflow decisions and run events as one stream",
+        about: [
+          "Prints, as they happen, what the agent daemon decides about the workspace's workflow runs (advance",
+          "started, run skipped, sweep started, process exited) and each run's own events, oldest first. It",
+          "starts from now and runs until Ctrl-C; with --run it follows that run alone and stops once the run",
+          "has finished. It only reads files, so it needs no running daemon. Times are local clock times; --json",
+          "has UTC ISO times. For what happened before, use `workspace workflow events RUN`.",
+          "",
+          "With --json each line is one JSON object with source, at, type, workspace, run_id, event and a cursor;",
+          "pass the last cursor as --since to resume without a repeat. See docs/README.daemon.md."
+        ],
+        options: [DAEMON_NAME, ["--run RUN", "Follow only this run, and stop when it has finished"],
+          ["--since CURSOR", "Resume after the line that printed this cursor (same workspace and --run)"],
+          ["--json", "Print one JSON object per line, each with a cursor"]],
+        examples: [
+          ["workspace daemon watch", "follow the project in the current directory until Ctrl-C"],
+          ["workspace daemon watch my-app --run wr_20261115_x", "follow one run to its end"],
+          ["workspace daemon watch my-app --json --since CURSOR", "resume after the line that printed CURSOR"]
+        ]
       }
     }.freeze
 

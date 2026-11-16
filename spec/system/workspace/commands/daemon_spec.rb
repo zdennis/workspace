@@ -616,6 +616,33 @@ RSpec.describe Workspace::Commands::Daemon do
     end
   end
 
+  describe "#watch" do
+    it "follows a run of a real workspace to its end through the built CLI" do
+      Dir.mktmpdir("workspace-watch") do |home|
+        saved = ENV.to_h
+        begin
+          ENV.replace("HOME" => home, "PATH" => File.dirname(RbConfig.ruby))
+          cfg = Workspace::Config.new
+          FileUtils.mkdir_p(cfg.tmuxinator_dir)
+          File.write(File.join(cfg.tmuxinator_dir, "workspace.api.yml"), "name: api\nroot: #{home}\nwindows: []\n")
+          store = Workspace::WorkflowRunStore.new(dir: cfg.workflow_runs_dir, archive_dir: cfg.workflow_archive_dir)
+          id = store.create({"workspace" => "api", "state" => "running", "current" => "s1", "created_at" => Time.now.utc.iso8601(3),
+                             "definition" => {"steps" => [{"id" => "s1"}]}, "steps" => {"s1" => {"attempts" => []}}})["id"]
+          store.record_event(id, "run_finished")
+          store.change(id) { |run| Workspace::WorkflowRun.from_h(run.to_h.merge("state" => "completed", "ended_at" => Time.now.utc.iso8601)) }
+          out = StringIO.new
+          cli = Workspace.build_cli(output: out, error_output: StringIO.new, input: StringIO.new, env: {})
+
+          Timeout.timeout(30) { cli.run(["daemon", "watch", "api", "--run", id]) }
+
+          expect(out.string.lines.map(&:chomp)).to match([/\A\d\d:\d\d:\d\d watching api for run #{id} from now; Ctrl-C stops \(earlier events: workspace workflow events #{id}\)\z/, /\A\d\d:\d\d:\d\d run #{id} completed; no more events/])
+        ensure
+          ENV.replace(saved)
+        end
+      end
+    end
+  end
+
   describe "finding the socket's processes with lsof" do
     let(:pid_file) { File.join(tmpdir, "lsof.pid") }
 

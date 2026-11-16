@@ -35,6 +35,7 @@ module Workspace
         "state_done" => 1,
         "doctor_json" => 1,
         "daemon_control" => 4,
+        "daemon_watch" => 1,
         "config_json" => 2,
         "config_scopes" => 2,
         "tmux_show" => 1,

@@ -1836,9 +1836,7 @@ module Workspace
       end
 
       def clock_time(iso)
-        Time.iso8601(iso.to_s).localtime.strftime("%H:%M:%S")
-      rescue ArgumentError
-        iso.to_s
+        Duration.clock_time(iso)
       end
 
       # What a person has to supply, shown as an upper-case placeholder where it goes.

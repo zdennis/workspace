@@ -52,6 +52,14 @@ RSpec.describe Workspace::CLI::Agent do
       expect(agent_command.calls).to be_empty
     end
 
+    it "hands `daemon watch` its workspace, --run, --since and --json" do
+      run("daemon", "watch", "app", "--run", "wr_x", "--since", "wcur", "--json")
+
+      expect(daemon_command.calls).to eq([{watch: "app", run: "wr_x", since: "wcur", json: true}])
+      expect { run("daemon", "status", "app", "--run", "wr_x") }.to raise_error(Workspace::UsageError, /--run only applies to `daemon watch`/)
+      expect { run("daemon", "log", "app", "--since", "x") }.to raise_error(Workspace::UsageError, /--since only applies to `daemon watch`/)
+    end
+
     it "writes and exits through the invocation it is given" do
       daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("failed", 11, nil, "not_stopped", "still running")
 

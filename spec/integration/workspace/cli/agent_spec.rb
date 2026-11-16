@@ -437,6 +437,88 @@ RSpec.describe Workspace::CLI do
       expect(daemon_command.calls).to eq([])
     end
 
+    describe "watch" do
+      it "hands the workspace, --run, --since and --json to the daemon command" do
+        cli.run(["daemon", "watch", "app", "--run", "wr_x", "--since", "wcur", "--json"])
+        cli.run(["daemon", "watch"])
+
+        expect(daemon_command.calls).to eq([{watch: "app", run: "wr_x", since: "wcur", json: true}, {watch: "detected-ws", run: nil, since: nil, json: false}])
+      end
+
+      it "refuses --run and --since on any other verb, as usage errors" do
+        [%w[daemon status app --run wr_x], %w[daemon log app --since x], %w[daemon list --run wr_x], %w[daemon restart app --since x]].each do |argv|
+          expect { cli.run(argv) }.to raise_error(FakeSystemExit), argv.join(" ")
+        end
+        expect(daemon_command.calls).to eq([])
+      end
+
+      def real_watch_cli(dir, store, raw)
+        project_config = instance_double(Workspace::ProjectConfig, available_projects: ["api"], exists?: true)
+        factory = ->(workspace:, run:) {
+          Workspace::DaemonWatch.new(workspace: workspace, run: run, store: store,
+            stream: Workspace::EventStream.new(lifecycle_path: nil, hook_dir: dir, workspace: workspace))
+        }
+        command = Workspace::Commands::Daemon.new(config: instance_double(Workspace::Config), project_config: project_config, ensure_agent: double("ensure_agent"),
+          version_client: double("version_client"), watch_factory: factory, sleeper: ->(_) {}, output: Workspace::OutputGate.new(raw))
+        build_test_cli(project_config: project_config, daemon_command: command, output: Workspace::OutputGate.new(raw), error_output: StringIO.new)[0]
+      end
+
+      it "follows a real run to its end and prints the stream as JSON lines, one per line with a cursor" do
+        dir = Dir.mktmpdir
+        store = Workspace::WorkflowRunStore.new(dir: File.join(dir, "runs"), archive_dir: File.join(dir, "archive"))
+        id = store.create({"workspace" => "api", "state" => "running", "current" => "s1", "created_at" => Time.now.utc.iso8601(3),
+                           "definition" => {"steps" => [{"id" => "s1"}]}, "steps" => {"s1" => {"attempts" => []}}})["id"]
+        store.record_event(id, "run_finished")
+        store.change(id) { |run| Workspace::WorkflowRun.from_h(run.to_h.merge("state" => "completed", "ended_at" => Time.now.utc.iso8601)) }
+        raw = StringIO.new
+
+        Timeout.timeout(20) { real_watch_cli(dir, store, raw).run(["daemon", "watch", "api", "--run", id, "--json"]) }
+
+        lines = raw.string.lines.map { |l| JSON.parse(l) }
+        expect(lines.first).to include("type" => "follow_started", "run_id" => id)
+        expect(lines.last).to include("type" => "follow_ended", "run_id" => id)
+        expect(lines.map { |l| l["cursor"] }).to all(start_with("w1."))
+        expect(lines.last["state"]).to eq("completed")
+      ensure
+        FileUtils.remove_entry(dir) if dir && File.directory?(dir)
+      end
+
+      it "resumes after the last cursor without repeating a line" do
+        dir = Dir.mktmpdir
+        store = Workspace::WorkflowRunStore.new(dir: File.join(dir, "runs"), archive_dir: File.join(dir, "archive"))
+        id = store.create({"workspace" => "api", "state" => "running", "current" => "s1", "created_at" => Time.now.utc.iso8601(3),
+                           "definition" => {"steps" => [{"id" => "s1"}]}, "steps" => {"s1" => {"attempts" => []}}})["id"]
+        first = StringIO.new
+        # The watch opens at the end of the run's history, so this event is only seen on the resumed read.
+        thread = Thread.new { Timeout.timeout(20) { real_watch_cli(dir, store, first).run(["daemon", "watch", "api", "--run", id, "--json"]) } }
+        sleep 0.05 until first.string.include?("follow_started")
+        store.record_event(id, "step_dispatched")
+        store.change(id) { |run| Workspace::WorkflowRun.from_h(run.to_h.merge("state" => "completed", "ended_at" => Time.now.utc.iso8601)) }
+        thread.join
+        lines = first.string.lines.map { |l| JSON.parse(l) }
+        expect(lines.map { |l| l["type"] }).to include("step_dispatched")
+        again = StringIO.new
+
+        real_watch_cli(dir, store, again).run(["daemon", "watch", "api", "--run", id, "--json", "--since", lines.last["cursor"]])
+
+        expect(again.string.lines.map { |l| JSON.parse(l)["type"] }).to eq(%w[follow_started follow_ended])
+      ensure
+        FileUtils.remove_entry(dir) if dir && File.directory?(dir)
+      end
+
+      it "reports a cursor it cannot read as an invalid_cursor JSON error" do
+        dir = Dir.mktmpdir
+        store = Workspace::WorkflowRunStore.new(dir: File.join(dir, "runs"), archive_dir: File.join(dir, "archive"))
+        raw = StringIO.new
+
+        expect { real_watch_cli(dir, store, raw).run(["daemon", "watch", "api", "--since", "nonsense", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(raw.string)).to include("ok" => false, "code" => "invalid_cursor")
+      ensure
+        FileUtils.remove_entry(dir) if dir && File.directory?(dir)
+      end
+    end
+
     it "rejects a non-numeric --lines, in text and as a usage JSON error" do
       expect { cli.run(["daemon", "log", "app", "--lines", "abc"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("invalid argument: --lines abc")

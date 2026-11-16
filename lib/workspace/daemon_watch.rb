@@ -144,6 +144,9 @@ module Workspace
       @done
     end
 
+    # @return [String, nil] with +run:+, the state the finished run ended in once {#done?}; nil before, or when the run is gone
+    attr_reader :state
+
     # @return [String] the cursor for everything read so far
     def cursor_string
       self.class.encode_cursor("w" => @workspace, "f" => @run, "e" => @stream_cursor, "r" => @runs.dup, "t" => @looked_at, "d" => @ended.dup)
@@ -206,7 +209,8 @@ module Workspace
     def read_run(id)
       archived = @store.archived?(id)
       result = @store.events(id, since: @runs[id])
-      result.merge("finished" => archived, "ended_at" => archived ? @store.run(id).ended_at : nil)
+      stored = archived ? @store.run(id) : nil
+      result.merge("finished" => archived, "ended_at" => stored&.ended_at, "state" => stored&.state)
     rescue Workspace::Error => e
       raise unless e.code == "unknown_run"
       nil
@@ -249,6 +253,7 @@ module Workspace
         @more ||= result["truncated"]
         drained = result["finished"] && !result["truncated"]
         @done = drained if id == @run
+        @state = result["state"] if id == @run && drained
         next unless drained && @run.nil?
         @runs.delete(id)
         @ended[id] = result["ended_at"].is_a?(String) ? result["ended_at"] : nil

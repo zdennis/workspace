@@ -1039,8 +1039,6 @@ module Workspace
       error_output: error_output
     )
     capabilities_command = Commands::Capabilities.new(config: config, output: output)
-    daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
-      process_tree: ProcessTree.new(logger: logger), output: output)
     ui_app_probe = UiAppProbe.new(osascript: ui_osascript || OsascriptRunner.new(command: ["osascript", "-l", "JavaScript"]))
     ui_command = Commands::Ui.new(output: output, notes: notes_command, app_probe: ui_app_probe)
     workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
@@ -1051,6 +1049,9 @@ module Workspace
     workflow_evidence = WorkflowEvidence.new(dir: config.workflow_evidence_dir)
     workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, evidence: workflow_evidence, event_errors_path: config.workflow_event_errors_path)
     workflow_run_loader = WorkflowRunLoader.new(store: workflow_store)
+    daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
+      watch_factory: ->(workspace:, run:) { DaemonWatch.new(workspace: workspace, run: run, store: workflow_store, stream: EventStream.new(lifecycle_path: nil, hook_dir: config.hook_events_dir, workspace: workspace)) },
+      process_tree: ProcessTree.new(logger: logger), output: output)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
       snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new, error_output: error_output)
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
