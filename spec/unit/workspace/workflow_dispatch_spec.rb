@@ -447,6 +447,34 @@ RSpec.describe Workspace::WorkflowDispatch do
       ])
     end
 
+    it "records the refusal on the marked attempt and the event, and a second refusal replaces the first" do
+      seen = {"state" => "working", "changed_by" => "screen", "refusal_reason" => "busy"}
+      first = over(RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "busy", reason: "working", seen: seen}))
+      second = over(RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "busy again\e[2J", reason: "waiting", seen: seen.merge("state" => "waiting")}))
+      open_run
+
+      first.type_continue("wr_1", mark, workspace: "app", text: "go", actor: "daemon", cause: "tick")
+      expect(store.runs["wr_1"]["steps"]["plan"]["attempts"].last["refusal"]).to eq("error" => "pane_busy", "message" => "busy", "reason" => "working", "seen" => seen)
+      second.type_continue("wr_1", mark, workspace: "app", text: "go", actor: "daemon", cause: "tick")
+
+      expect(store.runs["wr_1"]["steps"]["plan"]["attempts"].last["refusal"]).to include("message" => "busy again\\e[2J", "reason" => "waiting", "seen" => include("state" => "waiting"))
+      expect(store.events.last.last).to include("code" => "pane_busy", "reason" => "waiting", "seen_state" => "waiting", "seen_changed_by" => "screen")
+      expect(store.events.last.last).to include("code" => "pane_busy", "message" => "busy again\e[2J")
+      expect(store.events.last.last).not_to have_key("error")
+      expect(store.events.last.last).not_to have_key("seen_seen_at")
+    end
+
+    it "flattens a seen key that already starts with seen_ without prefixing it again" do
+      expect(described_class.refusal_event_keys({"error" => "pane_busy", "seen" => {"seen_at" => "t", "state" => "working"}})).to eq("error" => "pane_busy", "seen_at" => "t", "seen_state" => "working")
+    end
+
+    it "does not raise when no attempt matches the mark" do
+      refusing = over(RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "busy"}))
+      open_run("steps" => {"plan" => {"state" => "running", "attempts" => []}})
+
+      expect(refusing.type_continue("wr_1", mark, workspace: "app", text: "go", actor: "daemon", cause: "tick")).to include(ok: false)
+    end
+
     it "types nothing into a run paused again since its caller's change, and keeps the mark for the next unpause" do
       open_run("paused" => {"since" => "2026-11-10T11:59:00Z", "by" => "person"})
 
@@ -513,6 +541,22 @@ RSpec.describe Workspace::WorkflowDispatch do
       run = dispatch.deliver("wr_1", delivery.merge("remote_baseline" => true))
 
       expect(run.step("plan").last_attempt.remote).to eq("sha" => "abc")
+    end
+
+    it "records a pane_busy refusal on the attempt, the run's reason and step_dispatched, escaping pane text" do
+      seen = {"state" => "working", "changed_by" => "screen", "refusal_reason" => "shows a prompt"}
+      panes = RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "pane \e[2Jbusy", reason: "prompt", seen: seen})
+      dispatch = described_class.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
+        guard: guard, clock: -> { now })
+      store.runs["wr_1"] = delivering
+
+      run = dispatch.deliver("wr_1", delivery)
+
+      refusal = {"error" => "pane_busy", "message" => "pane \\e[2Jbusy", "reason" => "prompt", "seen" => seen}
+      expect(run.step("plan").last_attempt.refusal).to eq(refusal)
+      expect(run.reason["details"]).to include("seen" => seen, "reason" => "prompt")
+      expect(store.events.first.last).to include("delivered" => false, "error" => "pane_busy", "message" => "pane \\e[2Jbusy", "reason" => "prompt",
+        "seen_state" => "working", "seen_changed_by" => "screen", "seen_refusal_reason" => "shows a prompt")
     end
 
     it "parks a released resume again when the pane was only busy, naming the pane it was released into" do

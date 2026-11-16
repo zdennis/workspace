@@ -343,6 +343,18 @@ RSpec.describe Workspace::WorkflowReviewRound do
       end
     end
 
+    context "when the line is refused as pane_busy with what the pane showed" do
+      let(:seen) { {"state" => "working", "changed_by" => "screen"} }
+      let(:panes) { RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "busy\e[2J", reason: "working", seen: seen}) }
+
+      it "keeps reason and seen in the failure and adds them to review_delivery_failed" do
+        runner.call("wr_1", pending)
+
+        expect(round["failure"]).to include("code" => "pane_busy", "message" => "busy\\e[2J", "reason" => "working", "seen" => seen)
+        expect(change.events.last).to eq(["wr_1", "review_delivery_failed", {"step" => "plan", "attempt" => 1, "round" => 1, "code" => "pane_busy", "reason" => "working", "seen_state" => "working", "seen_changed_by" => "screen"}])
+      end
+    end
+
     context "when the line can't be typed into a window used again" do
       let(:panes) { RecordingWorkflowPanes.new(kick: {ok: false, code: "pane_busy", message: "busy"}) }
 

@@ -13,6 +13,29 @@ module Workspace
     # The one line typed into the pane; the instructions themselves are in the file.
     KICK = "Read %s and follow it."
 
+    # What a line refused as `pane_busy` leaves on the attempt, the run's reason and the events; text that may hold
+    # pane content is escaped with {TerminalText}.
+    #
+    # @param kick [Hash] a kick's answer (:ok, :code, :message, :reason, :seen)
+    # @return [Hash{String=>Object}, nil] `error`, `message`, `reason` and `seen` (those present); nil unless refused as `pane_busy`
+    def self.refusal(kick)
+      return nil if kick[:ok] || kick[:code].to_s != "pane_busy"
+      seen = kick[:seen]&.transform_values { |value| value.is_a?(String) ? TerminalText.escape(value) : value }
+      {"error" => "pane_busy", "message" => (TerminalText.escape(kick[:message]) if kick[:message]),
+       "reason" => (TerminalText.escape(kick[:reason]) if kick[:reason]), "seen" => seen}.compact
+    end
+
+    # A refusal as flat event keys: `error`, `message`, `reason` and one `seen_*` key per thing seen.
+    #
+    # @param refusal [Hash, nil] from {.refusal}
+    # @param except [Array<String>] keys left out, for an event that already carries them
+    # @return [Hash{String=>Object}] empty when there is no refusal
+    def self.refusal_event_keys(refusal, except: [])
+      return {} unless refusal
+      flat = refusal.except("seen").merge((refusal["seen"] || {}).transform_keys { |key| key.start_with?("seen_") ? key : "seen_#{key}" })
+      flat.except(*except)
+    end
+
     # Restart errors that mean there is no pane to type into.
     PANE_GONE_CODES = %w[no_such_pane pane_gone no_session wrong_session].freeze
 
@@ -106,7 +129,8 @@ module Workspace
         kick = kick.merge(pane_listed: true)
       end
       @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"],
-        "pane" => delivery["pane"], "delivered" => kick[:ok], "actor" => "engine", "cause" => delivery["cause"], "from_state" => nil, "to_state" => nil, **kick.slice(:warning, :proof_missing).transform_keys(&:to_s))
+        "pane" => delivery["pane"], "delivered" => kick[:ok], "actor" => "engine", "cause" => delivery["cause"], "from_state" => nil, "to_state" => nil, **kick.slice(:warning, :proof_missing).transform_keys(&:to_s),
+        **self.class.refusal_event_keys(self.class.refusal(kick)))
       @change.call(run_id, actor: "engine", cause: "delivery") { |run| settle(run, delivery, kick) }
     rescue Workspace::Error => e
       # Cancelled while the line was on its way: the cancel stands.
@@ -142,10 +166,10 @@ module Workspace
           {ok: false, code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.scrub.strip}
         end
       end
-      kick = kick.merge(pending: !CONTINUE_DROPPED.include?(kick[:code].to_s) && keep_continue(run_id, mark, actor, cause)) unless kick[:ok]
+      kick = kick.merge(pending: !CONTINUE_DROPPED.include?(kick[:code].to_s) && keep_continue(run_id, mark, actor, cause, self.class.refusal(kick))) unless kick[:ok]
       line = {"step" => mark["step"], "attempt" => mark["attempt"], "pane" => mark["pane"], "delivered" => kick[:ok],
               "actor" => actor, "cause" => cause, "from_state" => nil, "to_state" => nil}
-      @store.record_event(run_id, "step_continued", line.merge(kick.slice(:code, :message, :pending).transform_keys(&:to_s)))
+      @store.record_event(run_id, "step_continued", line.merge(kick.slice(:code, :message, :pending).transform_keys(&:to_s)).merge(self.class.refusal_event_keys(self.class.refusal(kick), except: %w[error message])))
       kick
     end
 
@@ -392,6 +416,8 @@ module Workspace
     def not_delivered(run, state, attempt, kick)
       attempt&.delete("delivery")
       attempt&.merge!("ended_at" => now_iso, "outcome" => "not_delivered")
+      refusal = self.class.refusal(kick)
+      attempt["refusal"] = refusal if attempt && refusal
       attempt["code"] = kick[:code].to_s if attempt && kick[:code]
       # The next attempt is told what this one would have been.
       run["pending_context"] = attempt["context"] + run["pending_context"] if attempt
@@ -402,8 +428,8 @@ module Workspace
       gone = PANE_GONE_CODES.include?(kick[:code].to_s) && !kick[:pane_listed]
       run["reason"] = reason(gone ? "pane_gone" : "waiting_you",
         {"kind" => "dispatch", "step" => run["current"], "pane" => run["pane"], "workspace" => run["workspace"],
-         "error" => kick[:code].to_s, "message" => kick[:message]&.to_s&.scrub, "reason" => kick[:reason]&.to_s,
-         "proof_missing" => kick[:proof_missing]&.to_s}.compact)
+         "error" => kick[:code].to_s, "message" => refusal&.fetch("message", nil) || kick[:message]&.to_s&.scrub, "reason" => refusal&.fetch("reason", nil) || kick[:reason]&.to_s,
+         "proof_missing" => kick[:proof_missing]&.to_s, "seen" => refusal&.fetch("seen", nil)}.compact)
     end
 
     # Whether the attempt about to start is held: the budget is used up. Not for a lock wait that ends (the attempt
@@ -569,13 +595,18 @@ module Workspace
     end
 
     # Puts a continue mark back as `continue_pending`, so a later tick types the line; true when it did.
-    def keep_continue(run_id, mark, actor, cause)
+    # A refusal is written on the marked attempt every time, so a second refusal on the same mark replaces the first.
+    def keep_continue(run_id, mark, actor, cause, refusal = nil)
       kept = false
       @change.call(run_id, actor: actor, cause: cause) do |read|
         stored = read.thawed
-        next read unless WorkflowTransitions.continue_mark?(stored, mark) && !stored.key?("continue_pending")
-        stored["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
-        kept = true
+        next read unless WorkflowTransitions.continue_mark?(stored, mark)
+        attempt = stored.dig("steps", mark["step"], "attempts")&.find { |a| a["n"] == mark["attempt"] }
+        attempt["refusal"] = refusal if attempt && refusal
+        unless stored.key?("continue_pending")
+          stored["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
+          kept = true
+        end
         WorkflowRun.from_h(stored)
       end
       kept

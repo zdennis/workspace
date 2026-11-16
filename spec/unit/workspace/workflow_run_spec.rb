@@ -275,6 +275,13 @@ RSpec.describe Workspace::WorkflowRun do
     end
   end
 
+  describe "Attempt#refusal" do
+    it "reads the stored refusal, nil when the attempt has none" do
+      expect(Workspace::WorkflowRun::Attempt.from_h("n" => 1, "refusal" => {"error" => "pane_busy"}).refusal).to eq("error" => "pane_busy")
+      expect(Workspace::WorkflowRun::Attempt.from_h("n" => 1).refusal).to be_nil
+    end
+  end
+
   describe "Attempt#thawed" do
     it "gives an unfrozen deep copy that changes nothing in the attempt" do
       attempt = Workspace::WorkflowRun::Attempt.from_h("n" => 1, "head" => {"before" => "a"}, "packs" => [{"ref" => "x"}])

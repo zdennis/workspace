@@ -139,7 +139,7 @@ module Workspace
         # never went out (the daemon gave no answer) may have reviewers at work: typed.
         unless kick[:ok]
           typed = WorkflowTransitions::ROUND_MAY_HAVE_TYPED.include?(kick[:code].to_s)
-          return failed(run, pending, window, kick[:code].to_s, kick[:message].to_s, close: !window[:fresh], typed: typed)
+          return failed(run, pending, window, kick[:code].to_s, TerminalText.escape(kick[:message]), close: !window[:fresh], typed: typed, refusal: WorkflowDispatch.refusal(kick))
         end
         delivered(run, pending, window, kick)
       rescue Workspace::Error, SystemCallError, EncodingError, IOError, Timeout::Error => e
@@ -330,7 +330,7 @@ module Workspace
     #
     # A failure after the line may have gone out (+typed+) never closes the window and keeps the round's pane, with a
     # `delivered_at` of now: reviewers may be at work there, so their own Stop still decides the round.
-    def failed(run, pending, window, code, message, close: true, typed: false)
+    def failed(run, pending, window, code, message, close: true, typed: false, refusal: nil)
       close = false if (window && window[:reused]) || typed
       shut = close
       after = @change.call(run.id, actor: "engine", cause: "review_round") do |read|
@@ -343,6 +343,7 @@ module Workspace
         round["delivery"] = "failed"
         round["failure"] = {"code" => code, "message" => message, "at" => @clock.call.utc.iso8601}
         round["failure"]["typed"] = true if typed
+        round["failure"].merge!(refusal.slice("reason", "seen")) if refusal
         # No turn of this delivery's is the round's: a Stop in its pane decides nothing. Unless the line may have been typed.
         if typed && window
           round["delivered_at"] ||= @clock.call.utc.iso8601(3)
@@ -355,7 +356,7 @@ module Workspace
           # A kept window that was to be cleared and was not: the next delivery into it clears it.
           round["uncleared"] = true if !close && window[:fresh]
         end
-        @change.event(hash, "review_delivery_failed", pending.slice("step", "attempt", "round").merge("code" => code))
+        @change.event(hash, "review_delivery_failed", pending.slice("step", "attempt", "round").merge("code" => code).merge(WorkflowDispatch.refusal_event_keys(refusal, except: %w[error message])))
         WorkflowRun.from_h(hash)
       end
       abandon(run, window) if window && shut
