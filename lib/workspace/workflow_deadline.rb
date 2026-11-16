@@ -10,8 +10,9 @@ module Workspace
   # waited for a lock first, and stops at the run's `ended_at` (else it runs to `now`). Only machine time
   # counts: the span is cut by every stored reason entry (an attempt's and the run's own, an open one running
   # to `now`) whose code is not in {MACHINE_CODES}, so a gate, a parked resume, a held budget or a failed
-  # check waits on a person and costs nothing. A stop that is never stored, such as a permission prompt the
-  # agent sits at, is not cut, so it counts; the docs say so.
+  # check waits on a person and costs nothing. Every step's stalls ({WorkflowTransitions.stall_spans}: its pane
+  # or agent gone, or a failed turn) and any `stops:` given (such as downtime) are cut too. A stop that is never
+  # stored, such as a permission prompt the agent sits at, is not cut, so it counts; the docs say so.
   class WorkflowDeadline
     # Reasons that are the machine's own time and so still count against the timeout.
     MACHINE_CODES = %w[waiting_lock retry_backoff].freeze
@@ -21,18 +22,19 @@ module Workspace
 
     # @param run [WorkflowRun, Hash{String=>Object}] a stored run
     # @param now [Time] where an open stretch ends
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Hash{String=>Object}, nil] nil unless the run's definition declares a `timeout` (a stored run from
     #   before the key, or a bad value, reads nil); else "timeout" and "action" (`hold` or `interrupt`),
     #   "extra_seconds", "limit" (timeout plus extra), "used" (seconds of machine time, three decimals),
     #   "spent" (used has reached the limit), "needed" (the least whole `--extra-time` seconds that lets an
     #   attempt start, nil unless spent) and "suggested" (needed rounded up to {ROUND_TO})
-    def self.reading(run, now)
+    def self.reading(run, now, stops: [])
       run = WorkflowRun.from_h(run)
       timeout = WorkflowDefinition.run_timeout(run.definition)
       return nil unless timeout
       extra = run.extra_seconds.is_a?(Numeric) ? [run.extra_seconds, 0].max : 0
       limit = timeout["seconds"] + extra
-      used = machine_seconds(run.to_h, now)
+      used = machine_seconds(run.to_h, now, stops: stops)
       spent = used >= limit
       needed = spent ? (used - limit).floor + 1 : nil
       {"timeout" => timeout["seconds"], "action" => timeout["action"], "extra_seconds" => extra, "limit" => limit,
@@ -42,8 +44,12 @@ module Workspace
       nil
     end
 
-    # @return [Float] seconds from the clock's start to its end, less the stretches a person's stop covers
-    def self.machine_seconds(hash, now)
+    # @param hash [Hash{String=>Object}] a stored run
+    # @param now [Time] where an open stretch ends
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
+    # @return [Float] seconds from the clock's start to its end, less the stretches a person's stop covers, every
+    #   step's stalls ({WorkflowTransitions.stall_spans}) and +stops+
+    def self.machine_seconds(hash, now, stops: [])
       attempts = hash["steps"].to_h.values.flat_map { |step| Array(step.is_a?(Hash) ? step["attempts"] : nil) }.grep(Hash)
       entries = Array(hash["reasons"]) + attempts.flat_map { |attempt| Array(attempt["reasons"]) }
       entries = entries.grep(Hash)
@@ -53,7 +59,8 @@ module Workspace
       return 0.0 unless origin
       finish = time(hash["ended_at"]) || now
       return 0.0 unless finish > origin
-      active_seconds(origin, finish, entries.reject { |entry| MACHINE_CODES.include?(entry["code"]) })
+      stalls = hash["steps"].to_h.keys.flat_map { |step| WorkflowTransitions.stall_spans(hash, step) }
+      active_seconds(origin, finish, entries.reject { |entry| MACHINE_CODES.include?(entry["code"]) } + stalls + Array(stops))
     end
 
     # @param origin [Time] where the span starts

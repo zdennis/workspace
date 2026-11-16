@@ -379,32 +379,87 @@ module Workspace
     end
 
     # Seconds a review round has run, from its `started_at` (a delivery again, or a rerun of missing reviewers, starts
-    # it again), less the spans the run was paused on its step ({.pause_spans}).
+    # it again), less the spans the run was paused on its step ({.pause_spans}), the step's stalls ({.stall_spans})
+    # and +stops+.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param round [Hash{String=>Object}, nil] a step's `review`
     # @param now [Time]
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Float, nil] nil when the round holds no start that can be read
-    def self.round_elapsed(run, round, now)
+    def self.round_elapsed(run, round, now, stops: [])
       return nil unless round.is_a?(Hash) && round["started_at"]
-      WorkflowDeadline.active_seconds(Time.iso8601(round["started_at"].to_s), now, pause_spans(run, run["current"]))
+      WorkflowDeadline.active_seconds(Time.iso8601(round["started_at"].to_s), now, step_stops(run, stops))
     rescue ArgumentError, TypeError
       nil
     end
 
     # Seconds an attempt of the current step has run, from its `started_at`, less the spans the run was paused on the
-    # step ({.pause_spans}): the one reading of a step's `timeout` clock, for the sweep and `workflow status`.
+    # step ({.pause_spans}), the step's stalls ({.stall_spans}) and +stops+: the one reading of a step's `timeout`
+    # clock, for the sweep and `workflow status`.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param attempt [Hash{String=>Object}, nil] the current step's attempt
     # @param now [Time]
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Float, nil] nil when the attempt holds no start that can be read
-    def self.step_elapsed(run, attempt, now)
+    def self.step_elapsed(run, attempt, now, stops: [])
       return nil unless attempt.is_a?(Hash) && attempt["started_at"]
-      WorkflowDeadline.active_seconds(Time.iso8601(attempt["started_at"].to_s), now, pause_spans(run, run["current"]))
+      WorkflowDeadline.active_seconds(Time.iso8601(attempt["started_at"].to_s), now, step_stops(run, stops))
     rescue ArgumentError, TypeError
       nil
     end
+
+    def self.step_stops(run, stops)
+      pause_spans(run, run["current"]) + stall_spans(run, run["current"]) + Array(stops)
+    end
+    private_class_method :step_stops
+
+    # Causes of a stall that stop the clocks while they last: nothing works on the step then.
+    STALL_CAUSES = %w[pane_gone agent_gone turn_failed].freeze
+
+    # The spans a step stood stalled ({STALL_CAUSES}): every attempt's `stalls` entries, plus the current attempt's
+    # raw `stalled` sweep marks ({.sweep_marks}) when +step+ is the current one, each ended by its `recovered` mark.
+    # A span ends at the earliest of its `until`, its attempt's `ended_at` and the first attempt `started_at` after
+    # its `since` anywhere in the run; with none of them it is left open, to run to the clock's finish. Entries that
+    # can't be read are skipped; the same span from both sources appears once.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String, nil] a step id
+    # @return [Array<Hash{String=>Object}>] spans with `since` and an optional `until`, for {WorkflowDeadline.active_seconds}
+    def self.stall_spans(run, step)
+      state = run.dig("steps", step)
+      attempts = state.is_a?(Hash) ? Array(state["attempts"]).grep(Hash) : []
+      marks = attempts.flat_map do |attempt|
+        Array(attempt["stalls"]).grep(Hash).filter_map do |entry|
+          [attempt, entry["since"], entry["until"]] if STALL_CAUSES.include?(entry["cause"])
+        end
+      end
+      if step == run["current"] && attempts.any?
+        sweep = sweep_marks(run)
+        stalled = sweep["stalled"].is_a?(Hash) ? sweep["stalled"] : {}
+        recovered = sweep["recovered"].is_a?(Hash) ? sweep["recovered"] : {}
+        STALL_CAUSES.each { |cause| marks << [attempts.last, stalled[cause], recovered[cause]] if stalled[cause] }
+      end
+      return [] if marks.empty?
+      starts = run["steps"].to_h.values.grep(Hash).flat_map { |each| Array(each["attempts"]).grep(Hash) }
+        .filter_map { |attempt| stall_time(attempt["started_at"]) }
+      spans = marks.filter_map do |attempt, since, till|
+        from = stall_time(since) or next
+        ends = [till, attempt["ended_at"]].filter_map { |value| (at = stall_time(value)) && [at, value] }
+        following = starts.select { |at| at > from }.min
+        ends << [following, following.iso8601(6)] if following
+        ends.empty? ? {"since" => since} : {"since" => since, "until" => ends.min_by(&:first).last}
+      end
+      spans.uniq
+    end
+
+    def self.stall_time(value)
+      value.is_a?(String) ? Time.iso8601(value) : nil
+    rescue ArgumentError
+      nil
+    end
+    private_class_method :stall_time
 
     # The `paused` reason entries that stop a step's clocks (its attempts' timeout and its review rounds'): every
     # attempt's own, the run's own entries for that step, and the pause under way when the step is the current one
