@@ -8,7 +8,7 @@ RSpec.describe Workspace::WorkflowNudger do
   let(:now) { Time.utc(2026, 10, 4, 12, 30, 0) }
   subject(:nudger) do
     described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(workspace) { "/log/#{workspace}.log" },
-      spawner: ->(argv, log) { spawned << [argv, log] }, clock: -> { clock_time[:now] }, error_output: error_output)
+      spawner: ->(argv, log) { spawned << [argv, log] and nil }, clock: -> { clock_time[:now] }, error_output: error_output)
   end
   let(:clock_time) { {now: now} }
   let(:error_output) { StringIO.new }
@@ -39,6 +39,67 @@ RSpec.describe Workspace::WorkflowNudger do
 
       def append(type, pane_id, fields) = @lines << [type, pane_id, fields]
     end.new
+  end
+
+  describe "the exit line" do
+    let(:waited) { Class.new { def call = yield }.new.method(:call) }
+    let(:status) { Struct.new(:signaled?, :termsig, :exitstatus) }
+
+    def fake_thread(pid, value) = Struct.new(:pid, :value).new(pid, value)
+
+    def nudger_with(thread)
+      described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(w) { "/log/#{w}.log" },
+        spawner: ->(*) { thread.respond_to?(:call) ? thread.call : thread }, waiter: ->(&block) { block.call },
+        clock: -> { (clock_time[:now] += 2.5) }, error_output: error_output)
+    end
+
+    before { allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1"}) }
+
+    it "logs the exit code, pid and seconds of an advance to the log of its start line" do
+      nudger_with(fake_thread(77, status.new(false, nil, 3))).turn_ended("app", "%5", hook_log: hook_log)
+
+      expect(hook_log.lines.last).to eq(["workflow_process_exited", nil, {"kind" => "advance", "run_id" => "wr_1", "pid" => 77, "exit_code" => 3, "seconds" => 2.5}])
+    end
+
+    it "logs the signal name when the process was killed" do
+      nudger_with(fake_thread(78, status.new(true, 9, nil))).turn_ended("app", "%5", hook_log: hook_log)
+
+      expect(hook_log.lines.last.last).to include("signal" => "KILL", "pid" => 78)
+      expect(hook_log.lines.last.last).not_to have_key("exit_code")
+    end
+
+    it "logs a sweep's exit with the run ids of its start line" do
+      going([run("wr_1", "app", reason: "waiting_you")])
+      nudger_with(fake_thread(5, status.new(false, nil, 0))).tick("app", hook_log: hook_log)
+
+      expect(hook_log.lines.last).to eq(["workflow_process_exited", nil, {"kind" => "sweep", "run_ids" => ["wr_1"], "pid" => 5, "exit_code" => 0, "seconds" => 2.5}])
+    end
+
+    it "writes no exit line when the spawner returns nil" do
+      nudger_with(nil).turn_ended("app", "%5", hook_log: hook_log)
+
+      expect(hook_log.lines.map(&:first)).to eq(["workflow_advance_started"])
+    end
+
+    it "writes no exit line when the spawn raises" do
+      expect(nudger_with(-> { raise Errno::ENOENT }).turn_ended("app", "%5", hook_log: hook_log)).to be_nil
+      expect(hook_log.lines.map(&:first)).to eq(["workflow_advance_started"])
+    end
+
+    it "writes no exit line when reading the thread raises" do
+      thread = Object.new
+      def thread.pid = 1
+      def thread.value = raise("gone")
+      nudger_with(thread).turn_ended("app", "%5", hook_log: hook_log)
+
+      expect(hook_log.lines.map(&:first)).to eq(["workflow_advance_started"])
+    end
+
+    it "writes no exit line without a log" do
+      nudger_with(fake_thread(1, status.new(false, nil, 0))).turn_ended("app", "%5")
+
+      expect(hook_log.lines).to eq([])
+    end
   end
 
   describe "#turn_ended" do
@@ -255,7 +316,7 @@ RSpec.describe Workspace::WorkflowNudger do
 
       def nudger_with(alive)
         described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(workspace) { "/log/#{workspace}.log" },
-          spawner: ->(argv, log) { spawned << [argv, log] }, holder_alive: alive, clock: -> { now }, error_output: error_output)
+          spawner: ->(argv, log) { spawned << [argv, log] and nil }, holder_alive: alive, clock: -> { now }, error_output: error_output)
       end
 
       it "wakes a round whose delivery failed or lapsed with no holder, or whose redeliveries are spent, so tick delivers or stops it" do
