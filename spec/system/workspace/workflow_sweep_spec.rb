@@ -415,8 +415,11 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(second).to include("outcome" => "nothing", "reason" => "already_recorded", "cause" => "pane_gone")
       expect(events.count { |each| each["type"] == "step_stalled" }).to eq(1)
       expect(events.find { |each| each["type"] == "step_stalled" }).to include("step" => "build", "attempt" => 1, "cause" => "pane_gone", "pane" => "%5")
-      expect(stored_run(store, "wr_1").except("sweep")).to eq(before)
-      expect(stored_run(store, "wr_1")["state"]).to eq("running")
+      stored = stored_run(store, "wr_1")
+      expect(stored["steps"]["build"]["attempts"].last["stalls"]).to match([a_hash_including("cause" => "pane_gone")])
+      stored["steps"]["build"]["attempts"].last.delete("stalls")
+      expect(stored.except("sweep")).to eq(before)
+      expect(stored["state"]).to eq("running")
     end
 
     it "records an agent that has left its pane as a shell" do

@@ -698,16 +698,30 @@ module Workspace
       stalled = (sweep_marks_for(run)["stalled"] ||= {})
       return false if stalled.key?(cause)
       stalled[cause] = now_iso
+      open_stall(run, cause)
       @change.event(run, "step_stalled", sweep_event(run, {"cause" => cause}.merge(data)))
       true
     end
 
     def mark_recovery(run, cause, action)
       recovered = (sweep_marks_for(run)["recovered"] ||= {})
+      close_stall(run, cause)
       return false if recovered.key?(cause)
       recovered[cause] = now_iso
       @change.event(run, "step_recovered", sweep_event(run, "action" => action, "cause" => cause))
       true
+    end
+
+    def open_stall(run, cause)
+      return unless WorkflowTransitions::STALL_CAUSES.include?(cause)
+      attempt = step_state(run)["attempts"].last
+      (attempt["stalls"] ||= []) << {"cause" => cause, "since" => now_iso} if attempt
+    end
+
+    def close_stall(run, cause)
+      return unless WorkflowTransitions::STALL_CAUSES.include?(cause)
+      entry = step_state(run)["attempts"].last&.fetch("stalls", nil)&.reverse&.find { |e| e["cause"] == cause && !e.key?("until") }
+      entry["until"] = now_iso if entry
     end
 
     def fail_timed_out(run, elapsed, timeout, ctx)
