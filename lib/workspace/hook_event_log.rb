@@ -30,7 +30,7 @@ module Workspace
     DEFAULT_ROTATE_THRESHOLD = 5 * 1_048_576
 
     # The line types this log writes.
-    TYPES = %w[tool_started tool_finished subagent_started subagent_stopped session_started session_ended prompt_submitted agent_status].freeze
+    TYPES = %w[tool_started tool_finished subagent_started subagent_stopped session_started session_ended prompt_submitted agent_status workflow_advance_started workflow_run_skipped workflow_sweep_started workflow_process_exited].freeze
 
     # The lines each forwarded session event becomes.
     LINES = {

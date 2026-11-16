@@ -9,16 +9,20 @@ RSpec.shared_context "waking workflow runs" do
   end
   let(:nudger) do
     Class.new do
-      attr_reader :turns, :ticks
+      attr_reader :turns, :ticks, :tick_logs
 
       def initialize
         @turns = []
         @ticks = []
+        @tick_logs = []
       end
 
-      def turn_ended(workspace, pane, turn_started: nil, background: nil) = @turns << [workspace, pane, turn_started, background]
+      def turn_ended(workspace, pane, turn_started: nil, background: nil, hook_log: nil) = @turns << [workspace, pane, turn_started, background]
 
-      def tick(workspace) = @ticks << workspace
+      def tick(workspace, hook_log: nil)
+        @tick_logs << hook_log
+        @ticks << workspace
+      end
     end.new
   end
 

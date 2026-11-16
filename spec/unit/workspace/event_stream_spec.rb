@@ -50,6 +50,16 @@ RSpec.describe Workspace::EventStream do
     expect(lines.map { |line| line["cursor"] }).to all(start_with("1."))
   end
 
+  it "passes the workflow nudger's decision lines through, pane_id null and all" do
+    hook("alpha", 2, 1, "workflow_run_skipped")
+    hook("alpha", 3, 2, "workflow_advance_started")
+
+    s = stream
+    s.open(at: :start)
+
+    expect(summary(s.read)).to eq([["hook", "alpha", "workflow_run_skipped", 1], ["hook", "alpha", "workflow_advance_started", 2]])
+  end
+
   it "resumes after the line whose cursor it is given, across every source" do
     life(1)
     hook("alpha", 2, 1)

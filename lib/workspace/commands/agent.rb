@@ -127,6 +127,7 @@ module Workspace
         @prompt_queue_desk = parts.queue_desk
         @agent_recovery_desk = parts.recovery_desk
         @hook_fanout = parts.hook_fanout
+        @hook_event_log = parts.hook_event_log
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
         @session_monitor.on_scan = -> { @hook_fanout.scan_desks } if @session_monitor.respond_to?(:on_scan=)
         @handoff_watcher = parts.handoff_watcher
@@ -135,7 +136,7 @@ module Workspace
         log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
         @daemon_started = true
         watcher = @socket_server.watch(socket_path, needs_registration: !registered,
-          on_tick: -> { @workflow_nudger&.tick(@current_name) }, re_register: -> { @pipeline_desk.re_register })
+          on_tick: -> { @workflow_nudger&.tick(@current_name, hook_log: @hook_event_log) }, re_register: -> { @pipeline_desk.re_register })
         @socket_server.serve(@router)
 
         true

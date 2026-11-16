@@ -31,7 +31,42 @@ RSpec.describe Workspace::WorkflowNudger do
     allow(store).to receive(:going).and_return(runs.map { |each| Workspace::WorkflowRun.from_h(each) })
   end
 
+  let(:hook_log) do
+    Class.new do
+      attr_reader :lines
+
+      def initialize = @lines = []
+
+      def append(type, pane_id, fields) = @lines << [type, pane_id, fields]
+    end.new
+  end
+
   describe "#turn_ended" do
+    it "logs one workflow_advance_started line for the pane and run, to the log it is given" do
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
+
+      nudger.turn_ended("app", "%5", hook_log: hook_log)
+
+      expect(hook_log.lines).to eq([["workflow_advance_started", "%5", {"run_id" => "wr_1", "cause" => "turn_ended"}]])
+    end
+
+    it "logs nothing for an unbound pane, and nothing without a log" do
+      allow(panes).to receive(:bound_on).with("%5").and_return(nil)
+      nudger.turn_ended("app", "%5", hook_log: hook_log)
+      expect(hook_log.lines).to eq([])
+
+      allow(panes).to receive(:bound_on).with("%6").and_return({run_id: "wr_1", role: "author"})
+      expect(nudger.turn_ended("app", "%6", hook_log: nil)).to eq("wr_1")
+    end
+
+    it "still starts the advance when the log raises" do
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
+      broken = Object.new.tap { |o| o.define_singleton_method(:append) { |*| raise IOError } }
+
+      expect(nudger.turn_ended("app", "%5", hook_log: broken)).to eq("wr_1")
+      expect(advances.size).to eq(1)
+    end
+
     it "starts `workflow advance` for the run the pane is bound to, logging beside the daemon" do
       allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
 
@@ -106,6 +141,83 @@ RSpec.describe Workspace::WorkflowNudger do
   end
 
   describe "#tick" do
+    describe "the decision lines" do
+      def types = hook_log.lines.map(&:first)
+
+      it "logs a wake as workflow_advance_started with cause tick and the wake reason, then the sweep start" do
+        going([run("wr_1", "app", reason: "waiting_lock")])
+
+        nudger.tick("app", hook_log: hook_log)
+
+        expect(hook_log.lines).to eq([
+          ["workflow_advance_started", nil, {"run_id" => "wr_1", "cause" => "tick", "reason" => "lock"}],
+          ["workflow_sweep_started", nil, {"run_ids" => ["wr_1"]}]
+        ])
+      end
+
+      it "logs a skipped run once, again only when its reason changes, and a paused run as paused" do
+        going([run("wr_1", "app", reason: "waiting_you")])
+        nudger.tick("app", hook_log: hook_log)
+        nudger.tick("app", hook_log: hook_log)
+        skipped = hook_log.lines.select { |l| l.first == "workflow_run_skipped" }
+        expect(skipped).to eq([["workflow_run_skipped", nil, {"run_id" => "wr_1", "reason" => "waiting_you"}]])
+
+        going([run("wr_1", "app", reason: "waiting_you").merge("paused" => {"since" => "2026-10-04T12:00:00Z", "by" => "person", "text" => nil})])
+        nudger.tick("app", hook_log: hook_log)
+        expect(hook_log.lines.reverse.find { |l| l.first == "workflow_run_skipped" }.last).to eq({"run_id" => "wr_1", "reason" => "paused"})
+        expect(hook_log.lines.count { |l| l.first == "workflow_run_skipped" }).to eq(2)
+      end
+
+      it "forgets a run that is no longer going, so it is logged again when it returns" do
+        going([run("wr_1", "app", reason: "waiting_you")])
+        nudger.tick("app", hook_log: hook_log)
+        going([])
+        nudger.tick("app", hook_log: hook_log)
+
+        going([run("wr_1", "app", reason: "waiting_you")])
+        nudger.tick("app", hook_log: hook_log)
+        expect(hook_log.lines.count { |l| l.first == "workflow_run_skipped" }).to eq(2)
+      end
+
+      it "does not repeat an unchanged skip when two workspaces tick alternately" do
+        going([run("wr_1", "app", reason: "waiting_you"), run("wr_2", "other", reason: "waiting_you")])
+
+        3.times do
+          nudger.tick("app", hook_log: hook_log)
+          nudger.tick("other", hook_log: hook_log)
+        end
+
+        skipped = hook_log.lines.select { |l| l.first == "workflow_run_skipped" }.map { |l| l.last["run_id"] }
+        expect(skipped).to eq(%w[wr_1 wr_2])
+      end
+
+      it "logs skip, then the wake, then the same skip again, since the wake changed the reason" do
+        going([run("wr_1", "app", reason: "waiting_you")])
+        nudger.tick("app", hook_log: hook_log)
+        going([run("wr_1", "app", reason: "waiting_lock")])
+        nudger.tick("app", hook_log: hook_log)
+        going([run("wr_1", "app", reason: "waiting_you")])
+        nudger.tick("app", hook_log: hook_log)
+
+        expect(hook_log.lines.map(&:first) - ["workflow_sweep_started"]).to eq(%w[workflow_run_skipped workflow_advance_started workflow_run_skipped])
+      end
+
+      it "writes the sweep start only when a sweep starts" do
+        going([run("wr_1", "app", reason: "waiting_you")])
+        nudger.tick("app", hook_log: hook_log)
+        nudger.tick("app", hook_log: hook_log)
+
+        expect(types.count("workflow_sweep_started")).to eq(1)
+      end
+
+      it "writes nothing with hook_log nil" do
+        going([run("wr_1", "app", reason: "waiting_lock"), run("wr_2", "app", reason: "waiting_you")])
+
+        expect(nudger.tick("app")).to eq(%w[wr_1])
+        expect(hook_log.lines).to eq([])
+      end
+    end
+
     it "does not run `advance` for a paused run, though it waits for a lock" do
       going([
         run("wr_1", "app", reason: "waiting_lock").merge("paused" => {"since" => "2026-10-04T12:00:00Z", "by" => "person", "text" => nil}),

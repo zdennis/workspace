@@ -55,8 +55,8 @@ RSpec.describe Workspace::HookFanout do
       subject.session_event(event("stop"))
 
       expect(nudger.calls).to eq([
-        [:turn_ended, "myapp", "%1", {turn_started: now, background: ["b1"]}],
-        [:turn_ended, "myapp", "%1", {turn_started: nil, background: nil}]
+        [:turn_ended, "myapp", "%1", {turn_started: now, background: ["b1"], hook_log: hook_log}],
+        [:turn_ended, "myapp", "%1", {turn_started: nil, background: nil, hook_log: hook_log}]
       ])
     end
 

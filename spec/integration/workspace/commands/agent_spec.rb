@@ -1420,6 +1420,47 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    context "with a hook event log and the real workflow nudger" do
+      let(:events_dir) { File.join(Dir.mktmpdir, ".events") }
+      let(:built_for) { [] }
+      let(:real_nudger) do
+        panes = instance_double(Workspace::WorkflowPanes)
+        allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
+        Workspace::WorkflowNudger.new(store: instance_double(Workspace::WorkflowRunStore), panes: panes, executable: "/ws/bin/workspace",
+          log_path: ->(_) { File::NULL }, spawner: ->(*) {})
+      end
+
+      subject(:agent) do
+        build_agentd(
+          config: config, tmux: tmux, work_coordinator_client: client,
+          pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+          epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+          sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+          clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+          workflow_nudger: real_nudger,
+          hook_event_log_factory: ->(name) {
+            built_for << name
+            Workspace::HookEventLog.new(dir: events_dir, workspace: name, boot_id: "BOOT")
+          },
+          output: output, error_output: error_output
+        )
+      end
+
+      after { FileUtils.remove_entry(File.dirname(events_dir)) }
+
+      it "writes a hook line and the nudger's decision line to one file with one boot id and rising seq" do
+        run_agent do
+          send_event("user_prompt")
+          send_event("stop")
+        end
+
+        lines = File.readlines(File.join(events_dir, "myapp.jsonl")).map { |line| JSON.parse(line) }
+        expect(built_for).to eq(["myapp"])
+        expect(lines.map { |l| l.values_at("type", "boot_id", "seq") }).to eq([["prompt_submitted", "BOOT", 1], ["workflow_advance_started", "BOOT", 2]])
+        expect(lines.last).to include("pane_id" => "%5", "run_id" => "wr_1", "cause" => "turn_ended")
+      end
+    end
+
     context "with a plan progress watcher" do
       let(:watcher) { instance_double(Workspace::PlanProgressWatcher, start: nil, stop: nil) }
       let(:built_for) { [] }
@@ -1880,6 +1921,35 @@ RSpec.describe Workspace::Commands::Agent do
           wait_until { nudger.ticks.size >= 2 }
 
           expect(nudger.ticks.uniq).to eq(["myapp"])
+        end
+      end
+
+      context "with a hook event log" do
+        let(:events_dir) { File.join(Dir.mktmpdir, ".events") }
+        let(:logs) { [] }
+
+        subject(:agent) do
+          build_agentd(
+            config: config, tmux: tmux, work_coordinator_client: client,
+            pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+            epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+            sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+            clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+            workflow_nudger: nudger, socket_poll_interval: socket_poll_interval, workflow_tick_passes: workflow_tick_passes,
+            hook_event_log_factory: ->(name) { Workspace::HookEventLog.new(dir: events_dir, workspace: name, boot_id: "BOOT").tap { |l| logs << l } },
+            output: output, error_output: error_output
+          )
+        end
+
+        after { FileUtils.remove_entry(File.dirname(events_dir)) }
+
+        it "passes the tick the one log the parts hold" do
+          run_agent do
+            wait_until { nudger.tick_logs.size >= 1 }
+
+            expect(logs.size).to eq(1)
+            expect(nudger.tick_logs.uniq).to eq(logs)
+          end
         end
       end
 
