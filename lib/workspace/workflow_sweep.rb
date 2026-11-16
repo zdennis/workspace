@@ -337,11 +337,9 @@ module Workspace
     def turn_failed(run, attempt, pass, pane, shown, elapsed, timeout, fail_on_timeout)
       return time_out(run, attempt, pass, elapsed, timeout, "the agent's turn failed") if fail_on_timeout
       entry = @recovery_entry.call(run.workspace, shown["pane_id"] || pane)
-      since = RecoveryEntry.failure_since(shown["turn_failed_since"], entry, shown["session_id"])
-      at = parse_time(since)
-      entry = RecoveryEntry.trusted_for_failure(entry, session_id: shown["session_id"], failed_at: at)
+      failed = RecoveryEntry.failed_turn(entry, shown)
+      since, at, entry, gave_up = failed.values_at(:since, :at, :entry, :gave_up)
       age = at && [@clock.call - at, 0].max
-      gave_up = entry&.dig("phase") == "gave_up"
       threshold = pass[:turn_failed_after]
       progress = if gave_up then "recovery gave up after #{entry["attempts"].to_i} of #{AgentRecoveryStore::MAX_ATTEMPTS} attempts"
       elsif entry then "recovery attempt #{entry["attempts"].to_i} of #{AgentRecoveryStore::MAX_ATTEMPTS} (#{entry["phase"] || "waiting"})"
@@ -354,12 +352,6 @@ module Workspace
       end
       note(run, pass, "turn_failed", "#{what}, so nothing will end step #{run.current}. Resume the run once the agent can work again (`workspace workflow resume #{run.id}`).",
         "pane" => pane, "since" => since, "recovery_phase" => entry&.dig("phase"), "recovery_attempts" => entry&.dig("attempts"))
-    end
-
-    def parse_time(text)
-      text.is_a?(String) ? Time.iso8601(text) : nil
-    rescue ArgumentError
-      nil
     end
 
     # Starts the workspace's daemon. The run is not acted on again in this pass.

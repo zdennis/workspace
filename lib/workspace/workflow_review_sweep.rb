@@ -24,7 +24,8 @@ module Workspace
   # again in a new window, counted against `redeliver`), waiting for an answer (left alone), its turn over and idle
   # for the definition's `stall` or past a time limit (cause `idle_turn_over`), its turn over after the sweep
   # interrupted it (cause `interrupted`, decided at once), its turn failed on an API error for `workflows.turn_failed_after`
-  # (cause `turn_failed`, decided on its verdicts; nothing is typed into a review pane), or at work past a time limit: the round's own
+  # (cause `turn_failed`, decided on its verdicts; nothing is typed into a review pane, and API recovery never takes
+  # on a review pane, so only that threshold decides it, not a recovery give-up), or at work past a time limit: the round's own
   # `review.timeout` ({WorkflowTransitions.round_timed_out?}, from the round's start; cause `review_timed_out`) or the
   # run's `timeout:` with `timeout_action: interrupt` (cause `run_timed_out`). For a time limit the interrupt is
   # claimed under the run's lock, the agent's interrupt keys pressed in the review pane with the lock given up (never

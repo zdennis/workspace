@@ -168,6 +168,24 @@ RSpec.describe Workspace::RecoveryEntry do
     end
   end
 
+  describe ".failed_turn" do
+    let(:entry) { {"session_id" => "s1", "phase" => "gave_up", "gave_up_at" => "2026-10-04T12:46:00Z", "failed_at" => "2026-10-04T12:40:00Z"} }
+
+    it "reads the shown time, the trusted entry and the give-up" do
+      shown = {"turn_failed_since" => "2026-10-04T12:45:00Z", "session_id" => "s1"}
+      expect(described_class.failed_turn(entry, shown)).to eq(since: "2026-10-04T12:45:00Z", at: Time.utc(2026, 10, 4, 12, 45), entry: entry, gave_up: true)
+    end
+
+    it "falls back to the entry's failed_at and distrusts an older give-up" do
+      older = entry.merge("gave_up_at" => "2026-10-04T12:30:00Z")
+      expect(described_class.failed_turn(older, {"session_id" => "s1"})).to eq(since: "2026-10-04T12:40:00Z", at: Time.utc(2026, 10, 4, 12, 40), entry: nil, gave_up: false)
+    end
+
+    it "gives nils and false for no entry and no shown time" do
+      expect(described_class.failed_turn(nil, {"session_id" => "s1"})).to eq(since: nil, at: nil, entry: nil, gave_up: false)
+    end
+  end
+
   describe ".trusted_for_failure" do
     let(:failed_at) { Time.utc(2026, 10, 4, 12, 45) }
     let(:waiting) { {"session_id" => "s1", "phase" => "waiting", "attempts" => 2} }

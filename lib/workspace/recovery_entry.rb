@@ -169,6 +169,19 @@ module Workspace
       shown_since || of_session(entry, session_id)&.dig("failed_at")
     end
 
+    # The one reading of a pane's failed turn that {WorkflowSweep} and {WorkflowStatus} share: when it failed, the
+    # entry to trust for it and whether that entry gave up.
+    #
+    # @param entry [Object] the pane's {AgentRecoveryStore} entry, or nil
+    # @param shown [Hash] the pane row (`turn_failed_since`, `session_id`)
+    # @return [Hash] `:since` (String or nil), `:at` (Time or nil), `:entry` (the trusted entry or nil), `:gave_up` (Boolean)
+    def failed_turn(entry, shown)
+      since = failure_since(shown["turn_failed_since"], entry, shown["session_id"])
+      at = RecoveryVerdicts.time_of(since)
+      trusted = trusted_for_failure(entry, session_id: shown["session_id"], failed_at: at)
+      {since: since, at: at, entry: trusted, gave_up: trusted&.dig("phase") == "gave_up"}
+    end
+
     # @param entry [Hash] changed in place
     # @param reason [String] the give-up reason
     # @param clock [#now] stamps `gave_up_at`, so a reader can tell this give-up from a later failure

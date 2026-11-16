@@ -311,10 +311,9 @@ module Workspace
       return {} if reason || live_park?(run) || run.parked || state.state != "running"
       return {} unless shown.is_a?(Hash) && shown["turn_failed"]
       entry = @recovery_entry.call(run.workspace, shown["pane_id"] || pane)
-      since = RecoveryEntry.failure_since(shown["turn_failed_since"], entry, shown["session_id"])
-      entry = RecoveryEntry.trusted_for_failure(entry, session_id: shown["session_id"], failed_at: RecoveryVerdicts.time_of(since))
-      {"turn_failed" => {"since" => since, "attempts" => entry&.dig("attempts"), "max_attempts" => AgentRecoveryStore::MAX_ATTEMPTS,
-                         "gave_up" => entry&.dig("phase") == "gave_up"}}
+      failed = RecoveryEntry.failed_turn(entry, shown)
+      {"turn_failed" => {"since" => failed[:since], "attempts" => failed[:entry]&.dig("attempts"), "max_attempts" => AgentRecoveryStore::MAX_ATTEMPTS,
+                         "gave_up" => failed[:gave_up]}}
     end
 
     # The review round of a `reviewing` step, as `current.review` shows it (absent for any other step, and for a

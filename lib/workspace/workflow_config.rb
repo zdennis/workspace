@@ -30,7 +30,7 @@ module Workspace
     # The idle time after which a step of a definition with no `stall:` counts
     # as stalled: `workflows.default_stall` from the global file, `600` when it
     # is unset, holds a value `config set` would refuse or the file can't be
-    # can not be parsed. `off` and `0` give nil.
+    # parsed. `off` and `0` give nil.
     #
     # @return [Numeric, nil] seconds, or nil when the default is turned off
     def default_stall
