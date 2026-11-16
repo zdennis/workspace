@@ -826,9 +826,21 @@ RSpec.describe Workspace::WorkflowStatus do
         timed_run
         row = status.run("wr_1")["runs"].first
 
-        expect(row["deadline"]).to eq("timeout" => 1200, "action" => "hold", "extra_seconds" => 0, "limit" => 1200, "used" => 1800.0, "spent" => true)
+        expect(row["deadline"]).to eq("timeout" => 1200, "action" => "hold", "extra_seconds" => 0, "limit" => 1200, "used" => 1800.0, "spent" => true, "clock" => "wall")
         need = [{"name" => "extra_time", "flag" => "--extra-time", "min" => 601, "suggested" => 900}]
         expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])
+      end
+
+      it "reads the clock as active once a heartbeat file exists" do
+        heartbeat = File.join(@dir, "heartbeat")
+        downtime = Workspace::WorkflowDowntime.new(heartbeat_path: heartbeat, downtime_path: File.join(@dir, "downtime"), downtime_after: -> { 60 }, clock: -> { now.first })
+        timed_run
+        wall = status.run("wr_1")["runs"].first["deadline"]["clock"]
+        File.write(heartbeat, "x")
+        active = described_class.new(store: store, panes: panes, snapshot_client: snapshot_client, ask_store_for: ->(_) { ask_store },
+          gate_note: Workspace::WorkflowGateNote.new(notes: notes), clock: -> { now.first }, recovery_entry: ->(*) {}, downtime: downtime)
+
+        expect([wall, active.run("wr_1")["runs"].first["deadline"]["clock"]]).to eq(%w[wall active])
       end
 
       it "has no deadline row without a timeout, and no need while time remains" do

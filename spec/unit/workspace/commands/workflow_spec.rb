@@ -533,6 +533,15 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).not_to include("\e")
     end
 
+    it "prints the run timeout with the clock it is measured on" do
+      timed = shown("deadline" => {"clock" => "active", "used" => 11400.0, "limit" => 28800, "timeout" => 28800, "spent" => false})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [timed], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  time: active 3h 10m of 8h 0m\n")
+    end
+
     it "prints where a parked resume waits and until when" do
       parked = shown("state" => "running", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "flags" => ["parked"], "reason" => nil,
                                                          "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"}})

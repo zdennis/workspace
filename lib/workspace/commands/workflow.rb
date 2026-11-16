@@ -1688,6 +1688,9 @@ module Workspace
         reason = current["reason"]
         @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
+        if (deadline = run["deadline"])
+          @output.puts "  time: #{deadline["clock"]} #{Duration.humanize(deadline["used"].to_f)} of #{Duration.humanize(deadline["limit"].to_f)}"
+        end
         describe_turn_failed(current["turn_failed"]) if current["turn_failed"]
         describe_review(current["review"]) if current["review"]
         parked = current["parked"]

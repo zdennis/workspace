@@ -288,11 +288,13 @@ module Workspace
     end
 
     # The run timeout as it stands, only for a run whose definition declares one. `used` is machine time in
-    # seconds (a gate, a parked resume and a held budget cost nothing); `limit` is the timeout plus `extra_seconds`.
+    # seconds (a gate, a parked resume and a held budget cost nothing); `limit` is the timeout plus `extra_seconds`;
+    # `clock` is "active" once a heartbeat exists (downtime is cut from `used`), else "wall".
     def deadline_row(run)
       reading = WorkflowDeadline.reading(run.to_h, @clock.call, stops: stops)
       return {} unless reading
-      {"deadline" => reading.slice("timeout", "action", "extra_seconds", "limit", "used", "spent")}
+      {"deadline" => reading.slice("timeout", "action", "extra_seconds", "limit", "used", "spent")
+        .merge("clock" => @downtime ? @downtime.clock_kind : "wall")}
     end
 
     # A step that reads running with no reason but is not moving: the sweep noted a stall on this attempt and
