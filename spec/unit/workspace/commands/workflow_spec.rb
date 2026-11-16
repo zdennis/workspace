@@ -3356,6 +3356,50 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { audit_command.audit(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
     end
   end
+  describe "#audit event errors" do
+    around do |example|
+      Dir.mktmpdir("wf-audit-ee") do |dir|
+        @log = File.join(dir, "event-errors.log")
+        @runs = File.join(dir, "runs")
+        @archive = File.join(dir, "archive")
+        example.run
+      end
+    end
+
+    let(:real_store) { Workspace::WorkflowRunStore.new(dir: @runs, archive_dir: @archive, id_generator: -> { "wr_2611010900abcd" }, event_errors_path: @log) }
+    let(:audit_reader) { instance_double(Workspace::WorkflowAudit) }
+    let(:audit_command) do
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, audit: audit_reader, process_tree: process_tree, lock_holder: lock_holder, output: output)
+    end
+
+    before do
+      real_store.create("workflow" => "rpiv", "workspace" => "app", "state" => "running", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]}, "steps" => {"plan" => {"attempts" => []}})
+      allow(audit_reader).to receive(:read).and_return("files" => [], "without_evidence" => [], "counts" => {}, "clean" => true, "directory" => nil)
+    end
+
+    it "gives an empty event_errors and no text line when nothing was lost" do
+      audit_command.audit(run: "wr_2611010900abcd", json: true)
+      expect(JSON.parse(output.string)["event_errors"]).to eq("count" => 0, "entries" => [])
+      output.truncate(0)
+      output.rewind
+      audit_command.audit(run: "wr_2611010900abcd")
+      expect(output.string).not_to include("could not be written")
+    end
+
+    it "reports the run's lost lines in json and text, leaving clean and the exit code alone" do
+      entry = {"ts" => "2026-11-01T09:00:00.000Z", "run_id" => "wr_2611010900abcd", "type" => "step_dispatched", "errno" => "ENOSPC", "message" => "No space left"}
+      File.write(@log, [entry, entry.merge("run_id" => "wr_other")].map { |each| JSON.generate(each) + "\n" }.join)
+
+      expect(audit_command.audit(run: "wr_2611010900abcd", json: true)).to eq(exit_code: 0)
+      doc = JSON.parse(output.string)
+      expect(doc).to include("clean" => true, "event_errors" => {"count" => 1, "entries" => [entry]})
+      output.truncate(0)
+      output.rewind
+      expect(audit_command.audit(run: "wr_2611010900abcd")).to eq(exit_code: 0)
+      expect(output.string).to include("1 history line could not be written")
+    end
+  end
+
   describe "#status --needs-me" do
     around do |example|
       Dir.mktmpdir("wf-needs-me") do |dir|

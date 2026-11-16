@@ -671,11 +671,12 @@ module Workspace
       def audit(run:, step: nil, json: false)
         raise Workspace::Error, "workflow audit is not available: no audit reader was wired" unless @audit
         result = @audit.read(@store.run(run).to_h, step: step)
+        event_errors = @store.event_errors(run)
         if json
           document("run" => run, "step" => step, "clean" => result["clean"], "counts" => result["counts"], "directory" => result["directory"],
-            "files" => result["files"], "without_evidence" => result["without_evidence"], "next_actions" => audit_next_actions(run, result))
+            "files" => result["files"], "without_evidence" => result["without_evidence"], "event_errors" => {"count" => event_errors.size, "entries" => event_errors}, "next_actions" => audit_next_actions(run, result))
         else
-          print_audit(run, step, result)
+          print_audit(run, step, result, event_errors)
         end
         {exit_code: result["clean"] ? 0 : 1}
       end
@@ -1047,10 +1048,11 @@ module Workspace
       end
 
       # The text of `audit`: one row per recorded file, then the attempts with no evidence and where the copies are.
-      def print_audit(run, step, result)
+      def print_audit(run, step, result, event_errors = [])
         files = result["files"]
         if files.empty? && result["without_evidence"].empty?
           @output.puts "No attempts recorded for #{run}#{" step #{TerminalText.escape(step)}" if step}."
+          print_audit_event_errors(event_errors)
           return
         end
         unless files.empty?
@@ -1066,6 +1068,13 @@ module Workspace
         @output.puts "#{files.size} #{(files.size == 1) ? "file" : "files"}#{": " + counts unless counts.empty?}. #{result["clean"] ? "No copy differs from its record." : "A copy differs from its record."}"
         @output.puts "Evidence kept in #{TerminalText.escape(result["directory"].to_s)}/" if result["directory"]
         @output.puts "See where the copies are: workspace workflow files #{TerminalText.escape(run)}" unless result["clean"]
+        print_audit_event_errors(event_errors)
+      end
+
+      # The one line of `audit` about history lines the run lost; nothing when there are none.
+      def print_audit_event_errors(event_errors)
+        return if event_errors.empty?
+        @output.puts "#{event_errors.size} history #{(event_errors.size == 1) ? "line" : "lines"} could not be written (see event-errors.log in the workflow state directory; check the disk)."
       end
 
       # What to run after a mismatch: the run's files, then each mismatched step's attempts. Empty when clean.
