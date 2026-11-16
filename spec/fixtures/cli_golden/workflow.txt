@@ -834,7 +834,9 @@ recorded, for a going or finished run. OK: the copy matches. CHANGED, MISSING, R
 holds what was recorded, and the command exits 1. NOT COPIED, TOO LARGE: nothing was kept, which
 is not tampering. 'checkout copy differs' notes a prompt or check log edited since it was copied (a
 cancelled check may legitimately differ). An attempt from before evidence existed is listed as having none.
-Reads the run file and the evidence directory and writes nothing.
+History lines the run could not write (logged to event-errors.log) are reported on one line and in
+event_errors with --json; they change neither the result nor the exit code.
+Reads the run file, the evidence directory and the error log, and writes nothing.
 
 With --json, next_actions is empty when clean; after a mismatch it offers `workflow files RUN` and one
 `workflow attempts RUN --attempt-of STEP` per mismatched step, each with a why naming the counts.
@@ -847,13 +849,13 @@ Options:
 Examples:
   workspace workflow audit RUN    # has anything the run kept been changed since it was copied?
   workspace workflow audit RUN --attempt-of implement    # only the implement step's files
-  workspace workflow audit RUN --json    # for a script: one row per file, and clean true or false
+  workspace workflow audit RUN --json    # for a script: one row per file, clean true or false, and event_errors
 --- stderr
 --- end
 ### workspace workflow audit --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace workflow audit RUN [--attempt-of STEP] [--json]"],"description":"Check a run's kept evidence against the hashes recorded for it.\n\nRUN is a workflow run id (see `workspace workflow status`).\n\nCompares each prompt, check log and output the engine copied to the state directory with the SHA-256 it\nrecorded, for a going or finished run. OK: the copy matches. CHANGED, MISSING, REPLACED: the copy no longer\nholds what was recorded, and the command exits 1. NOT COPIED, TOO LARGE: nothing was kept, which\nis not tampering. 'checkout copy differs' notes a prompt or check log edited since it was copied (a\ncancelled check may legitimately differ). An attempt from before evidence existed is listed as having none.\nReads the run file and the evidence directory and writes nothing.\n\nWith --json, next_actions is empty when clean; after a mismatch it offers `workflow files RUN` and one\n`workflow attempts RUN --attempt-of STEP` per mismatched step, each with a why naming the counts.","options":[{"flags":"--attempt-of STEP","description":"Only this step's attempts (an unknown step is refused as unknown_step)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace workflow audit RUN","scenario":"has anything the run kept been changed since it was copied?"},{"command":"workspace workflow audit RUN --attempt-of implement","scenario":"only the implement step's files"},{"command":"workspace workflow audit RUN --json","scenario":"for a script: one row per file, and clean true or false"}]}
+{"usage":["workspace workflow audit RUN [--attempt-of STEP] [--json]"],"description":"Check a run's kept evidence against the hashes recorded for it.\n\nRUN is a workflow run id (see `workspace workflow status`).\n\nCompares each prompt, check log and output the engine copied to the state directory with the SHA-256 it\nrecorded, for a going or finished run. OK: the copy matches. CHANGED, MISSING, REPLACED: the copy no longer\nholds what was recorded, and the command exits 1. NOT COPIED, TOO LARGE: nothing was kept, which\nis not tampering. 'checkout copy differs' notes a prompt or check log edited since it was copied (a\ncancelled check may legitimately differ). An attempt from before evidence existed is listed as having none.\nHistory lines the run could not write (logged to event-errors.log) are reported on one line and in\nevent_errors with --json; they change neither the result nor the exit code.\nReads the run file, the evidence directory and the error log, and writes nothing.\n\nWith --json, next_actions is empty when clean; after a mismatch it offers `workflow files RUN` and one\n`workflow attempts RUN --attempt-of STEP` per mismatched step, each with a why naming the counts.","options":[{"flags":"--attempt-of STEP","description":"Only this step's attempts (an unknown step is refused as unknown_step)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace workflow audit RUN","scenario":"has anything the run kept been changed since it was copied?"},{"command":"workspace workflow audit RUN --attempt-of implement","scenario":"only the implement step's files"},{"command":"workspace workflow audit RUN --json","scenario":"for a script: one row per file, clean true or false, and event_errors"}]}
 --- stderr
 --- end
 ### workspace workflow stats --help

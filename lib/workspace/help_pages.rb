@@ -701,7 +701,9 @@ module Workspace
           "holds what was recorded, and the command exits 1. NOT COPIED, TOO LARGE: nothing was kept, which",
           "is not tampering. 'checkout copy differs' notes a prompt or check log edited since it was copied (a",
           "cancelled check may legitimately differ). An attempt from before evidence existed is listed as having none.",
-          "Reads the run file and the evidence directory and writes nothing.",
+          "History lines the run could not write (logged to event-errors.log) are reported on one line and in",
+          "event_errors with --json; they change neither the result nor the exit code.",
+          "Reads the run file, the evidence directory and the error log, and writes nothing.",
           "",
           "With --json, next_actions is empty when clean; after a mismatch it offers `workflow files RUN` and one",
           "`workflow attempts RUN --attempt-of STEP` per mismatched step, each with a why naming the counts."
@@ -710,7 +712,7 @@ module Workspace
         examples: [
           ["workspace workflow audit RUN", "has anything the run kept been changed since it was copied?"],
           ["workspace workflow audit RUN --attempt-of implement", "only the implement step's files"],
-          ["workspace workflow audit RUN --json", "for a script: one row per file, and clean true or false"]
+          ["workspace workflow audit RUN --json", "for a script: one row per file, clean true or false, and event_errors"]
         ]
       },
       "stats" => {

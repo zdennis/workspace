@@ -576,7 +576,7 @@ module Workspace
       return {text: text, warning: nil} unless age > 2 * interval
       {text: text, warning: "the workflow sweep's last full pass was #{ago} ago, over twice its #{interval / 60}-minute interval; the machine may have been asleep, or the entry is not running",
        fix: "wait one interval and run 'workspace doctor' again#{sweep_log_advice}"}
-    rescue JSON::ParserError, ArgumentError, TypeError, SystemCallError
+    rescue JSON::ParserError, ArgumentError, TypeError, NoMethodError, SystemCallError
       {text: "", warning: "#{File.basename(@sweep_last_path)} is not a valid sweep record",
        fix: "delete #{TerminalText.escape(@sweep_last_path)}; the next sweep rewrites it"}
     end

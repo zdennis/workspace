@@ -377,7 +377,9 @@ module Workspace
     # from the runs directory, already finished. An events file already in the
     # archive (an earlier archive that was cut short) is appended to, never
     # renamed over; a crash between the append and the delete leaves the lines
-    # in both files, duplicated rather than lost. A last archived line with no
+    # in both files, duplicated rather than lost. A writer that does not hold the
+    # run lock and appends between the copy and the delete loses that line; the
+    # window is accepted, as it needs the rare cut-short archive first. A last archived line with no
     # newline is ended first, so it is skipped alone instead of eating the next.
     def archive(run, lock_path)
       FileUtils.mkdir_p(@archive_dir, mode: 0o700)

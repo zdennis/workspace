@@ -94,7 +94,8 @@ RSpec.describe Workspace::Doctor, "workflow sweep" do
       )
     end
 
-    [["a non-Hash top level", "[]"], ["a non-Hash last_full", '{"last_full":5}'], ["a bad at", '{"last_full":{"at":"yesterday"}}']].each do |name, body|
+    [["a non-Hash top level", "[]"], ["a non-Hash last_full", '{"last_full":5}'], ["a bad at", '{"last_full":{"at":"yesterday"}}'],
+      ["a Hash acted", '{"last_full":{"at":"2026-11-15T00:00:00Z","acted":{}}}']].each do |name, body|
       it "treats #{name} as an invalid record" do
         File.write(path, body)
 
