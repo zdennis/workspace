@@ -76,7 +76,7 @@ module Workspace
     # @param output [IO] output stream for results
     # @param env [Hash] the environment; a non-empty NO_COLOR turns color off
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, review_orphans: nil, tmux: nil, sweep_schedule: nil, working_dir: Dir.pwd, output: $stdout, env: ENV)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, review_orphans: nil, tmux: nil, sweep_schedule: nil, sweep_last_path: nil, sweep_log_path: nil, clock: -> { Time.now }, working_dir: Dir.pwd, output: $stdout, env: ENV)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -105,6 +105,9 @@ module Workspace
       @template_status = template_status
       @template_apply = template_apply
       @sweep_schedule = sweep_schedule
+      @sweep_last_path = sweep_last_path
+      @sweep_log_path = sweep_log_path
+      @clock = clock
       @skills_fixed = []
       @skills_notes = []
       @file_backup = file_backup || FileBackup.new(output: output)
@@ -534,7 +537,13 @@ module Workspace
       return unless @sweep_schedule
       status = @sweep_schedule.status
       if status["installed"] && status["loaded"] != false
-        add_row("workflow-sweep", "ok", "workflow sweep: installed#{" (launchctl could not say whether it is loaded)" if status["loaded"].nil?}")
+        last_pass = sweep_last_pass_text
+        add_row("workflow-sweep", "ok", "workflow sweep: installed#{" (launchctl could not say whether it is loaded)" if status["loaded"].nil?}#{last_pass[:text]}")
+        add_row("workflow-sweep", "warn", last_pass[:warning], fix: last_pass[:fix]) if last_pass[:warning]
+        if status["up_to_date"] == false
+          add_row("workflow-sweep", "warn", "the installed workflow sweep entry is out of date with this version of workspace",
+            fix: "rewrite it after upgrading workspace or moving Ruby: workspace workflow sweep --install", fix_command: "workspace workflow sweep --install")
+        end
       else
         why = status["installed"] ? "installed but not loaded" : "not installed"
         add_row("workflow-sweep", "warn", "the workflow sweep is #{why}. This matters only for workflows that set a timeout: (on the run or on a step); without the scheduled sweep, it is enforced only while the workspace's agent daemon is running (the daemon sweeps its workspace every 5 minutes while a run is going)",
@@ -543,6 +552,44 @@ module Workspace
     rescue Workspace::Error => e
       add_row("workflow-sweep", "warn", "workflow sweep: could not read its schedule: #{TerminalText.escape(e.message)}",
         fix: "run 'workspace workflow sweep --installed' to see the error")
+    end
+
+    # The last full sweep pass, read from sweep-last.json, as text for the ok row and, when it is missing, older
+    # than two intervals or unreadable, a warning with its own fix. Returns {text:, warning:, fix:}; nothing is
+    # checked when no path is wired.
+    def sweep_last_pass_text
+      return {text: "", warning: nil} unless @sweep_last_path
+      interval = SweepSchedule::INTERVAL
+      none = {text: "", warning: "no full pass recorded yet; the first runs within #{interval / 60} minutes of install",
+              fix: "wait one interval and run 'workspace doctor' again#{sweep_log_advice}"}
+      return none unless File.exist?(@sweep_last_path)
+      record = JSON.parse(File.read(@sweep_last_path))
+      raise ArgumentError, "not a record" unless record.is_a?(Hash)
+      full = record["last_full"]
+      return none if full.nil?
+      raise ArgumentError, "not a record" unless full.is_a?(Hash)
+      at = Time.iso8601(full["at"].to_s)
+      age = [(@clock.call - at).floor, 0].max
+      errors = Array(full["errors"]).size
+      ago = sweep_age_text(age)
+      text = "; last full pass #{ago} ago (#{full["acted"].to_i} acted, #{errors} #{(errors == 1) ? "error" : "errors"})"
+      return {text: text, warning: nil} unless age > 2 * interval
+      {text: text, warning: "the workflow sweep's last full pass was #{ago} ago, over twice its #{interval / 60}-minute interval; the machine may have been asleep, or the entry is not running",
+       fix: "wait one interval and run 'workspace doctor' again#{sweep_log_advice}"}
+    rescue JSON::ParserError, ArgumentError, TypeError, SystemCallError
+      {text: "", warning: "#{File.basename(@sweep_last_path)} is not a valid sweep record",
+       fix: "delete #{TerminalText.escape(@sweep_last_path)}; the next sweep rewrites it"}
+    end
+
+    def sweep_log_advice
+      "; if it persists, run 'workspace workflow sweep' once and read #{TerminalText.escape(@sweep_log_path || "sweep.log in the workspace state directory")}"
+    end
+
+    def sweep_age_text(seconds)
+      minutes = seconds / 60
+      return "#{minutes} min" if minutes <= 90
+      hours = minutes / 60
+      (hours <= 48) ? "#{hours} h" : "#{hours / 24} days"
     end
 
     def orphan_row(run)
