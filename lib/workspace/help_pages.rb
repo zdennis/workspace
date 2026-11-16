@@ -844,16 +844,23 @@ module Workspace
         ]
       },
       "events" => {
-        usage: ["workflow events RUN [--since N] [--json]"],
+        usage: ["workflow events RUN [--since N] [--follow] [--json]"],
         summary: "Show a run's history, one line per event",
         about: [
           RUN_ID,
           "",
           "A going or finished run: n (its line number), ts, type and the rest; oldest first, at most 1000 after",
-          "--since N. --json adds truncated and next_since to continue from."
+          "--since N. --json adds truncated and next_since to continue from.",
+          "",
+          "--follow keeps reading and prints each event as it is appended. It stops by itself once the run has",
+          "finished and its history is drained, prints a last line and exits 0. With --json each event is one JSON",
+          "line and the last is {\"type\":\"follow_ended\",\"run\",\"state\",\"next_since\"}."
         ],
-        options: [["--since N", "Only events after line N of the history (default 0)"], JSON_OPT],
+        options: [["--since N", "Only events after line N of the history (default 0)"],
+          ["--follow", "Keep reading until the run has finished and its history is drained"], JSON_OPT],
         examples: [
+          ["workspace workflow events RUN --follow", "watch a run's history as it grows"],
+          ["workspace workflow events RUN --follow --since 40 --json", "one JSON line per new event, then follow_ended"],
           ["workspace workflow events RUN", "a run's history, oldest first"],
           ["workspace workflow events RUN --since 40", "only what happened after line 40"],
           ["workspace workflow events RUN --json", "as one document, for a script"],

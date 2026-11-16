@@ -2809,6 +2809,90 @@ RSpec.describe Workspace::Commands::Workflow do
     it "refuses an unknown run with unknown_run" do
       expect { events_command.events(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
     end
+
+    describe "with follow" do
+      let(:errors) { StringIO.new }
+      let(:sleeps) { [] }
+      let(:steps) { [] }
+      let(:sleeper) {
+        lambda do |seconds|
+          sleeps << seconds
+          steps.shift&.call
+        end
+      }
+      let(:follow_command) do
+        described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
+          lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper)
+      end
+
+      def finish_run
+        real_store.change("wr_2610250930abcd") { |run| Workspace::WorkflowRun.from_h(run.to_h.merge("state" => "completed")) }
+      end
+
+      it "prints events appended between polls and stops once the run is archived and drained" do
+        fixture_run
+        steps << -> { real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "research", "attempt" => 2) }
+        steps << -> {
+          real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+          finish_run
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 10)
+
+        lines = output.string.lines.map(&:chomp)
+        expect(lines.map { |line| line[/\A\s*\d+\s+\S+\s+(\S+)/, 1] }).to eq(%w[run_started step_dispatched step_done step_dispatched run_finished] + [nil])
+        expect(lines.last).to eq("Run wr_2610250930abcd completed; no more events.")
+        expect(sleeps).to eq([0.25, 0.25])
+        expect(errors.string).to eq("Warning: Line 3 of the history is not a JSON object; skipped.\n")
+      end
+
+      it "prints one JSON line per event and a follow_ended line, from --since" do
+        fixture_run
+        steps << -> { finish_run }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
+
+        expect(output.string.lines.map { |line| JSON.parse(line) }).to eq([
+          {"type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "completed", "next_since" => 4}
+        ])
+      end
+
+      it "stops after max_polls while the run is going" do
+        fixture_run
+
+        follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 3)
+
+        expect(sleeps.size).to eq(2)
+        expect(output.string).not_to include("no more events")
+      end
+
+      it "reads again at once while the history is cut off" do
+        fixture_run
+        allow(real_store).to receive(:events).and_return(
+          {"events" => [{"n" => 1, "ts" => "t", "type" => "a"}], "truncated" => true, "next_since" => 1, "warnings" => []},
+          {"events" => [{"n" => 2, "ts" => "t", "type" => "b"}], "truncated" => false, "next_since" => 2, "warnings" => []}
+        )
+
+        follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 2)
+
+        expect(output.string.lines.size).to eq(2)
+        expect(sleeps).to eq([])
+        expect(real_store).to have_received(:events).with("wr_2610250930abcd", since: 1)
+      end
+
+      it "ends quietly on a closed pipe or Ctrl-C" do
+        fixture_run
+        allow(output).to receive(:puts).and_raise(Errno::EPIPE)
+        expect { follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 2) }.not_to raise_error
+
+        steps << -> { raise Interrupt }
+        expect { follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 5) }.not_to raise_error
+      end
+
+      it "refuses an unknown run" do
+        expect { follow_command.events(run: "wr_nope", follow: true, max_polls: 1) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+      end
+    end
   end
 
   describe "#validate" do

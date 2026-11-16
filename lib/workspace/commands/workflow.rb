@@ -49,7 +49,7 @@ module Workspace
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
       def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
-        clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
+        clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
         @pid = pid
@@ -76,6 +76,7 @@ module Workspace
         @store = store
         @panes = panes
         @clock = clock
+        @sleeper = sleeper
         @output = output
         @input = input
         @error_output = error_output
@@ -537,19 +538,23 @@ module Workspace
 
       # Prints a run's history, oldest first, going or finished.
       #
+      # With +follow+ it keeps reading from where the last read ended, printing each
+      # event as it is appended, and returns once the run has finished and its history
+      # is drained, after one last line. With +json+ each event is one JSON line.
+      #
       # @param run [String] a run id
       # @param since [Integer] only events on lines after this line number
       # @param json [Boolean]
+      # @param follow [Boolean] keep reading until the run finishes
+      # @param max_polls [Integer, nil] stop following after this many reads (for tests)
       # @return [void]
       # @raise [Workspace::Error] code `unknown_run`
-      def events(run:, since: 0, json: false)
+      def events(run:, since: 0, json: false, follow: false, max_polls: nil)
+        return follow_events(run, since, json, max_polls) if follow
         result = @store.events(run, since: since)
         return document("run" => run, "events" => result["events"], "truncated" => result["truncated"], "next_since" => result["next_since"], "warnings" => result["warnings"]) if json
         @output.puts "No events#{" after line #{since}" if since.positive?} for #{run}." if result["events"].empty?
-        result["events"].each do |event|
-          rest = event.except("n", "ts", "type").map { |key, value| "#{key}=#{(value.is_a?(String) && !value.match?(/[[:cntrl:]]/)) ? value : JSON.generate(value)}" }
-          @output.puts [event["n"].to_s.rjust(4), event["ts"], event["type"], *rest].join("  ")
-        end
+        result["events"].each { |event| @output.puts event_line(event) }
         @output.puts "More events follow: pass --since #{result["next_since"]}." if result["truncated"]
         result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
       end
@@ -1469,6 +1474,36 @@ module Workspace
         project = scope&.project&.name || WorkflowCatalog.project_of(scope&.workspace)
         found = @catalog.locate(id, project: project)
         found && {"source" => found.first, "project" => (found.first == "project") ? project : nil, "path" => found.last}
+      end
+
+      # Seconds between reads while following a run's history.
+      EVENTS_POLL_INTERVAL = 0.25
+
+      def follow_events(run, since, json, max_polls)
+        cursor = since
+        polls = 0
+        loop do
+          polls += 1
+          state = @store.run(run).state
+          result = @store.events(run, since: cursor)
+          result["events"].each { |event| @output.puts(json ? JSON.generate(event) : event_line(event)) }
+          result["warnings"].each { |warning| @error_output.puts "Warning: #{warning}" }
+          @output.flush
+          cursor = result["next_since"]
+          if !result["truncated"] && WorkflowRunStore::TERMINAL_STATES.include?(state)
+            @output.puts(json ? JSON.generate("type" => "follow_ended", "run" => run, "state" => state, "next_since" => cursor) : "Run #{run} #{state}; no more events.")
+            break
+          end
+          break if max_polls && polls >= max_polls
+          @sleeper.call(EVENTS_POLL_INTERVAL) unless result["truncated"]
+        end
+      rescue Errno::EPIPE, Interrupt
+        nil
+      end
+
+      def event_line(event)
+        rest = event.except("n", "ts", "type").map { |key, value| "#{key}=#{(value.is_a?(String) && !value.match?(/[[:cntrl:]]/)) ? value : JSON.generate(value)}" }
+        [event["n"].to_s.rjust(4), event["ts"], event["type"], *rest].join("  ")
       end
 
       def document(body)

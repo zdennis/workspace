@@ -87,7 +87,14 @@ RSpec.describe Workspace::CLI::Workflow do
       run("events", "wr_1", "--since", "4")
       run("attempts", "wr_1", "--attempt-of", "plan")
 
-      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 4, json: false}], [:attempts, {run: "wr_1", step: "plan", json: false}]])
+      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 4, json: false, follow: false}], [:attempts, {run: "wr_1", step: "plan", json: false}]])
+    end
+
+    it "parses events --follow and refuses it elsewhere" do
+      run("events", "wr_1", "--follow", "--json")
+
+      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: true, follow: true}]])
+      expect { run("status", "--follow") }.to raise_error(Workspace::UsageError, /--follow is for `workflow events RUN`/)
     end
 
     it "hands stats a --project scope and the --last window in seconds" do
@@ -431,7 +438,7 @@ RSpec.describe Workspace::CLI::Workflow do
       cli.run(["workflow", "events", "wr_1"])
       cli.run(["workflow", "events", "wr_1", "--since", "40", "--json"])
 
-      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: false}], [:events, {run: "wr_1", since: 40, json: true}]])
+      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: false, follow: false}], [:events, {run: "wr_1", since: 40, json: true, follow: false}]])
     end
 
     it "lists a run's attempts, of one step" do

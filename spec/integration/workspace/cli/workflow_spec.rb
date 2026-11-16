@@ -580,7 +580,7 @@ RSpec.describe Workspace::CLI do
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow list [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--json]").and include("--since N").and include("workflow files RUN [--json]").and include("--id ID").and include("--input KEY=VALUE")
+      expect(output.string).to include("Usage: workspace workflow list [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--follow] [--json]").and include("--since N").and include("workflow files RUN [--json]").and include("--id ID").and include("--input KEY=VALUE")
       output.truncate(0)
       output.rewind
       cli.run(["workflow", "status", "--help"])

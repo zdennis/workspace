@@ -51,6 +51,7 @@ module Workspace
         "instructions" => 1,
         "restore" => 1,
         "workflow" => 47,
+        "workflow_events_follow" => 1,
         "window_state" => 1,
         "window_position" => 1,
         "cleanup_dry_run" => 1,

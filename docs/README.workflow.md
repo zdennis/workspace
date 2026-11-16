@@ -21,7 +21,7 @@ workspace workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [
                          [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]
 workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]
 workspace workflow status --needs-me [--name WORKSPACE | --project [NAME]] [--json]
-workspace workflow events RUN [--since N] [--json]
+workspace workflow events RUN [--since N] [--follow] [--json]
 workspace workflow files RUN [--json]
 workspace workflow attempts RUN [--attempt-of STEP] [--json]
 workspace workflow audit RUN [--attempt-of STEP] [--json]
@@ -589,6 +589,10 @@ Other codes: `workflow_source_invalid` (an entry is not a usable source), `workf
 `workflow events RUN` prints the run's history file (`<RUN>.events.jsonl`, in `runs/` while the run is going and in `archive/` after), one line per event: the line number, the time, the type and the rest of the line's keys as `key=value`. It reads the file and writes nothing; a run with no history file has no events. An unknown run is refused with `unknown_run`. `--since N` must be a whole number, 0 or more, or it is a usage error.
 
 Each event's `n` is its 1-based line number in the file, so a reader that remembers the last `n` (or `next_since`) asks for `--since N` and gets only what is new. A complete line that is not a JSON object (hand-edited, or blank: a blank line counts as a bad line) is skipped, keeps its number and is named in `warnings`. A last line with no newline yet is an event still being written: it is not returned, counted or warned about, and `next_since` stays at the last complete line, so the next poll gets it. At most 1000 events are answered; when more follow, `truncated` is true and `next_since` is the line number to pass as `--since`.
+
+#### Following a run's events
+
+`workflow events RUN --follow [--since N] [--json]` prints the history from `--since` (default 0), then keeps reading and prints each event as it is appended. With `--json` each event is one JSON line (the same keys as in `events`, with no document around them). It reads the file every quarter of a second, and reads again at once while more than 1000 events wait. Once the run has finished (also when it is archived while you follow) and its history is drained, it prints one last line and exits 0: `Run RUN completed; no more events.`, or with `--json` `{"type":"follow_ended","run":"RUN","state":"completed","next_since":12}`. `state` is `completed`, `failed` or `cancelled`; the exit status is 0 in each case, so a script reads `state` to tell them apart. To resume a later follow, pass the last event's `n` (or `follow_ended.next_since`) as `--since`; this is a line number, not the opaque `cursor` of `workspace events`. A line that is not a JSON object is skipped with a warning on stderr. Ctrl-C and a closed pipe end it quietly. An unknown run is refused with `unknown_run`. The `workflow_events_follow` capability says the flag exists.
 
 #### Keys that say why a run changed
 
