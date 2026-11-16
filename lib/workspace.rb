@@ -1128,7 +1128,8 @@ module Workspace
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
       interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall,
       turn_failed_after: -> { workflow_config.turn_failed_after },
-      recovery_entry: workflow_recovery_entry, downtime: workflow_downtime)
+      recovery_entry: workflow_recovery_entry, downtime: workflow_downtime,
+      log_path: config.sweep_log_path, last_path: config.workflow_sweep_last_path)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do
         out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)

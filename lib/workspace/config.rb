@@ -290,6 +290,13 @@ module Workspace
       File.join(state_dir, ".workflows", "evidence")
     end
 
+    # The record of the last sweep pass and the last unfiltered one.
+    #
+    # @return [String] path to `sweep-last.json`
+    def workflow_sweep_last_path
+      File.join(state_dir, ".workflows", "sweep-last.json")
+    end
+
     # The daemon's heartbeat: the time of its last beat, one file for the machine.
     #
     # @return [String] path to the heartbeat file

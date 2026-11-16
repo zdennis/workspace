@@ -1,3 +1,4 @@
+require "json"
 require "time"
 
 module Workspace
@@ -102,9 +103,19 @@ module Workspace
     # @param recovery_entry [#call] given a workspace and a pane id, returns the pane's {AgentRecoveryStore} entry or nil
     # @param downtime [Workspace::WorkflowDowntime, nil] beaten at the start of every pass, a `--dry-run` pass too: the heartbeat is a machine fact, not run state;
     #   then its spans are read once for the pass and cut from every step, round and run clock it reads (nil: none)
+    # @param log_path [String, nil] the launchd entry's `sweep.log`; cut to its last `log_keep` bytes at the start of a pass
+    #   when over `log_limit` (nil: left alone)
+    # @param last_path [String, nil] `sweep-last.json`, which every pass but a dry run writes at its end (nil: none)
+    # @param log_limit [Integer] bytes the log may reach before it is cut
+    # @param log_keep [Integer] bytes of the log's end kept when it is cut
     # @param clock [#call] returns the current Time
     def initialize(store:, engine:, panes:, interrupter:, reviews:, default_stall: -> {}, turn_failed_after: -> {},
-      recovery_entry: ->(*) {}, clock: -> { Time.now }, downtime: nil)
+      recovery_entry: ->(*) {}, clock: -> { Time.now }, downtime: nil,
+      log_path: nil, last_path: nil, log_limit: 1024 * 1024, log_keep: 256 * 1024)
+      @log_path = log_path
+      @last_path = last_path
+      @log_limit = log_limit
+      @log_keep = log_keep
       @downtime = downtime
       @store = store
       @engine = engine
@@ -129,9 +140,11 @@ module Workspace
     #   for a person), `closed` (an orphan review window), `failed`, `dry_run`), "reason" (for a retry also `backoff`, `pane_busy`,
     #   `not_delivered`, `waiting_lock`), "message", "run_id",
     #   "step", "attempt", "cause", "action"
+    #   A dry run still trims the log, like the heartbeat; a pass that raises records nothing, so a reader sees it as stale.
     # @raise [Workspace::Error] code `unknown_run` for a +run+ that does not exist
     def call(run: nil, workspace: nil, dry_run: false, allow: nil)
       beat
+      trim_log
       runs = run ? [@store.run(run)] : @store.going
       runs = runs.select { |each| each.workspace == workspace } if workspace
       # Downtime is read once for the pass, after the beat has recorded any gap since the last one.
@@ -140,13 +153,74 @@ module Workspace
       rows = runs.map { |each| sweep_run(each, pass) }
       rows += unreadable_rows unless run || workspace
       # Every session of the default tmux server unless a workspace or a run narrows the pass.
-      rows + @reviews.orphan_rows(run, workspace || (run && runs.first&.workspace), pass)
+      rows += @reviews.orphan_rows(run, workspace || (run && runs.first&.workspace), pass)
+      record_pass(rows, run, workspace) unless dry_run
+      rows
     end
 
     private
 
     def beat
       @downtime&.beat(grace: SweepSchedule::INTERVAL)
+    rescue
+      nil
+    end
+
+    # Rewrites the log in place (same inode), so the launchd entry's append-mode descriptor keeps working. The kept
+    # tail is written at offset 0 before the file is cut to its size, so a crash leaves duplicated text, never an
+    # empty log. A sidecar lock keeps two sweeps from interleaving. Lines launchd appends during the rewrite can be
+    # lost; that is accepted.
+    def trim_log
+      return unless @log_path && File.size?(@log_path).to_i > @log_limit
+      FileLock.new("#{@log_path}.lock").hold do
+        size = File.size(@log_path)
+        next if size <= @log_limit || @log_keep >= size
+        File.open(@log_path, "r+b") do |file|
+          offset = size - @log_keep
+          file.seek(offset - 1)
+          boundary = file.read(1) == "\n"
+          tail = file.read
+          unless boundary
+            cut = tail.index("\n")
+            tail = tail[(cut + 1)..] if cut
+          end
+          file.rewind
+          file.write(tail)
+          file.truncate(tail.bytesize)
+        end
+      end
+    rescue
+      nil
+    end
+
+    def parse_record(text)
+      text = text.to_s
+      return {} unless text.valid_encoding?
+      data = JSON.parse(text)
+      data.is_a?(Hash) ? data : {}
+    rescue
+      {}
+    end
+
+    def record_pass(rows, run, workspace)
+      return unless @last_path
+      scope = if run
+        {"run" => run}
+      elsif workspace
+        {"workspace" => workspace}
+      else
+        "all"
+      end
+      entry = {"at" => @clock.call.utc.iso8601, "scope" => scope,
+               "acted" => rows.count { |row| row["outcome"] != "nothing" },
+               "errors" => rows.select { |row| row["outcome"] == "failed" }.map do |row|
+                 {"run_id" => row["run_id"], "reason" => row["reason"], "message" => row["message"].to_s[0, 200]}
+               end}
+      parse = ->(text) { parse_record(text) }
+      LockedJsonFile.new(@last_path, parse: parse).exclusive do |data|
+        data["last"] = entry
+        data["last_full"] = entry if scope == "all"
+      end
     rescue
       nil
     end
