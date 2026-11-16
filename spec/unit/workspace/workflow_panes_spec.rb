@@ -387,9 +387,47 @@ RSpec.describe Workspace::WorkflowPanes do
       %w[working waiting].each do |state|
         shown["state"] = state
         expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false))
-          .to eq(ok: false, code: "pane_busy", message: "the agent in pane %5 is in the middle of a turn; resume the run when it is done")
+          .to include(ok: false, code: "pane_busy", message: "the agent in pane %5 is in the middle of a turn; resume the run when it is done")
       end
       expect(tmux).not_to have_received(:deliver)
+    end
+
+    it "returns what a mid-turn refusal saw" do
+      shown.merge!("state" => "working", "state_since" => "2026-10-04T12:00:00Z", "state_changed_by" => "screen",
+        "last_event_at" => "2026-10-04T12:00:10Z")
+
+      result = panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false)
+
+      expect(result[:seen]).to eq("state" => "working", "state_since" => "2026-10-04T12:00:00Z", "changed_by" => "screen",
+        "kind" => "claude", "last_event_at" => "2026-10-04T12:00:10Z", "seen_at" => "2026-10-04T12:00:30Z")
+      expect(result).not_to have_key(:reason)
+    end
+
+    it "returns the failed turn and its kind when the refusal is for a failed turn" do
+      shown.merge!("kind" => "shell", "state" => "idle", "state_changed_by" => "hook", "turn_failed" => true,
+        "turn_failed_since" => "2026-10-04T12:00:05Z", "turn_failed_kind" => "rate_limit")
+
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false)[:seen])
+        .to include("changed_by" => "turn_failed", "turn_failed" => true, "turn_failed_since" => "2026-10-04T12:00:05Z",
+          "turn_failed_kind" => "rate_limit", "kind" => "shell")
+    end
+
+    it "types the line and returns no seen when the snapshot cannot be fetched" do
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted, message: "ok"))
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no answer", reason: :timeout))
+
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false)).to eq(ok: true)
+    end
+
+    it "makes no fetch beyond the two it always made for a delivered line, and none for a delivered fresh step" do
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted, message: "ok"))
+
+      panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false)
+      expect(snapshot_client).to have_received(:fetch).twice
+
+      replies << JSON.generate("ok" => true) + "\n"
+      panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)
+      expect(snapshot_client).to have_received(:fetch).twice
     end
 
     it "answers pane_busy for a shell pane showing a failed turn, and types for an agent pane showing one" do
@@ -478,7 +516,35 @@ RSpec.describe Workspace::WorkflowPanes do
       replies << JSON.generate("ok" => false, "error" => "pane_busy", "message" => "pane %5 kept changing", "reason" => "background_activity") + "\n"
 
       expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true))
-        .to eq(ok: false, code: "pane_busy", message: "pane %5 kept changing", reason: "background_activity")
+        .to include(ok: false, code: "pane_busy", message: "pane %5 kept changing", reason: "background_activity")
+    end
+
+    it "reads the snapshot once after a fresh step's pane_busy reply and marks it read_after" do
+      shown.merge!("state" => "working", "state_changed_by" => "hook")
+      replies << JSON.generate("ok" => false, "error" => "pane_busy", "message" => "m", "reason" => "background_activity") + "\n"
+
+      result = panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)
+
+      expect(result[:seen]).to include("state" => "working", "changed_by" => "hook", "refusal_reason" => "background_activity",
+        "read_after" => true, "seen_at" => "2026-10-04T12:00:30Z")
+      expect(snapshot_client).to have_received(:fetch).once
+    end
+
+    it "leaves seen out when that fetch fails" do
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no", reason: :timeout))
+      replies << JSON.generate("ok" => false, "error" => "pane_busy", "message" => "m", "reason" => "background_activity") + "\n"
+
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true))
+        .to eq(ok: false, code: "pane_busy", message: "m", reason: "background_activity")
+    end
+
+    it "does not fetch for a fresh step's other refusals or its success" do
+      replies << JSON.generate("ok" => false, "error" => "context_unknown", "message" => "m") + "\n"
+      panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)
+      replies << JSON.generate("ok" => true) + "\n"
+      panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)
+
+      expect(snapshot_client).not_to have_received(:fetch)
     end
 
     it "sends the run id, so the daemon stops typing once the run is gone" do
@@ -493,7 +559,7 @@ RSpec.describe Workspace::WorkflowPanes do
       replies << JSON.generate("ok" => false, "error" => "pane_busy", "message" => "kept changing", "reason" => "background_activity",
         "details" => {"proof_missing" => "transcript_activity:cost-v2"}) + "\n"
 
-      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)).to eq(ok: false, code: "pane_busy", message: "kept changing",
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: true)).to include(ok: false, code: "pane_busy", message: "kept changing",
         reason: "background_activity", proof_missing: "transcript_activity:cost-v2")
     end
 
@@ -741,6 +807,14 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(kick).to include(ok: false, code: "pane_busy", reason: "turn_started", message: a_string_including("pane %5"))
       expect(sleeps).to eq([0.5] * 10)
       expect(tmux).not_to have_received(:deliver)
+    end
+
+    it "returns what a screen refusal saw, with its reason" do
+      shown.merge!("state_since" => "2026-10-04T12:00:00Z", "state_changed_by" => "screen")
+      screen[0] = box("✽ Frosting… (3s)", "")
+
+      expect(kick[:seen]).to include("state" => "done", "changed_by" => "screen", "refusal_reason" => "turn_started",
+        "kind" => "claude", "seen_at" => "2026-10-04T12:00:35Z")
     end
 
     it "refuses a draft with its reason, typing nothing" do

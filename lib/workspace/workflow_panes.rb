@@ -508,7 +508,10 @@ module Workspace
     end
 
     # The refusal still standing after {SCREEN_SETTLE} seconds, reading the
-    # daemon again each time; nil when the line can be typed.
+    # daemon again each time, with the row it was read from; nil when the line can
+    # be typed.
+    #
+    # @return [Array(Hash, Hash, nil), nil] the refusal and the row, nil when the line can be typed
     def settled_refusal(workspace, pane)
       refused = typing_refusal(workspace, pane, nil)
       deadline = @clock.call + SCREEN_SETTLE
@@ -526,19 +529,38 @@ module Workspace
       snapshot = @snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT)
       row = row_of(snapshot, pane)
       return unknown unless row && row["kind"] == "claude" && parks?(snapshot)
-      screen_refusal(pane, row)
+      refusal = screen_refusal(pane, row)
+      refusal && [refusal, row]
     rescue Workspace::Error
       unknown
     end
 
-    # Whether the daemon shows the pane's agent working or waiting at a prompt, or a
-    # shell where an agent's turn failed (nothing to type a step's line to); false when it can't say.
-    def busy?(workspace, pane)
+    # The daemon's row for the pane when it shows the agent working or waiting at a prompt, or a
+    # shell where an agent's turn failed (nothing to type a step's line to); nil when it isn't, or the daemon can't say.
+    def busy_row(workspace, pane)
       shown = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
-      return true if shown && shown["turn_failed"] && shown["kind"] == "shell"
-      %w[working waiting].include?(shown && shown["state"])
+      return shown if shown && shown["turn_failed"] && shown["kind"] == "shell"
+      shown if %w[working waiting].include?(shown && shown["state"])
     rescue Workspace::Error
-      false
+      nil
+    end
+
+    # What a refusal saw, from the row it was read from.
+    def seen_of(row, reason: nil, changed_by: nil, read_after: false)
+      return nil unless row
+      {
+        "state" => row["state"],
+        "state_since" => row["state_since"],
+        "changed_by" => changed_by || row["state_changed_by"],
+        "turn_failed" => row["turn_failed"],
+        "turn_failed_since" => row["turn_failed_since"],
+        "turn_failed_kind" => row["turn_failed_kind"],
+        "kind" => row["kind"],
+        "last_event_at" => row["last_event_at"],
+        "refusal_reason" => reason && TerminalText.escape(reason),
+        "seen_at" => @clock.call.utc.iso8601,
+        "read_after" => (true if read_after)
+      }.compact
     end
 
     def type(workspace, pane, text)
@@ -550,12 +572,17 @@ module Workspace
       end
       # A line typed into a turn that is under way is queued into that turn, whose end would
       # then be taken for an earlier one's; so is one typed at a permission prompt.
-      if busy?(workspace, pane)
-        return {ok: false, code: "pane_busy", message: "the agent in pane #{pane} is in the middle of a turn; resume the run when it is done"}
+      busy = busy_row(workspace, pane)
+      if busy
+        changed_by = "turn_failed" if busy["turn_failed"] && busy["kind"] == "shell"
+        return {ok: false, code: "pane_busy", message: "the agent in pane #{pane} is in the middle of a turn; resume the run when it is done",
+                seen: seen_of(busy, changed_by: changed_by)}.compact
       end
-      refused = settled_refusal(workspace, pane)
+      refused, row = settled_refusal(workspace, pane)
       if refused
-        return {ok: false, code: "pane_busy", reason: refused[:reason], message: "pane #{pane} can't take the step's line: #{refused[:message]}"}
+        return {ok: false, code: "pane_busy", reason: refused[:reason],
+                message: TerminalText.escape("pane #{pane} can't take the step's line: #{refused[:message]}"),
+                seen: seen_of(row, reason: refused[:reason].to_s)}.compact
       end
       delivery = @tmux.deliver(session, pane, text)
       return {ok: true} if delivery.landed?
@@ -567,7 +594,16 @@ module Workspace
       reply = request(workspace, message)
       return {ok: true, warning: reply["warning"], cleared_at: reply["cleared_at"]}.compact if reply["ok"]
       {ok: false, code: reply["error"].to_s, message: [reply["message"], reply["fix"]].compact.join(" "), reason: reply["reason"],
-       proof_missing: reply.dig("details", "proof_missing"), warning: reply["warning"]}.compact
+       proof_missing: reply.dig("details", "proof_missing"), warning: reply["warning"],
+       seen: (read_after(workspace, pane, reply["reason"]) if reply["error"] == "pane_busy")}.compact
+    end
+
+    # The pane's row read once after the daemon refused it; the pane may have moved on by then.
+    def read_after(workspace, pane, reason)
+      row = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
+      seen_of(row, reason: reason&.to_s, read_after: true)
+    rescue Workspace::Error
+      nil
     end
 
     # `no_daemon` means nothing was sent (no socket to open); once the request is on the wire, a failure is
