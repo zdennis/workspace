@@ -701,7 +701,9 @@ module Workspace
           "holds what was recorded, and the command exits 1. NOT COPIED, TOO LARGE: nothing was kept, which",
           "is not tampering. 'checkout copy differs' notes a prompt or check log edited since it was copied (a",
           "cancelled check may legitimately differ). An attempt from before evidence existed is listed as having none.",
-          "Reads the run file and the evidence directory and writes nothing.",
+          "History lines the run could not write (logged to event-errors.log) are reported on one line and in",
+          "event_errors with --json; they change neither the result nor the exit code.",
+          "Reads the run file, the evidence directory and the error log, and writes nothing.",
           "",
           "With --json, next_actions is empty when clean; after a mismatch it offers `workflow files RUN` and one",
           "`workflow attempts RUN --attempt-of STEP` per mismatched step, each with a why naming the counts."
@@ -710,7 +712,7 @@ module Workspace
         examples: [
           ["workspace workflow audit RUN", "has anything the run kept been changed since it was copied?"],
           ["workspace workflow audit RUN --attempt-of implement", "only the implement step's files"],
-          ["workspace workflow audit RUN --json", "for a script: one row per file, and clean true or false"]
+          ["workspace workflow audit RUN --json", "for a script: one row per file, clean true or false, and event_errors"]
         ]
       },
       "stats" => {
@@ -813,7 +815,11 @@ module Workspace
           "To run it on a schedule even with no agent daemon, --install writes a per-user LaunchAgent (every 5",
           "minutes) and loads it; it is never done for you. --uninstall unloads and removes it, --installed says whether it is there and loaded.",
           "The entry records the absolute Ruby, program and PATH it was installed with, so run --install again",
-          "after a Ruby or install move. A plist that is not ours is never touched.",
+          "after a Ruby or install move. The entry's output goes to sweep.log in the state directory",
+          "(~/.local/state/workspace, or $XDG_STATE_HOME/workspace); a pass trims that log to its last 256 KiB when it is over 1 MiB, and writes",
+          ".workflows/sweep-last.json there (the last pass, and the last unfiltered one). An entry",
+          "installed before that reads as out of date (up_to_date false) until --install runs again.",
+          "A plist that is not ours is never touched.",
           "",
           "Next actions:",
           "With --json, next_actions (always present, empty when nothing needs a person) lists what a person can run.",

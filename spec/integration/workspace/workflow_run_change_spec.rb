@@ -224,6 +224,23 @@ RSpec.describe Workspace::WorkflowRunChange do
     end
   end
 
+  describe "#call when the history can't be written" do
+    it "still saves the run and the loss shows in event_errors" do
+      log_path = File.join(@dir, "event-errors.log")
+      failing = Workspace::WorkflowRunStore.new(dir: File.join(@dir, "runs"), archive_dir: File.join(@dir, "archive"), clock: -> { now }, event_errors_path: log_path)
+      FileUtils.mkdir_p(failing.events_path(run_id))
+      failing_change = described_class.new(store: failing, attempt_record: attempt_record, deliver: deliver, alerts: alerts, event_log: event_log)
+
+      failing_change.call(run_id, actor: "engine", cause: "test") do |run, _ctx|
+        failing_change.event(run, "step_reported", "step" => "a")
+        edited(run) { |work| work["note"] = "changed" }
+      end
+
+      expect(stored_run(failing, run_id)["note"]).to eq("changed")
+      expect(failing.event_errors(run_id).map { |entry| [entry["type"], entry["errno"]] }).to eq([%w[step_reported EISDIR]])
+    end
+  end
+
   describe "#event" do
     def lines(id = run_id)
       File.exist?(store.events_path(id)) ? File.readlines(store.events_path(id)).map { |line| JSON.parse(line) } : []

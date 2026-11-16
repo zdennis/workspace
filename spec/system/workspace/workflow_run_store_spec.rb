@@ -105,6 +105,69 @@ RSpec.describe Workspace::WorkflowRunStore do
     end
   end
 
+  it "appends a going events file to one already archived instead of renaming over it" do
+    create
+    FileUtils.mkdir_p(archive_dir)
+    archived = File.join(archive_dir, "wr_1.events.jsonl")
+    File.write(archived, %({"type":"a"}\n{"type":"b"}\n))
+    after_write = lambda do |_stored|
+      store.record_event("wr_1", "c")
+      store.record_event("wr_1", "d")
+    end
+    store.change("wr_1", after_write: after_write) { |run| merged(run, "state" => "completed") }
+
+    expect(File.exist?(File.join(runs_dir, "wr_1.events.jsonl"))).to be(false)
+    expect(store.events("wr_1")["events"].map { |event| event["type"] }).to eq(%w[a b c d])
+  end
+
+  it "ends an archived last line that has no newline before appending to it" do
+    create
+    FileUtils.mkdir_p(archive_dir)
+    File.write(File.join(archive_dir, "wr_1.events.jsonl"), %({"type":"a"}\n{"type":"cut))
+    after_write = ->(_stored) { store.record_event("wr_1", "c") }
+    store.change("wr_1", after_write: after_write) { |run| merged(run, "state" => "completed") }
+
+    result = store.events("wr_1")
+    expect(result["events"].map { |event| event["type"] }).to eq(%w[a c])
+    expect(result["warnings"].size).to eq(1)
+  end
+
+  describe "#record_event when the write fails" do
+    let(:log_path) { File.join(@dir, ".workflows", "event-errors.log") }
+    let(:logging) { described_class.new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, event_errors_path: log_path) }
+
+    before { FileUtils.mkdir_p([runs_dir, File.join(runs_dir, "wr_1.events.jsonl"), File.join(runs_dir, "wr_2.events.jsonl")]) }
+
+    it "returns without raising, logs a JSON line, and reads back only that run's lines" do
+      expect { logging.record_event("wr_1", "step_dispatched", "step" => "a") }.not_to raise_error
+      logging.record_event("wr_2", "run_started")
+
+      expect(logging.event_errors("wr_1")).to match([a_hash_including("ts" => "2026-10-04T12:00:00.000Z", "run_id" => "wr_1", "type" => "step_dispatched", "errno" => "EISDIR", "message" => a_kind_of(String))])
+      expect(logging.event_errors("wr_2").size).to eq(1)
+      expect(logging.event_errors("wr_9")).to eq([])
+    end
+
+    it "logs the class name for an event that can't be encoded" do
+      logging.record_event("wr_1", "x", "bad" => "\xFF".b.force_encoding("UTF-8"))
+
+      expect(logging.event_errors("wr_1").first["errno"]).to eq("JSON::GeneratorError")
+    end
+
+    it "skips lines that are not JSON" do
+      logging.record_event("wr_1", "x")
+      File.open(log_path, "a") { |file| file.puts("garbage") }
+
+      expect(logging.event_errors("wr_1").size).to eq(1)
+    end
+
+    it "writes nothing when no path is given" do
+      expect { store.record_event("wr_1", "x") }.not_to raise_error
+
+      expect(File.exist?(log_path)).to be(false)
+      expect(store.event_errors("wr_1")).to eq([])
+    end
+  end
+
   describe "#stamp" do
     it "is the same for the same runs directory and differs for another, 16 hex digits" do
       other = described_class.new(dir: File.join(@dir, "elsewhere", "runs"), archive_dir: archive_dir)
