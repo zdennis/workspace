@@ -10,7 +10,7 @@ module Workspace
     # `--help --json` captures what it prints.
     class Agent
       # The verbs of `daemon`, in the order `daemon --help` lists them.
-      DAEMON_SUBCOMMANDS = %w[status restart log list].freeze
+      DAEMON_SUBCOMMANDS = %w[status restart log list watch].freeze
 
       # The `agentd` flags `restart` doesn't take: beside one, `restart` is the workspace's name.
       AGENTD_RUN_FLAGS = %w[-f --force --ensure].freeze
@@ -549,6 +549,8 @@ module Workspace
           opts.on("--lines N", Integer, "log: how many trailing lines (default #{Commands::Daemon::DEFAULT_LINES})") { |v| options[:lines] = v }
           opts.on("--wc-socket PATH", "restart: work-coordinator socket for the new daemon (default: the old daemon's)") { |v| options[:wc_socket] = v }
           opts.on("--all", "restart: restart every running daemon instead of one workspace") { options[:all] = true }
+          opts.on("--run RUN", "watch: follow only this run, and stop when it has finished") { |v| options[:run] = v }
+          opts.on("--since CURSOR", "watch: resume after the line that printed this cursor") { |v| options[:since] = v }
           opts.on("--json", "Print one JSON document (see docs/README.daemon.md)") { options[:json] = true }
           opts.on("-h", "--help", "Show this help") { options[:help] = true }
           opts.separator ""
@@ -558,6 +560,7 @@ module Workspace
           opts.separator "  workspace daemon log my-app --lines 100    # the last 100 lines of its log"
           opts.separator "  workspace daemon restart my-app --json    # one JSON action document"
           opts.separator "  workspace daemon restart --all    # SIGTERM each running daemon and start it again"
+          opts.separator "  workspace daemon watch my-app    # follow its workflow decisions and run events"
         end
       end
 
@@ -577,6 +580,8 @@ module Workspace
 
         raise UsageError, "--all only applies to `daemon restart`." if options[:all] && subcommand != "restart"
         raise UsageError, "--lines only applies to `daemon log`." if options[:lines] && subcommand != "log"
+        raise UsageError, "--run only applies to `daemon watch`." if options[:run] && subcommand != "watch"
+        raise UsageError, "--since only applies to `daemon watch`." if options[:since] && subcommand != "watch"
         if subcommand == "list" || options[:all]
           what = (subcommand == "list") ? "daemon list" : "daemon restart --all"
           raise UsageError, "#{what} takes no workspace: it covers every running daemon." if options[:name] || args.any?
@@ -595,6 +600,7 @@ module Workspace
         result = case subcommand
         when "status" then @daemon_command.status(name: name, json: options[:json])
         when "log" then @daemon_command.log(name: name, lines: options[:lines], json: options[:json])
+        when "watch" then @daemon_command.watch(name: name, run: options[:run], since: options[:since], json: options[:json])
         else daemon_restart(name, options, invocation)
         end
         invocation.exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].to_i.zero?

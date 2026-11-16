@@ -53,7 +53,7 @@ module Workspace
        "definition_sha256" => attempt.definition_sha256, "prompt_sha256" => attempt.prompt_sha256,
        "packs" => attempt.packs, "outputs" => attempt.outputs, "check" => check,
        "reported" => attempt.reported, "proofs" => attempt.proofs, "usage" => attempt.usage, "evidence" => attempt.evidence, "reasons" => attempt.reasons,
-       "warnings" => attempt.warnings, "rounds" => attempt.rounds,
+       "warnings" => attempt.warnings, "rounds" => attempt.rounds, "refusal" => attempt.refusal,
        "redelivered" => (attempt.redelivered == true) ? true : nil,
        "review" => review_summary(attempt), "review_outcome" => attempt.review_outcome, "reviews" => attempt.reviews,
        "retry_of" => attempt.retry_of.is_a?(Integer) ? attempt.retry_of : nil}

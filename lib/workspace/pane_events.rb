@@ -75,10 +75,12 @@ module Workspace
       # @param pane [Hash] the pane's record; its alerted mark for +agent_id+ is taken
       # @param agent_id [String, Symbol, nil] whose wait it is (nil is the main agent)
       # @param now [Time] the start of a wait not carried over
+      # @param by [String, nil] what raised the wait: a hook event's name or "screen"
       # @return [Hash] the wait
-      def resumed_wait(pane, agent_id, now:)
+      def resumed_wait(pane, agent_id, now:, by: nil)
         since = pane[:alerted_waits]&.delete(agent_id)
-        since ? {since: since, alerted: true} : {since: now}
+        wait = since ? {since: since, alerted: true} : {since: now}
+        by ? wait.merge(by: by) : wait
       end
 
       private
@@ -139,7 +141,7 @@ module Workspace
           # A repeat notification during one wait keeps the original start, so
           # the wait is timed (and alerted) once. So does the first one after a
           # restart, for a wait the last daemon alerted for.
-          wait = permission_prompt?(event) ? bind_permission_wait(pane, event, now) : open_wait(pane, event["agent_id"], now).merge!(other_prompt: true)
+          wait = permission_prompt?(event) ? bind_permission_wait(pane, event, now) : open_wait(pane, event["agent_id"], now, event["event"]).merge!(other_prompt: true)
           wait[:message] = SessionMonitor.clean_message(event["message"])
         elsif TURN_EVENTS.include?(event["event"])
           clear_waiting(pane)
@@ -248,7 +250,7 @@ module Workspace
       # not carry a reason today, so a bare Stop is an end of turn.
       def done_mark(event, now)
         reason = SessionMonitor.clean_message(event["stop_reason"])
-        {since: now, stop_reason: reason || "end_turn"}
+        {since: now, stop_reason: reason || "end_turn", by: event["event"]}
       end
 
       # Claude Code's idle_prompt notification ("Claude is waiting for your
@@ -270,7 +272,7 @@ module Workspace
       def update_turn_failed(pane, event, now)
         case event["event"]
         when "turn_failed"
-          pane[:turn_failed] = {session_id: event["session_id"] || pane[:session_id], at: now}
+          pane[:turn_failed] = {session_id: event["session_id"] || pane[:session_id], at: now, kind: SessionMonitor.clean_message(event["error"])}
         when "user_prompt", "stop"
           pane.delete(:turn_failed)
         when "session_start"
@@ -294,10 +296,10 @@ module Workspace
       def bind_permission_wait(pane, event, now)
         pane[:waits].each_value { |wait| wait.merge!(tool: nil, input: nil) }
         requests = pane[:permission_requests]
-        return open_wait(pane, event["agent_id"], now) unless requests.size == 1
+        return open_wait(pane, event["agent_id"], now, event["event"]) unless requests.size == 1
 
         agent_id, request = requests.first
-        pane[:waits][agent_id] ||= take_unbound_permission_wait(pane) || resumed_wait(pane, agent_id, now: now)
+        pane[:waits][agent_id] ||= take_unbound_permission_wait(pane) || resumed_wait(pane, agent_id, now: now, by: event["event"])
         pane[:waits][agent_id].merge!(request)
       end
 
@@ -319,8 +321,8 @@ module Workspace
         end
       end
 
-      def open_wait(pane, agent_id, now)
-        pane[:waits][agent_id] ||= resumed_wait(pane, agent_id, now: now)
+      def open_wait(pane, agent_id, now, by)
+        pane[:waits][agent_id] ||= resumed_wait(pane, agent_id, now: now, by: by)
       end
 
       # nil is the main agent. A SubagentStop without an agent_id (older Claude

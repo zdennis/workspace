@@ -376,6 +376,15 @@ RSpec.describe Workspace::CLI do
       expect(workflow_command.calls).to be_empty
     end
 
+    it "prints what a resumed run waits for under --json, in the result" do
+      waits = {"kind" => "parked", "pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z", "text" => "The run waits."}
+      workflow_command.row = {"workspace" => "app", "outcome" => "parked", "reason" => nil, "message" => nil, "run" => {"id" => "wr_1"}, "waits" => waits}
+
+      cli.run(["workflow", "resume", "wr_1", "--json"])
+
+      expect(JSON.parse(output.string)["results"].first).to include("outcome" => "parked", "waits" => waits)
+    end
+
     it "passes --extra-tokens to resume and reject, and refuses a bad one or another verb" do
       cli.run(["workflow", "resume", "wr_1", "--extra-tokens", "250000"])
       cli.run(["workflow", "reject", "wr_1", "--note", "No.", "--extra-tokens=3"])
@@ -571,7 +580,7 @@ RSpec.describe Workspace::CLI do
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow list [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--json]").and include("--since N").and include("workflow files RUN [--json]").and include("--id ID").and include("--input KEY=VALUE")
+      expect(output.string).to include("Usage: workspace workflow list [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--follow] [--json]").and include("--since N").and include("workflow files RUN [--json]").and include("--id ID").and include("--input KEY=VALUE")
       output.truncate(0)
       output.rewind
       cli.run(["workflow", "status", "--help"])

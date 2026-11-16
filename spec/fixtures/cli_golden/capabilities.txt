@@ -47,7 +47,7 @@ features (0 = not available):
   name_suffix       1
   no_input          1
   action_json       1
-  sessions          3
+  sessions          4
   locks_json        2
   git_facts         1
   prune_safe        2
@@ -65,6 +65,7 @@ features (0 = not available):
   state_done        1
   doctor_json       1
   daemon_control    4
+  daemon_watch      1
   config_json       2
   config_scopes     2
   tmux_show         1
@@ -80,7 +81,8 @@ features (0 = not available):
   library_installed 1
   instructions      1
   restore           1
-  workflow          45
+  workflow          47
+  workflow_events_follow1
   window_state      1
   window_position   1
   cleanup_dry_run   1

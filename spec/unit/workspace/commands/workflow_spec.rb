@@ -4,6 +4,14 @@ require "json"
 require "tmpdir"
 
 RSpec.describe Workspace::Commands::Workflow do
+  around do |example|
+    zone = ENV["TZ"]
+    ENV["TZ"] = "UTC"
+    example.run
+  ensure
+    ENV["TZ"] = zone
+  end
+
   let(:catalog) { instance_double(Workspace::WorkflowCatalog) }
   let(:engine) { instance_double(Workspace::WorkflowEngine) }
   let(:status) { instance_double(Workspace::WorkflowStatus) }
@@ -552,6 +560,37 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to include("flag: parked\n  parked: pane %5 until 2026-10-04T14:00:00Z; carried out once that pane's turn ends\n")
     end
 
+    it "says on a line under the current step what a refused continue line saw" do
+      refused = shown("pane" => "%5", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => [],
+                                                    "refusal" => {"error" => "pane_busy", "seen" => {"state" => "working", "state_since" => "2026-10-04T12:01:02Z", "changed_by" => "screen"}}})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [refused], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  refused: the next line was not typed because pane %5 looked busy: working since 12:01:02, judged from the pane's screen\n")
+    end
+
+    it "names an agent hook as what set a refused pane's state, and leaves out a since it does not have" do
+      refused = shown("current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => [],
+                                    "refusal" => {"error" => "pane_busy", "seen" => {"state" => "working", "changed_by" => "UserPromptSubmit"}}})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [refused], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("looked busy: working, reported by the agent's UserPromptSubmit hook\n")
+    end
+
+    it "says under the review line what a refused review round saw" do
+      round = {"round" => 1, "max_rounds" => 3, "need" => 1, "approvals" => 0, "pending" => ["owl"], "pane" => "%9", "stopped" => false, "held" => nil, "next_round" => nil, "reviews" => [],
+               "refusal" => {"error" => "pane_busy", "seen" => {"state" => "waiting", "state_since" => "2026-10-04T12:01:02Z", "changed_by" => "restore", "read_after" => true}}}
+      refused = shown("current" => {"step" => "plan", "attempt" => 1, "state" => "reviewing", "reason" => nil, "flags" => [], "review" => round})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [refused], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("review pane %9\n    refused: the next line was not typed because pane %9 looked busy: waiting since 12:01:02, read back after a daemon restart, read after the refusal\n")
+    end
+
     it "prints a step being reviewed: the round, the approvals, who is out and the review pane, escaped" do
       round = {"round" => 2, "max_rounds" => 6, "need" => 2, "approvals" => 1, "pending" => ["sk\e[31meptic"], "pane" => "%9", "stopped" => true, "held" => nil, "next_round" => 3,
                "reviews" => [{"reviewer" => "owl", "verdict" => "approve", "isolation" => "review_pane"}, {"reviewer" => "scribe", "verdict" => nil, "problem" => "missing", "isolation" => "review_pane"}]}
@@ -743,6 +782,9 @@ RSpec.describe Workspace::Commands::Workflow do
           "waiting_you: open question a1: Postgres or sqlite?",
         reason("waiting_you", {"kind" => "dispatch", "step" => "plan", "error" => "pane_busy", "message" => "pane %5 did not go quiet"}) =>
           "waiting_you: step plan could not be started (pane_busy): pane %5 did not go quiet",
+        reason("waiting_you", {"kind" => "dispatch", "step" => "plan", "pane" => "%5", "error" => "pane_busy", "message" => "pane %5 did not go quiet",
+          "seen" => {"state" => "working", "changed_by" => "screen", "turn_failed" => true, "turn_failed_kind" => "rate_limit"}}) =>
+          "waiting_you: step plan could not be started (pane_busy): pane %5 did not go quiet; the pane showed working, judged from the pane's screen, its last turn failed (rate_limit)",
         reason("waiting_you", {"kind" => "delivery", "step" => "plan", "attempt" => 1, "pane" => "%5"}) =>
           "waiting_you: step plan's line was on its way to pane %5 when the process typing it stopped; the agent may not have it",
         reason("turn_ended_incomplete", {"missing" => ["/a/plan.md", "/a/risks.md"]}) =>
@@ -1113,6 +1155,71 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(row).to include("outcome" => "resumed", "message" => nil, "run" => shown)
     end
 
+    describe "saying what the run waits for" do
+      def waiting(current)
+        live = shown("pane" => "%5", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => []}.merge(current))
+        allow(status).to receive(:run).with("wr_1").and_return("runs" => [live], "warnings" => [])
+      end
+
+      it "has no waits when the resume went through" do
+        row = command.resume(run: "wr_1")
+
+        expect(row).to include("outcome" => "resumed", "waits" => nil)
+        expect(output.string).not_to include("waits")
+      end
+
+      it "names the pane and the expiry of a pending park" do
+        waiting("flags" => ["parked"], "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"})
+
+        row = command.resume(run: "wr_1")
+
+        sentence = "The run waits for the turn in pane %5 to end, then the agent daemon carries out the resume; the park expires at #{Time.iso8601("2026-10-04T14:00:00Z").localtime.strftime("%H:%M:%S")}."
+        expect(output.string).to end_with("#{sentence}\n")
+        expect(row["waits"]).to eq("kind" => "parked", "pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z", "text" => sentence)
+      end
+
+      it "names when a retry backoff ends" do
+        waiting("state" => "waiting", "reason" => reason("retry_backoff", {"step" => "verify", "to" => "build", "until" => "2026-10-04T12:02:00Z", "seconds" => 120}))
+
+        row = command.resume(run: "wr_1")
+
+        expect(row["waits"]).to eq("kind" => "backoff", "until" => "2026-10-04T12:02:00Z",
+          "text" => "The run waits out its retry backoff: step build starts again at #{Time.iso8601("2026-10-04T12:02:00Z").localtime.strftime("%H:%M:%S")}.")
+        expect(output.string).to end_with("#{row["waits"]["text"]}\n")
+        expect(output.string.scan("starts again at").size).to eq(1)
+        expect(output.string).not_to include("2026-10-04T12:02:00Z")
+      end
+
+      it "gives the refusal of a pane that looked busy" do
+        waiting("refusal" => {"error" => "pane_busy", "seen" => {"state" => "working"}})
+
+        row = command.resume(run: "wr_1")
+
+        expect(output.string.scan("looked busy").size).to eq(1)
+        expect(row["waits"]).to include("kind" => "pane_busy", "pane" => "%5",
+          "text" => "The run waits for its pane: the next line was not typed because pane %5 looked busy: working.")
+      end
+
+      it "still shows a refusal that a pending park comes before" do
+        waiting("flags" => ["parked"], "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"},
+          "refusal" => {"error" => "pane_busy", "seen" => {"state" => "working"}})
+
+        row = command.resume(run: "wr_1")
+
+        expect(row["waits"]).to include("kind" => "parked")
+        expect(output.string).to include("  refused: the next line was not typed because pane %5 looked busy: working")
+      end
+
+      it "says there is nothing to wait for when the resume did nothing" do
+        allow(engine).to receive(:resume).and_return("id" => "wr_1", "workspace" => "app", "unchanged" => "an agent is working on step plan")
+
+        row = command.resume(run: "wr_1")
+
+        expect(row["waits"]).to eq("kind" => "nothing", "text" => "The run waits for nothing, so there is nothing for a resume to do.")
+        expect(output.string).to end_with("Nothing was done: an agent is working on step plan.\n")
+      end
+    end
+
     it "hands --extra-attempts to the engine" do
       command.resume(run: "wr_1", extra_attempts: 2)
 
@@ -1237,8 +1344,8 @@ RSpec.describe Workspace::Commands::Workflow do
     describe "from the run's own pane" do
       let(:parked_run) { {"id" => "wr_1", "workspace" => "app", "parked" => {"pane" => nil, "expires_at" => "2026-10-04T14:00:00Z"}} }
       let(:own_message) do
-        "Run from the run's own pane, so nothing was typed. Once this turn ends, the agent daemon will carry out the resume in " \
-          "pane %5, at most 1 hour from now. End your turn now; a sub-agent should finish and let the main agent end its turn."
+        "Run from the run's own pane, so nothing was typed. Once this turn ends, the agent daemon will carry out the resume. " \
+          "End your turn now; a sub-agent should finish and let the main agent end its turn."
       end
 
       before do
@@ -1249,6 +1356,9 @@ RSpec.describe Workspace::Commands::Workflow do
       end
 
       it "parks instead of typing when $TMUX_PANE names the pane" do
+        live = shown("pane" => "%5", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => ["parked"],
+                                                   "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"}})
+        allow(status).to receive(:run).with("wr_1").and_return("runs" => [live], "warnings" => [])
         row = command.resume(run: "wr_1", note: "say \"hi\"\nplease", caller_pane: "%5")
 
         expect(engine).to have_received(:park).with("wr_1", actor: "person", from: nil, note: "say \"hi\"\nplease", pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
@@ -1256,6 +1366,10 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(row).to include("outcome" => "parked", "reason" => nil, "message" => own_message,
           "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"})
         expect(output.string).not_to include("please")
+        expect(row["waits"]).to include("kind" => "parked", "pane" => "%5")
+        expect(output.string.scan("%5").size).to eq(1)
+        expect(output.string.scan(Time.iso8601("2026-10-04T14:00:00Z").localtime.strftime("%H:%M:%S")).size).to eq(1)
+        expect(output.string).not_to include("2026-10-04T14:00:00Z")
       end
 
       it "parks when only the process table puts the caller under the pane" do
@@ -1329,11 +1443,18 @@ RSpec.describe Workspace::Commands::Workflow do
         stored["parked"] = {"id" => "p1", "expires_at" => "2026-10-04T14:00:00Z"}
         allow(engine).to receive(:park).and_return(parked_run.merge("unchanged" => "a resume is already parked for pane %5"))
 
+        live = shown("pane" => "%5", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => ["parked"],
+                                                   "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"}})
+        allow(status).to receive(:run).with("wr_1").and_return("runs" => [live], "warnings" => [])
+
         plain = command.resume(run: "wr_1", caller_pane: "%5")
+        expect(plain["waits"]).to include("kind" => "parked", "pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z")
+        expect(output.string.scan("%5").size).to eq(1)
+        expect(output.string.scan(Time.iso8601("2026-10-04T14:00:00Z").localtime.strftime("%H:%M:%S")).size).to eq(1)
         given = command.resume(run: "wr_1", note: "more", caller_pane: "%5")
 
-        expect(plain["message"]).to eq("Nothing was done: a resume is already parked for pane %5. End your turn now.")
-        expect(given["message"]).to eq("Nothing was done: a resume is already parked for pane %5. End your turn now. " \
+        expect(plain["message"]).to eq("Nothing was done: a resume is already parked. End your turn now.")
+        expect(given["message"]).to eq("Nothing was done: a resume is already parked. End your turn now. " \
           "The --from, --note or --pane given to this call was not kept.")
       end
 
@@ -2370,6 +2491,30 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string.lines[1]).to include("not_delivered (retried)")
     end
 
+    it "says under a refused attempt what the pane looked like, and prints nothing for the others" do
+      create_run
+      edit_run(real_store, "wr_2611010900abcd") do |stored|
+        stored["steps"]["implement"]["attempts"][1]["refusal"] = {"error" => "pane_busy", "reason" => "working",
+          "seen" => {"state" => "working", "state_since" => "2026-11-01T09:05:00Z", "changed_by" => "screen"}}
+      end
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      lines = output.string.lines.map(&:rstrip)
+      expect(lines.size).to eq(4)
+      expect(lines[3]).to eq("  refused: the next line was not typed because the pane looked busy: working since 09:05:00, judged from the pane's screen")
+    end
+
+    it "prints a refused attempt's refusal in --json, and null for the other" do
+      create_run
+      refusal = {"error" => "pane_busy", "message" => "busy", "reason" => "working", "seen" => {"state" => "working", "changed_by" => "screen"}}
+      edit_run(real_store, "wr_2611010900abcd") { |stored| stored["steps"]["implement"]["attempts"][1]["refusal"] = refusal }
+
+      attempts_command.attempts(run: "wr_2611010900abcd", json: true)
+
+      expect(JSON.parse(output.string)["attempts"].map { |row| row["refusal"] }).to eq([nil, refusal])
+    end
+
     it "prints one table row per attempt" do
       create_run
 
@@ -2610,6 +2755,34 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(new).to include("n" => 5, "type" => "step_dispatching", "step" => "research", "attempt" => 2, "from_state" => "running", "to_state" => "waiting", "actor" => "person", "cause" => "reject", "retry_of" => 1)
     end
 
+    describe "a run whose lines were refused as busy" do
+      before do
+        fixture_run
+        real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "research", "attempt" => 2, "delivered" => false, "reason" => "working",
+          "seen_state" => "working", "seen_changed_by" => "screen")
+        real_store.record_event("wr_2610250930abcd", "review_delivery_failed", "step" => "research", "attempt" => 2, "round" => 1, "code" => "pane_busy", "reason" => "working",
+          "seen_state" => "working", "seen_read_after" => true)
+      end
+
+      it "prints the seen keys as key=value" do
+        events_command.events(run: "wr_2610250930abcd")
+
+        expect(output.string.lines.map(&:chomp)).to include(
+          "   5  2026-10-25T09:30:00.000Z  step_dispatched  step=research  attempt=2  delivered=false  reason=working  seen_state=working  seen_changed_by=screen",
+          "   6  2026-10-25T09:30:00.000Z  review_delivery_failed  step=research  attempt=2  round=1  code=pane_busy  reason=working  seen_state=working  seen_read_after=true"
+        )
+      end
+
+      it "carries the seen keys in --json" do
+        events_command.events(run: "wr_2610250930abcd", json: true)
+
+        expect(json["events"].last(2)).to include(
+          include("type" => "step_dispatched", "reason" => "working", "seen_state" => "working", "seen_changed_by" => "screen"),
+          include("type" => "review_delivery_failed", "reason" => "working", "seen_state" => "working", "seen_read_after" => true)
+        )
+      end
+    end
+
     it "prints one line per event, then the warnings" do
       fixture_run
 
@@ -2645,6 +2818,122 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "refuses an unknown run with unknown_run" do
       expect { events_command.events(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+    end
+
+    describe "with follow" do
+      let(:errors) { StringIO.new }
+      let(:sleeps) { [] }
+      let(:steps) { [] }
+      let(:sleeper) {
+        lambda do |seconds|
+          sleeps << seconds
+          steps.shift&.call
+        end
+      }
+      let(:follow_command) do
+        described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
+          lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper)
+      end
+
+      def finish_run
+        real_store.change("wr_2610250930abcd") { |run| Workspace::WorkflowRun.from_h(run.to_h.merge("state" => "completed")) }
+      end
+
+      it "prints events appended between polls and stops once the run is archived and drained" do
+        fixture_run
+        steps << -> { real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "research", "attempt" => 2) }
+        steps << -> {
+          real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+          finish_run
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 10)
+
+        lines = output.string.lines.map(&:chomp)
+        expect(lines.map { |line| line[/\A\s*\d+\s+\S+\s+(\S+)/, 1] }).to eq(%w[run_started step_dispatched step_done step_dispatched run_finished] + [nil])
+        expect(lines.last).to eq("Run wr_2610250930abcd completed; no more events.")
+        expect(sleeps).to eq([0.25, 0.25])
+        expect(errors.string).to eq("Warning: Line 3 of the history is not a JSON object; skipped.\n")
+      end
+
+      it "keeps following a run whose terminal state is written before its last events and its move to the archive" do
+        fixture_run
+        path = File.join(File.dirname(real_store.events_path("wr_2610250930abcd")), "wr_2610250930abcd.json")
+        steps << -> { File.write(path, JSON.generate(JSON.parse(File.read(path)).merge("state" => "completed"))) }
+        steps << -> {
+          real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+          expect { real_store.change("wr_2610250930abcd") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, follow: true, max_polls: 10)
+
+        lines = output.string.lines.map(&:chomp)
+        expect(lines.first).to match(/\A\s+5\s+\S+\s+run_finished/)
+        expect(lines.last).to eq("Run wr_2610250930abcd completed; no more events.")
+        expect(sleeps.size).to eq(2)
+      end
+
+      it "prints one JSON line per event and a follow_ended line, from --since" do
+        fixture_run
+        steps << -> { finish_run }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
+
+        expect(output.string.lines.map { |line| JSON.parse(line) }).to eq([
+          {"type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "completed", "next_since" => 4}
+        ])
+      end
+
+      it "ends as finished when the archive prunes the run before its state is read" do
+        fixture_run
+        steps << -> {
+          finish_run
+          finished = real_store.run("wr_2610250930abcd")
+          reads = 0
+          # The history read still finds the run; the state read after it does not.
+          allow(real_store).to receive(:run) { ((reads += 1) > 1) ? raise(Workspace::Error.new("no run", code: "unknown_run")) : finished }
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
+
+        expect(JSON.parse(output.string.lines.last)).to include("type" => "follow_ended", "state" => "finished")
+      end
+
+      it "stops after max_polls while the run is going" do
+        fixture_run
+
+        follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 3)
+
+        expect(sleeps.size).to eq(2)
+        expect(output.string).not_to include("no more events")
+      end
+
+      it "reads again at once while the history is cut off" do
+        fixture_run
+        allow(real_store).to receive(:events).and_return(
+          {"events" => [{"n" => 1, "ts" => "t", "type" => "a"}], "truncated" => true, "next_since" => 1, "warnings" => []},
+          {"events" => [{"n" => 2, "ts" => "t", "type" => "b"}], "truncated" => false, "next_since" => 2, "warnings" => []}
+        )
+
+        follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 2)
+
+        expect(output.string.lines.size).to eq(2)
+        expect(sleeps).to eq([])
+        expect(real_store).to have_received(:events).with("wr_2610250930abcd", since: 1)
+      end
+
+      it "ends quietly on a closed pipe or Ctrl-C" do
+        fixture_run
+        allow(output).to receive(:puts).and_raise(Errno::EPIPE)
+        expect { follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 2) }.not_to raise_error
+
+        steps << -> { raise Interrupt }
+        expect { follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 5) }.not_to raise_error
+      end
+
+      it "refuses an unknown run" do
+        expect { follow_command.events(run: "wr_nope", follow: true, max_polls: 1) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+      end
     end
   end
 

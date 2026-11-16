@@ -274,7 +274,7 @@ module Workspace
       "ask_not_open" => "`ask answer` or `ask withdraw` named a question that is no longer open (answered or withdrawn). `details.id`, `details.status`.",
       "ask_not_answered" => "`ask deliver` named a question that has no recorded answer (still open or withdrawn). `details.id`, `details.status`.",
       "use_ask_answer" => "An `ask:` id can't be acked or snoozed: a question leaves the inbox when it is answered or withdrawn. `details.id`.",
-      "invalid_cursor" => "events --since was given something that isn't a cursor an events line printed.",
+      "invalid_cursor" => "events --since or daemon watch --since was given something that isn't a cursor a line of that same command printed (for daemon watch, of the same workspace).",
       "workflow_source_invalid" => "workflow install: a workflows.sources entry is not a usable source (a non-github.com URL, no owner and repository, or an empty path). details.source.",
       "workflow_source_local_missing" => "workflow install: a local workflows.sources entry is not a readable directory. details.source.",
       "workflow_source_gh_missing" => "workflow install: a GitHub workflows.sources entry needs gh, which is not installed; install it with brew install gh. details.source, details.install.",

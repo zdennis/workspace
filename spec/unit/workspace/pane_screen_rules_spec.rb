@@ -54,7 +54,7 @@ RSpec.describe Workspace::PaneScreenRules do
   describe ".screen_wait" do
     it "opens a screen wait with the provider's message, taking up one already alerted for" do
       described_class.screen_wait(pane, codex, sign_in, now)
-      expect(pane[:waits].values).to eq([{since: now, message: "Codex is asking you to sign in"}])
+      expect(pane[:waits].values).to eq([{since: now, by: "screen", message: "Codex is asking you to sign in"}])
 
       pane[:waits].clear
       pane[:alerted_waits] = {"screen" => now - 60}

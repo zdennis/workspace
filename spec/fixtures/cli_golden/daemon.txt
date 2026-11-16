@@ -6,18 +6,22 @@ Usage: workspace daemon status [WORKSPACE] [--name NAME] [--json]
        workspace daemon restart --all [--json]
        workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]
        workspace daemon list [--json]
+       workspace daemon watch [WORKSPACE] [--name NAME] [--run RUN] [--since CURSOR] [--json]
 
 Inspect or control a workspace's agent daemon (see `workspace agentd`).
   status   Say whether a workspace's agent daemon answers
   restart  Stop a workspace's agent daemon and start a new one in the background
   log      Show the last lines of a workspace's agent daemon log
   list     List every running agent daemon
+  watch    Follow a workspace's workflow decisions and run events as one stream
 Run `workspace daemon VERB --help` for a verb's options.
 
         --name NAME                  Workspace name (defaults to WORKSPACE or the project detected from the current directory)
         --lines N                    log: how many trailing lines (default 40)
         --wc-socket PATH             restart: work-coordinator socket for the new daemon (default: the old daemon's)
         --all                        restart: restart every running daemon instead of one workspace
+        --run RUN                    watch: follow only this run, and stop when it has finished
+        --since CURSOR               watch: resume after the line that printed this cursor
         --json                       Print one JSON document (see docs/README.daemon.md)
     -h, --help                       Show this help
 
@@ -27,12 +31,13 @@ Examples:
   workspace daemon log my-app --lines 100    # the last 100 lines of its log
   workspace daemon restart my-app --json    # one JSON action document
   workspace daemon restart --all    # SIGTERM each running daemon and start it again
+  workspace daemon watch my-app    # follow its workflow decisions and run events
 --- stderr
 --- end
 ### workspace daemon --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace daemon status [WORKSPACE] [--name NAME] [--json]","workspace daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]","workspace daemon restart --all [--json]","workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]","workspace daemon list [--json]"],"description":"Inspect or control a workspace's agent daemon (see `workspace agentd`).\n  status   Say whether a workspace's agent daemon answers\n  restart  Stop a workspace's agent daemon and start a new one in the background\n  log      Show the last lines of a workspace's agent daemon log\n  list     List every running agent daemon\nRun `workspace daemon VERB --help` for a verb's options.\n\n        --name NAME                  Workspace name (defaults to WORKSPACE or the project detected from the current directory)\n        --lines N                    log: how many trailing lines (default 40)\n        --wc-socket PATH             restart: work-coordinator socket for the new daemon (default: the old daemon's)\n        --all                        restart: restart every running daemon instead of one workspace\n        --json                       Print one JSON document (see docs/README.daemon.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace daemon list","scenario":"every running daemon"},{"command":"workspace daemon status my-app","scenario":"is its daemon answering"},{"command":"workspace daemon log my-app --lines 100","scenario":"the last 100 lines of its log"},{"command":"workspace daemon restart my-app --json","scenario":"one JSON action document"},{"command":"workspace daemon restart --all","scenario":"SIGTERM each running daemon and start it again"}]}
+{"usage":["workspace daemon status [WORKSPACE] [--name NAME] [--json]","workspace daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]","workspace daemon restart --all [--json]","workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]","workspace daemon list [--json]","workspace daemon watch [WORKSPACE] [--name NAME] [--run RUN] [--since CURSOR] [--json]"],"description":"Inspect or control a workspace's agent daemon (see `workspace agentd`).\n  status   Say whether a workspace's agent daemon answers\n  restart  Stop a workspace's agent daemon and start a new one in the background\n  log      Show the last lines of a workspace's agent daemon log\n  list     List every running agent daemon\n  watch    Follow a workspace's workflow decisions and run events as one stream\nRun `workspace daemon VERB --help` for a verb's options.\n\n        --name NAME                  Workspace name (defaults to WORKSPACE or the project detected from the current directory)\n        --lines N                    log: how many trailing lines (default 40)\n        --wc-socket PATH             restart: work-coordinator socket for the new daemon (default: the old daemon's)\n        --all                        restart: restart every running daemon instead of one workspace\n        --run RUN                    watch: follow only this run, and stop when it has finished\n        --since CURSOR               watch: resume after the line that printed this cursor\n        --json                       Print one JSON document (see docs/README.daemon.md)\n    -h, --help                       Show this help","options":[],"examples":[{"command":"workspace daemon list","scenario":"every running daemon"},{"command":"workspace daemon status my-app","scenario":"is its daemon answering"},{"command":"workspace daemon log my-app --lines 100","scenario":"the last 100 lines of its log"},{"command":"workspace daemon restart my-app --json","scenario":"one JSON action document"},{"command":"workspace daemon restart --all","scenario":"SIGTERM each running daemon and start it again"},{"command":"workspace daemon watch my-app","scenario":"follow its workflow decisions and run events"}]}
 --- stderr
 --- end
 ### workspace daemon status --help
@@ -150,6 +155,41 @@ Examples:
 {"usage":["workspace daemon list [--json]"],"description":"List every running agent daemon.\n\nShows each daemon's workspace, pid, start time and socket. It takes no workspace.","options":[{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace daemon list","scenario":"every running daemon; prints a message and exits 0 when none run"},{"command":"workspace daemon list --json","scenario":"one JSON document with a row per daemon"},{"command":"workspace daemon list --json | jq -r '.daemons[].workspace'","scenario":"the workspaces that have a daemon running"}]}
 --- stderr
 --- end
+### workspace daemon watch --help
+--- exit 0
+--- stdout
+Usage: workspace daemon watch [WORKSPACE] [--name NAME] [--run RUN] [--since CURSOR] [--json]
+
+Follow a workspace's workflow decisions and run events as one stream.
+
+Prints, as they happen, what the agent daemon decides about the workspace's workflow runs (advance
+started, run skipped, sweep started, process exited) and each run's own events, oldest first. It
+starts from now and runs until Ctrl-C; with --run it follows that run alone and stops once the run
+has finished. It only reads files, so it needs no running daemon. Times are local clock times; --json
+has UTC ISO times. For what happened before, use `workspace workflow events RUN`.
+
+With --json each line is one JSON object with source, at, type, workspace, run_id, event and a cursor;
+pass the last cursor as --since to resume without a repeat. See docs/README.daemon.md.
+
+Options:
+    --name NAME                  Same as the WORKSPACE argument (default: the project detected from the current directory)
+    --run RUN                    Follow only this run, and stop when it has finished
+    --since CURSOR               Resume after the line that printed this cursor (same workspace and --run)
+    --json                       Print one JSON object per line, each with a cursor
+    -h, --help                   Show this help
+
+Examples:
+  workspace daemon watch    # follow the project in the current directory until Ctrl-C
+  workspace daemon watch my-app --run wr_20261115_x    # follow one run to its end
+  workspace daemon watch my-app --json --since CURSOR    # resume after the line that printed CURSOR
+--- stderr
+--- end
+### workspace daemon watch --help --json
+--- exit 0
+--- stdout
+{"usage":["workspace daemon watch [WORKSPACE] [--name NAME] [--run RUN] [--since CURSOR] [--json]"],"description":"Follow a workspace's workflow decisions and run events as one stream.\n\nPrints, as they happen, what the agent daemon decides about the workspace's workflow runs (advance\nstarted, run skipped, sweep started, process exited) and each run's own events, oldest first. It\nstarts from now and runs until Ctrl-C; with --run it follows that run alone and stops once the run\nhas finished. It only reads files, so it needs no running daemon. Times are local clock times; --json\nhas UTC ISO times. For what happened before, use `workspace workflow events RUN`.\n\nWith --json each line is one JSON object with source, at, type, workspace, run_id, event and a cursor;\npass the last cursor as --since to resume without a repeat. See docs/README.daemon.md.","options":[{"flags":"--name NAME","description":"Same as the WORKSPACE argument (default: the project detected from the current directory)"},{"flags":"--run RUN","description":"Follow only this run, and stop when it has finished"},{"flags":"--since CURSOR","description":"Resume after the line that printed this cursor (same workspace and --run)"},{"flags":"--json","description":"Print one JSON object per line, each with a cursor"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace daemon watch","scenario":"follow the project in the current directory until Ctrl-C"},{"command":"workspace daemon watch my-app --run wr_20261115_x","scenario":"follow one run to its end"},{"command":"workspace daemon watch my-app --json --since CURSOR","scenario":"resume after the line that printed CURSOR"}]}
+--- stderr
+--- end
 ### workspace daemon --bogus
 --- exit 1
 --- stdout
@@ -166,25 +206,29 @@ invalid option: --bogus
 --- exit 1
 --- stdout
 --- stderr
-Missing subcommand: one of status, restart, log, list.
+Missing subcommand: one of status, restart, log, list, watch.
 
 Usage: workspace daemon status [WORKSPACE] [--name NAME] [--json]
        workspace daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]
        workspace daemon restart --all [--json]
        workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]
        workspace daemon list [--json]
+       workspace daemon watch [WORKSPACE] [--name NAME] [--run RUN] [--since CURSOR] [--json]
 
 Inspect or control a workspace's agent daemon (see `workspace agentd`).
   status   Say whether a workspace's agent daemon answers
   restart  Stop a workspace's agent daemon and start a new one in the background
   log      Show the last lines of a workspace's agent daemon log
   list     List every running agent daemon
+  watch    Follow a workspace's workflow decisions and run events as one stream
 Run `workspace daemon VERB --help` for a verb's options.
 
         --name NAME                  Workspace name (defaults to WORKSPACE or the project detected from the current directory)
         --lines N                    log: how many trailing lines (default 40)
         --wc-socket PATH             restart: work-coordinator socket for the new daemon (default: the old daemon's)
         --all                        restart: restart every running daemon instead of one workspace
+        --run RUN                    watch: follow only this run, and stop when it has finished
+        --since CURSOR               watch: resume after the line that printed this cursor
         --json                       Print one JSON document (see docs/README.daemon.md)
     -h, --help                       Show this help
 
@@ -194,4 +238,5 @@ Examples:
   workspace daemon log my-app --lines 100    # the last 100 lines of its log
   workspace daemon restart my-app --json    # one JSON action document
   workspace daemon restart --all    # SIGTERM each running daemon and start it again
+  workspace daemon watch my-app    # follow its workflow decisions and run events
 --- end

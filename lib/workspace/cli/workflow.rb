@@ -121,6 +121,7 @@ module Workspace
           opts.on("--by GROUP", "compare: group the runs by definition (default) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
           opts.on("--last DURATION", "stats, compare: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
           opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
+          opts.on("--follow", "events: keep reading and print each event as it is appended, until the run has finished and its history is drained") { options[:follow] = true }
           opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
           opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
           opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
@@ -192,6 +193,7 @@ module Workspace
         raise UsageError, "--script is for `workflow simulate ID`." if options[:script] && subcommand != "simulate"
         raise UsageError, "workflow simulate needs --script FILE (what the fake agent does; see `workspace workflow simulate --help`)." if subcommand == "simulate" && options[:script].nil?
         raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
+        raise UsageError, "--follow is for `workflow events RUN`." if options[:follow] && subcommand != "events"
         raise UsageError, "--attempt-of is for `workflow attempts RUN` and `workflow audit RUN`." if options[:attempt_of] && !%w[attempts audit].include?(subcommand)
         raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
         raise UsageError, "--last is for `workflow stats ID` and `workflow compare ID`." if options[:last] && !%w[stats compare].include?(subcommand)
@@ -301,7 +303,7 @@ module Workspace
           end
           workflow_action_rows(invocation, "workflow sweep", options) { @workflow_command.sweep(run: subject, name: options[:name], dry_run: options[:dry_run], json: options[:json], caller_pane: ENV["TMUX_PANE"]) }
         when "events"
-          @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json])
+          @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json], follow: options[:follow] || false)
         when "status"
           if subject && (options[:name] || options[:project] || options[:all])
             raise UsageError, "workflow status RUN takes no --name, --project or --all: the run names its own workspace."

@@ -799,6 +799,12 @@ module CLITestHelpers
       @restart_result
     end
 
+    def watch(name:, run: nil, since: nil, json: false, max_polls: nil)
+      @calls << {watch: name, run: run, since: since, json: json}
+      raise @error if @error
+      @result
+    end
+
     def list(json: false)
       @calls << {list: true, json: json}
       raise @error if @error

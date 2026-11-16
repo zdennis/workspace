@@ -27,6 +27,13 @@ RSpec.describe Workspace::HookEventLog do
     expect(File.stat(dir).mode & 0o777).to eq(0o700)
   end
 
+  it "appends the workflow nudger's decision lines with a null pane and the envelope every line carries" do
+    %w[workflow_advance_started workflow_run_skipped workflow_sweep_started workflow_process_exited].each_with_index do |type, i|
+      expect(log.append(type, nil, "run_id" => "wr_1")).to include("type" => type, "pane_id" => nil, "boot_id" => "BOOT1", "seq" => i + 1, "run_id" => "wr_1")
+    end
+    expect(lines.map { |l| l["seq"] }).to eq([1, 2, 3, 4])
+  end
+
   it "times a finish from its start, by pane and tool use id" do
     log.record(event("tool_start", tool: "Bash", tool_use_id: "toolu_1"))
     seconds[0] = 112.3456

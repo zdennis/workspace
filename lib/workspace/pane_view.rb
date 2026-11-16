@@ -56,7 +56,9 @@ module Workspace
       wait = PaneStates.oldest_wait(pane)
       waiting_since = wait&.dig(:since)
       state = PaneStates.reported_state(pane, idle_for, idle_after)
-      state_since = (state == pane[:logged_state]) ? pane[:state_since] : PaneStates.since_for(pane, state, now, idle_after)
+      logged = state == pane[:logged_state]
+      state_since = logged ? pane[:state_since] : PaneStates.since_for(pane, state, now, idle_after)
+      changed_by = logged ? pane[:state_by] : PaneStates.changed_by_for(pane, state)
       result = {
         "pane_id" => pane[:pane_id],
         "window" => pane[:window] || 0,
@@ -68,6 +70,7 @@ module Workspace
         "cwd" => pane[:cwd],
         "state" => state,
         "state_since" => state_since&.utc&.iso8601,
+        "state_changed_by" => changed_by,
         "activity_state" => PaneStates.state_of(pane, idle_for, idle_after),
         "main_turn_over_since" => PaneStates.main_turn_missing(pane) ? nil : pane[:main_stopped_at].utc.iso8601(3),
         "transcript_path" => pane[:transcript_path],
@@ -84,6 +87,7 @@ module Workspace
         "stop_reason" => pane[:done]&.dig(:stop_reason),
         "turn_failed" => !pane[:turn_failed].nil?,
         "turn_failed_since" => pane[:turn_failed]&.dig(:at)&.utc&.iso8601,
+        "turn_failed_kind" => pane[:turn_failed]&.dig(:kind),
         "session_id" => pane[:session_id],
         "display_label" => label,
         "agents" => pane[:agents].map { |agent|

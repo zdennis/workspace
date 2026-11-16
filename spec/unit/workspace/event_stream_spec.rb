@@ -50,6 +50,16 @@ RSpec.describe Workspace::EventStream do
     expect(lines.map { |line| line["cursor"] }).to all(start_with("1."))
   end
 
+  it "passes the workflow nudger's decision lines through, pane_id null and all" do
+    hook("alpha", 2, 1, "workflow_run_skipped")
+    hook("alpha", 3, 2, "workflow_advance_started")
+
+    s = stream
+    s.open(at: :start)
+
+    expect(summary(s.read)).to eq([["hook", "alpha", "workflow_run_skipped", 1], ["hook", "alpha", "workflow_advance_started", 2]])
+  end
+
   it "resumes after the line whose cursor it is given, across every source" do
     life(1)
     hook("alpha", 2, 1)
@@ -297,5 +307,19 @@ RSpec.describe Workspace::EventStream do
       described_class.encode_cursor("h" => {"a" => "x"})].each do |cursor|
       expect { stream.open(cursor: cursor) }.to raise_error(described_class::InvalidCursor) { |e| expect(e.code).to eq("invalid_cursor") }
     end
+  end
+
+  it "reads only one daemon's file, and no lifecycle log, when scoped with workspace: and lifecycle_path: nil" do
+    life(1)
+    hook("alpha", 2, 1)
+    hook("beta", 3, 1)
+
+    s = described_class.new(lifecycle_path: nil, hook_dir: hook_dir, clock: clock, workspace: "alpha")
+    s.open(at: :start)
+    hook("alpha", 4, 2)
+    hook("gamma", 5, 1)
+
+    expect(summary(s.read)).to eq([["hook", "alpha", "tool_started", 1], ["hook", "alpha", "tool_started", 2]])
+    expect(described_class.decode_cursor(s.cursor_string)).to match("h" => {"alpha" => include("s" => 2)})
   end
 end

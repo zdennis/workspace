@@ -1,6 +1,6 @@
 # workspace daemon
 
-Inspect and control agent daemons from outside them: which are running, whether one answers, its process, the tail of its log, and a restart (of one workspace's daemon, or of all of them) that doesn't hold the terminal. The daemon itself is `workspace agentd` (see [README.agentd.md](README.agentd.md)).
+Inspect and control agent daemons from outside them: which are running, whether one answers, its process, the tail of its log, what it decides about workflow runs as they happen, and a restart (of one workspace's daemon, or of all of them) that doesn't hold the terminal. The daemon itself is `workspace agentd` (see [README.agentd.md](README.agentd.md)).
 
 ## Usage
 
@@ -10,6 +10,7 @@ workspace daemon restart [WORKSPACE] [--name NAME] [--wc-socket PATH] [--json]
 workspace daemon restart --all [--json]
 workspace daemon list [--json]
 workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]
+workspace daemon watch [WORKSPACE] [--name NAME] [--run RUN] [--since CURSOR] [--json]
 ```
 
 `list` and `restart --all` cover every running daemon and take no workspace. For the others, `WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. A workspace with no tmuxinator config is an `unknown_workspace` error (exit 1) for every subcommand.
@@ -20,7 +21,40 @@ workspace daemon log [WORKSPACE] [--name NAME] [--lines N] [--json]
 | `--lines N` | `log` only: how many trailing lines, 1 to 10000 (default 40) |
 | `--wc-socket PATH` | `restart` only: work-coordinator socket for the new daemon (default: the one the old daemon was started with). A relative path is made absolute from the current directory |
 | `--all` | `restart` only: restart every running daemon. Can't be combined with a workspace or `--wc-socket` |
-| `--json` | Print one JSON document |
+| `--run RUN` | `watch` only: follow only this run, and stop once it has finished |
+| `--since CURSOR` | `watch` only: resume after the line that printed this cursor |
+| `--json` | Print one JSON document (`watch`: one JSON object per line) |
+
+## watch
+
+Follows one workspace's workflow, as it happens: what the agent daemon decides about its runs, and each run's own events, in one stream, oldest first. It starts from now and runs until Ctrl-C. For what came before, use `workspace workflow events RUN`; the first and last lines of a `--run` watch name that command. It only reads files, so it needs no running daemon and a slow reader never holds one up. `--run RUN` follows that run alone, with only the decisions that name it, and stops with exit 0 once the run has finished and its events are all printed. Without `--run` it follows every run of the workspace, finds new ones within a couple of seconds, and a run that starts and ends between two looks is still read.
+
+```
+12:00:58 watching api for run wr_x from now; Ctrl-C stops (earlier events: workspace workflow events wr_x)
+12:01:02 advance started for run wr_x in pane %3 after its turn ended
+12:01:02 run wr_x  line 7  step_dispatched  step=plan attempt=1
+12:01:09 run wr_x skipped: waiting out its retry backoff
+12:01:11 advance for run wr_x exited with code 0 after 3s
+12:01:40 sweep started for runs wr_x, wr_y
+```
+
+Times in the text are local clock times; `--json` keeps UTC ISO times. A skipped run says why in words: `paused`, `waiting out its retry backoff`, `nothing to do yet`, or the code itself for any other reason. Other sentences: `advance started for run X by the tick (reason)` for a wake by the daemon's timer, `sweep for runs X, Y exited with code 0 after 1.2s`, `advance for run X was ended by signal TERM after 3s`, and `run X completed; no more events (earlier events: workspace workflow events X)` (the run's state) as the last line of a `--run` watch. Run events read like `workflow events`: run, line number, type, then `key=value`. Anything that came from a pane or a file is shown with control characters escaped.
+
+`--json` prints one object per line:
+
+```json
+{"source":"daemon","at":"2026-11-15T12:01:02.114Z","type":"workflow_advance_started","workspace":"api","run_id":"wr_x",
+ "event":{"type":"workflow_advance_started","at":"2026-11-15T12:01:02.114Z","workspace":"api","pane_id":"%3","boot_id":"B1","seq":41,"run_id":"wr_x","cause":"turn_ended"},
+ "cursor":"w1.eyJ3Ijoi..."}
+```
+
+- `source` is `daemon` (a decision line from the daemon's hook event log), `run` (an event of a run, with its line number as `event.n`) or `watch` (the stream's own lines).
+- `type` is `workflow_advance_started`, `workflow_run_skipped`, `workflow_sweep_started`, `workflow_process_exited`, a run event's type, or one of the stream's: `follow_started` (first line), `follow_ended` (last line of a `--run` watch; it also has a top-level `state`, the run's final state) and `gap` (lines the cursor is older than are gone from the rotated log; the stream's own gap line is re-wrapped with `source: "watch"`, and `event` holds its `reason` and the `source` of the log it concerns).
+- `run_id` is the run the line is about. A sweep line has `run_id: null` and the run ids in `event.run_ids`; `follow_started` and `gap` lines carry the `--run` value or `null`.
+- `cursor` is opaque and covers everything up to and including its line. Pass the last one printed as `--since` to resume without a repeat. A cursor only resumes a watch of the same workspace with the same `--run`; any other is an `invalid_cursor` error. A resumed watch also reads the runs that finished since the cursor.
+- Every field of a line may be `null` or missing for a run or daemon from before this feature; a reader treats that as "not recorded".
+
+A `--run` that names no run is an `unknown_run` error. With `--json` an error is one JSON error document and exit 1; a closed pipe or Ctrl-C ends the watch with exit 0.
 
 ## list
 

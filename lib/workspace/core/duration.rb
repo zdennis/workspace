@@ -7,6 +7,14 @@ module Workspace
     WINDOW_UNITS = {"d" => 86_400, "w" => 604_800}.freeze
     private_constant :WINDOW_UNITS
 
+    # @param iso [String] an ISO 8601 time
+    # @return [String] its local clock time as HH:MM:SS; the text itself when it is not a time
+    def self.clock_time(iso)
+      Time.iso8601(iso.to_s).localtime.strftime("%H:%M:%S")
+    rescue ArgumentError
+      iso.to_s
+    end
+
     # Parses a duration string or number into seconds.
     # Supports: "20", "20s", "5m", "1h" (a plain number is seconds).
     #

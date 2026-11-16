@@ -61,7 +61,7 @@ module Workspace
       message = provider&.waiting_screen(screen)&.fetch(:message)
       hook_waiting = pane[:waits].keys.any? { |key| key != SCREEN_WAIT_KEY }
       if message && !hook_waiting
-        wait = (pane[:waits][SCREEN_WAIT_KEY] ||= PaneEvents.resumed_wait(pane, SCREEN_WAIT_KEY, now: now))
+        wait = (pane[:waits][SCREEN_WAIT_KEY] ||= PaneEvents.resumed_wait(pane, SCREEN_WAIT_KEY, now: now, by: "screen"))
         wait[:message] = message
         wait[:since] ||= now
       else

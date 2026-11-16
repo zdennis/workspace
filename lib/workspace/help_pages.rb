@@ -277,6 +277,28 @@ module Workspace
           ["workspace daemon list --json", "one JSON document with a row per daemon"],
           ["workspace daemon list --json | jq -r '.daemons[].workspace'", "the workspaces that have a daemon running"]
         ]
+      },
+      "watch" => {
+        usage: ["daemon watch [WORKSPACE] [--name NAME] [--run RUN] [--since CURSOR] [--json]"],
+        summary: "Follow a workspace's workflow decisions and run events as one stream",
+        about: [
+          "Prints, as they happen, what the agent daemon decides about the workspace's workflow runs (advance",
+          "started, run skipped, sweep started, process exited) and each run's own events, oldest first. It",
+          "starts from now and runs until Ctrl-C; with --run it follows that run alone and stops once the run",
+          "has finished. It only reads files, so it needs no running daemon. Times are local clock times; --json",
+          "has UTC ISO times. For what happened before, use `workspace workflow events RUN`.",
+          "",
+          "With --json each line is one JSON object with source, at, type, workspace, run_id, event and a cursor;",
+          "pass the last cursor as --since to resume without a repeat. See docs/README.daemon.md."
+        ],
+        options: [DAEMON_NAME, ["--run RUN", "Follow only this run, and stop when it has finished"],
+          ["--since CURSOR", "Resume after the line that printed this cursor (same workspace and --run)"],
+          ["--json", "Print one JSON object per line, each with a cursor"]],
+        examples: [
+          ["workspace daemon watch", "follow the project in the current directory until Ctrl-C"],
+          ["workspace daemon watch my-app --run wr_20261115_x", "follow one run to its end"],
+          ["workspace daemon watch my-app --json --since CURSOR", "resume after the line that printed CURSOR"]
+        ]
       }
     }.freeze
 
@@ -844,16 +866,23 @@ module Workspace
         ]
       },
       "events" => {
-        usage: ["workflow events RUN [--since N] [--json]"],
+        usage: ["workflow events RUN [--since N] [--follow] [--json]"],
         summary: "Show a run's history, one line per event",
         about: [
           RUN_ID,
           "",
           "A going or finished run: n (its line number), ts, type and the rest; oldest first, at most 1000 after",
-          "--since N. --json adds truncated and next_since to continue from."
+          "--since N. --json adds truncated and next_since to continue from.",
+          "",
+          "--follow keeps reading and prints each event as it is appended. It stops by itself once the run has",
+          "finished and its history is drained, prints a last line and exits 0. With --json each event is one JSON",
+          "line and the last is {\"type\":\"follow_ended\",\"run\",\"state\",\"next_since\"}."
         ],
-        options: [["--since N", "Only events after line N of the history (default 0)"], JSON_OPT],
+        options: [["--since N", "Only events after line N of the history (default 0)"],
+          ["--follow", "Keep reading until the run has finished and its history is drained"], JSON_OPT],
         examples: [
+          ["workspace workflow events RUN --follow", "watch a run's history as it grows"],
+          ["workspace workflow events RUN --follow --since 40 --json", "one JSON line per new event, then follow_ended"],
           ["workspace workflow events RUN", "a run's history, oldest first"],
           ["workspace workflow events RUN --since 40", "only what happened after line 40"],
           ["workspace workflow events RUN --json", "as one document, for a script"],
@@ -898,6 +927,12 @@ module Workspace
           "is over, within 1 hour, else the run reads waiting_you / parked_timeout. It needs a daemon started",
           "after the upgrade (workspace daemon restart) and a pane in window 0. With a draft in a Claude pane's",
           "input box nothing is typed and the draft stays (pane_busy, input_not_empty).",
+          "",
+          "After a resume that did not go straight through, one sentence says what the run waits for: a parked",
+          "resume (the pane and when the park expires), a retry backoff (when the step starts again), a pane that",
+          "looked busy (why), or nothing (the \"Nothing was done\" message stands in for the sentence). The sentence is the",
+          "only place the pane, the time and the refusal are said; times are local. --json has the same as `waits`,",
+          "null when the resume went through.",
           "",
           "On a step being reviewed (reviewing) it never runs the author again: a round still running is left",
           "alone, a round stopped for a person starts again as a fresh round (spending one of the step's",

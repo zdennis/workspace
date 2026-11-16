@@ -49,7 +49,7 @@ module Workspace
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
       def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
-        clock: -> { Time.now }, output: $stdout, input: $stdin, error_output: $stderr)
+        clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
         @pid = pid
@@ -76,6 +76,7 @@ module Workspace
         @store = store
         @panes = panes
         @clock = clock
+        @sleeper = sleeper
         @output = output
         @input = input
         @error_output = error_output
@@ -537,19 +538,25 @@ module Workspace
 
       # Prints a run's history, oldest first, going or finished.
       #
+      # With +follow+ it keeps reading from where the last read ended, printing each
+      # event as it is appended, and returns once the run has finished (its state file
+      # is in the archive) and its history is drained, after one last line. If moving the
+      # finished run to the archive fails, it keeps waiting until a later change archives
+      # it; Ctrl-C ends the wait. With +json+ each event is one JSON line.
+      #
       # @param run [String] a run id
       # @param since [Integer] only events on lines after this line number
       # @param json [Boolean]
+      # @param follow [Boolean] keep reading until the run finishes
+      # @param max_polls [Integer, nil] stop following after this many reads (for tests)
       # @return [void]
       # @raise [Workspace::Error] code `unknown_run`
-      def events(run:, since: 0, json: false)
+      def events(run:, since: 0, json: false, follow: false, max_polls: nil)
+        return follow_events(run, since, json, max_polls) if follow
         result = @store.events(run, since: since)
         return document("run" => run, "events" => result["events"], "truncated" => result["truncated"], "next_since" => result["next_since"], "warnings" => result["warnings"]) if json
         @output.puts "No events#{" after line #{since}" if since.positive?} for #{run}." if result["events"].empty?
-        result["events"].each do |event|
-          rest = event.except("n", "ts", "type").map { |key, value| "#{key}=#{(value.is_a?(String) && !value.match?(/[[:cntrl:]]/)) ? value : JSON.generate(value)}" }
-          @output.puts [event["n"].to_s.rjust(4), event["ts"], event["type"], *rest].join("  ")
-        end
+        result["events"].each { |event| @output.puts event_line(event) }
         @output.puts "More events follow: pass --since #{result["next_since"]}." if result["truncated"]
         result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
       end
@@ -595,7 +602,11 @@ module Workspace
           table = [%w[STEP ATTEMPT OUTCOME CODE HEAD DURATION TOKENS] + (reviewed ? %w[REVIEW] : [])] +
             result["attempts"].map { |each| attempt_cells(each) + (reviewed ? [TerminalText.escape(each["review"] || "-")] : []) }
           widths = table.transpose.map { |column| column.map(&:length).max }
-          table.each { |cells| @output.puts cells.each_with_index.map { |cell, index| cell.ljust(widths[index]) }.join("  ").rstrip }
+          table.each_with_index do |cells, index|
+            @output.puts cells.each_with_index.map { |cell, at| cell.ljust(widths[at]) }.join("  ").rstrip
+            refusal = (index > 0) && result["attempts"][index - 1]["refusal"]
+            @output.puts "  refused: #{refusal_text(refusal)}" if refusal
+          end
         end
         result["unowned_reasons"].each do |reason|
           @output.puts "Reason outside any attempt: #{[reason["step"], reason["code"], reason["since"], reason["until"] || "now"].map { |each| TerminalText.escape(each) }.join("  ")}"
@@ -774,7 +785,7 @@ module Workspace
         end
         resumed = @engine.resume(run, actor: "person", from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
           accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane)
-        row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.")
+        row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.", waits: true)
       end
 
       # @param run [String] a run id
@@ -1467,6 +1478,46 @@ module Workspace
         found && {"source" => found.first, "project" => (found.first == "project") ? project : nil, "path" => found.last}
       end
 
+      # Seconds between reads while following a run's history.
+      EVENTS_POLL_INTERVAL = 0.25
+
+      def follow_events(run, since, json, max_polls)
+        cursor = since
+        polls = 0
+        loop do
+          polls += 1
+          # The state alone is not enough: a finishing change writes it before its history lines.
+          archived = @store.archived?(run)
+          result = @store.events(run, since: cursor)
+          result["events"].each { |event| @output.puts(json ? JSON.generate(event) : event_line(event)) }
+          result["warnings"].each { |warning| @error_output.puts "Warning: #{warning}" }
+          @output.flush
+          cursor = result["next_since"]
+          if archived && !result["truncated"]
+            state = finished_state(run)
+            @output.puts(json ? JSON.generate("type" => "follow_ended", "run" => run, "state" => state, "next_since" => cursor) : "Run #{run} #{state}; no more events.")
+            break
+          end
+          break if max_polls && polls >= max_polls
+          @sleeper.call(EVENTS_POLL_INTERVAL) unless result["truncated"]
+        end
+      rescue Errno::EPIPE, Interrupt
+        nil
+      end
+
+      # The archive may prune the run between the two reads; it had finished by then.
+      def finished_state(run)
+        @store.run(run).state
+      rescue Workspace::Error => e
+        raise unless e.code == "unknown_run"
+        "finished"
+      end
+
+      def event_line(event)
+        rest = event.except("n", "ts", "type").map { |key, value| "#{key}=#{(value.is_a?(String) && !value.match?(/[[:cntrl:]]/)) ? value : JSON.generate(value)}" }
+        [event["n"].to_s.rjust(4), event["ts"], event["type"], *rest].join("  ")
+      end
+
       def document(body)
         @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true}.merge(body))
       end
@@ -1506,17 +1557,17 @@ module Workspace
         existing = WorkflowEngine.parked(stored.to_h, @clock.call) == :waiting
         parked = @engine.park(stored.id, actor: "person", from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
         if parked["unchanged"]
-          message = "Nothing was done: #{parked["unchanged"]}."
+          message = "Nothing was done: #{existing ? parked["unchanged"].sub(/ for pane \S+/, "") : parked["unchanged"]}."
           if existing
             message += " End your turn now."
             message += " The --from, --note or --pane given to this call was not kept." if from || note || pane
           end
-          return row(parked, "unchanged", message: message)
+          return row(parked, "unchanged", message: message, waits: true)
         end
         message = "Run from the run's own pane, so nothing was typed. Once this turn ends, the agent daemon will carry out " \
-          "the resume in pane #{target}, at most 1 hour from now. End your turn now; a sub-agent should finish and let " \
+          "the resume. End your turn now; a sub-agent should finish and let " \
           "the main agent end its turn."
-        row(parked, "parked", message: message).merge("parked" => {"pane" => target, "expires_at" => parked.dig("parked", "expires_at")})
+        row(parked, "parked", message: message, waits: true).merge("parked" => {"pane" => target, "expires_at" => parked.dig("parked", "expires_at")})
       end
 
       def resume_pane(stored, pane)
@@ -1657,14 +1708,36 @@ module Workspace
 
       # The action row for a run after a transition. A step that could not be
       # started is a failed action, though the run exists and can be resumed.
-      def row(run, verb, message: nil)
+      def row(run, verb, message: nil, waits: false)
         shown = @status.run(run["id"])["runs"].first
         reason = shown.dig("current", "reason")
         undelivered = reason && reason.dig("details", "kind") == "dispatch"
-        describe(shown)
+        wait = waits_for(shown, verb) if waits
+        describe(shown, wait_kind: wait&.fetch("kind"))
         @output.puts message if message
-        {"workspace" => run["workspace"], "outcome" => (undelivered && verb != "unchanged") ? "failed" : verb, "reason" => reason&.fetch("code"),
-         "message" => (undelivered && verb != "unchanged") ? reason.dig("details", "message") : message, "run" => shown}
+        result = {"workspace" => run["workspace"], "outcome" => (undelivered && verb != "unchanged") ? "failed" : verb, "reason" => reason&.fetch("code"),
+                  "message" => (undelivered && verb != "unchanged") ? reason.dig("details", "message") : message, "run" => shown}
+        return result unless waits
+        @output.puts wait["text"] if wait && wait["kind"] != "nothing"
+        result.merge("waits" => wait)
+      end
+
+      # What a run waits for after a resume, as one plain sentence: a park (with its expiry), a retry backoff, a pane that
+      # looked busy, or, when the resume did nothing and nothing else is pending, nothing. nil when the resume went through.
+      def waits_for(shown, verb)
+        current = shown["current"]
+        if (parked = current["parked"])
+          {"kind" => "parked", "pane" => parked["pane"], "expires_at" => parked["expires_at"],
+           "text" => "The run waits for the turn in pane #{parked["pane"]} to end, then the agent daemon carries out the resume; the park expires at #{clock_time(parked["expires_at"])}."}
+        elsif current.dig("reason", "code") == "retry_backoff"
+          details = current["reason"]["details"]
+          {"kind" => "backoff", "until" => details["until"],
+           "text" => "The run waits out its retry backoff: step #{TerminalText.escape(details["to"].to_s)} starts again at #{clock_time(details["until"])}."}
+        elsif current["refusal"]
+          {"kind" => "pane_busy", "pane" => shown["pane"], "text" => "The run waits for its pane: #{refusal_text(current["refusal"], pane: shown["pane"])}."}
+        elsif verb == "unchanged"
+          {"kind" => "nothing", "text" => "The run waits for nothing, so there is nothing for a resume to do."}
+        end
       end
 
       # Refuses a pause verb from where the run's own agent runs. A finished run is left for the engine to refuse.
@@ -1690,20 +1763,22 @@ module Workspace
         lines.join("\n")
       end
 
-      def describe(run)
+      # +wait_kind+ names the wait sentence printed after it, so its facts are not printed twice.
+      def describe(run, wait_kind: nil)
         current = run["current"]
         where = %w[completed cancelled failed].include?(run["state"]) ? "" : "  step #{current["step"]}#{" (attempt #{current["attempt"]})" if current["attempt"]}, #{current["state"]}"
         @output.puts "#{run["id"]}  #{run["workflow"]}  #{run["workspace"]}  #{run["state"]}#{where}"
         reason = current["reason"]
-        @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason
+        @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason && !(reason["code"] == "retry_backoff" && wait_kind == "backoff")
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
         if (deadline = run["deadline"])
           @output.puts "  time: #{deadline["clock"]} #{Duration.humanize(deadline["used"].to_f)} of #{Duration.humanize(deadline["limit"].to_f)}"
         end
         describe_turn_failed(current["turn_failed"]) if current["turn_failed"]
+        @output.puts "  refused: #{refusal_text(current["refusal"], pane: run["pane"])}" if current["refusal"] && wait_kind != "pane_busy"
         describe_review(current["review"]) if current["review"]
         parked = current["parked"]
-        @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked
+        @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked && wait_kind != "parked"
         @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }
@@ -1739,9 +1814,38 @@ module Workspace
         pending = review["pending"].empty? ? "" : ", waiting for #{review["pending"].map(&escape).join(", ")}"
         where = review["pane"] ? ", review pane #{escape.call(review["pane"])}" : ""
         @output.puts "  review: #{round}; #{review["approvals"]} of #{review["need"]} approvals#{pending}#{where}"
+        @output.puts "    refused: #{refusal_text(review["refusal"], pane: review["pane"])}" if review["refusal"]
         review["reviews"].each do |row|
           @output.puts "    #{escape.call(row["reviewer"])}: #{escape.call(row["verdict"] || "no verdict#{" (#{row["problem"]})" if row["problem"]}")}#{" [#{escape.call(row["isolation"])}]" if row["isolation"]}"
         end
+      end
+
+      CHANGED_BY_WORDS = {"screen" => "judged from the pane's screen", "restore" => "read back after a daemon restart",
+                          "turn_failed" => "its last turn failed"}.freeze
+
+      # A pane_busy refusal in plain words, the same in attempts and status:
+      # `the next line was not typed because pane %3 looked busy: working since 12:01:02, judged from the pane's screen`.
+      # Every value comes from a stored run, so the text is escaped for a terminal.
+      def refusal_text(refusal, pane: nil)
+        facts = refusal_facts(refusal)
+        head = "the next line was not typed because #{pane ? "pane #{pane}" : "the pane"} looked busy"
+        TerminalText.escape(facts ? "#{head}: #{facts}" : head)
+      end
+
+      # What the pane showed, without the sentence around it; nil when nothing was recorded.
+      def refusal_facts(refusal)
+        seen = refusal["seen"].is_a?(Hash) ? refusal["seen"] : {}
+        facts = []
+        facts << [seen["state"], ("since #{clock_time(seen["state_since"])}" if seen["state_since"])].compact.join(" ") if seen["state"]
+        facts << (CHANGED_BY_WORDS[seen["changed_by"]] || "reported by the agent's #{seen["changed_by"]} hook") if seen["changed_by"]
+        facts << "its last turn failed#{" (#{seen["turn_failed_kind"]})" if seen["turn_failed_kind"]}" if seen["turn_failed"]
+        facts << "read after the refusal" if seen["read_after"]
+        facts << refusal["reason"].to_s if facts.empty? && refusal["reason"]
+        facts.uniq.join(", ") unless facts.empty?
+      end
+
+      def clock_time(iso)
+        Duration.clock_time(iso)
       end
 
       # What a person has to supply, shown as an upper-case placeholder where it goes.
@@ -1779,7 +1883,7 @@ module Workspace
           when "prompt" then "#{"review " if details["role"] == "reviewer"}pane #{details["pane"]} is waiting for an answer#{": #{details["message"]}" if details["message"]}"
           when "ask" then "open question #{details["ask"]}: #{details["question"]}"
           when "delivery" then "step #{details["step"]}'s line was on its way to pane #{details["pane"]} when the process typing it stopped; the agent may not have it"
-          else "step #{details["step"]} could not be started (#{details["error"]}): #{details["message"]}"
+          else "step #{details["step"]} could not be started (#{details["error"]}): #{details["message"]}#{"; the pane showed #{refusal_facts(details)}" if details["seen"].is_a?(Hash) && refusal_facts(details)}"
           end
         when "turn_ended_incomplete"
           stale = Array(details["stale"])

@@ -29,9 +29,9 @@ RSpec.describe Workspace::PaneView do
 
   describe ".row" do
     it "builds the row in the order sessions prints it" do
-      expect(row(agent, context: reading).keys).to eq(%w[pane_id window review index kind label title cwd state state_since
+      expect(row(agent, context: reading).keys).to eq(%w[pane_id window review index kind label title cwd state state_since state_changed_by
         activity_state main_turn_over_since transcript_path open_tools idle_seconds waiting_since waiting_seconds
-        waiting_message waiting_tool waiting_input waits stop_reason turn_failed turn_failed_since session_id display_label agents
+        waiting_message waiting_tool waiting_input waits stop_reason turn_failed turn_failed_since turn_failed_kind session_id display_label agents
         context_pct context_error context_updated_at last_event_at current_tool current_tool_since subagents
         hook_mode hook_events])
     end
@@ -41,6 +41,45 @@ RSpec.describe Workspace::PaneView do
 
       agent[:turn_failed] = {session_id: "s1", at: now - 30}
       expect(row(agent, context: reading)).to include("turn_failed" => true, "turn_failed_since" => (now - 30).iso8601)
+    end
+
+    it "keeps the screen as the source of a working pane after a hook event arrives" do
+      agent[:activity_by] = "screen"
+      agent[:last_event_at] = now - 1
+
+      expect(row(agent)).to include("state" => "working", "state_changed_by" => "screen")
+    end
+
+    it "names the event that ended a done turn, the one that raised a wait, and nil with no source" do
+      expect(row(agent)).to include("state_changed_by" => nil)
+
+      agent[:waits][nil] = {since: now - 5, by: "notification"}
+      expect(row(agent)).to include("state" => "waiting", "state_changed_by" => "notification")
+
+      agent[:waits].clear
+      agent[:done] = {since: now - 3, stop_reason: "end_turn", by: "stop"}
+      expect(row(agent)).to include("state" => "done", "state_changed_by" => "stop")
+    end
+
+    it "names what set a state the monitor has already logged, not nil or restore" do
+      agent[:activity_by] = "screen"
+      Workspace::PaneStates.state_change(agent, now, 30)
+
+      expect(row(agent)).to include("state" => "working", "state_changed_by" => "screen")
+    end
+
+    it "reports restore while the state is the one read back from the log" do
+      agent.merge!(logged_state: "working", state_since: now - 100, state_by: "restore", activity_by: "screen")
+
+      expect(row(agent)).to include("state_changed_by" => "restore")
+    end
+
+    it "reports the kind of a failed turn" do
+      agent[:turn_failed] = {session_id: "s1", at: now - 30, kind: "rate_limit"}
+
+      expect(row(agent)).to include("turn_failed_kind" => "rate_limit")
+      agent.delete(:turn_failed)
+      expect(row(agent)).to include("turn_failed_kind" => nil)
     end
 
     it "reports the oldest wait and each wait by agent" do

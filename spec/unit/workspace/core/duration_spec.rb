@@ -102,4 +102,16 @@ RSpec.describe Workspace::Duration do
       expect(described_class.humanize(3600)).to eq("1h 0m")
     end
   end
+
+  describe ".clock_time" do
+    it "renders an ISO time as the local clock time" do
+      iso = "2026-11-15T14:03:09Z"
+      expect(described_class.clock_time(iso)).to eq(Time.iso8601(iso).localtime.strftime("%H:%M:%S"))
+    end
+
+    it "returns the text unchanged when it is not an ISO time" do
+      expect(described_class.clock_time("soon")).to eq("soon")
+      expect(described_class.clock_time(nil)).to eq("")
+    end
+  end
 end

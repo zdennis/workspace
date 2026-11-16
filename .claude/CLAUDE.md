@@ -157,6 +157,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/tool_input_summary.rb` — The short, safe summary of a tool call's input that `tool_started` and `tool_finished` lines carry as `input`: the first line of a Bash command, the file a file tool works on, a search's pattern, a fetch's URL.
 - `lib/workspace/commands/daemon.rb` — Reads and controls a workspace's agent daemon from outside it: whether it is answering and which process it is, the tail of its log, and a restart that stops it and starts a fresh one detached.
 - `lib/workspace/commands/ensure_agent.rb` — Makes sure a workspace has an agent daemon (`agentd`) answering on its socket, starting one detached when it doesn't.
+- `lib/workspace/daemon_watch.rb` — One stream of a workspace's workflow decision lines and its runs' events, oldest first, with one cursor that resumes both.
 
 ### Templates (`docs/architecture/template.md`)
 

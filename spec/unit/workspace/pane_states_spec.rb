@@ -30,6 +30,22 @@ RSpec.describe Workspace::PaneStates do
     end
   end
 
+  describe ".changed_by_for" do
+    it "names the input each state comes from, and nil when none was recorded" do
+      pane[:waits].merge!("a1" => wait(5).merge(by: "notification"), "a2" => wait(7).merge(by: "screen"))
+      pane[:done] = {since: now - 3, by: "stop"}
+      pane[:activity_by] = "screen"
+
+      expect(described_class.changed_by_for(pane, "done")).to eq("stop")
+      expect(described_class.changed_by_for(pane, "waiting")).to eq("screen")
+      expect(described_class.changed_by_for(pane, "working")).to eq("screen")
+      expect(described_class.changed_by_for(pane, "idle")).to eq("screen")
+
+      pane.delete(:activity_by)
+      expect(described_class.changed_by_for(pane, "working")).to be_nil
+    end
+  end
+
   describe ".since_for" do
     it "dates each state from its own evidence" do
       pane[:done] = {since: now - 3}
@@ -93,6 +109,16 @@ RSpec.describe Workspace::PaneStates do
         "state" => "working", "since" => (now - 10).utc.iso8601(3))
       expect(pane).to include(logged_state: "working", state_since: now - 10)
       expect(described_class.state_change(pane, now, 30)).to be_nil
+    end
+
+    it "keeps the source of the state it logged, so a logged state still names what set it" do
+      pane[:activity_by] = "screen"
+      described_class.state_change(pane, now, 30)
+      expect(pane[:state_by]).to eq("screen")
+
+      pane[:done] = {since: now - 3, stop_reason: "end_turn", by: "stop"}
+      described_class.state_change(pane, now, 30)
+      expect(pane[:state_by]).to eq("stop")
     end
 
     it "carries a done turn's stop reason" do

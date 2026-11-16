@@ -64,6 +64,20 @@ module Workspace
       end
     end
 
+    # Which input {.since_for} took +state+ from: the event that ended the turn
+    # or raised the oldest wait, or what last moved the pane's output.
+    #
+    # @param pane [Hash]
+    # @param state [String] a state {.reported_state} answered
+    # @return [String, nil] a hook event's name, "screen" or "restore"; nil when none was recorded
+    def changed_by_for(pane, state)
+      case state
+      when "done" then pane[:done][:by]
+      when "waiting" then oldest_wait(pane)[:by]
+      else pane[:activity_by]
+      end
+    end
+
     # {SessionMonitor#fresh_since} for one pane.
     #
     # @param pane [Hash]
@@ -105,7 +119,7 @@ module Workspace
       return gone_change(pane, "exited", now) if pane[:kind] == "shell"
       state = reported_state(pane, now - (pane[:last_activity_at] || now), idle_after)
       return nil if state == pane[:logged_state]
-      mark_state(pane, state, since_for(pane, state, now, idle_after))
+      mark_state(pane, state, since_for(pane, state, now, idle_after), changed_by_for(pane, state))
     end
 
     # @param pane [Hash] the pane's record; its logged state is changed in place
@@ -115,12 +129,13 @@ module Workspace
     #   was logged or the pane is already gone
     def gone_change(pane, state, now)
       return nil if pane[:logged_state].nil? || GONE_STATES.include?(pane[:logged_state])
-      mark_state(pane, state, now)
+      mark_state(pane, state, now, nil)
     end
 
-    def mark_state(pane, state, since)
+    def mark_state(pane, state, since, by)
       pane[:logged_state] = state
       pane[:state_since] = since
+      pane[:state_by] = by
       {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "window" => pane[:window] || 0, "index" => pane[:index],
        "review" => pane[:review],
        "kind" => pane[:kind], "state" => state, "since" => since.utc.iso8601(3),

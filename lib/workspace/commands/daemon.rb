@@ -32,6 +32,12 @@ module Workspace
       # How long `list` waits for each answering daemon to say its version.
       VERSION_TIMEOUT = 2
 
+      # What a skipped run is waiting for, for the codes the daemon logs.
+      SKIP_REASONS = {"paused" => "paused", "retry_backoff" => "waiting out its retry backoff", "not_due" => "nothing to do yet"}.freeze
+
+      # Seconds between reads while `watch` follows.
+      WATCH_POLL_INTERVAL = 0.25
+
       LSOF_COMMAND = %w[lsof -t].freeze
       private_constant :LSOF_COMMAND
 
@@ -69,8 +75,10 @@ module Workspace
       # @param stop_timeout [Numeric] seconds to wait for the old daemon to let go of its socket
       # @param lsof_command [Array<String>] the `lsof` argv the default +pid_finder+ runs, before the socket path
       # @param lsof_timeout [Numeric] seconds the default +pid_finder+ waits for `lsof` before killing it
+      # @param watch_factory [#call, nil] `(workspace:, run:)` builds the {Workspace::DaemonWatch} that `watch` follows; nil refuses `watch`
+      # @param wall_clock [#now] time source, for the watch's first and last lines
       # @param output [IO]
-      def initialize(config:, project_config:, ensure_agent:, version_client:, process_tree: ProcessTree.new, pid_finder: method(:lsof_pids), signaller: Process.method(:kill),
+      def initialize(config:, project_config:, ensure_agent:, version_client:, watch_factory: nil, wall_clock: Time, process_tree: ProcessTree.new, pid_finder: method(:lsof_pids), signaller: Process.method(:kill),
         sleeper: ->(seconds) { sleep(seconds) }, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
         stop_timeout: DEFAULT_STOP_TIMEOUT, lsof_command: LSOF_COMMAND, lsof_timeout: LSOF_TIMEOUT, output: $stdout)
         @config = config
@@ -78,6 +86,8 @@ module Workspace
         @ensure_agent = ensure_agent
         @process_tree = process_tree
         @version_client = version_client
+        @watch_factory = watch_factory
+        @wall_clock = wall_clock
         @pid_finder = pid_finder
         @signaller = signaller
         @sleeper = sleeper
@@ -185,6 +195,46 @@ module Workspace
           tail.each { |line| @output.puts line }
         end
         {exit_code: 0}
+      end
+
+      # Follows what the workspace's daemon decides about its workflow runs and
+      # what its runs record, as one stream of lines, until stopped (Ctrl-C) or,
+      # with +run+, until that run has finished and its events are all printed.
+      # It starts from now; +since+ resumes after a line. It only reads files, so
+      # it needs no running daemon. Each line carries a cursor (see
+      # {Workspace::DaemonWatch}); the first is a `follow_started` line and, with
+      # +run+, the last a `follow_ended` line.
+      #
+      # @param name [String] workspace name
+      # @param run [String, nil] follow only this run
+      # @param since [String, nil] a cursor a line of this watch (same workspace and +run+) printed
+      # @param json [Boolean] one JSON document per line instead of a sentence
+      # @param max_polls [Integer, nil] stop after this many reads (for tests)
+      # @return [Hash] `{exit_code: 0}`
+      # @raise [Workspace::Error] code `unknown_workspace`, or `unknown_run` when +run+ names no run
+      # @raise [Workspace::EventStream::InvalidCursor] when +since+ can't be read
+      def watch(name:, run: nil, since: nil, json: false, max_polls: nil)
+        raise Workspace::Error, "daemon watch is not available: no watch was wired" unless @watch_factory
+        require_workspace!(name)
+        watch = @watch_factory.call(workspace: name, run: run)
+        gaps = watch.open(cursor: since, at: :end)
+        emit_watch([watch_line("follow_started", name, run, watch.cursor_string), *gaps], json)
+        polls = 0
+        loop do
+          polls += 1
+          emit_watch(watch.read(discover: nil), json)
+          if watch.done?
+            emit_watch([watch_line("follow_ended", name, run, watch.cursor_string).merge("state" => watch.state)], json)
+            break
+          end
+          break if max_polls && polls >= max_polls
+          @sleeper.call(WATCH_POLL_INTERVAL) unless watch.more?
+        end
+        {exit_code: 0}
+      rescue Errno::EPIPE, Interrupt
+        {exit_code: 0}
+      rescue SystemCallError, IOError => e
+        raise Workspace::Error, "could not read the event files (#{e.message})"
       end
 
       # Stops the workspace's daemon, then starts a new one detached. The
@@ -295,6 +345,63 @@ module Workspace
       def entry_hash(entry)
         {"workspace" => entry.workspace, "pid" => entry.pid, "started_at" => entry.started_at, "version" => entry.version, "answering" => entry.answering,
          "socket" => entry.socket, "log" => entry.log, "wc_socket" => entry.wc_socket}
+      end
+
+      def watch_line(type, workspace, run, cursor)
+        {"source" => "watch", "at" => @wall_clock.now.utc.iso8601(3), "type" => type, "workspace" => workspace, "run_id" => run, "event" => {}, "cursor" => cursor}
+      end
+
+      def emit_watch(lines, json)
+        return if lines.empty?
+        lines.each { |line| @output.puts(json ? JSON.generate(line) : "#{Duration.clock_time(line["at"])} #{watch_sentence(line)}") }
+        @output.flush
+      end
+
+      # One plain sentence for a line; every piece that may hold pane or file text is escaped.
+      def watch_sentence(line)
+        event = line["event"]
+        run = TerminalText.escape(line["run_id"])
+        case line["type"]
+        when "follow_started" then "watching #{TerminalText.escape(line["workspace"])}#{" for run #{run}" if line["run_id"]} from now; Ctrl-C stops#{history_hint(line)}"
+        when "follow_ended" then "run #{run} #{TerminalText.escape(line["state"] || "finished")}; no more events#{history_hint(line)}"
+        when "gap" then "lines before the cursor are gone (#{TerminalText.escape(event["reason"])}) from the #{TerminalText.escape(event["source"])} log"
+        when "workflow_advance_started" then advance_started_text(event, run)
+        when "workflow_run_skipped" then "run #{run} skipped: #{SKIP_REASONS.fetch(event["reason"]) { TerminalText.escape(event["reason"]) }}"
+        when "workflow_sweep_started" then "sweep started for #{run_names(event["run_ids"])}"
+        when "workflow_process_exited" then process_exited_text(event, run)
+        else run_event_text(line)
+        end
+      end
+
+      def history_hint(line)
+        " (earlier events: workspace workflow events #{TerminalText.escape(line["run_id"])})" if line["run_id"]
+      end
+
+      def advance_started_text(event, run)
+        pane = event["pane_id"] && " in pane #{TerminalText.escape(event["pane_id"])}"
+        why = (event["cause"] == "turn_ended") ? " after its turn ended" : " by the tick#{" (#{TerminalText.escape(event["reason"])})" if event["reason"]}"
+        "advance started for run #{run}#{pane}#{why}"
+      end
+
+      def process_exited_text(event, run)
+        what = (event["kind"] == "sweep") ? "sweep for #{run_names(event["run_ids"])}" : "advance for run #{run}"
+        how = event["signal"] ? "was ended by signal #{TerminalText.escape(event["signal"])}" : "exited with code #{TerminalText.escape(event["exit_code"])}"
+        seconds = event["seconds"]
+        "#{what} #{how}#{" after #{seconds.to_f.round(1).to_s.delete_suffix(".0")}s" if seconds.is_a?(Numeric)}"
+      end
+
+      def run_names(ids)
+        names = Array(ids).map { |id| TerminalText.escape(id) }
+        names.empty? ? "no runs" : "run#{"s" if names.size > 1} #{names.join(", ")}"
+      end
+
+      # `run ID  N  type  key=value ...`, like `workflow events`.
+      def run_event_text(line)
+        event = line["event"]
+        rest = event.except("n", "ts", "at", "type").map do |key, value|
+          "#{TerminalText.escape(key)}=#{value.is_a?(String) ? TerminalText.escape(value) : TerminalText.escape(JSON.generate(value))}"
+        end
+        ["run #{TerminalText.escape(line["run_id"])}", ("line #{event["n"]}" if event["n"]), TerminalText.escape(line["type"]), *rest].compact.join("  ")
       end
 
       def require_workspace!(name)

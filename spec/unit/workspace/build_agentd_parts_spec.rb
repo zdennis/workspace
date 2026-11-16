@@ -103,7 +103,8 @@ RSpec.describe "Workspace.build_agentd_parts" do
 
     expect(monitor).to have_received(:record)
     expect(hook_log.calls.size).to eq(1)
-    expect(nudger.calls).to eq([[:turn_ended, "ws", "%5", {turn_started: nil, background: nil}]])
+    expect(nudger.calls).to eq([[:turn_ended, "ws", "%5", {turn_started: nil, background: nil, hook_log: hook_log}]])
+    expect(nudger.calls.first.last[:hook_log]).to equal(parts.hook_event_log)
   end
 
   it "gives a replaced desk the keywords the builder passes" do
