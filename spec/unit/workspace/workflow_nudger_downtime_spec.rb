@@ -3,7 +3,7 @@ require "spec_helper"
 RSpec.describe Workspace::WorkflowNudger, "heartbeat" do
   let(:store) { instance_double(Workspace::WorkflowRunStore, going: []) }
   let(:panes) { instance_double(Workspace::WorkflowPanes) }
-  let(:downtime) { double("downtime", beat: nil) }
+  let(:downtime) { double("downtime", beat: nil, spans: []) }
   let(:spawned) { [] }
   subject(:nudger) do
     described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(w) { "/log/#{w}.log" },

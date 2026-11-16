@@ -49,9 +49,9 @@ module Workspace
     def self.backoff(run, now) = WorkflowTransitions.backoff(run, now)
     def self.parked(run, now) = WorkflowTransitions.parked(run, now)
     def self.park_timeout_message(pane, checking: false) = WorkflowTransitions.park_timeout_message(pane, checking: checking)
-    def self.wakeable?(run, now, alive: nil) = WorkflowTransitions.wakeable?(run, now, alive: alive)
+    def self.wakeable?(run, now, alive: nil, stops: []) = WorkflowTransitions.wakeable?(run, now, alive: alive, stops: stops)
     def self.lost_check?(run, now) = WorkflowTransitions.lost_check?(run, now)
-    def self.lost_round?(run, now) = WorkflowTransitions.lost_round?(run, now)
+    def self.lost_round?(run, now, stops: []) = WorkflowTransitions.lost_round?(run, now, stops: stops)
     def self.sweep_marks(run) = WorkflowTransitions.sweep_marks(run)
 
     # {Workspace.build_workflow_engine} builds the phases over one shared {WorkflowRunChange}.

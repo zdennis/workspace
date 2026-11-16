@@ -75,8 +75,9 @@ module Workspace
       beat
       now = @clock.call
       runs = @store.going.select { |run| run.workspace == workspace }
+      stops = downtime_stops(now)
       woken = runs.filter_map do |run|
-        next unless WorkflowEngine.wakeable?(run.to_h, now, alive: @holder_alive)
+        next unless WorkflowEngine.wakeable?(run.to_h, now, alive: @holder_alive, stops: stops)
         advance(workspace, run.id)
         run.id
       rescue => e
@@ -98,6 +99,14 @@ module Workspace
       @downtime&.beat
     rescue => e
       @logger.debug { "workflow: could not beat the heartbeat (#{e.class}: #{e.message})" }
+    end
+
+    # Read once a tick, so a wake after downtime starts no advance for a clock the downtime stopped.
+    def downtime_stops(now)
+      @downtime&.spans(now) || []
+    rescue => e
+      @logger.debug { "workflow: could not read the downtime (#{e.class}: #{e.message})" }
+      []
     end
 
     def sweep(workspace, runs, now)

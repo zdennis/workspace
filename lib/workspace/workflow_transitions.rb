@@ -341,15 +341,16 @@ module Workspace
 
     # Whether a round whose line may have been typed has waited long enough for its reviewers that it is judged
     # whatever its review pane shows: {DELIVERY_WINDOW}, plus the definition's `stall` when set, from its failure
-    # (else from when its line went out, `kick_at`). A time that can't be read has waited long enough.
+    # (else from when its line went out, `kick_at`), less +stops+. A time that can't be read has waited long enough.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param round [Hash{String=>Object}] the current step's `review`
     # @param now [Time]
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
-    def self.typed_wait_over?(run, round, now)
+    def self.typed_wait_over?(run, round, now, stops: [])
       from = round.dig("failure", "at") || round["kick_at"]
-      now - Time.iso8601(from.to_s) >= DELIVERY_WINDOW + WorkflowDefinition.stall(run["definition"]).to_i
+      WorkflowDeadline.active_seconds(Time.iso8601(from.to_s), now, Array(stops)) >= DELIVERY_WINDOW + WorkflowDefinition.stall(run["definition"]).to_i
     rescue ArgumentError, TypeError
       true
     end
@@ -361,9 +362,10 @@ module Workspace
     # @param run [Hash{String=>Object}] a stored run
     # @param round [Hash{String=>Object}] the current step's `review`
     # @param now [Time]
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
-    def self.typed_review_timed_out?(run, round, now)
-      elapsed = round_elapsed(run, round, now)
+    def self.typed_review_timed_out?(run, round, now, stops: [])
+      elapsed = round_elapsed(run, round, now, stops: stops)
       elapsed.nil? || elapsed > review_timeout(run)
     end
 
@@ -501,9 +503,10 @@ module Workspace
     # @param run [Hash{String=>Object}] a stored run
     # @param round [Hash{String=>Object}, nil] the current step's `review`
     # @param now [Time]
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
-    def self.round_timed_out?(run, round, now)
-      elapsed = round_elapsed(run, round, now)
+    def self.round_timed_out?(run, round, now, stops: [])
+      elapsed = round_elapsed(run, round, now, stops: stops)
       !elapsed.nil? && elapsed > review_timeout(run)
     end
 
@@ -584,10 +587,11 @@ module Workspace
     # @param run [Hash{String=>Object}] a stored run
     # @param round [Hash{String=>Object}, nil] the current step's `review`
     # @param now [Time]
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
-    def self.press_unanswered?(run, round, now)
+    def self.press_unanswered?(run, round, now, stops: [])
       last = round_last_press(round)
-      !last.nil? && now - last >= press_wait(run)
+      !last.nil? && WorkflowDeadline.active_seconds(last, now, step_stops(run, stops)) >= press_wait(run)
     end
 
     # A delivered review round (its `delivery` null) that is the run's, undecided, not being judged and with no stop,
@@ -596,15 +600,16 @@ module Workspace
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
-    def self.unanswered_round?(run, now)
+    def self.unanswered_round?(run, now, stops: [])
       return false if run["parked"] || run["reason"]
       state = run.dig("steps", run["current"])
       return false unless state.is_a?(Hash) && state["state"] == "reviewing"
       round = state["review"]
       return false unless round.is_a?(Hash) && round.key?("delivery") && round["delivery"].nil? && round["pane"].is_a?(String)
       return false if round["recompute"] || round["ended_at"]
-      press_unanswered?(run, round, now)
+      press_unanswered?(run, round, now, stops: stops)
     end
 
     # Whether a round whose line may have been typed, its review pane at work and never interrupted by the sweep, has
@@ -614,9 +619,10 @@ module Workspace
     # @param run [Hash{String=>Object}] a stored run
     # @param round [Hash{String=>Object}] the current step's `review`
     # @param now [Time]
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
-    def self.typed_press_missed?(run, round, now)
-      elapsed = round_elapsed(run, round, now)
+    def self.typed_press_missed?(run, round, now, stops: [])
+      elapsed = round_elapsed(run, round, now, stops: stops)
       elapsed.nil? || elapsed > 2 * review_timeout(run)
     end
 
@@ -765,8 +771,9 @@ module Workspace
     # @param now [Time]
     # @param alive [#call, nil] given a review round's `holder`, whether it still runs (see {.round_delivery}); nil
     #   takes every holder as alive, so a lapsed round with a holder is not woken
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Symbol, nil] :parked, :continue, :continue_expired, :backoff (a retry's wait is over), :lock, :background, :round, :unanswered, :review, :check, or nil
-    def self.wakeable?(run, now, alive: nil)
+    def self.wakeable?(run, now, alive: nil, stops: [])
       return nil if run["paused"]
       return :parked if run["parked"]
       case continue_state(run, now)
@@ -777,8 +784,8 @@ module Workspace
       return :lock if run.dig("reason", "code") == "waiting_lock"
       return :background if background_expired?(run["reason"], now)
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
-      return :round if lost_round?(run, now)
-      return :unanswered if unanswered_round?(run, now)
+      return :round if lost_round?(run, now, stops: stops)
+      return :unanswered if unanswered_round?(run, now, stops: stops)
       return :review if %i[due exhausted].include?(round_redelivery(run, now, alive: alive)&.fetch(:state))
       :check if run["reason"].nil? && lost_check?(run, now)
     end
@@ -790,14 +797,15 @@ module Workspace
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time]
+    # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
-    def self.lost_round?(run, now)
+    def self.lost_round?(run, now, stops: [])
       return false if run["parked"] || run["reason"]
       state = run.dig("steps", run["current"])
       return false unless state.is_a?(Hash) && state["state"] == "reviewing"
       mark = state["review"].is_a?(Hash) ? state["review"]["recompute"] : nil
       return false unless mark.is_a?(Hash)
-      now - Time.iso8601(mark["started_at"].to_s) > DELIVERY_WINDOW
+      WorkflowDeadline.active_seconds(Time.iso8601(mark["started_at"].to_s), now, Array(stops)) > DELIVERY_WINDOW
     rescue ArgumentError, TypeError
       true
     end

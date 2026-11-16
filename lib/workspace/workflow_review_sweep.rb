@@ -95,7 +95,7 @@ module Workspace
     #
     # @param run [WorkflowRun]
     # @param state [WorkflowRun::Step] the current step
-    # @param pass [Hash] the pass's `dry_run` and `allow`
+    # @param pass [Hash] the pass's `dry_run`, `allow` and `stops` (downtime spans, cut from the round and run clocks)
     # @return [Hash] a sweep row
     def call(run, state, pass)
       round = state.review
@@ -119,7 +119,7 @@ module Workspace
       # Past the short wait, the engine's tick decides it from its pane (so a setup with only the sweep, no daemon
       # timer, decides it too); it still waits for a reviewer at work or a prompt. A reviewer at work past a time
       # limit is pressed first, as in a delivered round, through the round's own claim (below).
-      if typed && WorkflowTransitions.typed_wait_over?(run.to_h, round, now) && !press_typed?(run, round, now)
+      if typed && WorkflowTransitions.typed_wait_over?(run.to_h, round, now, stops: Array(pass[:stops])) && !press_typed?(run, round, now, pass[:stops])
         return typed_round(run, what, pass)
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "reviewing", message: "the end of #{what} is being judged") if round["recompute"]
@@ -142,7 +142,7 @@ module Workspace
           "its verdicts are read now, and it stops for a person (review_incomplete) when they fall short")
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "review pane #{pane} waits for an answer") if shown["state"] == "waiting"
-      due = time_limits(run, round, now)
+      due = time_limits(run, round, now, pass[:stops])
       if turn_over?(shown, round, now)
         idle_for = shown["idle_seconds"].to_i
         stall_after = WorkflowDefinition.stall(run.definition) || pass[:default_stall]
@@ -207,8 +207,8 @@ module Workspace
 
     # A round whose line may have been typed, its review pane's agent at work past a time limit: read in its pane and
     # pressed, rather than handed to the tick.
-    def press_typed?(run, round, now)
-      return false unless round["pane"].is_a?(String) && time_limits(run, round, now).any?
+    def press_typed?(run, round, now, stops)
+      return false unless round["pane"].is_a?(String) && time_limits(run, round, now, stops).any?
       @panes.pane_row(run.workspace, round["pane"])&.fetch("state", nil) == "working"
     end
 
@@ -249,12 +249,13 @@ module Workspace
 
     # The time limits the round is past, the round's own first: [cause, seconds used, limit] each, for the round's
     # `review.timeout` and the run's `timeout:` when its `timeout_action` is `interrupt`.
-    def time_limits(run, round, now)
+    def time_limits(run, round, now, stops)
+      stops = Array(stops)
       due = []
-      if WorkflowTransitions.round_timed_out?(run.to_h, round, now)
-        due << ["review_timed_out", WorkflowTransitions.round_elapsed(run.to_h, round, now), WorkflowTransitions.review_timeout(run.to_h)]
+      if WorkflowTransitions.round_timed_out?(run.to_h, round, now, stops: stops)
+        due << ["review_timed_out", WorkflowTransitions.round_elapsed(run.to_h, round, now, stops: stops), WorkflowTransitions.review_timeout(run.to_h)]
       end
-      deadline = WorkflowDeadline.reading(run, now)
+      deadline = WorkflowDeadline.reading(run, now, stops: stops)
       due << ["run_timed_out", deadline["used"], deadline["limit"]] if deadline && deadline["spent"] && deadline["action"] == "interrupt"
       due
     end
@@ -303,7 +304,7 @@ module Workspace
     # `interrupt_unanswered`), so it is never left waiting on a pane no press reaches.
     def unanswered(run, round, what, pass, pane, due)
       now = @clock.call
-      unless WorkflowTransitions.press_unanswered?(run.to_h, round, now)
+      unless WorkflowTransitions.press_unanswered?(run.to_h, round, now, stops: Array(pass[:stops]))
         return WorkflowSweepRows.row(run, "nothing", reason: "already_interrupted", cause: due.first.first,
           message: "#{what} was interrupted for its time limit; it is decided once the review turn ends")
       end

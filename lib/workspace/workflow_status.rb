@@ -88,8 +88,11 @@ module Workspace
     # @param clock [#call] returns the current Time
     # @param snapshot_timeout [Numeric] seconds one daemon read may take
     # @param list_grace [Numeric] seconds a list's reads share past the timeout
+    # @param downtime [Workspace::WorkflowDowntime, nil] its spans, read once for each document, are cut from the step,
+    #   round and run clocks shown (nil: none)
     def initialize(store:, panes:, snapshot_client:, ask_store_for:, gate_note:, clock: -> { Time.now }, snapshot_timeout: SNAPSHOT_TIMEOUT, list_grace: LIST_GRACE,
-      recovery_entry: ->(*) {})
+      recovery_entry: ->(*) {}, downtime: nil)
+      @downtime = downtime
       @snapshot_timeout = snapshot_timeout
       @list_grace = list_grace
       @store = store
@@ -147,7 +150,10 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_run`
     def run(id)
       warnings = []
+      @stops = downtime_stops
       {"runs" => [present(@store.run(id), warnings)], "warnings" => warnings}
+    ensure
+      @stops = nil
     end
 
     # The needs a resume has when the run's token budget or time limit is used: the same hashes `workflow
@@ -157,7 +163,7 @@ module Workspace
     # @return [Array<Hash{String=>Object}>] `extra_tokens` and `extra_time` needs; empty when neither is spent
     def limit_needs(run)
       budget = WorkflowBudget.reading(run.to_h)
-      deadline = WorkflowDeadline.reading(run.to_h, @clock.call)
+      deadline = WorkflowDeadline.reading(run.to_h, @clock.call, stops: stops)
       needs = []
       needs << NextAction.need("extra_tokens", "--extra-tokens", "min" => budget["needed"], "suggested" => budget["suggested"]) if budget && budget["spent"]
       needs << NextAction.need("extra_time", "--extra-time", "min" => deadline["needed"], "suggested" => deadline["suggested"]) if deadline && deadline["spent"]
@@ -165,6 +171,13 @@ module Workspace
     end
 
     private
+
+    # The downtime spans the document being built was read with; one read for each document.
+    def stops = @stops || downtime_stops
+
+    def downtime_stops
+      @downtime&.spans(@clock.call) || []
+    end
 
     # Warns of unreadable run files, then shows each stored run; a malformed one is a warning.
     # "unreadable" counts the run files and runs left out.
@@ -177,6 +190,7 @@ module Workspace
       malformed = 0
       # One daemon answer (or silence) per workspace for the whole list, asked in parallel under one deadline.
       @snapshots = prefetch_snapshots(stored)
+      @stops = downtime_stops
       shown = stored.filter_map do |run|
         present(run, warnings)
       rescue KeyError, NoMethodError, TypeError, ArgumentError
@@ -185,8 +199,10 @@ module Workspace
           "free a lock with `workspace lock clear NAME`, or delete the file."
         nil
       end
-      @snapshots = nil
       {"runs" => shown, "warnings" => warnings.uniq, "unreadable" => paths.size + malformed}
+    ensure
+      @snapshots = nil
+      @stops = nil
     end
 
     # Seconds all the daemon reads of one list share, past SNAPSHOT_TIMEOUT.
@@ -274,7 +290,7 @@ module Workspace
     # The run timeout as it stands, only for a run whose definition declares one. `used` is machine time in
     # seconds (a gate, a parked resume and a held budget cost nothing); `limit` is the timeout plus `extra_seconds`.
     def deadline_row(run)
-      reading = WorkflowDeadline.reading(run.to_h, @clock.call)
+      reading = WorkflowDeadline.reading(run.to_h, @clock.call, stops: stops)
       return {} unless reading
       {"deadline" => reading.slice("timeout", "action", "extra_seconds", "limit", "used", "spent")}
     end
@@ -557,7 +573,7 @@ module Workspace
       if timeout && started && !run.paused && %w[running checking].include?(state.state)
         # A start that is not a time makes the run malformed, as before; the clock itself is the sweep's.
         Time.iso8601(started)
-        elapsed = WorkflowTransitions.step_elapsed(run.to_h, state.last_attempt&.to_h, @clock.call)
+        elapsed = WorkflowTransitions.step_elapsed(run.to_h, state.last_attempt&.to_h, @clock.call, stops: stops)
         flags << "timed_out" if elapsed && elapsed > timeout
       end
       flags << "timed_out" if round_timed_out?(run, state) && !run.paused
@@ -577,7 +593,7 @@ module Workspace
     # A live review round past its `review.timeout`, counted from the round's start ({WorkflowTransitions.round_timed_out?},
     # the reading the sweep's interrupt takes).
     def round_timed_out?(run, state)
-      round_live?(run) && WorkflowTransitions.round_timed_out?(run.to_h, state.review, @clock.call)
+      round_live?(run) && WorkflowTransitions.round_timed_out?(run.to_h, state.review, @clock.call, stops: stops)
     end
 
     # A pane reads idle for a moment right after a dispatch, before the agent takes the prompt.

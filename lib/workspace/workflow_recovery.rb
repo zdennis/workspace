@@ -21,8 +21,10 @@ module Workspace
     # @param panes [Workspace::WorkflowPanes, nil] says whether a review pane's turn is proven over ({WorkflowPanes#main_turn_over?})
     #   or the pane is gone, and whether a `continue_pending` pane is idle and still the process marked, read with the
     #   run's lock not yet taken; nil takes every such pane as done and types no continue line
+    # @param downtime [Workspace::WorkflowDowntime, nil] its spans are cut from the review round clocks a tick reads (nil: none)
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, dispatch:, progress:, evaluation:, holder_alive: nil, panes: nil, clock: -> { Time.now })
+    def initialize(change:, store:, dispatch:, progress:, evaluation:, holder_alive: nil, panes: nil, downtime: nil, clock: -> { Time.now })
+      @downtime = downtime
       @change = change
       @store = store
       @dispatch = dispatch
@@ -61,10 +63,11 @@ module Workspace
       # Read before the lock is taken: no tmux or daemon call is made under it.
       typed = typed_pane_over(run_id, alive)
       ready = continue_ready(run_id)
+      stops = @downtime&.spans(@clock.call) || []
       continuing = nil
       run = @change.call(run_id, actor: actor, cause: "tick", nonblocking: true) do |read, ctx|
         stored = read.thawed
-        case WorkflowTransitions.wakeable?(stored, @clock.call, alive: alive)
+        case WorkflowTransitions.wakeable?(stored, @clock.call, alive: alive, stops: stops)
         when :continue
           continuing = take_continue(stored, ready)
           acted = !continuing.nil?
@@ -94,7 +97,7 @@ module Workspace
           acted = true
           decide_unanswered(stored, ctx)
         when :review
-          acted = redeliver_round(stored, ctx, alive, typed) == :acted
+          acted = redeliver_round(stored, ctx, alive, typed, stops) == :acted
         when :check
           acted = true
           evaluate(stored, ctx)
@@ -579,7 +582,7 @@ module Workspace
 
     # A round due to be delivered again ({WorkflowTransitions.round_redelivery}) is delivered; one whose deliveries
     # again are spent stops `review_incomplete`. A round still waiting out its backoff is left.
-    def redeliver_round(run, ctx, alive, typed = nil)
+    def redeliver_round(run, ctx, alive, typed = nil, stops = [])
       info = WorkflowTransitions.round_redelivery(run, @clock.call, alive: alive)
       return unless info
       # A line that may have been typed (an agent daemon that restarted while it typed) may have a finished review
@@ -588,7 +591,7 @@ module Workspace
       # (or the pane is gone): a reviewer still at work is waited for, and its own Stop may judge the round first.
       round = step_state(run)["review"]
       if info[:state] != :waiting && WorkflowTransitions.round_may_have_typed?(round, info[:mark])
-        decision = (@panes && round["pane"]) ? judge_typed(run, round, typed) : :judge
+        decision = (@panes && round["pane"]) ? judge_typed(run, round, typed, stops) : :judge
         return :waiting if decision == :wait
         if decision == :restart
           # Its window went with the old server: delivered again in a new one, the old server's panes dropped, as the
@@ -624,16 +627,16 @@ module Workspace
     # wait, since `workflow status` shows it waiting for a person. An agent daemon that can't be reached: waited for
     # until the review's timeout, then judged. Anything else (no row from the daemon, an idle pane whose turn is not
     # proven over, a reading for another round): judged once {WorkflowTransitions.typed_wait_over?} says so.
-    def judge_typed(run, round, typed)
+    def judge_typed(run, round, typed, stops)
       state = (typed && typed[:pane] == round["pane"] && typed[:round] == round["round"] && typed[:started_at] == round["started_at"]) ? typed[:state] : :unknown
       now = @clock.call
       case state
       when :over then :judge
       when :restarted then :restart
       when :waiting then :wait
-      when :busy then busy_typed(run, round, now)
-      when :unreachable then WorkflowTransitions.typed_review_timed_out?(run, round, now) ? :judge : :wait
-      else WorkflowTransitions.typed_wait_over?(run, round, now) ? :judge : :wait
+      when :busy then busy_typed(run, round, now, stops)
+      when :unreachable then WorkflowTransitions.typed_review_timed_out?(run, round, now, stops: stops) ? :judge : :wait
+      else WorkflowTransitions.typed_wait_over?(run, round, now, stops: stops) ? :judge : :wait
       end
     end
 
@@ -642,11 +645,11 @@ module Workspace
     # stopped here only once twice that timeout has passed with no press ({WorkflowTransitions.typed_press_missed?}:
     # no sweep is running). Pressed and still at work {WorkflowTransitions.press_wait} after the newest press, it is
     # judged: interrupted, its verdicts decide it or it stops `review_incomplete`, with no reviewer run again.
-    def busy_typed(run, round, now)
+    def busy_typed(run, round, now, stops)
       if WorkflowTransitions.round_interrupted(round, now)
-        return WorkflowTransitions.press_unanswered?(run, round, now) ? :unanswered : :wait
+        return WorkflowTransitions.press_unanswered?(run, round, now, stops: stops) ? :unanswered : :wait
       end
-      WorkflowTransitions.typed_press_missed?(run, round, now) ? :stop : :wait
+      WorkflowTransitions.typed_press_missed?(run, round, now, stops: stops) ? :stop : :wait
     end
 
     # A delivered round pressed and unanswered ({WorkflowTransitions.unanswered_round?}): recorded as the sweep's

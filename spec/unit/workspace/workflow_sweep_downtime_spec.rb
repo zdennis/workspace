@@ -4,7 +4,7 @@ RSpec.describe Workspace::WorkflowSweep, "heartbeat" do
   let(:run) { instance_double(Workspace::WorkflowRun, workspace: "app") }
   let(:store) { instance_double(Workspace::WorkflowRunStore, going: [run], unreadable: []) }
   let(:reviews) { instance_double(Workspace::WorkflowReviewSweep, orphan_rows: []) }
-  let(:downtime) { double("downtime", beat: nil) }
+  let(:downtime) { double("downtime", beat: nil, spans: []) }
   subject(:sweep) do
     described_class.new(store: store, engine: nil, panes: nil, interrupter: ->(*) {}, reviews: reviews, downtime: downtime)
   end
