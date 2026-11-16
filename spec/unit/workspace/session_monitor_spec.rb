@@ -1715,6 +1715,13 @@ RSpec.describe Workspace::SessionMonitor do
       expect(monitor.restart_state("%2")).to eq("idle")
       expect(monitor.pane_state("%9")).to be_nil
     end
+
+    it "#mark_turn_failed stamps the failure time it is given" do
+      event("user_prompt")
+      monitor.mark_turn_failed("%2", at: now - 600)
+
+      expect(pane("%2")["turn_failed_since"]).to eq((now - 600).utc.iso8601)
+    end
   end
 
   describe "#restart_state" do

@@ -288,12 +288,13 @@ module Workspace
     # idle notification opens no wait. Does nothing for a pane not scanned yet.
     #
     # @param pane_id [String] tmux pane id
+    # @param at [Time, nil] when the turn failed; the monitor's clock now when nil
     # @return [void]
-    def mark_turn_failed(pane_id)
+    def mark_turn_failed(pane_id, at: nil)
       @lock.synchronize do
         pane = @panes[pane_id]
         next unless pane
-        pane[:turn_failed] = {session_id: pane[:session_id], at: @clock.now}
+        pane[:turn_failed] = {session_id: pane[:session_id], at: at || @clock.now}
         pane[:turn_ended] = true
       end
       nil

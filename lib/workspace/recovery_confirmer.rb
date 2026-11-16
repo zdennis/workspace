@@ -56,7 +56,7 @@ module Workspace
       @unmarked = @unmarked.select { |pane_id| entries[pane_id] && failed_turn_stands?(entries[pane_id]) }
       @unmarked.reject! do |pane_id|
         known = !@session_monitor.pane_kind(pane_id).nil?
-        @session_monitor.mark_turn_failed(pane_id) if known
+        @session_monitor.mark_turn_failed(pane_id, at: RecoveryVerdicts.time_of(entries[pane_id]["failed_at"])) if known
         known
       end
       nil
