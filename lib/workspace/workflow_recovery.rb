@@ -143,6 +143,17 @@ module Workspace
       end
     end
 
+    # Ends the current attempt's open stalls ({WorkflowTransitions::STALL_CAUSES}) in a run being changed under its
+    # lock, as {#note_recovery} ends one: the `recovered` mark, the stall's `until` and a `step_recovered` event for
+    # each cause not yet recovered. For a change already under way, such as a person's resume that keeps the attempt.
+    #
+    # @param run [Hash{String=>Object}] the stored run being changed, written in place
+    # @param action [String] the `step_recovered` action, e.g. `resumed`
+    # @return [void]
+    def close_stalls(run, action:)
+      WorkflowTransitions.open_stalls(run).each { |cause| mark_recovery(run, cause, action) }
+    end
+
     # Decides a step whose agent has ended its turn without anyone seeing it, as a resume does when it is given
     # the same proof (+turn_over+). Does nothing unless the run is still on that step and attempt, `running`, with
     # no reason and no park, so a resume that got there first stands.

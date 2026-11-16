@@ -17,6 +17,10 @@ module Workspace
   #
   # - the run's pane is gone: records `step_stalled` (cause `pane_gone`); the
   #   run keeps its checkout until someone resumes or cancels it
+  # - a stall this attempt noted (`pane_gone`, `agent_gone`, `turn_failed`) whose cause has cleared on the step's
+  #   own pane: records `step_recovered` (action `pane_back`, `agent_back`, `turn_recovered`) and ends the stall's
+  #   span, so the step and run clocks run again; the pass then goes on as below and can time the step out. A
+  #   pane row the daemon does not give ends no `agent_gone` or `turn_failed` stall
   # - the workspace's daemon is not running: starts it (`step_stalled` cause
   #   `daemon_down`, then `step_recovered` action `daemon_respawned`, written
   #   whenever a start succeeds and the recovery is not yet written) and goes no
@@ -175,6 +179,14 @@ module Workspace
         pane = run.pane
         return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", "pane" => pane)
       end
+      seen = {}
+      if running
+        fresh = close_stalls(run, pass, seen)
+        # The run read again after a close: a step that moved on in between is the next pass's to look at.
+        return WorkflowSweepRows.row(fresh, "nothing", reason: "moved_on", message: "the run moved on while it was being looked at; nothing more was changed") unless same_attempt?(run, fresh)
+        run = fresh
+        state = run.steps.fetch(run.current)
+      end
       redelivery = WorkflowEngine.redelivery(run.to_h, @clock.call)
       return sweep_undelivered(run, redelivery, pass) if redelivery
       return respawn(run, pass) if daemon_needed && daemon_down?(run.workspace, pass)
@@ -183,7 +195,7 @@ module Workspace
       return @reviews.lost_round(run, pass) if reviewing && WorkflowEngine.lost_round?(run.to_h, @clock.call)
       return @reviews.call(run, state, pass) if reviewing
       return WorkflowSweepRows.row(run, "nothing", reason: "not_running", message: "no agent is working on step #{run.current} (#{state.state})") unless running
-      sweep_running(run, state, pass)
+      sweep_running(run, state, pass, seen)
     rescue Workspace::Error => e
       return WorkflowSweepRows.row(run, "nothing", reason: "finished", message: "the run ended while it was being looked at") if e.code == "run_not_active"
       WorkflowSweepRows.row(run, "failed", reason: e.code || "error", message: e.message.lines.first.to_s.strip)
@@ -283,7 +295,7 @@ module Workspace
     end
 
     # The step reads `running` and its pane is there.
-    def sweep_running(run, state, pass)
+    def sweep_running(run, state, pass, seen)
       attempt = state.last_attempt
       return WorkflowSweepRows.row(run, "nothing", reason: "no_attempt", message: "step #{run.current} reads running and has no attempt; resume the run") unless attempt
       elapsed = WorkflowTransitions.step_elapsed(run.to_h, attempt.to_h, @clock.call)
@@ -299,7 +311,7 @@ module Workspace
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "delivering", message: "the step's line is still on its way to the pane") if WorkflowEngine.delivery(attempt.to_h, @clock.call) == :delivering
       pane = @panes.pane_of(run.id)
-      shown = @panes.pane_row(run.workspace, pane)
+      shown = shown_row(run, seen)
       return WorkflowSweepRows.row(run, "nothing", reason: "unknown", message: "the agent daemon did not say what pane #{pane} shows") unless shown
       if WorkflowPanes.agent_gone_row?(shown)
         return note(run, pass, "agent_gone", "pane #{pane} shows a shell: the agent has exited, so nothing will end this step. Resume the run to start it again.", "pane" => pane)
@@ -330,6 +342,41 @@ module Workspace
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "not_working", message: "step #{run.current} is past its timeout, but pane #{pane} does not show the agent working") unless shown["state"] == "working"
       press_and_confirm(run, attempt, pass, shown, pane, elapsed, timeout, then_fail: on_timeout == "fail")
+    end
+
+    # What clears each stall cause on the step's own pane, and the `step_recovered` action that records it.
+    STALL_CLEARED = WorkflowTransitions::STALL_CAUSES.zip(%w[pane_back agent_back turn_recovered]).to_h.freeze
+
+    # Ends the open stalls of the running step's attempt whose cause has cleared, so its clocks run again: the
+    # pane is alive again (`pane_gone`; the caller has seen it), the pane shows an agent where a shell was
+    # (`agent_gone`), or its row no longer carries `turn_failed`. A row that can't be read, or a daemon that is
+    # down, ends neither of the last two. Writes nothing on a dry run.
+    # @return [WorkflowRun] the run, read again when a stall was ended
+    def close_stalls(run, pass, seen)
+      cleared = WorkflowTransitions.open_stalls(run.to_h).select do |cause|
+        next true if cause == "pane_gone"
+        next false if daemon_down?(run.workspace, pass)
+        shown = shown_row(run, seen)
+        next false unless shown
+        (cause == "agent_gone") ? shown["kind"] != "shell" : !shown["turn_failed"]
+      end
+      return run if cleared.empty? || pass[:dry_run]
+      cleared.each do |cause|
+        @engine.note_recovery(run.id, actor: "sweep", step: run.current, attempt: WorkflowSweepRows.attempt_of(run), cause: cause, action: STALL_CLEARED.fetch(cause))
+      end
+      @store.run(run.id)
+    end
+
+    # Whether +fresh+ is still on the step and attempt +run+ was read on, and that step still reads running.
+    def same_attempt?(run, fresh)
+      return false if WorkflowRunStore::TERMINAL_STATES.include?(fresh.state) || fresh.current != run.current
+      step = fresh.step(fresh.current)
+      step&.state == "running" && step.last_attempt&.n == run.step(run.current).last_attempt&.n
+    end
+
+    # The step's pane row, asked of the daemon at most once in a run's pass.
+    def shown_row(run, seen)
+      seen.fetch(:row) { seen[:row] = @panes.pane_row(run.workspace, @panes.pane_of(run.id)) }
     end
 
     def note(run, pass, cause, message, data = {})

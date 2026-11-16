@@ -454,6 +454,22 @@ module Workspace
       spans.uniq
     end
 
+    # The one rule for which stalls of the current attempt are open: the {STALL_CAUSES} marked in its sweep marks
+    # ({.sweep_marks}) and not recovered, or whose `stalls` entry on the attempt has no `until` yet.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Array<String>] causes, in {STALL_CAUSES} order
+    def self.open_stalls(run)
+      marks = sweep_marks(run)
+      stalled = marks["stalled"].is_a?(Hash) ? marks["stalled"] : {}
+      recovered = marks["recovered"].is_a?(Hash) ? marks["recovered"] : {}
+      attempt = run.dig("steps", run["current"], "attempts")&.last
+      entries = attempt.is_a?(Hash) ? Array(attempt["stalls"]).grep(Hash) : []
+      STALL_CAUSES.select do |cause|
+        (stalled[cause] && !recovered.key?(cause)) || entries.any? { |entry| entry["cause"] == cause && !entry.key?("until") }
+      end
+    end
+
     def self.stall_time(value)
       value.is_a?(String) ? Time.iso8601(value) : nil
     rescue ArgumentError

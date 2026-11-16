@@ -1308,6 +1308,13 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(current["stuck"]).to include("code" => "stalled")
     end
 
+    it "is absent for a stall the sweep has since ended, even when the pane can't be read" do
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::Error.new("down", code: "daemon_unavailable"))
+      create
+      mark(stalled: stall, recovered: {"agent_gone" => "2026-10-04T12:50:00Z"})
+      expect(current).not_to have_key("stuck")
+    end
+
     it "is absent for a step that is checking, or a line still on its way" do
       create(step_state: "checking")
       mark(stalled: stall)

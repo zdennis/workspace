@@ -43,9 +43,11 @@ module Workspace
     #   every holder as alive
     # @param interrupter [#call] presses keys in a pane (`workspace`, `pane`, `keys`), for `pause --interrupt`; raises
     #   {Workspace::Error} when it can't, and the pause then drops its interrupt mark
+    # @param recovery [Workspace::WorkflowRecovery, nil] ends the open stalls of an attempt a resume keeps ({WorkflowRecovery#close_stalls}); nil ends none
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, interrupter:, holder_alive: nil,
+    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, interrupter:, recovery: nil, holder_alive: nil,
       clock: -> { Time.now })
+      @recovery = recovery
       @change = change
       @store = store
       @progress = progress
@@ -794,6 +796,8 @@ module Workspace
       spend_attempts(stored, extra_attempts, needed: starting, target: WorkflowTransitions.target_step(stored, from: from))
       spend_limits(stored, extra_tokens, extra_seconds, needed: starting || round)
       spend_rounds(stored, extra_rounds, from)
+      # A resume that keeps the attempt ends its stalls, so its clocks run again; a new attempt's start ends them anyway.
+      @recovery&.close_stalls(stored, action: "resumed") unless WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
       # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if pane
