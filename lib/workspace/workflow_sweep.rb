@@ -96,9 +96,11 @@ module Workspace
     # @param turn_failed_after [#call] returns the seconds a failed turn may sit before its step counts as stalled, or
     #   nil for no time limit (a recovery that gave up still counts); called once for each pass
     # @param recovery_entry [#call] given a workspace and a pane id, returns the pane's {AgentRecoveryStore} entry or nil
+    # @param downtime [Workspace::WorkflowDowntime, nil] beaten at the start of every pass, a `--dry-run` pass too: the heartbeat is a machine fact, not run state
     # @param clock [#call] returns the current Time
     def initialize(store:, engine:, panes:, interrupter:, reviews:, default_stall: -> {}, turn_failed_after: -> {},
-      recovery_entry: ->(*) {}, clock: -> { Time.now })
+      recovery_entry: ->(*) {}, clock: -> { Time.now }, downtime: nil)
+      @downtime = downtime
       @store = store
       @engine = engine
       @panes = panes
@@ -124,6 +126,7 @@ module Workspace
     #   "step", "attempt", "cause", "action"
     # @raise [Workspace::Error] code `unknown_run` for a +run+ that does not exist
     def call(run: nil, workspace: nil, dry_run: false, allow: nil)
+      beat
       runs = run ? [@store.run(run)] : @store.going
       runs = runs.select { |each| each.workspace == workspace } if workspace
       pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, default_stall: @default_stall.call, turn_failed_after: @turn_failed_after.call}
@@ -134,6 +137,12 @@ module Workspace
     end
 
     private
+
+    def beat
+      @downtime&.beat
+    rescue
+      nil
+    end
 
     def unreadable_rows
       @store.unreadable.map do |path|

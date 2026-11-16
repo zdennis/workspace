@@ -863,6 +863,10 @@ module Workspace
     task_store ||= TaskStore.new(dir: config.task_dir, error_output: error_output)
     project_settings = ProjectSettings.new(config: config)
     config_resolver = ConfigResolver.new(project_settings: project_settings)
+    # One object for the daemon's tick and the sweep, so both beat the same heartbeat.
+    workflow_config = WorkflowConfig.new(config_resolver: config_resolver)
+    workflow_downtime = WorkflowDowntime.new(heartbeat_path: config.workflow_heartbeat_path, downtime_path: config.workflow_downtime_path,
+      downtime_after: -> { workflow_config.downtime_after })
     event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
     state = State.new(config: config, event_log: event_log, logger: logger)
     osascript ||= OsascriptRunner.new
@@ -1115,14 +1119,13 @@ module Workspace
     workflow_workspace_facts = WorkflowWorkspaceFacts.new(liveness: Liveness.new(tmux: tmux), project_config: project_config, config: config,
       agents: ProjectAgents.new(client: agent_snapshot_client))
     workflow_review_orphans = WorkflowReviewOrphans.new(tmux: tmux, store: workflow_store, panes: workflow_panes)
-    workflow_config = WorkflowConfig.new(config_resolver: config_resolver)
     sweep_default_stall = -> { workflow_config.default_stall }
     workflow_review_sweep = WorkflowReviewSweep.new(engine: workflow_engine, panes: workflow_panes, interrupter: workflow_interrupter,
       orphans: workflow_review_orphans, holder_alive: round_holder.method(:alive?))
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
       interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall,
       turn_failed_after: -> { workflow_config.turn_failed_after },
-      recovery_entry: workflow_recovery_entry)
+      recovery_entry: workflow_recovery_entry, downtime: workflow_downtime)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do
         out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)
@@ -1167,7 +1170,7 @@ module Workspace
       error_output: error_output
     )
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
-      log_path: ->(workspace) { config.agent_log_path(workspace) }, holder_alive: round_holder.method(:alive?), logger: logger, error_output: error_output)
+      log_path: ->(workspace) { config.agent_log_path(workspace) }, holder_alive: round_holder.method(:alive?), downtime: workflow_downtime, logger: logger, error_output: error_output)
     kill_command = Commands::Kill.new(git: git, pr_status: PullRequestStatus.new, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, tmux: tmux, locks: name_migration, output: output, input: input)
     pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
     rebase_command = Commands::Rebase.new(git: git, checkout: workspace_checkout, output: output)

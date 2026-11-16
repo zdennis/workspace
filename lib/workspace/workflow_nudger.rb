@@ -26,9 +26,11 @@ module Workspace
     # @param holder_alive [#call, nil] given a review round's delivery `holder`, whether that process still runs, so
     #   a lapsed round is woken only once its holder is gone (nil takes every holder as alive)
     # @param clock [#call] returns the current Time
+    # @param downtime [Workspace::WorkflowDowntime, nil] beaten first on every tick (its heartbeat)
     # @param logger [Workspace::Logger]
     # @param error_output [IO] the daemon's log, for a run that can't be looked at
-    def initialize(store:, panes:, executable:, log_path:, spawner: nil, holder_alive: nil, clock: -> { Time.now }, logger: Workspace::Logger.new, error_output: $stderr)
+    def initialize(store:, panes:, executable:, log_path:, spawner: nil, holder_alive: nil, clock: -> { Time.now }, downtime: nil, logger: Workspace::Logger.new, error_output: $stderr)
+      @downtime = downtime
       @holder_alive = holder_alive
       @error_output = error_output
       @store = store
@@ -70,6 +72,7 @@ module Workspace
     # @param workspace [String] the daemon's workspace
     # @return [Array<String>] the runs that were woken
     def tick(workspace)
+      beat
       now = @clock.call
       runs = @store.going.select { |run| run.workspace == workspace }
       woken = runs.filter_map do |run|
@@ -89,6 +92,13 @@ module Workspace
     end
 
     private
+
+    # The heartbeat is a side record: a failure to write it must not skip the tick.
+    def beat
+      @downtime&.beat
+    rescue => e
+      @logger.debug { "workflow: could not beat the heartbeat (#{e.class}: #{e.message})" }
+    end
 
     def sweep(workspace, runs, now)
       return if runs.empty?
