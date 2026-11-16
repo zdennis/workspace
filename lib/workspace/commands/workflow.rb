@@ -1494,7 +1494,7 @@ module Workspace
           @output.flush
           cursor = result["next_since"]
           if archived && !result["truncated"]
-            state = @store.run(run).state
+            state = finished_state(run)
             @output.puts(json ? JSON.generate("type" => "follow_ended", "run" => run, "state" => state, "next_since" => cursor) : "Run #{run} #{state}; no more events.")
             break
           end
@@ -1503,6 +1503,14 @@ module Workspace
         end
       rescue Errno::EPIPE, Interrupt
         nil
+      end
+
+      # The archive may prune the run between the two reads; it had finished by then.
+      def finished_state(run)
+        @store.run(run).state
+      rescue Workspace::Error => e
+        raise unless e.code == "unknown_run"
+        "finished"
       end
 
       def event_line(event)
@@ -1704,12 +1712,12 @@ module Workspace
         shown = @status.run(run["id"])["runs"].first
         reason = shown.dig("current", "reason")
         undelivered = reason && reason.dig("details", "kind") == "dispatch"
-        describe(shown, waits: waits)
+        wait = waits_for(shown, verb) if waits
+        describe(shown, wait_kind: wait&.fetch("kind"))
         @output.puts message if message
         result = {"workspace" => run["workspace"], "outcome" => (undelivered && verb != "unchanged") ? "failed" : verb, "reason" => reason&.fetch("code"),
                   "message" => (undelivered && verb != "unchanged") ? reason.dig("details", "message") : message, "run" => shown}
         return result unless waits
-        wait = waits_for(shown, verb)
         @output.puts wait["text"] if wait && wait["kind"] != "nothing"
         result.merge("waits" => wait)
       end
@@ -1755,21 +1763,22 @@ module Workspace
         lines.join("\n")
       end
 
-      def describe(run, waits: false)
+      # +wait_kind+ names the wait sentence printed after it, so its facts are not printed twice.
+      def describe(run, wait_kind: nil)
         current = run["current"]
         where = %w[completed cancelled failed].include?(run["state"]) ? "" : "  step #{current["step"]}#{" (attempt #{current["attempt"]})" if current["attempt"]}, #{current["state"]}"
         @output.puts "#{run["id"]}  #{run["workflow"]}  #{run["workspace"]}  #{run["state"]}#{where}"
         reason = current["reason"]
-        @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason && !(waits && reason["code"] == "retry_backoff")
+        @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason && !(reason["code"] == "retry_backoff" && wait_kind == "backoff")
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
         if (deadline = run["deadline"])
           @output.puts "  time: #{deadline["clock"]} #{Duration.humanize(deadline["used"].to_f)} of #{Duration.humanize(deadline["limit"].to_f)}"
         end
         describe_turn_failed(current["turn_failed"]) if current["turn_failed"]
-        @output.puts "  refused: #{refusal_text(current["refusal"], pane: run["pane"])}" if current["refusal"] && !waits
+        @output.puts "  refused: #{refusal_text(current["refusal"], pane: run["pane"])}" if current["refusal"] && wait_kind != "pane_busy"
         describe_review(current["review"]) if current["review"]
         parked = current["parked"]
-        @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked && !waits
+        @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked && wait_kind != "parked"
         @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }

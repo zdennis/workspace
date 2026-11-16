@@ -1200,6 +1200,16 @@ RSpec.describe Workspace::Commands::Workflow do
           "text" => "The run waits for its pane: the next line was not typed because pane %5 looked busy: working.")
       end
 
+      it "still shows a refusal that a pending park comes before" do
+        waiting("flags" => ["parked"], "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"},
+          "refusal" => {"error" => "pane_busy", "seen" => {"state" => "working"}})
+
+        row = command.resume(run: "wr_1")
+
+        expect(row["waits"]).to include("kind" => "parked")
+        expect(output.string).to include("  refused: the next line was not typed because pane %5 looked busy: working")
+      end
+
       it "says there is nothing to wait for when the resume did nothing" do
         allow(engine).to receive(:resume).and_return("id" => "wr_1", "workspace" => "app", "unchanged" => "an agent is working on step plan")
 
@@ -2872,6 +2882,21 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(output.string.lines.map { |line| JSON.parse(line) }).to eq([
           {"type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "completed", "next_since" => 4}
         ])
+      end
+
+      it "ends as finished when the archive prunes the run before its state is read" do
+        fixture_run
+        steps << -> {
+          finish_run
+          finished = real_store.run("wr_2610250930abcd")
+          reads = 0
+          # The history read still finds the run; the state read after it does not.
+          allow(real_store).to receive(:run) { ((reads += 1) > 1) ? raise(Workspace::Error.new("no run", code: "unknown_run")) : finished }
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
+
+        expect(JSON.parse(output.string.lines.last)).to include("type" => "follow_ended", "state" => "finished")
       end
 
       it "stops after max_polls while the run is going" do
