@@ -117,7 +117,9 @@ A next action is a suggestion for a person, or for a caller acting for one. Noth
 
 ## Snapshot
 
-The agent daemon's pane list (`sessions --json`) carries a boolean `turn_failed` per pane, `true` while the agent's last turn stands as ended by an API error (see [`sessions`](README.sessions.md), and [`agentd`](README.agentd.md#recovering-from-an-api-error) for the recovery). The panes of `snapshot --json` don't list it.
+The agent daemon's pane list (`sessions --json`) carries a boolean `turn_failed` per pane, `true` while the agent's last turn stands as ended by an API error (see [`sessions`](README.sessions.md), and [`agentd`](README.agentd.md#recovering-from-an-api-error) for the recovery). The panes of `snapshot --json` don't list it. Each `sessions --json` pane also carries `state_changed_by` (the input its `state` comes from, or null) and, while `turn_failed` is true, `turn_failed_kind` (see [`sessions`](README.sessions.md)).
+
+`workflow events RUN --follow --json` prints one event per line, then a last `{"type":"follow_ended","run":RUN,"state":"completed"|"failed"|"cancelled","next_since":N}` once the run has finished (see [`workflow events`](README.workflow.md)). `daemon watch --json` prints one object per line: `source` (`daemon`, `run` or `watch`), `at`, `type`, `workspace`, `run_id`, `event` and an opaque `cursor` to pass back as `--since`; a `--run` watch ends with a `follow_ended` line carrying `state` (see [`daemon watch`](README.daemon.md#watch)).
 
 The same pane list carries `waits` per pane: every open wait as `agent_id`, `tool`, `input` and `since` (the main agent's `agent_id` is `null`). `input` is as sensitive as `waiting_input`, and the panes of `snapshot --json` leave `waits` out (see [`sessions`](README.sessions.md)).
 
