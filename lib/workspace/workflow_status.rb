@@ -261,7 +261,7 @@ module Workspace
         "current" => {"step" => run.current, "attempt" => state.last_attempt&.n, "state" => state.state,
                       "reason" => shown_reason(run, reason, review_pane || pane),
                       "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state))
-            .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)).merge(finished ? {} : turn_failed_row(run, state, reason, shown, pane)).merge(finished ? {} : review_row(run, state)),
+            .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)).merge(finished ? {} : turn_failed_row(run, state, reason, shown, pane)).merge(finished ? {} : review_row(run, state)).merge(finished ? {} : refusal_row(run, state)),
         "steps" => run.definition["steps"].map { |step| step_row(step, run.steps.fetch(step["id"]), run) },
         "base_sha" => run.base_sha, "pane" => pane, "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
         "artifacts_dir" => run.artifacts_dir, "events_path" => @store.events_path(run.id),
@@ -334,12 +334,19 @@ module Workspace
                          "gave_up" => failed[:gave_up]}}
     end
 
+    # A continue line the pane refused as busy and a later tick will type again: `refusal` with `error`, `message`,
+    # `reason` and `seen` as the attempt recorded them. Absent otherwise, and for runs stored before it was recorded.
+    def refusal_row(run, state)
+      refusal = state.last_attempt&.refusal
+      (run.continue_pending && refusal.is_a?(Hash)) ? {"refusal" => refusal} : {}
+    end
+
     # The review round of a `reviewing` step, as `current.review` shows it (absent for any other step, and for a
     # reviewing step that stored no round): `round` and `max_rounds`, `need` and `must`, `approvals` and `pending`
     # (the reviewers with no verdict yet, from the verdict rows a stopped round read), `pane` and `window`, the
     # `delivery` mark, `started_at`, `stopped` (the round ended without deciding; a resume starts `next_round`),
     # `held` (the reason that kept a round from starting; `next_round` is then the round its release starts) and
-    # `reviews`, each row with its `isolation`.
+    # `reviews`, each row with its `isolation`, and `refusal` (what a refused delivery saw; the key is absent otherwise).
     def review_row(run, state)
       round = state.review
       spec = review_spec(run)
@@ -358,7 +365,14 @@ module Workspace
                     "pane" => round["pane"], "window" => round["window"], "delivery" => round["delivery"], "started_at" => round["started_at"],
                     "stopped" => state.review_stopped?, "held" => round["held"], "next_round" => next_round, "rerun" => (state.review_stopped? ? nil : round["rerun"]),
                     "rounds_spent" => !next_round.nil? && next_round > allowance,
-                    "reviews" => rows.map { |row| REVIEW_ROW_KEYS.to_h { |key| [key, row[key]] } }}}
+                    "reviews" => rows.map { |row| REVIEW_ROW_KEYS.to_h { |key| [key, row[key]] } }}.merge((refusal = review_refusal(round)) ? {"refusal" => refusal} : {})}
+    end
+
+    # What a round whose delivery was refused as busy saw: `error`, `message`, `reason` and `seen`; nil for any other round.
+    def review_refusal(round)
+      failure = round["failure"]
+      return nil if round["delivery"] != "failed" || !failure.is_a?(Hash) || !(failure["reason"] || failure["seen"])
+      {"error" => failure["code"], "message" => failure["message"], "reason" => failure["reason"], "seen" => failure["seen"]}.compact
     end
 
     # The keys of a verdict row `current.review.reviews` shows, each null when the stored row lacks it.

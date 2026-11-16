@@ -595,7 +595,11 @@ module Workspace
           table = [%w[STEP ATTEMPT OUTCOME CODE HEAD DURATION TOKENS] + (reviewed ? %w[REVIEW] : [])] +
             result["attempts"].map { |each| attempt_cells(each) + (reviewed ? [TerminalText.escape(each["review"] || "-")] : []) }
           widths = table.transpose.map { |column| column.map(&:length).max }
-          table.each { |cells| @output.puts cells.each_with_index.map { |cell, index| cell.ljust(widths[index]) }.join("  ").rstrip }
+          table.each_with_index do |cells, index|
+            @output.puts cells.each_with_index.map { |cell, at| cell.ljust(widths[at]) }.join("  ").rstrip
+            refusal = (index > 0) && result["attempts"][index - 1]["refusal"]
+            @output.puts "  refused: #{refusal_text(refusal)}" if refusal
+          end
         end
         result["unowned_reasons"].each do |reason|
           @output.puts "Reason outside any attempt: #{[reason["step"], reason["code"], reason["since"], reason["until"] || "now"].map { |each| TerminalText.escape(each) }.join("  ")}"
@@ -1701,6 +1705,7 @@ module Workspace
           @output.puts "  time: #{deadline["clock"]} #{Duration.humanize(deadline["used"].to_f)} of #{Duration.humanize(deadline["limit"].to_f)}"
         end
         describe_turn_failed(current["turn_failed"]) if current["turn_failed"]
+        @output.puts "  refused: #{refusal_text(current["refusal"], pane: run["pane"])}" if current["refusal"]
         describe_review(current["review"]) if current["review"]
         parked = current["parked"]
         @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked
@@ -1739,9 +1744,40 @@ module Workspace
         pending = review["pending"].empty? ? "" : ", waiting for #{review["pending"].map(&escape).join(", ")}"
         where = review["pane"] ? ", review pane #{escape.call(review["pane"])}" : ""
         @output.puts "  review: #{round}; #{review["approvals"]} of #{review["need"]} approvals#{pending}#{where}"
+        @output.puts "    refused: #{refusal_text(review["refusal"], pane: review["pane"])}" if review["refusal"]
         review["reviews"].each do |row|
           @output.puts "    #{escape.call(row["reviewer"])}: #{escape.call(row["verdict"] || "no verdict#{" (#{row["problem"]})" if row["problem"]}")}#{" [#{escape.call(row["isolation"])}]" if row["isolation"]}"
         end
+      end
+
+      CHANGED_BY_WORDS = {"screen" => "judged from the pane's screen", "restore" => "read back after a daemon restart",
+                          "turn_failed" => "its last turn failed"}.freeze
+
+      # A pane_busy refusal in plain words, the same in attempts and status:
+      # `the next line was not typed because pane %3 looked busy: working since 12:01:02, judged from the pane's screen`.
+      # Every value comes from a stored run, so the text is escaped for a terminal.
+      def refusal_text(refusal, pane: nil)
+        facts = refusal_facts(refusal)
+        head = "the next line was not typed because #{pane ? "pane #{pane}" : "the pane"} looked busy"
+        TerminalText.escape(facts ? "#{head}: #{facts}" : head)
+      end
+
+      # What the pane showed, without the sentence around it; nil when nothing was recorded.
+      def refusal_facts(refusal)
+        seen = refusal["seen"].is_a?(Hash) ? refusal["seen"] : {}
+        facts = []
+        facts << [seen["state"], ("since #{clock_time(seen["state_since"])}" if seen["state_since"])].compact.join(" ") if seen["state"]
+        facts << (CHANGED_BY_WORDS[seen["changed_by"]] || "reported by the agent's #{seen["changed_by"]} hook") if seen["changed_by"]
+        facts << "its last turn failed#{" (#{seen["turn_failed_kind"]})" if seen["turn_failed_kind"]}" if seen["turn_failed"]
+        facts << "read after the refusal" if seen["read_after"]
+        facts << refusal["reason"].to_s if facts.empty? && refusal["reason"]
+        facts.uniq.join(", ") unless facts.empty?
+      end
+
+      def clock_time(iso)
+        Time.iso8601(iso.to_s).localtime.strftime("%H:%M:%S")
+      rescue ArgumentError
+        iso.to_s
       end
 
       # What a person has to supply, shown as an upper-case placeholder where it goes.
@@ -1779,7 +1815,7 @@ module Workspace
           when "prompt" then "#{"review " if details["role"] == "reviewer"}pane #{details["pane"]} is waiting for an answer#{": #{details["message"]}" if details["message"]}"
           when "ask" then "open question #{details["ask"]}: #{details["question"]}"
           when "delivery" then "step #{details["step"]}'s line was on its way to pane #{details["pane"]} when the process typing it stopped; the agent may not have it"
-          else "step #{details["step"]} could not be started (#{details["error"]}): #{details["message"]}"
+          else "step #{details["step"]} could not be started (#{details["error"]}): #{details["message"]}#{"; the pane showed #{refusal_facts(details)}" if details["seen"].is_a?(Hash) && refusal_facts(details)}"
           end
         when "turn_ended_incomplete"
           stale = Array(details["stale"])

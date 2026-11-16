@@ -4,6 +4,14 @@ require "json"
 require "tmpdir"
 
 RSpec.describe Workspace::Commands::Workflow do
+  around do |example|
+    zone = ENV["TZ"]
+    ENV["TZ"] = "UTC"
+    example.run
+  ensure
+    ENV["TZ"] = zone
+  end
+
   let(:catalog) { instance_double(Workspace::WorkflowCatalog) }
   let(:engine) { instance_double(Workspace::WorkflowEngine) }
   let(:status) { instance_double(Workspace::WorkflowStatus) }
@@ -552,6 +560,37 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to include("flag: parked\n  parked: pane %5 until 2026-10-04T14:00:00Z; carried out once that pane's turn ends\n")
     end
 
+    it "says on a line under the current step what a refused continue line saw" do
+      refused = shown("pane" => "%5", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => [],
+                                                    "refusal" => {"error" => "pane_busy", "seen" => {"state" => "working", "state_since" => "2026-10-04T12:01:02Z", "changed_by" => "screen"}}})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [refused], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  refused: the next line was not typed because pane %5 looked busy: working since 12:01:02, judged from the pane's screen\n")
+    end
+
+    it "names an agent hook as what set a refused pane's state, and leaves out a since it does not have" do
+      refused = shown("current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => [],
+                                    "refusal" => {"error" => "pane_busy", "seen" => {"state" => "working", "changed_by" => "UserPromptSubmit"}}})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [refused], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("looked busy: working, reported by the agent's UserPromptSubmit hook\n")
+    end
+
+    it "says under the review line what a refused review round saw" do
+      round = {"round" => 1, "max_rounds" => 3, "need" => 1, "approvals" => 0, "pending" => ["owl"], "pane" => "%9", "stopped" => false, "held" => nil, "next_round" => nil, "reviews" => [],
+               "refusal" => {"error" => "pane_busy", "seen" => {"state" => "waiting", "state_since" => "2026-10-04T12:01:02Z", "changed_by" => "restore", "read_after" => true}}}
+      refused = shown("current" => {"step" => "plan", "attempt" => 1, "state" => "reviewing", "reason" => nil, "flags" => [], "review" => round})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [refused], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("review pane %9\n    refused: the next line was not typed because pane %9 looked busy: waiting since 12:01:02, read back after a daemon restart, read after the refusal\n")
+    end
+
     it "prints a step being reviewed: the round, the approvals, who is out and the review pane, escaped" do
       round = {"round" => 2, "max_rounds" => 6, "need" => 2, "approvals" => 1, "pending" => ["sk\e[31meptic"], "pane" => "%9", "stopped" => true, "held" => nil, "next_round" => 3,
                "reviews" => [{"reviewer" => "owl", "verdict" => "approve", "isolation" => "review_pane"}, {"reviewer" => "scribe", "verdict" => nil, "problem" => "missing", "isolation" => "review_pane"}]}
@@ -743,6 +782,9 @@ RSpec.describe Workspace::Commands::Workflow do
           "waiting_you: open question a1: Postgres or sqlite?",
         reason("waiting_you", {"kind" => "dispatch", "step" => "plan", "error" => "pane_busy", "message" => "pane %5 did not go quiet"}) =>
           "waiting_you: step plan could not be started (pane_busy): pane %5 did not go quiet",
+        reason("waiting_you", {"kind" => "dispatch", "step" => "plan", "pane" => "%5", "error" => "pane_busy", "message" => "pane %5 did not go quiet",
+          "seen" => {"state" => "working", "changed_by" => "screen", "turn_failed" => true, "turn_failed_kind" => "rate_limit"}}) =>
+          "waiting_you: step plan could not be started (pane_busy): pane %5 did not go quiet; the pane showed working, judged from the pane's screen, its last turn failed (rate_limit)",
         reason("waiting_you", {"kind" => "delivery", "step" => "plan", "attempt" => 1, "pane" => "%5"}) =>
           "waiting_you: step plan's line was on its way to pane %5 when the process typing it stopped; the agent may not have it",
         reason("turn_ended_incomplete", {"missing" => ["/a/plan.md", "/a/risks.md"]}) =>
@@ -2370,6 +2412,30 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string.lines[1]).to include("not_delivered (retried)")
     end
 
+    it "says under a refused attempt what the pane looked like, and prints nothing for the others" do
+      create_run
+      edit_run(real_store, "wr_2611010900abcd") do |stored|
+        stored["steps"]["implement"]["attempts"][1]["refusal"] = {"error" => "pane_busy", "reason" => "working",
+          "seen" => {"state" => "working", "state_since" => "2026-11-01T09:05:00Z", "changed_by" => "screen"}}
+      end
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      lines = output.string.lines.map(&:rstrip)
+      expect(lines.size).to eq(4)
+      expect(lines[3]).to eq("  refused: the next line was not typed because the pane looked busy: working since 09:05:00, judged from the pane's screen")
+    end
+
+    it "prints a refused attempt's refusal in --json, and null for the other" do
+      create_run
+      refusal = {"error" => "pane_busy", "message" => "busy", "reason" => "working", "seen" => {"state" => "working", "changed_by" => "screen"}}
+      edit_run(real_store, "wr_2611010900abcd") { |stored| stored["steps"]["implement"]["attempts"][1]["refusal"] = refusal }
+
+      attempts_command.attempts(run: "wr_2611010900abcd", json: true)
+
+      expect(JSON.parse(output.string)["attempts"].map { |row| row["refusal"] }).to eq([nil, refusal])
+    end
+
     it "prints one table row per attempt" do
       create_run
 
@@ -2608,6 +2674,34 @@ RSpec.describe Workspace::Commands::Workflow do
       old, new = json["events"].values_at(0, -1)
       expect(old).to eq("n" => 1, "ts" => "2026-10-25T09:30:00.000Z", "type" => "run_started", "workflow" => "rpiv")
       expect(new).to include("n" => 5, "type" => "step_dispatching", "step" => "research", "attempt" => 2, "from_state" => "running", "to_state" => "waiting", "actor" => "person", "cause" => "reject", "retry_of" => 1)
+    end
+
+    describe "a run whose lines were refused as busy" do
+      before do
+        fixture_run
+        real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "research", "attempt" => 2, "delivered" => false, "reason" => "working",
+          "seen_state" => "working", "seen_changed_by" => "screen")
+        real_store.record_event("wr_2610250930abcd", "review_delivery_failed", "step" => "research", "attempt" => 2, "round" => 1, "code" => "pane_busy", "reason" => "working",
+          "seen_state" => "working", "seen_read_after" => true)
+      end
+
+      it "prints the seen keys as key=value" do
+        events_command.events(run: "wr_2610250930abcd")
+
+        expect(output.string.lines.map(&:chomp)).to include(
+          "   5  2026-10-25T09:30:00.000Z  step_dispatched  step=research  attempt=2  delivered=false  reason=working  seen_state=working  seen_changed_by=screen",
+          "   6  2026-10-25T09:30:00.000Z  review_delivery_failed  step=research  attempt=2  round=1  code=pane_busy  reason=working  seen_state=working  seen_read_after=true"
+        )
+      end
+
+      it "carries the seen keys in --json" do
+        events_command.events(run: "wr_2610250930abcd", json: true)
+
+        expect(json["events"].last(2)).to include(
+          include("type" => "step_dispatched", "reason" => "working", "seen_state" => "working", "seen_changed_by" => "screen"),
+          include("type" => "review_delivery_failed", "reason" => "working", "seen_state" => "working", "seen_read_after" => true)
+        )
+      end
     end
 
     it "prints one line per event, then the warnings" do

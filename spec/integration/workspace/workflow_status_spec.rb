@@ -59,6 +59,40 @@ RSpec.describe Workspace::WorkflowStatus do
     {"action" => name, "args" => args, "needs" => needs}
   end
 
+  describe "current.refusal" do
+    let(:refusal) { {"error" => "pane_busy", "message" => "busy", "reason" => "working", "seen" => {"state" => "working", "changed_by" => "screen"}} }
+
+    def refused_run(**rest)
+      run = create(**rest)
+      edit_run(store, run["id"]) { |stored| stored["steps"]["plan"]["attempts"].last["refusal"] = refusal }
+    end
+
+    it "shows what a refused continue line saw while the run waits to type it again" do
+      refused_run(continue_pending: {"step" => "plan", "attempt" => 2, "pane" => "%5", "since" => "2026-10-04T12:41:00Z"})
+
+      expect(current["refusal"]).to eq(refusal)
+    end
+
+    it "has no key once the line went out, though the attempt keeps the refusal" do
+      refused_run
+
+      expect(current).not_to have_key("refusal")
+    end
+
+    it "has no key when the attempt was never refused" do
+      create(continue_pending: {"step" => "plan", "attempt" => 2, "pane" => "%5", "since" => "2026-10-04T12:41:00Z"})
+
+      expect(current).not_to have_key("refusal")
+    end
+
+    it "has no key for a finished run" do
+      refused_run(continue_pending: {"step" => "plan", "attempt" => 2, "pane" => "%5", "since" => "2026-10-04T12:41:00Z"})
+      edit_run(store, "wr_1") { |run| run.merge!("state" => "completed", "ended_at" => "2026-10-04T12:59:00Z") }
+
+      expect(current).not_to have_key("refusal")
+    end
+  end
+
   it "shows the current attempt's proofs, and no key for an attempt with none" do
     create
     expect(current).not_to have_key("proofs")
@@ -1525,6 +1559,15 @@ RSpec.describe Workspace::WorkflowStatus do
         expect(shown["current"]["reason"]).to include("code" => "waiting_you", "details" => include("kind" => "prompt", "role" => "reviewer", "pane" => "%9"))
         needs = Workspace::WorkflowNeedsMe.new(clock: -> { Time.utc(2026, 10, 4, 13) }).rows([shown])
         expect(needs.map { |each| each["run"] }).to eq(["wr_simulated"])
+      end
+
+      it "shows what a round refused as busy saw, and no key for a failure that carries nothing" do
+        failure = {"code" => "pane_busy", "message" => "busy", "reason" => "working", "at" => "2026-10-04T12:59:02Z", "seen" => {"state" => "working", "changed_by" => "screen"}}
+        load_fixture(round: {"delivery" => "failed", "pane" => "%9", "kick_at" => "2026-10-04T12:59:01.000Z", "failure" => failure})
+        expect(review_status["current"]["review"]["refusal"]).to eq("error" => "pane_busy", "message" => "busy", "reason" => "working", "seen" => failure["seen"])
+
+        load_fixture(round: typed)
+        expect(review_status["current"]["review"]).not_to have_key("refusal")
       end
 
       it "reads no pane for a failed delivery that proves nothing was typed" do
