@@ -268,6 +268,13 @@ module Workspace
       File.join(state_dir, ".workflows", "event-errors.log")
     end
 
+    # The file the launchd sweep entry writes its output to.
+    #
+    # @return [String] path to `sweep.log` in the state directory
+    def sweep_log_path
+      File.join(state_dir, "sweep.log")
+    end
+
     # Finished runs are moved here, so the runs directory holds only runs still going.
     #
     # @return [String] path to the directory holding finished workflow runs

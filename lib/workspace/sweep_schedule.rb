@@ -8,7 +8,7 @@ module Workspace
   # The plist records absolute paths read at install time (Ruby, the `workspace`
   # program, a PATH holding both Ruby's and tmux's directory), because launchd's
   # own PATH finds the system Ruby, which cannot load this code. Homebrew paths
-  # are the stable `opt` ones. Output goes to /dev/null, so nothing grows.
+  # are the stable `opt` ones. Output goes to `sweep.log` in the state directory.
   # `launchctl` and the LaunchAgents directory are injected; nothing here runs a
   # real one unless the composition root hands it over.
   class SweepSchedule
@@ -29,8 +29,10 @@ module Workspace
     # @param ruby [String] the Ruby that runs it (`RbConfig.ruby`)
     # @param which [#call] program name to absolute path or nil (`Which.method(:path)`)
     # @param uid [Integer] the user whose `gui/UID` domain the entry loads into
-    def initialize(agents_dir:, launchctl:, source:, ruby:, which:, uid:)
+    # @param log_path [String] where the entry's stdout and stderr go (`Config#sweep_log_path`)
+    def initialize(agents_dir:, launchctl:, source:, ruby:, which:, uid:, log_path:)
       @agents_dir = agents_dir
+      @log_path = log_path
       @launchctl = launchctl
       @source = source
       @ruby = ruby
@@ -60,6 +62,7 @@ module Workspace
       end
       return row("dry_run", "Would #{action}.", action: action) if dry_run && action
       return row("unchanged", "Already installed and loaded.") unless action
+      make_log_dir
       unload! if changed && loaded
       write(text) if changed
       load!
@@ -203,6 +206,12 @@ module Workspace
         retry_with: {"flags" => [], "destructive" => false})
     end
 
+    def make_log_dir
+      FileUtils.mkdir_p(File.dirname(@log_path))
+    rescue SystemCallError => e
+      raise Error.new("Could not create the directory of #{@log_path}: #{e.message}", code: "sweep_launchctl_failed", details: {"plist" => path, "step" => "log_dir", "output" => e.message, "plist_written" => false})
+    end
+
     def write(text)
       FileUtils.mkdir_p(@agents_dir)
       temp = "#{path}.tmp#{Process.pid}"
@@ -236,8 +245,8 @@ module Workspace
         ["StartInterval", INTERVAL],
         ["RunAtLoad", false],
         ["ProcessType", "Background"],
-        ["StandardOutPath", File::NULL],
-        ["StandardErrorPath", File::NULL],
+        ["StandardOutPath", @log_path],
+        ["StandardErrorPath", @log_path],
         ["EnvironmentVariables", {"PATH" => search_path(ruby)}]
       ]
       <<~XML

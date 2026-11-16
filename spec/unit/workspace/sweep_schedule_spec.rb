@@ -13,6 +13,7 @@ RSpec.describe Workspace::SweepSchedule do
   let(:agents_dir) { File.join(@dir, "Library", "LaunchAgents") }
   let(:plist_path) { File.join(agents_dir, "com.workspace.workflow-sweep.plist") }
   let(:program) { File.join(@dir, "a&b", "bin", "workspace") }
+  let(:log_path) { File.join(@dir, "state", "sweep.log") }
   let(:calls) { [] }
   let(:loaded) { [false] }
   let(:fail_step) { [] }
@@ -39,7 +40,7 @@ RSpec.describe Workspace::SweepSchedule do
   let(:ruby) { "/usr/local/ruby/bin/ruby" }
   let(:schedule) do
     described_class.new(agents_dir: agents_dir, launchctl: launchctl, source: source, ruby: ruby,
-      which: ->(name) { (name == "tmux") ? tmux : nil }, uid: 501)
+      which: ->(name) { (name == "tmux") ? tmux : nil }, uid: 501, log_path: log_path)
   end
 
   def mutating
@@ -60,7 +61,9 @@ RSpec.describe Workspace::SweepSchedule do
     expect(text).to include("<string>#{ruby}</string>", "<string>#{@dir}/a&amp;b/bin/workspace</string>")
     expect(text).to include("<integer>300</integer>", "<string>/usr/local/ruby/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>")
     expect(text.lines[2].chomp).to eq(described_class::MARKER)
-    expect(text.scan(File::NULL).size).to eq(2)
+    expect(text.scan("<string>#{log_path}</string>").size).to eq(2)
+    expect(text).not_to include(File::NULL)
+    expect(text).to include("<key>RunAtLoad</key>\n  <false/>")
     expect(calls).to include(["bootstrap", "gui/501", plist_path])
   end
 
@@ -69,7 +72,7 @@ RSpec.describe Workspace::SweepSchedule do
     opt = File.join(@dir, "brew", "opt", "ruby", "bin", "ruby")
     FileUtils.mkdir_p(File.dirname(opt))
     File.write(opt, "")
-    described_class.new(agents_dir: agents_dir, launchctl: launchctl, source: source, ruby: cellar, which: ->(_) {}, uid: 501).install
+    described_class.new(agents_dir: agents_dir, launchctl: launchctl, source: source, ruby: cellar, which: ->(_) {}, uid: 501, log_path: log_path).install
     expect(File.read(plist_path)).to include("<string>#{opt}</string>").and(satisfy { |text| !text.include?("Cellar") })
   end
 
@@ -101,7 +104,7 @@ RSpec.describe Workspace::SweepSchedule do
     end
 
     it "writes nothing when launchctl cannot run (the status check fails first)" do
-      schedule = described_class.new(agents_dir: agents_dir, launchctl: ->(_) { raise Errno::ENOENT }, source: source, ruby: ruby, which: ->(_) {}, uid: 1)
+      schedule = described_class.new(agents_dir: agents_dir, launchctl: ->(_) { raise Errno::ENOENT }, source: source, ruby: ruby, which: ->(_) {}, uid: 1, log_path: log_path)
       expect(error_of { schedule.install }.code).to eq("sweep_launchctl_failed")
       expect(File.exist?(plist_path)).to be(false)
     end
@@ -258,7 +261,7 @@ RSpec.describe Workspace::SweepSchedule do
       File.write(program, "")
       real_ruby = File.join(@dir, "ruby")
       File.write(real_ruby, "")
-      described_class.new(agents_dir: agents_dir, launchctl: launchctl, source: source, ruby: real_ruby, which: ->(_) {}, uid: 501).install
+      described_class.new(agents_dir: agents_dir, launchctl: launchctl, source: source, ruby: real_ruby, which: ->(_) {}, uid: 501, log_path: log_path).install
       expect(schedule.status["stale"]).to eq([])
     end
 
@@ -280,6 +283,28 @@ RSpec.describe Workspace::SweepSchedule do
       File.write(plist_path, "<plist/>")
       print_answer.replace(["timed out", nil])
       expect(schedule.status).to include("ours" => false, "loaded" => nil, "up_to_date" => nil)
+    end
+
+    it "creates the log directory on install, not on a dry run" do
+      schedule.install(dry_run: true)
+      expect(File.directory?(File.dirname(log_path))).to be(false)
+      schedule.install
+      expect(File.directory?(File.dirname(log_path))).to be(true)
+    end
+
+    it "refuses with sweep_launchctl_failed and writes no plist when the log directory cannot be made" do
+      FileUtils.mkdir_p(@dir)
+      File.write(File.join(@dir, "state"), "a file, not a directory")
+      error = error_of { schedule.install }
+      expect(error.code).to eq("sweep_launchctl_failed")
+      expect(error.details).to include("step" => "log_dir", "plist_written" => false)
+      expect(File.exist?(plist_path)).to be(false)
+    end
+
+    it "reads a plist that sends output to /dev/null as out of date" do
+      schedule.install
+      File.write(plist_path, File.read(plist_path).gsub(log_path, File::NULL))
+      expect(schedule.status).to include("ours" => true, "up_to_date" => false)
     end
 
     it "says up_to_date false when the plist differs" do

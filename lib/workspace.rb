@@ -1136,7 +1136,7 @@ module Workspace
       rescue SystemCallError, Timeout::Error => e
         [e.message, nil]
       end,
-      source: skill_source, ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid)
+      source: skill_source, ruby: RbConfig.ruby, which: Which.method(:path), uid: Process.uid, log_path: config.sweep_log_path)
     workflow_catalog = WorkflowCatalog.new(config: config, sources: workflow_source_dirs)
     workflow_project = WorkflowProject.new(project_detector: project_detector, project_config: project_config, git: git, start_ref: start_ref, config: config, error_output: error_output)
     workflow_needs_me = WorkflowNeedsMe.new
