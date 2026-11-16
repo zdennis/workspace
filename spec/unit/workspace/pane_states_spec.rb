@@ -30,6 +30,22 @@ RSpec.describe Workspace::PaneStates do
     end
   end
 
+  describe ".changed_by_for" do
+    it "names the input each state comes from, and nil when none was recorded" do
+      pane[:waits].merge!("a1" => wait(5).merge(by: "notification"), "a2" => wait(7).merge(by: "screen"))
+      pane[:done] = {since: now - 3, by: "stop"}
+      pane[:activity_by] = "screen"
+
+      expect(described_class.changed_by_for(pane, "done")).to eq("stop")
+      expect(described_class.changed_by_for(pane, "waiting")).to eq("screen")
+      expect(described_class.changed_by_for(pane, "working")).to eq("screen")
+      expect(described_class.changed_by_for(pane, "idle")).to eq("screen")
+
+      pane.delete(:activity_by)
+      expect(described_class.changed_by_for(pane, "working")).to be_nil
+    end
+  end
+
   describe ".since_for" do
     it "dates each state from its own evidence" do
       pane[:done] = {since: now - 3}

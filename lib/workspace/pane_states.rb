@@ -64,6 +64,20 @@ module Workspace
       end
     end
 
+    # Which input {.since_for} took +state+ from: the event that ended the turn
+    # or raised the oldest wait, or what last moved the pane's output.
+    #
+    # @param pane [Hash]
+    # @param state [String] a state {.reported_state} answered
+    # @return [String, nil] a hook event's name, "screen" or "restore"; nil when none was recorded
+    def changed_by_for(pane, state)
+      case state
+      when "done" then pane[:done][:by]
+      when "waiting" then oldest_wait(pane)[:by]
+      else pane[:activity_by]
+      end
+    end
+
     # {SessionMonitor#fresh_since} for one pane.
     #
     # @param pane [Hash]

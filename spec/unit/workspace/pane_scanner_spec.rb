@@ -65,6 +65,11 @@ RSpec.describe Workspace::PaneScanner do
       expect(pane).not_to have_key(:done)
     end
 
+    it "records the screen as the source of a first and a changed reading" do
+      refresh
+      expect(pane[:activity_by]).to eq("screen")
+    end
+
     it "dates activity from the screen's last change" do
       refresh
       refresh(now + 40)
@@ -82,7 +87,7 @@ RSpec.describe Workspace::PaneScanner do
 
       refresh
 
-      expect(pane[:waits]["screen"]).to eq(since: now + 2, message: "Codex is asking you to sign in")
+      expect(pane[:waits]["screen"]).to eq(since: now + 2, by: "screen", message: "Codex is asking you to sign in")
     end
 
     it "ends a bound permission wait once the ready prompt is back on the screen" do
@@ -139,6 +144,26 @@ RSpec.describe Workspace::PaneScanner do
 
       expect(pane).to include(logged_state: "idle", state_since: now - 100, restored_ready: true, last_activity_at: now - 130)
       expect(event_log).to have_received(:latest_agent_states).once
+    end
+
+    it "tags the restored state and its activity as restored, and the first changed screen as the screen" do
+      scanner.load_history
+      refresh
+
+      expect(pane).to include(state_by: "restore", activity_by: "restore")
+
+      allow(tmux).to receive(:capture_pane_by_id).with("%2").and_return("new output")
+      refresh(now + 50)
+      expect(pane).to include(activity_by: "screen")
+    end
+
+    it "takes up a done mark as restored" do
+      logged.merge!("state" => "done", "stop_reason" => "end_turn")
+
+      scanner.load_history
+      refresh
+
+      expect(pane[:done]).to include(by: "restore")
     end
 
     it "takes up no state logged for another pane process" do

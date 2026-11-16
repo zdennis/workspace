@@ -109,7 +109,7 @@ RSpec.describe Workspace::PaneEvents do
     it "marks a main Stop done and remembers when" do
       apply("stop", "stop_reason" => "max_tokens")
 
-      expect(pane).to include(done: {since: now, stop_reason: "max_tokens"}, main_stopped_at: now, turn_ended: true)
+      expect(pane).to include(done: {since: now, stop_reason: "max_tokens", by: "stop"}, main_stopped_at: now, turn_ended: true)
     end
 
     it "notes main activity after a Stop" do
@@ -126,9 +126,9 @@ RSpec.describe Workspace::PaneEvents do
     end
 
     it "keeps a failed turn until a prompt, and through a resume of the same session" do
-      apply("turn_failed", "session_id" => "s1")
+      apply("turn_failed", "session_id" => "s1", "error" => "rate_limit")
       apply("session_start", "session_id" => "s1")
-      expect(pane[:turn_failed]).to eq(session_id: "s1", at: now)
+      expect(pane[:turn_failed]).to eq(session_id: "s1", at: now, kind: "rate_limit")
 
       apply("user_prompt")
       expect(pane).not_to include(:turn_failed)
@@ -139,7 +139,13 @@ RSpec.describe Workspace::PaneEvents do
     it "opens a wait on a notification, with its cleaned message" do
       apply("notification", "message" => "Pick\none")
 
-      expect(pane[:waits]).to eq(nil => {since: now, other_prompt: true, message: "Pick one"})
+      expect(pane[:waits]).to eq(nil => {since: now, by: "notification", other_prompt: true, message: "Pick one"})
+    end
+
+    it "records the hook event that raised a permission wait" do
+      apply("notification", "notification_type" => "permission_prompt")
+
+      expect(pane[:waits][nil]).to include(by: "notification")
     end
 
     it "keeps the first start through a repeat notification" do

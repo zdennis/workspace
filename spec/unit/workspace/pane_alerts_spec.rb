@@ -73,7 +73,7 @@ RSpec.describe Workspace::PaneAlerts do
     it "takes an open wait up as alerted at the logged start" do
       pane[:waits]["a1"] = {since: now}
       restored = described_class.restore_waits(pane, 200, now - 300, alerts)
-      expect(restored[:waits]["a1"]).to eq(since: now - 60, alerted: true)
+      expect(restored[:waits]["a1"]).to eq(since: now - 60, alerted: true, by: "restore")
       expect(pane[:waits]["a1"]).to eq(since: now)
     end
 

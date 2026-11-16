@@ -136,6 +136,7 @@ module Workspace
       since = Time.iso8601(logged["since"].to_s)
       pane[:logged_state] = logged["state"]
       pane[:state_since] = since
+      pane[:state_by] = "restore"
       # Read back, not seen: {SessionMonitor#fresh_since} waits for this monitor's own evidence.
       pane[:restored_ready] = true if %w[done idle].include?(logged["state"])
       case logged["state"]
@@ -151,16 +152,18 @@ module Workspace
     # A done pane still alerts for its quiet stretch, so the stretch the last
     # daemon already alerted for is not alerted for again.
     def restore_done(pane, detail, since, stop_reason, alert)
-      pane[:done] = {since: since, stop_reason: stop_reason || "end_turn"}
+      pane[:done] = {since: since, stop_reason: stop_reason || "end_turn", by: "restore"}
       at = PaneAlerts.logged_time(alert, detail[:pid], "idle_since")
       return pane unless at
 
       pane[:last_activity_at] = at
+      pane[:activity_by] = "restore"
       PaneAlerts.mark(pane, PaneAlerts::IDLE, at).merge(quiet_since_restore: true)
     end
 
     def restore_idle(pane, detail, since, alert)
       pane[:last_activity_at] = since - @idle_after
+      pane[:activity_by] = "restore"
       pane[:quiet_since_restore] = true
       at = PaneAlerts.logged_time(alert, detail[:pid], "idle_since")
       return pane unless at && (at - pane[:last_activity_at]).abs < 0.002
@@ -181,12 +184,18 @@ module Workspace
         pane[:digest] = digest
         pane[:digest_seen_at] = now
         pane.delete(:own_quiet_at)
-        pane[:last_activity_at] = now unless first_since_restore
+        unless first_since_restore
+          pane[:last_activity_at] = now
+          pane[:activity_by] = "screen"
+        end
       elsif pane[:restored_ready] && !pane[:own_quiet_at] && now - pane[:digest_seen_at] >= @idle_after
         # Two of this monitor's own scans, idle_after apart, saw the same screen.
         pane[:own_quiet_at] = now
       end
-      pane[:last_activity_at] ||= now
+      unless pane[:last_activity_at]
+        pane[:last_activity_at] = now
+        pane[:activity_by] = "screen"
+      end
       screen
     end
 

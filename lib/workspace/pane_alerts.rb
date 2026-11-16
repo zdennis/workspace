@@ -101,7 +101,7 @@ module Workspace
         next restored unless waiting_since && waiting_since - stretch_since > -0.002
         if (wait = restored[:waits][agent_id])
           next restored if wait[:alerted]
-          restored.merge(waits: restored[:waits].merge(agent_id => wait.merge(since: waiting_since, alerted: true)))
+          restored.merge(waits: restored[:waits].merge(agent_id => wait.merge(since: waiting_since, alerted: true, by: "restore")))
         else
           restored.merge(alerted_waits: (restored[:alerted_waits] || {}).merge(agent_id => waiting_since))
         end
