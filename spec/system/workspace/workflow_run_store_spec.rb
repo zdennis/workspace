@@ -105,6 +105,33 @@ RSpec.describe Workspace::WorkflowRunStore do
     end
   end
 
+  it "appends a going events file to one already archived instead of renaming over it" do
+    create
+    FileUtils.mkdir_p(archive_dir)
+    archived = File.join(archive_dir, "wr_1.events.jsonl")
+    File.write(archived, %({"type":"a"}\n{"type":"b"}\n))
+    after_write = lambda do |_stored|
+      store.record_event("wr_1", "c")
+      store.record_event("wr_1", "d")
+    end
+    store.change("wr_1", after_write: after_write) { |run| merged(run, "state" => "completed") }
+
+    expect(File.exist?(File.join(runs_dir, "wr_1.events.jsonl"))).to be(false)
+    expect(store.events("wr_1")["events"].map { |event| event["type"] }).to eq(%w[a b c d])
+  end
+
+  it "ends an archived last line that has no newline before appending to it" do
+    create
+    FileUtils.mkdir_p(archive_dir)
+    File.write(File.join(archive_dir, "wr_1.events.jsonl"), %({"type":"a"}\n{"type":"cut))
+    after_write = ->(_stored) { store.record_event("wr_1", "c") }
+    store.change("wr_1", after_write: after_write) { |run| merged(run, "state" => "completed") }
+
+    result = store.events("wr_1")
+    expect(result["events"].map { |event| event["type"] }).to eq(%w[a c])
+    expect(result["warnings"].size).to eq(1)
+  end
+
   describe "#record_event when the write fails" do
     let(:log_path) { File.join(@dir, ".workflows", "event-errors.log") }
     let(:logging) { described_class.new(dir: runs_dir, archive_dir: archive_dir, clock: -> { now.first }, event_errors_path: log_path) }

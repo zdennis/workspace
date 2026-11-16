@@ -374,11 +374,24 @@ module Workspace
     end
 
     # The state file moves last: until it does, the run still reads as going
-    # from the runs directory, already finished.
+    # from the runs directory, already finished. An events file already in the
+    # archive (an earlier archive that was cut short) is appended to, never
+    # renamed over; a crash between the append and the delete leaves the lines
+    # in both files, duplicated rather than lost. A last archived line with no
+    # newline is ended first, so it is skipped alone instead of eating the next.
     def archive(run, lock_path)
       FileUtils.mkdir_p(@archive_dir, mode: 0o700)
       events = File.join(@dir, "#{run["id"]}.events.jsonl")
-      File.rename(events, File.join(@archive_dir, File.basename(events))) if File.exist?(events)
+      archived_events = File.join(@archive_dir, File.basename(events))
+      if File.exist?(events) && File.exist?(archived_events)
+        File.open(archived_events, "a+b") do |out|
+          out.write("\n") if out.size.positive? && out.pread(1, out.size - 1) != "\n"
+          File.open(events, "rb") { |src| IO.copy_stream(src, out) }
+        end
+        File.delete(events)
+      elsif File.exist?(events)
+        File.rename(events, archived_events)
+      end
       File.rename(File.join(@dir, "#{run["id"]}.json"), File.join(@archive_dir, "#{run["id"]}.json"))
       FileUtils.rm_f(lock_path)
       finished.drop(@archive_limit).each do |old|
