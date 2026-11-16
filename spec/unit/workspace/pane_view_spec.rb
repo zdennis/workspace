@@ -31,9 +31,16 @@ RSpec.describe Workspace::PaneView do
     it "builds the row in the order sessions prints it" do
       expect(row(agent, context: reading).keys).to eq(%w[pane_id window review index kind label title cwd state state_since
         activity_state main_turn_over_since transcript_path open_tools idle_seconds waiting_since waiting_seconds
-        waiting_message waiting_tool waiting_input waits stop_reason turn_failed session_id display_label agents
+        waiting_message waiting_tool waiting_input waits stop_reason turn_failed turn_failed_since session_id display_label agents
         context_pct context_error context_updated_at last_event_at current_tool current_tool_since subagents
         hook_mode hook_events])
+    end
+
+    it "reports when the turn failed, and nil otherwise" do
+      expect(row(agent, context: reading)).to include("turn_failed" => false, "turn_failed_since" => nil)
+
+      agent[:turn_failed] = {session_id: "s1", at: now - 30}
+      expect(row(agent, context: reading)).to include("turn_failed" => true, "turn_failed_since" => (now - 30).iso8601)
     end
 
     it "reports the oldest wait and each wait by agent" do

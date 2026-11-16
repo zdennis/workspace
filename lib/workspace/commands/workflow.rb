@@ -1688,12 +1688,28 @@ module Workspace
         reason = current["reason"]
         @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
+        describe_turn_failed(current["turn_failed"]) if current["turn_failed"]
         describe_review(current["review"]) if current["review"]
         parked = current["parked"]
         @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked
         @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }
+      end
+
+      # The failed agent turn of a running step: how long ago and how far recovery has got, all from the status row.
+      def describe_turn_failed(failed)
+        since = begin
+          Time.iso8601(failed["since"].to_s)
+        rescue ArgumentError
+          nil
+        end
+        ago = since ? " #{Duration.humanize([@clock.call - since, 0].max)} ago" : ""
+        recovery = if failed["gave_up"] then "recovery gave up"
+        elsif failed["attempts"] then "recovery #{failed["attempts"]} of #{failed["max_attempts"]}"
+        else "no recovery"
+        end
+        @output.puts "  turn failed#{ago} (#{recovery})"
       end
 
       # The round of a step being reviewed: which round of how many, the verdicts so far, who is still out, and where.

@@ -615,6 +615,40 @@ RSpec.describe Workspace::Commands::Workflow do
       TEXT
     end
 
+    describe "a failed agent turn" do
+      def failed_run(turn_failed)
+        shown("current" => {"step" => "plan", "attempt" => 1, "state" => "running", "flags" => [], "reason" => nil, "turn_failed" => turn_failed})
+      end
+
+      def printed(turn_failed)
+        allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [failed_run(turn_failed)], "warnings" => [])
+        command.status(scope: workspace_scope("app"))
+        output.string
+      end
+
+      let(:since) { "2026-10-04T12:48:00Z" }
+
+      it "says how long ago and how far recovery has got" do
+        expect(printed("since" => since, "attempts" => 4, "max_attempts" => 12, "gave_up" => false)).to include("  turn failed 12m ago (recovery 4 of 12)\n")
+      end
+
+      it "says recovery gave up" do
+        expect(printed("since" => since, "attempts" => 12, "max_attempts" => 12, "gave_up" => true)).to include("  turn failed 12m ago (recovery gave up)\n")
+      end
+
+      it "leaves out the age when the time is missing or does not parse" do
+        [nil, "not a time"].each do |bad|
+          output.truncate(0)
+          output.rewind
+          expect(printed("since" => bad, "attempts" => 4, "max_attempts" => 12, "gave_up" => false)).to include("  turn failed (recovery 4 of 12)\n")
+        end
+      end
+
+      it "says there is no recovery" do
+        expect(printed("since" => since, "attempts" => nil, "max_attempts" => 12, "gave_up" => false)).to include("  turn failed 12m ago (no recovery)\n")
+      end
+    end
+
     describe "header line" do
       let(:waiting_run) do
         shown("state" => "waiting", "current" => {"step" => "plan", "attempt" => 1, "state" => "passed", "flags" => [], "reason" => reason("waiting_you", {"kind" => "gate", "step" => "plan", "artifacts" => []}, [])})

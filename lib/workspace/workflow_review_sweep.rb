@@ -23,7 +23,9 @@ module Workspace
   # exited to a shell (cause `agent_gone`), lost with a restarted tmux server (cause `server_restarted`, delivered
   # again in a new window, counted against `redeliver`), waiting for an answer (left alone), its turn over and idle
   # for the definition's `stall` or past a time limit (cause `idle_turn_over`), its turn over after the sweep
-  # interrupted it (cause `interrupted`, decided at once), or at work past a time limit: the round's own
+  # interrupted it (cause `interrupted`, decided at once), its turn failed on an API error for `workflows.turn_failed_after`
+  # (cause `turn_failed`, decided on its verdicts; nothing is typed into a review pane, and API recovery never takes
+  # on a review pane, so only that threshold decides it, not a recovery give-up), or at work past a time limit: the round's own
   # `review.timeout` ({WorkflowTransitions.round_timed_out?}, from the round's start; cause `review_timed_out`) or the
   # run's `timeout:` with `timeout_action: interrupt` (cause `run_timed_out`). For a time limit the interrupt is
   # claimed under the run's lock, the agent's interrupt keys pressed in the review pane with the lock given up (never
@@ -153,6 +155,8 @@ module Workspace
         return stall(run, round, pass, pane, "idle_turn_over",
           "the review turn in pane #{pane} ended and nothing decided #{what} (idle for #{idle_for} seconds)", {"idle_for" => idle_for})
       end
+      failed = failed_turn(run, round, shown, pass, now, what, pane, due)
+      return failed if failed
       return WorkflowSweepRows.row(run, "nothing", reason: "reviewing", message: "#{what} is being reviewed") if due.empty?
       press_and_confirm(run, round, what, pass, shown, pane, due)
     end
@@ -212,9 +216,35 @@ module Workspace
     # pane is not one the line has yet to reach.
     def turn_over?(shown, round, now)
       return false unless WorkflowPanes.turn_over?(shown, now) && shown["idle_seconds"].to_i >= WorkflowSweepRows::IDLE_FLOOR
+      delivered_long_ago?(round, now)
+    end
+
+    def delivered_long_ago?(round, now)
       now - Time.iso8601((round["delivered_at"] || round["started_at"]).to_s) >= WorkflowSweepRows::IDLE_GRACE
     rescue ArgumentError
       false
+    end
+
+    # The review pane's turn failed on an API error. Nothing is typed into a review pane, so once the turn has stayed
+    # failed for `workflows.turn_failed_after` the round is decided on the verdicts written. Before that, with no time
+    # limit due, the row names the failed turn; a due time limit is decided as it was. With the threshold off, or no
+    # failed turn shown, nil: the rest of {#call} decides. A missing or unparseable `turn_failed_since` counts as not
+    # yet, on purpose: a failure of unknown age is not decided on.
+    def failed_turn(run, round, shown, pass, now, what, pane, due)
+      after = pass[:turn_failed_after]
+      return nil unless shown["turn_failed"] && after
+      since = begin
+        Time.iso8601(shown["turn_failed_since"].to_s)
+      rescue ArgumentError
+        nil
+      end
+      if since && now - since >= after && delivered_long_ago?(round, now)
+        return stall(run, round, pass, pane, "turn_failed",
+          "the review turn in pane #{pane} failed on an API error #{(now - since).round} seconds ago and nothing decided #{what}; " \
+          "its verdicts are read now, and it stops for a person (review_incomplete) when they fall short", {"since" => shown["turn_failed_since"]})
+      end
+      return nil unless due.empty?
+      WorkflowSweepRows.row(run, "nothing", reason: "reviewing", message: "the review turn in pane #{pane} of #{what} failed on an API error; it is decided on its verdicts if it stays failed for #{after} seconds")
     end
 
     # The time limits the round is past, the round's own first: [cause, seconds used, limit] each, for the round's
@@ -328,6 +358,10 @@ module Workspace
         fresh = @panes.pane_row(run.workspace, pane)
         unless fresh && WorkflowPanes.turn_over?(fresh, @clock.call) && fresh["idle_seconds"].to_i >= WorkflowSweepRows::IDLE_FLOOR
           return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", message: "review pane #{pane} no longer shows the review turn over; the next pass looks again", cause: cause)
+        end
+      elsif cause == "turn_failed"
+        unless @panes.pane_row(run.workspace, pane)&.fetch("turn_failed", nil)
+          return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", message: "review pane #{pane} no longer shows a failed turn; the next pass looks again", cause: cause)
         end
       elsif cause == "interrupt_unanswered"
         unless @panes.pane_row(run.workspace, pane)&.fetch("state", nil) == "working"

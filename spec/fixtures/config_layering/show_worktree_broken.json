@@ -2070,6 +2070,36 @@
       "unit": "seconds"
     },
     {
+      "key": "workflows.turn_failed_after",
+      "scope": "global",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 1800,
+      "effective": 1800,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a",
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "How long a pane whose agent turn ended on an API error (`turn_failed`) may sit before `workflow sweep` records its workflow step as stalled with cause `turn_failed` (default `30m`). `0` or `off` turns the time threshold off; recovery giving up still stalls the step",
+      "problems": [],
+      "unit": "seconds"
+    },
+    {
       "key": "events.rotate_size",
       "scope": "global",
       "type": "size",

@@ -116,6 +116,13 @@ RSpec.describe Workspace::WorkflowNeedsMe do
     expect(rows.map { |row| row.values_at("run", "code", "detail", "waiting_seconds") }).to eq([["wr_1", "stalled", "agent_gone", 1800], ["wr_2", "idle", nil, nil]])
   end
 
+  it "lists a run stalled by a turn that failed on an API error" do
+    stalled = {"code" => "stalled", "cause" => "turn_failed", "since" => "2026-10-04T12:30:00Z", "actions" => [resume("wr_1"), cancel("wr_1")]}
+    rows = needs_me.rows([run("wr_1", stuck: stalled, state: "running")])
+
+    expect(rows.map { |row| row.values_at("run", "code", "detail") }).to eq([["wr_1", "stalled", "turn_failed"]])
+  end
+
   it "sorts the longest wait first and a wait with no start last" do
     rows = needs_me.rows([run("wr_a", reason: reason("pane_gone", since: nil)), run("wr_b", reason: reason("pane_gone", since: "2026-10-04T12:50:00Z")),
       run("wr_c", reason: reason("pane_gone", since: "2026-10-04T11:00:00Z"))])

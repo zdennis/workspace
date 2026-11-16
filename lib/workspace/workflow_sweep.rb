@@ -29,6 +29,12 @@ module Workspace
   #   it is failed (`step_timed_out`). A `turn_ended_background` hold has its own
   #   90-minute limit and is never touched
   # - the pane shows a shell where the agent was: records cause `agent_gone`
+  # - the agent's turn ended on an API error (the pane row's `turn_failed`): once the failure is older than
+  #   `workflows.turn_failed_after`, or the pane's recovery ({AgentRecoveryDesk}) has given up, records cause
+  #   `turn_failed` and presses nothing; a step past its `timeout` with `on_timeout: fail` is failed instead
+  #   (`step_timed_out`). Before either, a `turn_failed` row and no event. A recovery entry counts only when its
+  #   `session_id` is the pane's, a give-up only when its `gave_up_at` is no earlier than the failure, and the
+  #   age is from the row's `turn_failed_since` (else the entry's `failed_at`)
   # - the agent's turn is over (the daemon says so, read again just before the
   #   change, and idle for a few seconds) and the pane has been idle for the
   #   definition's `stall`, or the step is past its `timeout` and has
@@ -87,14 +93,20 @@ module Workspace
     # @param reviews [Workspace::WorkflowReviewSweep] the rows of a run being reviewed and of left-over review windows
     # @param default_stall [#call] returns the idle seconds that decide a step whose definition sets no `stall:`, or nil
     #   for none; called once for each pass
+    # @param turn_failed_after [#call] returns the seconds a failed turn may sit before its step counts as stalled, or
+    #   nil for no time limit (a recovery that gave up still counts); called once for each pass
+    # @param recovery_entry [#call] given a workspace and a pane id, returns the pane's {AgentRecoveryStore} entry or nil
     # @param clock [#call] returns the current Time
-    def initialize(store:, engine:, panes:, interrupter:, reviews:, default_stall: -> {}, clock: -> { Time.now })
+    def initialize(store:, engine:, panes:, interrupter:, reviews:, default_stall: -> {}, turn_failed_after: -> {},
+      recovery_entry: ->(*) {}, clock: -> { Time.now })
       @store = store
       @engine = engine
       @panes = panes
       @interrupter = interrupter
       @reviews = reviews
       @default_stall = default_stall
+      @turn_failed_after = turn_failed_after
+      @recovery_entry = recovery_entry
       @clock = clock
     end
 
@@ -114,7 +126,7 @@ module Workspace
     def call(run: nil, workspace: nil, dry_run: false, allow: nil)
       runs = run ? [@store.run(run)] : @store.going
       runs = runs.select { |each| each.workspace == workspace } if workspace
-      pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, default_stall: @default_stall.call}
+      pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, default_stall: @default_stall.call, turn_failed_after: @turn_failed_after.call}
       rows = runs.map { |each| sweep_run(each, pass) }
       rows += unreadable_rows unless run || workspace
       # Every session of the default tmux server unless a workspace or a run narrows the pass.
@@ -284,6 +296,7 @@ module Workspace
         return note(run, pass, "agent_gone", "pane #{pane} shows a shell: the agent has exited, so nothing will end this step. Resume the run to start it again.", "pane" => pane)
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "pane #{pane} waits for an answer") if shown["state"] == "waiting"
+      return turn_failed(run, attempt, pass, pane, shown, elapsed, timeout, timed_out && on_timeout == "fail") if shown["turn_failed"]
 
       defined_stall = WorkflowDefinition.stall(run.definition)
       stall = defined_stall || pass[:default_stall]
@@ -315,6 +328,30 @@ module Workspace
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: cause, action: "record") if pass[:dry_run]
       outcome = @engine.note_stall(run.id, actor: "sweep", step: run.current, attempt: WorkflowSweepRows.attempt_of(run), cause: cause, data: data)
       WorkflowSweepRows.engine_row(run, outcome, "recorded", cause: cause, message: message, action: "record")
+    end
+
+    # The agent's turn ended on an API error. Recovery may still bring it back, so the step counts as stalled only
+    # once the failure is older than the threshold or the recovery gave up; a step past its `timeout` with
+    # `on_timeout: fail` is failed at once, the timeout being a hard limit. Nothing is pressed either way.
+    # A second failure in the same attempt is not recorded again: the stall mark is per attempt and cause.
+    def turn_failed(run, attempt, pass, pane, shown, elapsed, timeout, fail_on_timeout)
+      return time_out(run, attempt, pass, elapsed, timeout, "the agent's turn failed") if fail_on_timeout
+      entry = @recovery_entry.call(run.workspace, shown["pane_id"] || pane)
+      failed = RecoveryEntry.failed_turn(entry, shown)
+      since, at, entry, gave_up = failed.values_at(:since, :at, :entry, :gave_up)
+      age = at && [@clock.call - at, 0].max
+      threshold = pass[:turn_failed_after]
+      progress = if gave_up then "recovery gave up after #{entry["attempts"].to_i} of #{AgentRecoveryStore::MAX_ATTEMPTS} attempts"
+      elsif entry then "recovery attempt #{entry["attempts"].to_i} of #{AgentRecoveryStore::MAX_ATTEMPTS} (#{entry["phase"] || "waiting"})"
+      else "no recovery under way"
+      end
+      what = "pane #{pane}'s agent turn ended on an API error#{" #{Duration.humanize(age)} ago" if age}; #{progress}"
+      if !gave_up && !(threshold && age && age >= threshold)
+        wait = threshold ? "the step counts as stalled after #{Duration.humanize(threshold)}" : "no time limit is set (workflows.turn_failed_after)"
+        return WorkflowSweepRows.row(run, "nothing", reason: "turn_failed", message: "#{what}; #{wait}")
+      end
+      note(run, pass, "turn_failed", "#{what}, so nothing will end step #{run.current}. Resume the run once the agent can work again (`workspace workflow resume #{run.id}`).",
+        "pane" => pane, "since" => since, "recovery_phase" => entry&.dig("phase"), "recovery_attempts" => entry&.dig("attempts"))
     end
 
     # Starts the workspace's daemon. The run is not acted on again in this pass.

@@ -56,7 +56,7 @@ module Workspace
       @unmarked = @unmarked.select { |pane_id| entries[pane_id] && failed_turn_stands?(entries[pane_id]) }
       @unmarked.reject! do |pane_id|
         known = !@session_monitor.pane_kind(pane_id).nil?
-        @session_monitor.mark_turn_failed(pane_id) if known
+        @session_monitor.mark_turn_failed(pane_id, at: RecoveryVerdicts.time_of(entries[pane_id]["failed_at"])) if known
         known
       end
       nil
@@ -161,18 +161,18 @@ module Workspace
       failed = entry.delete("failed_during_attempt") == true
       %w[turn_completed attempt_session_id prompt_seen].each { |key| entry.delete(key) }
       if open_session && open_session != entry["session_id"]
-        RecoveryEntry.give_up(entry, "fresh_conversation")
+        RecoveryEntry.give_up(entry, "fresh_conversation", clock: @clock)
         return true
       end
       if failed && !RecoveryEntry::RETRYABLE_ERRORS.include?(entry["error"])
-        RecoveryEntry.give_up(entry, "not_retryable")
+        RecoveryEntry.give_up(entry, "not_retryable", clock: @clock)
         return true
       end
 
       RecoveryEntry.apply_read(entry, agent)
       entry["failed_at"] = AgentRecoveryStore.stamp(@clock.now) if failed
       if RecoveryEntry.agent_gone?(entry, agent)
-        RecoveryEntry.give_up(entry, "unconfirmed")
+        RecoveryEntry.give_up(entry, "unconfirmed", clock: @clock)
         return true
       end
       RecoveryEntry.schedule_next(entry, max_attempts: @max_attempts, clock: @clock)

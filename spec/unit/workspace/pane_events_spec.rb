@@ -128,7 +128,7 @@ RSpec.describe Workspace::PaneEvents do
     it "keeps a failed turn until a prompt, and through a resume of the same session" do
       apply("turn_failed", "session_id" => "s1")
       apply("session_start", "session_id" => "s1")
-      expect(pane[:turn_failed]).to eq(session_id: "s1")
+      expect(pane[:turn_failed]).to eq(session_id: "s1", at: now)
 
       apply("user_prompt")
       expect(pane).not_to include(:turn_failed)

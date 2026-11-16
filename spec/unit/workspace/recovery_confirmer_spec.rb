@@ -59,6 +59,14 @@ RSpec.describe Workspace::RecoveryConfirmer do
       expect(marked).to eq(%w[%1 %2 %4])
     end
 
+    it "passes each entry's failed_at as the time the turn failed" do
+      at = now - 900
+      confirmer.mark_failed_panes({"%1" => {"phase" => "waiting", "failed_at" => stamp(at)}, "%2" => {"phase" => "waiting"}})
+
+      expect(monitor.marked_at["%1"]).to eq(Time.iso8601(stamp(at)))
+      expect(monitor.marked_at["%2"]).to be_nil
+    end
+
     it "keeps a pane the monitor doesn't know yet for the next call, until it is marked" do
       entries = {"%5" => {"phase" => "waiting"}}
       unknown_panes << "%5"

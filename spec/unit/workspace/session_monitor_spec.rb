@@ -1660,7 +1660,7 @@ RSpec.describe Workspace::SessionMonitor do
       event("notification", "notification_type" => "idle_prompt", "message" => "Claude is waiting for your input")
       allow(clock).to receive(:now).and_return(now + 90)
 
-      expect(pane("%2")).to include("state" => "idle", "waiting_message" => nil, "turn_failed" => true)
+      expect(pane("%2")).to include("state" => "idle", "waiting_message" => nil, "turn_failed" => true, "turn_failed_since" => now.utc.iso8601)
       expect(monitor.restart_state("%2")).to eq("idle")
     end
 
@@ -1682,6 +1682,7 @@ RSpec.describe Workspace::SessionMonitor do
       event("user_prompt")
 
       expect(pane("%2")["turn_failed"]).to be false
+      expect(pane("%2")["turn_failed_since"]).to be_nil
     end
 
     it "survives session_end, a same-id session_start and a rescan with no agent" do
@@ -1710,8 +1711,16 @@ RSpec.describe Workspace::SessionMonitor do
       monitor.mark_turn_failed("%9")
 
       expect(pane("%2")["turn_failed"]).to be true
+      expect(pane("%2")["turn_failed_since"]).to eq(now.utc.iso8601)
       expect(monitor.restart_state("%2")).to eq("idle")
       expect(monitor.pane_state("%9")).to be_nil
+    end
+
+    it "#mark_turn_failed stamps the failure time it is given" do
+      event("user_prompt")
+      monitor.mark_turn_failed("%2", at: now - 600)
+
+      expect(pane("%2")["turn_failed_since"]).to eq((now - 600).utc.iso8601)
     end
   end
 

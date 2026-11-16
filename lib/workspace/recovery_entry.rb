@@ -36,7 +36,7 @@ module Workspace
         return false if same && entry["phase"] == "gave_up" && entry["give_up_reason"] != "not_retryable"
         entry.clear unless same
         fill(entry, session_id, error, transcript_path)
-        give_up(entry, "not_retryable")
+        give_up(entry, "not_retryable", clock: clock)
         return true
       end
 
@@ -134,11 +134,60 @@ module Workspace
       store_agent(entry, live)
     end
 
+    # @param entry [Object] a pane's {AgentRecoveryStore} entry, or nil
+    # @param session_id [String, nil] the session the pane shows
+    # @return [Hash, nil] the entry when it is of that session, else nil
+    def of_session(entry, session_id)
+      (entry.is_a?(Hash) && entry["session_id"] && entry["session_id"] == session_id) ? entry : nil
+    end
+
+    # The entry a reader may trust for a failed turn it sees on a pane: the entry must be of that session, and a
+    # `gave_up` entry counts only when its `gave_up_at` is at or after the failure (the final failure comes before
+    # the decision to give up). An exhausted entry stays `gave_up` for its session, so an older give-up, one with
+    # no `gave_up_at`, or a failure of no known time is not trusted.
+    #
+    # @param entry [Object] the pane's {AgentRecoveryStore} entry, or nil
+    # @param session_id [String, nil] the session the pane shows
+    # @param failed_at [Time, nil] when the pane's turn failed
+    # @return [Hash, nil] the entry, or nil when it is not to be trusted
+    def trusted_for_failure(entry, session_id:, failed_at:)
+      entry = of_session(entry, session_id)
+      return nil unless entry
+      return entry unless entry["phase"] == "gave_up"
+      gave_up_at = RecoveryVerdicts.time_of(entry["gave_up_at"])
+      (gave_up_at.nil? || failed_at.nil? || gave_up_at < failed_at) ? nil : entry
+    end
+
+    # When a pane's failed turn failed, as text: the time the pane shows, else the failure time of the entry of
+    # the pane's session. The one derivation {WorkflowSweep} and {WorkflowStatus} share.
+    #
+    # @param shown_since [String, nil] the pane row's `turn_failed_since`
+    # @param entry [Object] the pane's {AgentRecoveryStore} entry, or nil
+    # @param session_id [String, nil] the session the pane shows
+    # @return [String, nil]
+    def failure_since(shown_since, entry, session_id)
+      shown_since || of_session(entry, session_id)&.dig("failed_at")
+    end
+
+    # The one reading of a pane's failed turn that {WorkflowSweep} and {WorkflowStatus} share: when it failed, the
+    # entry to trust for it and whether that entry gave up.
+    #
+    # @param entry [Object] the pane's {AgentRecoveryStore} entry, or nil
+    # @param shown [Hash] the pane row (`turn_failed_since`, `session_id`)
+    # @return [Hash] `:since` (String or nil), `:at` (Time or nil), `:entry` (the trusted entry or nil), `:gave_up` (Boolean)
+    def failed_turn(entry, shown)
+      since = failure_since(shown["turn_failed_since"], entry, shown["session_id"])
+      at = RecoveryVerdicts.time_of(since)
+      trusted = trusted_for_failure(entry, session_id: shown["session_id"], failed_at: at)
+      {since: since, at: at, entry: trusted, gave_up: trusted&.dig("phase") == "gave_up"}
+    end
+
     # @param entry [Hash] changed in place
     # @param reason [String] the give-up reason
+    # @param clock [#now] stamps `gave_up_at`, so a reader can tell this give-up from a later failure
     # @return [void]
-    def give_up(entry, reason)
-      entry.merge!("phase" => "gave_up", "give_up_reason" => reason, "next_attempt_at" => nil, "defer_since" => nil)
+    def give_up(entry, reason, clock:)
+      entry.merge!("phase" => "gave_up", "give_up_reason" => reason, "gave_up_at" => AgentRecoveryStore.stamp(clock.now), "next_attempt_at" => nil, "defer_since" => nil)
     end
 
     # @param entry [Hash] changed in place
@@ -149,7 +198,7 @@ module Workspace
     end
 
     # Waits for the next attempt, or gives up once the attempts are used up.
-    # The clock is read only when an attempt is scheduled.
+    # The clock stamps the attempt it schedules, or the give-up.
     #
     # @param entry [Hash] changed in place
     # @param max_attempts [Integer] attempts after which the desk gives up
@@ -157,7 +206,7 @@ module Workspace
     # @return [Boolean] whether this gave up, the attempts being used up
     def schedule_next(entry, max_attempts:, clock:)
       if entry["attempts"].to_i >= max_attempts
-        give_up(entry, "attempts_exhausted")
+        give_up(entry, "attempts_exhausted", clock: clock)
         return true
       end
       next_at = AgentRecoveryStore.stamp(clock.now + AgentRecoveryStore.wait_before(entry["attempts"].to_i + 1))

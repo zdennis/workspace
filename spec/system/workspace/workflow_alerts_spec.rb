@@ -59,6 +59,12 @@ RSpec.describe Workspace::WorkflowAlerts do
     expect(sent.map { |env| env["WORKSPACE_ALERT_CAUSE"] }).to eq(["agent_gone"])
   end
 
+  it "fires a stall for a turn that failed on an API error" do
+    alerts.fire(alerts.marks(run), run(stalled: {"turn_failed" => "t"}))
+
+    expect(sent.map { |env| [env["WORKSPACE_ALERT_EVENT"], env["WORKSPACE_ALERT_CAUSE"]] }).to eq([%w[stalled turn_failed]])
+  end
+
   it "keeps a name in the settings that the run lacks from firing" do
     settings[:workflow] = %w[gate]
     alerts.fire(alerts.marks(run), run(state: "completed"))

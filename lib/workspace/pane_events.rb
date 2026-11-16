@@ -144,7 +144,7 @@ module Workspace
         elsif TURN_EVENTS.include?(event["event"])
           clear_waiting(pane)
           pane[:turn_ended] = (event["event"] != "user_prompt")
-          update_turn_failed(pane, event)
+          update_turn_failed(pane, event, now)
         elsif event["event"] != "subagent_start"
           # Like a tool start, a sub-agent start (the Agent tool) leaves a wait alone.
           pane[:waits].delete(event_agent_id(event))
@@ -267,10 +267,10 @@ module Workspace
       # A failed turn stays the pane's state until the person or the agent starts
       # another: a prompt, a Stop, or a new session. A Stop-less end of the session,
       # a resumed session with the same id and the agent leaving the pane keep it.
-      def update_turn_failed(pane, event)
+      def update_turn_failed(pane, event, now)
         case event["event"]
         when "turn_failed"
-          pane[:turn_failed] = {session_id: event["session_id"] || pane[:session_id]}
+          pane[:turn_failed] = {session_id: event["session_id"] || pane[:session_id], at: now}
         when "user_prompt", "stop"
           pane.delete(:turn_failed)
         when "session_start"

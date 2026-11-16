@@ -131,7 +131,7 @@ end
 # sub-agents for a check, a pane's rescan and agent pid for moving its queued prompts, and a pane's kind and
 # failed-turn mark for the confirmer.
 class RecordingRecoveryMonitor
-  CONTROL_METHODS = %i[calls].freeze
+  CONTROL_METHODS = %i[calls marked_at].freeze
 
   attr_reader :calls
 
@@ -153,8 +153,11 @@ class RecordingRecoveryMonitor
     @unknown_panes.include?(pane_id) ? nil : "claude"
   end
 
-  def mark_turn_failed(pane_id)
+  def marked_at = (@marked_at ||= {})
+
+  def mark_turn_failed(pane_id, at: nil)
     @calls << [:mark_turn_failed, pane_id]
+    (@marked_at ||= {})[pane_id] = at
   end
 
   def rescan_pane(pane_id)

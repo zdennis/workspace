@@ -380,11 +380,11 @@ RSpec.describe Workspace::InboxDerived do
       run
     end
 
-    def stuck_run(id, code: "stalled", since: "2026-10-16T11:10:00Z")
+    def stuck_run(id, code: "stalled", cause: "no_output", since: "2026-10-16T11:10:00Z")
       run = workflow_run(id, workspace: "api.worktree-c", code: "x", kind: nil)
       run["state"] = "running"
       run["current"].delete("reason")
-      run["current"]["stuck"] = {"code" => code, "cause" => "no_output", "since" => since,
+      run["current"]["stuck"] = {"code" => code, "cause" => cause, "since" => since,
                                  "actions" => [{"action" => "workflow resume", "args" => [id], "needs" => []}]}
       run
     end
@@ -484,6 +484,12 @@ RSpec.describe Workspace::InboxDerived do
       expect(attention.map { |r| [r["id"], r["kind"]] }).to contain_exactly(
         ["workflow:stalled:r-1", "workflow_stalled"], ["workflow:idle:r-2", "workflow_idle"]
       )
+    end
+
+    it "adds a stalled row for a run whose agent turn failed on an API error" do
+      workflow_reply["runs"] = [stuck_run("r-1", cause: "turn_failed")]
+
+      expect(attention.map { |r| [r["id"], r["kind"]] }).to eq([["workflow:stalled:r-1", "workflow_stalled"]])
     end
 
     it "leaves a run in another workspace, a finished run and a gate to their own rows" do

@@ -83,6 +83,7 @@ module Workspace
         },
         "stop_reason" => pane[:done]&.dig(:stop_reason),
         "turn_failed" => !pane[:turn_failed].nil?,
+        "turn_failed_since" => pane[:turn_failed]&.dig(:at)&.utc&.iso8601,
         "session_id" => pane[:session_id],
         "display_label" => label,
         "agents" => pane[:agents].map { |agent|
