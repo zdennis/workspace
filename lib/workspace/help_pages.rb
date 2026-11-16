@@ -287,7 +287,7 @@ module Workspace
 
     EXTRA_TOKENS_OPT = ["--extra-tokens N", "Add N (a whole number from 1 up) to the run's token budget, for a run that has used budget.tokens; N must cover the overrun, and the refusal names the least and a round figure"].freeze
 
-    EXTRA_TIME_OPT = ["--extra-time DURATION", "Add DURATION (30m, 2h, or seconds) to the run's timeout, for a run that has used its timeout:; DURATION must cover the overrun, and the refusal names the least and a round figure"].freeze
+    EXTRA_TIME_OPT = ["--extra-time DURATION", "Add DURATION (30m, 2h, or seconds) to the run's timeout, for a run that has used its timeout: (active time is the time the machine was up, less waits for a person, stalls and downtime); DURATION must cover the overrun, and the refusal names the least and a round figure"].freeze
 
     WORKFLOW = {
       "list" => {
@@ -911,9 +911,10 @@ module Workspace
           "and attempts with no usage are left out.",
           "",
           "A run held by its definition's timeout: (reason run_timed_out) is refused the same way (run_timed_out)",
-          "until --extra-time DURATION adds to its timeout. Only machine time counts against it: time a person",
-          "is waited on (a gate, a parked resume, a held budget, a failed check) does not. With the budget and",
-          "the timeout both spent, pass both flags.",
+          "until --extra-time DURATION adds to its timeout. Only active time counts against it: time a person",
+          "is waited on (a gate, a parked resume, a held budget, a failed check), time the machine was off or",
+          "asleep, and time a step spent stalled do not. With the budget and the timeout both spent, pass both",
+          "flags.",
           "",
           "--accept-guard takes a guard stop (failed_check by head_moved, hooks_changed, hidden_changed,",
           "no_commit, operation_in_progress or tracked_changed) as a person's decision; any other stop is",
