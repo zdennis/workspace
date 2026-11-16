@@ -111,6 +111,16 @@ RSpec.describe Workspace::PaneStates do
       expect(described_class.state_change(pane, now, 30)).to be_nil
     end
 
+    it "keeps the source of the state it logged, so a logged state still names what set it" do
+      pane[:activity_by] = "screen"
+      described_class.state_change(pane, now, 30)
+      expect(pane[:state_by]).to eq("screen")
+
+      pane[:done] = {since: now - 3, stop_reason: "end_turn", by: "stop"}
+      described_class.state_change(pane, now, 30)
+      expect(pane[:state_by]).to eq("stop")
+    end
+
     it "carries a done turn's stop reason" do
       pane[:done] = {since: now - 3, stop_reason: "end_turn"}
 

@@ -56,9 +56,9 @@ module Workspace
       wait = PaneStates.oldest_wait(pane)
       waiting_since = wait&.dig(:since)
       state = PaneStates.reported_state(pane, idle_for, idle_after)
-      restored = state == pane[:logged_state]
-      state_since = restored ? pane[:state_since] : PaneStates.since_for(pane, state, now, idle_after)
-      changed_by = restored ? pane[:state_by] : PaneStates.changed_by_for(pane, state)
+      logged = state == pane[:logged_state]
+      state_since = logged ? pane[:state_since] : PaneStates.since_for(pane, state, now, idle_after)
+      changed_by = logged ? pane[:state_by] : PaneStates.changed_by_for(pane, state)
       result = {
         "pane_id" => pane[:pane_id],
         "window" => pane[:window] || 0,

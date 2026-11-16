@@ -61,6 +61,13 @@ RSpec.describe Workspace::PaneView do
       expect(row(agent)).to include("state" => "done", "state_changed_by" => "stop")
     end
 
+    it "names what set a state the monitor has already logged, not nil or restore" do
+      agent[:activity_by] = "screen"
+      Workspace::PaneStates.state_change(agent, now, 30)
+
+      expect(row(agent)).to include("state" => "working", "state_changed_by" => "screen")
+    end
+
     it "reports restore while the state is the one read back from the log" do
       agent.merge!(logged_state: "working", state_since: now - 100, state_by: "restore", activity_by: "screen")
 
