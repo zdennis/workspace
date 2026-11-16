@@ -711,8 +711,8 @@ module Workspace
     def mark_stall(run, cause, data)
       stalled = (sweep_marks_for(run)["stalled"] ||= {})
       return false if stalled.key?(cause)
-      stalled[cause] = now_iso
-      open_stall(run, cause)
+      stalled[cause] = stamp = now_iso
+      open_stall(run, cause, stamp)
       @change.event(run, "step_stalled", sweep_event(run, {"cause" => cause}.merge(data)))
       true
     end
@@ -726,10 +726,10 @@ module Workspace
       true
     end
 
-    def open_stall(run, cause)
+    def open_stall(run, cause, since)
       return unless WorkflowTransitions::STALL_CAUSES.include?(cause)
       attempt = step_state(run)["attempts"].last
-      (attempt["stalls"] ||= []) << {"cause" => cause, "since" => now_iso} if attempt
+      (attempt["stalls"] ||= []) << {"cause" => cause, "since" => since} if attempt
     end
 
     def close_stall(run, cause)
