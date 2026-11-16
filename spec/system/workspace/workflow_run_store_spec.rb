@@ -194,6 +194,48 @@ RSpec.describe Workspace::WorkflowRunStore do
     end
   end
 
+  describe "#unarchived" do
+    it "lists every run in the runs directory, a finished one not yet archived included" do
+      going = create
+      ended = create
+      path = File.join(runs_dir, "#{ended["id"]}.json")
+      File.write(path, JSON.generate(JSON.parse(File.read(path)).merge("state" => "completed")))
+      archived = create
+      store.change(archived["id"]) { |read| merged(read, "state" => "completed") }
+
+      expect(store.unarchived.map(&:id)).to contain_exactly(going["id"], ended["id"])
+      expect(store.going.map(&:id)).to eq([going["id"]])
+    end
+  end
+
+  describe "#finished_since" do
+    it "reads only the archived runs whose state file changed at or after the time" do
+      old = create
+      store.change(old["id"]) { |read| merged(read, "state" => "completed") }
+      recent = create
+      store.change(recent["id"]) { |read| merged(read, "state" => "failed") }
+      File.utime(Time.utc(2026, 1, 1), Time.utc(2026, 1, 1), File.join(archive_dir, "#{old["id"]}.json"))
+      create
+
+      expect(store.finished_since(Time.utc(2026, 6, 1)).map(&:id)).to eq([recent["id"]])
+      expect(store.finished_since(Time.utc(2025, 1, 1)).map(&:id)).to contain_exactly(old["id"], recent["id"])
+      expect(store.finished_since(Time.now + 3600)).to eq([])
+    end
+  end
+
+  describe "#archived?" do
+    it "is true only once the run's state file is in the archive" do
+      run = create
+      expect(store.archived?(run["id"])).to be(false)
+
+      store.change(run["id"]) { |read| merged(read, "state" => "completed") }
+
+      expect(store.archived?(run["id"])).to be(true)
+      expect(store.archived?("wr_nope")).to be(false)
+      expect(store.archived?("../x")).to be(false)
+    end
+  end
+
   describe "#events" do
     def record(*types)
       types.each { |type| store.record_event("wr_1", type, "step" => "plan") }

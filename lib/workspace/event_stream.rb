@@ -42,12 +42,14 @@ module Workspace
       JSON.parse((body + "=" * (-body.length % 4)).unpack1("m0"))
     end
 
-    # @param lifecycle_path [String] the lifecycle event log
+    # @param lifecycle_path [String, nil] the lifecycle event log; nil reads none
     # @param lifecycle_rotated [Integer] how many rotated copies it keeps (`.1` .. `.N`)
     # @param hook_dir [String] the directory holding every daemon's hook event file
     # @param clock [#now] time source, for the time of gap lines
     # @param max_read [Integer] most bytes one read takes from a source
-    def initialize(lifecycle_path:, hook_dir:, lifecycle_rotated: EventLog::KEEP_ROTATED, clock: Time, max_read: Source::MAX_READ)
+    # @param workspace [String, nil] read only this daemon's hook file; nil reads every daemon's
+    def initialize(lifecycle_path:, hook_dir:, lifecycle_rotated: EventLog::KEEP_ROTATED, clock: Time, max_read: Source::MAX_READ, workspace: nil)
+      @workspace = workspace
       @lifecycle_path = lifecycle_path
       @lifecycle_rotated = lifecycle_rotated
       @hook_dir = hook_dir
@@ -67,7 +69,7 @@ module Workspace
     def open(cursor: nil, at: :end)
       parts = cursor ? decode(cursor) : nil
       gaps = []
-      add_source("lifecycle", Source.new(kind: :lifecycle, workspace: nil, path: @lifecycle_path, rotated: @lifecycle_rotated, max_read: @max_read))
+      add_source("lifecycle", Source.new(kind: :lifecycle, workspace: nil, path: @lifecycle_path, rotated: @lifecycle_rotated, max_read: @max_read)) if @lifecycle_path
       hook_names.each { |name| add_source("hook:#{name}", hook_source(name)) }
 
       @sources.each do |key, source|
@@ -137,7 +139,8 @@ module Workspace
     end
 
     def hook_names
-      Dir.children(@hook_dir).filter_map { |file| file[/\A(.+)\.jsonl(?:\.1)?\z/, 1] }.uniq.sort
+      names = Dir.children(@hook_dir).filter_map { |file| file[/\A(.+)\.jsonl(?:\.1)?\z/, 1] }.uniq.sort
+      @workspace ? names & [@workspace] : names
     rescue SystemCallError
       []
     end

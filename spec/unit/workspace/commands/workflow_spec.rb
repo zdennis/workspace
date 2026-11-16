@@ -2846,6 +2846,23 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(errors.string).to eq("Warning: Line 3 of the history is not a JSON object; skipped.\n")
       end
 
+      it "keeps following a run whose terminal state is written before its last events and its move to the archive" do
+        fixture_run
+        path = File.join(File.dirname(real_store.events_path("wr_2610250930abcd")), "wr_2610250930abcd.json")
+        steps << -> { File.write(path, JSON.generate(JSON.parse(File.read(path)).merge("state" => "completed"))) }
+        steps << -> {
+          real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+          expect { real_store.change("wr_2610250930abcd") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_not_active") }
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, follow: true, max_polls: 10)
+
+        lines = output.string.lines.map(&:chomp)
+        expect(lines.first).to match(/\A\s+5\s+\S+\s+run_finished/)
+        expect(lines.last).to eq("Run wr_2610250930abcd completed; no more events.")
+        expect(sleeps.size).to eq(2)
+      end
+
       it "prints one JSON line per event and a follow_ended line, from --since" do
         fixture_run
         steps << -> { finish_run }

@@ -539,8 +539,10 @@ module Workspace
       # Prints a run's history, oldest first, going or finished.
       #
       # With +follow+ it keeps reading from where the last read ended, printing each
-      # event as it is appended, and returns once the run has finished and its history
-      # is drained, after one last line. With +json+ each event is one JSON line.
+      # event as it is appended, and returns once the run has finished (its state file
+      # is in the archive) and its history is drained, after one last line. If moving the
+      # finished run to the archive fails, it keeps waiting until a later change archives
+      # it; Ctrl-C ends the wait. With +json+ each event is one JSON line.
       #
       # @param run [String] a run id
       # @param since [Integer] only events on lines after this line number
@@ -1484,13 +1486,15 @@ module Workspace
         polls = 0
         loop do
           polls += 1
-          state = @store.run(run).state
+          # The state alone is not enough: a finishing change writes it before its history lines.
+          archived = @store.archived?(run)
           result = @store.events(run, since: cursor)
           result["events"].each { |event| @output.puts(json ? JSON.generate(event) : event_line(event)) }
           result["warnings"].each { |warning| @error_output.puts "Warning: #{warning}" }
           @output.flush
           cursor = result["next_since"]
-          if !result["truncated"] && WorkflowRunStore::TERMINAL_STATES.include?(state)
+          if archived && !result["truncated"]
+            state = @store.run(run).state
             @output.puts(json ? JSON.generate("type" => "follow_ended", "run" => run, "state" => state, "next_since" => cursor) : "Run #{run} #{state}; no more events.")
             break
           end

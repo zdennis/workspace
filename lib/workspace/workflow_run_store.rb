@@ -97,6 +97,25 @@ module Workspace
       runs_in(@dir).reject { |run| TERMINAL_STATES.include?(run.state) }.sort_by { |run| run.to_h["created_at"].to_s }
     end
 
+    # Every run in the runs directory, finished or not: a run whose terminal state is
+    # written but that is not yet archived is here, and in neither {#going} nor {#finished}.
+    #
+    # @return [Array<WorkflowRun>] oldest first
+    def unarchived
+      runs_in(@dir).sort_by { |run| run.to_h["created_at"].to_s }
+    end
+
+    # The finished runs whose state file changed at or after +time+, read without parsing the
+    # rest of the archive. A run's state file is written when it ends and the move to the
+    # archive keeps its mtime, so every run that ended at or after +time+ is among them.
+    #
+    # @param time [Time]
+    # @return [Array<WorkflowRun>] in no set order
+    def finished_since(time)
+      @globber.call(File.join(@archive_dir, "*.json")).select { |path| modified_since?(path, time) }
+        .filter_map { |path| read(path) }.map { |run| WorkflowRun.from_h(run) }
+    end
+
     # @return [Array<WorkflowRun>] finished runs, newest first
     def finished
       runs_in(@archive_dir).sort_by { |run| run.to_h["ended_at"].to_s }.reverse
@@ -239,6 +258,17 @@ module Workspace
       []
     end
 
+    # Whether the run's state file is in the archive. A change that finishes a run writes
+    # the terminal state, then its history lines, then moves the files, so a reader that
+    # follows a history counts it complete only from here on, never from the state alone.
+    #
+    # @param id [String] a run id
+    # @return [Boolean]
+    def archived?(id)
+      path = path_for(@archive_dir, id)
+      !path.nil? && File.exist?(path)
+    end
+
     # @param id [String] a run id
     # @return [String] the run's history file, wherever the run is now
     def events_path(id)
@@ -362,6 +392,12 @@ module Workspace
         state = steps[step["id"]]
         state.is_a?(Hash) && state["attempts"].is_a?(Array) && state["attempts"].all?(Hash)
       end
+    end
+
+    def modified_since?(path, time)
+      File.mtime(path) >= time
+    rescue SystemCallError
+      false
     end
 
     def runs_in(dir)
