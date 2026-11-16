@@ -15,7 +15,7 @@ RSpec.describe Workspace::WorkflowSweep, "heartbeat" do
     sweep.call
     sweep.call(dry_run: true)
 
-    expect(downtime).to have_received(:beat).twice
+    expect(downtime).to have_received(:beat).with(grace: Workspace::SweepSchedule::INTERVAL).twice
   end
 
   it "still sweeps the runs when the beat raises" do

@@ -146,7 +146,7 @@ module Workspace
     private
 
     def beat
-      @downtime&.beat
+      @downtime&.beat(grace: SweepSchedule::INTERVAL)
     rescue
       nil
     end

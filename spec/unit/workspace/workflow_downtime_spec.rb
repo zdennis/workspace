@@ -11,9 +11,9 @@ RSpec.describe Workspace::WorkflowDowntime do
 
   after { FileUtils.rm_rf(dir) }
 
-  def at(time)
+  def at(time, grace: 0)
     now[0] = time
-    downtime.beat
+    downtime.beat(grace: grace)
   end
 
   it "records one span for two beats 9h apart" do
@@ -71,7 +71,7 @@ RSpec.describe Workspace::WorkflowDowntime do
     failing.beat
     now[0] = Time.utc(2026, 11, 1, 9, 0, 0)
     failing.beat
-    expect(File.read(File.join(dir, "heartbeat"))).to eq("2026-11-01T09:00:00.000Z")
+    expect(File.read(File.join(dir, "heartbeat"))).to eq("2026-11-01T09:00:00.000Z 0")
     expect(failing.spans.size).to eq(1)
   end
 
@@ -81,5 +81,50 @@ RSpec.describe Workspace::WorkflowDowntime do
     File.write(File.join(dir, "heartbeat"), "garbage")
     expect { at(Time.utc(2026, 11, 1, 0, 0, 0)) }.not_to raise_error
     expect(downtime.spans).to eq([])
+  end
+
+  describe "sweep grace" do
+    it "records none for two sweep beats 300s apart" do
+      at(Time.utc(2026, 11, 1, 0, 0, 0), grace: 300)
+      at(Time.utc(2026, 11, 1, 0, 5, 0), grace: 300)
+      expect(downtime.spans).to eq([])
+    end
+
+    it "shows no open gap 200s after a sweep beat" do
+      at(Time.utc(2026, 11, 1, 0, 0, 0), grace: 300)
+      expect(downtime.spans(Time.utc(2026, 11, 1, 0, 3, 20))).to eq([])
+    end
+
+    it "shows an open gap once threshold plus grace has passed" do
+      at(Time.utc(2026, 11, 1, 0, 0, 0), grace: 300)
+      expect(downtime.spans(Time.utc(2026, 11, 1, 0, 7, 1))).to eq([{"since" => "2026-11-01T00:00:00.000Z"}])
+    end
+
+    it "records one span for a sweep beat followed 9h later by any beat" do
+      at(Time.utc(2026, 11, 1, 0, 0, 0), grace: 300)
+      at(Time.utc(2026, 11, 1, 9, 0, 0))
+      expect(downtime.spans).to eq([{"since" => "2026-11-01T00:00:00.000Z", "until" => "2026-11-01T09:00:00.000Z"}])
+    end
+
+    it "reads a legacy heartbeat file holding only a time as grace 0" do
+      File.write(File.join(dir, "heartbeat"), "2026-11-01T00:00:00.000Z")
+      at(Time.utc(2026, 11, 1, 0, 5, 0))
+      expect(downtime.spans).to eq([{"since" => "2026-11-01T00:00:00.000Z", "until" => "2026-11-01T00:05:00.000Z"}])
+    end
+
+    it "reads the clock inside the lock" do
+      held = false
+      lock = instance_double(Workspace::FileLock)
+      allow(Workspace::FileLock).to receive(:new).and_return(lock)
+      allow(lock).to receive(:hold) do |&block|
+        held = true
+        block.call
+      end
+      reads = []
+      timed = described_class.new(heartbeat_path: File.join(dir, "heartbeat"), downtime_path: File.join(dir, "downtime.jsonl"),
+        downtime_after: -> { 120 }, clock: -> { reads << held && now.first })
+      timed.beat
+      expect(reads).to eq([true])
+    end
   end
 end
