@@ -42,7 +42,6 @@ RSpec.describe Workspace::WorkflowNudger do
   end
 
   describe "the exit line" do
-    let(:waited) { Class.new { def call = yield }.new.method(:call) }
     let(:status) { Struct.new(:signaled?, :termsig, :exitstatus) }
 
     def fake_thread(pid, value) = Struct.new(:pid, :value).new(pid, value)
@@ -122,7 +121,7 @@ RSpec.describe Workspace::WorkflowNudger do
 
     it "still starts the advance when the log raises" do
       allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
-      broken = Object.new.tap { |o| o.define_singleton_method(:append) { |*| raise IOError } }
+      broken = Class.new { def append(*) = raise(IOError) }.new
 
       expect(nudger.turn_ended("app", "%5", hook_log: broken)).to eq("wr_1")
       expect(advances.size).to eq(1)
