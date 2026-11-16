@@ -2105,6 +2105,36 @@
       "unit": "seconds"
     },
     {
+      "key": "workflows.downtime_after",
+      "scope": "global",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 120,
+      "effective": 120,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "How long a gap between two heartbeats (every agent daemon tick and `workflow sweep` pass records one) must be before workspace treats the machine as asleep or off for that gap and leaves it out of workflow run, step and review-round `timeout:` clocks (default `2m`, at least `30s`; `off` is refused: set a large value such as `24h` to count nearly every gap). Keep it well above the 15s daemon tick: a tick that blocks longer than this is wrongly left out of the clocks",
+      "problems": [],
+      "min": 30,
+      "unit": "seconds"
+    },
+    {
       "key": "events.rotate_size",
       "scope": "global",
       "type": "size",

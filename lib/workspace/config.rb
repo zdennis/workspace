@@ -276,6 +276,20 @@ module Workspace
       File.join(state_dir, ".workflows", "evidence")
     end
 
+    # The daemon's heartbeat: the time of its last beat, one file for the machine.
+    #
+    # @return [String] path to the heartbeat file
+    def workflow_heartbeat_path
+      File.join(state_dir, ".workflows", "heartbeat")
+    end
+
+    # Spans in which the heartbeat went unbeaten, one JSON line each.
+    #
+    # @return [String] path to the machine downtime file
+    def workflow_downtime_path
+      File.join(state_dir, ".workflows", "downtime.jsonl")
+    end
+
     # Dotted, like {#task_dir}, so no workspace name can produce it. Each agent
     # daemon appends its hook events to `<workspace>.jsonl` here.
     #
