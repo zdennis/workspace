@@ -376,6 +376,15 @@ RSpec.describe Workspace::CLI do
       expect(workflow_command.calls).to be_empty
     end
 
+    it "prints what a resumed run waits for under --json, in the result" do
+      waits = {"kind" => "parked", "pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z", "text" => "The run waits."}
+      workflow_command.row = {"workspace" => "app", "outcome" => "parked", "reason" => nil, "message" => nil, "run" => {"id" => "wr_1"}, "waits" => waits}
+
+      cli.run(["workflow", "resume", "wr_1", "--json"])
+
+      expect(JSON.parse(output.string)["results"].first).to include("outcome" => "parked", "waits" => waits)
+    end
+
     it "passes --extra-tokens to resume and reject, and refuses a bad one or another verb" do
       cli.run(["workflow", "resume", "wr_1", "--extra-tokens", "250000"])
       cli.run(["workflow", "reject", "wr_1", "--note", "No.", "--extra-tokens=3"])

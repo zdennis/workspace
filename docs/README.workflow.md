@@ -1451,6 +1451,8 @@ Once the turn in that pane is proven over, the agent daemon runs `workflow advan
 
 `status` shows a parked run with the flag `parked` and `current.parked` (`pane`, `from`, `requested_at`, `expires_at`; never the note). The run's stored reason is not shown while the park lasts, except for a prompt or question waiting on a person. The run file keeps a `resume_parked` event and, when it ends, `resume_parked_ended` (`how`: `released`, `unchanged`, `failed`, `taken_over`, `moved_on`, `expired`, `ended` or `paused`).
 
+`workflow resume` ends by saying, in one sentence, what the run waits for, and `--json` carries it as `waits` (needs `workflow` 46): `kind` `parked` (the park's `pane` and `expires_at`; also what a second resume says while a park is pending), `backoff` (the retry's `until`), `pane_busy` (the pane and why its line was refused, as in [Why a line was refused](#why-a-line-was-refused)) or `nothing` (the resume did nothing and nothing else is pending; the text output shows its "Nothing was done" message instead), each with the sentence as `text`. In the text output that sentence is the only place the pane, the time and the refusal appear: the `parked:` and `refused:` lines and the `retry_backoff` reason line `workflow status` shows are left out, and the message does not repeat them. `waits` is null when the resume went through.
+
 The turn counts as over only when all of this holds, read from the daemon's snapshot, the transcript and the screen:
 
 - The pane runs Claude Code with hooks, the daemon heard the main agent's `Stop`, and the transcript shows nothing from the main agent after it (a background task's notice can wake the agent after a `Stop`; nothing is typed until that turn has ended).

@@ -1155,6 +1155,61 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(row).to include("outcome" => "resumed", "message" => nil, "run" => shown)
     end
 
+    describe "saying what the run waits for" do
+      def waiting(current)
+        live = shown("pane" => "%5", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => []}.merge(current))
+        allow(status).to receive(:run).with("wr_1").and_return("runs" => [live], "warnings" => [])
+      end
+
+      it "has no waits when the resume went through" do
+        row = command.resume(run: "wr_1")
+
+        expect(row).to include("outcome" => "resumed", "waits" => nil)
+        expect(output.string).not_to include("waits")
+      end
+
+      it "names the pane and the expiry of a pending park" do
+        waiting("flags" => ["parked"], "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"})
+
+        row = command.resume(run: "wr_1")
+
+        sentence = "The run waits for the turn in pane %5 to end, then the agent daemon carries out the resume; the park expires at #{Time.iso8601("2026-10-04T14:00:00Z").localtime.strftime("%H:%M:%S")}."
+        expect(output.string).to end_with("#{sentence}\n")
+        expect(row["waits"]).to eq("kind" => "parked", "pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z", "text" => sentence)
+      end
+
+      it "names when a retry backoff ends" do
+        waiting("state" => "waiting", "reason" => reason("retry_backoff", {"step" => "verify", "to" => "build", "until" => "2026-10-04T12:02:00Z", "seconds" => 120}))
+
+        row = command.resume(run: "wr_1")
+
+        expect(row["waits"]).to eq("kind" => "backoff", "until" => "2026-10-04T12:02:00Z",
+          "text" => "The run waits out its retry backoff: step build starts again at #{Time.iso8601("2026-10-04T12:02:00Z").localtime.strftime("%H:%M:%S")}.")
+        expect(output.string).to end_with("#{row["waits"]["text"]}\n")
+        expect(output.string.scan("starts again at").size).to eq(1)
+        expect(output.string).not_to include("2026-10-04T12:02:00Z")
+      end
+
+      it "gives the refusal of a pane that looked busy" do
+        waiting("refusal" => {"error" => "pane_busy", "seen" => {"state" => "working"}})
+
+        row = command.resume(run: "wr_1")
+
+        expect(output.string.scan("looked busy").size).to eq(1)
+        expect(row["waits"]).to include("kind" => "pane_busy", "pane" => "%5",
+          "text" => "The run waits for its pane: the next line was not typed because pane %5 looked busy: working.")
+      end
+
+      it "says there is nothing to wait for when the resume did nothing" do
+        allow(engine).to receive(:resume).and_return("id" => "wr_1", "workspace" => "app", "unchanged" => "an agent is working on step plan")
+
+        row = command.resume(run: "wr_1")
+
+        expect(row["waits"]).to eq("kind" => "nothing", "text" => "The run waits for nothing, so there is nothing for a resume to do.")
+        expect(output.string).to end_with("Nothing was done: an agent is working on step plan.\n")
+      end
+    end
+
     it "hands --extra-attempts to the engine" do
       command.resume(run: "wr_1", extra_attempts: 2)
 
@@ -1279,8 +1334,8 @@ RSpec.describe Workspace::Commands::Workflow do
     describe "from the run's own pane" do
       let(:parked_run) { {"id" => "wr_1", "workspace" => "app", "parked" => {"pane" => nil, "expires_at" => "2026-10-04T14:00:00Z"}} }
       let(:own_message) do
-        "Run from the run's own pane, so nothing was typed. Once this turn ends, the agent daemon will carry out the resume in " \
-          "pane %5, at most 1 hour from now. End your turn now; a sub-agent should finish and let the main agent end its turn."
+        "Run from the run's own pane, so nothing was typed. Once this turn ends, the agent daemon will carry out the resume. " \
+          "End your turn now; a sub-agent should finish and let the main agent end its turn."
       end
 
       before do
@@ -1291,6 +1346,9 @@ RSpec.describe Workspace::Commands::Workflow do
       end
 
       it "parks instead of typing when $TMUX_PANE names the pane" do
+        live = shown("pane" => "%5", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => ["parked"],
+                                                   "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"}})
+        allow(status).to receive(:run).with("wr_1").and_return("runs" => [live], "warnings" => [])
         row = command.resume(run: "wr_1", note: "say \"hi\"\nplease", caller_pane: "%5")
 
         expect(engine).to have_received(:park).with("wr_1", actor: "person", from: nil, note: "say \"hi\"\nplease", pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil)
@@ -1298,6 +1356,10 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(row).to include("outcome" => "parked", "reason" => nil, "message" => own_message,
           "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"})
         expect(output.string).not_to include("please")
+        expect(row["waits"]).to include("kind" => "parked", "pane" => "%5")
+        expect(output.string.scan("%5").size).to eq(1)
+        expect(output.string.scan(Time.iso8601("2026-10-04T14:00:00Z").localtime.strftime("%H:%M:%S")).size).to eq(1)
+        expect(output.string).not_to include("2026-10-04T14:00:00Z")
       end
 
       it "parks when only the process table puts the caller under the pane" do
@@ -1371,11 +1433,18 @@ RSpec.describe Workspace::Commands::Workflow do
         stored["parked"] = {"id" => "p1", "expires_at" => "2026-10-04T14:00:00Z"}
         allow(engine).to receive(:park).and_return(parked_run.merge("unchanged" => "a resume is already parked for pane %5"))
 
+        live = shown("pane" => "%5", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => ["parked"],
+                                                   "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"}})
+        allow(status).to receive(:run).with("wr_1").and_return("runs" => [live], "warnings" => [])
+
         plain = command.resume(run: "wr_1", caller_pane: "%5")
+        expect(plain["waits"]).to include("kind" => "parked", "pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z")
+        expect(output.string.scan("%5").size).to eq(1)
+        expect(output.string.scan(Time.iso8601("2026-10-04T14:00:00Z").localtime.strftime("%H:%M:%S")).size).to eq(1)
         given = command.resume(run: "wr_1", note: "more", caller_pane: "%5")
 
-        expect(plain["message"]).to eq("Nothing was done: a resume is already parked for pane %5. End your turn now.")
-        expect(given["message"]).to eq("Nothing was done: a resume is already parked for pane %5. End your turn now. " \
+        expect(plain["message"]).to eq("Nothing was done: a resume is already parked. End your turn now.")
+        expect(given["message"]).to eq("Nothing was done: a resume is already parked. End your turn now. " \
           "The --from, --note or --pane given to this call was not kept.")
       end
 

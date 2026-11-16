@@ -778,7 +778,7 @@ module Workspace
         end
         resumed = @engine.resume(run, actor: "person", from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
           accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane)
-        row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.")
+        row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.", waits: true)
       end
 
       # @param run [String] a run id
@@ -1510,17 +1510,17 @@ module Workspace
         existing = WorkflowEngine.parked(stored.to_h, @clock.call) == :waiting
         parked = @engine.park(stored.id, actor: "person", from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
         if parked["unchanged"]
-          message = "Nothing was done: #{parked["unchanged"]}."
+          message = "Nothing was done: #{existing ? parked["unchanged"].sub(/ for pane \S+/, "") : parked["unchanged"]}."
           if existing
             message += " End your turn now."
             message += " The --from, --note or --pane given to this call was not kept." if from || note || pane
           end
-          return row(parked, "unchanged", message: message)
+          return row(parked, "unchanged", message: message, waits: true)
         end
         message = "Run from the run's own pane, so nothing was typed. Once this turn ends, the agent daemon will carry out " \
-          "the resume in pane #{target}, at most 1 hour from now. End your turn now; a sub-agent should finish and let " \
+          "the resume. End your turn now; a sub-agent should finish and let " \
           "the main agent end its turn."
-        row(parked, "parked", message: message).merge("parked" => {"pane" => target, "expires_at" => parked.dig("parked", "expires_at")})
+        row(parked, "parked", message: message, waits: true).merge("parked" => {"pane" => target, "expires_at" => parked.dig("parked", "expires_at")})
       end
 
       def resume_pane(stored, pane)
@@ -1661,14 +1661,36 @@ module Workspace
 
       # The action row for a run after a transition. A step that could not be
       # started is a failed action, though the run exists and can be resumed.
-      def row(run, verb, message: nil)
+      def row(run, verb, message: nil, waits: false)
         shown = @status.run(run["id"])["runs"].first
         reason = shown.dig("current", "reason")
         undelivered = reason && reason.dig("details", "kind") == "dispatch"
-        describe(shown)
+        describe(shown, waits: waits)
         @output.puts message if message
-        {"workspace" => run["workspace"], "outcome" => (undelivered && verb != "unchanged") ? "failed" : verb, "reason" => reason&.fetch("code"),
-         "message" => (undelivered && verb != "unchanged") ? reason.dig("details", "message") : message, "run" => shown}
+        result = {"workspace" => run["workspace"], "outcome" => (undelivered && verb != "unchanged") ? "failed" : verb, "reason" => reason&.fetch("code"),
+                  "message" => (undelivered && verb != "unchanged") ? reason.dig("details", "message") : message, "run" => shown}
+        return result unless waits
+        wait = waits_for(shown, verb)
+        @output.puts wait["text"] if wait && wait["kind"] != "nothing"
+        result.merge("waits" => wait)
+      end
+
+      # What a run waits for after a resume, as one plain sentence: a park (with its expiry), a retry backoff, a pane that
+      # looked busy, or, when the resume did nothing and nothing else is pending, nothing. nil when the resume went through.
+      def waits_for(shown, verb)
+        current = shown["current"]
+        if (parked = current["parked"])
+          {"kind" => "parked", "pane" => parked["pane"], "expires_at" => parked["expires_at"],
+           "text" => "The run waits for the turn in pane #{parked["pane"]} to end, then the agent daemon carries out the resume; the park expires at #{clock_time(parked["expires_at"])}."}
+        elsif current.dig("reason", "code") == "retry_backoff"
+          details = current["reason"]["details"]
+          {"kind" => "backoff", "until" => details["until"],
+           "text" => "The run waits out its retry backoff: step #{TerminalText.escape(details["to"].to_s)} starts again at #{clock_time(details["until"])}."}
+        elsif current["refusal"]
+          {"kind" => "pane_busy", "pane" => shown["pane"], "text" => "The run waits for its pane: #{refusal_text(current["refusal"], pane: shown["pane"])}."}
+        elsif verb == "unchanged"
+          {"kind" => "nothing", "text" => "The run waits for nothing, so there is nothing for a resume to do."}
+        end
       end
 
       # Refuses a pause verb from where the run's own agent runs. A finished run is left for the engine to refuse.
@@ -1694,21 +1716,21 @@ module Workspace
         lines.join("\n")
       end
 
-      def describe(run)
+      def describe(run, waits: false)
         current = run["current"]
         where = %w[completed cancelled failed].include?(run["state"]) ? "" : "  step #{current["step"]}#{" (attempt #{current["attempt"]})" if current["attempt"]}, #{current["state"]}"
         @output.puts "#{run["id"]}  #{run["workflow"]}  #{run["workspace"]}  #{run["state"]}#{where}"
         reason = current["reason"]
-        @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason
+        @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason && !(waits && reason["code"] == "retry_backoff")
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
         if (deadline = run["deadline"])
           @output.puts "  time: #{deadline["clock"]} #{Duration.humanize(deadline["used"].to_f)} of #{Duration.humanize(deadline["limit"].to_f)}"
         end
         describe_turn_failed(current["turn_failed"]) if current["turn_failed"]
-        @output.puts "  refused: #{refusal_text(current["refusal"], pane: run["pane"])}" if current["refusal"]
+        @output.puts "  refused: #{refusal_text(current["refusal"], pane: run["pane"])}" if current["refusal"] && !waits
         describe_review(current["review"]) if current["review"]
         parked = current["parked"]
-        @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked
+        @output.puts "  parked: pane #{parked["pane"]} until #{parked["expires_at"]}; carried out once that pane's turn ends" if parked && !waits
         @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }
