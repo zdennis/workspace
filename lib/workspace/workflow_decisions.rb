@@ -43,9 +43,13 @@ module Workspace
     #   every holder as alive
     # @param interrupter [#call] presses keys in a pane (`workspace`, `pane`, `keys`), for `pause --interrupt`; raises
     #   {Workspace::Error} when it can't, and the pause then drops its interrupt mark
+    # @param recovery [Workspace::WorkflowRecovery, nil] ends the open stalls of an attempt a resume keeps ({WorkflowRecovery#close_stalls}); nil ends none
+    # @param downtime [Workspace::WorkflowDowntime, nil] its spans are cut from the run's timeout clock (nil: none)
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, interrupter:, holder_alive: nil,
-      clock: -> { Time.now })
+    def initialize(change:, store:, progress:, dispatch:, evaluation:, attempt_record:, gate_note:, panes:, guard:, interrupter:, recovery: nil, holder_alive: nil,
+      downtime: nil, clock: -> { Time.now })
+      @downtime = downtime
+      @recovery = recovery
       @change = change
       @store = store
       @progress = progress
@@ -794,6 +798,8 @@ module Workspace
       spend_attempts(stored, extra_attempts, needed: starting, target: WorkflowTransitions.target_step(stored, from: from))
       spend_limits(stored, extra_tokens, extra_seconds, needed: starting || round)
       spend_rounds(stored, extra_rounds, from)
+      # A resume that keeps the attempt ends its stalls, so its clocks run again; a new attempt's start ends them anyway.
+      @recovery&.close_stalls(stored, action: "resumed") unless WorkflowTransitions.starts_attempt?(stored, from: from, pane: pane)
       # A person's resume starts the sweep's retry count again, also for a retry waiting on a lock.
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if pane
@@ -934,8 +940,8 @@ module Workspace
     end
 
     # What a spent run timeout refuses with, or nil: not spent, or +extra+ seconds cover the overrun.
-    def deadline_shortfall(run, extra)
-      reading = WorkflowDeadline.reading(run, @clock.call)
+    def deadline_shortfall(run, extra, stops)
+      reading = WorkflowDeadline.reading(run, @clock.call, stops: stops)
       return nil unless reading && reading["spent"]
       return nil if extra && extra >= reading["needed"]
       reading
@@ -944,9 +950,9 @@ module Workspace
     # Refuses with `budget_spent` when the token budget is used up and +extra_tokens+ does not cover it, and with
     # `run_timed_out` when the run's timeout is used up and +extra_seconds+ does not cover it. With both short the
     # refusal is `budget_spent` and names both needs (the time one under `details.run_timed_out`).
-    def refuse_over_limits(run, extra_tokens, extra_seconds)
+    def refuse_over_limits(run, extra_tokens, extra_seconds, stops = downtime_stops)
       reading = budget_shortfall(run, extra_tokens)
-      deadline = deadline_shortfall(run, extra_seconds)
+      deadline = deadline_shortfall(run, extra_seconds, stops)
       return unless reading || deadline
       used = []
       pass = []
@@ -976,15 +982,20 @@ module Workspace
     # one) and recorded.
     def spend_limits(run, extra_tokens, extra_seconds, needed: true)
       return unless needed
-      refuse_over_limits(run, extra_tokens, extra_seconds)
+      stops = downtime_stops
+      refuse_over_limits(run, extra_tokens, extra_seconds, stops)
       if extra_tokens && WorkflowBudget.reading(run)
         run["extra_tokens"] = run["extra_tokens"].to_i + extra_tokens
         event(run, "budget_extended", "extra" => extra_tokens, "extra_tokens" => run["extra_tokens"], "allowance" => WorkflowBudget.reading(run, live: false)["allowance"])
       end
-      return unless extra_seconds && WorkflowDeadline.reading(run, @clock.call)
+      return unless extra_seconds && WorkflowDeadline.reading(run, @clock.call, stops: stops)
       run["extra_seconds"] = run["extra_seconds"].to_i + extra_seconds
       event(run, "time_extended", "extra" => extra_seconds, "extra_seconds" => run["extra_seconds"],
-        "limit" => WorkflowDeadline.reading(run, @clock.call)["limit"])
+        "limit" => WorkflowDeadline.reading(run, @clock.call, stops: stops)["limit"])
+    end
+
+    def downtime_stops
+      @downtime&.spans(@clock.call) || []
     end
 
     # A run held by its budget types into the pane it had when the attempt would have started. As for a retry's wait,

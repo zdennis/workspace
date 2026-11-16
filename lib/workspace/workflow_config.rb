@@ -3,6 +3,7 @@ module Workspace
   class WorkflowConfig
     DEFAULT_STALL = 600
     DEFAULT_TURN_FAILED_AFTER = 1800
+    DEFAULT_DOWNTIME_AFTER = 120
 
     # @param config_resolver [Workspace::ConfigResolver]
     def initialize(config_resolver:)
@@ -52,6 +53,19 @@ module Workspace
       value.nil? ? DEFAULT_TURN_FAILED_AFTER : ConfigSchema.parse("workflows.turn_failed_after", value)
     rescue ArgumentError, Workspace::ConfigParseError
       DEFAULT_TURN_FAILED_AFTER
+    end
+
+    # How long the daemon's heartbeat may go unbeaten before the gap counts as
+    # machine downtime: `workflows.downtime_after` from the global file, `120`
+    # when it is unset, when it holds a value `config set` would refuse, or when
+    # the file can not be parsed. Keep it well above the 15s daemon tick.
+    #
+    # @return [Numeric] seconds
+    def downtime_after
+      value = read("", upto: "global", key: "workflows.downtime_after")
+      value.nil? ? DEFAULT_DOWNTIME_AFTER : ConfigSchema.parse("workflows.downtime_after", value)
+    rescue ArgumentError, Workspace::ConfigParseError
+      DEFAULT_DOWNTIME_AFTER
     end
 
     private

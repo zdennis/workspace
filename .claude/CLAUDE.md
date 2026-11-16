@@ -72,6 +72,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_audit.rb` — Checks recorded evidence against its stored copies.
 - `lib/workspace/workflow_budget.rb` — Reads a run's token budget and spend.
 - `lib/workspace/workflow_deadline.rb` — Reads a run's `timeout:` and elapsed machine time.
+- `lib/workspace/workflow_downtime.rb` — Records the time the workflow daemon was not running, from a heartbeat file and a span file.
 - `lib/workspace/workflow_run_health.rb` — What `doctor` reports about runs and run locks, read only.
 - `lib/workspace/workflow_sweep.rb` — `workflow sweep`: one pass over going runs to recover stalled or timed-out steps.
 - `lib/workspace/workflow_review_sweep.rb` — The sweep's rows for a reviewing step and left-over review windows.

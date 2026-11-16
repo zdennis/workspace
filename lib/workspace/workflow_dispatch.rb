@@ -40,8 +40,9 @@ module Workspace
     # @param env_stopper [#call, nil] stops the dev environment a run left running under a lock it gave up
     #   (`run_id:`, `worktree:`)
     # @param event_log [Workspace::EventLog, nil] gets the run's lock events
+    # @param downtime [Workspace::WorkflowDowntime, nil] its spans are cut from the run's timeout clock (nil: none)
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, resources:, panes:, prompt:, attempt_record:, guard:, env_stopper: nil, event_log: nil, clock: -> { Time.now })
+    def initialize(change:, store:, resources:, panes:, prompt:, attempt_record:, guard:, env_stopper: nil, event_log: nil, downtime: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @resources = resources
@@ -51,6 +52,7 @@ module Workspace
       @guard = guard
       @env_stopper = env_stopper
       @event_log = event_log
+      @downtime = downtime
       @clock = clock
     end
 
@@ -417,7 +419,7 @@ module Workspace
     # {WorkflowDeadline}). Exempt as {#budget_holds?} is: a lock wait that ends was allowed when the step was reached.
     def time_holds?(run)
       return false if run.dig("reason", "code") == "waiting_lock"
-      reading = WorkflowDeadline.reading(run, @clock.call)
+      reading = WorkflowDeadline.reading(run, @clock.call, stops: downtime_stops)
       !!(reading && reading["spent"])
     end
 
@@ -482,7 +484,7 @@ module Workspace
     # The hold itself, for an attempt or a review round: +hold+ is the record each spent limit stores.
     def hold(run, hold, budget:, time:)
       reading = WorkflowBudget.reading(run, live: false) if budget
-      deadline = WorkflowDeadline.reading(run, @clock.call) if time
+      deadline = WorkflowDeadline.reading(run, @clock.call, stops: downtime_stops) if time
       release(run)
       run["budget_hold"] = hold if budget
       run["timeout_hold"] = hold.dup if time
@@ -584,6 +586,10 @@ module Workspace
 
     def now_iso
       @clock.call.utc.iso8601
+    end
+
+    def downtime_stops
+      @downtime&.spans(@clock.call) || []
     end
   end
 end

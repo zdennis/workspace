@@ -382,6 +382,7 @@ require_relative "workspace/workflow_review_tally"
 require_relative "workspace/workflow_attempt_record"
 require_relative "workspace/workflow_budget"
 require_relative "workspace/workflow_deadline"
+require_relative "workspace/workflow_downtime"
 require_relative "workspace/workflow_evidence"
 require_relative "workspace/workflow_attempts"
 require_relative "workspace/workflow_audit"
@@ -586,13 +587,15 @@ module Workspace
   # @param interrupter [#call] presses keys in a pane (`workspace`, `pane`, `keys`) for `pause --interrupt`, the one the
   #   sweep presses through; raises {Workspace::Error} when it can't (default: one that always raises, so a pause
   #   asked to interrupt reports `interrupted: false` and keeps no mark)
+  # @param downtime [Workspace::WorkflowDowntime, nil] the machine's recorded downtime, cut from the run, step and round
+  #   clocks the engine reads (default: none, so they run on wall time)
   # @param clock [#call] returns the current Time
   # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
   # @return [Workspace::WorkflowEngine]
   def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
     env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil, review_revision: nil,
     review_runner: nil, round_rerun: nil, review_summary: nil, round_holder: nil, holder_alive: nil, interrupter: ->(*) { raise Workspace::Error, "cannot interrupt: no key presser was given" }, clock: -> { Time.now },
-    prompt_writer: File.method(:write))
+    prompt_writer: File.method(:write), downtime: nil)
     attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
     require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
       commands_config: commands_config, checker: checker)
@@ -602,7 +605,7 @@ module Workspace
     change = WorkflowRunChange.new(store: store, attempt_record: attempt_record, deliver: ->(run_id, delivery) { dispatch.deliver(run_id, delivery) },
       alerts: alerts, event_log: event_log)
     dispatch = WorkflowDispatch.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record,
-      guard: guard, env_stopper: env_stopper, event_log: event_log, clock: clock)
+      guard: guard, env_stopper: env_stopper, event_log: event_log, downtime: downtime, clock: clock)
     if review_runner
       runner = review_runner.call(change: change, store: store, prompt: prompt)
       review_round ||= runner.method(:call)
@@ -620,9 +623,9 @@ module Workspace
       guard: guard, commands_config: commands_config, inbox_for: inbox_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, review_revision: review_revision, round_rerun: round_rerun, clock: clock)
     starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
       lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
+    recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, holder_alive: holder_alive, panes: panes, downtime: downtime, clock: clock)
     decisions = WorkflowDecisions.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
-      attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, holder_alive: holder_alive, interrupter: interrupter, clock: clock)
-    recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, holder_alive: holder_alive, panes: panes, clock: clock)
+      attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, holder_alive: holder_alive, interrupter: interrupter, recovery: recovery, downtime: downtime, clock: clock)
     WorkflowEngine.new(starter: starter, evaluation: evaluation, decisions: decisions, recovery: recovery)
   end
 
@@ -862,6 +865,10 @@ module Workspace
     task_store ||= TaskStore.new(dir: config.task_dir, error_output: error_output)
     project_settings = ProjectSettings.new(config: config)
     config_resolver = ConfigResolver.new(project_settings: project_settings)
+    # One object for the daemon's tick and the sweep, so both beat the same heartbeat.
+    workflow_config = WorkflowConfig.new(config_resolver: config_resolver)
+    workflow_downtime = WorkflowDowntime.new(heartbeat_path: config.workflow_heartbeat_path, downtime_path: config.workflow_downtime_path,
+      downtime_after: -> { workflow_config.downtime_after })
     event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
     state = State.new(config: config, event_log: event_log, logger: logger)
     osascript ||= OsascriptRunner.new
@@ -1102,6 +1109,7 @@ module Workspace
       event_log: event_log,
       task_store: task_store,
       interrupter: workflow_interrupter,
+      downtime: workflow_downtime,
       alerts: WorkflowAlerts.new(alert_config: alert_config, log_path: File.join(config.state_dir, "workflow-alerts.log"), error_output: error_output)
     )
     workflow_recovery_entry = ->(workspace, pane) do
@@ -1110,18 +1118,17 @@ module Workspace
       nil
     end
     workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for,
-      gate_note: workflow_gate_note, recovery_entry: workflow_recovery_entry)
+      gate_note: workflow_gate_note, recovery_entry: workflow_recovery_entry, downtime: workflow_downtime)
     workflow_workspace_facts = WorkflowWorkspaceFacts.new(liveness: Liveness.new(tmux: tmux), project_config: project_config, config: config,
       agents: ProjectAgents.new(client: agent_snapshot_client))
     workflow_review_orphans = WorkflowReviewOrphans.new(tmux: tmux, store: workflow_store, panes: workflow_panes)
-    workflow_config = WorkflowConfig.new(config_resolver: config_resolver)
     sweep_default_stall = -> { workflow_config.default_stall }
     workflow_review_sweep = WorkflowReviewSweep.new(engine: workflow_engine, panes: workflow_panes, interrupter: workflow_interrupter,
       orphans: workflow_review_orphans, holder_alive: round_holder.method(:alive?))
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
       interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall,
       turn_failed_after: -> { workflow_config.turn_failed_after },
-      recovery_entry: workflow_recovery_entry)
+      recovery_entry: workflow_recovery_entry, downtime: workflow_downtime)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do
         out, err, ok = TimedProcess.run(["launchctl", *args], chdir: Dir.pwd, timeout: 15)
@@ -1166,7 +1173,7 @@ module Workspace
       error_output: error_output
     )
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
-      log_path: ->(workspace) { config.agent_log_path(workspace) }, holder_alive: round_holder.method(:alive?), logger: logger, error_output: error_output)
+      log_path: ->(workspace) { config.agent_log_path(workspace) }, holder_alive: round_holder.method(:alive?), downtime: workflow_downtime, logger: logger, error_output: error_output)
     kill_command = Commands::Kill.new(git: git, pr_status: PullRequestStatus.new, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, tmux: tmux, locks: name_migration, output: output, input: input)
     pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
     rebase_command = Commands::Rebase.new(git: git, checkout: workspace_checkout, output: output)

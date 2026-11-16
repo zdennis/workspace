@@ -107,7 +107,7 @@ module Workspace
           opts.on("--retry", "resume --accept-guard: run the stopped step again instead of passing it (a new attempt)") { options[:guard_retry] = true }
           opts.on("--extra-attempts N", "resume, reject: add N to the run's attempt allowance when it has spent max_attempts (ignored by a resume that starts no attempt)") { |v| options[:extra_attempts] = v }
           opts.on("--extra-tokens N", "resume, reject: add N to the run's token budget when it has used budget.tokens (ignored by a resume that starts no attempt)") { |v| options[:extra_tokens] = v }
-          opts.on("--extra-time DURATION", "resume, reject: add DURATION (30m, 2h) to the run's timeout when it has used its timeout: (ignored by a resume that starts no attempt)") { |v| options[:extra_time] = v }
+          opts.on("--extra-time DURATION", "resume, reject: add DURATION (30m, 2h) to the run's timeout when it has used its timeout: (active time; ignored by a resume that starts no attempt)") { |v| options[:extra_time] = v }
           opts.on("--extra-rounds N", "resume: add N to the review rounds the step may spend (its review.max_rounds) when it has spent them all") { |v| options[:extra_rounds] = v }
           opts.on("--interrupt", "pause: also press the agent's interrupt keys in the run's pane while it works") { options[:interrupt] = true }
           opts.on("--reason TEXT", "pause: why (shown with the pause, at most 4000 characters)") { |v| options[:reason] = v }

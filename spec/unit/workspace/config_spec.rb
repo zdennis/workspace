@@ -151,6 +151,15 @@ RSpec.describe Workspace::Config do
     end
   end
 
+  describe "#workflow_heartbeat_path and #workflow_downtime_path" do
+    it "sit in the dotted .workflows directory of the state dir" do
+      config = described_class.new
+
+      expect(config.workflow_heartbeat_path).to eq(File.join(config.state_dir, ".workflows", "heartbeat"))
+      expect(config.workflow_downtime_path).to eq(File.join(config.state_dir, ".workflows", "downtime.jsonl"))
+    end
+  end
+
   describe "#workflow_runs_dir" do
     it "sits under a dotted directory of the state dir, where no workspace name can be" do
       config = described_class.new

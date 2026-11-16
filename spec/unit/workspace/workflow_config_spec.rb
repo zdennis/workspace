@@ -102,4 +102,29 @@ RSpec.describe Workspace::WorkflowConfig do
       expect(config.turn_failed_after).to eq(1800)
     end
   end
+
+  describe "#downtime_after" do
+    def after(value)
+      global["workflows"] = {"downtime_after" => value}
+      config.downtime_after
+    end
+
+    it "is 120 seconds when unset" do
+      expect(config.downtime_after).to eq(120)
+    end
+
+    it "reads a duration" do
+      expect(after("5m")).to eq(300)
+    end
+
+    it "is 120 for a value under 30s, off, or one `config set` would refuse" do
+      expect(%w[10s off soon].map { |v| after(v) }).to eq([120, 120, 120])
+    end
+
+    it "is 120 when the global file can't be parsed" do
+      allow(project_settings).to receive(:load_global).and_raise(Workspace::ConfigParseError.new("/c/config.yml", "bad"))
+
+      expect(config.downtime_after).to eq(120)
+    end
+  end
 end

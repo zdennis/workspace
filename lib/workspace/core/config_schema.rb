@@ -170,7 +170,16 @@ module Workspace
       seconds = Duration.parse(value)
       seconds.zero? ? nil : seconds
     end
-    private_constant :DURATION, :POSITIVE_DURATION, :OPTIONAL_DURATION
+    # The shortest `workflows.downtime_after`: twice the 15s daemon tick, so a slow tick is not read as downtime.
+    MIN_DOWNTIME_AFTER = 30
+    # A duration of at least 30 seconds; `off` and a zero are refused.
+    DOWNTIME_AFTER = lambda do |value|
+      raise ArgumentError, "expected a duration of at least #{MIN_DOWNTIME_AFTER}s; off is not allowed" if value == false || value.to_s.strip.casecmp?("off")
+      seconds = Duration.parse(value)
+      raise ArgumentError, "expected a duration of at least #{MIN_DOWNTIME_AFTER}s, got #{value.inspect}" if seconds < MIN_DOWNTIME_AFTER
+      seconds
+    end
+    private_constant :DURATION, :POSITIVE_DURATION, :OPTIONAL_DURATION, :DOWNTIME_AFTER
 
     COMMAND = lambda do |value|
       command = value.to_s.strip
@@ -648,6 +657,8 @@ module Workspace
         doc: "How long a workflow step may sit idle, counted from when the agent's turn is proven over, before `workflow sweep` treats it as stalled, for a definition with no `stall:` of its own (default `10m`). `0` or `off` turns the default off"),
       Key.new(name: "workflows.turn_failed_after", scope: :global, type: :duration, settable: true, examples: ["10m", "off"], default: 1800, parser: OPTIONAL_DURATION,
         doc: "How long a pane whose agent turn ended on an API error (`turn_failed`) may sit before `workflow sweep` records its workflow step as stalled with cause `turn_failed` (default `30m`). `0` or `off` turns the time threshold off; recovery giving up still stalls the step"),
+      Key.new(name: "workflows.downtime_after", scope: :global, type: :duration, settable: true, examples: ["2m", "5m"], default: 120, min: MIN_DOWNTIME_AFTER, parser: DOWNTIME_AFTER,
+        doc: "How long a gap between two heartbeats (every agent daemon tick and `workflow sweep` pass records one) must be before workspace treats the machine as asleep or off for that gap and leaves it out of workflow run, step and review-round `timeout:` clocks (default `2m`, at least `30s`; `off` is refused: set a large value such as `24h` to count nearly every gap). Keep it well above the 15s daemon tick: a tick that blocks longer than this is wrongly left out of the clocks"),
       Key.new(name: "events.rotate_size", scope: :global, type: :size, unit: "bytes", settable: true, examples: ["512KB", "5MB"], default: 5 * 1024 * 1024, restart: true, min: MIN_EVENTS_ROTATE_SIZE, parser: EVENTS_ROTATE_SIZE,
         doc: "Size at which a daemon's hook-event file rotates to `<workspace>.jsonl.1` (default `5MB`, at least `64KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes; see [`workspace events`](README.events.md)"),
       Key.new(name: "codex.hooks.install", scope: :global, type: :boolean, settable: true, default: true, parser: BOOLEAN,
