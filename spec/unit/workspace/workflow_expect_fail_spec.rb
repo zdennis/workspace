@@ -86,6 +86,23 @@ RSpec.describe Workspace::WorkflowExpectFail do
     expect(checker.calls).to be_empty
   end
 
+  it "refuses a test file that starts with a dash, without running" do
+    result = expect_fail.call(cwd: checkout, files: ["spec/a_spec.rb", "--seed=1"])
+
+    expect(result.passed).to be(false)
+    expect(result.message).to start_with("expect-fail: test file \"--seed=1\" starts with -")
+    expect(checker.calls).to be_empty
+  end
+
+  it "finds the match text and passes when the output holds an invalid UTF-8 byte" do
+    bad = fake_checker.new(result: {exit_code: 1, timed_out: false}, stdout: "caf\xE9 \xFF\nexpected boom here\n".b)
+    subject = described_class.new(lineage: lineage, commands_config: commands_config, checker: bad, tmp_root: tmp_root)
+
+    result = subject.call(cwd: checkout, files: ["a_spec.rb"], match_file: match_file("expected boom"))
+
+    expect(result.passed).to be(true)
+  end
+
   it "refuses when commands.test is unset" do
     allow(commands_config).to receive(:for_project).and_return({test: nil, lint: nil})
 

@@ -150,6 +150,13 @@ RSpec.describe Workspace::Commands::Workflow do
         lock_holder: lock_holder, expect_fail: checker, output: output, error_output: expect_err), checker]
     end
 
+    it "raises when built without a check" do
+      command = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
+        lock_holder: lock_holder, output: output, error_output: expect_err)
+
+      expect { command.step_expect_fail(cwd: "/src/app", files: ["a_spec.rb"]) }.to raise_error(Workspace::Error, /no check was wired/)
+    end
+
     it "prints the tests' output, then the passing line on stdout, and exits 0" do
       command, checker = wired(Workspace::WorkflowExpectFail::Result.new(passed: true, message: "expect-fail: the tests failed as expected (exit 1)", output: "1 failure"))
 

@@ -52,6 +52,8 @@ module Workspace
     # @raise [Workspace::ConfigParseError] if a config file that is read can't be parsed
     def call(cwd:, files:, match_file: nil, timeout: DEFAULT_TIMEOUT)
       return refused("no test files given; a fail-first proof needs the files of the new test") if files.empty?
+      option_like = files.find { |file| file.start_with?("-") }
+      return refused("test file #{option_like.inspect} starts with -, so the test command would read it as an option; give a path such as ./#{option_like}") if option_like
       lineage = @lineage.resolve(cwd: cwd)
       workspace = lineage.worktree || lineage.name
       command = @commands_config.for_project(workspace)[:test]

@@ -514,9 +514,9 @@ module Workspace
       unless max_attempts.is_a?(Integer) && max_attempts >= 1
         problem "max_attempts must be a whole number of 1 or more, got #{max_attempts.inspect}"
       end
-      version = raw["version"]
-      if raw.key?("version") && !(version.is_a?(Integer) && version >= 1)
-        problem "version must be a whole number of 1 or more, got #{version.inspect[0, 40]}"
+      version = self.class.version(raw)
+      if raw.key?("version") && version.nil?
+        problem "version must be a whole number of 1 or more, got #{raw["version"].inspect[0, 40]}"
       end
       redeliver = raw.fetch("redeliver", DEFAULT_REDELIVER)
       unless redeliver.is_a?(Integer) && redeliver.between?(0, MAX_REDELIVER)
@@ -545,7 +545,7 @@ module Workspace
         "redeliver" => redeliver,
         "deny" => deny_from(raw["deny"]),
         "steps" => steps
-      }.merge((version.is_a?(Integer) && version >= 1) ? {"version" => version} : {})
+      }.merge(version ? {"version" => version} : {})
         .merge(budget ? {"budget" => budget} : {})
         .merge(reviewers.any? ? {"reviewers" => reviewers} : {})
         .merge(timeout ? {"timeout" => timeout} : {})

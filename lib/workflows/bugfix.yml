@@ -44,7 +44,8 @@ steps:
       --summary "<the tracked file it needs and why>"` and end your turn.
       The run's check runs every untracked file that matches commands.test_files, not only yours.
       On a rerun (after a rejected gate or a resume), delete or replace the test files an earlier
-      attempt wrote, so exactly one new test file is untracked when your turn ends.
+      attempt wrote. Always, on the first attempt too, exactly one new test file is untracked when
+      your turn ends.
       Write {{artifacts}}/repro.md: the steps to reproduce, expected and actual behavior, the new
       test file's path, and the command that runs it.
       Write {{artifacts}}/failure.txt: one line, a short fragment of the failure text the test
@@ -56,6 +57,7 @@ steps:
     produces: [repro.md, failure.txt]
     guard: unchanged
     require:
+      # --timeout must stay below this entry's timeout: 15m (840s < 900s)
       - exec: "workspace step expect-fail --timeout 840 --match-file {{artifacts}}/failure.txt -- {{changed.tests}}"
         timeout: 15m
     gate: approve

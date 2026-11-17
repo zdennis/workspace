@@ -31,6 +31,10 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(described_class.version(nil)).to be_nil
     end
 
+    it "reads no version from a string, zero or a float" do
+      ["7", 0, 1.5].each { |value| expect(described_class.version({"version" => value})).to be_nil }
+    end
+
     it "refuses zero, negatives, floats, strings and booleans" do
       ["0", "-1", "1.5", "\"1\"", "true", "false"].each do |value|
         expect(problems("version: #{value}\n#{minimal}")).to include(a_string_matching(/version must be a whole number of 1 or more/))
