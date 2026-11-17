@@ -475,6 +475,20 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(lines("run_resumed").last).not_to have_key("infra_retry")
     end
 
+    it "clears the step's count when the daemon carries out a parked resume" do
+      start
+      edit_run(store, "wr_1") { |stored| stored["infra_retries"] = {"build" => 2} }
+      expect(stall(max: 2)).to eq(:exhausted)
+      id = engine.park("wr_1", actor: "person", from: "build")["parked"]["id"]
+      expect(run["infra_retries"]).to eq("build" => 2)
+
+      after = engine.release_park("wr_1", id, actor: "daemon")
+
+      expect(after).not_to have_key("unchanged")
+      expect(after["infra_retries"]).to eq({})
+      expect(lines("resume_parked_ended").map { |line| line["how"] }).to eq(["released"])
+    end
+
     it "keeps the count on the daemon's own restart" do
       start
       stall

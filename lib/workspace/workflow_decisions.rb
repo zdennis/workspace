@@ -243,7 +243,8 @@ module Workspace
     end
 
     # Carries out a parked resume, in one change with taking it off the run. A park typed again after a busy pane
-    # (`retries` above 0) is not held to the allowance and budget a second time: its attempt was counted then.
+    # (`retries` above 0) is not held to the allowance and budget a second time: its attempt was counted then. A
+    # release that changed something clears the step's `infra_retries` count, as a person's {#resume} does.
     #
     # @param id [String] the park's id; any other changes nothing
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
@@ -269,7 +270,8 @@ module Workspace
         if ctx.delivery
           step_state(stored)["attempts"].last["after_park"] = {"expires_at" => parked["expires_at"], "pane" => ctx.delivery["pane"], "retries" => parked["retries"]}
         end
-        WorkflowRun.from_h(stored)
+        # The park is a person's resume, so its release starts the step's infra retries again as {#resume} does.
+        unchanged ? WorkflowRun.from_h(stored) : fresh_infra_retries(WorkflowRun.from_h(stored), read.current)
       end
       Resumed.new(run: @evaluation.finish_follow_ups(run_id, follow, run), unchanged: unchanged)
     end
