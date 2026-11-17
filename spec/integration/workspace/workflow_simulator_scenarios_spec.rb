@@ -45,24 +45,14 @@ RSpec.describe Workspace::WorkflowSimulator, "scenario transcripts of the preset
     name.split(".", 2)
   end
 
-  def definition_of(preset)
-    path = File.join(PROJECT_ROOT, "lib", "workflows", "#{preset}.yml")
-    lookup = lambda do |id, below: nil|
-      file = File.join(PROJECT_ROOT, "lib", "workflows", "#{id}.yml")
-      {"text" => File.read(file), "path" => file, "source" => "builtin"} if File.file?(file) && below.nil?
-    end
-    Workspace::WorkflowDefinition.parse(File.read(path), id: preset, source: "builtin", path: path, parent_lookup: lookup)
-  end
-
   def play(preset, scenario)
-    definition = definition_of(preset)
+    definition = PresetSimulation.definition(preset)
     script = Workspace::WorkflowSimScript.parse(File.read(File.join(fixtures, "#{preset}.#{scenario}.script.yml")), definition: definition.to_h, source: "golden.yml")
-    inputs = definition.to_h["inputs"].select { |_, each| each["required"] }.transform_values { "golden" }
-    simulator.call(definition: definition, script: script, inputs: inputs)
+    simulator.call(definition: definition, script: script, inputs: PresetSimulation.inputs(definition))
   end
 
   def transcript(preset, scenario)
-    JSON.pretty_generate(play(preset, scenario)).gsub(base, "<TMP>").gsub(/\b[0-9a-f]{40,64}\b/, "<SHA>") + "\n"
+    PresetSimulation.transcript(play(preset, scenario), base)
   end
 
   # The pairs left without a script or an n/a entry, both, and the scripts and entries naming a preset or scenario not listed.
@@ -96,6 +86,7 @@ RSpec.describe Workspace::WorkflowSimulator, "scenario transcripts of the preset
       File.write(golden, text) if ENV["GOLDEN_UPDATE"]
 
       expect(File.read(golden)).to eq(text)
+      # A second play proves the transcript is deterministic, not only that it matches.
       expect(transcript(preset, scenario)).to eq(text)
     end
   end

@@ -48,6 +48,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_step_check.rb` — `workflow check`: runs one step's `status:` command outside a run.
 - `lib/workspace/workflow_simulator.rb` — `workflow simulate`: plays a script through a real engine over fakes.
 - `lib/workspace/workflow_sim_script.rb` — Parses and checks a simulator script against a definition.
+- `spec/support/preset_simulation.rb` — Parses a shipped preset, fills its inputs and masks a simulator transcript for the golden specs.
 - `lib/workspace/workflow_panes.rb` — The run's pane: binding, the one typed line, and review-window handling.
 - `lib/workspace/workflow_gate_note.rb` — The one resolver for a gate's note file.
 - `lib/workspace/shell_safe_path.rb` — Lists characters a path can't hold inside steps' shell commands.
