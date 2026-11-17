@@ -156,7 +156,7 @@ RSpec.describe Workspace::WorkflowTrace do
           "reasons" => [
             {"code" => "failed_check", "since" => t("10:01:00"), "until" => t("10:02:00")},
             {"code" => "retry_backoff", "since" => t("10:03:00"), "until" => t("10:04:00")},
-            {"code" => "waiting_you", "details" => {"kind" => "gate"}, "since" => t("10:05:00"), "until" => t("10:06:00")}
+            {"code" => "waiting_you", "since" => t("10:05:00"), "until" => t("10:06:00")}
           ],
           "stalls" => [{"cause" => "pane_gone", "since" => t("10:08:30"), "until" => t("10:09:00")}]}
        ]}}}
@@ -290,6 +290,36 @@ RSpec.describe Workspace::WorkflowTrace do
       expect(totals).to include(wall_seconds: 600.0, clock_seconds: 600.0, active_seconds: 390.0, stopped_seconds: 210.0)
       expect(totals[:active_seconds] + totals[:stopped_seconds]).to eq(totals[:clock_seconds])
       expect(totals[:waiting_seconds].values.sum).to eq(totals[:stopped_seconds])
+    end
+
+    it "keeps a waiting_you entry that has no gate span as a waiting_you wait" do
+      other = run.merge("reasons" => [])
+      other["steps"]["build"]["attempts"][0]["reasons"] = [{"code" => "waiting_you", "since" => t("10:05:00"), "until" => t("10:06:00")}]
+      result = reader.read(other, [events.first], now: now, stops: stops)
+      expect(result[:spans].count { |span| span[:kind] == "wait" && span[:code] == "waiting_you" }).to eq(1)
+      expect(result[:totals][:waiting_seconds]).to include("waiting_you" => 60.0)
+    end
+
+    it "keeps a waiting_you entry on the same step that starts after the gate was approved" do
+      other = run.merge("reasons" => [])
+      other["steps"]["build"]["attempts"][0]["reasons"] = [{"code" => "waiting_you", "since" => t("10:06:30"), "until" => t("10:07:00")}]
+      result = reader.read(other, events, now: now, stops: stops)
+      expect(result[:spans].count { |span| span[:kind] == "wait" && span[:code] == "waiting_you" }).to eq(1)
+      expect(result[:totals][:waiting_seconds]).to include("waiting_you" => 30.0)
+    end
+
+    it "keeps a waiting_you entry on another step while a gate is open on a different step" do
+      other = run.merge("reasons" => [])
+      other["steps"]["build"]["attempts"][0]["reasons"] = []
+      other["steps"]["ship"] = {"attempts" => [{"n" => 1, "reasons" => [{"code" => "waiting_you", "since" => t("10:05:10"), "until" => t("10:05:40")}]}]}
+      result = reader.read(other, events, now: now, stops: stops)
+      expect(result[:spans].count { |span| span[:kind] == "wait" && span[:code] == "waiting_you" && span[:step] == "ship" }).to eq(1)
+    end
+
+    it "keeps the waiting_you entry when the gate events were lost" do
+      result = reader.read(run, [events.first], now: now, stops: stops)
+      expect(result[:spans].select { |span| span[:kind] == "gate" }).to be_empty
+      expect(result[:totals][:waiting_seconds]).to include("waiting_you" => 60.0)
     end
 
     it "keeps the identity with a pause that overlaps a stall, so the buckets can exceed stopped" do

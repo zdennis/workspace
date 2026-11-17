@@ -232,10 +232,11 @@ module Workspace
           end
         end
       end
-      gate_spans(events).each { |gate| out << make.call("gate", gate[:step], gate[:attempt], nil, gate.except(:step, :attempt)) }
+      gates = gate_spans(events)
+      gates.each { |gate| out << make.call("gate", gate[:step], gate[:attempt], nil, gate.except(:step, :attempt)) }
       WorkflowDeadline.reason_entries(run.to_h).each do |found|
         entry = found["entry"]
-        next if entry["code"] == "waiting_you" && entry.dig("details", "kind") == "gate"
+        next if gate_entry?(entry, string(found["step"]), gates)
         next if unreadable_until?(entry)
         out << make.call("wait", string(found["step"]), integer(found["attempt"]), nil, code: string(entry["code"]) || "unknown",
           started_at: string(entry["since"]), ended_at: string(entry["until"]))
@@ -251,6 +252,20 @@ module Workspace
         out << make.call("downtime", nil, nil, nil, code: "downtime", started_at: string(stop["since"]), ended_at: string(stop["until"]))
       end
       out
+    end
+
+    # A stored `waiting_you` entry never carries `details`, so it is the gate's wait when its step has a gate span (from
+    # events) whose interval holds the entry's `since`, the span starting at most one second after it (event `ts` has one second).
+    def gate_entry?(entry, step, gates)
+      return false unless entry["code"] == "waiting_you"
+      return true if entry.dig("details", "kind") == "gate"
+      since = time(entry["since"]) or return false
+      gates.any? do |gate|
+        next false unless gate[:step] == step
+        from = time(gate[:started_at]) or next false
+        to = gate[:ended_at] ? time(gate[:ended_at]) : nil
+        since >= from - 1 && (to.nil? || since <= to)
+      end
     end
 
     def head_of(attempt, key)
