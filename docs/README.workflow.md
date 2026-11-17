@@ -21,27 +21,27 @@ workspace workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [
                          [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]
 workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]
 workspace workflow status --needs-me [--name WORKSPACE | --project [NAME]] [--json]
-workspace workflow events RUN [--since N] [--types A,B] [--follow [--timeout DURATION]] [--json]
-workspace workflow files RUN [--json]
+workspace workflow events [RUN] [--since N] [--types A,B] [--follow [--timeout DURATION]] [--json]
+workspace workflow files [RUN] [--json]
 workspace workflow trace RUN [--table] [--json]
-workspace workflow attempts RUN [--attempt-of STEP] [--json]
-workspace workflow audit RUN [--attempt-of STEP] [--json]
-workspace workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
-workspace workflow compare ID [--by definition | --by version | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
+workspace workflow attempts [RUN] [--attempt-of STEP] [--json]
+workspace workflow audit [RUN] [--attempt-of STEP] [--json]
+workspace workflow stats [ID] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
+workspace workflow compare [ID] [--by definition | --by version | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow insights ID [--limit N] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow learn reflect RUN [--agent KIND] [--json]
 workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow sweep --install | --uninstall [--dry-run] [--json]
 workspace workflow sweep --installed [--json]
 workspace workflow recover [--dry-run] [--json]
-workspace workflow resume RUN --accept-guard --note TEXT [--retry] [--pane PANE] [--extra-attempts N] [--json]
-workspace workflow resume RUN --restart-step [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]
-workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--extra-rounds N] [--json]
-workspace workflow cancel RUN [--json]
-workspace workflow pause RUN [--interrupt] [--reason TEXT] [--json]
-workspace workflow unpause RUN [--json]
-workspace workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
-workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]
+workspace workflow resume [RUN] --accept-guard --note TEXT [--retry] [--pane PANE] [--extra-attempts N] [--json]
+workspace workflow resume [RUN] --restart-step [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]
+workspace workflow resume [RUN] [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--extra-rounds N] [--json]
+workspace workflow cancel [RUN] [--json]
+workspace workflow pause [RUN] [--interrupt] [--reason TEXT] [--json]
+workspace workflow unpause [RUN] [--json]
+workspace workflow approve [RUN] [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
+workspace workflow reject [RUN] --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]
 
 workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]
 workspace step status [--json]
@@ -260,6 +260,16 @@ The workspace columns describe the workspace as it is now, not as it was when th
 The other columns say whether each piece exists: `yes`, `no`, or `?` when it could not be read (tmux gave no answer, for example). Worktree is the checkout path stored with the run. A `no` in State dir can also mean nothing was ever written there.
 
 `--project NAME` for a project with no members left is refused with `unknown_workspace`; use `--all` to see its runs. Rows are not cut to the terminal width: use `less -S`, or `--json`.
+
+## Which run the verbs default to
+
+The run-id verbs (`events`, `files`, `attempts`, `audit`, `resume`, `cancel`, `pause`, `unpause`, `approve`, `reject`) and the definition-id verbs (`show`, `graph`, `stats`, `compare`) take their RUN or ID argument as optional. With the argument left out, the verb resolves a run:
+
+1. the run the calling pane is bound to (as its author, or as a reviewer for the read verbs) — for a mutating verb a review pane resolves nothing;
+2. else the one run still going in the workspace of the working directory (its `workspace` field is the match key; `--name` never takes part);
+3. else nothing, and the verb raises the usage error it always gave (`workflow events needs a RUN id.`), and bare `workflow show` lists every definition.
+
+Several going runs on the checkout are refused with `ambiguous_run` (details `workspace` and `runs`, newest first) rather than a guess: name the run. A run a verb reaches through the resolver is the same one an explicit id names — the gate verbs still refuse a pane bound to a run or the run's own agent pane, and a run that is stored no more fails as `unknown_run` (with `stats` and `compare`, in place of the `unknown_workflow` an unknown explicit id gives).
 
 ## Starting from a ticket or a prompt
 
