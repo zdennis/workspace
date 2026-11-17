@@ -309,4 +309,57 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect { failing.review_text(reviewed_run, reviewed, 1, 1, "abc123") }.to raise_error(Errno::ENOSPC)
     end
   end
+
+  describe ".interrupted_brief" do
+    def task(id, title, state)
+      Workspace::PlanFile::Task.new(id: id, title: title, state: state)
+    end
+
+    let(:tasks) do
+      [task("T1", "Parse the file", "done"), task("T2", "Write the spec", "in_progress"), task("T3", "Skipped one", "skipped"),
+        task(nil, "Untitled work", "todo"), task("T5", "Stuck", "blocked")]
+    end
+
+    it "matches the golden text" do
+      golden = File.join(PROJECT_ROOT, "spec/fixtures/workflow_prompt_golden/interrupted_brief.txt")
+      text = described_class.interrupted_brief(head: "b" * 40, head_before: "a" * 40, tasks: tasks)
+      if ENV["GOLDEN_UPDATE"]
+        FileUtils.mkdir_p(File.dirname(golden))
+        File.write(golden, text)
+      end
+
+      expect(text).to eq(File.read(golden))
+    end
+
+    it "says so when there is no plan" do
+      text = described_class.interrupted_brief(head: "b" * 40, head_before: nil, tasks: nil)
+
+      expect(text).to include("This workspace has no plan.")
+      expect(text).not_to include("Done tasks")
+    end
+
+    it "says so when HEAD could not be read" do
+      text = described_class.interrupted_brief(head: nil, head_before: nil, tasks: [])
+
+      expect(text).to include("HEAD could not be read.")
+      expect(text).to include("Done tasks: none")
+    end
+
+    it "lists a task with no id by its title" do
+      text = described_class.interrupted_brief(head: nil, head_before: nil, tasks: [task(nil, "Untitled work", "todo")])
+
+      expect(text).to include("Open tasks: Untitled work")
+    end
+
+    it "keeps a title with a fence and control characters inside the fence" do
+      title = "x \e[31m ```` break out"
+      text = described_class.interrupted_brief(head: nil, head_before: nil, tasks: [task("T1", title, "todo")])
+
+      fence = text[/^(`+)text$/, 1]
+      expect(fence.length).to be > 4
+      expect(text.lines.grep(/^#{fence}/).size).to eq(2)
+      expect(text).not_to include("\e")
+      expect(text).to include("\\e[31m")
+    end
+  end
 end
