@@ -562,6 +562,7 @@ Do not run the whole suite while working or before a commit. GitHub Actions runs
 4. Some files reach many commands:
    - `lib/workspace/cli.rb`, `help_pages.rb`, `json_envelope.rb`, `output_gate.rb`, `error_codes.rb`, or `build_cli` in `lib/workspace.rb`: add `spec/system/workspace/cli_spec.rb`, `spec/system/workspace_spec.rb`, and the specs that build the CLI (`grep -rlE 'build_cli|CLI\.new' spec/integration spec/system`).
    - A file in `spec/support/`: every spec that uses the helper (grep its name).
+   - A changed public method signature: `spec/unit/fake_contract_spec.rb`, which holds the spec fakes to the real classes' parameters.
    - A new or changed spec file: add `spec/unit/no_peeking_spec.rb`, which reads every spec as text.
    - `lib/library/play/`, `lib/workflows/`, `lib/templates/`: grep the specs for the pack, preset or template name. `lib/skills/`: also run `script/check-skills`.
    - A new, renamed or removed `lib/` file, or a change to `.claude/CLAUDE.md` or `docs/architecture/`: run `spec/unit/claude_md_size_spec.rb`.

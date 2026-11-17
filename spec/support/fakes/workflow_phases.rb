@@ -493,12 +493,12 @@ class RecordingAttemptRecord
     Workspace::WorkflowRun::Attempt.from_h(attempt.merge("outputs" => []))
   end
 
-  def abandon(run)
+  def abandon(run, outcome: "cancelled")
     hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:abandon, hash["id"]]
     last = hash["steps"][hash["current"]]["attempts"].last
     if last && !last["ended_at"]
-      last["outcome"] = "cancelled"
+      last["outcome"] = outcome
       last["ended_at"] = "2026-11-10T12:00:00Z"
     end
     Workspace::WorkflowRun.from_h(hash)
