@@ -177,15 +177,40 @@ workspace config set workflows.sources 'acme/workflows/presets, ~/workflows'</co
   </div>
   <p class="muted">Every <code>.yml</code> file in the source is checked, GitHub sources are cached under the state directory, and the report names what is new, changed or gone. Run it again to update. Your own files in <code>~/.config/workspace/workflows/</code> always win over sources; sources win over the presets.</p>
   <p>See everything that is now available — yours, the sources' and the presets — with <code>workspace workflow list</code> (abbreviated):</p>
-  <div class="card"><pre><code>ID                    SOURCE    DESCRIPTION
-rpiv                  builtin   One feature end to end in one workspace, with a plan gate
-                                and a test-backed verify loop.
-rpiv-auto-approve-v2  builtin   One feature end to end with no person, three reviewers the
-                                engine runs on the plan in one review window, and a
-                                test-backed verify loop.
-explore               builtin   Read-only research into a question, a gate on the findings,
-                                then a report note. Changes no code.
-my-workflow           source:1  ...your installed definitions show their source here</code></pre></div>
+  <div class="card"><pre style="white-space: pre-wrap"><code>ID                 SOURCE
+rpiv               builtin
+  One feature end to end in one workspace, with a
+  plan gate and a test-backed verify loop.
+rpiv-auto-approve-v2  builtin
+  One feature end to end with no person,
+  three reviewers the engine runs on the plan in
+  one review window, and a test-backed verify loop.
+explore            builtin
+  Read-only research into a question, a gate on
+  the findings, then a report note. Changes no code.
+my-workflow        source:1
+  ...your installed definitions show their source here</code></pre></div>
+
+  <h2>Tips</h2>
+  <ul>
+    <li><strong>Everything speaks JSON.</strong> Every command takes <code>--json</code> and prints a stable, versioned document — the same words a person reads and a machine parses. <code>workspace capabilities --json</code> reports the version and feature set, so a script or agent can ask what this install can do.</li>
+    <li><strong>It ships with skills for your coding agents.</strong> Run <code>workspace skills install</code> and it links one skill per subject into each harness it finds (Claude Code, Codex, Pi, OpenCode):
+      <ul>
+        <li><code>workspace</code> — router and ground rules for the CLI: workspaces, worktrees, agents in tmux panes, everyday verbs.</li>
+        <li><code>workspace-lifecycle</code> — create, restore and end workspaces and worktrees: <code>start</code>, <code>launch</code>, <code>promote</code>, <code>prune</code>.</li>
+        <li><code>workspace-workflow</code> — start and follow workflow runs: <code>go</code>, <code>workflow start</code>, <code>workflow status</code>.</li>
+        <li><code>workspace-agent-run</code> — talk to another workspace's agent: message, ping, nudge, run a command and wait.</li>
+        <li><code>workspace-inbox</code> — leave to-dos and questions for the person, answer an agent's <code>ask</code>.</li>
+        <li><code>workspace-template</code> — choose, check and apply the tmuxinator template sets behind pane layouts.</li>
+      </ul>
+    </li>
+    <li><strong>Running workspaces can talk to each other.</strong> <code>agent-run send</code> messages, pings or nudges another workspace's agent pane, queues for when it is idle, or runs a command in it and waits — agent to agent, not just person to agent.</li>
+    <li><strong>There is a companion UI.</strong> <a href="https://github.com/zdennis/workspace-ui">workspace-ui</a> is a lightweight desktop app for managing workspace projects; the CLI's <code>ui open</code> builds its links.</li>
+    <li><strong>From ticket to running workflow in one command.</strong> <code>workspace go PROJ-101</code> (or a PR URL, issue, branch or plain text) picks the workflow for the ref and starts it in a new or existing workspace.</li>
+    <li><strong>Reboots are not fatal.</strong> <code>workspace restore --all</code> brings back the agent panes a reboot or tmux restart took, typing each session's resume line; <code>workflow recover</code> restarts mid-turn workflow steps.</li>
+    <li><strong>Let the sweep keep runs moving.</strong> <code>workspace workflow sweep --install</code> sets up a launchd entry that recovers stalled or timed-out steps on a schedule, so unattended runs do not wait for you to notice.</li>
+    <li><strong>Clean up merged work with one verb.</strong> <code>workspace prune</code> removes worktree-backed projects whose GitHub PR is closed or merged; <code>workspace doctor --fix</code> repairs most setup problems it finds.</li>
+  </ul>
 
   <footer>
     <p class="muted">Full documentation in the <a href="https://github.com/zdennis/workspace">repo README</a> and <a href="https://github.com/zdennis/workspace/tree/main/docs">docs/</a>.</p>
