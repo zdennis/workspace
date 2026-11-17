@@ -909,4 +909,68 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class::INTERRUPT_CLAIM_SECONDS).to eq(Workspace::WorkflowRecovery::INTERRUPT_CLAIM_SECONDS)
     end
   end
+
+  describe ".restart_refusal" do
+    let(:open_attempt) { {"n" => 1, "started_at" => now.iso8601(3)} }
+    let(:run) { run_with(:steps => {"plan" => step("running", open_attempt)}, "id" => "r1") }
+
+    def refusal(run, bound, at: now)
+      described_class.restart_refusal(run, run["steps"][run["current"]], at, bound)
+    end
+
+    it "refuses a step that is not running, naming a plain resume" do
+      stopped = run_with(:steps => {"plan" => step("failed", open_attempt)}, "id" => "r1")
+      error = refusal(stopped, "idle")
+      expect(error.code).to eq("no_open_attempt")
+      expect(error.details).to include("state" => "failed", "step" => "plan")
+      expect(error.message).to include("workspace workflow resume r1", "nothing was changed")
+    end
+
+    it "refuses a running step with no attempt or an ended one" do
+      none = run_with(:steps => {"plan" => step("running")}, "id" => "r1")
+      ended = run_with(:steps => {"plan" => step("running", open_attempt.merge("ended_at" => now.iso8601))}, "id" => "r1")
+      expect(refusal(none, "idle").code).to eq("no_open_attempt")
+      expect(refusal(ended, "idle").code).to eq("no_open_attempt")
+    end
+
+    it "refuses while the line is being typed, whatever the pane" do
+      typing = run_with(:steps => {"plan" => step("running", open_attempt.merge("delivery" => "delivering"))}, "id" => "r1")
+      error = refusal(typing, "idle")
+      expect(error.code).to eq("step_still_working")
+      expect(error.details["reason"]).to eq("delivering")
+    end
+
+    %w[gone shell failed idle].each do |bound|
+      it "allows a restart when the bound pane is #{bound}" do
+        expect(refusal(run, bound)).to be_nil
+      end
+    end
+
+    it "allows an unknown pane when an agent_gone or pane_gone stall is open" do
+      %w[agent_gone pane_gone].each do |cause|
+        stalled = run_with(:steps => {"plan" => step("running", open_attempt.merge("stalls" => [{"cause" => cause, "since" => now.iso8601}]))}, "id" => "r1")
+        expect(refusal(stalled, "unknown")).to be_nil
+      end
+    end
+
+    it "refuses an unknown pane with no stall, a closed stall or a turn_failed stall" do
+      closed = run_with(:steps => {"plan" => step("running", open_attempt.merge("stalls" => [{"cause" => "agent_gone", "until" => now.iso8601}]))}, "id" => "r1")
+      failed = run_with(:steps => {"plan" => step("running", open_attempt.merge("stalls" => [{"cause" => "turn_failed"}]))}, "id" => "r1")
+      [run, closed, failed].each do |candidate|
+        error = refusal(candidate, "unknown")
+        expect(error.code).to eq("step_still_working")
+        expect(error.details["reason"]).to eq("unknown")
+        expect(error.message).to include("nothing was changed")
+      end
+    end
+
+    it "refuses a busy pane even with an open stall" do
+      stalled = run_with(:steps => {"plan" => step("running", open_attempt.merge("stalls" => [{"cause" => "agent_gone"}]))}, "id" => "r1")
+      [run, stalled].each do |candidate|
+        error = refusal(candidate, "busy")
+        expect(error.code).to eq("step_still_working")
+        expect(error.details["reason"]).to eq("working")
+      end
+    end
+  end
 end
