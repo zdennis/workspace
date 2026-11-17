@@ -12,9 +12,6 @@ module Workspace
     # A produced file above this many bytes is recorded with its size and no hash.
     MAX_HASH_BYTES = 16 * 1024 * 1024
 
-    # The last bytes of the session ledger read to find an attempt's session; a ledger is never rotated.
-    MAX_LEDGER_BYTES = 1024 * 1024
-
     # The last bytes of a transcript read for an attempt's usage, model and version. Attempt recording
     # runs under the run's lock, so a transcript is never read whole; when the tail does not reach back
     # to the attempt's start, `usage` is recorded as nil rather than a count that leaves tokens out.
@@ -26,20 +23,16 @@ module Workspace
     # An attempt's start is recorded a moment before its session's hook may have been.
     START_SLACK = 5
 
-    SESSION_ID = /\A[A-Za-z0-9._-]{1,128}\z/
-    TRANSCRIPT_PATH = %r{\A/[^\x00-\x1f\x7f]{1,4095}\.jsonl\z}
-    VERSION = /\A[A-Za-z0-9._+-]{1,50}\z/
-    MODEL = /\A[A-Za-z0-9._:\/\[\]-]{1,100}\z/
+    SESSION_ID = TranscriptUsage::SESSION_ID
     KIND = /\A[a-z][a-z0-9_-]{0,31}\z/
     # The reason codes that hide the stored reason while they stand; the entry they close carries the stored key `parked`.
     HIDING_CODES = %w[parked paused].freeze
-    USAGE_KEYS = %w[input_tokens output_tokens cache_creation_input_tokens cache_read_input_tokens].freeze
     # A sub-agent transcript's file name, and the most of them one attempt reads (more is uncounted).
     SUBAGENT_FILE = /\Aagent-[A-Za-z0-9._-]{1,128}\.jsonl\z/
     MAX_SUBAGENT_FILES = 64
     # The most directory entries looked at before the attempt gives up as uncounted.
     MAX_SUBAGENT_ENTRIES = 4096
-    private_constant :KEPT_EVIDENCE, :SUBAGENT_FILE, :MAX_SUBAGENT_FILES, :MAX_SUBAGENT_ENTRIES, :START_SLACK, :SESSION_ID, :TRANSCRIPT_PATH, :VERSION, :MODEL, :KIND, :USAGE_KEYS
+    private_constant :KEPT_EVIDENCE, :SUBAGENT_FILE, :MAX_SUBAGENT_FILES, :MAX_SUBAGENT_ENTRIES, :START_SLACK, :SESSION_ID, :KIND
 
     # @param guard [Workspace::WorkflowGuard] reads the checkout's HEAD
     # @param ledger [Workspace::SessionLedger, nil] finds an attempt's session; nil records none
@@ -297,7 +290,7 @@ module Workspace
       kind = entry["kind"].nil? ? "claude" : entry["kind"]
       kind = nil unless kind.is_a?(String) && KIND.match?(kind)
       path = entry["transcript_path"]
-      path = nil unless path.is_a?(String) && TRANSCRIPT_PATH.match?(path)
+      path = nil unless TranscriptUsage.transcript_path?(path)
       # Only a startup or a /clear begins a new transcript file; a resume or a compact goes on in the old one.
       new_file = %w[startup clear].include?(entry["source"])
       read = if kind == "claude" && path
@@ -315,21 +308,7 @@ module Workspace
     # @return [Array(Hash, Boolean), nil] the chosen SessionStart entry and whether a SessionEnd for it was seen
     def session_entry(run, pane, started, ended, server)
       return nil unless @ledger && pane.is_a?(String) && !pane.empty?
-      names = Array(@session_names.call(run["workspace"])).select { |name| name.is_a?(String) && !name.empty? }
-      entries = @ledger.recent_entries(max_bytes: MAX_LEDGER_BYTES, matching: pane)
-      start = entries.reverse_each.find do |entry|
-        entry["event"] == "session_start" && entry["pane_id"] == pane && names.include?(entry["workspace"]) &&
-          (server.nil? || entry["tmux_server"].nil? || entry["tmux_server"].to_s == server.to_s) &&
-          entry["session_id"].is_a?(String) && SESSION_ID.match?(entry["session_id"]) && (at = time(entry["at"])) && at <= ended
-      end
-      return nil unless start
-      # Only an end at or after this start closes it: a session resumed under the same id starts again.
-      start_at = time(start["at"])
-      end_at = entries.find do |entry|
-        entry["event"] == "session_end" && entry["session_id"] == start["session_id"] && (stop = time(entry["at"])) && stop >= start_at
-      end&.fetch("at", nil)
-      return nil if end_at && time(end_at) < started
-      [start, !end_at.nil?]
+      TranscriptUsage.session_entry(ledger: @ledger, names: @session_names.call(run["workspace"]), pane: pane, started: started, ended: ended, server: server)
     end
 
     # A session that began before the attempt (past a small slack) is carried over into it. It is trusted
@@ -342,9 +321,7 @@ module Workspace
     end
 
     def time(value)
-      Time.iso8601(value.to_s)
-    rescue ArgumentError
-      nil
+      TranscriptUsage.time(value)
     end
 
     # Reads the tail of the transcript once. A message written on several lines is one message: it is in the
@@ -360,33 +337,12 @@ module Workspace
       return nil unless File.lstat(path).file?
       lines, complete = tail_lines(path)
       floor = (session_at && session_at >= from) ? session_at : from
-      messages = {}
-      version = nil
-      reached = complete
-      unreadable = seen = false
-      lines.each_with_index do |line, index|
-        entry = parse_line(line) or next
-        next if entry["isSidechain"] == true && !sidechain
-        message = (entry["type"] == "assistant" && entry["message"].is_a?(Hash)) ? entry["message"] : nil
-        at = time(entry["timestamp"])
-        unless at
-          unreadable = true if message&.key?("usage")
-          next
-        end
-        unreadable = true if message&.key?("usage") && !message["usage"].is_a?(Hash)
-        reached = true if at <= floor
-        inside = at.between?(from, to)
-        seen = true if inside
-        version = entry["version"] if inside && entry["version"].is_a?(String) && VERSION.match?(entry["version"])
-        next unless message
-        record = (messages[message["id"].is_a?(String) ? message["id"] : index] ||= {first: at})
-        record[:usage] = message["usage"] if message["usage"].is_a?(Hash)
-        record[:model] = message["model"] if message["model"].is_a?(String) && MODEL.match?(message["model"]) && message["model"] != "<synthetic>"
-      end
-      counted = messages.values.select { |record| record[:usage] && record[:first] >= from && record[:first] <= to }
-      records = counted.map { |record| record[:usage] }
-      {usage: (reached && !unreadable) ? total(records) : nil, records: records, ok: reached && !unreadable,
-       model: counted.reverse_each.find { |record| record[:model] }&.fetch(:model), version: version, seen: seen}
+      scan = TranscriptUsage::Scan.new(from: from, to: to, floor: floor, sidechain: sidechain).feed(lines)
+      ok = (complete || scan.reached?) && !scan.unreadable?
+      counted = scan.counted
+      records = counted.map(&:usage)
+      {usage: ok ? total(records) : nil, records: records, ok: ok,
+       model: counted.reverse_each.find(&:model)&.model, version: scan.version, seen: scan.seen?}
     rescue SystemCallError, IOError
       nil
     end
@@ -440,18 +396,8 @@ module Workspace
       end
     end
 
-    def parse_line(line)
-      entry = JSON.parse(line)
-      entry.is_a?(Hash) ? entry : nil
-    rescue JSON::ParserError
-      nil
-    end
-
     def total(usages)
-      return nil if usages.empty?
-      return nil unless usages.all? { |usage| USAGE_KEYS.all? { |key| !usage.key?(key) || (usage[key].is_a?(Integer) && usage[key] >= 0) } }
-      sums = USAGE_KEYS.to_h { |key| [key, usages.sum { |usage| usage[key] || 0 }] }
-      sums.reject { |key, value| value.zero? && key.start_with?("cache_") }
+      TranscriptUsage.total(usages)
     end
 
     # With an evidence copy that holds the file, its hash is the copy's, so the two records can't differ and

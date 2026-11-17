@@ -62,6 +62,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_guard.rb` — Checks that a `guard:` step left the checkout alone; also review-round snapshots.
 - `lib/workspace/workflow_require.rb` — Checks a step's `require:` proofs.
 - `lib/workspace/workflow_produced.rb` — The one check of a step's `produces` file, plus safe hashing.
+- `lib/workspace/transcript_usage.rb` — Token-usage rules: ledger session pick, transcript path check, per-line read, forward line scan and usage totals.
 - `lib/workspace/workflow_attempt_record.rb` — What an attempt records about itself: hashes, head, outputs, session and usage.
 - `lib/workspace/workflow_evidence.rb` — Copies prompts, check logs, outputs and verdicts into a run's evidence directory.
 - `lib/workspace/workflow_log_tail.rb` — Formats a failed check's log tail and a reviewer's write-up as safe data blocks.
