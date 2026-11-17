@@ -33,7 +33,7 @@ jobs:
         run: ruby script/check-ci-groups
 
   specs:
-    name: specs (${{ matrix.group }})
+    name: specs (${{ matrix.group }}, ruby ${{ matrix.ruby-version }})
     runs-on: macos-latest
     timeout-minutes: 20
     strategy:
@@ -41,19 +41,46 @@ jobs:
       matrix:
         include:
           - group: unit-integration
+            ruby-version: "3.4"
+            paths: spec/unit spec/integration
+            processes: 3
+            no_tmux: true
+          - group: unit-integration
+            ruby-version: "4.0"
             paths: spec/unit spec/integration
             processes: 3
             no_tmux: true
           - group: system-commands
+            ruby-version: "3.4"
+            paths: spec/system/workspace/commands
+            processes: 3
+          - group: system-commands
+            ruby-version: "4.0"
             paths: spec/system/workspace/commands
             processes: 3
           - group: system-workflow
+            ruby-version: "3.4"
+            paths: spec/system/workspace/workflow_*_spec.rb
+            processes: 3
+          - group: system-workflow
+            ruby-version: "4.0"
             paths: spec/system/workspace/workflow_*_spec.rb
             processes: 3
           - group: system-git
+            ruby-version: "3.4"
+            paths: spec/system/workspace/checkout_move_spec.rb spec/system/workspace/git_spec.rb spec/system/workspace/git_*_spec.rb
+            processes: 3
+          - group: system-git
+            ruby-version: "4.0"
             paths: spec/system/workspace/checkout_move_spec.rb spec/system/workspace/git_spec.rb spec/system/workspace/git_*_spec.rb
             processes: 3
           - group: system
+            ruby-version: "3.4"
+            paths: spec/system
+            exclude: ^spec/system/workspace/(commands/|workflow_[^/]*_spec\.rb$|git(_[^/]*)?_spec\.rb$|checkout_move_spec\.rb$)
+            processes: 3
+          - group: system
+            ruby-version: "4.0"
             paths: spec/system
             exclude: ^spec/system/workspace/(commands/|workflow_[^/]*_spec\.rb$|git(_[^/]*)?_spec\.rb$|checkout_move_spec\.rb$)
             processes: 3
@@ -62,7 +89,7 @@ jobs:
 
       - uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "4.0"
+          ruby-version: ${{ matrix.ruby-version }}
           bundler-cache: true
 
       - name: Install tmux
@@ -77,8 +104,8 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: tmp/runtime-cache
-          key: runtime-v1-${{ matrix.group }}@${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: runtime-v1-${{ matrix.group }}@
+          key: runtime-v1-${{ matrix.group }}-ruby${{ matrix.ruby-version }}@${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: runtime-v1-${{ matrix.group }}-ruby${{ matrix.ruby-version }}@
 
       - name: Configure git identity for specs that commit
         run: |
@@ -102,5 +129,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: runtime-${{ matrix.group }}
+          name: runtime-${{ matrix.group }}-ruby${{ matrix.ruby-version }}
           path: tmp/runtime-${{ matrix.group }}.log

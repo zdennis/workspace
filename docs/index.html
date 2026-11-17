@@ -76,16 +76,18 @@
   <h2>Requirements</h2>
   <ul>
     <li><strong>macOS</strong> (uses AppleScript and Accessibility APIs)</li>
-    <li><strong>Ruby</strong> 3.x</li>
+    <li><strong>Ruby</strong> 3.4 or 4.x (both tested on CI)</li>
     <li><strong><a href="https://iterm2.com/">iTerm2</a></strong></li>
     <li><strong><a href="https://github.com/tmux/tmux">tmux</a></strong> and <strong><a href="https://github.com/tmuxinator/tmuxinator">tmuxinator</a></strong></li>
     <li><strong><a href="https://github.com/zdennis/window-tool">window-tool</a></strong> and <strong>git</strong></li>
+    <li><strong><a href="https://github.com/zdennis/homebrew-bin/blob/main/docs/README.ascii-banner.md">ascii-banner</a></strong> (optional, banner in the launcher pane)</li>
   </ul>
   <p class="muted">A <a href="https://github.com/zdennis/workspace/blob/main/docs/README.launch.md#headless">headless</a> launch needs only Ruby, tmux, tmuxinator and git — no macOS, iTerm2 or window-tool.</p>
 
   <div class="card">
     <pre><code>brew install tmux tmuxinator gh
-brew install zdennis/bin/window-tool</code></pre>
+brew install zdennis/bin/window-tool
+brew install zdennis/bin/ascii-banner</code></pre>
   </div>
 
   <h2>Install</h2>
@@ -174,6 +176,16 @@ workspace config set workflows.sources 'acme/workflows/presets, ~/workflows'</co
     <pre><code>workspace workflow install</code></pre>
   </div>
   <p class="muted">Every <code>.yml</code> file in the source is checked, GitHub sources are cached under the state directory, and the report names what is new, changed or gone. Run it again to update. Your own files in <code>~/.config/workspace/workflows/</code> always win over sources; sources win over the presets.</p>
+  <p>See everything that is now available — yours, the sources' and the presets — with <code>workspace workflow list</code> (abbreviated):</p>
+  <div class="card"><pre><code>ID                    SOURCE    DESCRIPTION
+rpiv                  builtin   One feature end to end in one workspace, with a plan gate
+                                and a test-backed verify loop.
+rpiv-auto-approve-v2  builtin   One feature end to end with no person, three reviewers the
+                                engine runs on the plan in one review window, and a
+                                test-backed verify loop.
+explore               builtin   Read-only research into a question, a gate on the findings,
+                                then a report note. Changes no code.
+my-workflow           source:1  ...your installed definitions show their source here</code></pre></div>
 
   <footer>
     <p class="muted">Full documentation in the <a href="https://github.com/zdennis/workspace">repo README</a> and <a href="https://github.com/zdennis/workspace/tree/main/docs">docs/</a>.</p>

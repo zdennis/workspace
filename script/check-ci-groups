@@ -10,6 +10,11 @@ Dir.chdir(File.expand_path("..", __dir__))
 
 matrix = YAML.load_file(".github/workflows/ci.yml").dig("jobs", "specs", "strategy", "matrix", "include")
 
+# The matrix holds one entry per group per Ruby version; the groups are what
+# this checks, so collapse the entries down to distinct groups first.
+groups = matrix.map { |g| g.reject { |k, _| k == "ruby-version" } }.uniq
+group_names = groups.map { |g| g["group"] }.uniq
+
 member = lambda do |group, spec|
   listed = group["paths"].split.any? do |token|
     spec == token || spec.start_with?("#{token}/") || File.fnmatch(token, spec, File::FNM_PATHNAME)
@@ -19,12 +24,12 @@ end
 
 specs = (Dir.glob("spec/**/*_spec.rb") + ARGV).uniq.sort
 problems = specs.filter_map do |spec|
-  names = matrix.select { |g| member.call(g, spec) }.map { |g| g["group"] }
+  names = groups.select { |g| member.call(g, spec) }.map { |g| g["group"] }
   "#{spec}: #{names.empty? ? "in no group" : "in #{names.join(", ")}"}" if names.size != 1
 end
 
 if problems.empty?
-  puts "ok: #{specs.size} specs, each in exactly one of #{matrix.size} groups"
+  puts "ok: #{specs.size} specs, each in exactly one of #{group_names.size} groups"
 else
   warn problems
   exit 1
