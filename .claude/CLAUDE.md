@@ -565,6 +565,7 @@ Do not run the whole suite while working or before a commit. GitHub Actions runs
 3. Find the integration and system specs at risk. Take the constants each changed `lib/` file defines and grep for them: `grep -rlw WorkflowEngine spec/integration spec/system`. Then go one level out: grep `lib/` for the constant to find its direct callers, and grep the integration and system specs for those callers' constants. When the change alters a method signature, a `--json` field, an error code, printed text another class parses, or a file format, follow every caller, not one level. A change inside one private method's body needs only the first level.
 4. Some files reach many commands:
    - `lib/workspace/cli.rb`, `help_pages.rb`, `json_envelope.rb`, `output_gate.rb`, `error_codes.rb`, or `build_cli` in `lib/workspace.rb`: add `spec/system/workspace/cli_spec.rb`, `spec/system/workspace_spec.rb`, and the specs that build the CLI (`grep -rlE 'build_cli|CLI\.new' spec/integration spec/system`).
+   - A new, renamed or removed verb (a `SUBCOMMANDS` list in `cli.rb` or `cli/*.rb`): also `lib/workspace/shell_init.rb`'s completion word lists and `spec/system/workspace/shell_init_spec.rb`.
    - A file in `spec/support/`: every spec that uses the helper (grep its name).
    - A changed public method signature: `spec/unit/fake_contract_spec.rb`, which holds the spec fakes to the real classes' parameters.
    - A new or changed spec file: add `spec/unit/no_peeking_spec.rb`, which reads every spec as text.
