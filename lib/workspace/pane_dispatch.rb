@@ -87,7 +87,8 @@ module Workspace
     end
 
     # The Claude Code or Codex pane +preferred+ names, else the first one.
-    # A pane of a review window (its row's `review` mark) is never one of them.
+    # A pane of a review window (its row's `review` mark) is never one of them, nor is a pane
+    # bound for a reflection ({Commands::Binding#reflecting}): it is single-purpose until its binding ends.
     #
     # @param name [String] the workspace
     # @param panes [Array<Hash>] from {#panes}
@@ -96,7 +97,7 @@ module Workspace
     # @return [Hash] the pane's row
     # @raise [Workspace::Error] `no_agent_pane` when no pane runs Claude Code or Codex
     def main_pane(name, panes, preferred:, what:)
-      agents = panes.select { |pane| MAIN_KINDS.include?(pane["kind"]) && pane["pane_id"] && !pane["review"] }
+      agents = panes.select { |pane| MAIN_KINDS.include?(pane["kind"]) && pane["pane_id"] && !pane["review"] && !@binder.reflecting(pane: pane["pane_id"]) }
       agents.find { |pane| pane["pane_id"] == preferred } || agents.first ||
         raise(Workspace::Error.new("No pane of '#{name}' runs Claude Code or Codex, so there is nowhere to send #{what}.",
           code: "no_agent_pane", details: {"workspace" => name}))

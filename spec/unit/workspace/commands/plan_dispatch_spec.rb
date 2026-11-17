@@ -18,7 +18,7 @@ RSpec.describe Workspace::Commands::PlanDispatch do
   let(:tmux) { instance_double(Workspace::Tmux, sessions: ["api", "api-worktree-x"], custom_socket_option: nil, close_pane: true, capture_screen: "") }
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:sender) { instance_double(Workspace::Commands::Send, deliver: {"pane" => "%19", "mode" => "text", "submitted" => true}) }
-  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}, owned: nil, refuse_owned!: nil) }
+  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}, owned: nil, refuse_owned!: nil, reflecting: nil) }
   let(:run_owned) { {"run" => "wr_9", "pane" => "%19", "paused" => false} }
   let(:real_binding) { Workspace::Commands::Binding.new(bindings: nil, locator: nil, tmux: nil) }
   let(:run_owned_pane) do

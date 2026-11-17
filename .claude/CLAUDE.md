@@ -56,6 +56,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_deny.rb` — PreToolUse tripwire that blocks Bash commands a run's `deny` list matches.
 - `lib/workspace/review_write_guard.rb` — PreToolUse tripwire that keeps review panes from writing outside the round directory.
 - `lib/workspace/review_round_path.rb` — The one derivation of a reviewer's round directory and its link-safe walk.
+- `lib/workspace/reflection_write_guard.rb` — PreToolUse tripwire that keeps a reflection pane to writing its run's `reflection.md`.
 - `lib/workspace/workflow_review_revision.rb` — Computes a review round's revision digest.
 - `lib/workspace/workflow_review_tally.rb` — Owns the verdict file format and tallies a round's verdicts.
 - `lib/workspace/workflow_round_holder.rb` — The process a review round's `holder` names, and its liveness.
@@ -70,6 +71,8 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_evidence.rb` — Copies prompts, check logs, outputs and verdicts into a run's evidence directory.
 - `lib/workspace/workflow_log_tail.rb` — Formats a failed check's log tail and a reviewer's write-up as safe data blocks.
 - `lib/workspace/workflow_attempts.rb` — The rows `workflow attempts` shows.
+- `lib/workspace/workflow_reflection.rb` — Composes the instructions for a pane that looks back at a finished run and writes its `reflection.md`.
+- `lib/workspace/commands/workflow_reflect.rb` — `workflow learn reflect`: starts a bound reflection pane for one finished run, or prints its existing `reflection.md`.
 - `lib/workspace/workflow_trace.rb` — `WorkflowTrace`: a run's events as ordered transition rows with derived states, and tokens on each attempt's ending row.
 - `lib/workspace/workflow_stats.rb` — `workflow stats`: per-step attempt and token statistics over a definition's runs.
 - `lib/workspace/workflow_graph.rb` — The nodes and edges of one workflow definition, for `workflow graph`.

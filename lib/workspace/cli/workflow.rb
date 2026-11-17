@@ -9,12 +9,13 @@ module Workspace
     # {Invocation} it is given, so `--help --json` captures what it prints.
     class Workflow
       # The verbs of `workflow`, in the order `workflow --help` lists them.
-      SUBCOMMANDS = %w[list show graph validate add update remove install uninstall run start render check simulate status events files attempts trace audit stats compare insights sweep recover resume cancel pause unpause approve reject advance].freeze
+      SUBCOMMANDS = %w[list show graph validate add update remove install uninstall run start render check simulate status events files attempts trace audit stats compare insights learn sweep recover resume cancel pause unpause approve reject advance].freeze
 
       # The verbs of `step`, in the order `step --help` lists them.
       STEP_SUBCOMMANDS = %w[done status expect-fail].freeze
 
       # @param workflow_command [Workspace::Commands::Workflow, nil] the `workflow` and `step` command; nil refuses both verbs
+      # @param workflow_reflect_command [Workspace::Commands::WorkflowReflect, nil] the `workflow learn reflect` command; nil refuses that verb
       # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] the `workflow start` command; nil refuses that verb
       # @param workflow_project [Workspace::WorkflowProject, nil] the one resolver for the project whose workflow definitions are read first;
       #   nil reads none and finds the workspace through the project detector
@@ -29,8 +30,9 @@ module Workspace
       # @param input [IO] the input stream `workflow remove` asks on (refused under --no-input)
       # @param working_dir [String] the directory the CLI runs from
       # @param launcher [CLI::Launcher] launches the workspaces `workflow recover` restores
-      def initialize(workflow_command:, workflow_start_command:, workflow_project:, status_scope:, config:, project_config:, project_detector:, git:, launch_mode:, common:, names:, input:, working_dir:, launcher:)
+      def initialize(workflow_command:, workflow_start_command:, workflow_project:, status_scope:, config:, project_config:, project_detector:, git:, launch_mode:, common:, names:, input:, working_dir:, launcher:, workflow_reflect_command: nil)
         @workflow_command = workflow_command
+        @workflow_reflect_command = workflow_reflect_command
         @workflow_start_command = workflow_start_command
         @workflow_project = workflow_project
         @status_scope = status_scope
@@ -127,6 +129,7 @@ module Workspace
           opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not; install: only the source at position N of workflows.sources (a whole number from 1, written after the flag)") { options[:source] = true }
           opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
           opts.on("--by GROUP", "compare: group the runs by definition (default), version (the definition's `version:`) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
+          opts.on("--agent KIND", "learn reflect: the coding agent the reflection pane runs: #{AgentProvider.all.map(&:key).join(", ")} (default: the workspace's main agent)") { |v| options[:agent] = v }
           opts.on("--limit N", "insights: read this many of the newest runs (default #{WorkflowInsights::DEFAULT_RUNS}; a whole number from 1)") { |v| options[:limit] = v }
           opts.on("--last DURATION", "stats, compare, insights: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
           opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
@@ -190,18 +193,27 @@ module Workspace
         return invocation.output.puts(parser.help) if options[:help]
 
         unless subcommand
-          raise UsageError, args.empty? ? "Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, insights, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+          raise UsageError, args.empty? ? "Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, insights, learn, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
         end
         raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
+        learn_verb = args.shift if subcommand == "learn"
+        if subcommand == "learn"
+          raise UsageError, "workflow learn needs a verb: reflect (see `workspace workflow learn reflect --help`)." if learn_verb.nil?
+          raise UsageError, "Unknown workflow learn verb: #{learn_verb}. Run 'workspace workflow learn --help'." unless learn_verb == "reflect"
+        end
         subject = args.shift
         source_path = args.shift if %w[add update].include?(subcommand)
         start_ref = args.shift if subcommand == "start"
         render_step = args.shift if %w[render check].include?(subcommand)
-        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "trace" => "a RUN id (see `workspace workflow status`)", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "insights" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow #{"learn " if subcommand == "learn"}--help'." if args.any?
+        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "trace" => "a RUN id (see `workspace workflow status`)", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "insights" => "a workflow ID (see `workspace workflow show`)", "learn" => "a RUN id (see `workspace workflow status`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
                  "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
         raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
 
+        raise UsageError, "--agent is for `workflow learn reflect RUN`." if options[:agent] && subcommand != "learn"
+        if subcommand == "learn" && (used = options.except(:json, :agent, :help).select { |_, v| v && v != [] }).any?
+          raise UsageError, "workflow learn reflect takes only --agent KIND and --json (not --#{used.keys.first.to_s.tr("_", "-")}). Run 'workspace workflow learn reflect --help'."
+        end
         raise UsageError, "--format is for `workflow graph ID`." if options[:format] && subcommand != "graph"
         raise UsageError, "--run is for `workflow graph ID`." if options[:graph_run] && subcommand != "graph"
         raise UsageError, "--script is for `workflow simulate ID`." if options[:script] && subcommand != "simulate"
@@ -321,6 +333,9 @@ module Workspace
           scope = @status_scope.resolve(name: options[:name], project: options[:project], all: nil, working_dir: @working_dir) if options[:name] || options[:project]
           result = @workflow_command.insights(workflow: subject, runs: runs, last: last, last_text: options[:last], scope: scope, json: options[:json])
           invocation.exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+        when "learn"
+          raise Error, "workflow learn is not available: no workflow reflect command was wired" unless @workflow_reflect_command
+          @workflow_reflect_command.call(run: subject, agent: options[:agent], json: options[:json])
         when "audit"
           result = @workflow_command.audit(run: subject, step: options[:attempt_of], json: options[:json])
           invocation.exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?

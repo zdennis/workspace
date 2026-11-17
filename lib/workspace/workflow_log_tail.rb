@@ -82,6 +82,29 @@ module Workspace
         "#{fence}text\n#{text}\n#{fence}"
     end
 
+    # The last lines of a log, for a caller that fences them itself ({WorkflowReflection}). Same capped,
+    # link-refusing read and escaping as {#block}, and the whole lines kept within {MAX_BYTES}.
+    #
+    # @param path [String, nil] the log
+    # @param lines [Integer] how many lines from the end to keep (1 to {MAX_LINES})
+    # @return [Array<String>, nil] escaped lines; nil for a file that is missing, a link, not a regular file or empty
+    def tail_lines(path, lines:)
+      return nil unless path.is_a?(String) && lines.is_a?(Integer) && lines.positive?
+      kept = last_lines(path, [lines, MAX_LINES].min)
+      (kept.nil? || kept.empty?) ? nil : within_bytes(kept).first
+    end
+
+    # The head of a file, for a caller that fences it itself ({WorkflowReflection}); the read, the escaping and the
+    # cap are those of {#writeup}.
+    #
+    # @param path [String, nil] the file
+    # @return [Array<String>, nil] escaped whole lines within {MAX_BYTES}; nil for a file that is missing, a link, not a regular file or empty
+    def head_lines(path)
+      return nil unless path.is_a?(String)
+      rows = first_lines(path)
+      (rows.nil? || rows.empty?) ? nil : self.class.head_within_bytes(rows).first
+    end
+
     private
 
     def first_lines(path)

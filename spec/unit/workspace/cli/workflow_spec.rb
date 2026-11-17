@@ -369,6 +369,60 @@ RSpec.describe Workspace::CLI::Workflow do
     end
   end
 
+  describe "workflow learn reflect" do
+    let(:reflect) { double("workflow reflect command", call: nil) }
+
+    it "passes the run, the agent and json to the command" do
+      expect(reflect).to receive(:call).with(run: "wr_1", agent: "codex", json: true)
+
+      expect(run("learn", "reflect", "wr_1", "--agent", "codex", "--json", workflow_reflect_command: reflect)).to be_nil
+    end
+
+    it "passes nil for an agent not given, and accepts the flags before the words" do
+      expect(reflect).to receive(:call).with(run: "wr_1", agent: nil, json: false)
+
+      run("learn", "reflect", "wr_1", workflow_reflect_command: reflect)
+    end
+
+    it "needs a verb" do
+      expect { run("learn", workflow_reflect_command: reflect) }.to raise_error(Workspace::UsageError, "workflow learn needs a verb: reflect (see `workspace workflow learn reflect --help`).")
+    end
+
+    it "refuses an unknown verb" do
+      expect { run("learn", "ponder", "wr_1", workflow_reflect_command: reflect) }.to raise_error(Workspace::UsageError, "Unknown workflow learn verb: ponder. Run 'workspace workflow learn --help'.")
+    end
+
+    it "needs a RUN id" do
+      expect { run("learn", "reflect", workflow_reflect_command: reflect) }.to raise_error(Workspace::UsageError, "workflow learn needs a RUN id (see `workspace workflow status`).")
+    end
+
+    it "refuses every flag but --agent and --json" do
+      expect(reflect).not_to receive(:call)
+
+      expect { run("learn", "reflect", "wr_1", "--dry-run", workflow_reflect_command: reflect) }.to raise_error(Workspace::UsageError, /takes only --agent KIND and --json \(not --dry-run\)/)
+      expect { run("learn", "reflect", "wr_1", "--name", "app", workflow_reflect_command: reflect) }.to raise_error(Workspace::UsageError, /not --name/)
+      expect { run("learn", "reflect", "wr_1", "--note", "x", workflow_reflect_command: reflect) }.to raise_error(Workspace::UsageError, /not --note/)
+    end
+
+    it "refuses --agent on another verb" do
+      expect { run("cancel", "wr_1", "--agent", "codex") }.to raise_error(Workspace::UsageError, /--agent is for `workflow learn reflect RUN`/)
+    end
+
+    it "says so when no reflect command was wired" do
+      expect { run("learn", "reflect", "wr_1") }.to raise_error(Workspace::Error, /no workflow reflect command was wired/)
+    end
+
+    it "gives the usage error as an envelope under --json" do
+      run("learn", "reflect", "--json", workflow_reflect_command: reflect)
+
+      expect(JSON.parse(out.string)).to include("ok" => false, "code" => "usage", "error" => a_string_including("needs a RUN id"))
+    end
+
+    it "points an extra argument at the learn page" do
+      expect { run("learn", "reflect", "wr_1", "extra", workflow_reflect_command: reflect) }.to raise_error(Workspace::UsageError, "Unexpected argument: extra. Run 'workspace workflow learn --help'.")
+    end
+  end
+
   describe "step" do
     it "runs expect-fail in the working directory with every file after --, and no pane" do
       expect(run("expect-fail", "--match-file", "f.txt", "--timeout", "840", "--", "spec/a_spec.rb", "-odd_spec.rb", verb: "step")).to be_nil

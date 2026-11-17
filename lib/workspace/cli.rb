@@ -3062,7 +3062,7 @@ module Workspace
         opts.separator ""
         opts.on("--name NAME", "Workspace name (set)") { |v| options[:name] = v }
         opts.on("--pane PANE", "Pane id (%19) or, for set, window.pane (0.1)") { |v| options[:pane] = v }
-        opts.on("--kind KIND", "run, review or play (set)") { |v| options[:kind] = v }
+        opts.on("--kind KIND", "run, review, play or reflection (set)") { |v| options[:kind] = v }
         opts.on("--id ID", "Run id, review id such as acme/api#835, or play/NAME (set)") { |v| options[:id] = v }
         opts.on("--step STEP", "Step name (set)") { |v| options[:step] = v }
         opts.on("--attempt N", Integer, "Step attempt, 1 or more (set)") { |v| options[:attempt] = v }

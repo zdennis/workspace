@@ -128,6 +128,8 @@ module Workspace
       #   definition lists under `deny:`; nil skips it
       # @param review_write_guard [Workspace::ReviewWriteGuard, nil] denies a file write in a review pane
       #   that is not a sub-agent's write of its round's verdict file; nil skips it
+      # @param reflection_write_guard [Workspace::ReflectionWriteGuard, nil] denies a file write in a reflection
+      #   pane other than the run's `reflection.md`; nil skips it
       # @param session_ledger [Workspace::SessionLedger, nil] records each
       #   SessionStart and SessionEnd; nil skips the ledger
       # @param pane_bindings [Workspace::PaneBindings, nil] looked up on SessionStart to
@@ -144,7 +146,7 @@ module Workspace
       # @param connect_timeout [Numeric] seconds to wait for the daemon's socket to take the connection
       # @param reply_timeout [Numeric] seconds to wait for the daemon's reply
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
-        lock_idle_tracker: nil, lock_enforcer: nil, workflow_deny: nil, review_write_guard: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
+        lock_idle_tracker: nil, lock_enforcer: nil, workflow_deny: nil, review_write_guard: nil, reflection_write_guard: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
         workspace_for_session: ->(session) { session }, delivery_log: nil,
         connect_timeout: CONNECT_TIMEOUT, reply_timeout: REPLY_TIMEOUT)
         @workspace_for_session = workspace_for_session
@@ -163,6 +165,7 @@ module Workspace
         @lock_enforcer = lock_enforcer
         @workflow_deny = workflow_deny
         @review_write_guard = review_write_guard
+        @reflection_write_guard = reflection_write_guard
         @session_ledger = session_ledger
         @pane_bindings = pane_bindings
         @instruction_composer = instruction_composer
@@ -192,6 +195,7 @@ module Workspace
         if hook == "PreToolUse"
           deny = @lock_enforcer&.check(tool_name: payload["tool_name"], cwd: cwd) ||
             @review_write_guard&.check(tool_name: payload["tool_name"], tool_input: payload["tool_input"], cwd: cwd, agent_id: agent_id_for(payload)) ||
+            @reflection_write_guard&.check(tool_name: payload["tool_name"], tool_input: payload["tool_input"], cwd: cwd, agent_id: agent_id_for(payload)) ||
             @workflow_deny&.check(tool_name: payload["tool_name"], tool_input: payload["tool_input"])
           if deny
             @error_output.puts deny
@@ -204,6 +208,8 @@ module Workspace
 
         pane_id = @env["TMUX_PANE"]
         return ok { "session-event: not inside tmux, dropped" } unless pane_id
+
+        @reflection_write_guard&.release(pane_id: pane_id, hook: hook, reason: text_field(payload, "reason"))
 
         name = workspace
         unless name

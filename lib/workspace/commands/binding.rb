@@ -21,7 +21,7 @@ module Workspace
       #
       # @param workspace [String]
       # @param pane [String] a pane id ("%19") or "window.pane" ("0.1"); stored by pane id
-      # @param fields [Hash{String=>Object}] see {Workspace::PaneBindings#bind}; a reviewer binding also
+      # @param fields [Hash{String=>Object}] see {Workspace::PaneBindings#bind}; a reviewer or reflection binding also
       #   records the tmux server's pid
       # @return [Hash{String=>Object}] the stored binding
       # @raise [Workspace::UsageError] for fields {Workspace::PaneBindings#bind} refuses
@@ -44,7 +44,7 @@ module Workspace
         stored = fields.transform_keys(&:to_s).merge(
           "workspace" => workspace, "session" => located.fetch(:session), "pane_slot" => @tmux.pane_slot(located.fetch(:id))
         )
-        stored["server_pid"] = @tmux.server_pid_for_pane(located.fetch(:id)) if stored["role"] == "reviewer"
+        stored["server_pid"] = @tmux.server_pid_for_pane(located.fetch(:id)) if stored["role"] == "reviewer" || stored["kind"] == "reflection"
         @bindings.bind(located.fetch(:id), stored)
       end
 
@@ -76,6 +76,15 @@ module Workspace
         require_pane_id(pane)
         entry = @bindings.binding_for(pane)
         (entry && !stale?(entry)) ? entry : nil
+      end
+
+      # @param pane [String] a pane id ("%19")
+      # @return [Hash{String=>Object}, nil] the pane's live (not stale) `reflection` binding; nil for any
+      #   other binding, a stale one or none
+      # @raise [Workspace::UsageError] when `pane` is not a pane id
+      def reflecting(pane:)
+        entry = live(pane: pane)
+        (entry && entry["kind"] == "reflection") ? entry : nil
       end
 
       # @param pane [String] a pane id ("%19")

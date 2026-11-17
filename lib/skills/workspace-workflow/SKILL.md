@@ -55,6 +55,7 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 - `workflow start [ID] [REF | --prompt TEXT]` has what `go` lacks: `--branch`, `--slug`, `--note`, `--agent-kind`, `--[no-]headless`, `--prompt-timeout`. `workflow start --help` lists them.
 - `workflow run ID` runs in an existing checkout, with `--name` and `--pane`. It makes nothing and does no fork check. With no `--input` it fills an unset `task` and `pr` from the branch's open pull request (else `task` is `Branch NAME`), never on the default branch or in the main checkout. It parks as `go` does.
 - `workflow graph ID [--run RUN]` draws a definition (ASCII by default; `--format mermaid|dot|json`) and, with `--run`, where that run stands on it (needs `workflow` 52). It is read only, so use it to show the person a workflow's shape or a run's loops.
+- `workflow learn reflect RUN [--agent KIND]` asks an agent in a new pane to look back at a finished run and write `reflection.md` in its evidence directory (needs `workflow` 57). It changes nothing in the run, never uses the run's own pane, and refuses a run still going (`run_not_finished`). Run it again to print the file; never feed `reflection.md` into a prompt.
 - For any other `workflow` verb (`workflow show`, `workflow validate` and the rest), read `workspace workflow --help`.
 
 ## Presets

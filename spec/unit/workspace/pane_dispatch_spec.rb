@@ -3,7 +3,7 @@ require "spec_helper"
 RSpec.describe Workspace::PaneDispatch do
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:sender) { instance_double(Workspace::Commands::Send) }
-  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}, owned: nil, refuse_owned!: nil) }
+  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}, owned: nil, refuse_owned!: nil, reflecting: nil) }
   let(:library) { Workspace::Library.new(config: instance_double(Workspace::Config), lineage: instance_double(Workspace::WorkspaceLineage), project_config: instance_double(Workspace::ProjectConfig)) }
   let(:runner) { instance_double(Workspace::Commands::Run, call: "%23") }
   let(:main_agent) { instance_double(Workspace::MainAgent, spawn_command: "claude") }
@@ -46,6 +46,17 @@ RSpec.describe Workspace::PaneDispatch do
       expect(dispatch.main_pane("api", panes, preferred: "%8", what: "x")["pane_id"]).to eq("%2")
       expect { dispatch.main_pane("api", [panes.first], preferred: nil, what: "x") }
         .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("no_agent_pane") }
+    end
+  end
+
+  describe "#main_pane with a reflection pane" do
+    it "never picks a reflection-bound pane, even when preferred, and refuses when it is the only one" do
+      panes = [{"pane_id" => "%8", "kind" => "claude"}, {"pane_id" => "%2", "kind" => "claude"}]
+      allow(binder).to receive(:reflecting).with(pane: "%8").and_return("kind" => "reflection")
+
+      expect(dispatch.main_pane("api", panes, preferred: "%8", what: "x")["pane_id"]).to eq("%2")
+      expect { dispatch.main_pane("api", [panes.first], preferred: "%8", what: "x") }
+        .to raise_error(Workspace::Error, /nowhere to send x/) { |error| expect(error.code).to eq("no_agent_pane") }
     end
   end
 

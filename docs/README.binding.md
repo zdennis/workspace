@@ -5,7 +5,7 @@ Bind a tmux pane to a workflow run, a PR review or a library play, so the agent 
 ## Usage
 
 ```sh
-workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--name NAME] [--json]
+workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play|reflection --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--name NAME] [--json]
 workspace binding show [--pane %ID] [--json]
 workspace binding clear [--pane %ID] [--json]
 ```
@@ -15,7 +15,7 @@ workspace binding clear [--pane %ID] [--json]
 | Option | Description |
 |--------|-------------|
 | `--pane PANE` | The pane to bind, show or clear (default `$TMUX_PANE`) |
-| `--kind KIND` | `run` (a workflow run), `review` (a PR review) or `play` (a [library](README.library.md) play) |
+| `--kind KIND` | `run` (a workflow run), `review` (a PR review), `play` (a [library](README.library.md) play) or `reflection` (see [Reflections](#reflections)) |
 | `--id ID` | The run id, the review id such as `acme/api#835`, or the play ref such as `play/kickoff` |
 | `--step STEP` | The step the pane is working on |
 | `--attempt N` | The step's attempt, 1 or more |
@@ -26,6 +26,12 @@ workspace binding clear [--pane %ID] [--json]
 | `--json` | Print one action document |
 
 Every text value is one line of at most 200 characters, counted after a path is made absolute. Nothing is typed into the pane, and no prompt text is stored.
+
+## Reflections
+
+[`workflow learn reflect`](README.workflow.md#reflecting-on-a-finished-run) binds the new pane it makes, with kind `reflection`, the run id as `id`, the run's evidence directory as `artifacts` and `reflection.prompt.md` as `instructions`. `binding set --kind reflection` can make one by hand, but the write guard computes the allowed file from the run id, never from `artifacts`.
+
+The binding ends by itself. It is removed when the agent's turn ends with `reflection.md` written as a regular file, and when the session ends, whatever the file's state (a `/clear` does not end it). To end it sooner, run `workspace binding clear --pane ID` or close the pane. While it lasts, a guard holds the pane's file tools to that one `reflection.md` (a tripwire, not a sandbox: shell commands are not covered), `plan start` and `spine start` do not type into the pane, and a second reflection on the same run is refused.
 
 ## Plays
 

@@ -372,6 +372,7 @@ require_relative "workspace/workflow_run"
 require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_deny"
 require_relative "workspace/review_write_guard"
+require_relative "workspace/reflection_write_guard"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
 require_relative "workspace/workflow_step_check"
@@ -389,6 +390,7 @@ require_relative "workspace/workflow_deadline"
 require_relative "workspace/workflow_downtime"
 require_relative "workspace/workflow_evidence"
 require_relative "workspace/workflow_attempts"
+require_relative "workspace/workflow_reflection"
 require_relative "workspace/workflow_audit"
 require_relative "workspace/workflow_panes"
 require_relative "workspace/workflow_gate_note"
@@ -513,6 +515,7 @@ require_relative "workspace/commands/binding"
 require_relative "workspace/commands/library"
 require_relative "workspace/commands/instructions"
 require_relative "workspace/commands/workflow"
+require_relative "workspace/commands/workflow_reflect"
 require_relative "workspace/commands/workflow_start"
 require_relative "workspace/commands/go"
 require_relative "workspace/commands/go_task"
@@ -1020,6 +1023,7 @@ module Workspace
     workflow_deny = WorkflowDeny.new(bound_run: bound_run, logger: logger, event_log: event_log,
       run_store: WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, event_errors_path: config.workflow_event_errors_path))
     review_write_guard = ReviewWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, env: env, event_log: event_log, logger: logger)
+    reflection_write_guard = ReflectionWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, config: config, env: env, event_log: event_log, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     recovery_stop_marker = RecoveryStopMarker.new(state_dir: config.state_dir)
     delivery_log = DeliveryLog.new(path: File.join(config.state_dir, "session-event.log"))
@@ -1027,7 +1031,7 @@ module Workspace
       on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
       workspace_for_session: workspace_for_session, delivery_log: delivery_log,
-      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, review_write_guard: review_write_guard, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
+      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, review_write_guard: review_write_guard, reflection_write_guard: reflection_write_guard, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
       dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), recovery_marker: recovery_stop_marker, logger: logger))
     process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, lineage: lineage,
@@ -1173,6 +1177,8 @@ module Workspace
       readiness: agent_readiness, panes: workflow_panes, liveness: Liveness.new(tmux: tmux), project_config: project_config,
       config: workflow_config, session_name: ->(workspace) { tmux.session_name_for(workspace) })
     workflow_infra_retry = WorkflowInfraRetry.new(engine: workflow_engine, store: workflow_store, dispatch: pane_dispatch, lock_holder: lock_holder, agent_commands: agent_commands)
+    workflow_reflect_command = Commands::WorkflowReflect.new(store: workflow_store, reflection: WorkflowReflection.new, panes: pane_dispatch, binder: binding_command,
+      bindings: pane_bindings, main_agent: main_agent, evidence_dir: config.workflow_evidence_dir, output: output)
     workflow_command = Commands::Workflow.new(
       infra_retry: workflow_infra_retry,
       source_installer: workflow_source_installer,
@@ -1421,7 +1427,7 @@ module Workspace
     relauncher = CLI::Relauncher.new(stop_command: stop_command, hook_runner: hook_runner, launcher: launcher, state: state, sleeper: sleeper || ->(seconds) { sleep(seconds) }, tmux: tmux,
       detacher: detacher || DetachedSpawn.new, program: [RbConfig.ruby, File.join(SkillSource.stable_dir(config.workspace_dir), "bin", "workspace")], log_dir: config.relaunch_log_dir,
       processes: lock_holder)
-    workflow_family = CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: workflow_start_command, workflow_project: workflow_project,
+    workflow_family = CLI::Workflow.new(workflow_command: workflow_command, workflow_reflect_command: workflow_reflect_command, workflow_start_command: workflow_start_command, workflow_project: workflow_project,
       status_scope: status_scope, config: config, project_config: project_config, project_detector: project_detector, git: git, launch_mode: launch_mode,
       common: common, names: names, input: input, working_dir: working_dir, launcher: launcher)
     agent_client = AgentMessageClient.new(config: config)

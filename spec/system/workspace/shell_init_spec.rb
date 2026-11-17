@@ -508,6 +508,8 @@ RSpec.describe Workspace::ShellInit do
       bash_text = described_class.text("bash")
       expect(zsh_text).to include("wf_list=(#{subcommands.join(" ")})", "wf_list=(#{verbs.join(" ")})")
       expect(bash_text).to include(%(wf_list="#{subcommands.join(" ")}"), %(wf_list="#{verbs.join(" ")}"))
+      expect(zsh_text).to match(/wf_list=\([^)]* learn /)
+      expect(bash_text).to match(/wf_list="[^"]* learn /)
       steps = Workspace::CLI::Workflow::STEP_SUBCOMMANDS.join(" ")
       expect(zsh_text).to include("wf_list=(#{steps})")
       expect(bash_text).to include(%(wf_list="#{steps}"))

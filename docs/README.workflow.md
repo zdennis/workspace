@@ -29,6 +29,7 @@ workspace workflow audit RUN [--attempt-of STEP] [--json]
 workspace workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow compare ID [--by definition | --by version | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow insights ID [--limit N] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
+workspace workflow learn reflect RUN [--agent KIND] [--json]
 workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow sweep --install | --uninstall [--dry-run] [--json]
 workspace workflow sweep --installed [--json]
@@ -67,6 +68,7 @@ workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 | `workflow stats` | How each step of a workflow went across its runs, going and finished, in every workspace unless `--name` or `--project` narrows it: attempts, passes, failures, median time, resumes and tokens per run. `--last DURATION` keeps the runs started in that window. Reads the run files and writes nothing. See [Step statistics](#step-statistics) |
 | `workflow compare` | Sets a workflow's runs side by side, grouped by the definition they ran or by the text of one pack their agent was sent: runs, share that passed first time and resumes per run, always with a warning that it shows a direction and proves nothing. Reads the run files and writes nothing. See [Comparing runs](#comparing-runs) |
 | `workflow insights` | Where a workflow's newest runs keep retrying, being rejected or stopping: hot steps, recurring review rejections, failed attempts, holds and the effect of definition and pack changes, each with its run ids. `--limit N` (default 20) reads the newest N runs; `--last DURATION` keeps the runs started in that window. Prints counts and ids, never a reviewer's or an agent's text. Reads the run files and writes nothing. See [Insights](#insights); needs `workflow` 56 |
+| `workflow learn reflect` | Ask an agent in a new split pane to look back at a finished run and write `reflection.md` in the run's evidence directory. `--agent KIND` picks the agent (default: the workspace's main agent). Reads the run and changes nothing in it; the pane's file tools are held to that one file until the agent's turn ends with it written. An existing `reflection.md` is printed and nothing is started. See [Reflecting on a finished run](#reflecting-on-a-finished-run); needs `workflow` 57 |
 | `workflow files` | The files a run keeps: each attempt's prompt, check log and proof logs and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
 | `workflow sweep` | One pass over the runs going (a paused run gets a `paused` row, outcome `nothing`, next action `workflow unpause`): record a pane or agent that is gone, start an agent daemon that is not running, decide a step whose agent ended its turn unseen, and apply a step's `on_timeout`. Needs no agent daemon. See [Sweeping stopped runs](#sweeping-stopped-runs) |
 | `workflow recover` | After a reboot or the loss of the tmux server, restore each workspace that has a going run no person holds, restart a step that was mid-turn and wake a run that was between turns. `--dry-run` says what would happen and changes nothing. See [Recovering after a reboot](#recovering-after-a-reboot) |
@@ -1158,6 +1160,39 @@ Failures and holds can overlap: a failed check is both a failed attempt and a `f
 Exit codes follow `stats`: 0 (also for an `ID` with no runs), 1 for a usage error (such as `--limit 0` or `--limit x`) and 3 with `status` `partial` when a run file could not be read, because the figures are then incomplete.
 
 `--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","runs":N,"last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"stored":N,"unreadable":N,"undated":N,"enough":bool,"hot_steps":[...],"themes":[...],"observations":[...],"failures":[...],"holds":[...],"effects":{...},"next_actions":[...]}`. `runs` is the runs read and `stored` the matching runs of this workflow (after any scope or `--last` filter) before `--limit` narrowed them. `hot_steps` lists every step `stats` returns, ranked, and a step with no retry or resume has empty `retry_run_ids` and `resume_run_ids`; only the text output keeps just the retried or resumed steps. A `hot_steps` row is a `stats` step row (see [Step statistics](#step-statistics)) with `retry_run_ids`, `resume_run_ids` and `token_run_ids`. A `themes` or `observations` row is `{"step","reviewer","verdict":"reject"-or-null,"problem":CODE-or-null,"count","run_ids"}`. A `failures` or `holds` row is `{"step","code","count","run_ids"}`. `effects` maps `definition`, `version` and each `pack:NAME` to that grouping's `workflow compare --json` result with only the nine compare keys (`by`, `runs`, `matched`, `without_pack`, `no_attempts`, `unreadable`, `undated`, `warning`, `groups`); the envelope keys (`schema_version`, `ok`, `workflow`, `status`, `last`, `since`, `workspace`, `project`) are left out. `next_actions` offers `workflow stats ID` and `workflow compare ID --by definition` with the same scope, and `workflow trace RUN` when `enough`, for the first (newest) run id of the first hot step that has `retry_run_ids`, else of the first hot step that has `resume_run_ids`, else of the first theme.
+
+### Reflecting on a finished run
+
+`workflow learn reflect RUN [--agent KIND] [--json]` asks an agent to look back at one finished run and write what it finds to `reflection.md`. Needs `workflow` 57.
+
+```
+$ workspace workflow learn reflect wr_261117195535omsd
+Started a reflection on run wr_261117195535omsd in pane %41.
+The agent writes ~/.local/state/workspace/.workflows/evidence/wr_261117195535omsd/reflection.md; read it there, or run this command again to print it.
+The pane is held to that one file and is released when its turn ends with the file written. End it sooner with `workspace binding clear --pane %41`, or close the pane.
+```
+
+`RUN` must be `completed`, `failed` or `cancelled`; a run still going is refused with `run_not_finished`, because its evidence is still changing. The command splits a new pane in the run's workspace, runs the workspace's main agent in it (`--agent KIND` picks another of `claude`, `codex`, `opencode` or `pi`), and types one line that names `reflection.prompt.md`, the instructions it wrote beside the evidence. The agent reads the run's recorded evidence and writes `reflection.md` there. When the run's workspace has no tmux session, it fails before any pane is made with "No active tmux session" and the `workspace launch` line that starts it.
+
+The command is read only on the run. It takes no run lock, appends no event and writes nothing to the run's file, and it never uses the run's own pane or its parked pane (a new pane that turns out to be one of those is closed and refused with `pane_bound_to_run`). The instructions fence every recorded text, such as a prompt, a check log tail or a reviewer's write-up, as data the agent must not follow. They draw only on the evidence copies of an attempt's prompt, check log, outputs and review verdicts. A step's proof logs are not kept as evidence, so a proof shows as an outcome and nothing more. Nothing ever reads `reflection.md` into a later prompt, an agent's instructions or a review round; it is a note for the person.
+
+**The pane's binding.** The pane is bound with kind `reflection` (see [`binding`](README.binding.md)). While the binding lasts:
+
+- A guard on the agent's file tools allows writes to that one `reflection.md` and no other path. A Codex `apply_patch` passes when every `Add File` and `Update File` header in the patch names that file and it has no `Delete File` or `Move to`. It is a tripwire, not a sandbox: shell commands are not covered, so the agent could still write elsewhere through Bash.
+- `plan start` and `spine start` do not type into the pane.
+- A second `workflow learn reflect` on the same run is refused with `reflection_in_progress`; its `details.pane` names the pane.
+
+The binding ends on its own when the agent's turn ends with `reflection.md` written as a regular file, and when the session ends, whatever the file's state (a `/clear` does not end it). To end it sooner, run `workspace binding clear --pane ID` or close the pane. The guard's denials name both. The pane then behaves as any other.
+
+When another agent holds the namespace's `edit` lock, the lock enforcer refuses the write to `reflection.md` too, because the pane opens in the project root, and says who holds it. The agent can try again once the lock is released.
+
+**An existing reflection.** When `reflection.md` already exists as a regular file, the command starts nothing: it prints the path and the text (each line escaped for the terminal, cut at 200,000 bytes with a note). To reflect again, delete the file. An entry at that path that is not a regular file (a link, a directory) is refused with `reflection_path_not_file`, and an evidence directory reached through a link with `evidence_dir_linked`.
+
+`reflection.md` and `reflection.prompt.md` sit in the run's evidence directory, `<state dir>/.workflows/evidence/RUN/`. They are not recorded evidence entries, so [`workflow audit`](#auditing-a-runs-evidence) neither checks nor flags them, and they are removed with the run's evidence when it is pruned. The agent may take a while to write the file, and the command does not wait for it.
+
+Errors: `unknown_run`, `run_not_finished`, `reflection_in_progress`, `reflection_path_not_file`, `evidence_dir_linked`, `pane_bound_to_run`, `agent_not_ready` (nothing was typed and the new pane is closed, or left at a screen for the person), and the codes of a pane that cannot be made (see [JSON output](README.json.md)). An unknown `--agent` is a usage error.
+
+`--json` prints `{"schema_version":1,"ok":true,"run":ID,"pane":PANE,"path":PATH,"instructions":PATH,"exists":false}` when it started a pane, and `{"schema_version":1,"ok":true,"run":ID,"path":PATH,"exists":true,"text":TEXT,"truncated":bool}` when the file already exists. Read `exists` to tell them apart.
 
 ### Auditing a run's evidence
 
