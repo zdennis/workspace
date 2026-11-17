@@ -43,14 +43,15 @@ module Workspace
     #   `active_seconds`, `stopped_seconds` and both bucket hashes are null when the clock has no origin.
     def read(run, events, now:, event_errors: [], stops: [], warnings: [])
       run = WorkflowRun.new(run) unless run.is_a?(WorkflowRun)
-      ordered_events = ordered(events).map(&:first)
-      spans = spans(run, ordered_events, now, Array(stops).grep(Hash))
+      sorted = ordered(events)
+      clock = clock_readable?(run)
+      spans = spans(run, sorted.map(&:first), now, Array(stops).grep(Hash), clock)
       WorkflowRun.deep_freeze({
         trace_id: Digest::SHA256.hexdigest(run.id.to_s)[0, 32],
-        transitions: transitions(run, events),
+        transitions: transitions(run, sorted),
         spans: spans,
-        totals: totals(run, spans, now, Array(stops).grep(Hash)),
-        warnings: caller_warnings(warnings) + lost_warning(event_errors)
+        totals: totals(run, spans, now, Array(stops).grep(Hash), clock),
+        warnings: caller_warnings(warnings) + lost_warning(event_errors) + clock_warning(clock)
       })
     end
 
@@ -203,6 +204,17 @@ module Workspace
       end
     end
 
+    # The deadline reader walks `steps` as a Hash; a stored run whose `steps` is anything else gets no clock figures.
+    def clock_readable?(run)
+      steps = run.to_h["steps"]
+      steps.nil? || steps.is_a?(Hash)
+    end
+
+    def clock_warning(clock)
+      return [] if clock
+      [{code: "run_steps_unreadable", message: "The stored run's steps are not in the expected form, so the trace has no waiting reasons, stalls or clock figures."}]
+    end
+
     def lost_warning(event_errors)
       errors = Array(event_errors).grep(Hash)
       return [] if errors.empty?
@@ -221,7 +233,7 @@ module Workspace
       entry["until"] && time(entry["until"]).nil?
     end
 
-    def spans(run, events, now, stops)
+    def spans(run, events, now, stops, clock)
       counts = Hash.new(0)
       make = lambda do |kind, step, attempt, round, fields|
         index = counts[[step, attempt, round, kind]]
@@ -243,7 +255,7 @@ module Workspace
       end
       gates = gate_spans(events)
       gates.each { |gate| out << make.call("gate", gate[:step], gate[:attempt], nil, gate.except(:step, :attempt)) }
-      WorkflowDeadline.reason_entries(run.to_h).each do |found|
+      (clock ? WorkflowDeadline.reason_entries(run.to_h) : []).each do |found|
         entry = found["entry"]
         next if gate_entry?(entry, string(found["step"]), gates)
         next if unreadable_until?(entry)
@@ -251,6 +263,7 @@ module Workspace
           started_at: string(entry["since"]), ended_at: string(entry["until"]))
       end
       run.steps.each_key do |step_id|
+        next unless clock
         WorkflowTransitions.stall_spans(run.to_h, step_id).each do |stall|
           next if unreadable_until?(stall)
           out << make.call("stall", step_id, nil, nil, code: SPAN_CODES["stall"], started_at: string(stall["since"]), ended_at: string(stall["until"]))
@@ -304,9 +317,9 @@ module Workspace
       closed + open.values
     end
 
-    def totals(run, spans, now, stops)
+    def totals(run, spans, now, stops, clock)
       hash = run.to_h
-      window = WorkflowDeadline.machine_window(hash, now)
+      window = clock ? WorkflowDeadline.machine_window(hash, now) : nil
       clock_ms = window && ((window[1] - window[0]) * 1000).round
       active_ms = window && (WorkflowDeadline.machine_seconds(hash, now, stops: stops) * 1000).round
       counted = counted_attempts(run)
@@ -360,12 +373,12 @@ module Workspace
       {total: sums.sum, in: splits.sum { |t| t[:in] }, out: splits.sum { |t| t[:out] }, cache: splits.sum { |t| t[:cache] }}
     end
 
-    def transitions(run, events)
+    def transitions(run, sorted)
       rows = []
       last_state = {}
       last_ts = {}
       current_attempt = {}
-      ordered(events).each do |event, n|
+      sorted.each do |event, n|
         step = string(event["step"])
         scope = step
         attempt = integer(event["attempt"])
@@ -405,11 +418,7 @@ module Workspace
       ((to - from) * 1000).round
     end
 
-    def time(value)
-      value.is_a?(String) ? Time.iso8601(value) : nil
-    rescue ArgumentError
-      nil
-    end
+    def time(value) = self.class.parse_time(value)
 
     # Puts each attempt's tokens on the one row that ends it, and its evidence there when the event carries none.
     def place_tokens(run, rows)
@@ -443,6 +452,7 @@ module Workspace
     end
 
     def tokens(attempt)
+      return nil if WorkflowStats.kind_of(attempt) == :not_delivered
       return nil unless WorkflowBudget.counted_attempt?(attempt)
       return nil unless WorkflowBudget.attempt_tokens(attempt)
       usages = [attempt.usage] + WorkflowBudget.rounds_of(attempt).map { |round| round["usage"] }

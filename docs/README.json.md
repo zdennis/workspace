@@ -520,6 +520,7 @@ The plan (`rename --dry-run --json`, from `RenamePlan::Plan#to_h`) has these fie
 | `use_ask_answer` | `inbox ack` or `inbox snooze` named an `ask:` id; answer the question with `ask answer` (or close it with `ask withdraw`) instead. `details.id`. |
 | `invalid_cursor` | `events --since` or `daemon watch --since` was given something that isn't a cursor a line of that same command printed (for `daemon watch`, of the same workspace). |
 | `events_lost` | A `workflow trace` warning, not an error: events of the run could not be written to its history, so the trace may lack them. Carries `count` and `types`. |
+| `run_steps_unreadable` | A `workflow trace` warning, not an error: the stored run keeps its `steps` in a form the trace cannot read, so it has no waiting reasons, stalls or clock figures. |
 | `event_line_skipped` | A `workflow trace` warning, not an error: a line of the run history could not be read and was skipped; `message` names the line. |
 | `workflow_source_invalid` | `workflow install`: a `workflows.sources` entry is not a usable source (a non-github.com URL, no owner and repository, or an empty path). `details.source`. |
 | `workflow_source_local_missing` | `workflow install`: a local `workflows.sources` entry is not a readable directory. `details.source`. |

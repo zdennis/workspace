@@ -365,6 +365,28 @@ RSpec.describe Workspace::WorkflowTrace do
       expect(reader.read(live, [], now: now)[:totals][:tokens]).to eq(total: 320, in: 200, out: 100, cache: 20)
     end
 
+    it "puts no tokens on the row or span of a redelivered attempt, so row tokens never exceed the totals" do
+      redelivered = run.merge("steps" => {"build" => {"attempts" => [
+        {"n" => 1, "started_at" => t("10:00:00"), "ended_at" => t("10:05:00"), "outcome" => "passed", "usage" => usage},
+        {"n" => 2, "started_at" => t("10:05:00"), "ended_at" => t("10:09:00"), "outcome" => "passed", "redelivered" => true, "usage" => usage}
+      ]}})
+      evs = [{"n" => 1, "ts" => t("10:05:00"), "type" => "step_passed", "step" => "build", "attempt" => 1},
+        {"n" => 2, "ts" => t("10:09:00"), "type" => "step_passed", "step" => "build", "attempt" => 2}]
+      result = reader.read(redelivered, evs, now: now)
+      expect(result[:transitions].map { |row| row[:tokens]&.fetch(:total) }).to eq([160, nil])
+      expect(result[:spans].select { |span| span[:kind] == "attempt" }.map { |span| span[:tokens]&.fetch(:total) }).to eq([160, nil])
+      expect(result[:totals][:tokens][:total]).to eq(160)
+    end
+
+    it "does not crash on a run whose steps are not a Hash, and warns run_steps_unreadable" do
+      [["x"], 5, "text"].each do |steps|
+        result = reader.read({"id" => "wr_bad", "started_at" => t("10:00:00"), "steps" => steps}, [], now: now)
+        expect(result[:totals]).to include(clock_seconds: nil, active_seconds: nil, stopped_seconds: nil, waiting_seconds: nil)
+        expect(result[:spans].map { |span| span[:kind] }).not_to include("wait", "stall")
+        expect(result[:warnings].map { |warning| warning[:code] }).to eq(["run_steps_unreadable"])
+      end
+    end
+
     it "gives null token totals, never 0, when a counted attempt has null usage" do
       old = {"id" => "wr_n", "steps" => {"a" => {"attempts" => [{"n" => 1, "outcome" => "passed", "usage" => usage}, {"n" => 2, "outcome" => "passed", "usage" => nil}]}}}
       expect(reader.read(old, [], now: now)[:totals][:tokens]).to eq(total: nil, in: nil, out: nil, cache: nil)

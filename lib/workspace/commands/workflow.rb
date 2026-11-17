@@ -674,8 +674,9 @@ module Workspace
         raise Workspace::Error, "workflow trace is not available: no trace reader was wired" unless @trace
         stored = @store.run(run).to_h
         events, warnings = trace_events(run)
-        stops = @downtime ? @downtime.spans(@clock.call) : []
-        result = @trace.read(stored, events, now: @clock.call, event_errors: @store.event_errors(run), stops: stops, warnings: warnings)
+        now = @clock.call
+        stops = @downtime ? @downtime.spans(now) : []
+        result = @trace.read(stored, events, now: now, event_errors: @store.event_errors(run), stops: stops, warnings: warnings)
         if json
           return document("run" => run, "trace_id" => result[:trace_id], "transitions" => result[:transitions], "spans" => result[:spans],
             "totals" => result[:totals], "warnings" => result[:warnings])

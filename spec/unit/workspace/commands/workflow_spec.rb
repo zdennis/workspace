@@ -4645,6 +4645,19 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { trace_command.trace(run: "nope") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_run") }
     end
 
+    it "reads the clock once" do
+      calls = 0
+      tick = lambda do
+        calls += 1
+        Time.utc(2026, 11, 1, 10, 0, 0)
+      end
+      counted = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+        trace: Workspace::WorkflowTrace.new, downtime: downtime, process_tree: process_tree, lock_holder: lock_holder,
+        clock: tick, output: output)
+      counted.trace(run: "wr_t")
+      expect(calls).to eq(1)
+    end
+
     it "refuses when no trace reader was wired" do
       expect { command.trace(run: "wr_t") }.to raise_error(Workspace::Error, /no trace reader/)
     end
