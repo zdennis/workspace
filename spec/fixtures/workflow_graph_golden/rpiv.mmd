@@ -1,0 +1,17 @@
+stateDiagram-v2
+    state "Research" as n0
+    state "Plan" as n1
+    state "Plan gate" as n2
+    state "Implement" as n3
+    state "Verify" as n4
+    [*] --> n0
+    n0 --> n1
+    n1 --> n2
+    n2 --> n3
+    n3 --> n4
+    n4 --> [*]
+    n4 --> n3 : fail: max 3
+    n2 --> n1 : reject (or --to an earlier step)
+    note right of n0
+        max_attempts 10
+    end note

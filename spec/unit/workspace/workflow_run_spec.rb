@@ -3,7 +3,7 @@ require "json"
 
 # The fixtures in spec/fixtures/workflow_runs are run files the real engine wrote under the simulator (fixed
 # clock and run id, the temporary directory replaced by /tmp/workspace-simulate, each prompt_sha256 by a token).
-# reviewing, parked, swept_stall, budget_hold_extended, attempt_detail, cancelled, legacy_minimal and unknown_keys are those
+# reviewing, parked, swept_stall, budget_hold_extended, attempt_detail, cancelled, legacy_minimal, unknown_keys and looped_twice are those
 # files with the keys the simulator never writes added or removed by hand, in the shapes the engine writes them.
 RSpec.describe Workspace::WorkflowRun do
   let(:dir) { File.join(PROJECT_ROOT, "spec", "fixtures", "workflow_runs") }

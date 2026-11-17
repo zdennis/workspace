@@ -1,0 +1,32 @@
+      (Start)
+        |
+        v
+      +----------------------+
+      | Research (from rpiv) |
+      +----------------------+
+        |
+        v
+      +------+
+   +->| Plan |
+   |  +------+
+   |    |
+   |    v
+   |  +----------------------------------------------------------------+
+   +--| Plan review                                                    |  review_rejected: max_rounds 6
+      | need 2 of: supportive, skeptical, implementer; must: skeptical |
+      +----------------------------------------------------------------+
+        |
+        v
+      +-----------------------+
++---->| Implement (from rpiv) |
+|     +-----------------------+
+|       |
+|       v
+|     +--------------------+
++-----| Verify (from rpiv) |  fail: max 3
+      +--------------------+
+        |
+        v
+      (End)
+
+Run limits: max_attempts 17, timeout 8h, timeout_action hold, budget 40000000 tokens (stop)

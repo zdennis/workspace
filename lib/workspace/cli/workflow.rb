@@ -9,7 +9,7 @@ module Workspace
     # {Invocation} it is given, so `--help --json` captures what it prints.
     class Workflow
       # The verbs of `workflow`, in the order `workflow --help` lists them.
-      SUBCOMMANDS = %w[list show validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep recover resume cancel pause unpause approve reject advance].freeze
+      SUBCOMMANDS = %w[list show graph validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep recover resume cancel pause unpause approve reject advance].freeze
 
       # @param workflow_command [Workspace::Commands::Workflow, nil] the `workflow` and `step` command; nil refuses both verbs
       # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] the `workflow start` command; nil refuses that verb
@@ -119,6 +119,8 @@ module Workspace
           opts.on("--attempt N", "approve, reject: that step's attempt you saw (current.attempt); needs --step") { |v| options[:attempt] = v }
           opts.on("--note-sha256 HEX", "approve: the sha256 of the gate's note you read (gate_file.sha256); refused with stale_revision when it changed") { |v| options[:note_sha256] = v }
           opts.on("--script FILE", "simulate: the YAML script of what the fake agent does on each attempt and how each check comes out") { |v| options[:script] = v }
+          opts.on("--format FMT", "graph: how to draw it, mermaid, dot, ascii (default) or json") { |v| options[:format] = v }
+          opts.on("--run RUN", "graph: draw the definition RUN stored, marked with each step's state and the loops it took") { |v| options[:graph_run] = v }
           opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not; install: only the source at position N of workflows.sources (a whole number from 1, written after the flag)") { options[:source] = true }
           opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
           opts.on("--by GROUP", "compare: group the runs by definition (default) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
@@ -182,7 +184,7 @@ module Workspace
         return invocation.output.puts(parser.help) if options[:help]
 
         unless subcommand
-          raise UsageError, args.empty? ? "Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+          raise UsageError, args.empty? ? "Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
         end
         raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
         subject = args.shift
@@ -190,10 +192,12 @@ module Workspace
         start_ref = args.shift if subcommand == "start"
         render_step = args.shift if %w[render check].include?(subcommand)
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-        needs = {"validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
+        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
                  "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
         raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
 
+        raise UsageError, "--format is for `workflow graph ID`." if options[:format] && subcommand != "graph"
+        raise UsageError, "--run is for `workflow graph ID`." if options[:graph_run] && subcommand != "graph"
         raise UsageError, "--script is for `workflow simulate ID`." if options[:script] && subcommand != "simulate"
         raise UsageError, "workflow simulate needs --script FILE (what the fake agent does; see `workspace workflow simulate --help`)." if subcommand == "simulate" && options[:script].nil?
         raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
@@ -251,6 +255,7 @@ module Workspace
         case subcommand
         when "list" then @workflow_command.list(json: options[:json], project: workflow_project(options))
         when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source], project: workflow_project(options))
+        when "graph" then @workflow_command.graph(id: subject, format: options[:format], json: options[:json], project: workflow_project(options), run: options[:graph_run])
         when "uninstall" then workflow_action(invocation, "workflow uninstall", options) { @workflow_command.uninstall(yes: options[:yes], dry_run: options[:dry_run], json: options[:json]) }
         when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json], project: workflow_project(options))
         when "render"

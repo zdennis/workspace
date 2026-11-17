@@ -1,0 +1,449 @@
+{
+  "id": "wr_simulated",
+  "schema_version": 1,
+  "workflow": "rpiv",
+  "title": "Research, Plan, Implement, Verify",
+  "definition": {
+    "id": "rpiv",
+    "title": "Research, Plan, Implement, Verify",
+    "description": "One feature end to end in one workspace, with a plan gate and a test-backed verify loop.",
+    "use_when": "A feature or change to build end to end, with a plan to approve first.",
+    "applies_to": [],
+    "inputs": {
+      "task": {
+        "description": "What to build. A ticket key with a sentence, or a path to a spec in the worktree. `workflow run` fills it from the open pull request, else `Branch NAME`, when left out.",
+        "required": true
+      },
+      "spec": {
+        "description": "Optional spec or ticket file to read first.",
+        "required": false
+      }
+    },
+    "include": [],
+    "instructions": "You are working on {{inputs.task}} in workspace {{workspace}}, branch {{branch}}.\nSpec (may be empty): {{inputs.spec}}\nEvery artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are\ninputs; read them before you start.\n",
+    "max_attempts": 10,
+    "stall": null,
+    "redeliver": 3,
+    "deny": [],
+    "steps": [
+      {
+        "id": "research",
+        "title": "Research",
+        "prompt": "Research {{inputs.task}}. Read the code it touches, the tests that cover it, and\nrelated docs. Don't change code or commit.\nWrite {{artifacts}}/research.md with: what exists (file:line), what has to change,\nconstraints, open questions, risks.\n",
+        "include": [],
+        "produces": [
+          "research.md"
+        ],
+        "status": null,
+        "gate": null,
+        "guard": "unchanged",
+        "require": [],
+        "uses": [],
+        "on_fail": null,
+        "context": "fresh",
+        "timeout": 2700.0,
+        "on_timeout": "warn",
+        "max_attempts": null
+      },
+      {
+        "id": "plan",
+        "title": "Plan",
+        "prompt": "Using {{artifacts}}/research.md, write the plan as the workspace plan: the\nIMPLEMENTATION_PLAN.md that `workspace plan path` names (run `workspace plan init --title \"<title>\"` first if it does not exist), in the syntax the\nimplementation-plan instructions give, so `workspace plan status` shows it.\nOne task per commit, in order, with the files touched, tests to add and how you'll\nknow it works under that task in Task details. Call out anything that needs the\ndev environment or the test database. Set `status: active` and leave every task `[ ]`.\nYou only write the plan here; do not start any task, and do not set `status: done`.\nThen write {{artifacts}}/plan.md for the approval gate: the approach, the risks, and\nthe path of the plan file. Do not copy the task list into it. The step is not\nfinished until plan.md exists.\nDon't change code.\n",
+        "include": [
+          "notes",
+          "implementation-plan"
+        ],
+        "produces": [
+          "plan.md"
+        ],
+        "status": {
+          "run": "workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)[\"plans\"].to_a.first; exit(plan && plan[\"exists\"] && plan[\"counts\"][\"total\"].to_i > 0 ? 0 : 1)'\n",
+          "timeout": 1200
+        },
+        "gate": "approve",
+        "guard": "unchanged",
+        "require": [],
+        "uses": [],
+        "on_fail": null,
+        "context": "fresh",
+        "timeout": 2700.0,
+        "on_timeout": "warn",
+        "max_attempts": null
+      },
+      {
+        "id": "implement",
+        "title": "Implement",
+        "prompt": "Implement the workspace plan (`workspace plan path`) one task at a time, marking\neach task as the instructions say. Run the relevant tests before each commit. If the\nplan turns out wrong, update the plan file and say why in {{artifacts}}/implement.md.\nWrite {{artifacts}}/implement.md listing the commits you made, then set the plan's\n`status: done`; the run is waiting on that file and on that status. Make at least one commit.\nOn a rerun (after a failed verify, or a resume), make a new commit for the fix and never\namend or rebase, which the run's commit check can't follow. If no code change is needed,\nrun `git commit --allow-empty -m '<why>'`.\n",
+        "include": [
+          "notes",
+          "implementation-plan"
+        ],
+        "produces": [
+          "implement.md"
+        ],
+        "status": null,
+        "gate": null,
+        "guard": null,
+        "require": [
+          {
+            "commits": 1
+          },
+          {
+            "plan_status": "done"
+          }
+        ],
+        "uses": [],
+        "on_fail": null,
+        "context": "fresh",
+        "timeout": 10800.0,
+        "on_timeout": "warn",
+        "max_attempts": null
+      },
+      {
+        "id": "verify",
+        "title": "Verify",
+        "prompt": "Verify the work against the workspace plan (`workspace plan path`). Run the tests for the\nfiles the change touched, their obvious neighbors, and the tests the change obviously\nimpacts — not the whole suite (it runs on CI). Run the linter (the project's lint\ncommand, when it has one, must pass: the run checks it), then review the branch's diff against its base.\nWrite {{artifacts}}/verify.md: test results, review findings, and what you fixed.\nIf anything blocking remains, run `workspace step done --status fail --summary \"<what is left>\"`\nand end your turn.\n",
+        "include": [
+          "review"
+        ],
+        "produces": [
+          "verify.md"
+        ],
+        "status": {
+          "command": "test",
+          "timeout": 1200
+        },
+        "gate": null,
+        "guard": null,
+        "require": [
+          {
+            "command": "lint",
+            "optional": true
+          }
+        ],
+        "uses": [
+          "test-db"
+        ],
+        "on_fail": {
+          "goto": "implement",
+          "max": 3,
+          "context": "continue"
+        },
+        "context": "fresh",
+        "timeout": 5400.0,
+        "on_timeout": "warn",
+        "max_attempts": null
+      }
+    ],
+    "produces_check": "strict"
+  },
+  "definition_source": "builtin",
+  "definition_path": null,
+  "definition_sha256": "42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8",
+  "workspace": "simulation",
+  "project": "simulation",
+  "worktree": "/tmp/workspace-simulate/checkout",
+  "base_sha": null,
+  "base_guard": null,
+  "task": null,
+  "inputs": {
+    "task": "Add the thing",
+    "spec": ""
+  },
+  "note": null,
+  "state": "running",
+  "created_at": "2026-01-01T00:00:00Z",
+  "started_at": "2026-01-01T00:00:00Z",
+  "ended_at": null,
+  "current": "verify",
+  "pane": "%sim",
+  "loops": {
+    "verify->implement": 2
+  },
+  "infra_retries": {},
+  "pending_context": [],
+  "reason": null,
+  "steps": {
+    "research": {
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "started_at": "2026-01-01T00:00:00.000Z",
+          "context": [],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/research.1.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": [],
+          "ended_at": "2026-01-01T00:00:01Z",
+          "outcome": "passed",
+          "outputs": [
+            {
+              "file": "research.md",
+              "sha256": "735b403437134b33ca917146580516ae35aad82f0d33d3e1df74eef1ba794684",
+              "bytes": 29
+            }
+          ],
+          "agent": null,
+          "session": null,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          }
+        }
+      ]
+    },
+    "plan": {
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "started_at": "2026-01-01T00:00:01.000Z",
+          "context": [],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/plan.1.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": [],
+          "check": {
+            "started_at": "2026-01-01T00:00:02Z",
+            "log": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/plan.1.check.log",
+            "command": "workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)[\"plans\"].to_a.first; exit(plan && plan[\"exists\"] && plan[\"counts\"][\"total\"].to_i > 0 ? 0 : 1)'\n",
+            "ended_at": "2026-01-01T00:00:02Z",
+            "exit_code": 0,
+            "timed_out": false
+          },
+          "ended_at": "2026-01-01T00:00:02Z",
+          "outcome": "passed",
+          "outputs": [
+            {
+              "file": "plan.md",
+              "sha256": "735b403437134b33ca917146580516ae35aad82f0d33d3e1df74eef1ba794684",
+              "bytes": 29
+            }
+          ],
+          "agent": null,
+          "session": null,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          },
+          "reasons": [
+            {
+              "code": "waiting_you",
+              "since": "2026-01-01T00:00:02Z",
+              "until": "2026-01-01T00:00:02Z"
+            }
+          ]
+        }
+      ],
+      "gate": {
+        "state": "approved",
+        "since": "2026-01-01T00:00:02Z",
+        "at": "2026-01-01T00:00:02Z",
+        "note": null
+      }
+    },
+    "implement": {
+      "state": "passed",
+      "attempts": [
+        {
+          "n": 1,
+          "started_at": "2026-01-01T00:00:02.000Z",
+          "context": [],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/implement.1.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": [],
+          "ended_at": "2026-01-01T00:00:03Z",
+          "outcome": "passed",
+          "outputs": [
+            {
+              "file": "implement.md",
+              "sha256": "735b403437134b33ca917146580516ae35aad82f0d33d3e1df74eef1ba794684",
+              "bytes": 29
+            }
+          ],
+          "agent": null,
+          "session": null,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          }
+        },
+        {
+          "n": 2,
+          "started_at": "2026-01-01T00:00:04.000Z",
+          "context": [
+            "The verify step failed and sent the run back to this step (time 1 of 3): its check exited 1 (log: /tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/verify.1.check.log). Its files are in /tmp/workspace-simulate/checkout/.workflow/wr_simulated. Fix what it found."
+          ],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/implement.2.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": [],
+          "ended_at": "2026-01-01T00:00:05Z",
+          "outcome": "passed",
+          "outputs": [
+            {
+              "file": "implement.md",
+              "sha256": "735b403437134b33ca917146580516ae35aad82f0d33d3e1df74eef1ba794684",
+              "bytes": 29
+            }
+          ],
+          "agent": null,
+          "session": null,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          }
+        },
+        {
+          "n": 3,
+          "started_at": "2026-01-01T00:00:06.000Z",
+          "context": [
+            "The verify step failed and sent the run back to this step (time 2 of 3): its check exited 1 (log: /tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/verify.2.check.log). Its files are in /tmp/workspace-simulate/checkout/.workflow/wr_simulated. Fix what it found."
+          ],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/implement.3.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": [],
+          "ended_at": "2026-01-01T00:00:07Z",
+          "outcome": "passed",
+          "outputs": [
+            {
+              "file": "implement.md",
+              "sha256": "735b403437134b33ca917146580516ae35aad82f0d33d3e1df74eef1ba794684",
+              "bytes": 29
+            }
+          ],
+          "agent": null,
+          "session": null,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          }
+        }
+      ]
+    },
+    "verify": {
+      "state": "running",
+      "attempts": [
+        {
+          "n": 1,
+          "started_at": "2026-01-01T00:00:03.000Z",
+          "context": [],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/verify.1.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": [],
+          "check": {
+            "started_at": "2026-01-01T00:00:04Z",
+            "log": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/verify.1.check.log",
+            "command": "simulated test",
+            "ended_at": "2026-01-01T00:00:04Z",
+            "exit_code": 1,
+            "timed_out": false
+          },
+          "ended_at": "2026-01-01T00:00:04Z",
+          "outcome": "failed",
+          "code": "check_failed",
+          "outputs": [
+            {
+              "file": "verify.md",
+              "sha256": "735b403437134b33ca917146580516ae35aad82f0d33d3e1df74eef1ba794684",
+              "bytes": 29
+            }
+          ],
+          "agent": null,
+          "session": null,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          }
+        },
+        {
+          "n": 2,
+          "started_at": "2026-01-01T00:00:05.000Z",
+          "context": [],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/verify.2.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": [],
+          "check": {
+            "started_at": "2026-01-01T00:00:06Z",
+            "log": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/verify.2.check.log",
+            "command": "simulated test",
+            "ended_at": "2026-01-01T00:00:06Z",
+            "exit_code": 1,
+            "timed_out": false
+          },
+          "ended_at": "2026-01-01T00:00:06Z",
+          "outcome": "failed",
+          "code": "check_failed",
+          "outputs": [
+            {
+              "file": "verify.md",
+              "sha256": "735b403437134b33ca917146580516ae35aad82f0d33d3e1df74eef1ba794684",
+              "bytes": 29
+            }
+          ],
+          "agent": null,
+          "session": null,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0
+          }
+        },
+        {
+          "n": 3,
+          "started_at": "2026-01-01T00:00:07.000Z",
+          "context": [],
+          "prompt_file": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated/steps/verify.3.prompt.md",
+          "head": {
+            "before": null,
+            "after": null
+          },
+          "definition_sha256": "42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8",
+          "prompt_sha256": "<PROMPT_SHA>",
+          "packs": []
+        }
+      ]
+    }
+  },
+  "artifacts_dir": "/tmp/workspace-simulate/checkout/.workflow/wr_simulated",
+  "reasons": [
+    {
+      "code": "waiting_you",
+      "since": "2026-01-01T00:00:00Z",
+      "until": "2026-01-01T00:00:00Z",
+      "step": "research"
+    }
+  ]
+}

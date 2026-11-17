@@ -40,6 +40,98 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    context "graph" do
+      let(:out) { StringIO.new }
+      let(:err) { StringIO.new }
+      let(:real_cli) do
+        catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: "/nonexistent/workflows", builtin_workflows_dir: Workspace::Config.new.builtin_workflows_dir))
+        command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, process_tree: nil, lock_holder: nil, output: out)
+        build_test_cli(workflow_command: command, output: out, error_output: err)[0]
+      end
+
+      it "draws rpiv as mermaid exactly like the golden" do
+        real_cli.run(["workflow", "graph", "rpiv", "--format", "mermaid"])
+
+        expect(out.string).to eq(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_graph_golden/rpiv.mmd")))
+      end
+
+      it "prints the same document for --json and --format json" do
+        real_cli.run(["workflow", "graph", "rpiv", "--json"])
+        first = out.string.dup
+        out.truncate(0)
+        out.rewind
+        real_cli.run(["workflow", "graph", "rpiv", "--format", "json"])
+
+        expect(out.string).to eq(first)
+        expect(JSON.parse(first)["graph"].keys).to eq(%w[nodes edges legend])
+      end
+
+      it "tags the steps an extending preset inherited with the parent's id" do
+        real_cli.run(["workflow", "graph", "rpiv-auto-approve-v2", "--json"])
+        origins = JSON.parse(out.string)["graph"]["nodes"].to_h { |node| [node["id"], node["annotations"]["origin"]] }
+
+        expect(origins).to include("research" => "rpiv", "plan" => nil)
+      end
+
+      it "exits 1 with unknown_workflow for an unknown id" do
+        expect { real_cli.run(["workflow", "graph", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(out.string + err.string).to include("unknown_workflow")
+      end
+
+      it "refuses --json with --format dot" do
+        expect { real_cli.run(["workflow", "graph", "rpiv", "--json", "--format", "dot"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(out.string + err.string).to include("usage")
+      end
+    end
+
+    context "graph --run" do
+      let(:out) { StringIO.new }
+      let(:err) { StringIO.new }
+      let(:root) { Dir.mktmpdir }
+      let(:looped_text) { File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/looped_twice.json")) }
+      let(:real_cli) do
+        FileUtils.mkdir_p(File.join(root, "global"))
+        File.write(File.join(root, "global", "rpiv.yml"), "title: Changed since\nsteps:\n  only:\n    prompt: Do it.\n")
+        FileUtils.mkdir_p(File.join(root, "runs"))
+        File.write(File.join(root, "runs", "wr_simulated.json"), looped_text)
+        store = Workspace::WorkflowRunStore.new(dir: File.join(root, "runs"), archive_dir: File.join(root, "archive"))
+        catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: File.join(root, "global"), builtin_workflows_dir: Workspace::Config.new.builtin_workflows_dir))
+        command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: nil, status: nil, store: store, panes: nil, files: nil, run_files: nil, process_tree: nil, lock_holder: nil, output: out)
+        build_test_cli(workflow_command: command, output: out, error_output: err)[0]
+      end
+
+      after { FileUtils.remove_entry(root) }
+
+      it "draws the looped run as mermaid exactly like the golden" do
+        real_cli.run(["workflow", "graph", "rpiv", "--run", "wr_simulated", "--format", "mermaid"])
+
+        expect(out.string).to eq(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_graph_golden/rpiv-looped.mmd")))
+      end
+
+      it "draws the stored definition even when the catalog's file now differs" do
+        real_cli.run(["workflow", "graph", "rpiv", "--json"])
+        expect(JSON.parse(out.string)["graph"]["nodes"].map { |node| node["id"] }).to eq(%w[.start only .end])
+        out.truncate(0)
+        out.rewind
+
+        real_cli.run(["workflow", "graph", "rpiv", "--run", "wr_simulated", "--json"])
+
+        nodes = JSON.parse(out.string)["graph"]["nodes"]
+        expect(nodes.map { |node| node["id"] }).to eq(%w[.start research plan plan.gate implement verify .end])
+        expect(nodes.find { |node| node["id"] == "implement" }).to include("state" => "passed", "passes" => 3, "attempts" => 3)
+      end
+
+      it "exits 1 with unknown_run for an unknown run" do
+        expect { real_cli.run(["workflow", "graph", "rpiv", "--run", "wr_nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(out.string + err.string).to include("unknown_run")
+      end
+
+      it "exits 1 with usage for a run of another workflow" do
+        expect { real_cli.run(["workflow", "graph", "demo", "--run", "wr_simulated", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(out.string + err.string).to include("usage").and include("rpiv")
+      end
+    end
+
     context "recover" do
       it "routes to the command with dry_run and a launch block, and prints one action document" do
         cli.run(["workflow", "recover", "--dry-run", "--json"])
@@ -583,7 +675,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject/,
+        ["workflow"] => /Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
         ["workflow", "files"] => /workflow files needs a RUN id/,

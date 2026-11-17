@@ -233,6 +233,116 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#graph" do
+    before { allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition) }
+
+    let(:model) { Workspace::WorkflowGraph.build(definition.to_h).to_h }
+
+    it "draws ascii by default" do
+      command.graph(id: "flow")
+
+      expect(output.string).to eq(Workspace::WorkflowGraphAscii.render(model))
+    end
+
+    it "draws mermaid and dot" do
+      command.graph(id: "flow", format: "mermaid")
+      command.graph(id: "flow", format: "dot")
+
+      expect(output.string).to eq(Workspace::WorkflowGraphMermaid.render(model) + Workspace::WorkflowGraphDot.render(model))
+    end
+
+    it "prints the model under graph for --format json and --json alike" do
+      command.graph(id: "flow", format: "json")
+      first = output.string.dup
+      output.truncate(0)
+      output.rewind
+      command.graph(id: "flow", json: true)
+
+      expect(output.string).to eq(first)
+      expect(json).to eq("schema_version" => 1, "ok" => true, "graph" => JSON.parse(JSON.generate(model)))
+    end
+
+    it "uses the renderers it was given" do
+      renderer = double("renderer", render: "drawn")
+      drawing = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+        process_tree: process_tree, lock_holder: lock_holder, graph_renderers: {"ascii" => renderer}, output: output)
+
+      drawing.graph(id: "flow")
+
+      expect(output.string).to eq("drawn\n")
+    end
+
+    it "passes the project to the catalog" do
+      allow(catalog).to receive(:find).with("flow", project: "web").and_return(definition)
+
+      command.graph(id: "flow", project: "web")
+
+      expect(catalog).to have_received(:find).with("flow", project: "web")
+    end
+
+    it "refuses an unknown format, naming the formats" do
+      expect { command.graph(id: "flow", format: "svg") }.to raise_error(Workspace::UsageError, /mermaid, dot, ascii, json/)
+    end
+
+    it "refuses --json with another format" do
+      expect { command.graph(id: "flow", format: "dot", json: true) }.to raise_error(Workspace::UsageError, /--json prints the graph as json/)
+      expect(output.string).to be_empty
+    end
+
+    it "raises the catalog's unknown_workflow for an unknown id" do
+      allow(catalog).to receive(:find).with("nope", project: anything).and_raise(Workspace::Error.new("No workflow nope.", code: "unknown_workflow"))
+
+      expect { command.graph(id: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+    end
+
+    describe "with run:" do
+      let(:looped) { JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/looped_twice.json"))) }
+      let(:looped_run) { Workspace::WorkflowRun.from_h(looped) }
+      let(:marked) { Workspace::WorkflowGraphStates.mark(Workspace::WorkflowGraph.build(looped_run.definition).to_h, looped_run) }
+
+      it "draws the run's stored definition marked with its states, without reading the catalog" do
+        allow(store).to receive(:run).with("wr_simulated").and_return(looped_run)
+        allow(catalog).to receive(:find)
+
+        command.graph(id: "rpiv", run: "wr_simulated")
+
+        expect(output.string).to eq(Workspace::WorkflowGraphAscii.render(marked))
+        expect(catalog).not_to have_received(:find)
+      end
+
+      it "prints the marked model under graph with --json" do
+        allow(store).to receive(:run).with("wr_simulated").and_return(looped_run)
+
+        command.graph(id: "rpiv", run: "wr_simulated", json: true)
+
+        verify = json["graph"]["nodes"].find { |node| node["id"] == "verify" }
+        expect(verify).to include("state" => "current", "passes" => 0, "attempts" => 3)
+      end
+
+      it "raises the store's unknown_run for an unknown run" do
+        allow(store).to receive(:run).with("wr_nope").and_raise(Workspace::Error.new("No workflow run \"wr_nope\".", code: "unknown_run"))
+
+        expect { command.graph(id: "rpiv", run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+      end
+
+      it "refuses a run of another workflow by its workflow key" do
+        allow(store).to receive(:run).with("wr_simulated").and_return(looped_run)
+
+        expect { command.graph(id: "demo", run: "wr_simulated") }.to raise_error(Workspace::UsageError, /of workflow "rpiv", not "demo"/)
+        expect(output.string).to be_empty
+      end
+
+      it "falls back to the stored definition's id for a legacy run with no workflow key" do
+        legacy = Workspace::WorkflowRun.from_h(looped.except("workflow"))
+        allow(store).to receive(:run).with("wr_simulated").and_return(legacy)
+
+        expect { command.graph(id: "demo", run: "wr_simulated") }.to raise_error(Workspace::UsageError, /of workflow "rpiv", not "demo"/)
+        command.graph(id: "rpiv", run: "wr_simulated")
+        expect(output.string).to eq(Workspace::WorkflowGraphAscii.render(marked))
+      end
+    end
+  end
+
   describe "#show stall" do
     def stall_definition(stall)
       Workspace::WorkflowDefinition.parse("#{"stall: #{stall}\n" if stall}steps:\n  a:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml").tap do |defn|

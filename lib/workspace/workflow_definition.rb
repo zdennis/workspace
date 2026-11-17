@@ -159,6 +159,7 @@ module Workspace
       extension = WorkflowExtends.new(id: id, source: source, lookup: parent_lookup, chain: chain || [[id, path || id]])
       @resolved_raw = extension.resolve(load_yaml(text))
       @parents = extension.parents
+      @origins = extension.origins
       @notes = extension.notes
       if extension.failure.any?
         # The parent can't be used, so nothing else about this file can be judged.
@@ -181,6 +182,13 @@ module Workspace
     #
     # @return [Array<Hash{String=>String}>] each with "id", "source", "path" and "sha256" (of that file's text)
     attr_reader :parents
+
+    # Where each step came from, for a definition that extends another: step id to the id of the workflow it was
+    # inherited from (the nearest ancestor that defines it), or "own" for a step this file adds or replaces.
+    # Empty without `extends:`. Not part of {#to_h}.
+    #
+    # @return [Hash{String=>String}]
+    attr_reader :origins
 
     # The digest a run records as `definition_sha256`: {#sha256} alone, or, for a definition that extends
     # others, the digest of its own digest and each parent's, so a changed parent is a changed definition.

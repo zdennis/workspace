@@ -527,6 +527,7 @@ RSpec.describe Workspace::ShellInit do
       it "offers only valid ids after workflow start, and runs nothing for an odd one" do
         expect(bash_tab(["workspace", "workflow", "start", ""])).to eq(%w[rpiv explore])
         expect(bash_tab(["workspace", "workflow", "show", "ex"])).to eq(%w[explore])
+        expect(bash_tab(["workspace", "workflow", "graph", "rp"])).to eq(%w[rpiv])
         expect(File.exist?(File.join(work_dir, "canary"))).to be(false)
       end
 

@@ -507,4 +507,36 @@ RSpec.describe "workflow extends" do
       expect(catalog.find("child").to_h["reviewers"]["fan"]["prompt"]).to eq("child's own")
     end
   end
+
+  describe "origins" do
+    it "is empty for a definition that extends nothing" do
+      expect(catalog.find("base").origins).to eq({})
+    end
+
+    it "names the parent for inherited steps and own for added or replaced ones" do
+      write(global_dir, "child", "extends: base\nreplace:\n  two:\n    prompt: New two\n    produces: [two.md]\nsteps:\n  four:\n    after: three\n    prompt: Fourth\n    produces: [four.md]\n")
+
+      definition = catalog.find("child")
+
+      expect(definition.origins).to eq("one" => "base", "two" => "own", "three" => "base", "four" => "own")
+      expect(definition.to_h["steps"].map { |step| step["id"] }).to eq(%w[one two three four])
+    end
+
+    it "gives a step a parent inherited itself the parent's own origin, down a chain" do
+      write(global_dir, "mid", "extends: base\nsteps:\n  mid-step:\n    after: one\n    prompt: Mid\n    produces: [m.md]\n")
+      write(global_dir, "top", "extends: mid\nreplace:\n  three:\n    prompt: Top three\n    produces: [three.md]\nsteps:\n  top-step:\n    prompt: Top\n    produces: [t.md]\n")
+
+      expect(catalog.find("top").origins).to eq("one" => "base", "mid-step" => "mid", "two" => "base", "three" => "own", "top-step" => "own")
+    end
+
+    it "tags only inherited steps in the drawn graph" do
+      write(global_dir, "child", "extends: base\nsteps:\n  four:\n    prompt: Fourth\n    produces: [four.md]\n")
+      definition = catalog.find("child")
+      model = Workspace::WorkflowGraph.build(definition.to_h, origins: definition.origins).to_h
+      titles = model["nodes"].select { |node| node["kind"] == "step" }.to_h { |node| [node["id"], Workspace::WorkflowGraphText.node_title(node)] }
+
+      expect(titles["one"]).to end_with("(from base)")
+      expect(titles["four"]).not_to include("from")
+    end
+  end
 end
