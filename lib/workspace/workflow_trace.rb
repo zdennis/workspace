@@ -263,7 +263,6 @@ module Workspace
           started_at: string(entry["since"]), ended_at: string(entry["until"]))
       end
       run.steps.each_key do |step_id|
-        next unless clock
         WorkflowTransitions.stall_spans(run.to_h, step_id).each do |stall|
           next if unreadable_until?(stall)
           out << make.call("stall", step_id, nil, nil, code: SPAN_CODES["stall"], started_at: string(stall["since"]), ended_at: string(stall["until"]))
