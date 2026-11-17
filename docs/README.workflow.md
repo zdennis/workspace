@@ -1509,7 +1509,7 @@ The pane is chosen in this order: the pane named with `--pane`; else the run's b
 | `bound_pane` | run from the run's own pane; a step is restarted by a person, from another pane |
 | `usage` | given with `--from`, `--accept-guard`, `--retry` or `--extra-rounds` |
 
-The event `step_interrupted` (`step`, `attempt`, `pane`, `usage_counted`) records the close, and `run_resumed` carries `restart_step: true`. A plain `resume` of a step that looks crashed still works, and prints a `hint` naming `--restart-step` on stderr, in text and in `--json` mode; with `--json` it is also the `hint` field of the result row. `workflow status` and `workflow sweep` list `workflow resume RUN --restart-step` among the `next_actions` of a running step whose open attempt has a `pane_gone` or `agent_gone` stall.
+The event `step_interrupted` (`step`, `attempt`, `pane`, `usage_counted`) records the close, and `run_resumed` carries `restart_step: true`. When a reboot recovery makes the restart, the run's `reboot_recoveries` count rises by one and the event `reboot_recovered` (`workspace`, `outcome` `restarted`, `count` the new total) is written with it. A plain `resume` of a step that looks crashed still works, and prints a `hint` naming `--restart-step` on stderr, in text and in `--json` mode; with `--json` it is also the `hint` field of the result row. `workflow status` and `workflow sweep` list `workflow resume RUN --restart-step` among the `next_actions` of a running step whose open attempt has a `pane_gone` or `agent_gone` stall.
 
 ### Resuming from the run's own pane
 

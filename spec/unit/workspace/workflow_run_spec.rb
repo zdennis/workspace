@@ -152,10 +152,16 @@ RSpec.describe Workspace::WorkflowRun do
       expect([given.step("b").review, given.step("b").review_rounds]).to eq([nil, nil])
     end
 
+    it "reads 0 for a reboot_recoveries that is not an Integer" do
+      expect(described_class.from_h({"reboot_recoveries" => "2"}).reboot_recoveries).to eq(0)
+      expect(described_class.from_h({"reboot_recoveries" => 2}).reboot_recoveries).to eq(2)
+    end
+
     it "reads nil for every key of an empty run" do
       given = described_class.from_h({})
 
-      expect(described_class::KEYS.map { |key| given.method(key).call }).to all(be_nil)
+      expect((described_class::KEYS - %w[reboot_recoveries]).map { |key| given.method(key).call }).to all(be_nil)
+      expect(given.reboot_recoveries).to eq(0)
       expect(given.steps).to eq({})
       expect(given.current_step).to be_nil
       expect(given.to_h).to eq({})

@@ -11,7 +11,7 @@ module Workspace
       id schema_version workflow title definition definition_source definition_path definition_sha256
       workspace project worktree base_sha base_guard task inputs note state created_at started_at ended_at
       current pane loops pending_context reason reasons artifacts_dir parked paused continue_pending backoff budget_hold timeout_hold sweep
-      extra_tokens extra_attempts extra_seconds guard_config_seen cancelled_by infra_retries
+      extra_tokens extra_attempts extra_seconds guard_config_seen cancelled_by infra_retries reboot_recoveries
     ].freeze
 
     # A frozen deep copy of a parsed value, or the value itself when it is already frozen all the way down.
@@ -71,9 +71,12 @@ module Workspace
       freeze
     end
 
-    KEYS.each do |key|
+    (KEYS - %w[reboot_recoveries]).each do |key|
       define_method(key) { to_h[key] }
     end
+
+    # @return [Integer] how many restarts a reboot recovery has made on this run; 0 when none is stored
+    def reboot_recoveries = to_h["reboot_recoveries"].is_a?(Integer) ? to_h["reboot_recoveries"] : 0
 
     # @param id [String] a step id
     # @return [Step, nil]

@@ -160,6 +160,9 @@ module Workspace
     # @param bound [String, nil] with +restart_step+, what the caller saw of the bound pane: `gone`, `shell`, `failed`,
     #   `idle`, `busy` or `unknown` (nil reads `unknown`), seen before the run lock is taken, so a turn that starts in
     #   between is not caught; see {WorkflowTransitions.restart_refusal}
+    # @param reboot_recovery [Hash, nil] with +restart_step+ (UsageError without), `{"workspace" => name}` of a reboot recovery:
+    #   once every refusal has passed, the run's `reboot_recoveries` rises by one and `reboot_recovered` (`workspace`,
+    #   `outcome` `restarted`, `count`) is queued in the same change
     # @param infra_retry [Hash, nil] with +restart_step+, the claimant ("pid", "started") of the step's infra retry
     #   ({WorkflowRecovery#claim_infra_retry}): the restart is that retry, refused with `infra_retry_not_claimed` unless the
     #   current attempt's retry is claimed (or its claim stale) by this claimant, and its `run_resumed` carries `infra_retry` (the
@@ -176,9 +179,10 @@ module Workspace
     #   `max_rounds`, or start again a step a review rejected with every round spent; with +restart_step+, also
     #   `no_open_attempt`, `step_still_working`, `pane_has_run` and `restart_not_closed`; with +infra_retry+, `infra_retry_not_claimed`
     def resume(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
-      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil, infra_retry: nil)
+      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil, infra_retry: nil, reboot_recovery: nil)
       refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry, extra_rounds: extra_rounds, restart_step: restart_step, turn_over: turn_over)
       raise UsageError, "infra_retry is the claimant of an automatic restart; it needs restart_step." if infra_retry && !restart_step
+      raise UsageError, "reboot_recovery is the workspace of a recovery restart; it needs restart_step." if reboot_recovery && !restart_step
       infra_retry &&= WorkflowRecovery.infra_retry_claimant(infra_retry)
       follow = nil
       unchanged = nil
@@ -186,7 +190,7 @@ module Workspace
         follow = ctx
         step = read.current
         changed = if restart_step
-          restart_in(read, ctx, note: note, pane: pane, bound: bound, infra_retry: infra_retry,
+          restart_in(read, ctx, note: note, pane: pane, bound: bound, infra_retry: infra_retry, reboot_recovery: reboot_recovery,
             extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
         elsif accept_guard
           accept_guard_stop(read, ctx, note: note, pane: pane, guard_retry: guard_retry, caller_pane: caller_pane,
@@ -723,7 +727,7 @@ module Workspace
     # `interrupted` against the run as it is, so its usage is read from the old pane's session, before the run moves
     # to +pane+. Its stalls end (`restarted`), and the new attempt (`retry_of` the closed one) starts in a fresh
     # conversation with {WorkflowPrompt.interrupted_brief} first in its instructions, then the note.
-    def restart_in(read, ctx, note:, pane:, bound:, extra_attempts:, extra_tokens:, extra_seconds:, infra_retry: nil)
+    def restart_in(read, ctx, note:, pane:, bound:, extra_attempts:, extra_tokens:, extra_seconds:, infra_retry: nil, reboot_recovery: nil)
       stored = read.thawed
       retry_n = infra_retry && claimed_retry(stored, infra_retry)
       refuse_resume(stored)
@@ -753,9 +757,16 @@ module Workspace
       drop_park(stored, "taken_over")
       stored["pending_context"].unshift(interrupted_brief(stored, closed))
       stored["pending_context"] << WorkflowRun.resume_note(note) if note
+      count_reboot_recovery(stored, reboot_recovery) if reboot_recovery
       event(stored, "run_resumed", {"step" => step, "state" => "running", "restart_step" => true}.merge(retry_n ? {"infra_retry" => retry_n} : {}))
       dispatch(stored, ctx, "resume", context: "fresh", budgeted: true, retry_of: {"attempt" => n})
       WorkflowRun.from_h(stored)
+    end
+
+    # Raises the run's `reboot_recoveries` by one and queues `reboot_recovered` with the new count, once the restart is certain.
+    def count_reboot_recovery(stored, reboot_recovery)
+      stored["reboot_recoveries"] = stored["reboot_recoveries"].to_i + 1
+      event(stored, "reboot_recovered", "workspace" => reboot_recovery["workspace"], "outcome" => "restarted", "count" => stored["reboot_recoveries"])
     end
 
     # The `n` of the current attempt's infra retry when +claimant+ holds its claim ({WorkflowTransitions.infra_retry}
