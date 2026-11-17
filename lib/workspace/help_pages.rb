@@ -942,7 +942,7 @@ module Workspace
         ]
       },
       "events" => {
-        usage: ["workflow events RUN [--since N] [--follow] [--json]"],
+        usage: ["workflow events RUN [--since N] [--types A,B] [--follow [--timeout DURATION]] [--json]"],
         summary: "Show a run's history, one line per event",
         about: [
           RUN_ID,
@@ -951,13 +951,27 @@ module Workspace
           "--since N. --json adds truncated and next_since to continue from.",
           "",
           "--follow keeps reading and prints each event as it is appended. It stops by itself once the run has",
-          "finished and its history is drained, prints a last line and exits 0. With --json each event is one JSON",
-          "line and the last is {\"type\":\"follow_ended\",\"run\",\"state\",\"next_since\"}."
+          "finished and its history is drained, and prints a last line. With --json it opens with",
+          "{\"type\":\"follow_started\",\"run\",\"since\",\"state\",\"current\",\"definition_sha256\"}, each event is one JSON",
+          "line, a {\"type\":\"gap\",\"reason\",\"next_since\"} line says lines were lost, and the last is",
+          "{\"type\":\"follow_ended\",\"run\",\"state\",\"reason\",\"next_since\"}. reason is completed, cancelled, killed,",
+          "failed, pruned (the run was archived and removed; its state is unknown) or timeout.",
+          "",
+          "--types A,B prints only events of those types (a plain read or --follow); n and next_since still count every",
+          "line, so a --since resume neither repeats nor skips. follow_started, gap and follow_ended always print.",
+          "--timeout DURATION (30s, 5m, 1h; only with --follow) stops waiting that long after the follow began, even in",
+          "the middle of a long backlog, unless the run has already finished.",
+          "",
+          "Exit codes: 0 completed, pruned, a plain read, Ctrl-C; 1 the run ended cancelled, killed or failed (a",
+          "cancelled run used to exit 0); 75 the --timeout ran out while the run was still going."
         ],
         options: [["--since N", "Only events after line N of the history (default 0)"],
-          ["--follow", "Keep reading until the run has finished and its history is drained"], JSON_OPT],
+          ["--types A,B", "Only events of these types (repeatable, or comma-separated)"],
+          ["--follow", "Keep reading until the run has finished and its history is drained"],
+          ["--timeout DURATION", "With --follow: stop waiting after this long (30s, 5m, 1h); exit 75"], JSON_OPT],
         examples: [
           ["workspace workflow events RUN --follow", "watch a run's history as it grows"],
+          ["workspace workflow events RUN --follow --types step_passed,run_completed --timeout 30m --json", "wait for steps to finish, for at most 30 minutes"],
           ["workspace workflow events RUN --follow --since 40 --json", "one JSON line per new event, then follow_ended"],
           ["workspace workflow events RUN", "a run's history, oldest first"],
           ["workspace workflow events RUN --since 40", "only what happened after line 40"],

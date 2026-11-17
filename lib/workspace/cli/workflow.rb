@@ -126,6 +126,8 @@ module Workspace
           opts.on("--by GROUP", "compare: group the runs by definition (default) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
           opts.on("--last DURATION", "stats, compare: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
           opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
+          opts.on("--types A,B", "events: only events of these types (repeatable, or comma-separated)") { |v| (options[:types] ||= []).concat(v.split(",").map(&:strip).reject(&:empty?)) }
+          opts.on("--timeout DURATION", "events --follow: stop waiting after this long (30s, 5m, 1h) and exit 75") { |v| options[:timeout] = @common.parse_duration_option("--timeout", v, positive: true) }
           opts.on("--follow", "events: keep reading and print each event as it is appended, until the run has finished and its history is drained") { options[:follow] = true }
           opts.on("--id ID", "validate: check the text as this workflow id") { |v| options[:id] = v }
           opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
@@ -202,6 +204,8 @@ module Workspace
         raise UsageError, "workflow simulate needs --script FILE (what the fake agent does; see `workspace workflow simulate --help`)." if subcommand == "simulate" && options[:script].nil?
         raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
         raise UsageError, "--follow is for `workflow events RUN`." if options[:follow] && subcommand != "events"
+        raise UsageError, "--types is for `workflow events RUN`." if options[:types] && subcommand != "events"
+        raise UsageError, "--timeout is for `workflow events RUN --follow`." if options[:timeout] && !(subcommand == "events" && options[:follow])
         raise UsageError, "--attempt-of is for `workflow attempts RUN` and `workflow audit RUN`." if options[:attempt_of] && !%w[attempts audit].include?(subcommand)
         raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
         raise UsageError, "--last is for `workflow stats ID` and `workflow compare ID`." if options[:last] && !%w[stats compare].include?(subcommand)
@@ -319,7 +323,7 @@ module Workspace
           raise UsageError, "workflow recover takes no --name; it looks at every run going." if options[:name]
           workflow_action_rows(invocation, "workflow recover", options) { @workflow_command.recover(dry_run: options[:dry_run] || false) { |missing| @launcher.launch_missing(invocation, missing) } }
         when "events"
-          result = @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json], follow: options[:follow] || false)
+          result = @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json], follow: options[:follow] || false, types: options[:types], timeout: options[:timeout])
           invocation.exit_handler.exit(result[:exit_code]) if result.is_a?(Hash) && !result[:exit_code].to_i.zero?
         when "status"
           if subject && (options[:name] || options[:project] || options[:all])

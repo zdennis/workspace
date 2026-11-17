@@ -3179,7 +3179,12 @@ RSpec.describe Workspace::Commands::Workflow do
       }
       let(:follow_command) do
         described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
-          lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper)
+          lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper, clock: -> { tick.first })
+      end
+      let(:tick) { [Time.utc(2026, 10, 25, 9, 30, 0)] }
+
+      def advance(seconds)
+        tick[0] += seconds
       end
 
       def finish_run(attrs = {"state" => "completed"})
@@ -3270,6 +3275,117 @@ RSpec.describe Workspace::Commands::Workflow do
         follow_command.events(run: "wr_2610250930abcd", since: 4, follow: true, max_polls: 10)
 
         expect(output.string.lines.last).to eq("Run wr_2610250930abcd cancelled (killed); no more events.\n")
+      end
+
+      it "prints only the --types events in a plain read, with next_since from the store" do
+        fixture_run
+
+        events_command.events(run: "wr_2610250930abcd", json: true, types: %w[step_done])
+
+        shown = JSON.parse(output.string)
+        expect(shown["events"].map { |event| event["type"] }).to eq(%w[step_done])
+        expect(shown["next_since"]).to eq(4)
+        output.truncate(0)
+        output.rewind
+        follow_command.events(run: "wr_2610250930abcd", types: %w[nothing])
+        expect(output.string).to start_with("No events for wr_2610250930abcd.")
+      end
+
+      it "follows only the --types events, always printing follow_started and follow_ended, and resumes without repeat or skip" do
+        fixture_run
+        steps << -> {
+          real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "plan", "attempt" => 1)
+          real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+          finish_run
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", json: true, follow: true, types: %w[step_done run_finished], max_polls: 10)
+
+        lines = json_lines
+        expect(lines.map { |line| line["type"] }).to eq(%w[follow_started step_done run_finished follow_ended])
+        expect(lines.last["next_since"]).to eq(6)
+        output.truncate(0)
+        output.rewind
+        follow_command.events(run: "wr_2610250930abcd", json: true, follow: true, since: 4, types: %w[step_done run_finished step_dispatched], max_polls: 10)
+        expect(json_lines.map { |line| [line["type"], line["n"]] }).to eq([["follow_started", nil], ["step_dispatched", 5], ["run_finished", 6], ["follow_ended", nil]])
+      end
+
+      it "advances next_since over a poll whose events all fail the --types filter" do
+        fixture_run
+        steps << -> { real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "plan", "attempt" => 1) }
+        steps << -> {
+          real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+          finish_run
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", json: true, follow: true, since: 4, types: %w[run_finished], max_polls: 10)
+
+        lines = json_lines
+        expect(lines.map { |line| line["type"] }).to eq(%w[follow_started run_finished follow_ended])
+        expect(lines.last["next_since"]).to eq(6)
+      end
+
+      it "stops with reason timeout and exit 75 when the deadline passes while the run is going" do
+        fixture_run
+        steps << -> { advance(200) }
+        steps << -> { advance(200) }
+
+        result = follow_command.events(run: "wr_2610250930abcd", follow: true, timeout: 300, max_polls: 10)
+
+        expect(output.string.lines.last).to eq("Stopped following wr_2610250930abcd after 5m; run is running.\n")
+        expect(result).to eq(exit_code: 75)
+        expect(sleeps.size).to eq(2)
+      end
+
+      it "prints the timeout as follow_ended with the current state and next_since in JSON" do
+        fixture_run
+        steps << -> { advance(31) }
+
+        result = follow_command.events(run: "wr_2610250930abcd", json: true, follow: true, timeout: 30, max_polls: 10)
+
+        expect(json_lines.last).to eq("type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "running", "reason" => "timeout", "next_since" => 4)
+        expect(result).to eq(exit_code: 75)
+      end
+
+      it "reports completed, not timeout, when the run finishes in the poll the deadline passes" do
+        fixture_run
+        steps << -> {
+          advance(600)
+          real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+          finish_run
+        }
+
+        result = follow_command.events(run: "wr_2610250930abcd", json: true, follow: true, timeout: 300, max_polls: 10)
+
+        expect(json_lines.last).to include("type" => "follow_ended", "state" => "completed", "reason" => "completed")
+        expect(result).to eq(exit_code: 0)
+      end
+
+      it "stops on the deadline in the middle of a backlog read in pages, without sleeping" do
+        fixture_run
+        6.times { |i| real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "s#{i}", "attempt" => 1) }
+        ticking = Class.new(SimpleDelegator) do
+          def initialize(store, ticker)
+            super(store)
+            @ticker = ticker
+          end
+
+          def events(id, since: 0, limit: 1000)
+            @ticker.call
+            super(id, since: since, limit: 2)
+          end
+        end.new(real_store, -> { advance(1) })
+        paged = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: ticking, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
+          lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper, clock: -> { tick.first })
+
+        result = paged.events(run: "wr_2610250930abcd", json: true, follow: true, timeout: 2, max_polls: 20)
+
+        expect(result).to eq(exit_code: 75)
+        expect(sleeps).to eq([])
+        ended = json_lines.last
+        expect(ended).to include("reason" => "timeout", "state" => "running")
+        expect(ended["next_since"]).to be < 10
+        expect(ended["next_since"]).to be > 0
       end
 
       it "answers exit code 0 for a plain read, max_polls and a closed pipe" do
