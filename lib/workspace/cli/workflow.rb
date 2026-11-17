@@ -123,7 +123,7 @@ module Workspace
           opts.on("--run RUN", "graph: draw the definition RUN stored, marked with each step's state and the loops it took") { |v| options[:graph_run] = v }
           opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not; install: only the source at position N of workflows.sources (a whole number from 1, written after the flag)") { options[:source] = true }
           opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
-          opts.on("--by GROUP", "compare: group the runs by definition (default) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
+          opts.on("--by GROUP", "compare: group the runs by definition (default), version (the definition's `version:`) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
           opts.on("--last DURATION", "stats, compare: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
           opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
           opts.on("--types A,B", "events: only events of these types (repeatable, or comma-separated)") { |v| (options[:types] ||= []).concat(v.split(",").map(&:strip).reject(&:empty?)) }

@@ -83,6 +83,22 @@ RSpec.describe "workspace workflow compare through build_cli" do
     expect(out.string).to include("unknown: runs stored without the hash; mixed: runs that saw more than one.")
   end
 
+  it "groups by version with a VERSION column and its own unknown note" do
+    put("wr_1", %w[passed], text: "v1")
+    put("wr_2", %w[passed], text: "v2")
+    File.write(File.join(config.workflow_archive_dir, "wr_1.json"), File.read(File.join(config.workflow_archive_dir, "wr_1.json")).sub('"definition":{', '"definition":{"version":4,'))
+
+    run_cli("rpiv", "--by", "version")
+
+    lines = out.string.lines
+    expect(lines[0].split).to eq(%w[VERSION RUNS PASS-1ST RESUMES/RUN])
+    expect(lines[1].split.first).to eq("4")
+    expect(lines[2].split.first).to eq("unknown")
+    expect(out.string).to include("grouped by version.")
+    expect(out.string).to include("unknown: runs whose stored definition has no version.")
+    expect(out.string).not_to include("without the hash")
+  end
+
   it "prints full shas, the counts and the warning with --json" do
     put("wr_1", %w[passed], text: "v1")
     put("wr_2", %w[passed], text: "v2", workspace: "lib")
@@ -91,7 +107,7 @@ RSpec.describe "workspace workflow compare through build_cli" do
 
     document = JSON.parse(out.string)
     expect(document).to include("schema_version" => 1, "ok" => true, "workflow" => "rpiv", "status" => "ok", "by" => "pack:plan-review", "workspace" => "lib", "last" => "2w", "runs" => 1, "matched" => 1)
-    expect(document["groups"]).to eq([{"sha" => sha("v2"), "runs" => 1, "settled" => 1, "first_try" => 1, "pass_first_percent" => 100, "running" => 0, "cancelled" => 0, "stuck" => 0, "resumes" => 0, "resumes_per_run" => 0.0}])
+    expect(document["groups"]).to eq([{"key" => sha("v2"), "sha" => sha("v2"), "runs" => 1, "settled" => 1, "first_try" => 1, "pass_first_percent" => 100, "running" => 0, "cancelled" => 0, "stuck" => 0, "resumes" => 0, "resumes_per_run" => 0.0}])
     expect(document["warning"]).to start_with("Too few runs")
   end
 
@@ -134,7 +150,7 @@ RSpec.describe "workspace workflow compare through build_cli" do
   end
 
   it "refuses a bad --by, --by on another verb, --all, a bad --last and a missing ID" do
-    expect(refused("workflow", "compare", "rpiv", "--by", "sha")).to include("--by needs definition or pack:NAME")
+    expect(refused("workflow", "compare", "rpiv", "--by", "sha")).to include("--by needs definition, version or pack:NAME")
     expect(exits).to eq([1])
     expect(refused("workflow", "stats", "rpiv", "--by", "definition")).to include("--by is for `workflow compare ID`.")
     expect(refused("workflow", "compare", "rpiv", "--all")).to include("--all is not needed")

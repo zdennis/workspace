@@ -1321,7 +1321,9 @@ module Workspace
           what = result["by"].start_with?("pack:") ? "run of #{name}#{window} used #{by.sub("pack:", "pack ")}" : "run of #{name}#{window}"
           @output.puts "No #{what}."
         else
-          rows = [COMPARE_HEADER] + groups.map { |each| compare_cells(each).map { |cell| TerminalText.escape(cell) } }
+          by_version = result["by"] == "version"
+          header = by_version ? ["VERSION"] + COMPARE_HEADER.drop(1) : COMPARE_HEADER
+          rows = [header] + groups.map { |each| compare_cells(each, version: by_version).map { |cell| TerminalText.escape(cell) } }
           widths = rows.transpose.map { |column| column.map(&:length).max }
           rows.each { |line| @output.puts line.each_with_index.map { |cell, i| i.zero? ? cell.ljust(widths[i]) : cell.rjust(widths[i]) }.join("  ") }
           @output.puts "#{result["matched"]} #{(result["matched"] == 1) ? "run" : "runs"} of #{name}#{window}, grouped by #{by}."
@@ -1332,15 +1334,19 @@ module Workspace
         @output.puts "#{running} run#{"s" unless running == 1} still going and #{cancelled} cancelled with no miss, left out of PASS-1ST." if running.positive? || cancelled.positive?
         @output.puts "#{result["without_pack"]} run#{"s" unless result["without_pack"] == 1} did not use #{by.sub("pack:", "pack ")} and #{(result["without_pack"] == 1) ? "is" : "are"} in no group." if result["without_pack"].positive?
         @output.puts "#{result["no_attempts"]} run#{"s" unless result["no_attempts"] == 1} never delivered an attempt and #{(result["no_attempts"] == 1) ? "is" : "are"} in no group." if result["no_attempts"].positive?
-        @output.puts "unknown: runs stored without the hash; mixed: runs that saw more than one." if groups.any? { |each| %w[unknown mixed].include?(each["sha"]) }
+        if result["by"] == "version"
+          @output.puts "unknown: runs whose stored definition has no version." if groups.any? { |each| each["key"] == "unknown" }
+        elsif groups.any? { |each| %w[unknown mixed].include?(each["key"]) }
+          @output.puts "unknown: runs stored without the hash; mixed: runs that saw more than one."
+        end
         @output.puts result["warning"]
         @output.puts "Warning: #{result["undated"]} run#{"s" unless result["undated"] == 1} with no start time left out of the window." if result["undated"].positive?
         @output.puts "Warning: #{result["unreadable"]} run file#{"s" unless result["unreadable"] == 1} could not be read; the figures are incomplete." if result["unreadable"].positive?
       end
 
-      def compare_cells(group)
+      def compare_cells(group, version: false)
         percent = group["pass_first_percent"] ? "#{group["pass_first_percent"]}%" : "-"
-        [group["sha"].to_s[0, 8], group["runs"], percent, format("%.1f", group["resumes_per_run"])].map(&:to_s)
+        [version ? group["key"].to_s : group["sha"].to_s[0, 8], group["runs"], percent, format("%.1f", group["resumes_per_run"])].map(&:to_s)
       end
 
       def print_stats(workflow, last_text, result)

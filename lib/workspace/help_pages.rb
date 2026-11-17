@@ -846,11 +846,12 @@ module Workspace
         ]
       },
       "compare" => {
-        usage: ["workflow compare ID [--by definition | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
-        summary: "Set a workflow's runs side by side, grouped by definition or pack text",
+        usage: ["workflow compare ID [--by definition | --by version | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
+        summary: "Set a workflow's runs side by side, grouped by definition, version or pack text",
         about: [
           "ID is a workflow definition id; it need not exist now. Covers the runs going and finished, in every workspace unless",
           "--name or --project narrows it. --by definition (the default) groups runs by the sha256 of the definition they ran;",
+          "--by version groups them by the `version:` of the definition they stored (a run with none is in the unknown group; numeric order);",
           "--by pack:NAME groups them by the sha256 of that pack's text in the instructions their agent was sent. A run counts in one",
           "group. If a pack's text changed between a run's attempts, the run is in the mixed group; a run stored without the hash",
           "is in the unknown group. A run that did not use the pack, or never delivered an attempt, is counted apart and in no group,",
@@ -868,7 +869,7 @@ module Workspace
           "is only one group. A run file that cannot be read exits 3 (status partial), as in `workflow stats`."
         ],
         options: [
-          ["--by GROUP", "definition (default) or pack:NAME, a pack's name such as plan-review"],
+          ["--by GROUP", "definition (default), version or pack:NAME, a pack's name such as plan-review"],
           ["--last DURATION", "Only runs started in the last DURATION (30d, 2w, 12h, 90m); a bare number means seconds"],
           name_opt("Only that workspace's runs"),
           ["--project [NAME]", "Only that project's runs (NAME, or the project of the current workspace)"],
@@ -876,6 +877,7 @@ module Workspace
         ],
         examples: [
           ["workspace workflow compare rpiv-auto-approve", "runs grouped by the definition they ran"],
+          ["workspace workflow compare rpiv --by version", "did a newer version of the definition change the results?"],
           ["workspace workflow compare rpiv-auto-approve --by pack:plan-review", "did changing that pack's text change the results?"],
           ["workspace workflow compare rpiv --by pack:commits --last 30d --json", "for a script: groups with full shas, counts and the warning"]
         ]

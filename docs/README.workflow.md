@@ -27,7 +27,7 @@ workspace workflow trace RUN [--table] [--json]
 workspace workflow attempts RUN [--attempt-of STEP] [--json]
 workspace workflow audit RUN [--attempt-of STEP] [--json]
 workspace workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
-workspace workflow compare ID [--by definition | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
+workspace workflow compare ID [--by definition | --by version | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow sweep --install | --uninstall [--dry-run] [--json]
 workspace workflow sweep --installed [--json]
@@ -1075,7 +1075,7 @@ Where other attempts go: an attempt that was never delivered to the agent (`not_
 
 ### Comparing runs
 
-`workflow compare ID [--by definition | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]` sets the runs of definition `ID` side by side, to see whether a change to the definition or to a pack moved the results:
+`workflow compare ID [--by definition | --by version | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]` sets the runs of definition `ID` side by side, to see whether a change to the definition or to a pack moved the results:
 
 ```
 $ workspace workflow compare rpiv-auto-approve --by pack:plan-review
@@ -1085,13 +1085,14 @@ SHA       RUNS  PASS-1ST  RESUMES/RUN
 Too few runs to call this a difference; tasks also differ between runs, so this shows a direction and does not prove a cause.
 ```
 
-Scope, `--last`, `--name`, `--project` (`--all` is refused), an `ID` with no definition on disk and the damaged-file behaviour are those of [`workflow stats`](#step-statistics): unreadable run files make `status` `partial`, exit 3 and a warning. `--by` is `definition` (the default) or `pack:NAME`; any other text is a usage error. It reads only what each run stored, so older runs can lack the hashes.
+Scope, `--last`, `--name`, `--project` (`--all` is refused), an `ID` with no definition on disk and the damaged-file behaviour are those of [`workflow stats`](#step-statistics): unreadable run files make `status` `partial`, exit 3 and a warning. `--by` is `definition` (the default), `version` or `pack:NAME`; any other text is a usage error. It reads only what each run stored, so older runs can lack the hashes.
 
 A run counts in exactly one group:
 
 | `--by` | The run's group |
 |--------|-----------------|
 | `definition` | The run's `definition_sha256` (the definition it was started from, kept whole in the run, so it cannot change mid-run), else the one `definition_sha256` its attempts agree on |
+| `version` | The `version:` of the definition the run stored, as a number; a run whose stored definition has none (stored before the key existed) is in the `unknown` group. Groups sort by number, `unknown` last, and the first column reads `VERSION` |
 | `pack:NAME` | The `sha256` of pack `NAME` (its name or its full ref) in the `packs` its delivered attempts recorded. The pack's text can change between attempts of one run: such a run is in the `mixed` group, under neither sha |
 
 A run with no readable hash is in the `unknown` group: for `pack:`, a run whose delivered attempts recorded no `packs` at all (stored before they were recorded) or no hash for the pack. A run whose attempts recorded `packs` without `NAME`, and a run that never delivered an attempt (`not_delivered` only, or none), are in no group and are counted apart (`without_pack`, `no_attempts`). A `NAME` no run used is not an error: the groups are empty (exit 0), because an archived run may not have kept it, and the output says so.
@@ -1105,7 +1106,7 @@ A run with no readable hash is in the `unknown` group: for `pack:`, a run whose 
 
 The output always ends with the sample warning, and `--json` always carries it as `warning`. Its first clause, `Too few runs to call this a difference;`, is dropped once every group has at least 20 settled runs and there are at least two groups. The rest stays: the tasks differ between runs, so compare shows a direction and does not prove a cause.
 
-`--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"by":"definition"|"pack:NAME","runs":N,"matched":N,"without_pack":N,"no_attempts":N,"unreadable":N,"undated":N,"warning":TEXT,"groups":[...]}`, each group `{"sha","runs","settled","first_try","pass_first_percent":N-or-null,"running","cancelled","stuck","resumes","resumes_per_run"}`. `runs` counts the runs read and `matched` those in a group. Needs `workflow` 24 in `capabilities`.
+`--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"by":"definition"|"version"|"pack:NAME","runs":N,"matched":N,"without_pack":N,"no_attempts":N,"unreadable":N,"undated":N,"warning":TEXT,"groups":[...]}`, each group `{"key","sha","runs","settled","first_try","pass_first_percent":N-or-null,"running","cancelled","stuck","resumes","resumes_per_run"}`. `runs` counts the runs read and `matched` those in a group. `key` is the group's name (a sha, a version number as text, `unknown` or `mixed`); `sha` holds the same text and is kept for older readers. Needs `workflow` 24 in `capabilities`, and 55 for `--by version` and `key`.
 
 ### Auditing a run's evidence
 
