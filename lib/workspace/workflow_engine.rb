@@ -119,13 +119,15 @@ module Workspace
       @decisions.reject(run_id, actor: actor, note: note, to: to, step: step, attempt: attempt, guard: guard, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds).to_h
     end
 
-    # Gets a run that is not moving going again. See {WorkflowDecisions#resume}.
+    # Gets a run that is not moving going again, or with +restart_step+ starts its current step again: the open
+    # attempt is closed as `interrupted` (a `step_interrupted` event: `step`, `attempt`, `pane`, `usage_counted`) and a
+    # new one starts. See {WorkflowDecisions#resume}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was done
     def resume(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
-      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil)
+      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil)
       resumed_h(@decisions.resume(run_id, actor: actor, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
-        accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane))
+        accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane, restart_step: restart_step, bound: bound))
     end
 
     # Stores a resume for later, with {#resume}'s arguments. See {WorkflowDecisions#park}.

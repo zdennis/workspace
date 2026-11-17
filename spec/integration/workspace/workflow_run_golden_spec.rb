@@ -4,7 +4,7 @@ require "fileutils"
 require "json"
 require "stringio"
 
-# Pins the run file and the events file a real WorkflowEngine leaves after a park, a resume, a cancel,
+# Pins the run file and the events file a real WorkflowEngine leaves after a park, a resume, a restarted step, a cancel,
 # a killed workspace and a sweep stall, with a stubbed guard, fixed run ids and a fixed clock (the
 # setup of the system engine spec, with no git process). The tmpdir realpath, each prompt_sha256 and the random park id
 # become tokens. Regenerate a fixture deliberately with GOLDEN_UPDATE=1.
@@ -113,6 +113,14 @@ RSpec.describe Workspace::WorkflowEngine, "golden run files" do
     engine.resume("wr_1", actor: "person", note: "again")
 
     golden("resumed")
+  end
+
+  it "records a restarted step" do
+    begin_run
+    now[0] += 60
+    engine.resume("wr_1", actor: "person", note: "again", restart_step: true, bound: "idle")
+
+    golden("restarted")
   end
 
   it "records a cancel" do

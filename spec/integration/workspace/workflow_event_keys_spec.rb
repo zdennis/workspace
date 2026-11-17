@@ -7,7 +7,7 @@ require "fileutils"
 # when a run waits for a person), so workflow_engine_spec.rb covers their events.
 module EventKeysSpec
   # The engine's state-moving types a simulation can reach. The rest are covered in workflow_engine_spec.rb:
-  # run_cancelled, run_resumed (a simulation ends when the run waits for a person), run_timed_out, step_stalled, step_recovered, lock_*, ask_*, *_extended, budget_spent,
+  # run_cancelled, run_resumed (a simulation ends when the run waits for a person), step_interrupted, run_timed_out, step_stalled, step_recovered, lock_*, ask_*, *_extended, budget_spent,
   # resume_parked*, guard_*, review_no_change, review_delivery_failed, review_rounds_spent, step_retry_blocked (needs a lost
   # pane, and the simulator's pane is always there).
   REQUIRED_TYPES = %w[
