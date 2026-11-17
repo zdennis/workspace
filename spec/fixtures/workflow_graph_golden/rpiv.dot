@@ -1,0 +1,20 @@
+digraph workflow {
+  rankdir=LR;
+  labelloc=b;
+  label="max_attempts 10";
+  ".start" [shape=point];
+  "research" [shape=box, label="Research"];
+  "plan" [shape=box, label="Plan"];
+  "plan.gate" [shape=diamond, label="Plan gate"];
+  "implement" [shape=box, label="Implement"];
+  "verify" [shape=box, label="Verify"];
+  ".end" [shape=doublecircle, label=""];
+  ".start" -> "research";
+  "research" -> "plan";
+  "plan" -> "plan.gate";
+  "plan.gate" -> "implement";
+  "implement" -> "verify";
+  "verify" -> ".end";
+  "verify" -> "implement" [style=dashed, label="fail: max 3"];
+  "plan.gate" -> "plan" [style=dashed, label="reject (or --to an earlier step)"];
+}

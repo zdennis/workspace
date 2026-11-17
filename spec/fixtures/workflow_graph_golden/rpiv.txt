@@ -1,0 +1,31 @@
+      (Start)
+        |
+        v
+      +----------+
+      | Research |
+      +----------+
+        |
+        v
+      +------+
+   +->| Plan |
+   |  +------+
+   |    |
+   |    v
+   |  +===========+
+   +--| Plan gate |  reject (or --to an earlier step)
+      +===========+
+        |
+        v
+      +-----------+
++---->| Implement |
+|     +-----------+
+|       |
+|       v
+|     +--------+
++-----| Verify |  fail: max 3
+      +--------+
+        |
+        v
+      (End)
+
+Run limits: max_attempts 10
