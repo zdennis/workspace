@@ -672,7 +672,7 @@ module Workspace
       # @raise [Workspace::Error] code `unknown_run`
       def trace(run:, json: false, table: false)
         raise Workspace::Error, "workflow trace is not available: no trace reader was wired" unless @trace
-        stored = @store.run(run)
+        stored = @store.run(run).to_h
         events, warnings = trace_events(run)
         stops = @downtime ? @downtime.spans(@clock.call) : []
         result = @trace.read(stored, events, now: @clock.call, event_errors: @store.event_errors(run), stops: stops, warnings: warnings)

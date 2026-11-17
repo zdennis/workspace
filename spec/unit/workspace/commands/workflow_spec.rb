@@ -4554,7 +4554,7 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     before do
-      allow(store).to receive(:run).with("wr_t").and_return(run_hash)
+      allow(store).to receive(:run).with("wr_t").and_return(Workspace::WorkflowRun.from_h(run_hash))
       allow(store).to receive(:events).and_return(page)
       allow(store).to receive(:event_errors).with("wr_t").and_return([])
     end
