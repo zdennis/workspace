@@ -962,6 +962,18 @@ RSpec.describe Workspace::Commands::Plan do
           expect(binder).not_to have_received(:refuse_owned!)
         end
 
+        it "refuses --interrupt on an already paused plan, sending no keys and leaving the file alone" do
+          write_plan("api", paused_text)
+          before = File.binread(plan_path)
+          allow(dispatch).to receive(:interrupt_owners)
+
+          expect { command.pause(name: "api", interrupt: true) }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("pane_bound_to_run")
+          }
+          expect(dispatch).not_to have_received(:interrupt_owners)
+          expect(File.binread(plan_path)).to eq(before)
+        end
+
         it "skips an owner_pane that is not a %N id and pauses" do
           write_plan("api", active_text.sub("owner_pane: \"%19\"", "owner_pane: \"0.1\""))
 

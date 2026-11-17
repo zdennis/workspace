@@ -819,6 +819,13 @@ RSpec.describe Workspace::Commands::Handoff do
         expect(File.exist?(notes_dir)).to be(false)
       end
 
+      it "rejects an out-of-range --context-pct before the run-owned check" do
+        with_sessions([over_pane]) do
+          expect { command.check(name: "myapp", context_pct: 101) }
+            .to raise_error(Workspace::UsageError, /--context-pct must be between 0 and 100/)
+        end
+      end
+
       it "prints status bound_to_run and next continue with --json" do
         env["TMUX_PANE"] = "%1"
         result = with_sessions([over_pane]) { command.check(name: "myapp", json: true) }

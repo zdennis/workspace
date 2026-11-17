@@ -83,9 +83,7 @@ module Workspace
       #   reviewer), nil for any other binding, a run that has ended or when no run store was given
       # @raise [Workspace::UsageError] when `pane` is not a pane id
       def owning_run(pane:)
-        entry = live(pane: pane)
-        return nil unless @runs && entry && entry["kind"] == "run"
-        entry["id"] if @runs.going?(entry["id"])
+        going_run(pane)&.first
       end
 
       # @param pane [String] a pane id ("%19")
@@ -93,9 +91,9 @@ module Workspace
       #   `{"run", "pane", "paused"}` (paused is whether the run is paused)
       # @raise [Workspace::UsageError] when `pane` is not a pane id
       def owned(pane:)
-        id = owning_run(pane: pane)
-        return nil unless id
-        {"run" => id, "pane" => pane, "paused" => !@runs.run(id).paused.nil?}.freeze
+        id, run = going_run(pane)
+        return nil unless run
+        {"run" => id, "pane" => pane, "paused" => !run.paused.nil?}.freeze
       end
 
       # @param owned [Hash{String=>Object}] what {#owned} returned
@@ -131,8 +129,14 @@ module Workspace
       def refuse_owned!(pane:, workspace:, action:, own_pane: false, resumed: false)
         found = owned(pane: pane)
         return nil unless found
-        refused = refusal(found, workspace: workspace, action: action, own_pane: own_pane, resumed: resumed)
-        raise Workspace::Error.new(refused[:message], code: refused[:code], details: refused[:details])
+        raise refusal_error(found, workspace: workspace, action: action, own_pane: own_pane, resumed: resumed)
+      end
+
+      # @param (see #refusal)
+      # @return [Workspace::Error] {#refusal} as the `pane_bound_to_run` error, to raise
+      def refusal_error(owned, workspace:, action:, own_pane: false, resumed: false)
+        refused = refusal(owned, workspace: workspace, action: action, own_pane: own_pane, resumed: resumed)
+        Workspace::Error.new(refused[:message], code: refused[:code], details: refused[:details])
       end
 
       # @param entry [Hash{String=>Object}] a binding
@@ -155,6 +159,18 @@ module Workspace
       end
 
       private
+
+      # One read of the run: [id, run] when the pane's run binding names a run not in a terminal state,
+      # nil when it can't be read (the rule of {WorkflowRunStore#going?}).
+      def going_run(pane)
+        entry = live(pane: pane)
+        return nil unless @runs && entry && entry["kind"] == "run"
+        run = @runs.run(entry["id"])
+        return nil if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
+        [entry["id"], run]
+      rescue Workspace::Error
+        nil
+      end
 
       def refusal_text(action, own_pane:, resumed:, run:, pane:, use:, paused:)
         case action

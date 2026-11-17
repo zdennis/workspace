@@ -214,7 +214,7 @@ module Workspace
       def pause(name:, interrupt: false)
         file, plan = @access.require_plan(name)
         raise @access.plan_done(name, file) if @access.finished?(plan)
-        refuse_run_owned_panes(name, plan) unless plan.status == "paused"
+        refuse_run_owned_panes(name, plan) if interrupt || plan.status != "paused"
         changed = @access.write_status(name, file, "paused")
         @output.puts changed ? "Paused the plan for #{name}." : "The plan for #{name} is already paused."
         result = @access.row(changed ? "paused" : "unchanged", file)
@@ -252,11 +252,9 @@ module Workspace
 
       private
 
-      OWNER_PANE_ID = /\A%\d+\z/
-
       # Raises `pane_bound_to_run` for the first owner pane a going run owns, before anything is written.
       def refuse_run_owned_panes(name, plan)
-        PlanState.owner_panes(plan).grep(OWNER_PANE_ID).each do |pane|
+        PlanState.owner_panes(plan).grep(PlanFile::PANE_ID).each do |pane|
           @binder&.refuse_owned!(pane: pane, workspace: name, action: :pause)
         end
       end
@@ -292,7 +290,7 @@ module Workspace
 
       # The going run that owns the plan's owner pane, or nil (also for a value that is not a `%N` id).
       def owning_run_of(pane)
-        return nil unless @binder && pane.to_s.match?(OWNER_PANE_ID)
+        return nil unless @binder && pane.to_s.match?(PlanFile::PANE_ID)
         @binder.owning_run(pane: pane)
       rescue Workspace::Error
         nil

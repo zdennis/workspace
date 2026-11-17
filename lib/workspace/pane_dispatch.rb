@@ -132,8 +132,7 @@ module Workspace
     # @param resumed [Boolean] whether a paused plan was set back to active
     # @return [Workspace::Error] the `pane_bound_to_run` refusal, to raise
     def bound_error(owned, name, resumed: false)
-      refused = @binder.refusal(owned, workspace: name, action: :type, resumed: resumed)
-      Workspace::Error.new(refused[:message], code: refused[:code], details: refused[:details])
+      @binder.refusal_error(owned, workspace: name, action: :type, resumed: resumed)
     end
 
     # @param name [String] the workspace

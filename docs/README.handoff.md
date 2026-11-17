@@ -123,7 +123,7 @@ With `--json`, the reason and fix go in the JSON object instead of stderr:
 
 `--context-pct N` skips detection for that call, so you can run a handoff even while detection is broken.
 
-The other two outcomes print `status` (`ok`, `bound_to_run`, or `handoff_sent` / `handoff_send_failed`), `context_pct`, `threshold`, `pane` (the pane's index in its window), `window` (its window index, `0` for an older daemon that does not say) and `pane_id` (its tmux pane id, e.g. `%19`, which a later `--pane` accepts). At or over the threshold they add `delivery` and `landed`. When the prompt landed, `handoff_sent` also carries [`followup`](#follow-ups).
+The other two outcomes print `status` (`ok`, or `handoff_sent` / `handoff_send_failed`), `context_pct`, `threshold`, `pane` (the pane's index in its window), `window` (its window index, `0` for an older daemon that does not say) and `pane_id` (its tmux pane id, e.g. `%19`, which a later `--pane` accepts). At or over the threshold they add `delivery` and `landed`. When the prompt landed, `handoff_sent` also carries [`followup`](#follow-ups).
 
 `bound_to_run` means a going workflow run owns the pane (the check comes before the threshold test, so it replaces `ok` there): nothing was sent and the exit is 0, because 0 is the play's "continue" and 1 would make an agent wait for a prompt that never comes. It carries `code` (`pane_bound_to_run`), `run`, `paused`, `pane_id`, `use` (the workflow command to run, `null` for the run's own agent), `next` (`continue`) and `message`; text mode prints the message on stderr.
 

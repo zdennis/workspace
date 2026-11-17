@@ -24,6 +24,7 @@ RSpec.describe Workspace::Commands::PlanDispatch do
   let(:run_owned_pane) do
     allow(binder).to receive(:owned).with(pane: "%19").and_return(run_owned)
     allow(binder).to receive(:refusal) { |*args, **opts| real_binding.refusal(*args, **opts) }
+    allow(binder).to receive(:refusal_error) { |*args, **opts| real_binding.refusal_error(*args, **opts) }
   end
   let(:play) { {"ref" => "play/implementation-plan", "path" => "/lib/play/implementation-plan.md"} }
   let(:library) do

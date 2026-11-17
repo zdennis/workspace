@@ -184,8 +184,10 @@ RSpec.describe Workspace::Commands::Binding do
     let(:paused) { {} }
     let(:runs) do
       double("runs").tap do |store|
-        allow(store).to receive(:going?) { |id| going.fetch(id, false) }
-        allow(store).to receive(:run) { |id| double("run", paused: paused[id]) }
+        allow(store).to receive(:run) do |id|
+          raise Workspace::Error.new("no run", code: "run_not_found") unless going.key?(id)
+          double("run", state: going[id] ? "running" : "completed", paused: paused[id])
+        end
       end
     end
     let(:owner) { described_class.new(bindings: bindings, locator: locator, tmux: tmux, output: output, runs: runs) }
@@ -220,6 +222,13 @@ RSpec.describe Workspace::Commands::Binding do
 
       going["wr_1"] = true
       expect(command.owning_run(pane: "%5")).to be_nil
+    end
+
+    it "treats a run file that can't be read as not owned, from one read of the run" do
+      owner.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
+      allow(runs).to receive(:run).and_raise(Workspace::Error.new("unreadable", code: "run_unreadable"))
+      expect(owner.owned(pane: "%5")).to be_nil
+      expect(owner.owning_run(pane: "%5")).to be_nil
     end
 
     it "gives a frozen owned hash with the run's paused state" do

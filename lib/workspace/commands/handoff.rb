@@ -113,12 +113,12 @@ module Workspace
         return undetermined(json, unlisted_reason(name, detail), fix: unlisted_fix(name), doc: doc) unless pane_info
         raise Workspace::UsageError, unsupported_pane_message(name, pane_info) unless pane_kind_ok?(pane_info)
 
-        owned = @binder.owned(pane: pane_info["pane_id"])
-        return bound_to_run(json, owned, name, pane_info, doc) if owned
-
         if context_pct && !context_pct.between?(0, 100)
           raise Workspace::UsageError, "--context-pct must be between 0 and 100"
         end
+        owned = @binder.owned(pane: pane_info["pane_id"])
+        return bound_to_run(json, owned, name, pane_info, doc) if owned
+
         pct = context_pct || pane_info["context_pct"]
         reason = context_pct ? nil : pane_info["context_error"]
         if pct.nil?
