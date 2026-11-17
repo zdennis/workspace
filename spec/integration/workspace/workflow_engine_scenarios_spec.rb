@@ -256,11 +256,15 @@ RSpec.describe "engine scenarios on a throwaway definition" do
 
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "backoff", "cause" => "undelivered")
       advance(backoff[0])
+      kicks = panes.kicks.size
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "not_delivered", "action" => "redeliver")
+      expect(panes.kicks.size).to eq(kicks + 1)
       advance(backoff[1] - 1)
       expect(only_row(sweep.call)).to include("reason" => "backoff")
+      expect(panes.kicks.size).to eq(kicks + 1)
       advance(1)
       expect(only_row(sweep.call)).to include("reason" => "not_delivered")
+      expect(panes.kicks.size).to eq(kicks + 2)
       kicks = panes.kicks.size
 
       advance(backoff[2])
