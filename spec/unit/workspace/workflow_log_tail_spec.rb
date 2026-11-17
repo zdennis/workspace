@@ -185,4 +185,20 @@ RSpec.describe Workspace::WorkflowLogTail do
       expect(tail.writeup(File.join(@dir, "link.md"))).to be_nil
     end
   end
+
+  describe "#tail_lines and #head_lines" do
+    it "return escaped lines from the end and the start" do
+      path = log("a\e\nb\nc\n")
+
+      expect(tail.tail_lines(path, lines: 2)).to eq(%w[b c])
+      expect(tail.head_lines(path)).to eq(["a" + "\\e", "b", "c"])
+    end
+
+    it "give nil for a missing file or a link" do
+      File.symlink(log("x\n"), File.join(@dir, "ln.log"))
+
+      expect(tail.tail_lines(File.join(@dir, "nope"), lines: 2)).to be_nil
+      expect(tail.head_lines(File.join(@dir, "ln.log"))).to be_nil
+    end
+  end
 end
