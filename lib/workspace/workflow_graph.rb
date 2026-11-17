@@ -2,7 +2,9 @@ module Workspace
   # The shape of one workflow definition as a graph of nodes and edges: a `.start` terminal, a node per step, a
   # `<step>.review` node after a step with `review:`, a `<step>.gate` node after a step with `gate: approve`, and
   # an `.end` terminal. A model id that is not a step id holds a `.`, which a step id never does, so no step can
-  # collide with one. Pure: it reads a definition hash and does no I/O; renderers map model ids to their own.
+  # collide with one. A `fail` edge whose `goto` is not a step id (a hand-edited stored run) is left out, so
+  # every edge joins two declared nodes. Pure: it reads a definition hash and does no I/O; renderers map model
+  # ids to their own.
   class WorkflowGraph
     STEP_ANNOTATIONS = %w[produces status require guard uses timeout on_timeout max_attempts context].freeze
     REVIEW_ANNOTATIONS = %w[from need must max_rounds].freeze
@@ -47,7 +49,9 @@ module Workspace
       nodes << node(".end", "end", "End", {})
       path << ".end"
       path.each_cons(2) { |from, to| edges << edge(from, to, "next", nil) }
-      @to_h = deep_freeze("nodes" => nodes, "edges" => edges + fails + rejects, "legend" => legend(definition))
+      ids = steps.map { |each| each["id"] }
+      fails.select! { |each| ids.include?(each["to"]) }
+      @to_h = WorkflowRun.deep_freeze("nodes" => nodes, "edges" => edges + fails + rejects, "legend" => legend(definition))
       freeze
     end
 
@@ -95,14 +99,6 @@ module Workspace
 
     def set?(value)
       !(value.nil? || (value.respond_to?(:empty?) && value.empty?))
-    end
-
-    def deep_freeze(value)
-      case value
-      when Hash then value.each_value { |item| deep_freeze(item) }
-      when Array then value.each { |item| deep_freeze(item) }
-      end
-      value.freeze
     end
   end
 end

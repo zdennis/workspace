@@ -2,7 +2,7 @@ module Workspace
   # Draws a {WorkflowGraph} model as Mermaid `stateDiagram-v2` text. A model id is never written as a state id:
   # each non-terminal node is numbered `n0`, `n1`, ... in model order and declared with its quoted label, and the
   # `.start` and `.end` terminals are `[*]`. A node a run marked ({WorkflowGraphStates}) gets the `classDef` of its
-  # state. Pure: reads the model hash only.
+  # state. Labels drop `<` and `>`, which Mermaid reads as markup. Pure: reads the model hash only.
   module WorkflowGraphMermaid
     # The `classDef` of each node state {WorkflowGraphStates} marks.
     STATE_STYLES = {

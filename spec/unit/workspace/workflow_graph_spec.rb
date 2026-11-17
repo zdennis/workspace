@@ -141,6 +141,14 @@ RSpec.describe Workspace::WorkflowGraph do
     expect(graph["legend"]).to eq({})
   end
 
+  it "leaves out a fail edge whose goto is not a step id" do
+    graph = described_class.build({"steps" => [step("a", "on_fail" => {"goto" => "gone", "max" => 2}), step("b", "on_fail" => {"goto" => ".end", "max" => 1})]}).to_h
+
+    expect(edges_of(graph, "fail")).to eq([])
+    ids = graph["nodes"].map { |node| node["id"] }
+    expect(graph["edges"].flat_map { |edge| edge.values_at("from", "to") } - ids).to eq([])
+  end
+
   it "is frozen all the way down" do
     built = described_class.build(catalog.find("rpiv-auto-approve-v2").to_h)
 

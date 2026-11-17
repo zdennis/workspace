@@ -1169,7 +1169,6 @@ module Workspace
     workflow_infra_retry = WorkflowInfraRetry.new(engine: workflow_engine, store: workflow_store, dispatch: pane_dispatch, lock_holder: lock_holder, agent_commands: agent_commands)
     workflow_command = Commands::Workflow.new(
       infra_retry: workflow_infra_retry,
-      graph_renderers: {"mermaid" => WorkflowGraphMermaid, "dot" => WorkflowGraphDot, "ascii" => WorkflowGraphAscii},
       source_installer: workflow_source_installer,
       workflow_config: workflow_config,
       branch_inputs: branch_inputs,
