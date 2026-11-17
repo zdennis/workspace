@@ -40,6 +40,43 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    context "graph" do
+      let(:out) { StringIO.new }
+      let(:err) { StringIO.new }
+      let(:real_cli) do
+        catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: "/nonexistent/workflows", builtin_workflows_dir: Workspace::Config.new.builtin_workflows_dir))
+        command = Workspace::Commands::Workflow.new(lint: nil, catalog: catalog, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil, process_tree: nil, lock_holder: nil, output: out)
+        build_test_cli(workflow_command: command, output: out, error_output: err)[0]
+      end
+
+      it "draws rpiv as mermaid exactly like the golden" do
+        real_cli.run(["workflow", "graph", "rpiv", "--format", "mermaid"])
+
+        expect(out.string).to eq(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_graph_golden/rpiv.mmd")))
+      end
+
+      it "prints the same document for --json and --format json" do
+        real_cli.run(["workflow", "graph", "rpiv", "--json"])
+        first = out.string.dup
+        out.truncate(0)
+        out.rewind
+        real_cli.run(["workflow", "graph", "rpiv", "--format", "json"])
+
+        expect(out.string).to eq(first)
+        expect(JSON.parse(first)["graph"].keys).to eq(%w[nodes edges legend])
+      end
+
+      it "exits 1 with unknown_workflow for an unknown id" do
+        expect { real_cli.run(["workflow", "graph", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(out.string + err.string).to include("unknown_workflow")
+      end
+
+      it "refuses --json with --format dot" do
+        expect { real_cli.run(["workflow", "graph", "rpiv", "--json", "--format", "dot"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(out.string + err.string).to include("usage")
+      end
+    end
+
     context "recover" do
       it "routes to the command with dry_run and a launch block, and prints one action document" do
         cli.run(["workflow", "recover", "--dry-run", "--json"])
@@ -583,7 +620,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject/,
+        ["workflow"] => /Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
         ["workflow", "files"] => /workflow files needs a RUN id/,

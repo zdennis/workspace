@@ -22,7 +22,14 @@ module Workspace
       # What `step done --status` accepts.
       REPORT_STATUSES = %w[pass fail].freeze
 
+      # The drawings `graph` makes, by `--format`; json prints the model itself.
+      GRAPH_FORMATS = %w[mermaid dot ascii json].freeze
+
+      # The renderers `graph` uses unless it is given others.
+      DEFAULT_GRAPH_RENDERERS = {"mermaid" => WorkflowGraphMermaid, "dot" => WorkflowGraphDot, "ascii" => WorkflowGraphAscii}.freeze
+
       # @param catalog [Workspace::WorkflowCatalog]
+      # @param graph_renderers [Hash{String=>#render}] draws a graph model as text, by format (`graph`)
       # @param engine [Workspace::WorkflowEngine]
       # @param status [Workspace::WorkflowStatus]
       # @param workspace_facts [Workspace::WorkflowWorkspaceFacts, nil] reads the workspace facts `status --table` shows
@@ -50,7 +57,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
         clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
@@ -74,6 +81,7 @@ module Workspace
         @source_installer = source_installer
         @workflow_config = workflow_config
         @infra_retry = infra_retry
+        @graph_renderers = graph_renderers
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -116,6 +124,25 @@ module Workspace
         @output.puts stall_line(data)
         @output.puts "Steps:"
         data["steps"].each { |step| @output.puts "  #{step["id"].ljust(12)} #{step_traits(step)}".rstrip }
+      end
+
+      # Draws one definition's steps, gates, reviews and loops. The default format is ascii; `json: true`
+      # is `format: "json"` and prints the model under `graph` in one document.
+      #
+      # @param id [String]
+      # @param format [String, nil] one of {GRAPH_FORMATS}
+      # @param json [Boolean]
+      # @param project [String, nil] the project whose definitions come first (see {Workspace::WorkflowCatalog})
+      # @return [void]
+      # @raise [Workspace::UsageError] for an unknown format, or --json with a format other than json
+      # @raise [Workspace::Error] code `unknown_workflow`
+      def graph(id:, format: nil, json: false, project: nil)
+        raise UsageError, "Unknown graph format #{format.inspect}: use #{GRAPH_FORMATS.join(", ")} (default ascii)." if format && !GRAPH_FORMATS.include?(format)
+        raise UsageError, "--json prints the graph as json: drop --format #{format}, or use --format json." if json && format && format != "json"
+        format ||= json ? "json" : "ascii"
+        model = WorkflowGraph.build(@catalog.find(id, project: project).to_h).to_h
+        return document("graph" => model) if format == "json"
+        @output.puts @graph_renderers.fetch(format).render(model)
       end
 
       LIST_HEADER = ["ID", "SOURCE", "DESCRIPTION"].freeze

@@ -233,6 +233,69 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#graph" do
+    before { allow(catalog).to receive(:find).with("flow", project: anything).and_return(definition) }
+
+    let(:model) { Workspace::WorkflowGraph.build(definition.to_h).to_h }
+
+    it "draws ascii by default" do
+      command.graph(id: "flow")
+
+      expect(output.string).to eq(Workspace::WorkflowGraphAscii.render(model))
+    end
+
+    it "draws mermaid and dot" do
+      command.graph(id: "flow", format: "mermaid")
+      command.graph(id: "flow", format: "dot")
+
+      expect(output.string).to eq(Workspace::WorkflowGraphMermaid.render(model) + Workspace::WorkflowGraphDot.render(model))
+    end
+
+    it "prints the model under graph for --format json and --json alike" do
+      command.graph(id: "flow", format: "json")
+      first = output.string.dup
+      output.truncate(0)
+      output.rewind
+      command.graph(id: "flow", json: true)
+
+      expect(output.string).to eq(first)
+      expect(json).to eq("schema_version" => 1, "ok" => true, "graph" => JSON.parse(JSON.generate(model)))
+    end
+
+    it "uses the renderers it was given" do
+      renderer = double("renderer", render: "drawn")
+      drawing = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+        process_tree: process_tree, lock_holder: lock_holder, graph_renderers: {"ascii" => renderer}, output: output)
+
+      drawing.graph(id: "flow")
+
+      expect(output.string).to eq("drawn\n")
+    end
+
+    it "passes the project to the catalog" do
+      allow(catalog).to receive(:find).with("flow", project: "web").and_return(definition)
+
+      command.graph(id: "flow", project: "web")
+
+      expect(catalog).to have_received(:find).with("flow", project: "web")
+    end
+
+    it "refuses an unknown format, naming the formats" do
+      expect { command.graph(id: "flow", format: "svg") }.to raise_error(Workspace::UsageError, /mermaid, dot, ascii, json/)
+    end
+
+    it "refuses --json with another format" do
+      expect { command.graph(id: "flow", format: "dot", json: true) }.to raise_error(Workspace::UsageError, /--json prints the graph as json/)
+      expect(output.string).to be_empty
+    end
+
+    it "raises the catalog's unknown_workflow for an unknown id" do
+      allow(catalog).to receive(:find).with("nope", project: anything).and_raise(Workspace::Error.new("No workflow nope.", code: "unknown_workflow"))
+
+      expect { command.graph(id: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+    end
+  end
+
   describe "#show stall" do
     def stall_definition(stall)
       Workspace::WorkflowDefinition.parse("#{"stall: #{stall}\n" if stall}steps:\n  a:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml").tap do |defn|

@@ -201,6 +201,27 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(workflow_command.calls).to eq([[:install, {source: nil}]])
     end
 
+    it "routes graph with its id, format and project" do
+      run("graph", "rpiv", "--format", "dot", "--name", "web")
+
+      expect(workflow_command.calls).to eq([[:graph, {id: "rpiv", format: "dot", json: false, project: "web"}]])
+    end
+
+    it "passes --json and no format when only --json is given" do
+      run("graph", "rpiv", "--json")
+
+      expect(workflow_command.calls).to eq([[:graph, {id: "rpiv", format: nil, json: true, project: "app"}]])
+    end
+
+    it "refuses graph without an id" do
+      expect { run("graph") }.to raise_error(Workspace::UsageError, "workflow graph needs an ID (see `workspace workflow show`).")
+    end
+
+    it "refuses --format on another verb" do
+      expect { run("show", "rpiv", "--format", "dot") }.to raise_error(Workspace::UsageError, "--format is for `workflow graph ID`.")
+      expect(workflow_command.calls).to be_empty
+    end
+
     {
       %w[install 2] => "workflow install takes no argument; --source N installs only the Nth source.",
       %w[install --source] => "workflow install --source needs N, the position in workflows.sources (1 is the first).",
@@ -289,7 +310,7 @@ RSpec.describe Workspace::CLI::Workflow do
 
   describe "usage errors" do
     it "names the verbs when none is given" do
-      expect { run }.to raise_error(Workspace::UsageError, /\AMissing subcommand: list, show, validate/)
+      expect { run }.to raise_error(Workspace::UsageError, /\AMissing subcommand: list, show, graph, validate/)
     end
 
     it "refuses an unknown verb" do
