@@ -1029,7 +1029,7 @@ Every span has the same 15 keys, `null` where one does not apply: `span_id` (16 
 
 The clock figures, `waiting_seconds` and `machine_waiting_seconds` are `null` when the clock has no origin.
 
-`warnings` holds objects with a `code` and a `message`. `events_lost` also has `count` and `types` (the lines the history lost, and their types): the spans then miss time, and `waiting_seconds` can fall short of `stopped_seconds`. `event_line_skipped` means a line of the history could not be read and was skipped.
+`warnings` holds objects with a `code` and a `message`. `events_lost` also has `count` and `types` (the lines the history lost, and their types): the spans then miss time, and `waiting_seconds` can fall short of `stopped_seconds`. `event_line_skipped` means a line of the history could not be read and was skipped. `run_steps_unreadable` means the run file's `steps` could not be read: the trace then has no wait or stall spans and the clock figures are null.
 
 ### Reading a run's attempts
 
