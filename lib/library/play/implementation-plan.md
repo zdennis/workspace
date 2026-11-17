@@ -50,7 +50,7 @@ When you are told the plan has no tasks yet, your only job is to write them:
 
 ## Before every new task
 
-Re-read the `status:` line. If it is `paused`, do nothing more: write `## State`, tell the person the plan is paused, and end your turn. Do not run `workspace handoff new`. Someone resumes the plan with `workspace plan start`.
+Re-read the `status:` line. If it is `paused`, do nothing more: write `## State`, tell the person the plan is paused, and end your turn. Do not run `workspace handoff new`. Someone resumes the plan with `workspace plan start`; in a workflow run that sets the plan back to active and types nothing, and the run's next attempt picks it up. In a run, `workspace plan pause` is refused: use `workspace workflow pause RUN`.
 
 When no `[ ]`, `[~]`, or `[!]` lines are left, set `status: done`, write a short summary in `## State`, and end your turn.
 
