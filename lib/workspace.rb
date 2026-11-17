@@ -903,7 +903,9 @@ module Workspace
       name_migration: name_migration)
     pane_locator = PaneLocator.new(tmux: tmux)
     pane_bindings = PaneBindings.new(path: config.pane_bindings_path, logger: logger, error_output: error_output)
-    binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output)
+    workflow_evidence = WorkflowEvidence.new(dir: config.workflow_evidence_dir)
+    workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, evidence: workflow_evidence, event_errors_path: config.workflow_event_errors_path)
+    binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output, runs: workflow_store)
     main_agent = MainAgent.new(project_config: project_config, agent_commands: agent_commands)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, agent_commands: agent_commands, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new(rev_parse: git.method(:path_of))
@@ -1046,8 +1048,6 @@ module Workspace
       installer: library_installer, checkout: workspace_checkout, template_validator: template_validator, template_in_use: template_in_use)
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
-    workflow_evidence = WorkflowEvidence.new(dir: config.workflow_evidence_dir)
-    workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, evidence: workflow_evidence, event_errors_path: config.workflow_event_errors_path)
     workflow_run_loader = WorkflowRunLoader.new(store: workflow_store)
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
       watch_factory: ->(workspace:, run:) { DaemonWatch.new(workspace: workspace, run: run, store: workflow_store, stream: EventStream.new(lifecycle_path: nil, hook_dir: config.hook_events_dir, workspace: workspace)) },

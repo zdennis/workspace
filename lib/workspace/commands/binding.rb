@@ -8,7 +8,9 @@ module Workspace
       # @param locator [Workspace::PaneLocator] resolves the pane to one of the workspace's own
       # @param tmux [Workspace::Tmux] reads the pane's slot
       # @param output [IO]
-      def initialize(bindings:, locator:, tmux:, output: $stdout)
+      # @param runs [#going?, #run, nil] the run store; nil means no pane is ever reported as owned by a run
+      def initialize(bindings:, locator:, tmux:, output: $stdout, runs: nil)
+        @runs = runs
         @bindings = bindings
         @locator = locator
         @tmux = tmux
@@ -76,6 +78,63 @@ module Workspace
         (entry && !stale?(entry)) ? entry : nil
       end
 
+      # @param pane [String] a pane id ("%19")
+      # @return [String, nil] the id of the going workflow run the pane is bound to (kind `run`, author or
+      #   reviewer), nil for any other binding, a run that has ended or when no run store was given
+      # @raise [Workspace::UsageError] when `pane` is not a pane id
+      def owning_run(pane:)
+        entry = live(pane: pane)
+        return nil unless @runs && entry && entry["kind"] == "run"
+        entry["id"] if @runs.going?(entry["id"])
+      end
+
+      # @param pane [String] a pane id ("%19")
+      # @return [Hash{String=>Object}, nil] nil when no going run owns the pane, else the frozen
+      #   `{"run", "pane", "paused"}` (paused is whether the run is paused)
+      # @raise [Workspace::UsageError] when `pane` is not a pane id
+      def owned(pane:)
+        id = owning_run(pane: pane)
+        return nil unless id
+        {"run" => id, "pane" => pane, "paused" => !@runs.run(id).paused.nil?}.freeze
+      end
+
+      # @param owned [Hash{String=>Object}] what {#owned} returned
+      # @param workspace [String]
+      # @param action [Symbol] one of :type, :handoff_new, :handoff_check, :pause
+      # @param own_pane [Boolean] whether the caller is the agent in the owned pane
+      # @param resumed [Boolean] for :type, whether a paused plan was set back to active
+      # @return [Hash] the frozen `{code:, message:, details:}` of the `pane_bound_to_run` refusal
+      def refusal(owned, workspace:, action:, own_pane: false, resumed: false)
+        run = owned.fetch("run")
+        pane = owned.fetch("pane")
+        paused = owned.fetch("paused")
+        unpause_or_status = paused ? "workspace workflow unpause #{run}" : "workspace workflow status #{run}"
+        use = if own_pane && %i[handoff_new handoff_check].include?(action)
+          nil
+        elsif action == :pause
+          paused ? "workspace workflow status #{run}" : "workspace workflow pause #{run} [--interrupt]"
+        else
+          unpause_or_status
+        end
+        message = refusal_text(action, own_pane: own_pane, resumed: resumed, run: run, pane: pane, use: use, paused: paused)
+        {code: "pane_bound_to_run", message: message,
+         details: {"workspace" => workspace, "pane" => pane, "run" => run, "paused" => paused, "use" => use, "plan_resumed" => resumed}.freeze}.freeze
+      end
+
+      # Raises {#refusal} when a going run owns the pane.
+      #
+      # @param pane [String] a pane id ("%19")
+      # @param (see #refusal)
+      # @return [nil] when no run owns the pane
+      # @raise [Workspace::Error] code `pane_bound_to_run`
+      # @raise [Workspace::UsageError] when `pane` is not a pane id
+      def refuse_owned!(pane:, workspace:, action:, own_pane: false, resumed: false)
+        found = owned(pane: pane)
+        return nil unless found
+        refused = refusal(found, workspace: workspace, action: action, own_pane: own_pane, resumed: resumed)
+        raise Workspace::Error.new(refused[:message], code: refused[:code], details: refused[:details])
+      end
+
       # @param entry [Hash{String=>Object}] a binding
       # @return [Boolean] true when the pane is now in another session or slot, or
       #   tmux can't find it (see {Workspace::PaneBindings#stale?})
@@ -96,6 +155,29 @@ module Workspace
       end
 
       private
+
+      def refusal_text(action, own_pane:, resumed:, run:, pane:, use:, paused:)
+        case action
+        when :type
+          lead = "Pane #{pane} is bound to workflow run #{run}, which owns what is typed into it; nothing was typed."
+          lead += " The plan was paused and is set back to active, so the run's agent takes it on its next attempt." if resumed
+          "#{lead} Use `#{use}`."
+        when :handoff_new
+          return "This pane is bound to workflow run #{run}; the run owns its context, so it was not restarted. Finish or record where the step stands, then end your turn; the run checks the step and a retry starts fresh." if own_pane
+          "Pane #{pane} is bound to workflow run #{run}; handoff would /clear the run's turn, so nothing was restarted. Use `#{use}`."
+        when :handoff_check
+          return "This pane is bound to workflow run #{run}, which owns its context; no save-state prompt was sent. Keep working on the step; do not hand off." if own_pane
+          "Pane #{pane} is bound to workflow run #{run}; no save-state prompt was sent. Use `#{use}`."
+        when :pause
+          if paused
+            "Pane #{pane} is bound to workflow run #{run}; a plan pause would not stop it, so the plan was left as it is. Run #{run} is already paused: `#{use}`."
+          else
+            "Pane #{pane} is bound to workflow run #{run}; a plan pause would not stop it, so the plan was left as it is. Use `#{use}`."
+          end
+        else
+          raise ArgumentError, "unknown refusal action #{action.inspect}"
+        end
+      end
 
       def require_pane_id(pane)
         raise UsageError, "#{pane.to_s.inspect} is not a pane id (%19)." unless pane.to_s.match?(TmuxPane::PANE_ID)
