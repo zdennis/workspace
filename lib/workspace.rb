@@ -515,6 +515,7 @@ require_relative "workspace/commands/binding"
 require_relative "workspace/commands/library"
 require_relative "workspace/commands/instructions"
 require_relative "workspace/commands/workflow"
+require_relative "workspace/commands/workflow_reflect"
 require_relative "workspace/commands/workflow_start"
 require_relative "workspace/commands/go"
 require_relative "workspace/commands/go_task"
@@ -1176,6 +1177,8 @@ module Workspace
       readiness: agent_readiness, panes: workflow_panes, liveness: Liveness.new(tmux: tmux), project_config: project_config,
       config: workflow_config, session_name: ->(workspace) { tmux.session_name_for(workspace) })
     workflow_infra_retry = WorkflowInfraRetry.new(engine: workflow_engine, store: workflow_store, dispatch: pane_dispatch, lock_holder: lock_holder, agent_commands: agent_commands)
+    workflow_reflect_command = Commands::WorkflowReflect.new(store: workflow_store, reflection: WorkflowReflection.new, panes: pane_dispatch, binder: binding_command,
+      bindings: pane_bindings, main_agent: main_agent, evidence_dir: config.workflow_evidence_dir, output: output)
     workflow_command = Commands::Workflow.new(
       infra_retry: workflow_infra_retry,
       source_installer: workflow_source_installer,
@@ -1424,7 +1427,7 @@ module Workspace
     relauncher = CLI::Relauncher.new(stop_command: stop_command, hook_runner: hook_runner, launcher: launcher, state: state, sleeper: sleeper || ->(seconds) { sleep(seconds) }, tmux: tmux,
       detacher: detacher || DetachedSpawn.new, program: [RbConfig.ruby, File.join(SkillSource.stable_dir(config.workspace_dir), "bin", "workspace")], log_dir: config.relaunch_log_dir,
       processes: lock_holder)
-    workflow_family = CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: workflow_start_command, workflow_project: workflow_project,
+    workflow_family = CLI::Workflow.new(workflow_command: workflow_command, workflow_reflect_command: workflow_reflect_command, workflow_start_command: workflow_start_command, workflow_project: workflow_project,
       status_scope: status_scope, config: config, project_config: project_config, project_detector: project_detector, git: git, launch_mode: launch_mode,
       common: common, names: names, input: input, working_dir: working_dir, launcher: launcher)
     agent_client = AgentMessageClient.new(config: config)

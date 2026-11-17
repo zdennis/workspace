@@ -72,6 +72,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_log_tail.rb` — Formats a failed check's log tail and a reviewer's write-up as safe data blocks.
 - `lib/workspace/workflow_attempts.rb` — The rows `workflow attempts` shows.
 - `lib/workspace/workflow_reflection.rb` — Composes the instructions for a pane that looks back at a finished run and writes its `reflection.md`.
+- `lib/workspace/commands/workflow_reflect.rb` — `workflow learn reflect`: starts a bound reflection pane for one finished run, or prints its existing `reflection.md`.
 - `lib/workspace/workflow_trace.rb` — `WorkflowTrace`: a run's events as ordered transition rows with derived states, and tokens on each attempt's ending row.
 - `lib/workspace/workflow_stats.rb` — `workflow stats`: per-step attempt and token statistics over a definition's runs.
 - `lib/workspace/workflow_graph.rb` — The nodes and edges of one workflow definition, for `workflow graph`.

@@ -15,6 +15,7 @@ module Workspace
       STEP_SUBCOMMANDS = %w[done status expect-fail].freeze
 
       # @param workflow_command [Workspace::Commands::Workflow, nil] the `workflow` and `step` command; nil refuses both verbs
+      # @param workflow_reflect_command [Workspace::Commands::WorkflowReflect, nil] the `workflow learn reflect` command; nil refuses that verb
       # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] the `workflow start` command; nil refuses that verb
       # @param workflow_project [Workspace::WorkflowProject, nil] the one resolver for the project whose workflow definitions are read first;
       #   nil reads none and finds the workspace through the project detector
@@ -29,8 +30,9 @@ module Workspace
       # @param input [IO] the input stream `workflow remove` asks on (refused under --no-input)
       # @param working_dir [String] the directory the CLI runs from
       # @param launcher [CLI::Launcher] launches the workspaces `workflow recover` restores
-      def initialize(workflow_command:, workflow_start_command:, workflow_project:, status_scope:, config:, project_config:, project_detector:, git:, launch_mode:, common:, names:, input:, working_dir:, launcher:)
+      def initialize(workflow_command:, workflow_start_command:, workflow_project:, status_scope:, config:, project_config:, project_detector:, git:, launch_mode:, common:, names:, input:, working_dir:, launcher:, workflow_reflect_command: nil)
         @workflow_command = workflow_command
+        @workflow_reflect_command = workflow_reflect_command
         @workflow_start_command = workflow_start_command
         @workflow_project = workflow_project
         @status_scope = status_scope
