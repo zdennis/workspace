@@ -725,7 +725,7 @@ module Workspace
         {exit_code: partial ? 3 : 0}
       end
 
-      INSIGHTS_STORE_NOTE = "the store keeps the newest 200 finished runs across all workflows"
+      INSIGHTS_STORE_NOTE = "The store as a whole keeps only the newest 200 finished runs, so older ones are gone."
 
       # Prints what recurs across a workflow's newest runs: steps that retry or resume, reviewer rejections that
       # recur, failures, holds and the effect of definition or pack changes (see {Workspace::WorkflowInsights}).
@@ -746,7 +746,7 @@ module Workspace
         if json
           document("workflow" => workflow, "status" => partial ? "partial" : "ok", "runs" => result["runs"], "last" => last_text,
             "since" => last && (@clock.call - last).utc.iso8601, "workspace" => scope&.workspace, "project" => scope&.project&.name,
-            **result.except("runs"), "next_actions" => insights_actions(workflow, result))
+            **result.except("runs"), "next_actions" => insights_actions(workflow, result, last_text, scope))
         else
           print_insights(workflow, last_text, scope, result)
         end
@@ -1365,10 +1365,19 @@ module Workspace
         end
       end
 
-      def insights_actions(workflow, result)
-        actions = [NextAction.build("workflow stats", workflow, why: "per-step figures for the same runs"),
-          NextAction.build("workflow compare", workflow, "--by", "definition", why: "the same runs by definition")]
-        newest = result["enough"] && (Array(result["hot_steps"]).find { |row| !Array(row["retry_run_ids"]).empty? }&.dig("retry_run_ids")&.first ||
+      def insights_actions(workflow, result, last_text, scope)
+        flags = []
+        flags += ["--last", last_text] if last_text
+        if scope&.workspace
+          flags += ["--name", scope.workspace]
+        elsif scope&.project
+          flags += ["--project", scope.project.name]
+        end
+        actions = [NextAction.build("workflow stats", workflow, *flags, why: "per-step figures for the same runs"),
+          NextAction.build("workflow compare", workflow, "--by", "definition", *flags, why: "the same runs by definition")]
+        hot = Array(result["hot_steps"])
+        newest = result["enough"] && (hot.find { |row| !Array(row["retry_run_ids"]).empty? }&.dig("retry_run_ids")&.first ||
+          hot.find { |row| !Array(row["resume_run_ids"]).empty? }&.dig("resume_run_ids")&.first ||
           result["themes"].first&.dig("run_ids")&.first)
         actions << NextAction.build("workflow trace", newest, why: "the newest run behind the top finding") if newest
         actions
@@ -1377,6 +1386,7 @@ module Workspace
       def print_insights(workflow, last_text, scope, result)
         name = TerminalText.escape(workflow)
         window = last_text ? " started in the last #{TerminalText.escape(last_text)}" : ""
+        read_window = last_text && " (in the last #{TerminalText.escape(last_text)})"
         where = if scope&.workspace then " in workspace #{TerminalText.escape(scope.workspace)}"
         elsif scope&.project then " in project #{TerminalText.escape(scope.project.name)}"
         else
@@ -1385,17 +1395,18 @@ module Workspace
         if result["stored"].zero?
           @output.puts "No runs of #{name}#{window}#{where}."
         else
-          @output.puts "Insights for #{name}: #{result["runs"]} #{(result["runs"] == 1) ? "run" : "runs"} read#{window}#{where}, of #{result["stored"]} stored for this workflow (#{INSIGHTS_STORE_NOTE})."
+          @output.puts "Insights for #{name}: #{result["runs"]} #{(result["runs"] == 1) ? "run" : "runs"} read#{read_window}#{where}, of #{result["stored"]} stored for this workflow. #{INSIGHTS_STORE_NOTE}"
         end
         if result["enough"]
           print_insight_sections(result)
         else
           @output.puts "Not enough runs (#{result["runs"]}; insights needs #{WorkflowInsights::MIN_RUNS})."
+          @output.puts "More runs are stored (#{result["stored"]}); raise --runs or widen --last to read them." if result["runs"] < result["stored"]
         end
         warnings = result["effects"].values.map { |each| each["warning"] }.compact.uniq
         warnings.each { |text| @output.puts text }
         @output.puts "Warning: #{result["undated"]} run#{"s" unless result["undated"] == 1} with no start time left out of the window." if result["undated"].positive?
-        @output.puts "Warning: #{result["unreadable"]} file#{"s" unless result["unreadable"] == 1} in the whole store (not only these runs) could not be read; the figures are incomplete." if result["unreadable"].positive?
+        @output.puts "Warning: #{result["unreadable"]} run file#{"s" unless result["unreadable"] == 1} in the store (the whole store, not only these runs) could not be read; the figures are incomplete." if result["unreadable"].positive?
       end
 
       def print_insight_sections(result)
@@ -1412,7 +1423,7 @@ module Workspace
         section("Single observations", result["observations"]) { |row| rejection_line(row) }
         section("Failures", result["failures"]) { |row| coded_line(row) }
         section("Holds", result["holds"]) { |row| coded_line(row) }
-        section("Effects", result["effects"].flat_map { |by, each| each["groups"].map { |group| [by, group] } }) do |(by, group)|
+        section("Effects of definition and pack changes", result["effects"].flat_map { |by, each| each["groups"].map { |group| [by, group] } }) do |(by, group)|
           key = TerminalText.escape(by.start_with?("pack:") ? "#{by}=#{group["key"]}" : "#{by} #{group["key"].to_s[0, 8]}")
           percent = group["pass_first_percent"] ? "#{group["pass_first_percent"]}% first try" : "no settled runs"
           "#{key}: #{percent}, #{format("%.1f", group["resumes_per_run"])} resumes/run (#{ids(group["run_ids"])})"
@@ -1432,11 +1443,11 @@ module Workspace
 
       def rejection_line(row)
         what = row["problem"] ? "problem #{TerminalText.escape(row["problem"])}" : "verdict #{TerminalText.escape(row["verdict"].to_s)}"
-        "#{TerminalText.escape(row["step"])} / #{TerminalText.escape(row["reviewer"])}: #{what}, #{row["count"]} times in #{ids(row["run_ids"])}"
+        "#{TerminalText.escape(row["step"])} / #{TerminalText.escape(row["reviewer"])}: #{what}, #{row["count"]} #{(row["count"] == 1) ? "time" : "times"} in #{ids(row["run_ids"])}"
       end
 
       def coded_line(row)
-        "#{TerminalText.escape(row["step"])} #{TerminalText.escape(row["code"])}: #{row["count"]} times in #{ids(row["run_ids"])}"
+        "#{TerminalText.escape(row["step"])} #{TerminalText.escape(row["code"])}: #{row["count"]} #{(row["count"] == 1) ? "time" : "times"} in #{ids(row["run_ids"])}"
       end
 
       def print_compare(workflow, last_text, result)

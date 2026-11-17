@@ -4754,21 +4754,21 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "prints the header with runs read, runs stored and the store note" do
       insights_command.insights(workflow: "flow", runs: 20)
-      expect(output.string.lines.first).to eq("Insights for flow: 4 runs read, of 9 stored for this workflow (the store keeps the newest 200 finished runs across all workflows).\n")
+      expect(output.string.lines.first).to eq("Insights for flow: 4 runs read, of 9 stored for this workflow. The store as a whole keeps only the newest 200 finished runs, so older ones are gone.\n")
     end
 
     it "passes the run count, window and scope filter to the reader" do
       insights_command.insights(workflow: "flow", runs: 7, last: 3600, last_text: "1h")
       expect(reader).to have_received(:read).with(workflow: "flow", runs: 7, last: 3600, include: nil)
-      expect(output.string).to include("started in the last 1h")
+      expect(output.string).to include("(in the last 1h)")
     end
 
     it "lists run ids for every figure and prints the compare warning verbatim" do
       insights_command.insights(workflow: "flow", runs: 20)
       text = output.string
       expect(text).to include("retried in 2 runs: wr_4, wr_2", "resumed in 1 run: wr_3", "recorded in 2 runs: wr_4, wr_2")
-      expect(text).to include("4 times in 3 runs: wr_4, wr_3, wr_2", "Single observations:", "problem wrong_revision, 1 times in 1 run: wr_1")
-      expect(text).to include("2 times in 2 runs: wr_4, wr_1", "budget_spent: 1 times in 1 run: wr_3", "abcdef12: 50% first try, 1.0 resumes/run (2 runs: wr_2, wr_1)")
+      expect(text).to include("4 times in 3 runs: wr_4, wr_3, wr_2", "Single observations:", "problem wrong_revision, 1 time in 1 run: wr_1")
+      expect(text).to include("2 times in 2 runs: wr_4, wr_1", "budget_spent: 1 time in 1 run: wr_3", "abcdef12: 50% first try, 1.0 resumes/run (2 runs: wr_2, wr_1)")
       expect(text).to include("Compare shows a direction, it proves nothing.\n")
       expect(text).not_to include("quiet")
     end
@@ -4785,6 +4785,30 @@ RSpec.describe Workspace::Commands::Workflow do
       text = output.string
       expect(text).to include("Insights for flow: 2 runs read", "Not enough runs (2; insights needs 3).", "Compare shows a direction")
       expect(text).not_to include("Hot steps", "Recurring rejections", "Failures")
+      expect(text).to include("More runs are stored (9); raise --runs or widen --last to read them.")
+    end
+
+    it "gives no more-runs hint when every stored run was read" do
+      allow(reader).to receive(:read).and_return(result.merge("runs" => 2, "stored" => 2, "enough" => false))
+      insights_command.insights(workflow: "flow", runs: 20)
+      expect(output.string).to include("Not enough runs (2; insights needs 3).")
+      expect(output.string).not_to include("More runs are stored")
+    end
+
+    it "says the read count reflects the window when --last is given" do
+      insights_command.insights(workflow: "flow", runs: 20, last: 3600, last_text: "1h")
+      expect(output.string.lines.first).to start_with("Insights for flow: 4 runs read (in the last 1h), of 9 stored for this workflow.")
+    end
+
+    it "names the effects section by what it shows" do
+      insights_command.insights(workflow: "flow", runs: 20)
+      expect(output.string).to include("Effects of definition and pack changes:")
+    end
+
+    it "says 1 run read, not 1 runs" do
+      allow(reader).to receive(:read).and_return(result.merge("runs" => 1, "enough" => false))
+      insights_command.insights(workflow: "flow", runs: 20)
+      expect(output.string.lines.first).to include("1 run read")
     end
 
     it "says there are no runs when none are stored" do
@@ -4796,7 +4820,7 @@ RSpec.describe Workspace::Commands::Workflow do
     it "warns that unreadable files count the whole store and exits 3" do
       allow(reader).to receive(:read).and_return(result.merge("unreadable" => 2))
       expect(insights_command.insights(workflow: "flow", runs: 20)).to eq(exit_code: 3)
-      expect(output.string).to include("2 files in the whole store (not only these runs) could not be read")
+      expect(output.string).to include("2 run files in the store (the whole store, not only these runs) could not be read")
     end
 
     it "prints a JSON document with the sections and next actions" do
@@ -4806,6 +4830,36 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json["next_actions"].map { |each| [each["action"], each["args"]] }).to eq(
         [["workflow stats", ["flow"]], ["workflow compare", ["flow", "--by", "definition"]], ["workflow trace", ["wr_4"]]]
       )
+    end
+
+    it "carries --last and workspace scope into the stats and compare actions" do
+      scope = Workspace::StatusScope::Scope.new(kind: :workspace, workspace: "ws1")
+      allow(status).to receive(:in_project)
+      insights_command.insights(workflow: "flow", runs: 20, last: 3600, last_text: "1h", scope: scope, json: true)
+      expect(json["next_actions"].first(2).map { |each| each["args"] }).to eq(
+        [%w[flow --last 1h --name ws1], %w[flow --by definition --last 1h --name ws1]]
+      )
+    end
+
+    it "carries project scope into the actions" do
+      project = Struct.new(:name).new("proj")
+      scope = Workspace::StatusScope::Scope.new(kind: :project, project: project)
+      allow(status).to receive(:in_project?).and_return(true)
+      insights_command.insights(workflow: "flow", runs: 20, scope: scope, json: true)
+      expect(json["next_actions"].first["args"]).to eq(%w[flow --project proj])
+    end
+
+    it "traces a resumed-only hot step, then falls back to the first theme" do
+      hot = result["hot_steps"].first.merge("retry_run_ids" => [])
+      allow(reader).to receive(:read).and_return(result.merge("hot_steps" => [hot]))
+      insights_command.insights(workflow: "flow", runs: 20, json: true)
+      expect(json["next_actions"].last["args"]).to eq(["wr_3"])
+    end
+
+    it "traces the first theme when no hot step retried or resumed" do
+      allow(reader).to receive(:read).and_return(result.merge("hot_steps" => []))
+      insights_command.insights(workflow: "flow", runs: 20, json: true)
+      expect(json["next_actions"].last["args"]).to eq(["wr_4"])
     end
 
     it "reports partial status in JSON" do
