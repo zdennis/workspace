@@ -250,8 +250,48 @@ RSpec.describe Workspace::WorkflowRunStore do
           {"n" => 1, "ts" => "2026-10-04T12:00:00.000Z", "type" => "run_started", "step" => "plan"},
           {"n" => 2, "ts" => "2026-10-04T12:00:00.000Z", "type" => "step_dispatched", "step" => "plan"}
         ],
-        "truncated" => false, "next_since" => 2, "warnings" => []
+        "truncated" => false, "next_since" => 2, "warnings" => [], "last_n" => 2
       )
+    end
+
+    it "reports last_n as the count of complete lines, counting lines at or before since" do
+      create
+      record("a", "b", "c")
+
+      expect(store.events("wr_1")["last_n"]).to eq(3)
+      expect(store.events("wr_1", since: 2)["last_n"]).to eq(3)
+    end
+
+    it "reports last_n nil with no history file and 0 for an empty one" do
+      create
+      expect(store.events("wr_1")["last_n"]).to be_nil
+
+      FileUtils.touch(store.events_path("wr_1"))
+      expect(store.events("wr_1")["last_n"]).to eq(0)
+    end
+
+    it "does not count a last line with no newline in last_n" do
+      create
+      record("a")
+      File.open(store.events_path("wr_1"), "a") { |file| file.write('{"type":"b"') }
+
+      expect(store.events("wr_1")["last_n"]).to eq(1)
+    end
+
+    it "gives a last_n below since when since is past the end" do
+      create
+      record("a", "b")
+
+      result = store.events("wr_1", since: 99)
+      expect(result["last_n"]).to eq(2)
+      expect(result["last_n"]).to be < 99
+    end
+
+    it "reports the last line a truncated read reached" do
+      create
+      record("a", "b", "c", "d", "e")
+
+      expect(store.events("wr_1", limit: 2)).to include("truncated" => true, "last_n" => 3)
     end
 
     it "answers only the lines after since, and nothing new when since is the last line" do
@@ -320,7 +360,7 @@ RSpec.describe Workspace::WorkflowRunStore do
     it "is empty for a run with no history file" do
       create
 
-      expect(store.events("wr_1")).to eq("events" => [], "truncated" => false, "next_since" => 0, "warnings" => [])
+      expect(store.events("wr_1")).to eq("events" => [], "truncated" => false, "next_since" => 0, "warnings" => [], "last_n" => nil)
     end
 
     it "reads the history of a run that finished" do
