@@ -823,7 +823,7 @@ RSpec.describe Workspace::WorkflowStatus do
         budgeted(1500, reason: held, budget_hold: {})
         row = status.run("wr_1")["runs"].first
 
-        expect(row["budget"]).to eq("tokens" => 1000, "action" => "stop", "extra_tokens" => 0, "allowance" => 1000, "used" => 1500, "counted" => 1, "uncounted" => 0,
+        expect(row["budget"]).to eq("tokens" => 1000, "action" => "stop", "extra_tokens" => 0, "allowance" => 1000, "used" => 1500, "counted" => 1, "uncounted" => 0, "estimated" => 0,
           "measured" => true, "spent" => true, "minimum" => true, "live" => nil, "live_spent" => false)
         need = [{"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}]
         expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])

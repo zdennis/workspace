@@ -325,7 +325,7 @@ module Workspace
       return true unless run.steps.fetch(run.current).state == "running"
       budget = WorkflowBudget.reading(run)
       return true unless budget && budget["action"] == "interrupt"
-      return false if WorkflowEngine.sweep_marks(run.to_h).dig("budget_interrupt", "state") == "sent"
+      return false if WorkflowEngine.sweep_marks(run.to_h).dig(WorkflowTransitions::INTERRUPT_MARK_KEYS["budget_spent"], "state") == "sent"
       live = @live_usage&.reading(run, now: @clock.call)
       !(live.is_a?(Integer) && budget["used"] + live >= budget["allowance"])
     end

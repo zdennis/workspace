@@ -302,7 +302,7 @@ module Workspace
       return {} unless reading
       live = @live_usage&.reading(run, now: @clock.call)
       live_spent = live.is_a?(Integer) && reading["used"] + live >= reading["allowance"]
-      {"budget" => reading.slice("tokens", "action", "extra_tokens", "allowance", "used", "counted", "uncounted", "measured", "spent")
+      {"budget" => reading.slice("tokens", "action", "extra_tokens", "allowance", "used", "counted", "uncounted", "estimated", "measured", "spent")
         .merge("minimum" => true, "live" => live, "live_spent" => live_spent)}
     end
 

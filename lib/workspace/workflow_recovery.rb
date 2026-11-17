@@ -326,7 +326,7 @@ module Workspace
     # @param timeout [Numeric] the step's `timeout:`
     # @param cause [String] `timed_out` (the step's `timeout:`), `run_timed_out` (the run's `timeout_action: interrupt`) or
     #   `budget_spent` (the run's token budget); each keeps its own mark ({WorkflowTransitions::INTERRUPT_MARK_KEYS}), so
-    #   all may be due on one attempt and each presses once
+    #   all may be due on one attempt; the sweep presses once per attempt, and that press serves every cause
     # @param details [Hash{String=>Object}, nil] what the `step_stalled` event carries besides the cause; by default
     #   `elapsed` and `timeout`, and `budget_spent` gives `used`, `allowance` and `live`
     # @param budget [Hash{Symbol=>Integer}, nil] for `budget_spent` only: `tokens` (the attempt's live figure), `used` and
