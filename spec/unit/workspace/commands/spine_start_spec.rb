@@ -250,10 +250,14 @@ RSpec.describe Workspace::Commands::SpineStart do
     write("40-verify.md", "---\nstatus: in_progress\nowner: \"%21\"\n---\n")
     before = stage_text("40-verify.md")
     pane_rows[1]["state"] = "working"
+    owned = {"run" => "wr_9", "pane" => "%21", "paused" => true}
     allow(binder).to receive(:refuse_owned!).with(pane: "%21", workspace: "api", action: :type)
-      .and_raise(Workspace::Error.new("bound", code: "pane_bound_to_run"))
+      .and_raise(Workspace::Commands::Binding.new(bindings: nil, locator: nil, tmux: nil).refusal_error(owned, workspace: "api", action: :type))
 
-    expect { start }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("pane_bound_to_run") }
+    error = refusal { start }
+    expect(error.code).to eq("pane_bound_to_run")
+    expect(error.details["use"]).to eq("workspace workflow unpause wr_9")
+    expect(error.message).to include("workspace workflow unpause wr_9")
 
     expect(steps).to eq([])
     expect(stage_text("40-verify.md")).to eq(before)

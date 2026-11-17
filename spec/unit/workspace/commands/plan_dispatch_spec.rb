@@ -393,7 +393,7 @@ RSpec.describe Workspace::Commands::PlanDispatch do
       yield
     rescue Workspace::Error => e
       expect(e.code).to eq("pane_bound_to_run")
-      expect(e.details).to include("pane" => "%19", "run" => "wr_9", "plan_resumed" => plan_resumed)
+      expect(e.details).to include("pane" => "%19", "run" => "wr_9", "plan_resumed" => plan_resumed, "use" => "workspace workflow status wr_9")
       expect(sender).not_to have_received(:deliver)
       expect(binder).not_to have_received(:bind)
       e
