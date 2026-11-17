@@ -90,8 +90,10 @@ module Workspace
     # @param list_grace [Numeric] seconds a list's reads share past the timeout
     # @param downtime [Workspace::WorkflowDowntime, nil] its spans, read once for each document, are cut from the step,
     #   round and run clocks shown (nil: none)
+    # @param live_usage [Workspace::WorkflowLiveUsage, nil] reads the running attempt's tokens so far (nil: none read)
     def initialize(store:, panes:, snapshot_client:, ask_store_for:, gate_note:, clock: -> { Time.now }, snapshot_timeout: SNAPSHOT_TIMEOUT, list_grace: LIST_GRACE,
-      recovery_entry: ->(*) {}, downtime: nil)
+      recovery_entry: ->(*) {}, downtime: nil, live_usage: nil)
+      @live_usage = live_usage
       @downtime = downtime
       @snapshot_timeout = snapshot_timeout
       @list_grace = list_grace
@@ -298,8 +300,10 @@ module Workspace
     def budget_row(run)
       reading = WorkflowBudget.reading(run.to_h)
       return {} unless reading
+      live = @live_usage&.reading(run, now: @clock.call)
+      live_spent = live.is_a?(Integer) && reading["used"] + live >= reading["allowance"]
       {"budget" => reading.slice("tokens", "action", "extra_tokens", "allowance", "used", "counted", "uncounted", "measured", "spent")
-        .merge("minimum" => true)}
+        .merge("minimum" => true, "live" => live, "live_spent" => live_spent)}
     end
 
     # The run timeout as it stands, only for a run whose definition declares one. `used` is machine time in

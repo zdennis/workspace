@@ -1801,6 +1801,11 @@ module Workspace
         if (deadline = run["deadline"])
           @output.puts "  time: #{deadline["clock"]} #{Duration.humanize(deadline["used"].to_f)} of #{Duration.humanize(deadline["limit"].to_f)}"
         end
+        if (budget = run["budget"])
+          live = budget["live"]
+          spent = budget["used"] + (live || 0)
+          @output.puts "  tokens: spent #{format_tokens(spent).sub(".0M", "M")} of #{format_tokens(budget["allowance"]).sub(".0M", "M")}#{" (live)" if live}"
+        end
         describe_turn_failed(current["turn_failed"]) if current["turn_failed"]
         @output.puts "  refused: #{refusal_text(current["refusal"], pane: run["pane"])}" if current["refusal"] && wait_kind != "pane_busy"
         describe_review(current["review"]) if current["review"]
