@@ -601,13 +601,14 @@ module Workspace
   #   asked to interrupt reports `interrupted: false` and keeps no mark)
   # @param downtime [Workspace::WorkflowDowntime, nil] the machine's recorded downtime, cut from the run, step and round
   #   clocks the engine reads (default: none, so they run on wall time)
+  # @param exec_program [#problem] judges argument 1 of each `exec` proof when a run starts (default: {WorkflowExecProgram}, a lookup on this process's PATH)
   # @param clock [#call] returns the current Time
   # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
   # @return [Workspace::WorkflowEngine]
   def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
     env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil, review_revision: nil,
     review_runner: nil, round_rerun: nil, review_summary: nil, round_holder: nil, holder_alive: nil, interrupter: ->(*) { raise Workspace::Error, "cannot interrupt: no key presser was given" }, clock: -> { Time.now },
-    prompt_writer: File.method(:write), downtime: nil)
+    prompt_writer: File.method(:write), downtime: nil, exec_program: WorkflowExecProgram)
     attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
     require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
       commands_config: commands_config, checker: checker)
@@ -634,7 +635,7 @@ module Workspace
     evaluation = WorkflowEvaluation.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
       guard: guard, commands_config: commands_config, inbox_for: inbox_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, review_revision: review_revision, round_rerun: round_rerun, clock: clock)
     starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
-      lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, clock: clock)
+      lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, exec_program: exec_program, clock: clock)
     recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, holder_alive: holder_alive, panes: panes, downtime: downtime, clock: clock)
     decisions = WorkflowDecisions.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
       attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, holder_alive: holder_alive, interrupter: interrupter, recovery: recovery, downtime: downtime, clock: clock)

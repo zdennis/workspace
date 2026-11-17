@@ -90,7 +90,7 @@ module Workspace
       FileUtils.mkdir_p(checkout)
       engine = @engine_factory.call(store: store, resources: SimResources.new, composer: SimComposer.new, panes: panes, checker: SimChecker.new(script),
         commands_config: SimCommands.new, lineage: SimLineage.new, git: SimGit.new, guard: guard, excludes: SimExcludes.new, gate_note: SimGateNote.new,
-        attempt_record: records, require_check: SimRequire.new(script), review_round: round_runner(store, script), review_closer: ->(_run_id, _round) {},
+        attempt_record: records, require_check: SimRequire.new(script), exec_program: SimExecProgram.new, review_round: round_runner(store, script), review_closer: ->(_run_id, _round) {},
         review_tally: WorkflowReviewTally.new(proof: SimVerdictProof.new), review_revision: SimRevision.new(script), clock: clock)
       run = WorkflowRun.from_h(engine.start(definition: definition, workspace: WORKSPACE, worktree: checkout, inputs: inputs, pane: PANE, actor: "person"))
       actions, capped = drive(engine, store, run.id, definition.to_h, script, clock, records)
@@ -443,6 +443,18 @@ module Workspace
     class SimCommands
       def for_project(_name)
         {test: "simulated test", lint: "simulated lint"}
+      end
+
+      # `{{changed.tests}}` has a glob to expand, so a proof that uses it can start.
+      def test_files(_name)
+        ["spec/**/*_spec.rb"]
+      end
+    end
+
+    # Programs are not looked up: no proof runs here, so whether one is installed is not the simulation's question.
+    class SimExecProgram
+      def problem(_argv0, **)
+        nil
       end
     end
 
