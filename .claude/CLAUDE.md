@@ -69,6 +69,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_log_tail.rb` — Formats a failed check's log tail and a reviewer's write-up as safe data blocks.
 - `lib/workspace/workflow_attempts.rb` — The rows `workflow attempts` shows.
 - `lib/workspace/workflow_stats.rb` — `workflow stats`: per-step attempt and token statistics over a definition's runs.
+- `lib/workspace/workflow_graph.rb` — The nodes and edges of one workflow definition, for `workflow graph`.
 - `lib/workspace/workflow_run_loader.rb` — The run loading `workflow stats` and `compare` share.
 - `lib/workspace/workflow_compare.rb` — `workflow compare`: groups a workflow's runs by definition or pack version.
 - `lib/workspace/workflow_audit.rb` — Checks recorded evidence against its stored copies.
