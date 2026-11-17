@@ -88,9 +88,39 @@ RSpec.describe Workspace::WorkflowAlerts do
       expect(sent.map { |env| [env["WORKSPACE_ALERT_EVENT"], env["WORKSPACE_ALERT_CAUSE"]] }).to eq([%w[stalled pane_gone]])
     end
 
-    it "does not hold a stall whose mark ended, or whose stall recovered with the mark never ended" do
-      expect(alerts.marks(with_mark({"ended" => {"at" => "t", "reason" => "recovered"}}))[:stalled]).to eq([["plan:1", "pane_gone"]])
-      expect(alerts.marks(with_mark(recovered: {"pane_gone" => "t"}))[:stalled]).to eq([["plan:1", "pane_gone"]])
+    it "does not hold a stall whose mark ended while the stall is still open" do
+      expect(alerts.marks(with_mark({"ended" => {"at" => "t", "reason" => "resumed"}}))[:stalled]).to eq([["plan:1", "pane_gone"]])
+    end
+
+    it "sends nothing for a held stall that then recovered, ended mark or not" do
+      held = with_mark
+      alerts.fire(alerts.marks(run), held)
+      [with_mark(recovered: {"pane_gone" => "t"}), with_mark({"ended" => {"at" => "t", "reason" => "recovered"}}, recovered: {"pane_gone" => "t"})].each do |recovered|
+        alerts.fire(alerts.marks(held), recovered)
+        alerts.fire(alerts.marks(recovered), recovered)
+      end
+
+      expect(sent).to eq([])
+    end
+
+    it "sends one stalled alert for a give-up, and nothing more when the stall then recovers" do
+      held = with_mark
+      gave_up = with_mark({"given_up" => {"at" => "t", "reason" => "retries_spent"}})
+      recovered = with_mark({"given_up" => {"at" => "t", "reason" => "retries_spent"}}, recovered: {"pane_gone" => "t"})
+      alerts.fire(alerts.marks(run), held)
+      alerts.fire(alerts.marks(held), gave_up)
+      alerts.fire(alerts.marks(gave_up), recovered)
+
+      expect(sent.map { |env| env["WORKSPACE_ALERT_EVENT"] }).to eq(%w[stalled])
+    end
+
+    it "alerts for the same cause stalling again on a later attempt with no restart held" do
+      recovered = with_mark(recovered: {"pane_gone" => "t"})
+      alerts.fire(alerts.marks(run), recovered)
+      restalled = run(stalled: stall, attempts: 2)
+      alerts.fire(alerts.marks(recovered), restalled)
+
+      expect(sent.map { |env| [env["WORKSPACE_ALERT_EVENT"], env["WORKSPACE_ALERT_CAUSE"]] }).to eq([%w[stalled pane_gone]])
     end
 
     it "alerts for a cause the mark does not name" do

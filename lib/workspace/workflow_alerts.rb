@@ -119,11 +119,15 @@ module Workspace
 
     private
 
-    # The stall cause an automatic restart holds: its mark is waiting, due or claimed (a pause holds it too). A restart
-    # that gave up or ended holds nothing, so its stall alerts.
+    # The stall cause an automatic restart holds: its mark is waiting, due or claimed (a pause holds it too), or it
+    # ended with its stall closed, so a stall that recovered while its restart was pending never alerts. A restart that
+    # gave up, or ended with its stall still open, holds nothing, so its stall alerts.
     def held_causes(run)
       info = WorkflowEngine.infra_retry(run.to_h, @clock.call)
-      (info && HELD_STATES.include?(info[:state])) ? [info[:cause].to_s] : []
+      return [] unless info
+      cause = info[:cause].to_s
+      held = HELD_STATES.include?(info[:state]) || (info[:state] == :ended && !WorkflowTransitions.open_stalls(run.to_h).include?(cause))
+      held ? [cause] : []
     end
 
     def spawn_detached(argv, env, log)
