@@ -1,0 +1,78 @@
+{
+  "ts": "2026-10-04T12:00:00.000Z",
+  "type": "run_started",
+  "workflow": "investigate",
+  "workspace": "app.worktree-x",
+  "from_state": "waiting",
+  "to_state": "running",
+  "actor": "person",
+  "cause": "start"
+}
+{
+  "ts": "2026-10-04T12:00:00.000Z",
+  "type": "step_dispatching",
+  "step": "reproduce",
+  "attempt": 1,
+  "pane": "%5",
+  "cause": "first",
+  "retry_of": null,
+  "from_state": "waiting",
+  "to_state": "running",
+  "actor": "person"
+}
+{
+  "ts": "2026-10-04T12:00:00.000Z",
+  "type": "step_dispatched",
+  "step": "reproduce",
+  "attempt": 1,
+  "pane": "%5",
+  "delivered": true,
+  "actor": "engine",
+  "cause": "first",
+  "from_state": null,
+  "to_state": null
+}
+{
+  "ts": "2026-10-04T12:01:00.000Z",
+  "type": "step_passed",
+  "step": "reproduce",
+  "attempt": 1,
+  "from_state": "running",
+  "to_state": "running",
+  "actor": "agent",
+  "cause": "turn_ended"
+}
+{
+  "ts": "2026-10-04T12:01:00.000Z",
+  "type": "step_dispatching",
+  "step": "diagnose",
+  "attempt": 1,
+  "pane": "%5",
+  "cause": "next_step",
+  "retry_of": null,
+  "from_state": "running",
+  "to_state": "running",
+  "actor": "agent"
+}
+{
+  "ts": "2026-10-04T12:01:00.000Z",
+  "type": "step_dispatched",
+  "step": "diagnose",
+  "attempt": 1,
+  "pane": "%5",
+  "delivered": true,
+  "actor": "engine",
+  "cause": "next_step",
+  "from_state": null,
+  "to_state": null
+}
+{
+  "ts": "2026-10-04T12:03:00.000Z",
+  "type": "step_failed",
+  "step": "diagnose",
+  "attempt": 1,
+  "cause": "require",
+  "from_state": "running",
+  "to_state": "waiting",
+  "actor": "agent"
+}

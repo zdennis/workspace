@@ -1,0 +1,87 @@
+{
+  "ts": "2026-10-04T12:00:00.000Z",
+  "type": "run_started",
+  "workflow": "pr-feedback",
+  "workspace": "app.worktree-x",
+  "from_state": "waiting",
+  "to_state": "running",
+  "actor": "person",
+  "cause": "start"
+}
+{
+  "ts": "2026-10-04T12:00:00.000Z",
+  "type": "step_dispatching",
+  "step": "triage",
+  "attempt": 1,
+  "pane": "%5",
+  "cause": "first",
+  "retry_of": null,
+  "from_state": "waiting",
+  "to_state": "running",
+  "actor": "person"
+}
+{
+  "ts": "2026-10-04T12:00:00.000Z",
+  "type": "step_dispatched",
+  "step": "triage",
+  "attempt": 1,
+  "pane": "%5",
+  "delivered": true,
+  "actor": "engine",
+  "cause": "first",
+  "from_state": null,
+  "to_state": null
+}
+{
+  "ts": "2026-10-04T12:02:00.000Z",
+  "type": "step_passed",
+  "step": "triage",
+  "attempt": 1,
+  "from_state": "running",
+  "to_state": "waiting",
+  "actor": "agent",
+  "cause": "turn_ended"
+}
+{
+  "ts": "2026-10-04T12:02:00.000Z",
+  "type": "gate_waiting",
+  "step": "triage",
+  "from_state": "running",
+  "to_state": "waiting",
+  "actor": "agent",
+  "cause": "turn_ended"
+}
+{
+  "ts": "2026-10-04T12:02:00.000Z",
+  "type": "gate_approved",
+  "step": "triage",
+  "sha256": "4b6077d3e63b89c8ca06dd25af8f33d0887a8b5d740a556e6ddaf1a33350eb89",
+  "from_state": "waiting",
+  "to_state": "running",
+  "actor": "person",
+  "cause": "approve"
+}
+{
+  "ts": "2026-10-04T12:02:00.000Z",
+  "type": "step_dispatching",
+  "step": "fix",
+  "attempt": 1,
+  "pane": "%5",
+  "cause": "next_step",
+  "retry_of": null,
+  "from_state": "waiting",
+  "to_state": "running",
+  "actor": "person"
+}
+{
+  "ts": "2026-10-04T12:02:00.000Z",
+  "type": "step_dispatched",
+  "step": "fix",
+  "attempt": 1,
+  "pane": "%5",
+  "delivered": true,
+  "actor": "engine",
+  "cause": "next_step",
+  "from_state": null,
+  "to_state": null
+}

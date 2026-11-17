@@ -23,18 +23,10 @@ RSpec.describe Workspace::WorkflowSimulator, "golden transcripts of the presets"
   after { FileUtils.rm_rf(base) }
 
   def transcript(name, preset = name)
-    path = File.join(PROJECT_ROOT, "lib", "workflows", "#{preset}.yml")
-    lookup = lambda do |id, below: nil|
-      file = File.join(PROJECT_ROOT, "lib", "workflows", "#{id}.yml")
-      {"text" => File.read(file), "path" => file, "source" => "builtin"} if File.file?(file) && below.nil?
-    end
-    definition = Workspace::WorkflowDefinition.parse(File.read(path), id: preset, source: "builtin", path: path, parent_lookup: lookup)
+    definition = PresetSimulation.definition(preset)
     scripted = File.join(fixtures, "#{name}.script.yml")
     script = Workspace::WorkflowSimScript.parse(File.file?(scripted) ? File.read(scripted) : "steps: {}\n", definition: definition.to_h, source: "golden.yml")
-    inputs = definition.to_h["inputs"].select { |_, each| each["required"] }.transform_values { "golden" }
-    result = simulator.call(definition: definition, script: script, inputs: inputs)
-    text = JSON.pretty_generate(result) + "\n"
-    text.gsub(base, "<TMP>").gsub(/\b[0-9a-f]{40,64}\b/, "<SHA>")
+    PresetSimulation.transcript(simulator.call(definition: definition, script: script, inputs: PresetSimulation.inputs(definition)), base)
   end
 
   {"rpiv" => "rpiv", "rpiv-auto-approve" => "rpiv-auto-approve", "rpiv-auto-approve-v2" => "rpiv-auto-approve-v2", "pr-feedback" => "pr-feedback",

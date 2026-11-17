@@ -1,0 +1,7 @@
+# The script the rpiv-auto-approve-v2 review-reject golden plays: the skeptic turns plan round 1 down, attempt 2 is a
+# changed plan and all three reviewers approve its round, and the run goes on to the end. review_no_change and
+# review_stale are covered for v2 in spec/integration/workspace/workflow_v2_scenarios_spec.rb.
+steps:
+  plan:
+    - reviews: {supportive: approve, skeptical: reject, implementer: approve}
+    - reviews: {supportive: approve, skeptical: approve, implementer: approve}

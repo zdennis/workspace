@@ -1,0 +1,6 @@
+# The script the pr-feedback gate-reject golden plays: the person rejects the triage gate with a note, the step runs again
+# as attempt 2, and the person approves that.
+steps:
+  triage:
+    - {gate: reject, note: "the findings miss the flaky retry path, cover it"}
+    - {}
