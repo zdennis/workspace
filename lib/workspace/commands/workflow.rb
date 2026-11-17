@@ -1632,7 +1632,7 @@ module Workspace
             state = finished_state(run)
             return print_follow_ended(run, state, end_reason(run, state), cursor, json)
           end
-          return print_follow_timeout(run, timeout, cursor, json) if deadline && @clock.call >= deadline
+          return print_follow_timeout(run, timeout, cursor, json) if deadline && !archived && @clock.call >= deadline
           break if max_polls && polls >= max_polls
           @sleeper.call(EVENTS_POLL_INTERVAL) unless result["truncated"]
         end

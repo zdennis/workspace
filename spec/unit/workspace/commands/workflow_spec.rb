@@ -3388,6 +3388,32 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(ended["next_since"]).to be > 0
       end
 
+      it "drains the backlog of a finished run past the deadline and ends with its own reason" do
+        fixture_run
+        6.times { |i| real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "s#{i}", "attempt" => 1) }
+        real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+        finish_run
+        ticking = Class.new(SimpleDelegator) do
+          def initialize(store, ticker)
+            super(store)
+            @ticker = ticker
+          end
+
+          def events(id, since: 0, limit: 1000)
+            @ticker.call
+            super(id, since: since, limit: 2)
+          end
+        end.new(real_store, -> { advance(1) })
+        paged = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: ticking, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
+          lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper, clock: -> { tick.first })
+
+        result = paged.events(run: "wr_2610250930abcd", json: true, follow: true, timeout: 2, max_polls: 20)
+
+        expect(result).to eq(exit_code: 0)
+        expect(json_lines.last).to include("type" => "follow_ended", "state" => "completed", "reason" => "completed")
+        expect(json_lines.count { |line| line["type"] == "step_dispatched" }).to eq(7)
+      end
+
       it "answers exit code 0 for a plain read, max_polls and a closed pipe" do
         fixture_run
         expect(follow_command.events(run: "wr_2610250930abcd")).to eq(exit_code: 0)
