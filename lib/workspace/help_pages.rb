@@ -127,7 +127,8 @@ module Workspace
       "pause" => {
         usage: ["plan pause [--name WORKSPACE] [--interrupt] [--json]"],
         summary: "Set status: paused; the agent stops before its next task",
-        about: ["Writes status: paused into the plan file for real. --interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works."],
+        about: ["Writes status: paused into the plan file for real. --interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works.",
+          "An owner pane a going workflow run owns is refused (exit 1, pane_bound_to_run) and nothing is written: pausing the plan would not stop the run, so the error names the workflow command to use."],
         options: [NAME_OPT, ["--interrupt", "Interrupt the owner panes that are working"], JSON_OPT],
         examples: [
           ["workspace plan pause", "set status: paused; the agent stops before its next task and nothing is interrupted"],

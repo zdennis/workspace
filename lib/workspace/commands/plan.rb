@@ -38,10 +38,11 @@ module Workspace
       # @param snapshot_client [Workspace::AgentSnapshotClient] reads the owner pane's state from the daemon
       # @param ask_store_for [#call] given a workspace name, returns its {Workspace::AskStore}
       # @param task_store [Workspace::TaskStore] gives `init` a default title
+      # @param binder [Workspace::Commands::Binding, nil] says which going run owns a pane; nil checks nothing
       # @param clock [#call] returns the current Time, for the name of a deleted plan
       # @param output [IO] output stream
       def initialize(notes:, access:, dispatch:, catalog:, groups:, plan_state:, plan_config:, snapshot_client:, ask_store_for:, task_store:,
-        clock: -> { Time.now }, output: $stdout)
+        binder: nil, clock: -> { Time.now }, output: $stdout)
         @notes = notes
         @access = access
         @dispatch = dispatch
@@ -52,6 +53,7 @@ module Workspace
         @snapshot_client = snapshot_client
         @ask_store_for = ask_store_for
         @task_store = task_store
+        @binder = binder
         @clock = clock
         @output = output
       end
@@ -212,6 +214,7 @@ module Workspace
       def pause(name:, interrupt: false)
         file, plan = @access.require_plan(name)
         raise @access.plan_done(name, file) if @access.finished?(plan)
+        refuse_run_owned_panes(name, plan) unless plan.status == "paused"
         changed = @access.write_status(name, file, "paused")
         @output.puts changed ? "Paused the plan for #{name}." : "The plan for #{name} is already paused."
         result = @access.row(changed ? "paused" : "unchanged", file)
@@ -248,6 +251,15 @@ module Workspace
       end
 
       private
+
+      OWNER_PANE_ID = /\A%\d+\z/
+
+      # Raises `pane_bound_to_run` for the first owner pane a going run owns, before anything is written.
+      def refuse_run_owned_panes(name, plan)
+        PlanState.owner_panes(plan).grep(OWNER_PANE_ID).each do |pane|
+          @binder&.refuse_owned!(pane: pane, workspace: name, action: :pause)
+        end
+      end
 
       def deleted_name(file)
         stamp = @clock.call.utc.strftime("%Y%m%dT%H%M%SZ")

@@ -100,8 +100,7 @@ module Workspace
       # @param plan [PlanFile] the plan
       # @return [Array(Array<Hash>, Array<Hash>)] the interrupt rows (`{pane, kind, outcome, message}`) and the warnings (`no_daemon`)
       def interrupt_owners(name, plan)
-        left = plan.tasks.select { |task| PlanState::LEFT_STATES.include?(task.state) }
-        owners = [plan.owner_pane, *left.map(&:owner)].compact.uniq
+        owners = PlanState.owner_panes(plan)
         return [[], []] if owners.empty?
         panes = begin
           @panes.panes(name)

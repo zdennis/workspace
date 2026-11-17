@@ -35,13 +35,23 @@ RSpec.describe Workspace::Commands::Plan do
       allow(log).to receive(:record) { |type:, project:, data: {}| events_log << {type: type, project: project, data: data} }
     end
   end
+  let(:binder) { instance_double(Workspace::Commands::Binding, owning_run: nil, refuse_owned!: nil) }
+  let(:real_binding) { Workspace::Commands::Binding.new(bindings: nil, locator: nil, tmux: nil) }
+  let(:run_panes) { {} }
   subject(:command) do
     described_class.new(notes: notes, access: Workspace::PlanAccess.new(notes: notes, tmux: tmux, event_log: event_log), dispatch: dispatch,
       catalog: catalog, groups: groups, plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config,
-      snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store }, task_store: task_store, clock: -> { now }, output: output)
+      snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store }, task_store: task_store, binder: binder, clock: -> { now }, output: output)
   end
 
   before do
+    allow(binder).to receive(:owning_run) { |pane:| run_panes.dig(pane, "run") }
+    allow(binder).to receive(:refuse_owned!) do |pane:, workspace:, action:, **opts|
+      found = run_panes[pane]
+      next unless found
+      refused = real_binding.refusal(found, workspace: workspace, action: action, **opts)
+      raise Workspace::Error.new(refused[:message], code: refused[:code], details: refused[:details])
+    end
     allow(notes).to receive(:info) do |name:, create: false|
       dir = notes_dirs.fetch(name) { raise Workspace::Error.new("Unknown workspace '#{name}'.", code: "unknown_workspace", details: {"name" => name}) }
       FileUtils.mkdir_p(dir) if create
@@ -858,6 +868,59 @@ RSpec.describe Workspace::Commands::Plan do
 
         expect(result).to include("interrupts" => [{"pane" => "%19", "outcome" => "sent"}], "warnings" => [])
         expect(dispatch).to have_received(:interrupt_owners).with("api", have_attributes(tasks: plan.tasks))
+      end
+
+      context "when a going run owns an owner pane" do
+        let(:run_panes) { {"%19" => {"run" => "wr_9", "pane" => "%19", "paused" => false}} }
+
+        it "refuses with pane_bound_to_run naming workflow pause and writes nothing" do
+          write_plan("api", active_text)
+          before = File.binread(plan_path)
+
+          expect { command.pause(name: "api") }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("pane_bound_to_run")
+            expect(e.message).to include("workspace workflow pause wr_9")
+          }
+          expect(File.binread(plan_path)).to eq(before)
+          expect(output.string).to eq("")
+          expect(events_log).to eq([])
+        end
+
+        it "refuses when only a task still left names the run-owned pane" do
+          text = "---\ntitle: T\nstatus: active\n---\n## Tasks\n- [~] T1 a <!-- owner: %19 -->\n- [ ] T2 b\n"
+          write_plan("api", text)
+
+          expect { command.pause(name: "api") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("pane_bound_to_run") }
+          expect(File.read(plan_path)).to eq(text)
+        end
+
+        it "names workflow status when the run is already paused" do
+          run_panes["%19"] = {"run" => "wr_9", "pane" => "%19", "paused" => true}
+          write_plan("api", active_text)
+
+          expect { command.pause(name: "api") }.to raise_error(Workspace::Error, /already paused.*workspace workflow status wr_9/)
+        end
+
+        it "is unchanged, with no error, when the plan is already paused" do
+          write_plan("api", paused_text)
+
+          expect(command.pause(name: "api")["outcome"]).to eq("unchanged")
+          expect(binder).not_to have_received(:refuse_owned!)
+        end
+
+        it "skips an owner_pane that is not a %N id and pauses" do
+          write_plan("api", active_text.sub("owner_pane: \"%19\"", "owner_pane: \"0.1\""))
+
+          expect(command.pause(name: "api")["outcome"]).to eq("paused")
+          expect(binder).not_to have_received(:refuse_owned!)
+        end
+      end
+
+      it "pauses as before when no run owns the owner pane" do
+        write_plan("api", active_text)
+
+        expect(command.pause(name: "api")["outcome"]).to eq("paused")
+        expect(binder).to have_received(:refuse_owned!).with(pane: "%19", workspace: "api", action: :pause)
       end
 
       it "is unchanged, and records nothing, when the plan is already paused" do

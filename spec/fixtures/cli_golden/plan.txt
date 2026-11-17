@@ -241,6 +241,7 @@ Usage: workspace plan pause [--name WORKSPACE] [--interrupt] [--json]
 Set status: paused; the agent stops before its next task.
 
 Writes status: paused into the plan file for real. --interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works.
+An owner pane a going workflow run owns is refused (exit 1, pane_bound_to_run) and nothing is written: pausing the plan would not stop the run, so the error names the workflow command to use.
 
 Options:
     --name NAME                  Workspace (default: detected from the current directory)
@@ -257,7 +258,7 @@ Examples:
 ### workspace plan pause --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace plan pause [--name WORKSPACE] [--interrupt] [--json]"],"description":"Set status: paused; the agent stops before its next task.\n\nWrites status: paused into the plan file for real. --interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--interrupt","description":"Interrupt the owner panes that are working"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan pause","scenario":"set status: paused; the agent stops before its next task and nothing is interrupted"},{"command":"workspace plan pause --interrupt","scenario":"also press the interrupt key in each owner pane that is working"},{"command":"workspace plan pause --name api.worktree-x --json","scenario":"pause one workspace by name, with a JSON action document"}]}
+{"usage":["workspace plan pause [--name WORKSPACE] [--interrupt] [--json]"],"description":"Set status: paused; the agent stops before its next task.\n\nWrites status: paused into the plan file for real. --interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works.\nAn owner pane a going workflow run owns is refused (exit 1, pane_bound_to_run) and nothing is written: pausing the plan would not stop the run, so the error names the workflow command to use.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--interrupt","description":"Interrupt the owner panes that are working"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace plan pause","scenario":"set status: paused; the agent stops before its next task and nothing is interrupted"},{"command":"workspace plan pause --interrupt","scenario":"also press the interrupt key in each owner pane that is working"},{"command":"workspace plan pause --name api.worktree-x --json","scenario":"pause one workspace by name, with a JSON action document"}]}
 --- stderr
 --- end
 ### workspace plan delete --help
