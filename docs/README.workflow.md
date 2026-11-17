@@ -30,6 +30,7 @@ workspace workflow compare ID [--by definition | --by pack:NAME] [--last DURATIO
 workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow sweep --install | --uninstall [--dry-run] [--json]
 workspace workflow sweep --installed [--json]
+workspace workflow recover [--dry-run] [--json]
 workspace workflow resume RUN --accept-guard --note TEXT [--retry] [--pane PANE] [--extra-attempts N] [--json]
 workspace workflow resume RUN --restart-step [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]
 workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--extra-rounds N] [--json]
@@ -62,6 +63,7 @@ workspace step status [--json]
 | `workflow compare` | Sets a workflow's runs side by side, grouped by the definition they ran or by the text of one pack their agent was sent: runs, share that passed first time and resumes per run, always with a warning that it shows a direction and proves nothing. Reads the run files and writes nothing. See [Comparing runs](#comparing-runs) |
 | `workflow files` | The files a run keeps: each attempt's prompt, check log and proof logs and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
 | `workflow sweep` | One pass over the runs going (a paused run gets a `paused` row, outcome `nothing`, next action `workflow unpause`): record a pane or agent that is gone, start an agent daemon that is not running, decide a step whose agent ended its turn unseen, and apply a step's `on_timeout`. Needs no agent daemon. See [Sweeping stopped runs](#sweeping-stopped-runs) |
+| `workflow recover` | After a reboot or the loss of the tmux server, restore each workspace that has a going run no person holds, restart a step that was mid-turn and wake a run that was between turns. `--dry-run` says what would happen and changes nothing. See [Recovering after a reboot](#recovering-after-a-reboot) |
 | `workflow resume` | Get a run going again; `--from STEP` starts again at that step; `--accept-guard --note TEXT` accepts a guard stop. Refused with `--from` at a waiting gate from a pane a run is bound to. Run from the pane it would type into, it is [parked](#resuming-from-the-runs-own-pane) (outcome `parked`) and carried out after the agent ends its turn. `--restart-step` starts a crashed step again in a fresh conversation (see [Restarting a crashed step](#restarting-a-crashed-step)) |
 | `workflow cancel` | End a run and release what it holds |
 | `workflow pause` | Hold a run: nothing new starts until `workflow unpause` (the current turn keeps running). See [Pausing a run](#pausing-a-run) |
@@ -1135,6 +1137,46 @@ A scheduler runs the sweep with a short `PATH`, which must include a Ruby new en
 Nothing retries an undelivered line unless something runs `workflow sweep`: a person, the installed schedule, or the workspace's agent daemon, each at an interval of 300 seconds.
 
 Needs `workflow` 16 in `capabilities` for the schedule and 17 for the retry of an undelivered line.
+
+### Recovering after a reboot
+
+A reboot or a tmux restart takes the panes of every going run. Run `workspace workflow recover --dry-run` to see what it would do, then `workspace workflow recover`. It takes no arguments and covers every going run in every workspace. Needs `workflow` 51 in `capabilities`.
+
+It goes through the runs oldest first. A run is restarted, restored and woken, waiting on you, or handled elsewhere.
+
+- **Restarted.** The step is mid-turn (`running` with an open attempt) and its session is down or its pane is gone. The workspace is restored, the command waits for the run's own pane to come back and be ready, and the step starts again as `workflow resume RUN --restart-step` does (see [Restarting a crashed step](#restarting-a-crashed-step)). The restart is a new attempt with a fresh agent conversation; the earlier conversation is not continued. Changes already in the checkout stay.
+- **Restored and woken.** The step is between turns (reviewing, checking, waiting out a retry backoff, or due a redelivery) in a workspace with no session. The workspace is restored and the run gets one tick, which does whatever is due.
+- **Waiting on you.** A paused run, a run waiting at a gate, a parked run, and a run held for any other reason the sweep leaves to a person (a retry blocked, a spent budget or timeout, a review round held; see [Where a run is stuck](#where-a-run-is-stuck)). Nothing is restored for its sake. A parked run in a stopped workspace needs `workspace restore WORKSPACE` by hand.
+- **Handled elsewhere.** A run whose session is up and whose pane is alive, or whose step is between turns, which the agent daemon and `workflow sweep` reach; and a step the daemon is already restarting on its own (see [Automatic restarts](#automatic-restarts)). A run whose workspace is removed is also left alone, whatever its state (`skipped/workspace_removed`).
+
+Workspaces are handled one at a time, so a failed restore stops only that workspace's runs, not the others.
+
+Each run gets one row. Its `outcome` is one of:
+
+| Outcome | Meaning |
+| --- | --- |
+| `restarted` | The step started again as a new attempt |
+| `restored` | The workspace is back and the run was ticked (`reason` `woken`, `nothing_due`, or `backoff` with its `due` time) |
+| `skipped` | Nothing was needed or a person holds the run; `reason` says which, for example `workspace_removed`, `nothing_to_restart`, `pane_alive`, `infra_retry_pending`, `moved_on`, `unknown_liveness`, or a held reason such as `paused` |
+| `refused` | The run stays stopped on purpose, for example `limit_reached`, or a refusal of the restart such as `attempts_spent`, `budget_spent` or `run_timed_out` |
+| `failed` | The run stays stopped because something broke, for example `restore_failed`, `no_pane`, `pane_not_ready`, `step_still_working`, or `unreadable_run` for a run file that can't be read or isn't shaped as a run |
+| `would_restart`, `would_restore` | What a `--dry-run` would do |
+
+What to do with a row:
+
+| Row | What to do |
+| --- | --- |
+| `refused` or `failed` that names a command | Run it |
+| `refused` or `failed` with no command (an engine refusal, `restart_not_closed`, a failed wake) | `workspace workflow status RUN`, which the text output points at |
+| `skipped` because the run waits for you | `workspace workflow status --needs-me`, then approve, resume or unpause as it says |
+| `failed` with `unreadable_run` | The run file is damaged: the row's `run_id` names it, and a file that does not parse is also listed in `unreadable_files`. No `workflow` command repairs it: inspect it, then fix or delete it by hand |
+| `skipped` with `unknown_liveness` | tmux did not answer for that workspace (or it uses its own socket). Check `tmux ls`, then run `workspace workflow recover` again |
+
+A run is restarted at most `workflows.recover.max_per_run` times (default 2, `0` turns it off; see [config](README.config.md)). The count is kept on the run as `reboot_recoveries` and is never reset, so a run that keeps dying is left for you with `refused/limit_reached`. The manual commands are `workspace restore WORKSPACE` and `workspace workflow resume RUN --restart-step`. Each restart writes the event `reboot_recovered` (`workspace`, `outcome`, `count`) beside the usual `step_interrupted` and `run_resumed`.
+
+The exit status is 0 when no row failed or was refused, 3 when some did, and 1 when all did. A dry run follows the same rule, and a run file that can't be read counts as a failed row.
+
+Restoring a workspace in a live session also brings back every recorded agent pane that is gone, not only the run's, so look at the dry run before you run it. Restore resumes only Claude Code panes; a Codex pane is skipped (`other_agent`), so recover cannot restart a run whose pane runs Codex, and its row is `failed`. Only Claude Code has been tested by hand.
 
 ### Retrying a failed step
 

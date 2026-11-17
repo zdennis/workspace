@@ -891,7 +891,7 @@ module Workspace
         summary: "Bring going runs back after a reboot",
         about: [
           "After a reboot or the loss of the tmux server, restores each workspace that has a going run no person",
-          "is holding, restarts a step that was mid-turn (a new attempt, in a new pane), and wakes a run that was",
+          "is holding, restarts a step that was mid-turn (a new attempt with a fresh conversation, in the run's own pane), and wakes a run that was",
           "between turns (reviewing, checking, a retry backoff). It goes through runs oldest first, one workspace at a time.",
           "",
           "Run `workspace workflow recover --dry-run` first: it lists each run and what would happen, and changes nothing.",
