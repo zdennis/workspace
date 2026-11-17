@@ -20,7 +20,7 @@ module Workspace
   # Per group: `key` (what the group is named: a sha, a version number as text, `unknown` or `mixed`; `sha` holds the
   # same text, kept for older readers), `runs` (all of them), `first_try`, `settled`, `pass_first_percent` (`first_try` of `settled`, nil
   # with none settled), `running` (not settled, still going), `cancelled` (stopped by a person without a miss),
-  # `stuck` (settled runs not ended: waiting on `failed_check`, `budget_spent` or `run_timed_out` after a miss), `resumes`
+  # `run_ids` (the ids of the group's runs, newest first), `stuck` (settled runs not ended: waiting on `failed_check`, `budget_spent` or `run_timed_out` after a miss), `resumes`
   # (all `run_resumed` events) and `resumes_per_run`.
   #
   # A step is a miss when it has more than one delivered attempt (a rejected gate or a `resume --from` reran it,
@@ -156,7 +156,7 @@ module Workspace
       when "cancelled" then missed ? :settled : :cancelled
       else (missed && STUCK.include?(run.reason&.dig("code"))) ? :stuck : :running
       end
-      {state: state, first_try: run.state == "completed" && !missed, resumes: @loader.resumes(run).values.sum}
+      {id: run.id, state: state, first_try: run.state == "completed" && !missed, resumes: @loader.resumes(run).values.sum}
     end
 
     # Per step, its attempts that are stored as Hashes.
@@ -185,7 +185,8 @@ module Workspace
        "pass_first_percent" => settled.empty? ? nil : (clean * 100.0 / settled.size).round,
        "running" => list.count { |each| each[:state] == :running }, "cancelled" => list.count { |each| each[:state] == :cancelled },
        "stuck" => list.count { |each| each[:state] == :stuck },
-       "resumes" => resumes, "resumes_per_run" => resumes.fdiv(list.size).round(1)}
+       "resumes" => resumes, "resumes_per_run" => resumes.fdiv(list.size).round(1),
+       "run_ids" => list.map { |each| each[:id] }}
     end
   end
 end

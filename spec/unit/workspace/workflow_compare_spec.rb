@@ -402,4 +402,40 @@ RSpec.describe Workspace::WorkflowCompare do
       expect(read["groups"].first).to include("running" => 1, "stuck" => 0, "settled" => 0)
     end
   end
+  describe "run_ids" do
+    it "lists each definition group's run ids, newest first" do
+      put("wr_a", attempts: [attempt(1, "passed")], created: "2026-10-30T09:00:00Z")
+      put("wr_b", attempts: [attempt(1, "passed")], created: "2026-10-30T11:00:00Z")
+      put("wr_c", attempts: [attempt(1, "passed")], created: "2026-10-30T10:00:00Z", definition: sha("d2"))
+
+      result = read
+
+      expect(group(result, sha("d1"))["run_ids"]).to eq(%w[wr_b wr_a])
+      expect(group(result, sha("d2"))["run_ids"]).to eq(%w[wr_c])
+    end
+
+    it "lists each version group's run ids" do
+      %w[wr_1 wr_2].each_with_index do |id, index|
+        put(id, attempts: [attempt(1, "passed")], created: "2026-10-30T0#{index}:00:00Z")
+        file = File.join(archive_dir, "#{id}.json")
+        run = JSON.parse(File.read(file))
+        run["definition"]["version"] = 2
+        File.write(file, JSON.generate(run))
+      end
+
+      expect(read(by: "version")["groups"]).to contain_exactly(a_hash_including("key" => "2", "run_ids" => %w[wr_2 wr_1]))
+    end
+
+    it "leaves runs outside every pack group, and malformed runs, out of the ids" do
+      put("wr_1", attempts: [attempt(1, "passed", packs: [pack("notes", "n")])])
+      put("wr_2", attempts: [])
+      put("wr_3", attempts: [attempt(1, "passed", packs: [pack("plan-review", "v1")])])
+      put("wr_bad", attempts: [attempt(1, "passed", packs: [pack("plan-review", "v1")])])
+      File.write(File.join(archive_dir, "wr_bad.json"), JSON.generate("id" => "wr_bad", "workflow" => "rpiv", "state" => "completed", "steps" => "nope"))
+
+      result = read(by: "pack:plan-review")
+
+      expect(result["groups"].flat_map { |each| each["run_ids"] }).to eq(%w[wr_3])
+    end
+  end
 end

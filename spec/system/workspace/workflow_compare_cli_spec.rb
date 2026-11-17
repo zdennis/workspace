@@ -107,7 +107,7 @@ RSpec.describe "workspace workflow compare through build_cli" do
 
     document = JSON.parse(out.string)
     expect(document).to include("schema_version" => 1, "ok" => true, "workflow" => "rpiv", "status" => "ok", "by" => "pack:plan-review", "workspace" => "lib", "last" => "2w", "runs" => 1, "matched" => 1)
-    expect(document["groups"]).to eq([{"key" => sha("v2"), "sha" => sha("v2"), "runs" => 1, "settled" => 1, "first_try" => 1, "pass_first_percent" => 100, "running" => 0, "cancelled" => 0, "stuck" => 0, "resumes" => 0, "resumes_per_run" => 0.0}])
+    expect(document["groups"]).to eq([{"key" => sha("v2"), "sha" => sha("v2"), "runs" => 1, "settled" => 1, "first_try" => 1, "pass_first_percent" => 100, "running" => 0, "cancelled" => 0, "stuck" => 0, "resumes" => 0, "resumes_per_run" => 0.0, "run_ids" => ["wr_2"]}])
     expect(document["warning"]).to start_with("Too few runs")
   end
 
