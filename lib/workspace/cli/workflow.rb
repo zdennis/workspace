@@ -319,7 +319,8 @@ module Workspace
           raise UsageError, "workflow recover takes no --name; it looks at every run going." if options[:name]
           workflow_action_rows(invocation, "workflow recover", options) { @workflow_command.recover(dry_run: options[:dry_run] || false) { |missing| @launcher.launch_missing(invocation, missing) } }
         when "events"
-          @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json], follow: options[:follow] || false)
+          result = @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json], follow: options[:follow] || false)
+          invocation.exit_handler.exit(result[:exit_code]) if result.is_a?(Hash) && !result[:exit_code].to_i.zero?
         when "status"
           if subject && (options[:name] || options[:project] || options[:all])
             raise UsageError, "workflow status RUN takes no --name, --project or --all: the run names its own workspace."

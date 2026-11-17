@@ -587,16 +587,20 @@ module Workspace
       # @param json [Boolean]
       # @param follow [Boolean] keep reading until the run finishes
       # @param max_polls [Integer, nil] stop following after this many reads (for tests)
-      # @return [void]
+      # @return [Hash] `exit_code`: 1 when a followed run ended cancelled, killed or failed, else 0
       # @raise [Workspace::Error] code `unknown_run`
       def events(run:, since: 0, json: false, follow: false, max_polls: nil)
         return follow_events(run, since, json, max_polls) if follow
         result = @store.events(run, since: since)
-        return document("run" => run, "events" => result["events"], "truncated" => result["truncated"], "next_since" => result["next_since"], "warnings" => result["warnings"]) if json
+        if json
+          document("run" => run, "events" => result["events"], "truncated" => result["truncated"], "next_since" => result["next_since"], "warnings" => result["warnings"])
+          return {exit_code: 0}
+        end
         @output.puts "No events#{" after line #{since}" if since.positive?} for #{run}." if result["events"].empty?
         result["events"].each { |event| @output.puts event_line(event) }
         @output.puts "More events follow: pass --since #{result["next_since"]}." if result["truncated"]
         result["warnings"].each { |warning| @output.puts "Warning: #{warning}" }
+        {exit_code: 0}
       end
 
       # Prints the files a run keeps (each attempt's prompt and check log, each
@@ -1595,27 +1599,63 @@ module Workspace
       EVENTS_POLL_INTERVAL = 0.25
 
       def follow_events(run, since, json, max_polls)
+        started = @store.run(run)
+        if json
+          @output.puts JSON.generate("type" => "follow_started", "run" => run, "since" => since, "state" => started.state, "current" => started.current,
+            "definition_sha256" => started.definition_sha256)
+        end
         cursor = since
         polls = 0
         loop do
           polls += 1
           # The state alone is not enough: a finishing change writes it before its history lines.
           archived = @store.archived?(run)
-          result = @store.events(run, since: cursor)
+          begin
+            result = @store.events(run, since: cursor)
+          rescue Workspace::Error => e
+            raise unless e.code == "unknown_run"
+            print_gap(run, "not_retained", cursor, json)
+            return print_follow_ended(run, "finished", "pruned", cursor, json)
+          end
+          last_n = result["last_n"]
+          shorter = !result["truncated"] && last_n && last_n < cursor
+          print_gap(run, "history_shorter", last_n, json) if shorter
           result["events"].each { |event| @output.puts(json ? JSON.generate(event) : event_line(event)) }
           result["warnings"].each { |warning| @error_output.puts "Warning: #{warning}" }
           @output.flush
-          cursor = result["next_since"]
+          cursor = shorter ? last_n : result["next_since"]
           if archived && !result["truncated"]
             state = finished_state(run)
-            @output.puts(json ? JSON.generate("type" => "follow_ended", "run" => run, "state" => state, "next_since" => cursor) : "Run #{run} #{state}; no more events.")
-            break
+            return print_follow_ended(run, state, end_reason(run, state), cursor, json)
           end
           break if max_polls && polls >= max_polls
           @sleeper.call(EVENTS_POLL_INTERVAL) unless result["truncated"]
         end
+        {exit_code: 0}
       rescue Errno::EPIPE, Interrupt
-        nil
+        {exit_code: 0}
+      end
+
+      def print_gap(run, reason, next_since, json)
+        @output.puts(json ? JSON.generate("type" => "gap", "at" => @clock.call.utc.iso8601(3), "run" => run, "reason" => reason, "next_since" => next_since) :
+          "Gap in #{run}'s history (#{reason}); continuing from line #{next_since}.")
+      end
+
+      def print_follow_ended(run, state, reason, cursor, json)
+        @output.puts(json ? JSON.generate("type" => "follow_ended", "run" => run, "state" => state, "reason" => reason, "next_since" => cursor) :
+          "Run #{run} #{state}#{" (#{reason})" unless reason == state}; no more events.")
+        @output.flush
+        {exit_code: %w[cancelled killed failed].include?(reason) ? 1 : 0}
+      end
+
+      # Why the follow ended: how the run finished, with a cancel by a killed workspace named apart.
+      def end_reason(run, state)
+        return "pruned" if state == "finished"
+        return state unless state == "cancelled"
+        %w[kill workspace_killed].include?(@store.run(run).cancelled_by) ? "killed" : "cancelled"
+      rescue Workspace::Error => e
+        raise unless e.code == "unknown_run"
+        "pruned"
       end
 
       # The archive may prune the run between the two reads; it had finished by then.

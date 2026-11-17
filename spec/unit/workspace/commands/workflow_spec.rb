@@ -3182,8 +3182,12 @@ RSpec.describe Workspace::Commands::Workflow do
           lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper)
       end
 
-      def finish_run
-        real_store.change("wr_2610250930abcd") { |run| Workspace::WorkflowRun.from_h(run.to_h.merge("state" => "completed")) }
+      def finish_run(attrs = {"state" => "completed"})
+        real_store.change("wr_2610250930abcd") { |run| Workspace::WorkflowRun.from_h(run.to_h.merge(attrs)) }
+      end
+
+      def json_lines
+        output.string.lines.map { |line| JSON.parse(line) }
       end
 
       it "prints events appended between polls and stops once the run is archived and drained" do
@@ -3226,9 +3230,119 @@ RSpec.describe Workspace::Commands::Workflow do
 
         follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
 
-        expect(output.string.lines.map { |line| JSON.parse(line) }).to eq([
-          {"type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "completed", "next_since" => 4}
+        expect(json_lines).to eq([
+          {"type" => "follow_started", "run" => "wr_2610250930abcd", "since" => 4, "state" => "running", "current" => "research", "definition_sha256" => nil},
+          {"type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "completed", "reason" => "completed", "next_since" => 4}
         ])
+      end
+
+      it "prints no follow_started line in text mode" do
+        fixture_run
+        steps << -> { finish_run }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, follow: true, max_polls: 10)
+
+        expect(output.string).not_to include("follow_started")
+      end
+
+      {
+        "a completed run" => [{"state" => "completed"}, "completed", "completed", 0],
+        "a cancelled run" => [{"state" => "cancelled", "cancelled_by" => "cancel"}, "cancelled", "cancelled", 1],
+        "a run cancelled by a workspace kill" => [{"state" => "cancelled", "cancelled_by" => "kill"}, "cancelled", "killed", 1],
+        "a run cancelled by workspace_killed" => [{"state" => "cancelled", "cancelled_by" => "workspace_killed"}, "cancelled", "killed", 1],
+        "a failed run" => [{"state" => "failed"}, "failed", "failed", 1]
+      }.each do |name, (attrs, state, reason, code)|
+        it "ends #{name} with reason #{reason} and exit code #{code}" do
+          fixture_run
+          steps << -> { finish_run(attrs) }
+
+          result = follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
+
+          expect(json_lines.last).to eq("type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => state, "reason" => reason, "next_since" => 4)
+          expect(result).to eq(exit_code: code)
+        end
+      end
+
+      it "names the reason in the text end line when it differs from the state" do
+        fixture_run
+        steps << -> { finish_run("state" => "cancelled", "cancelled_by" => "kill") }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, follow: true, max_polls: 10)
+
+        expect(output.string.lines.last).to eq("Run wr_2610250930abcd cancelled (killed); no more events.\n")
+      end
+
+      it "answers exit code 0 for a plain read, max_polls and a closed pipe" do
+        fixture_run
+        expect(follow_command.events(run: "wr_2610250930abcd")).to eq(exit_code: 0)
+        expect(follow_command.events(run: "wr_2610250930abcd", json: true)).to eq(exit_code: 0)
+        expect(follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 1)).to eq(exit_code: 0)
+        steps << -> { raise Interrupt }
+        expect(follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 5)).to eq(exit_code: 0)
+      end
+
+      it "prints a gap and ends as pruned when the run is pruned mid-follow" do
+        fixture_run
+        allow(real_store).to receive(:events).and_return({"events" => [], "truncated" => false, "next_since" => 4, "last_n" => 4, "warnings" => []})
+          .and_raise(Workspace::Error.new("no run", code: "unknown_run"))
+
+        result = follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
+
+        lines = json_lines
+        expect(lines[1]).to include("type" => "gap", "run" => "wr_2610250930abcd", "reason" => "not_retained", "next_since" => 4, "at" => match(/\A\d{4}-\d\d-\d\dT[\d:.]+Z\z/))
+        expect(lines.last).to eq("type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "finished", "reason" => "pruned", "next_since" => 4)
+        expect(result).to eq(exit_code: 0)
+      end
+
+      it "prints a gap and resets the cursor when the history is shorter than the cursor" do
+        fixture_run
+        path = real_store.events_path("wr_2610250930abcd")
+        steps << -> { File.write(path, File.readlines(path).first(1).join) }
+        steps << -> {
+          real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "research", "attempt" => 2)
+          finish_run
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, follow: true, max_polls: 10)
+
+        lines = output.string.lines.map(&:chomp)
+        expect(lines[0]).to eq("Gap in wr_2610250930abcd's history (history_shorter); continuing from line 1.")
+        expect(lines[1]).to match(/\A\s+2\s+\S+\s+step_dispatched/)
+        expect(lines.last).to eq("Run wr_2610250930abcd completed; no more events.")
+      end
+
+      it "prints no gap and replays nothing in the archive window" do
+        fixture_run
+        id = "wr_2610250930abcd"
+        live = real_store.events_path(id)
+        archive_dir = File.join(File.dirname(@runs), "archive")
+        state_live = File.join(File.dirname(live), "#{id}.json")
+        steps << -> {
+          real_store.record_event(id, "run_finished", "state" => "completed")
+          FileUtils.mkdir_p(archive_dir)
+          FileUtils.mv(live, File.join(archive_dir, File.basename(live)))
+        }
+        steps << -> {
+          File.write(state_live, JSON.generate(JSON.parse(File.read(state_live)).merge("state" => "completed")))
+          FileUtils.mv(state_live, File.join(archive_dir, File.basename(state_live)))
+        }
+
+        follow_command.events(run: id, json: true, follow: true, max_polls: 10)
+
+        lines = json_lines
+        expect(lines.select { |l| l["type"] == "gap" }).to be_empty
+        expect(lines.filter_map { |l| l["n"] }).to eq([1, 2, 4, 5])
+        expect(lines.last).to include("type" => "follow_ended", "reason" => "completed")
+      end
+
+      it "prints no gap for --since past a history file that does not exist yet" do
+        fixture_run
+        FileUtils.rm_f(real_store.events_path("wr_2610250930abcd"))
+        steps << -> { finish_run }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 7, json: true, follow: true, max_polls: 10)
+
+        expect(json_lines.map { |l| l["type"] }).to eq(%w[follow_started follow_ended])
       end
 
       it "ends as finished when the archive prunes the run before its state is read" do
@@ -3243,7 +3357,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
         follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
 
-        expect(JSON.parse(output.string.lines.last)).to include("type" => "follow_ended", "state" => "finished")
+        expect(JSON.parse(output.string.lines.last)).to include("type" => "follow_ended", "state" => "finished", "reason" => "pruned")
       end
 
       it "stops after max_polls while the run is going" do

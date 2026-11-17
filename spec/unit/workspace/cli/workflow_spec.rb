@@ -174,6 +174,14 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(status_scope.calls).to eq([[:resolve_needs_me, {name: nil, project: nil, all: false, working_dir: "/src/app"}]])
     end
 
+    it "exits with the events command's non-zero code and not for zero" do
+      workflow_command.status_result = {exit_code: 1}
+      expect(run("events", "wr_1", "--follow")).to eq(1)
+
+      workflow_command.status_result = {exit_code: 0}
+      expect(run("events", "wr_1", "--follow")).to be_nil
+    end
+
     it "checks a step at the repository root outside a workspace" do
       run("check", "rpiv", "verify", workflow_project: RecordingWorkflowProject.new)
 
