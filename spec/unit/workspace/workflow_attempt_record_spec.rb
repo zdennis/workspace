@@ -850,6 +850,25 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
         expect(closed["agent"]).to include("kind" => "claude")
         expect(closed["usage"]).to eq("input_tokens" => 5030, "output_tokens" => 512)
       end
+
+      it "closes the open attempt with a given outcome, with usage, and leaves the run it was given" do
+        open = {"n" => 2, "started_at" => "2026-10-04T12:00:00.000Z"}
+        run["steps"]["plan"]["attempts"] = [open]
+        before_run = Marshal.load(Marshal.dump(run))
+        closed = record.abandon(run, outcome: "interrupted").current_step.last_attempt.to_h
+
+        expect(closed).to include("outcome" => "interrupted", "ended_at" => "2026-10-04T12:10:00Z")
+        expect(closed["usage"]).to eq("input_tokens" => 5030, "output_tokens" => 512)
+        expect(run).to eq(before_run)
+      end
+
+      it "leaves usage nil but still closes the attempt as interrupted when the transcript is unreadable" do
+        FileUtils.rm_f(transcript)
+        run["steps"]["plan"]["attempts"] = [{"n" => 2, "started_at" => "2026-10-04T12:00:00.000Z"}]
+        closed = record.abandon(run, outcome: "interrupted").current_step.last_attempt.to_h
+
+        expect(closed).to include("outcome" => "interrupted", "ended_at" => "2026-10-04T12:10:00Z", "usage" => nil)
+      end
     end
 
     describe "#finish_round" do

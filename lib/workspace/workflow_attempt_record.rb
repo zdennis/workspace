@@ -155,22 +155,23 @@ module Workspace
     end
 
     # Closes the current step's attempt for a run that is cancelled or whose workspace was killed, if it is
-    # still open (no `ended_at`): the end fields of {#finish}, `ended_at` now and outcome `cancelled`. A
+    # still open (no `ended_at`): the end fields of {#finish}, `ended_at` now and the given outcome (`cancelled` by default). A
     # `check` or `proofs` row that was running keeps its own open state (no `ended_at`, `exit_code`).
     # Never raises; a checkout that is gone gives a nil `head.after`. A step being reviewed has no open
     # attempt (it ended `checks_passed`), so nothing is closed here: its round is ended by
     # {WorkflowProgress#end_round}, which records it through {#finish_round}.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] left as it is
+    # @param outcome [String] the outcome the attempt ends with
     # @return [WorkflowRun] the run with that attempt closed; the run given, unchanged, when there was none
     #   to close or on any error
-    def abandon(run)
+    def abandon(run, outcome: "cancelled")
       value = WorkflowRun.from_h(run)
       attempt = value.current_step&.last_attempt
       return value if attempt.nil? || attempt.ended_at
       step = value.definition["steps"].find { |each| each["id"] == value.current }
       # One clock read stamps the end and bounds the usage window ({#agent_facts} reads `ended_at`).
-      ended = attempt.thawed.merge("ended_at" => @clock.call.utc.iso8601, "outcome" => "cancelled")
+      ended = attempt.thawed.merge("ended_at" => @clock.call.utc.iso8601, "outcome" => outcome)
       value.with_attempt(value.current, finish(run: value, step: step, attempt: ended))
     rescue
       WorkflowRun.from_h(run)
