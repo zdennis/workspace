@@ -546,7 +546,7 @@ module Workspace
     def budget_from(value)
       return nil if value.nil?
       unless value.is_a?(Hash)
-        problem "budget must be a mapping like {tokens: 40M, action: stop|interrupt}, got #{value.inspect[0, 60]}"
+        problem "budget must be a mapping like {tokens: 40000000, action: stop|interrupt}, got #{value.inspect[0, 60]}"
         return nil
       end
       unknown_keys(value, BUDGET_KEYS, "budget")
