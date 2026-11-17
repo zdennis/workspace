@@ -52,7 +52,7 @@ RSpec.describe "workspace workflow insights through build_cli" do
 
     run_cli("rpiv")
 
-    expect(out.string).to include("Insights for rpiv: 3 runs read, of 3 stored for this workflow.")
+    expect(out.string).to include("Insights for rpiv: 3 runs read, of 3 matching runs stored.")
     expect(out.string).to include("plan")
     expect(exits).to eq([])
     expect(state_tree).to eq(before)
@@ -104,9 +104,12 @@ RSpec.describe "workspace workflow insights through build_cli" do
     expect(err.string).to include("--all is not needed")
     run_cli
     expect(err.string).to include("needs a workflow ID")
-    Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}).run(["workflow", "stats", "rpiv", "--runs", "3"])
-  rescue SystemExit => e
-    expect(e.status).to eq(1)
+  end
+
+  it "refuses --runs on another verb" do
+    expect {
+      Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}).run(["workflow", "stats", "rpiv", "--runs", "3"])
+    }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
     expect(err.string).to include("--runs is for `workflow insights ID`.")
   end
 end

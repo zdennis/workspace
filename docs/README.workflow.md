@@ -1120,7 +1120,7 @@ The output always ends with the sample warning, and `--json` always carries it a
 
 ```
 $ workspace workflow insights rpiv-auto-approve
-Insights for rpiv-auto-approve: 20 runs read, of 26 stored for this workflow. The store as a whole keeps only the newest 200 finished runs, so older ones are gone.
+Insights for rpiv-auto-approve: 20 runs read, of 26 matching runs stored. The store as a whole keeps only the newest 200 finished runs, so older ones are gone.
 Hot steps (retried or resumed):
   plan_review: 26 attempts, median 9m, tokens/run 640k (recorded in 18 runs: r-0412, r-0409, ...); retried in 7 runs: r-0412, r-0409, ...; resumed in 4 runs: r-0409, r-0403, ...
 Recurring rejections:
@@ -1140,7 +1140,7 @@ It reads the run files, going and finished, and writes nothing. `ID` needs no de
 
 Every figure is a count, a step id, a reviewer name, a code or a run id. No reviewer's write-up, summary, prompt or other agent text is ever shown or read. Pass a run id to [`workflow trace`](#tracing-a-run) to see one run. A reviewer name or code comes from stored text and is cut to 64 characters.
 
-**Choosing the runs.** `--runs N` (a whole number of 1 or more; default 20) reads the newest N runs of `ID`. `--last DURATION` means what it does for [`stats`](#step-statistics) and [`compare`](#comparing-runs): only runs started in that window (`30d`, `2w`, `12h`, `90m`; a bare number is seconds). It is not a count. The two combine: the window is applied first, then the newest N of what is left. The header says how many runs were read and how many are stored for this workflow, and the store note says older runs may be gone. Scope flags work as in `stats`; `--all` is refused.
+**Choosing the runs.** `--runs N` (a whole number of 1 or more; default 20) reads the newest N runs of `ID`. `--last DURATION` means what it does for [`stats`](#step-statistics) and [`compare`](#comparing-runs): only runs started in that window (`30d`, `2w`, `12h`, `90m`; a bare number is seconds). It is not a count. The two combine: the window is applied first, then the newest N of what is left. The header says how many runs were read and how many matching runs are stored (after any scope or `--last` filter), and the store note says older runs may be gone. Scope flags work as in `stats`; `--all` is refused.
 
 **Thresholds.** `MIN_RUNS` is 3: with fewer than 3 runs read, insights prints `Not enough runs (N; insights needs 3).` and no sections (the header and the compare warning still show). Row order means nothing below `MIN_RUNS`, so the `--json` rows then keep the order `stats` gives them and `enough` is false. At 3 or more, hot steps are ranked by the number of runs that retried them, then median time, then tokens. `THEME_MIN_RUNS` is 3: a rejection key is a recurring theme only when it appears in 3 or more distinct runs; three rejections in one run are one observation. Anything less is listed as a single observation.
 

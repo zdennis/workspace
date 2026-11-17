@@ -4754,7 +4754,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "prints the header with runs read, runs stored and the store note" do
       insights_command.insights(workflow: "flow", runs: 20)
-      expect(output.string.lines.first).to eq("Insights for flow: 4 runs read, of 9 stored for this workflow. The store as a whole keeps only the newest 200 finished runs, so older ones are gone.\n")
+      expect(output.string.lines.first).to eq("Insights for flow: 4 runs read, of 9 matching runs stored. The store as a whole keeps only the newest 200 finished runs, so older ones are gone.\n")
     end
 
     it "passes the run count, window and scope filter to the reader" do
@@ -4785,7 +4785,7 @@ RSpec.describe Workspace::Commands::Workflow do
       text = output.string
       expect(text).to include("Insights for flow: 2 runs read", "Not enough runs (2; insights needs 3).", "Compare shows a direction")
       expect(text).not_to include("Hot steps", "Recurring rejections", "Failures")
-      expect(text).to include("More runs are stored (9); raise --runs or widen --last to read them.")
+      expect(text).to include("More runs are stored (9); raise --runs to read them.")
     end
 
     it "gives no more-runs hint when every stored run was read" do
@@ -4797,7 +4797,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "says the read count reflects the window when --last is given" do
       insights_command.insights(workflow: "flow", runs: 20, last: 3600, last_text: "1h")
-      expect(output.string.lines.first).to start_with("Insights for flow: 4 runs read (in the last 1h), of 9 stored for this workflow.")
+      expect(output.string.lines.first).to start_with("Insights for flow: 4 runs read (in the last 1h), of 9 matching runs stored.")
     end
 
     it "names the effects section by what it shows" do
@@ -4839,6 +4839,7 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json["next_actions"].first(2).map { |each| each["args"] }).to eq(
         [%w[flow --last 1h --name ws1], %w[flow --by definition --last 1h --name ws1]]
       )
+      expect(json["next_actions"].first(2).map { |each| each["why"] }).to all(include("every matching run, not only the --runs newest"))
     end
 
     it "carries project scope into the actions" do
