@@ -4727,4 +4727,156 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { command.trace(run: "wr_t") }.to raise_error(Workspace::Error, /no trace reader/)
     end
   end
+
+  describe "#insights" do
+    let(:effects) do
+      {"definition" => {"by" => "definition", "warning" => "Compare shows a direction, it proves nothing.",
+                        "groups" => [{"key" => "abcdef1234", "sha" => "abcdef1234", "pass_first_percent" => 50, "resumes_per_run" => 1.0, "run_ids" => %w[wr_2 wr_1]}]}}
+    end
+    let(:result) do
+      {"runs" => 4, "stored" => 9, "unreadable" => 0, "undated" => 0, "enough" => true,
+       "hot_steps" => [{"step" => "pl\e[31man", "attempts" => 6, "median_seconds" => 90, "tokens" => {"mean" => 1500, "runs_counted" => 2, "runs_uncounted" => 0},
+                        "retry_run_ids" => %w[wr_4 wr_2], "resume_run_ids" => ["wr_3"], "token_run_ids" => %w[wr_4 wr_2]},
+         {"step" => "quiet", "attempts" => 1, "median_seconds" => nil, "tokens" => {"mean" => nil}, "retry_run_ids" => [], "resume_run_ids" => [], "token_run_ids" => []}],
+       "themes" => [{"step" => "plan", "reviewer" => "rev\e[2Jiewer", "verdict" => "reject", "problem" => nil, "count" => 4, "run_ids" => %w[wr_4 wr_3 wr_2]}],
+       "observations" => [{"step" => "plan", "reviewer" => "other", "verdict" => nil, "problem" => "wrong_revision", "count" => 1, "run_ids" => ["wr_1"]}],
+       "failures" => [{"step" => "verify", "code" => "bad\ecode", "count" => 2, "run_ids" => %w[wr_4 wr_1]}],
+       "holds" => [{"step" => "verify", "code" => "budget_spent", "count" => 1, "run_ids" => ["wr_3"]}],
+       "effects" => effects}
+    end
+    let(:reader) { instance_double(Workspace::WorkflowInsights) }
+    let(:insights_command) do
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+        process_tree: process_tree, lock_holder: lock_holder, insights: reader, clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
+    end
+
+    before { allow(reader).to receive(:read).and_return(result) }
+
+    it "prints the header with runs read, runs stored and the store note" do
+      insights_command.insights(workflow: "flow", runs: 20)
+      expect(output.string.lines.first).to eq("Insights for flow: 4 runs read, of 9 matching runs stored. The store as a whole keeps only the newest 200 finished runs, so older ones are gone.\n")
+    end
+
+    it "passes the run count, window and scope filter to the reader" do
+      insights_command.insights(workflow: "flow", runs: 7, last: 3600, last_text: "1h")
+      expect(reader).to have_received(:read).with(workflow: "flow", runs: 7, last: 3600, include: nil)
+      expect(output.string).to include("(in the last 1h)")
+    end
+
+    it "lists run ids for every figure and prints the compare warning verbatim" do
+      insights_command.insights(workflow: "flow", runs: 20)
+      text = output.string
+      expect(text).to include("retried in 2 runs: wr_4, wr_2", "resumed in 1 run: wr_3", "recorded in 2 runs: wr_4, wr_2")
+      expect(text).to include("4 times in 3 runs: wr_4, wr_3, wr_2", "Single observations:", "problem wrong_revision, 1 time in 1 run: wr_1")
+      expect(text).to include("2 times in 2 runs: wr_4, wr_1", "budget_spent: 1 time in 1 run: wr_3", "abcdef12: 50% first try, 1.0 resumes/run (2 runs: wr_2, wr_1)")
+      expect(text).to include("Compare shows a direction, it proves nothing.\n")
+      expect(text).not_to include("quiet")
+    end
+
+    it "escapes step ids, reviewer names and codes" do
+      insights_command.insights(workflow: "flow", runs: 20)
+      expect(output.string).not_to include("\e")
+      expect(output.string).to include(Workspace::TerminalText.escape("pl\e[31man"), Workspace::TerminalText.escape("rev\e[2Jiewer"), Workspace::TerminalText.escape("bad\ecode"))
+    end
+
+    it "prints not enough runs in place of the ranked sections, keeping header and warning" do
+      allow(reader).to receive(:read).and_return(result.merge("runs" => 2, "enough" => false))
+      insights_command.insights(workflow: "flow", runs: 20)
+      text = output.string
+      expect(text).to include("Insights for flow: 2 runs read", "Not enough runs (2; insights needs 3).", "Compare shows a direction")
+      expect(text).not_to include("Hot steps", "Recurring rejections", "Failures")
+      expect(text).to include("More runs are stored (9); raise --limit to read them.")
+    end
+
+    it "gives no more-runs hint when every stored run was read" do
+      allow(reader).to receive(:read).and_return(result.merge("runs" => 2, "stored" => 2, "enough" => false))
+      insights_command.insights(workflow: "flow", runs: 20)
+      expect(output.string).to include("Not enough runs (2; insights needs 3).")
+      expect(output.string).not_to include("More runs are stored")
+    end
+
+    it "says the read count reflects the window when --last is given" do
+      insights_command.insights(workflow: "flow", runs: 20, last: 3600, last_text: "1h")
+      expect(output.string.lines.first).to start_with("Insights for flow: 4 runs read (in the last 1h), of 9 matching runs stored.")
+    end
+
+    it "names the effects section by what it shows" do
+      insights_command.insights(workflow: "flow", runs: 20)
+      expect(output.string).to include("Effects of definition and pack changes:")
+    end
+
+    it "says 1 run read, not 1 runs" do
+      allow(reader).to receive(:read).and_return(result.merge("runs" => 1, "enough" => false))
+      insights_command.insights(workflow: "flow", runs: 20)
+      expect(output.string.lines.first).to include("1 run read")
+    end
+
+    it "says there are no runs when none are stored" do
+      allow(reader).to receive(:read).and_return(result.merge("runs" => 0, "stored" => 0, "enough" => false, "effects" => {}))
+      expect(insights_command.insights(workflow: "flow", runs: 20)).to eq(exit_code: 0)
+      expect(output.string).to include("No runs of flow.")
+    end
+
+    it "warns that unreadable files count the whole store and exits 3" do
+      allow(reader).to receive(:read).and_return(result.merge("unreadable" => 2))
+      expect(insights_command.insights(workflow: "flow", runs: 20)).to eq(exit_code: 3)
+      expect(output.string).to include("2 run files in the store (the whole store, not only these runs) could not be read")
+    end
+
+    it "prints a JSON document with the sections and next actions" do
+      expect(insights_command.insights(workflow: "flow", runs: 20, json: true)).to eq(exit_code: 0)
+      expect(json).to include("ok" => true, "workflow" => "flow", "status" => "ok", "runs" => 4, "stored" => 9, "enough" => true)
+      expect(json.keys).to include("last", "since", "workspace", "project", "hot_steps", "themes", "observations", "failures", "holds", "effects", "next_actions")
+      expect(json["next_actions"].map { |each| [each["action"], each["args"]] }).to eq(
+        [["workflow stats", ["flow"]], ["workflow compare", ["flow", "--by", "definition"]], ["workflow trace", ["wr_4"]]]
+      )
+    end
+
+    it "carries --last and workspace scope into the stats and compare actions" do
+      scope = Workspace::StatusScope::Scope.new(kind: :workspace, workspace: "ws1")
+      allow(status).to receive(:in_project)
+      insights_command.insights(workflow: "flow", runs: 20, last: 3600, last_text: "1h", scope: scope, json: true)
+      expect(json["next_actions"].first(2).map { |each| each["args"] }).to eq(
+        [%w[flow --last 1h --name ws1], %w[flow --by definition --last 1h --name ws1]]
+      )
+      expect(json["next_actions"].first(2).map { |each| each["why"] }).to all(include("every matching run, not only the --limit newest"))
+    end
+
+    it "carries project scope into the actions" do
+      project = Struct.new(:name).new("proj")
+      scope = Workspace::StatusScope::Scope.new(kind: :project, project: project)
+      allow(status).to receive(:in_project?).and_return(true)
+      insights_command.insights(workflow: "flow", runs: 20, scope: scope, json: true)
+      expect(json["next_actions"].first["args"]).to eq(%w[flow --project proj])
+    end
+
+    it "traces a resumed-only hot step, then falls back to the first theme" do
+      hot = result["hot_steps"].first.merge("retry_run_ids" => [])
+      allow(reader).to receive(:read).and_return(result.merge("hot_steps" => [hot]))
+      insights_command.insights(workflow: "flow", runs: 20, json: true)
+      expect(json["next_actions"].last["args"]).to eq(["wr_3"])
+    end
+
+    it "traces the first theme when no hot step retried or resumed" do
+      allow(reader).to receive(:read).and_return(result.merge("hot_steps" => []))
+      insights_command.insights(workflow: "flow", runs: 20, json: true)
+      expect(json["next_actions"].last["args"]).to eq(["wr_4"])
+    end
+
+    it "reports partial status in JSON" do
+      allow(reader).to receive(:read).and_return(result.merge("unreadable" => 1))
+      expect(insights_command.insights(workflow: "flow", runs: 20, json: true)).to eq(exit_code: 3)
+      expect(json["status"]).to eq("partial")
+    end
+
+    it "offers no trace action when there are not enough runs" do
+      allow(reader).to receive(:read).and_return(result.merge("enough" => false))
+      insights_command.insights(workflow: "flow", runs: 20, json: true)
+      expect(json["next_actions"].map { |each| each["action"] }).to eq(["workflow stats", "workflow compare"])
+    end
+
+    it "refuses when no insights reader was wired" do
+      expect { command.insights(workflow: "flow", runs: 20) }.to raise_error(Workspace::Error, /no insights reader/)
+    end
+  end
 end

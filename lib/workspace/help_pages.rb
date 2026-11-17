@@ -882,6 +882,38 @@ module Workspace
           ["workspace workflow compare rpiv --by pack:commits --last 30d --json", "for a script: groups with full shas, counts and the warning"]
         ]
       },
+      "insights" => {
+        usage: ["workflow insights ID [--limit N] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
+        summary: "Show where a workflow's recent runs keep retrying, being rejected or stopping",
+        about: [
+          "ID is a workflow definition id; it need not exist now. Reads the newest runs of that id (--limit, default 20), going and",
+          "finished, in every workspace unless --name or --project narrows it. Read only: it writes nothing and prints counts and run",
+          "ids, never a reviewer's write-up, a summary or a prompt. Use the ids with `workflow trace RUN`.",
+          "",
+          "Sections: hot steps (retried or resumed, with the runs and the token mean), repeated rejections (a step, a reviewer and",
+          "the verdict reject, or a reviewer's problem code), failed attempts by step and code, holds (budget_spent, run_timed_out,",
+          "failed_check) and the effect of each definition, version and pack text, from `workflow compare`, with its warning.",
+          "",
+          "Thresholds: with fewer than 3 runs it prints \"Not enough runs\" and no rankings. A rejection theme needs the same key in",
+          "3 different runs; three rejections in one run count once, and anything less is listed as a single observation.",
+          "The store keeps the newest 200 finished runs across all workflows, so older runs may be gone.",
+          "",
+          "Exit codes: 0 (also when the workflow has no runs), 1 for a usage error, 3 with status partial when a run file cannot be read,",
+          "since the figures are then incomplete."
+        ],
+        options: [
+          ["--limit N", "Read this many of the newest runs (a whole number from 1; default 20)"],
+          ["--last DURATION", "Only runs started in the last DURATION (30d, 2w, 12h, 90m); a bare number means seconds"],
+          name_opt("Only that workspace's runs"),
+          ["--project [NAME]", "Only that project's runs (NAME, or the project of the current workspace)"],
+          JSON_OPT
+        ],
+        examples: [
+          ["workspace workflow insights rpiv", "where the last 20 runs of rpiv went wrong"],
+          ["workspace workflow insights rpiv --limit 50 --last 30d", "up to 50 runs, from the last 30 days"],
+          ["workspace workflow insights rpiv --project --json", "for a script: sections with run ids and next_actions"]
+        ]
+      },
       "sweep" => {
         usage: ["workflow sweep [RUN | --name WORKSPACE] [--budget-only] [--dry-run] [--json]", "workflow sweep --install | --uninstall [--dry-run] [--json]", "workflow sweep --installed [--json]"],
         summary: "One pass over the runs going: act on the ones that have stopped",

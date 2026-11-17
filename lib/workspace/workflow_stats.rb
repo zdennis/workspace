@@ -43,11 +43,13 @@ module Workspace
     # @param last [Numeric, nil] see {WorkflowRunLoader#load}
     # @param include [#call, nil] see {WorkflowRunLoader#load}
     # @param loaded [Hash, nil] the answer of {WorkflowRunLoader#load}, when the caller has read it already
+    # @param resumes [#call, nil] given a run, its {WorkflowRunLoader#resumes}; for a caller that keeps the answers (default: the loader)
     # @return [Hash{String=>Object}] "runs" (how many were read), "unreadable" (files that are no run, plus runs whose
     #   content was the wrong shape), "undated", "steps" (one row per step: "step", "attempts", "passed", "failed", "overridden",
     #   "not_delivered", "unfinished", "median_seconds", "resumes", "tokens_from_unfinished" (unfinished attempts whose tokens are in the mean), "tokens" => {"mean", "runs_counted", "runs_uncounted"})
     #   in the order of the newest run's definition then the others, and "unattributed_resumes"
-    def read(workflow:, last: nil, include: nil, loaded: nil)
+    def read(workflow:, last: nil, include: nil, loaded: nil, resumes: nil)
+      resumes ||= ->(each) { @loader.resumes(each) }
       loaded ||= @loader.load(workflow: workflow, last: last, include: include)
       rows = {}
       unattributed = 0
@@ -59,18 +61,27 @@ module Workspace
         run = WorkflowRun.from_h(stored)
         row_ids = step_ids(run)
         found = tally(run)
-        resumes = @loader.resumes(run)
+        resumed = resumes.call(run)
       rescue NoMethodError, TypeError, ArgumentError, Workspace::Error
         malformed += 1
       else
         used += 1
         first_ids ||= row_ids
-        (row_ids + found.keys + resumes.keys).uniq.each { |id| rows[id] ||= blank(id) }
+        (row_ids + found.keys + resumed.keys).uniq.each { |id| rows[id] ||= blank(id) }
         found.each { |id, tallied| merge(rows[id], tallied) }
-        resumes.each { |id, count| id ? rows[id]["resumes"] += count : unattributed += count }
+        resumed.each { |id, count| id ? rows[id]["resumes"] += count : unattributed += count }
       end
       steps = order(rows, first_ids || []).map { |row| finish(row) }
       {"runs" => used, "unreadable" => loaded["unreadable"] + malformed, "undated" => loaded["undated"], "steps" => steps, "unattributed_resumes" => unattributed}
+    end
+
+    # A step's attempts whose stored entry is a Hash.
+    #
+    # @param step [WorkflowRun::Step]
+    # @return [Array<WorkflowRun::Attempt>]
+    def self.stored_attempts(step)
+      stored = Array(step.to_h["attempts"])
+      step.attempts.each_with_index.select { |_, index| stored[index].is_a?(Hash) }.map(&:first)
     end
 
     # How one attempt counts: `:passed`, `:failed` and `:overridden` by its stored outcome, `:not_delivered` for one that never
@@ -150,8 +161,7 @@ module Workspace
     # Per step id: counts, durations and the run's token figure (an Integer, :uncounted, or nil with nothing finished).
     def tally(run)
       run.steps.to_h do |id, step|
-        stored = Array(step.to_h["attempts"])
-        attempts = step.attempts.each_with_index.select { |_, index| stored[index].is_a?(Hash) }.map(&:first)
+        attempts = self.class.stored_attempts(step)
         t = {"passed" => 0, "failed" => 0, "overridden" => 0, "not_delivered" => 0, "unfinished" => 0, "durations" => [], "unfinished_tokens" => 0}
         paid = []
         attempts.each do |attempt|

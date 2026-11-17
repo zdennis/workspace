@@ -221,7 +221,7 @@ RSpec.describe Workspace::CLI do
       it "refuses --project after --prompt TEXT as a flag of another subcommand" do
         expect { cli.run(["workflow", "start", "rpiv", "--prompt", "add a script", "--project"]) }.to raise_error(FakeSystemExit)
 
-        expect(error_output.string).to include("--project is for `workflow status`, `workflow stats` and `workflow compare`.")
+        expect(error_output.string).to include("--project is for `workflow status`, `workflow stats`, `workflow compare` and `workflow insights`.")
         expect(start_command.calls).to be_empty
       end
 
@@ -468,7 +468,7 @@ RSpec.describe Workspace::CLI do
 
     it "refuses --project on the other subcommands, and lists it in the help beside --prompt" do
       expect { cli.run(["workflow", "show", "rpiv", "--project"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("--project is for `workflow status`, `workflow stats` and `workflow compare`.")
+      expect(error_output.string).to include("--project is for `workflow status`, `workflow stats`, `workflow compare` and `workflow insights`.")
 
       cli.run(["workflow", "--help"])
       expect(output.string).to include("--project [NAME]").and include("--prompt TEXT")
@@ -714,7 +714,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject/,
+        ["workflow"] => /Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, insights, sweep, recover, resume, cancel, pause, unpause, approve or reject/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
         ["workflow", "files"] => /workflow files needs a RUN id/,

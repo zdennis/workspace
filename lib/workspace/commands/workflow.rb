@@ -47,6 +47,7 @@ module Workspace
       # @param needs_me [Workspace::WorkflowNeedsMe, nil] narrows the runs to the ones that wait for a person (`status --needs-me`)
       # @param stats [Workspace::WorkflowStats, nil] reads a workflow's runs into per-step figures (`stats`)
       # @param compare [Workspace::WorkflowCompare, nil] sets a workflow's runs side by side by definition or pack (`compare`)
+      # @param insights [Workspace::WorkflowInsights, nil] reads a workflow's newest runs into hot steps, themes, failures, holds and effects (`insights`)
       # @param simulator [Workspace::WorkflowSimulator, nil] plays a workflow with a scripted fake agent (`simulate`)
       # @param expect_fail [Workspace::WorkflowExpectFail, nil] runs the fail-first check (`step expect-fail`)
       # @param source_installer [Workspace::WorkflowSourceInstaller, nil] fetches, checks and caches the `workflows.sources` entries (`install`)
@@ -60,7 +61,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, trace: nil, downtime: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, expect_fail: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, trace: nil, downtime: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, insights: nil, step_check: nil, simulator: nil, expect_fail: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
         clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
@@ -81,6 +82,7 @@ module Workspace
         @branch_inputs = branch_inputs
         @stats = stats
         @compare = compare
+        @insights = insights
         @step_check = step_check
         @simulator = simulator
         @expect_fail = expect_fail
@@ -723,6 +725,34 @@ module Workspace
         {exit_code: partial ? 3 : 0}
       end
 
+      INSIGHTS_STORE_NOTE = "The store as a whole keeps only the newest #{WorkflowRunStore::ARCHIVE_LIMIT} finished runs, so older ones are gone."
+
+      # Prints what recurs across a workflow's newest runs: steps that retry or resume, reviewer rejections that
+      # recur, failures, holds and the effect of definition or pack changes (see {Workspace::WorkflowInsights}).
+      # Prints counts, run ids, step ids, reviewer names and codes only, never a reviewer's or an agent's own words.
+      # Reads the run files and writes nothing.
+      #
+      # @param workflow [String] a definition id; it need not exist now
+      # @param runs [Integer] how many of the newest runs to read
+      # @param last [Numeric, nil] only runs started in the last this many seconds
+      # @param last_text [String, nil] the `--last` text
+      # @param scope [Workspace::StatusScope::Scope, nil] narrows to one workspace or project
+      # @param json [Boolean]
+      # @return [Hash] `exit_code` 3 when a run file could not be read (the figures are then incomplete), else 0
+      def insights(workflow:, runs:, last: nil, last_text: nil, scope: nil, json: false)
+        raise Workspace::Error, "workflow insights is not available: no insights reader was wired" unless @insights
+        result = @insights.read(workflow: workflow, runs: runs, last: last, include: scope_filter(scope))
+        partial = result["unreadable"].positive?
+        if json
+          document("workflow" => workflow, "status" => partial ? "partial" : "ok", "runs" => result["runs"], "last" => last_text,
+            "since" => last && (@clock.call - last).utc.iso8601, "workspace" => scope&.workspace, "project" => scope&.project&.name,
+            **result.except("runs"), "next_actions" => insights_actions(workflow, result, last_text, scope))
+        else
+          print_insights(workflow, last_text, scope, result)
+        end
+        {exit_code: partial ? 3 : 0}
+      end
+
       COMPARE_HEADER = %w[SHA RUNS PASS-1ST RESUMES/RUN].freeze
 
       # Prints the runs of a workflow in groups by definition or pack text, side by side (see
@@ -1333,6 +1363,91 @@ module Workspace
         elsif scope&.project
           ->(run) { @status.in_project?(run, scope.project) }
         end
+      end
+
+      def insights_actions(workflow, result, last_text, scope)
+        flags = []
+        flags += ["--last", last_text] if last_text
+        if scope&.workspace
+          flags += ["--name", scope.workspace]
+        elsif scope&.project
+          flags += ["--project", scope.project.name]
+        end
+        actions = [NextAction.build("workflow stats", workflow, *flags, why: "per-step figures for the same workflow and scope; every matching run, not only the --limit newest"),
+          NextAction.build("workflow compare", workflow, "--by", "definition", *flags, why: "the same workflow and scope by definition; every matching run, not only the --limit newest")]
+        hot = Array(result["hot_steps"])
+        newest = result["enough"] && (hot.find { |row| !Array(row["retry_run_ids"]).empty? }&.dig("retry_run_ids")&.first ||
+          hot.find { |row| !Array(row["resume_run_ids"]).empty? }&.dig("resume_run_ids")&.first ||
+          result["themes"].first&.dig("run_ids")&.first)
+        actions << NextAction.build("workflow trace", newest, why: "the newest run behind the top finding") if newest
+        actions
+      end
+
+      def print_insights(workflow, last_text, scope, result)
+        name = TerminalText.escape(workflow)
+        window = last_text ? " started in the last #{TerminalText.escape(last_text)}" : ""
+        read_window = last_text && " (in the last #{TerminalText.escape(last_text)})"
+        where = if scope&.workspace then " in workspace #{TerminalText.escape(scope.workspace)}"
+        elsif scope&.project then " in project #{TerminalText.escape(scope.project.name)}"
+        else
+          ""
+        end
+        if result["stored"].zero?
+          @output.puts "No runs of #{name}#{window}#{where}."
+        else
+          @output.puts "Insights for #{name}: #{result["runs"]} #{(result["runs"] == 1) ? "run" : "runs"} read#{read_window}#{where}, of #{result["stored"]} matching runs stored. #{INSIGHTS_STORE_NOTE}"
+        end
+        if result["enough"]
+          print_insight_sections(result)
+        else
+          @output.puts "Not enough runs (#{result["runs"]}; insights needs #{WorkflowInsights::MIN_RUNS})."
+          @output.puts "More runs are stored (#{result["stored"]}); raise --limit to read them." if result["runs"] < result["stored"]
+        end
+        warnings = result["effects"].values.map { |each| each["warning"] }.compact.uniq
+        warnings.each { |text| @output.puts text }
+        @output.puts "Warning: #{result["undated"]} run#{"s" unless result["undated"] == 1} with no start time left out of the window." if result["undated"].positive?
+        @output.puts "Warning: #{result["unreadable"]} run file#{"s" unless result["unreadable"] == 1} in the store (the whole store, not only these runs) could not be read; the figures are incomplete." if result["unreadable"].positive?
+      end
+
+      def print_insight_sections(result)
+        steps = result["hot_steps"].select { |row| !Array(row["retry_run_ids"]).empty? || !Array(row["resume_run_ids"]).empty? }
+        section("Hot steps (retried or resumed)", steps) do |row|
+          parts = []
+          parts << "retried in #{ids(row["retry_run_ids"])}" unless Array(row["retry_run_ids"]).empty?
+          parts << "resumed in #{ids(row["resume_run_ids"])}" unless Array(row["resume_run_ids"]).empty?
+          median = row["median_seconds"] ? ", median #{Duration.humanize(row["median_seconds"])}" : ""
+          tokens = row.dig("tokens", "mean") ? ", tokens/run #{format_tokens(row.dig("tokens", "mean"))} (recorded in #{ids(row["token_run_ids"])})" : ""
+          "#{TerminalText.escape(row["step"])}: #{row["attempts"]} attempts#{median}#{tokens}; #{parts.join("; ")}"
+        end
+        section("Recurring rejections", result["themes"]) { |row| rejection_line(row) }
+        section("Single observations", result["observations"]) { |row| rejection_line(row) }
+        section("Failures", result["failures"]) { |row| coded_line(row) }
+        section("Holds", result["holds"]) { |row| coded_line(row) }
+        section("Effects of definition and pack changes", result["effects"].flat_map { |by, each| each["groups"].map { |group| [by, group] } }) do |(by, group)|
+          key = TerminalText.escape(by.start_with?("pack:") ? "#{by}=#{group["key"]}" : "#{by} #{group["key"].to_s[0, 8]}")
+          percent = group["pass_first_percent"] ? "#{group["pass_first_percent"]}% first try" : "no settled runs"
+          "#{key}: #{percent}, #{format("%.1f", group["resumes_per_run"])} resumes/run (#{ids(group["run_ids"])})"
+        end
+      end
+
+      def section(title, rows)
+        return if rows.empty?
+        @output.puts "#{title}:"
+        rows.each { |row| @output.puts "  #{yield(row)}" }
+      end
+
+      def ids(list)
+        runs = Array(list).map { |id| TerminalText.escape(id.to_s) }
+        "#{runs.size} #{(runs.size == 1) ? "run" : "runs"}: #{runs.join(", ")}"
+      end
+
+      def rejection_line(row)
+        what = row["problem"] ? "problem #{TerminalText.escape(row["problem"])}" : "verdict #{TerminalText.escape(row["verdict"].to_s)}"
+        "#{TerminalText.escape(row["step"])} / #{TerminalText.escape(row["reviewer"])}: #{what}, #{row["count"]} #{(row["count"] == 1) ? "time" : "times"} in #{ids(row["run_ids"])}"
+      end
+
+      def coded_line(row)
+        "#{TerminalText.escape(row["step"])} #{TerminalText.escape(row["code"])}: #{row["count"]} #{(row["count"] == 1) ? "time" : "times"} in #{ids(row["run_ids"])}"
       end
 
       def print_compare(workflow, last_text, result)

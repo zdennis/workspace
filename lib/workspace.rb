@@ -423,6 +423,7 @@ require_relative "workspace/workflow_graph_dot"
 require_relative "workspace/workflow_graph_ascii"
 require_relative "workspace/workflow_graph_states"
 require_relative "workspace/workflow_compare"
+require_relative "workspace/workflow_insights"
 require_relative "workspace/workflow_sim_script"
 require_relative "workspace/workflow_simulator"
 require_relative "workspace/workflow_run_health"
@@ -1062,6 +1063,8 @@ module Workspace
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
     workflow_run_loader = WorkflowRunLoader.new(store: workflow_store)
+    workflow_stats = WorkflowStats.new(store: workflow_store, loader: workflow_run_loader)
+    workflow_compare = WorkflowCompare.new(loader: workflow_run_loader)
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
       watch_factory: ->(workspace:, run:) { DaemonWatch.new(workspace: workspace, run: run, store: workflow_store, stream: EventStream.new(lifecycle_path: nil, hook_dir: config.hook_events_dir, workspace: workspace)) },
       process_tree: ProcessTree.new(logger: logger), output: output)
@@ -1189,8 +1192,9 @@ module Workspace
       sweep_actions: WorkflowSweepActions.new(store: workflow_store, panes: workflow_panes, status: workflow_status),
       schedule: sweep_schedule,
       needs_me: workflow_needs_me,
-      stats: WorkflowStats.new(store: workflow_store, loader: workflow_run_loader),
-      compare: WorkflowCompare.new(loader: workflow_run_loader),
+      stats: workflow_stats,
+      compare: workflow_compare,
+      insights: WorkflowInsights.new(loader: workflow_run_loader, stats: workflow_stats, compare: workflow_compare),
       step_check: WorkflowStepCheck.new(engine: workflow_engine, checker: workflow_checker),
       simulator: WorkflowSimulator.new(engine_factory: ->(**parts) { build_workflow_engine(**parts) }),
       expect_fail: WorkflowExpectFail.new(lineage: lineage, commands_config: commands_config, checker: workflow_checker),

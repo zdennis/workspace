@@ -80,6 +80,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_graph_states.rb` — Marks a workflow graph model with one run's node states, pass counts and loop counts.
 - `lib/workspace/workflow_run_loader.rb` — The run loading `workflow stats` and `compare` share.
 - `lib/workspace/workflow_compare.rb` — `workflow compare`: groups a workflow's runs by definition or pack version.
+- `lib/workspace/workflow_insights.rb` — Joins stats, compare and run hashes into the sections `workflow insights` prints: hot steps, review themes, failures, holds and effects.
 - `lib/workspace/workflow_audit.rb` — Checks recorded evidence against its stored copies.
 - `lib/workspace/workflow_budget.rb` — Reads a run's token budget and spend.
 - `lib/workspace/workflow_live_usage.rb` — Reads the running attempt's tokens so far, a capped, cached piece of its transcript at a time.

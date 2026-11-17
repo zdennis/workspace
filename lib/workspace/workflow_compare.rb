@@ -20,7 +20,7 @@ module Workspace
   # Per group: `key` (what the group is named: a sha, a version number as text, `unknown` or `mixed`; `sha` holds the
   # same text, kept for older readers), `runs` (all of them), `first_try`, `settled`, `pass_first_percent` (`first_try` of `settled`, nil
   # with none settled), `running` (not settled, still going), `cancelled` (stopped by a person without a miss),
-  # `stuck` (settled runs not ended: waiting on `failed_check`, `budget_spent` or `run_timed_out` after a miss), `resumes`
+  # `run_ids` (the ids of the group's runs, newest first), `stuck` (settled runs not ended: waiting on `failed_check`, `budget_spent` or `run_timed_out` after a miss), `resumes`
   # (all `run_resumed` events) and `resumes_per_run`.
   #
   # A step is a miss when it has more than one delivered attempt (a rejected gate or a `resume --from` reran it,
@@ -76,9 +76,11 @@ module Workspace
     # @param last [Numeric, nil] see {WorkflowRunLoader#load}
     # @param include [#call, nil] see {WorkflowRunLoader#load}
     # @param loaded [Hash, nil] the answer of {WorkflowRunLoader#load}, when the caller has read it already
+    # @param resumes [#call, nil] given a run, its {WorkflowRunLoader#resumes}; for a caller that keeps the answers (default: the loader)
     # @return [Hash{String=>Object}] "by", "runs" (read), "matched" (in a group), "without_pack", "no_attempts",
     #   "unreadable" (files that are no run, plus runs of the wrong shape), "undated", "groups" and "warning"
-    def read(workflow:, by:, last: nil, include: nil, loaded: nil)
+    def read(workflow:, by:, last: nil, include: nil, loaded: nil, resumes: nil)
+      resumes ||= ->(each) { @loader.resumes(each) }
       kind, name = self.class.parse_by(by)
       loaded ||= @loader.load(workflow: workflow, last: last, include: include)
       groups = {}
@@ -91,7 +93,7 @@ module Workspace
         when :version then version_key(run)
         else definition_key(run)
         end
-        figures = figures_of(run)
+        figures = figures_of(run, resumes)
       rescue NoMethodError, TypeError, ArgumentError, Workspace::Error
         counts["malformed"] += 1
       else
@@ -149,22 +151,19 @@ module Workspace
     end
 
     # What one run adds to its group.
-    def figures_of(run)
+    def figures_of(run, resumes)
       missed = steps_of(run).any? { |attempts| missed?(attempts, run.state == "completed") }
       state = case run.state
       when "completed" then :settled
       when "cancelled" then missed ? :settled : :cancelled
       else (missed && STUCK.include?(run.reason&.dig("code"))) ? :stuck : :running
       end
-      {state: state, first_try: run.state == "completed" && !missed, resumes: @loader.resumes(run).values.sum}
+      {id: run.id, state: state, first_try: run.state == "completed" && !missed, resumes: resumes.call(run).values.sum}
     end
 
     # Per step, its attempts that are stored as Hashes.
     def steps_of(run)
-      run.steps.values.map do |step|
-        stored = Array(step.to_h["attempts"])
-        step.attempts.each_with_index.select { |_, index| stored[index].is_a?(Hash) }.map(&:first)
-      end
+      run.steps.values.map { |step| WorkflowStats.stored_attempts(step) }
     end
 
     # In a completed run an attempt with no outcome was passed over (a `resume --from` later step), not passed: a miss.
@@ -185,7 +184,8 @@ module Workspace
        "pass_first_percent" => settled.empty? ? nil : (clean * 100.0 / settled.size).round,
        "running" => list.count { |each| each[:state] == :running }, "cancelled" => list.count { |each| each[:state] == :cancelled },
        "stuck" => list.count { |each| each[:state] == :stuck },
-       "resumes" => resumes, "resumes_per_run" => resumes.fdiv(list.size).round(1)}
+       "resumes" => resumes, "resumes_per_run" => resumes.fdiv(list.size).round(1),
+       "run_ids" => list.map { |each| each[:id] }}
     end
   end
 end
