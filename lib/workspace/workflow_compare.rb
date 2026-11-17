@@ -76,9 +76,11 @@ module Workspace
     # @param last [Numeric, nil] see {WorkflowRunLoader#load}
     # @param include [#call, nil] see {WorkflowRunLoader#load}
     # @param loaded [Hash, nil] the answer of {WorkflowRunLoader#load}, when the caller has read it already
+    # @param resumes [#call, nil] given a run, its {WorkflowRunLoader#resumes}; for a caller that keeps the answers (default: the loader)
     # @return [Hash{String=>Object}] "by", "runs" (read), "matched" (in a group), "without_pack", "no_attempts",
     #   "unreadable" (files that are no run, plus runs of the wrong shape), "undated", "groups" and "warning"
-    def read(workflow:, by:, last: nil, include: nil, loaded: nil)
+    def read(workflow:, by:, last: nil, include: nil, loaded: nil, resumes: nil)
+      resumes ||= ->(each) { @loader.resumes(each) }
       kind, name = self.class.parse_by(by)
       loaded ||= @loader.load(workflow: workflow, last: last, include: include)
       groups = {}
@@ -91,7 +93,7 @@ module Workspace
         when :version then version_key(run)
         else definition_key(run)
         end
-        figures = figures_of(run)
+        figures = figures_of(run, resumes)
       rescue NoMethodError, TypeError, ArgumentError, Workspace::Error
         counts["malformed"] += 1
       else
@@ -149,14 +151,14 @@ module Workspace
     end
 
     # What one run adds to its group.
-    def figures_of(run)
+    def figures_of(run, resumes)
       missed = steps_of(run).any? { |attempts| missed?(attempts, run.state == "completed") }
       state = case run.state
       when "completed" then :settled
       when "cancelled" then missed ? :settled : :cancelled
       else (missed && STUCK.include?(run.reason&.dig("code"))) ? :stuck : :running
       end
-      {id: run.id, state: state, first_try: run.state == "completed" && !missed, resumes: @loader.resumes(run).values.sum}
+      {id: run.id, state: state, first_try: run.state == "completed" && !missed, resumes: resumes.call(run).values.sum}
     end
 
     # Per step, its attempts that are stored as Hashes.

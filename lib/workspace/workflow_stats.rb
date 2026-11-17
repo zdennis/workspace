@@ -43,11 +43,13 @@ module Workspace
     # @param last [Numeric, nil] see {WorkflowRunLoader#load}
     # @param include [#call, nil] see {WorkflowRunLoader#load}
     # @param loaded [Hash, nil] the answer of {WorkflowRunLoader#load}, when the caller has read it already
+    # @param resumes [#call, nil] given a run, its {WorkflowRunLoader#resumes}; for a caller that keeps the answers (default: the loader)
     # @return [Hash{String=>Object}] "runs" (how many were read), "unreadable" (files that are no run, plus runs whose
     #   content was the wrong shape), "undated", "steps" (one row per step: "step", "attempts", "passed", "failed", "overridden",
     #   "not_delivered", "unfinished", "median_seconds", "resumes", "tokens_from_unfinished" (unfinished attempts whose tokens are in the mean), "tokens" => {"mean", "runs_counted", "runs_uncounted"})
     #   in the order of the newest run's definition then the others, and "unattributed_resumes"
-    def read(workflow:, last: nil, include: nil, loaded: nil)
+    def read(workflow:, last: nil, include: nil, loaded: nil, resumes: nil)
+      resumes ||= ->(each) { @loader.resumes(each) }
       loaded ||= @loader.load(workflow: workflow, last: last, include: include)
       rows = {}
       unattributed = 0
@@ -59,15 +61,15 @@ module Workspace
         run = WorkflowRun.from_h(stored)
         row_ids = step_ids(run)
         found = tally(run)
-        resumes = @loader.resumes(run)
+        resumed = resumes.call(run)
       rescue NoMethodError, TypeError, ArgumentError, Workspace::Error
         malformed += 1
       else
         used += 1
         first_ids ||= row_ids
-        (row_ids + found.keys + resumes.keys).uniq.each { |id| rows[id] ||= blank(id) }
+        (row_ids + found.keys + resumed.keys).uniq.each { |id| rows[id] ||= blank(id) }
         found.each { |id, tallied| merge(rows[id], tallied) }
-        resumes.each { |id, count| id ? rows[id]["resumes"] += count : unattributed += count }
+        resumed.each { |id, count| id ? rows[id]["resumes"] += count : unattributed += count }
       end
       steps = order(rows, first_ids || []).map { |row| finish(row) }
       {"runs" => used, "unreadable" => loaded["unreadable"] + malformed, "undated" => loaded["undated"], "steps" => steps, "unattributed_resumes" => unattributed}
