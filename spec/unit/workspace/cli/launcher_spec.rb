@@ -27,6 +27,23 @@ RSpec.describe Workspace::CLI::Launcher do
     {"ref" => "pack/#{ref}", "source" => "config"}
   end
 
+  describe "#launch_missing" do
+    it "launches windowed workspaces and headless ones as two batches, and answers none failed" do
+      state["app"] = {"unique_id" => "u1"}
+      state["web"] = {"headless" => true, "unique_id" => "u2"}
+
+      expect(launcher.launch_missing(invocation, ["app", "web"])).to eq({})
+
+      expect(launch_command.calls.map { |names, options| [names, options[:headless]] }).to eq([[["app"], nil], [["web"], true]])
+    end
+
+    it "answers why a batch could not be launched when the launch raises" do
+      allow(launch_command).to receive(:call).and_raise(Workspace::Error, "no tmux")
+
+      expect(launcher.launch_missing(invocation, ["app"])).to eq({"app" => "no tmux"})
+    end
+  end
+
   describe "#launch" do
     it "hands the projects to the launch command, then makes each one's settings file and runs its post_launch hook" do
       launched = launcher.launch(invocation, ["app", "web"])

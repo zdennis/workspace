@@ -116,13 +116,13 @@ module Workspace
       end
       return row(run, "skipped", held, "the run waits for a person (#{held}); see `workspace workflow status #{run.id}`") if held
       live = alive[workspace]
-      return row(run, "skipped", "unknown_liveness", "can't tell whether workspace '#{workspace}' has a tmux session (a custom socket, or tmux did not answer)") if live.nil?
+      return row(run, "skipped", "unknown_liveness", "can't tell whether workspace '#{workspace}' has a tmux session (a custom socket, or tmux did not answer); check `tmux ls`, then run `workspace workflow status #{run.id}`") if live.nil?
       if live
-        return row(run, "skipped", "nothing_to_restart", "workspace '#{workspace}' is running and step #{run.current} is between turns; its daemon and the sweep take it from here") unless open
+        return row(run, "skipped", "nothing_to_restart", "workspace '#{workspace}' is running and step #{run.current} is between turns; the agent daemon moves it on when the agent's turn ends") unless open
         return row(run, "skipped", "pane_alive", "workspace '#{workspace}' is running and the run's pane is there") if @panes.alive?(run.id)
       end
       if open && infra && (live ? PENDING_INFRA : [:claimed]).include?(infra[:state])
-        return row(run, "skipped", "infra_retry_pending", "step #{run.current} has an automatic restart #{infra[:state]}; the workspace's daemon carries it out")
+        return row(run, "skipped", "infra_retry_pending", "step #{run.current} has an automatic restart #{infra[:state]}; another process is already restarting it, or the workspace's daemon will")
       end
       return {kind: :wake, run: run} unless open
       return limit_row(run, max) if recoveries >= max
@@ -140,7 +140,7 @@ module Workspace
        infra: WorkflowTransitions.infra_retry(run.to_h, now), recoveries: run.reboot_recoveries}
     rescue KeyError, TypeError, NoMethodError => e
       {"workspace" => run.to_h["workspace"], "outcome" => "failed", "reason" => "unreadable_run", "run_id" => run.id, "step" => nil, "attempt" => nil,
-       "message" => "the run could not be read as a run (#{e.class}: #{first_line(e)}); see `workspace workflow status #{run.id}`"}
+       "message" => "the run could not be read as a run (#{e.class}: #{first_line(e)})"}
     end
 
     # The engine's refusal of a restart with the pane gone, returned or raised alike.
@@ -274,7 +274,7 @@ module Workspace
     end
 
     def claimed_row(run)
-      row(run, "skipped", "infra_retry_pending", "step #{run.current}'s automatic restart is claimed by another process, which carries it out")
+      row(run, "skipped", "infra_retry_pending", "another process is already restarting step #{run.current}")
     end
 
     def moved_on(run) = row(run, "skipped", "moved_on", "the run moved on while it was being recovered; nothing was changed")

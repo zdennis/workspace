@@ -3747,22 +3747,11 @@ module Workspace
       @state.keys.dup
     end
 
-    # Launches the workspaces whose session is gone, each the way it was last
-    # launched (headless ones stay headless), as `relaunch` does.
+    # Launches the workspaces whose session is gone, as `relaunch` does (see {CLI::Launcher#launch_missing}).
     #
     # @return [Hash{String=>String}] workspace => why it could not be launched
     def launch_for_restore(names)
-      headless, windowed = names.partition { |name| @state.dig(name, "headless") }
-      [[windowed, nil], [headless, true]].each_with_object({}) do |(batch, mode), failures|
-        next if batch.empty?
-
-        launch = @launcher.launch(@invocation, batch.dup, headless: mode)
-        @launcher.rows(launch[:projects], launch[:result]).each do |row|
-          failures[row["workspace"]] = row["message"] || row["reason"] if row["outcome"] == "failed"
-        end
-      rescue Workspace::Error => e
-        batch.each { |name| failures[name] = e.message }
-      end
+      @launcher.launch_missing(@invocation, names)
     end
 
     def cmd_add(args)

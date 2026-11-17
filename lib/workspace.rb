@@ -1152,6 +1152,14 @@ module Workspace
     workflow_needs_me = WorkflowNeedsMe.new
     protected_branch = ProtectedBranch.new(git: git)
     branch_inputs = WorkflowBranchInputs.new(git: git, start_ref: start_ref, protected_branch: protected_branch, pull_request_status: PullRequestStatus.new)
+    tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands)
+    agent_resume_command = AgentResumeCommand.new(tmuxinator_report: tmuxinator_report, agent_commands: agent_commands)
+    workflow_recover = WorkflowRecover.new(store: workflow_store, engine: workflow_engine,
+      restore: Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,
+        process_tree: process_tree, agent_ensurer: ensure_agent_command, agent_commands: agent_commands,
+        resume_command: agent_resume_command, output: StringIO.new, error_output: error_output),
+      readiness: agent_readiness, panes: workflow_panes, liveness: Liveness.new(tmux: tmux), project_config: project_config,
+      config: workflow_config, session_name: ->(workspace) { tmux.session_name_for(workspace) })
     workflow_infra_retry = WorkflowInfraRetry.new(engine: workflow_engine, store: workflow_store, dispatch: pane_dispatch, lock_holder: lock_holder, agent_commands: agent_commands)
     workflow_command = Commands::Workflow.new(
       infra_retry: workflow_infra_retry,
@@ -1166,6 +1174,7 @@ module Workspace
       attempts: WorkflowAttempts.new,
       audit: WorkflowAudit.new(attempts: WorkflowAttempts.new, dir: config.workflow_evidence_dir),
       sweep: workflow_sweep,
+      recover: workflow_recover,
       sweep_actions: WorkflowSweepActions.new(store: workflow_store, panes: workflow_panes, status: workflow_status),
       schedule: sweep_schedule,
       needs_me: workflow_needs_me,
@@ -1276,8 +1285,6 @@ module Workspace
       hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, project_config: project_config, agent_command_check: AgentCommandCheck.new, project_detector: project_detector, config_resolver: config_resolver, output: output, error_output: error_output)
     config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library, catalog: workflow_catalog, template_validator: template_validator)
-    tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux, agent_commands: agent_commands)
-    agent_resume_command = AgentResumeCommand.new(tmuxinator_report: tmuxinator_report, agent_commands: agent_commands)
     restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,
       process_tree: process_tree, agent_ensurer: ensure_agent_command, agent_commands: agent_commands,
       resume_command: agent_resume_command, output: output, error_output: error_output)
@@ -1400,7 +1407,7 @@ module Workspace
       processes: lock_holder)
     workflow_family = CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: workflow_start_command, workflow_project: workflow_project,
       status_scope: status_scope, config: config, project_config: project_config, project_detector: project_detector, git: git, launch_mode: launch_mode,
-      common: common, names: names, input: input, working_dir: working_dir)
+      common: common, names: names, input: input, working_dir: working_dir, launcher: launcher)
     agent_client = AgentMessageClient.new(config: config)
     agent_run_family = CLI::AgentRun.new(config: config, agent_client: agent_client, restart_agent_command: restart_agent_command,
       send_command: send_command, prompt_queue_command: prompt_queue_command, handoff_command: handoff_command,

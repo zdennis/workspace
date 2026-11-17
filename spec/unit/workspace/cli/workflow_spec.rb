@@ -35,6 +35,50 @@ RSpec.describe Workspace::CLI::Workflow do
     e.status
   end
 
+  describe "workflow recover" do
+    let(:command) { double("workflow command") }
+    let(:launcher) { double("launcher") }
+    let(:result) { {exit_code: 0, results: [], status: "ok", extra: {"next_actions" => []}} }
+
+    before { allow(command).to receive(:recover) { |**_, &launch| (@launch = launch) && result } }
+
+    it "prints the action document with the command's extra" do
+      allow(command).to receive(:recover).and_return(result.merge(extra: {"next_actions" => [{"action" => "restore"}], "unreadable_files" => []}))
+
+      expect(run("recover", "--json", workflow_command: command, launcher: launcher)).to be_nil
+
+      expect(JSON.parse(out.string)).to include("action" => "workflow recover", "status" => "ok", "next_actions" => [{"action" => "restore"}], "unreadable_files" => [])
+    end
+
+    it "passes dry_run, and false without the flag" do
+      run("recover", "--dry-run", workflow_command: command, launcher: launcher)
+      expect(command).to have_received(:recover).with(dry_run: true)
+
+      run("recover", workflow_command: command, launcher: launcher)
+      expect(command).to have_received(:recover).with(dry_run: false)
+    end
+
+    it "hands the command a launch block that launches the missing workspaces through the launcher" do
+      allow(launcher).to receive(:launch_missing).and_return({"app" => "no config"})
+      run("recover", workflow_command: command, launcher: launcher)
+
+      expect(@launch.call(["app"])).to eq({"app" => "no config"})
+      expect(launcher).to have_received(:launch_missing).with(instance_of(Workspace::CLI::Invocation), ["app"])
+    end
+
+    it "exits with the result's code: 3 for partial, 1 for failed" do
+      {"partial" => 3, "failed" => 1}.each do |status, code|
+        allow(command).to receive(:recover).and_return(result.merge(exit_code: code, status: status, results: [{"outcome" => "failed", "run_id" => "wr_1"}]))
+        expect(run("recover", "--json", workflow_command: command, launcher: launcher)).to eq(code)
+      end
+    end
+
+    it "refuses a RUN or --name" do
+      expect { run("recover", "wr_1", workflow_command: command, launcher: launcher) }.to raise_error(Workspace::UsageError, /takes no RUN/)
+      expect { run("recover", "--name", "app", workflow_command: command, launcher: launcher) }.to raise_error(Workspace::UsageError, /takes no --name/)
+    end
+  end
+
   describe "workflow sweep --json" do
     it "puts the command's extra into the action document" do
       actions = [{"action" => "workflow resume", "args" => ["wr_1"], "needs" => [], "why" => "held"}]

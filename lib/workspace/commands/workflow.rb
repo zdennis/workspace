@@ -33,6 +33,7 @@ module Workspace
       # @param attempts [Workspace::WorkflowAttempts, nil] reads a run's recorded attempts (`attempts`)
       # @param audit [Workspace::WorkflowAudit, nil] checks a run's evidence copies against their hashes (`audit`)
       # @param sweep [Workspace::WorkflowSweep, nil] looks at the runs still going and acts on the stopped ones (`sweep`)
+      # @param recover [Workspace::WorkflowRecover, nil] brings going runs back after a reboot (`recover`)
       # @param sweep_actions [Workspace::WorkflowSweepActions, nil] turns the sweep's rows into `next_actions` (`sweep --json`)
       # @param needs_me [Workspace::WorkflowNeedsMe, nil] narrows the runs to the ones that wait for a person (`status --needs-me`)
       # @param stats [Workspace::WorkflowStats, nil] reads a workflow's runs into per-step figures (`stats`)
@@ -49,7 +50,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, pid: Process.pid,
         clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
@@ -61,6 +62,7 @@ module Workspace
         @attempts = attempts
         @audit = audit
         @sweep = sweep
+        @recover = recover
         @sweep_actions = sweep_actions
         @schedule = schedule
         @needs_me = needs_me
@@ -724,6 +726,21 @@ module Workspace
         {exit_code: ((rows.any? { |each| each["outcome"] == "failed" }) ? 1 : 0), results: rows, status: (dry_run ? "dry_run" : nil), extra: extra}
       end
 
+      # `workflow recover`: after a reboot, restores the workspaces that have going runs and restarts or wakes those
+      # runs (see {Workspace::WorkflowRecover}). Prints a line for each run.
+      #
+      # @param dry_run [Boolean] say what would be done and do nothing
+      # @yieldparam missing [Array<String>] workspaces with no tmux session, to launch
+      # @yieldreturn [Hash{String=>String}] workspace => why it could not be launched
+      # @return [Hash{Symbol=>Object}] `exit_code` (0, 3 or 1), `results`, `status` and `extra`
+      # @raise [Workspace::Error] when no recover was wired
+      def recover(dry_run: false, &launch)
+        raise Workspace::Error, "workflow recover is not available: no recover was wired" unless @recover
+        outcome = @recover.call(dry_run: dry_run, &launch)
+        print_recover(outcome[:results], dry_run: dry_run)
+        outcome
+      end
+
       # `workflow sweep --install`, `--uninstall` or `--installed`: the opt-in launchd
       # entry that runs the sweep every five minutes. Changes nothing unless asked.
       # A running agent daemon also runs the sweep for its own workspace every five minutes.
@@ -1175,6 +1192,33 @@ module Workspace
         end
         return unless summary
         @output.puts "#{budget_only ? "Budget-only pass: looked" : "Looked"} at #{rows.size} run#{"s" unless rows.size == 1}; #{shown.empty? ? "nothing to report" : "#{shown.size} reported above"}."
+      end
+
+      def print_recover(rows, dry_run:)
+        return @output.puts("No going runs to recover.") if rows.empty?
+        rows.each do |each|
+          text = TerminalText.escape(each["message"] || [each["outcome"], each["reason"]].compact.join(" ").tr("_", " "))
+          manual = recover_manual_command(each)
+          @output.puts "#{each["run_id"]}  #{each["workspace"]}  step #{each["step"]}  #{manual ? "#{text.chomp(".")}. Run: #{manual}" : text}"
+        end
+        @output.puts "#{recover_counts(rows)}."
+        @output.puts "Dry run: nothing was changed. Run `workspace workflow recover` to do it." if dry_run
+      end
+
+      # The command a person runs for a refused or failed row: its first next action, else `workflow status RUN`.
+      def recover_manual_command(row)
+        return nil unless %w[refused failed].include?(row["outcome"]) && row["run_id"]
+        actions = (row["next_actions"] || []).select { |each| each["needs"].to_a.empty? }
+        return "`workspace workflow status #{row["run_id"]}`" if actions.empty?
+        actions.map { |each| "`workspace #{[each["action"], *each["args"]].join(" ")}`" }.join(" or ")
+      end
+
+      def recover_counts(rows)
+        counts = rows.group_by { |each| %w[refused failed].include?(each["outcome"]) ? "needs you" : each["outcome"].tr("_", " ") }
+        counts.map do |label, found|
+          label = "need you" if label == "needs you" && found.size != 1
+          "#{found.size} #{label}"
+        end.join(", ")
       end
 
       def scope_filter(scope)

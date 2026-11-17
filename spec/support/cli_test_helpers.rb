@@ -982,6 +982,12 @@ module CLITestHelpers
       {exit_code: 0}
     end
 
+    def recover(dry_run: false, &launch)
+      @calls << [:recover, {dry_run: dry_run, launch: launch}]
+      raise @error if @error
+      {exit_code: 0, results: [], status: dry_run ? "dry_run" : "ok", extra: {"next_actions" => []}}
+    end
+
     %i[stats compare audit].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
