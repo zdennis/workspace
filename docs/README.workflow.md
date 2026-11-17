@@ -28,6 +28,7 @@ workspace workflow attempts RUN [--attempt-of STEP] [--json]
 workspace workflow audit RUN [--attempt-of STEP] [--json]
 workspace workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow compare ID [--by definition | --by version | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
+workspace workflow insights ID [--runs N] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow sweep --install | --uninstall [--dry-run] [--json]
 workspace workflow sweep --installed [--json]
@@ -65,6 +66,7 @@ workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 | `workflow audit` | Check the evidence copies a run kept against the hashes recorded for them, going or finished. Exits 1 when a copy changed, is gone or was replaced. Reads the run file and the evidence directory and writes nothing. With `--json`, `next_actions` says what to look at after a mismatch. See [Auditing a run's evidence](#auditing-a-runs-evidence) |
 | `workflow stats` | How each step of a workflow went across its runs, going and finished, in every workspace unless `--name` or `--project` narrows it: attempts, passes, failures, median time, resumes and tokens per run. `--last DURATION` keeps the runs started in that window. Reads the run files and writes nothing. See [Step statistics](#step-statistics) |
 | `workflow compare` | Sets a workflow's runs side by side, grouped by the definition they ran or by the text of one pack their agent was sent: runs, share that passed first time and resumes per run, always with a warning that it shows a direction and proves nothing. Reads the run files and writes nothing. See [Comparing runs](#comparing-runs) |
+| `workflow insights` | Where a workflow's newest runs keep retrying, being rejected or stopping: hot steps, recurring review rejections, failed attempts, holds and the effect of definition and pack changes, each with its run ids. `--runs N` (default 20) reads the newest N runs; `--last DURATION` keeps the runs started in that window. Prints counts and ids, never a reviewer's or an agent's text. Reads the run files and writes nothing. See [Insights](#insights); needs `workflow` 56 |
 | `workflow files` | The files a run keeps: each attempt's prompt, check log and proof logs and each step's `produces` entries, with whether each exists and its size. Reads file metadata only; a link is reported, never followed. See [Reading a run's files](#reading-a-runs-files) |
 | `workflow sweep` | One pass over the runs going (a paused run gets a `paused` row, outcome `nothing`, next action `workflow unpause`): record a pane or agent that is gone, start an agent daemon that is not running, decide a step whose agent ended its turn unseen, and apply a step's `on_timeout`. Needs no agent daemon. See [Sweeping stopped runs](#sweeping-stopped-runs) |
 | `workflow recover` | After a reboot or the loss of the tmux server, restore each workspace that has a going run no person holds, restart a step that was mid-turn and wake a run that was between turns. `--dry-run` says what would happen and changes nothing. See [Recovering after a reboot](#recovering-after-a-reboot) |
@@ -1111,6 +1113,50 @@ A run with no readable hash is in the `unknown` group: for `pack:`, a run whose 
 The output always ends with the sample warning, and `--json` always carries it as `warning`. Its first clause, `Too few runs to call this a difference;`, is dropped once every group has at least 20 settled runs and there are at least two groups. The rest stays: the tasks differ between runs, so compare shows a direction and does not prove a cause.
 
 `--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"by":"definition"|"version"|"pack:NAME","runs":N,"matched":N,"without_pack":N,"no_attempts":N,"unreadable":N,"undated":N,"warning":TEXT,"groups":[...]}`, each group `{"key","sha","runs","settled","first_try","pass_first_percent":N-or-null,"running","cancelled","stuck","resumes","resumes_per_run","run_ids":[RUN-ID,...]}`. `runs` counts the runs read and `matched` those in a group. `key` is the group's name (a sha, a version number as text, `unknown` or `mixed`); `sha` holds the same text and is kept for older readers. `run_ids` lists the ids of the group's runs, newest first; a run counted in `without_pack`, `no_attempts` or `unreadable` is in no group's list. Needs `workflow` 24 in `capabilities`, and 55 for `--by version` and `key`.
+
+### Insights
+
+`workflow insights ID [--runs N] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]` shows where the newest runs of definition `ID` keep retrying, being rejected or stopping. Needs `workflow` 56.
+
+```
+$ workspace workflow insights rpiv-auto-approve
+Insights for rpiv-auto-approve: 20 runs read, of 26 stored for this workflow. The store as a whole keeps only the newest 200 finished runs, so older ones are gone.
+Hot steps (retried or resumed):
+  plan_review: 26 attempts, median 9m, tokens/run 640k (recorded in 18 runs: r-0412, r-0409, ...); retried in 7 runs: r-0412, r-0409, ...; resumed in 4 runs: r-0409, r-0403, ...
+Recurring rejections:
+  plan_review / skeptic: verdict reject, 9 times in 5 runs: r-0412, r-0409, r-0407, r-0403, r-0398
+Single observations:
+  plan_review / skeptic: problem wrong_revision, 1 time in 1 run: r-0403
+Failures:
+  implement failed_check: 3 times in 3 runs: r-0411, r-0405, r-0399
+Holds:
+  implement failed_check: 3 times in 3 runs: r-0411, r-0405, r-0399
+Effects of definition and pack changes:
+  definition 1dd4e0aa: 33% first try, 1.5 resumes/run (6 runs: r-0412, ...)
+Too few runs to call this a difference; tasks also differ between runs, so this shows a direction and does not prove a cause.
+```
+
+It reads the run files, going and finished, and writes nothing. `ID` needs no definition on disk. An `ID` with no runs prints `No runs of ID.` and still exits 0.
+
+Every figure is a count, a step id, a reviewer name, a code or a run id. No reviewer's write-up, summary, prompt or other agent text is ever shown or read. Pass a run id to [`workflow trace`](#tracing-a-run) to see one run. A reviewer name or code comes from stored text and is cut to 64 characters.
+
+**Choosing the runs.** `--runs N` (a whole number of 1 or more; default 20) reads the newest N runs of `ID`. `--last DURATION` means what it does for [`stats`](#step-statistics) and [`compare`](#comparing-runs): only runs started in that window (`30d`, `2w`, `12h`, `90m`; a bare number is seconds). It is not a count. The two combine: the window is applied first, then the newest N of what is left. The header says how many runs were read and how many are stored for this workflow, and the store note says older runs may be gone. Scope flags work as in `stats`; `--all` is refused.
+
+**Thresholds.** `MIN_RUNS` is 3: with fewer than 3 runs read, insights prints `Not enough runs (N; insights needs 3).` and no sections (the header and the compare warning still show). Row order means nothing below `MIN_RUNS`, so the `--json` rows then keep the order `stats` gives them and `enough` is false. At 3 or more, hot steps are ranked by the number of runs that retried them, then median time, then tokens. `THEME_MIN_RUNS` is 3: a rejection key is a recurring theme only when it appears in 3 or more distinct runs; three rejections in one run are one observation. Anything less is listed as a single observation.
+
+| Section | What it lists |
+|---------|---------------|
+| Hot steps | Steps with a retried or resumed run: the `stats` row plus the runs that retried the step (`retry_run_ids`), resumed it (`resume_run_ids`) and recorded its tokens (`token_run_ids`). A step is retried when a run delivered more than one attempt of it. |
+| Recurring rejections, single observations | Keys of step, reviewer and verdict `reject`, and of step, reviewer and a reviewer's `problem` code (such as `wrong_revision`), with the count and the runs. A reject counts unless its row says `counted: false`, as the engine treats it. `problem` codes are counted even on a verdict row that did not count, since that is why it did not. |
+| Failures | Failed attempts by step and `code`. |
+| Holds | Stops with the reasons `budget_spent`, `run_timed_out` and `failed_check`, by step and code, read from attempts and from the run's own reasons. |
+| Effects | `workflow compare` for the definition, the `version` and each pack the runs carry (the 5 used by most runs), with its warning kept as it is. |
+
+Failures and holds can overlap: a failed check is both a failed attempt and a `failed_check` hold, so it appears in both. Run-id lists are never cut short. `unreadable` counts run files in the whole store that could not be read, not only those of `ID`, because an unreadable file cannot be told apart by workflow.
+
+Exit codes follow `stats`: 0 (also for an `ID` with no runs), 1 for a usage error (such as `--runs 0` or `--runs x`) and 3 with `status` `partial` when a run file could not be read, because the figures are then incomplete.
+
+`--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","runs":N,"last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"stored":N,"unreadable":N,"undated":N,"enough":bool,"hot_steps":[...],"themes":[...],"observations":[...],"failures":[...],"holds":[...],"effects":{...},"next_actions":[...]}`. `runs` is the runs read and `stored` the runs of this workflow before `--runs` narrowed them. A `hot_steps` row is a `stats` step row (see [Step statistics](#step-statistics)) with `retry_run_ids`, `resume_run_ids` and `token_run_ids`. A `themes` or `observations` row is `{"step","reviewer","verdict":"reject"-or-null,"problem":CODE-or-null,"count","run_ids"}`. A `failures` or `holds` row is `{"step","code","count","run_ids"}`. `effects` maps `definition`, `version` and each `pack:NAME` to that grouping's `workflow compare --json` result without the document keys (`by`, `runs`, `matched`, `without_pack`, `no_attempts`, `unreadable`, `undated`, `warning`, `groups`). `next_actions` offers `workflow stats ID` and `workflow compare ID --by definition` with the same scope, and `workflow trace RUN` for the newest run behind the top hot step or theme when `enough`.
 
 ### Auditing a run's evidence
 
