@@ -1107,18 +1107,23 @@ module Workspace
       {kind: :loop, edge: edge, to: on_fail["goto"], count: count + 1, wait: WorkflowDefinition.backoff(on_fail)}
     end
 
-    # The failure codes a step's implicit loop (a step with no `on_fail`) never retries, read from the fail
-    # sites: a guard stop is the checkout disagreeing with the run, `check_error` is the check or guard not
-    # having run at all, `step_timed_out` the step outliving its time, and an `unproven` require proof is one
-    # the engine could not decide. Re-running the step before cannot fix any of them.
-    IMPLICIT_LOOP_STOP_CODES = %w[check_error step_timed_out].freeze
+    # Whether a failure is one no loop can fix, read from the fail sites: a guard stop is the
+    # checkout disagreeing with the run, an `unproven` require proof is one the engine could not
+    # decide, `check_error` is the check or guard not having run at all, and `step_timed_out` the
+    # step outliving its time. (`check_timed_out` loops: an agent's own code can hang a check.)
+    #
+    # @param failure [Hash{String=>Object}] a step failure's "cause" and "code"
+    # @return [Boolean]
+    def self.implicit_loop_stops?(failure)
+      failure["cause"] == "guard" || failure["unproven"] == true || %w[check_error step_timed_out].include?(failure["code"])
+    end
 
     # @param run [Hash{String=>Object}] a stored run at the failed step
     # @param step [Hash{String=>Object}] the failing step's definition
     # @param failure [Hash{String=>Object}] its "cause" and "code"
     # @return [Hash{Symbol=>Object}] `{kind: :loop, edge:, to:, count:, wait: nil}` or `{kind: :stop}`
     def self.implicit_failure_move(run, step, failure)
-      return {kind: :stop} if failure["cause"] == "guard" || failure["unproven"] == true || IMPLICIT_LOOP_STOP_CODES.include?(failure["code"])
+      return {kind: :stop} if implicit_loop_stops?(failure)
       steps = run["definition"]["steps"]
       index = steps.index { |each| each["id"] == step["id"] }
       return {kind: :stop} if index.to_i.zero?

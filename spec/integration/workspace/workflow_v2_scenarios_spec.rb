@@ -164,7 +164,6 @@ RSpec.describe "the rpiv-auto-approve-v2 preset in the simulator" do
     expect(result["outcome"]).to eq("completed")
   end
 
-
   it "holds the round start when the token budget is spent, and starts that same round on a resume with --extra-tokens" do
     answers.push({on: "budget_spent", resume: {extra_tokens: 1_000_000}})
     result = play("plan" => [{"tokens" => 40_000_000, "reviews" => approve_all}])

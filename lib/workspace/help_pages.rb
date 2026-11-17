@@ -358,8 +358,8 @@ module Workspace
         usage: ["workflow show [ID] [--source] [--json]"],
         summary: "Print one workflow (its inputs and steps)",
         about: [
-          'With ID left out and no --source, the resolved run\'s workflow is shown (the pane\'s run, else the one',
-          'going in this checkout); when nothing resolves, every definition is listed.',
+          "With ID left out and no --source, the resolved run's workflow is shown (the pane's run, else the one",
+          "going in this checkout); when nothing resolves, every definition is listed.",
           "",
           "--source gives the file's text, its sha256 and its problems even when it is invalid (exit 0), for",
           "an editor.",
@@ -392,9 +392,9 @@ module Workspace
         usage: ["workflow graph [ID] [--run RUN] [--format mermaid|dot|ascii|json] [--json]"],
         summary: "Draw a workflow's steps, gates, reviews and loops",
         about: [
-          'With ID left out, the workflow of the resolved run is drawn (the pane\'s run, else the one going in',
-          'this checkout); when nothing resolves, ID is needed. An id reached through a run that is not stored',
-          'fails as unknown_run.',
+          "With ID left out, the workflow of the resolved run is drawn (the pane's run, else the one going in",
+          "this checkout); when nothing resolves, ID is needed. An id reached through a run that is not stored",
+          "fails as unknown_run.",
           "",
           "Draws the definition as a graph: a node for each step, a gate node after a step with gate: approve,",
           "a review node after a step with review:, and an edge for each way a run moves between them (next,",
@@ -823,8 +823,8 @@ module Workspace
         summary: "Show how each step of a workflow went across its runs",
         about: [
           "ID is a workflow definition id (see `workspace workflow show`); it need not exist now, only its runs do.",
-          'With ID left out, the workflow of the resolved run is used (the pane\'s run, else the one going in this',
-          'checkout); an id reached through a run that is not stored fails as unknown_run.', 
+          "With ID left out, the workflow of the resolved run is used (the pane's run, else the one going in this",
+          "checkout); an id reached through a run that is not stored fails as unknown_run.",
           "The runs of one id are counted together, even when two projects have each their own definition of it; with --name or",
           "--project, --json `definition` and a text line say where that project's definition of the id is found now.",
           "Covers the runs going and finished, in every workspace unless --name or --project narrows it. One row",
@@ -880,8 +880,8 @@ module Workspace
           "This shows a direction and proves nothing: the tasks differ between runs. The result always ends with a warning saying",
           "so (the `warning` key of --json), and says the sample is too small while any group has fewer than 20 settled runs or there",
           "is only one group. A run file that cannot be read exits 3 (status partial), as in `workflow stats`.",
-          'With ID left out, the workflow of the resolved run is used (the pane\'s run, else the one going in this',
-          'checkout); an id reached through a run that is not stored fails as unknown_run.'
+          "With ID left out, the workflow of the resolved run is used (the pane's run, else the one going in this",
+          "checkout); an id reached through a run that is not stored fails as unknown_run."
         ],
         options: [
           ["--by GROUP", "definition (default), version or pack:NAME, a pack's name such as plan-review"],

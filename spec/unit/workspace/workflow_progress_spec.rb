@@ -256,7 +256,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
     it "loops back to the step before on a failure the default can retry, telling it what failed" do
       definition = [{"id" => "plan", "produces" => ["plan.md"]}, {"id" => "build", "produces" => []}]
-      run = run_hash(definition_steps: definition, "current" => "build")
+      run = run_hash(:definition_steps => definition, "current" => "build")
       run["steps"]["build"] = {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:30:00.000Z"}]}
       context = ctx
 
@@ -275,7 +275,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
     it "stops for a person when the default loop's failure is infrastructural" do
       definition = [{"id" => "plan", "produces" => ["plan.md"]}, {"id" => "build", "produces" => []}]
-      run = run_hash(definition_steps: definition, "current" => "build")
+      run = run_hash(:definition_steps => definition, "current" => "build")
       run["steps"]["build"] = {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:30:00.000Z"}]}
 
       run = progress.fail_step(run, {"cause" => "guard", "code" => "head_moved"}, ctx: ctx)
