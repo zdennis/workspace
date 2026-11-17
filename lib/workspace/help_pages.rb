@@ -1502,6 +1502,7 @@ module Workspace
           "in_progress with that pane as its owner, then types the brief (the play, the spine pack, and the",
           "stage's path and file), then binds the pane. Refuses a stage that is completed or skipped",
           "(stage_done) or whose depends_on stages are not (stage_waiting), and a pane that is busy (pane_busy).",
+          "A pane a going workflow run owns is never typed into (pane_bound_to_run); nothing is written.",
           "",
           "--fan-out starts every sub-stage of STAGE-PATH (the folder named like its file) that is not started",
           "and has no unmet depends_on, each in its own new pane (--spawn, default the main agent's kind), at",

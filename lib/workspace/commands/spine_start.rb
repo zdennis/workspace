@@ -244,6 +244,7 @@ module Workspace
         id = target["pane_id"]
         refuse_owned(name, stage, owner) if owner && owner["state"] == "working" && owner["pane_id"] != id
         @panes.require_agent(name, target, "stage")
+        @panes.refuse_bound(name, id)
         if target["state"] == "working" && owner_id == id && !stage.file.check_failed?
           @output.puts "Stage #{stage.path} of #{name} is already being worked on in pane #{id}."
           return doc(name, stage, "already_working", pane: id, play: job[:play])
