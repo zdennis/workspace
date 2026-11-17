@@ -231,6 +231,11 @@ RSpec.describe Workspace::Commands::Binding do
       expect(owner.owning_run(pane: "%5")).to be_nil
     end
 
+    it "refuses a pane that is not a pane id instead of saying no run owns it" do
+      expect { owner.owned(pane: "0.1") }.to raise_error(Workspace::UsageError, /pane id/)
+      expect { owner.refuse_owned!(pane: "0.1", workspace: "app", action: :type) }.to raise_error(Workspace::UsageError)
+    end
+
     it "gives a frozen owned hash with the run's paused state" do
       owner.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
       expect(owner.owned(pane: "%5")).to eq("run" => "wr_1", "pane" => "%5", "paused" => false)

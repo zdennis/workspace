@@ -165,11 +165,13 @@ module Workspace
       def going_run(pane)
         entry = live(pane: pane)
         return nil unless @runs && entry && entry["kind"] == "run"
-        run = @runs.run(entry["id"])
+        run = begin
+          @runs.run(entry["id"])
+        rescue Workspace::Error
+          return nil
+        end
         return nil if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
         [entry["id"], run]
-      rescue Workspace::Error
-        nil
       end
 
       def refusal_text(action, own_pane:, resumed:, run:, pane:, use:, paused:)
