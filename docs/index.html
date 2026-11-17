@@ -116,6 +116,65 @@ workspace add
 workspace launch my-project</code></pre>
   </div>
 
+  <h2>Run a workflow</h2>
+  <p>A workflow is an ordered list of steps — research, plan, implement, verify — run by the agent in a workspace's pane, with gates, checks and locks. <code>rpiv</code> is the built-in preset: research, plan (behind an approve gate), implement, verify.</p>
+  <div class="card">
+    <pre><code>workspace workflow run rpiv --input task="PROJ-101 invoice PDF export"</code></pre>
+  </div>
+  <p class="muted">Add <code>--dry-run</code> first to preview what would start. For work no one watches, the recommended preset is <code>rpiv-auto-approve-v2</code>:</p>
+  <div class="card">
+    <pre><code>workspace workflow start rpiv-auto-approve-v2 --prompt "add a retry to the uploader"</code></pre>
+  </div>
+  <p>See where a run stands with <code>workspace workflow status</code>, and every workflow with <code>workspace workflow list</code>.</p>
+
+  <h2>The shape of a workflow</h2>
+  <p><code>workspace workflow graph rpiv</code> draws any workflow as Mermaid, DOT, JSON or ASCII. The <code>rpiv</code> preset, in ASCII:</p>
+  <div class="card"><pre><code>      (Start)
+        |
+        v
+      +----------+
+      | Research |
+      +----------+
+        |
+        v
+      +------+
+   +->| Plan |
+   |  +------+
+   |    |
+   |    v
+   |  +===========+
+   +--| Plan gate |  reject (or --to an earlier step)
+      +===========+
+        |
+        v
+      +-----------+
++---->| Implement |
+|     +-----------+
+|       |
+|       v
+|     +--------+
++-----| Verify |  fail: max 3
+      +--------+
+        |
+        v
+      (End)</code></pre></div>
+
+  <h2>Add your own workflows</h2>
+  <p>Beyond the presets that ship, <code>workspace</code> reads workflow definitions from a local directory or a GitHub repository. Point the <code>workflows.sources</code> config key at either — a local path:</p>
+  <div class="card">
+    <pre><code>workspace config set workflows.sources '~/workflows'</code></pre>
+  </div>
+  <p>or a GitHub directory (a URL with ref, or shorthand <code>owner/repo/path</code>):</p>
+  <div class="card">
+    <pre><code>workspace config set workflows.sources 'https://github.com/acme/workflows/tree/main/presets'
+workspace config set workflows.sources 'acme/workflows/presets, ~/workflows'</code></pre>
+  </div>
+  <p>Then fetch and check them:</p>
+  <div class="card">
+    <pre><code>workspace workflow install</code></pre>
+  </div>
+  <p class="muted">Every <code>.yml</code> file in the source is checked, GitHub sources are cached under the state directory, and the report names what is new, changed or gone. Run it again to update. Your own files in <code>~/.config/workspace/workflows/</code> always win over sources; sources win over the presets.</p>
+
   <footer>
     <p class="muted">Full documentation in the <a href="https://github.com/zdennis/workspace">repo README</a> and <a href="https://github.com/zdennis/workspace/tree/main/docs">docs/</a>.</p>
   </footer>
