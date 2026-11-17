@@ -227,6 +227,29 @@ module Workspace
       [run["budget_hold"], run["timeout_hold"]].any? { |hold| hold.is_a?(Hash) && hold.key?("review_round") }
     end
 
+    # Why a run waits for a person, or for nothing the clock will move: the one rule `workflow sweep` and
+    # `workflow recover` share. A backoff that is only scheduled is no hold (a blocked one is); nor is a
+    # `waiting_lock` reason. First match wins.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [String, nil] `paused`, `retry_blocked`, `budget_hold`, `timeout_hold`, `round_held` (a reviewing step
+    #   stopped with a reason), `reason`, `gate_waiting`, `parked`, or nil
+    def self.held_reason(run)
+      return "paused" if run["paused"]
+      waiting = run["state"] == "waiting"
+      return "retry_blocked" if run.dig("backoff", "blocked") && waiting
+      return "budget_hold" if run["budget_hold"] && waiting
+      return "timeout_hold" if run["timeout_hold"] && waiting
+      step = run.dig("steps", run["current"]) || {}
+      reason = run["reason"]
+      reason = nil if reason.is_a?(Hash) && reason["code"] == "waiting_lock"
+      return "round_held" if step["state"] == "reviewing" && reason
+      return "reason" if reason
+      return "gate_waiting" if step.dig("gate", "state") == "waiting"
+      return "parked" if run["parked"]
+      nil
+    end
+
     # Whether a resume would start a review round, which the token budget and the run's timeout are asked about as
     # an attempt's start is: a round the budget or timeout held, or a fresh round after one that stopped for a
     # person. Not `--from` (it starts an attempt), nor a round whose delivery failed or lapsed (delivered again as
