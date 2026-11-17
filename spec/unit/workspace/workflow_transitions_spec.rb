@@ -923,7 +923,7 @@ RSpec.describe Workspace::WorkflowTransitions do
       error = refusal(stopped, "idle")
       expect(error.code).to eq("no_open_attempt")
       expect(error.details).to include("state" => "failed", "step" => "plan")
-      expect(error.message).to include("workspace workflow resume r1", "nothing was changed")
+      expect(error.message).to include("workspace workflow resume r1", "Nothing was changed.")
     end
 
     it "refuses a running step with no attempt or an ended one" do
@@ -960,7 +960,7 @@ RSpec.describe Workspace::WorkflowTransitions do
         error = refusal(candidate, "unknown")
         expect(error.code).to eq("step_still_working")
         expect(error.details["reason"]).to eq("unknown")
-        expect(error.message).to include("nothing was changed")
+        expect(error.message).to include("Nothing was changed.")
       end
     end
 

@@ -105,6 +105,7 @@ module Workspace
           opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
           opts.on("--accept-guard", "resume: accept the guard stop the run waits on (needs --note WHY); the checkout as it is now becomes the run's base and the step's other checks decide it") { options[:accept_guard] = true }
           opts.on("--retry", "resume --accept-guard: run the stopped step again instead of passing it (a new attempt)") { options[:guard_retry] = true }
+          opts.on("--restart-step", "resume: start a crashed step again in a fresh conversation") { options[:restart_step] = true }
           opts.on("--extra-attempts N", "resume, reject: add N to the run's attempt allowance when it has spent max_attempts (ignored by a resume that starts no attempt)") { |v| options[:extra_attempts] = v }
           opts.on("--extra-tokens N", "resume, reject: add N to the run's token budget when it has used budget.tokens (ignored by a resume that starts no attempt)") { |v| options[:extra_tokens] = v }
           opts.on("--extra-time DURATION", "resume, reject: add DURATION (30m, 2h) to the run's timeout when it has used its timeout: (active time; ignored by a resume that starts no attempt)") { |v| options[:extra_time] = v }
@@ -219,6 +220,7 @@ module Workspace
         raise UsageError, "workflow uninstall takes no argument." if subcommand == "uninstall" && subject
         workflow_pause_options(subcommand, options)
         workflow_accept_guard_options(subcommand, options)
+        workflow_restart_step_options(subcommand, options)
         gate_options = workflow_gate_options(subcommand, options)
         extra_attempts = workflow_extra_attempts(subcommand, options[:extra_attempts])
         extra_tokens = workflow_extra_tokens(subcommand, options[:extra_tokens])
@@ -346,7 +348,7 @@ module Workspace
             row
           end
         when "resume"
-          workflow_action(invocation, "workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds, caller_pane: ENV["TMUX_PANE"], accept_guard: options[:accept_guard] || false, guard_retry: options[:guard_retry] || false) }
+          workflow_action(invocation, "workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds, caller_pane: ENV["TMUX_PANE"], accept_guard: options[:accept_guard] || false, guard_retry: options[:guard_retry] || false, restart_step: options[:restart_step] || false) }
         when "cancel" then workflow_action(invocation, "workflow cancel", options) { @workflow_command.cancel(run: subject) }
         when "pause" then workflow_action(invocation, "workflow pause", options) { @workflow_command.pause(run: subject, interrupt: options[:interrupt] || false, reason: options[:reason], caller_pane: ENV["TMUX_PANE"]) }
         when "unpause" then workflow_action(invocation, "workflow unpause", options) { @workflow_command.unpause(run: subject, caller_pane: ENV["TMUX_PANE"]) }
@@ -430,6 +432,15 @@ module Workspace
         return if subcommand == "resume"
         raise UsageError, "--accept-guard is for `workflow resume`." if options[:accept_guard]
         raise UsageError, "--retry is for `workflow resume RUN --accept-guard --note WHY`." if options[:guard_retry]
+      end
+
+      # `--restart-step` belongs to resume alone and stands apart from the flags that name another way to resume.
+      def workflow_restart_step_options(subcommand, options)
+        return unless options[:restart_step]
+        raise UsageError, "--restart-step only works with `workflow resume`." unless subcommand == "resume"
+        {"--from" => :from, "--accept-guard" => :accept_guard, "--retry" => :guard_retry, "--extra-rounds" => :extra_rounds}.each do |flag, key|
+          raise UsageError, "--restart-step can not be used with #{flag}; use one or the other." if options[key]
+        end
       end
 
       # The `--step`/`--attempt` pair of approve and reject, checked; `--note-sha256` is approve's.

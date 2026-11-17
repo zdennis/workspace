@@ -906,7 +906,7 @@ module Workspace
         ]
       },
       "resume" => {
-        usage: ["workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--extra-rounds N] [--json]",
+        usage: ["workflow resume RUN [--from STEP | --restart-step] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--extra-rounds N] [--json]",
           "workflow resume RUN --accept-guard --note WHY [--retry] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
         summary: "Get a run going again",
         about: [
@@ -957,6 +957,24 @@ module Workspace
           "asleep, and time a step spent stalled do not. With the budget and the timeout both spent, pass both",
           "flags.",
           "",
+          "--restart-step is for a step whose agent or pane crashed. It ends the unfinished attempt as interrupted (it",
+          "still counts toward max_attempts and the budget) and types the step again into a Claude Code pane in a fresh",
+          "conversation, starting with a short summary of the current commit and the plan's tasks. It is typed into the",
+          "run's pane if its agent is idle there, otherwise into the one free idle Claude Code pane of the workspace, or",
+          "the one named with --pane. Run it as a person from another pane than the run's own. --note, --pane and",
+          "--extra-attempts, --extra-tokens and --extra-time still work. It can not be combined with --from,",
+          "--accept-guard, --retry or --extra-rounds (use one or the other). Refusals, each ending \"Nothing was changed.\":",
+          "  the step has nothing running to restart (no_open_attempt);",
+          "  its agent is still working, or its line is still being typed (step_still_working): wait, then run it again;",
+          "  several idle Claude Code panes could take it (pane_ambiguous): name one with --pane;",
+          "  no Claude Code pane is free to take it (no_agent_pane): start one, or name one with --pane;",
+          "  the pane is mid-turn, or a pane named with --pane is the caller's, a review pane or another run's (pane_busy);",
+          "  the unfinished attempt could not be closed (restart_not_closed): run it again;",
+          "  the run or the step has used all its attempts (attempts_spent, step_attempts_spent) or the token budget",
+          "  (budget_spent): add --extra-attempts or --extra-tokens.",
+          "",
+          "A plain resume of such a crashed step prints a hint to use --restart-step (stderr; `hint` with --json).",
+          "",
           "--accept-guard takes a guard stop (failed_check by head_moved, hooks_changed, hidden_changed,",
           "no_commit, operation_in_progress or tracked_changed) as a person's decision; any other stop is",
           "refused (guard_not_stopped). It needs --note WHY, and is refused from a pane bound to a run. HEAD",
@@ -969,7 +987,7 @@ module Workspace
           "with it. Later guarded steps measure from the new base. The note is recorded on a guard_overridden",
           "event and given to the next attempt, after a line naming the guard and the new base."
         ],
-        options: [["--from STEP", "Start again at this step"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT, EXTRA_ROUNDS_OPT,
+        options: [["--from STEP", "Start again at this step"], ["--restart-step", "Start a crashed step again in a fresh conversation"], WORKFLOW_NOTE, PANE_OPT, EXTRA_ATTEMPTS_OPT, EXTRA_TOKENS_OPT, EXTRA_TIME_OPT, EXTRA_ROUNDS_OPT,
           ["--accept-guard", "Accept the guard stop the run waits on (needs --note WHY)"],
           ["--retry", "With --accept-guard: run the stopped step again instead of passing it"], JSON_OPT],
         examples: [
@@ -977,6 +995,7 @@ module Workspace
           ["workspace workflow resume RUN --from implement", "start again at the implement step of rpiv"],
           ["workspace workflow resume RUN --note \"The migration is already applied.\"", "tell the next attempt something"],
           ["workspace workflow resume RUN --pane %19", "the run's pane is gone: carry on in another pane of the workspace"],
+          ["workspace workflow resume RUN --restart-step", "the step's agent or pane crashed: start it again in a fresh conversation"],
           ["workspace workflow resume RUN --extra-rounds 2", "a review spent its max_rounds: allow two more rounds and go on"],
           ["workspace workflow resume RUN --accept-guard --note \"I rebased on purpose.\"", "accept a head_moved stop: the step's other checks run, measured from HEAD now"],
           ["workspace workflow resume RUN --accept-guard --retry --note \"Hooks were updated upstream.\"", "accept the stop and run the step again"]

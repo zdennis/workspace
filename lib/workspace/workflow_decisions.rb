@@ -709,7 +709,7 @@ module Workspace
       closed = step_state(stored)["attempts"].last
       # `abandon` never raises: an attempt it could not close is still open here.
       unless closed["n"] == n && closed["ended_at"]
-        raise Workspace::Error.new("Attempt #{n} of step #{step} of run #{stored["id"]} could not be closed, so the step was not restarted; nothing was changed. Try again.",
+        raise Workspace::Error.new("Attempt #{n} of step #{step} of run #{stored["id"]} could not be closed, so the step was not restarted. Run the command again. Nothing was changed.",
           code: "restart_not_closed", details: {"run_id" => stored["id"], "step" => step, "attempt" => n})
       end
       event(stored, "step_interrupted", "step" => step, "attempt" => n, "pane" => old_pane, "usage_counted" => !closed["usage"].nil?)

@@ -517,13 +517,15 @@ module Workspace
       refuse_named(workspace, named, "review") if review_pane?(row)
       refuse_named(workspace, named, "bound") if live_binding?(named) && run_on(named) != run_id
       return named if row["turn_failed"] || self.class.turn_over?(row, @clock.call)
-      raise Workspace::Error.new("The agent in pane #{named} is in the middle of a turn. Nothing was changed.",
+      raise Workspace::Error.new("The agent in pane #{named} is in the middle of a turn. Wait for its turn to end, then run the command again. Nothing was changed.",
         code: "pane_busy", details: {"workspace" => workspace, "pane" => named, "reason" => row["state"]}.compact)
     end
 
     def refuse_named(workspace, named, reason)
-      why = {"caller" => "is the pane this command was run from", "review" => "is a review pane", "bound" => "is bound to something else"}.fetch(reason)
-      raise Workspace::Error.new("Pane #{named} of '#{workspace}' #{why}. Nothing was changed.",
+      why = {"caller" => "is the pane this command was run from. Run the command from another pane.",
+             "review" => "is a review pane. Name a different pane with --pane.",
+             "bound" => "is bound to something else. Name a pane no run uses with --pane."}.fetch(reason)
+      raise Workspace::Error.new("Pane #{named} of '#{workspace}' #{why} Nothing was changed.",
         code: "pane_busy", details: {"workspace" => workspace, "pane" => named, "reason" => reason})
     end
 

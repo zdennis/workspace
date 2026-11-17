@@ -754,23 +754,35 @@ module Workspace
       # @param accept_guard [Boolean] accept the guard stop the run waits on: the checkout as it is now becomes the
       #   run's base, and the step passes once its other checks do (see {Workspace::WorkflowDecisions#resume}); needs +note+
       # @param guard_retry [Boolean] with +accept_guard+, run the stopped step again instead of passing it
-      # @return [Hash{String=>Object}] the action row; `outcome` is "unchanged" when an agent
+      # @param restart_step [Boolean] close the step's interrupted attempt and start it again in a fresh conversation (see
+      #   {Workspace::WorkflowDecisions#resume}); refused from the run's own pane, and with a pane from {Workspace::WorkflowPanes#restart_target}
+      # @return [Hash{String=>Object}] the action row, with `hint` when a plain resume could have been a restart; `outcome` is "unchanged" when an agent
       #   is working on the step or its check is still running
       # @raise [Workspace::Error] code `bound_pane` for `--from` at a waiting gate, or `--accept-guard`, from a pane
       #   bound to a run (and `--accept-guard` from a process under the run's own pane), or see {Workspace::WorkflowEngine#resume}
       def resume(run:, from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, caller_pane: nil,
-        accept_guard: false, guard_retry: false)
+        accept_guard: false, guard_retry: false, restart_step: false)
         stored = @store.run(run)
         pane_id = nil
         turn_over = nil
+        bound_fact = nil
+        hint = nil
         unless WorkflowRunStore::TERMINAL_STATES.include?(stored.state)
           state = stored.steps.fetch(stored.current)
           refuse_bound_pane!(caller_pane, "workflow resume --from") if from && state.gate_waiting?
           refuse_caller!(stored, caller_pane, "workflow resume --accept-guard", "A guard stop is accepted by a person") if accept_guard
-          refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && !accept_guard && checked_step?(stored)
-          @engine.refuse_resume(stored.to_h, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
-          pane_id = resume_pane(stored, pane)
-          if pane_id.nil? && from.nil? && state.state == "running" && stored.reason.nil? &&
+          refuse_caller!(stored, caller_pane, "workspace workflow resume #{stored.id} --restart-step", "A step is restarted by a person, from another pane") if restart_step
+          refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && !accept_guard && !restart_step && checked_step?(stored)
+          @engine.refuse_resume(stored.to_h, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry) unless restart_step
+          if restart_step
+            target = @panes.restart_target(stored.workspace, stored.id, bound: @panes.pane_of(run) || stored.pane, named: (@panes.locate(stored.workspace, pane) if pane), caller: caller_pane)
+            pane_id = target["pane"]
+            bound_fact = target["bound"]
+          else
+            pane_id = resume_pane(stored, pane)
+          end
+          hint = restart_hint(stored) if from.nil? && !accept_guard && !restart_step && restart_hint?(stored)
+          if !restart_step && pane_id.nil? && from.nil? && state.state == "running" && stored.reason.nil? &&
               @panes.idle?(stored.workspace, @panes.pane_of(run) || stored.pane)
             turn_over = {"step" => stored.current, "attempt" => state.last_attempt&.n}
           end
@@ -779,13 +791,16 @@ module Workspace
         # A round is delivered to the review pane, so a resume of it types nothing into the caller's pane and needs no park.
         reviewing = from.nil? && stored.current_step&.state == "reviewing"
         # An accepted guard stop is never parked: it is refused from the run's own pane above.
-        if !accept_guard && !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && !reviewing && caller_in_pane?(stored.workspace, caller_pane, target) &&
+        if !accept_guard && !restart_step && !WorkflowRunStore::TERMINAL_STATES.include?(stored.state) && !reviewing && caller_in_pane?(stored.workspace, caller_pane, target) &&
             @panes.parkable?(stored.workspace, target)
           return park_resume(stored, from: from, note: note, pane: pane_id, target: target, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
         end
         resumed = @engine.resume(run, actor: "person", from: from, note: note, pane: pane_id, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
-          accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane)
-        row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.", waits: true)
+          accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane, **(restart_step ? {restart_step: true, bound: bound_fact} : {}))
+        result = row(resumed, resumed["unchanged"] ? "unchanged" : "resumed", message: resumed["unchanged"] && "Nothing was done: #{resumed["unchanged"]}.", waits: true)
+        return result unless hint
+        Warn.puts(@error_output, hint)
+        result.merge("hint" => hint)
       end
 
       # @param run [String] a run id
@@ -1568,6 +1583,18 @@ module Workspace
           "the resume. End your turn now; a sub-agent should finish and let " \
           "the main agent end its turn."
         row(parked, "parked", message: message, waits: true).merge("parked" => {"pane" => target, "expires_at" => parked.dig("parked", "expires_at")})
+      end
+
+      # A plain resume of a step with an open attempt whose agent or pane is gone: the one where --restart-step is the better fit.
+      def restart_hint(stored)
+        "This step's agent looks gone. To close its attempt and start it again in a fresh conversation, run `workspace workflow resume #{stored.id} --restart-step`."
+      end
+
+      def restart_hint?(stored)
+        return true if WorkflowStatus.restartable?(stored.to_h)
+        last = stored.current_step&.last_attempt
+        stored.current_step&.state == "running" && !last.nil? && last.to_h["ended_at"].nil? &&
+          !@panes.pane_of(stored.id).nil? && !@panes.alive?(stored.id)
       end
 
       def resume_pane(stored, pane)
