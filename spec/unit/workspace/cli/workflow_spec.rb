@@ -256,6 +256,11 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(workflow_command.calls).to be_empty
     end
 
+    it "reads --run on insights as --run, not as an abbreviation of its count flag" do
+      expect { run("insights", "rpiv", "--run", "wr_261117123627abcd") }.to raise_error(Workspace::UsageError, "--run is for `workflow graph ID`.")
+      expect(workflow_command.calls).to be_empty
+    end
+
     it "refuses --format on another verb" do
       expect { run("show", "rpiv", "--format", "dot") }.to raise_error(Workspace::UsageError, "--format is for `workflow graph ID`.")
       expect(workflow_command.calls).to be_empty
