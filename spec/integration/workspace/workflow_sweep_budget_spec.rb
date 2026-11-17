@@ -285,4 +285,84 @@ RSpec.describe Workspace::WorkflowSweep, "a token budget with action: interrupt"
 
     expect(live.pruned).to eq([["wr_1"]])
   end
+  describe "a budget-only pass" do
+    it "gives no row, reads no pane and presses nothing when spent plus live is under the allowance" do
+      begin_run
+      pane_shows("working")
+      live.value = 10
+      pane_reads = 0
+      panes.on_row = -> { pane_reads += 1 }
+
+      expect(sweep.call(budget_only: true)).to eq([])
+      expect(pane_reads).to eq(0)
+      expect(pressed).to be_empty
+    end
+
+    it "gives no row for an action: stop budget, and does not read the live figure" do
+      begin_run(flow(action: "stop"))
+      live.value = 5000
+
+      expect(sweep.call(budget_only: true)).to eq([])
+      expect(live.reads).to eq(0)
+    end
+
+    it "gives no row for a step that is not running" do
+      begin_run
+      edit_run(store, "wr_1") { |run| run["steps"]["build"]["state"] = "passed" }
+
+      expect(sweep.call(budget_only: true)).to eq([])
+    end
+
+    it "presses once when spent plus live reaches the allowance, as a full pass does" do
+      begin_run
+      pane_shows("working")
+      live.value = 1000
+
+      expect(only_row(sweep.call(budget_only: true))).to include("outcome" => "interrupted", "cause" => "budget_spent")
+      expect(only_row(sweep.call(budget_only: true))).to include("outcome" => "nothing", "reason" => "already_interrupted")
+      expect(pressed.size).to eq(1)
+    end
+
+    it "decides the turn the press ended" do
+      begin_run
+      pane_shows("working")
+      live.value = 1000
+      sweep.call(budget_only: true)
+      pane_shows("idle", idle_seconds: 30)
+      live.value = 0
+
+      expect(only_row(sweep.call(budget_only: true))).to include("outcome" => "evaluated", "cause" => "interrupted")
+    end
+
+    it "adds no unreadable-run rows" do
+      begin_run
+      pane_shows("working")
+      live.value = 0
+      File.write(File.join(runs_dir, "bad.json"), "{")
+
+      expect(sweep.call(budget_only: true)).to eq([])
+      expect(sweep.call.map { |row| row["run_id"] }).to include("bad")
+    end
+
+    it "gives no row for a paused run, even when its budget is spent" do
+      begin_run
+      pane_shows("working")
+      live.value = 1000
+      edit_run(store, "wr_1") { |run| run["paused"] = {"since" => now.first.utc.iso8601, "by" => "person", "text" => nil} }
+
+      expect(sweep.call(budget_only: true)).to eq([])
+      expect(pressed).to be_empty
+    end
+
+    it "narrows to a workspace like a full pass" do
+      begin_run
+      live.value = 0
+
+      pane_shows("working")
+      live.value = 1000
+
+      expect(sweep.call(workspace: "other", budget_only: true)).to eq([])
+      expect(sweep.call(workspace: "app.worktree-x", budget_only: true).size).to eq(1)
+    end
+  end
 end

@@ -47,6 +47,25 @@ RSpec.describe Workspace::CLI::Workflow do
     end
   end
 
+  describe "workflow sweep --budget-only" do
+    let(:command) { double("workflow command") }
+
+    before { allow(command).to receive(:sweep).and_return(exit_code: 0, results: [], status: nil, extra: {}) }
+
+    it "passes budget_only to the command, and false without the flag" do
+      run("sweep", "--name", "app", "--budget-only", workflow_command: command)
+      expect(command).to have_received(:sweep).with(hash_including(name: "app", budget_only: true))
+
+      run("sweep", "--name", "app", workflow_command: command)
+      expect(command).to have_received(:sweep).with(hash_including(name: "app", budget_only: false))
+    end
+
+    it "is refused for another subcommand and with the schedule flags" do
+      expect { run("status", "--budget-only") }.to raise_error(Workspace::UsageError, /--budget-only is for `workflow sweep`/)
+      expect { run("sweep", "--install", "--budget-only", workflow_command: command) }.to raise_error(Workspace::UsageError, /--budget-only does not go with --install/)
+    end
+  end
+
   describe "workflow help" do
     it "prints the overview with the directories the definitions are read from" do
       run("--help")

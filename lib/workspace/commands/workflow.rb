@@ -702,10 +702,11 @@ module Workspace
       # @param dry_run [Boolean] say what would be done and do nothing
       # @param json [Boolean] the caller prints the action document, so no count line is written
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
+      # @param budget_only [Boolean] look only at token budgets with `action: interrupt` ({WorkflowSweep#call})
       # @return [Hash{Symbol=>Object}] `exit_code` (1 when a result is `failed`: the action document turns that into 3 or 1),
       #   `results` (the rows) and, for a dry run, `status`
       # @raise [Workspace::Error] code `unknown_run`
-      def sweep(run: nil, name: nil, dry_run: false, json: false, caller_pane: nil)
+      def sweep(run: nil, name: nil, dry_run: false, json: false, caller_pane: nil, budget_only: false)
         raise Workspace::Error, "workflow sweep is not available: no sweep was wired" unless @sweep
         allow = lambda do |stored|
           refuse_caller!(WorkflowRun.from_h(stored), caller_pane, "workflow sweep", "A run is moved by a person or the sweep, not by its own agent")
@@ -714,10 +715,11 @@ module Workspace
           raise unless e.code == "bound_pane"
           e.message.lines.first.to_s.strip
         end
-        rows = @sweep.call(run: run, workspace: name, dry_run: dry_run, allow: allow)
-        print_sweep(rows, summary: !json)
-        {exit_code: ((rows.any? { |each| each["outcome"] == "failed" }) ? 1 : 0), results: rows, status: (dry_run ? "dry_run" : nil),
-         extra: (json ? {"next_actions" => @sweep_actions.call(rows, run: run, name: name)} : {})}
+        rows = @sweep.call(run: run, workspace: name, dry_run: dry_run, allow: allow, budget_only: budget_only)
+        print_sweep(rows, summary: !json, budget_only: budget_only)
+        extra = json ? {"next_actions" => @sweep_actions.call(rows, run: run, name: name)} : {}
+        extra["budget_only"] = true if json && budget_only
+        {exit_code: ((rows.any? { |each| each["outcome"] == "failed" }) ? 1 : 0), results: rows, status: (dry_run ? "dry_run" : nil), extra: extra}
       end
 
       # `workflow sweep --install`, `--uninstall` or `--installed`: the opt-in launchd
@@ -1156,14 +1158,14 @@ module Workspace
 
       QUIET_SWEEP_REASONS = %w[healthy parked paused checking reviewing not_running finished held idle delivering prompt timed_out backoff pane_busy already_recorded].freeze
 
-      def print_sweep(rows, summary:)
+      def print_sweep(rows, summary:, budget_only: false)
         shown = rows.reject { |each| each["outcome"] == "nothing" && QUIET_SWEEP_REASONS.include?(each["reason"]) }
         shown.each do |each|
           label = (each["outcome"] == "nothing") ? "left alone (#{each["reason"]})" : each["outcome"].tr("_", " ")
           @output.puts "#{each["run_id"]}  #{each["workspace"]}  step #{each["step"]}  #{label}#{": #{TerminalText.escape(each["message"])}" if each["message"]}"
         end
         return unless summary
-        @output.puts "Looked at #{rows.size} run#{"s" unless rows.size == 1}; #{shown.empty? ? "nothing to report" : "#{shown.size} reported above"}."
+        @output.puts "#{budget_only ? "Budget-only pass: looked" : "Looked"} at #{rows.size} run#{"s" unless rows.size == 1}; #{shown.empty? ? "nothing to report" : "#{shown.size} reported above"}."
       end
 
       def scope_filter(scope)

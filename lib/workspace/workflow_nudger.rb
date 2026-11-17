@@ -10,13 +10,18 @@ module Workspace
   # While the workspace has a going run, its tick also starts
   # `workspace workflow sweep --name WORKSPACE` the same way, at most once
   # every {SWEEP_INTERVAL} seconds, so stalled and timed-out steps are
-  # recovered without the opt-in launchd sweep.
+  # recovered without the opt-in launchd sweep. A going run whose budget has `action: interrupt` and whose step is
+  # running also gets `workflow sweep --budget-only` at most every {BUDGET_SWEEP_INTERVAL} seconds, so a runaway step is
+  # pressed within about a minute; it is left out on a tick that starts the full sweep, which covers it.
   #
   # Nothing here raises: a run that can't be woken shows as stuck in
   # `workflow status`, and the daemon keeps running.
   class WorkflowNudger
     # Seconds between two sweeps the tick starts for one workspace.
     SWEEP_INTERVAL = 300
+
+    # Seconds between two budget-only sweeps the tick starts for one workspace.
+    BUDGET_SWEEP_INTERVAL = 60
 
     # @param store [Workspace::WorkflowRunStore]
     # @param panes [Workspace::WorkflowPanes] names the run a pane is bound to
@@ -44,6 +49,7 @@ module Workspace
       @clock = clock
       @logger = logger
       @last_sweep = {}
+      @last_budget_sweep = {}
       @last_reasons = {}
       @lock = Mutex.new
     end
@@ -105,7 +111,8 @@ module Workspace
         @error_output.puts "workflow: could not look at run #{run.id} (#{e.class}: #{e.message}); its run file may be malformed"
         nil
       end
-      sweep(workspace, runs, now, hook_log)
+      swept = sweep(workspace, runs, now, hook_log)
+      budget_sweep(workspace, runs, now, hook_log, swept)
       woken
     rescue => e
       @logger.debug { "workflow: tick failed (#{e.class}: #{e.message})" }
@@ -129,20 +136,51 @@ module Workspace
       []
     end
 
+    # @return [Boolean] whether a full sweep was started on this tick
     def sweep(workspace, runs, now, hook_log)
-      return if runs.empty?
+      return false if runs.empty?
       due = @lock.synchronize do
         last = @last_sweep[workspace]
         # Recorded before the spawn, so a spawn that raises is not retried on every tick.
         (@last_sweep[workspace] = now) unless last && now - last < SWEEP_INTERVAL
       end
-      return unless due
+      return false unless due
       record(hook_log, "workflow_sweep_started", nil, "run_ids" => runs.map(&:id))
       started = @clock.call
       thread = @spawner.call([RbConfig.ruby, @executable, "workflow", "sweep", "--name", workspace], @log_path.call(workspace))
       record_exit(thread, hook_log, started, "kind" => "sweep", "run_ids" => runs.map(&:id))
+      true
     rescue => e
       @logger.debug { "workflow: could not start the sweep for #{workspace} (#{e.class}: #{e.message})" }
+      true
+    end
+
+    # Starts `workflow sweep --budget-only` when this workspace's budget throttle has run out and a going run has a
+    # budget with `action: interrupt` and a running step. The throttle is checked first, so a tick it has not run out on
+    # looks at no run; a tick that started the full sweep restarts the throttle and starts nothing more.
+    def budget_sweep(workspace, runs, now, hook_log, full_sweep_started)
+      return if runs.empty?
+      due = @lock.synchronize do
+        last = @last_budget_sweep[workspace]
+        # Recorded before the spawn, so a spawn that raises is not retried on every tick.
+        (@last_budget_sweep[workspace] = now) unless last && now - last < BUDGET_SWEEP_INTERVAL
+      end
+      return unless due && !full_sweep_started
+      watched = runs.select { |run| interrupt_budget_running?(run) }
+      return if watched.empty?
+      ids = watched.map(&:id)
+      record(hook_log, "workflow_sweep_started", nil, "run_ids" => ids)
+      started = @clock.call
+      thread = @spawner.call([RbConfig.ruby, @executable, "workflow", "sweep", "--name", workspace, "--budget-only"], @log_path.call(workspace))
+      record_exit(thread, hook_log, started, "kind" => "sweep", "run_ids" => ids)
+    rescue => e
+      @logger.debug { "workflow: could not start the budget sweep for #{workspace} (#{e.class}: #{e.message})" }
+    end
+
+    def interrupt_budget_running?(run)
+      WorkflowDefinition.budget(run.definition)&.fetch("action", nil) == "interrupt" && run.steps[run.current]&.state == "running"
+    rescue KeyError, TypeError
+      false
     end
 
     # Why a run that nothing wakes is left alone, as far as its stored state says.

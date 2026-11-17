@@ -433,6 +433,118 @@ RSpec.describe Workspace::WorkflowNudger do
       end
     end
 
+    describe "the budget sweep" do
+      let(:budget_argv) { [RbConfig.ruby, "/ws/bin/workspace", "workflow", "sweep", "--name", "app", "--budget-only"] }
+
+      def budget_run(id, action: "interrupt", state: "running", workspace: "app")
+        each = run(id, workspace, state: state)
+        each["definition"]["budget"] = {"tokens" => 1000, "action" => action}
+        each
+      end
+
+      def budget_sweeps = spawned.select { |argv, _log| argv.last == "--budget-only" }
+
+      def tick_at(seconds)
+        clock_time[:now] = now + seconds
+        nudger.tick("app")
+      end
+
+      before do
+        # The full sweep's own throttle is spent on the first tick, so only the budget sweep is in view after it.
+        going([run("wr_0", "app", reason: "waiting_you")])
+        nudger.tick("app")
+        spawned.clear
+      end
+
+      it "starts on a tick 60 seconds on for a going run with an interrupt budget and a running step" do
+        going([budget_run("wr_1")])
+        tick_at(60)
+
+        expect(spawned).to eq([[budget_argv, "/log/app.log"]])
+      end
+
+      it "starts nothing for a budget with action stop, a run with no budget or a step that is not running" do
+        going([budget_run("wr_1", action: "stop"), run("wr_2", "app"), budget_run("wr_3", state: "failed")])
+        tick_at(60)
+
+        expect(budget_sweeps).to eq([])
+      end
+
+      it "starts nothing for a run of another workspace" do
+        going([budget_run("wr_1", workspace: "other")])
+        tick_at(60)
+
+        expect(budget_sweeps).to eq([])
+      end
+
+      it "is throttled to one start in 60 seconds, and starts again when they have passed" do
+        going([budget_run("wr_1")])
+        tick_at(60)
+        tick_at(75)
+        tick_at(119)
+        expect(budget_sweeps.size).to eq(1)
+
+        tick_at(120)
+        expect(budget_sweeps.size).to eq(2)
+      end
+
+      it "spends the throttle on a tick that finds nothing, so the next look is 60 seconds on" do
+        going([budget_run("wr_1", action: "stop")])
+        tick_at(60)
+        going([budget_run("wr_1")])
+        tick_at(90)
+        expect(budget_sweeps).to eq([])
+
+        tick_at(120)
+        expect(budget_sweeps.size).to eq(1)
+      end
+
+      it "looks at no run's definition before the throttle has run out" do
+        hash = budget_run("wr_1", state: "failed")
+        probe = instance_double(Workspace::WorkflowRun, id: "wr_1", workspace: "app", to_h: hash)
+        allow(store).to receive(:going).and_return([probe])
+        tick_at(30)
+
+        expect(budget_sweeps).to eq([])
+      end
+
+      it "starts nothing on the tick that starts the full sweep, and counts that tick as its look" do
+        going([budget_run("wr_1")])
+        tick_at(300)
+
+        expect(sweeps.map(&:first)).to eq([[RbConfig.ruby, "/ws/bin/workspace", "workflow", "sweep", "--name", "app"]])
+        tick_at(330)
+        expect(budget_sweeps).to eq([])
+        tick_at(360)
+        expect(budget_sweeps.size).to eq(1)
+      end
+
+      it "logs the start with the run ids that are watched" do
+        going([budget_run("wr_1"), run("wr_2", "app", reason: "waiting_you")])
+        clock_time[:now] = now + 60
+        nudger.tick("app", hook_log: hook_log)
+
+        expect(hook_log.lines.select { |l| l.first == "workflow_sweep_started" }).to eq([["workflow_sweep_started", nil, {"run_ids" => ["wr_1"]}]])
+      end
+
+      it "does not retry within 60 seconds when starting it raises" do
+        attempts = 0
+        failing = described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(w) { "/log/#{w}.log" },
+          spawner: ->(argv, _log) {
+            attempts += 1 if argv.last == "--budget-only"
+            raise Errno::ENOENT
+          }, clock: -> { clock_time[:now] })
+        going([budget_run("wr_1")])
+        failing.tick("app")
+        clock_time[:now] = now + 60
+        failing.tick("app")
+        clock_time[:now] = now + 75
+        failing.tick("app")
+
+        expect(attempts).to eq(1)
+      end
+    end
+
     it "does not raise when the store can't be read" do
       allow(store).to receive(:going).and_raise(Workspace::Error, "no store")
 

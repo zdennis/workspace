@@ -157,8 +157,12 @@ module Workspace
     #   `not_delivered`, `waiting_lock`), "message", "run_id",
     #   "step", "attempt", "cause", "action"
     #   A dry run still trims the log, like the heartbeat; a pass that raises records nothing, so a reader sees it as stale.
+    # @param budget_only [Boolean] only the token budget with `action: interrupt` is looked at: a run whose running step
+    #   has no such budget, or whose spent plus live tokens are under the allowance and that holds no `sent` budget
+    #   interrupt gets no row at all and no pane read, so a row means the run was acted on or evaluated; no
+    #   unreadable-run or orphan rows, and no record of the pass, so the full sweep's own record stays the last one
     # @raise [Workspace::Error] code `unknown_run` for a +run+ that does not exist
-    def call(run: nil, workspace: nil, dry_run: false, allow: nil)
+    def call(run: nil, workspace: nil, dry_run: false, allow: nil, budget_only: false)
       beat
       trim_log
       going = run ? nil : @store.going
@@ -167,12 +171,12 @@ module Workspace
       runs = runs.select { |each| each.workspace == workspace } if workspace
       # Downtime is read once for the pass, after the beat has recorded any gap since the last one.
       pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, default_stall: @default_stall.call, turn_failed_after: @turn_failed_after.call,
-              stops: downtime_stops}
-      rows = runs.map { |each| sweep_run(each, pass) }
-      rows += unreadable_rows unless run || workspace
+              stops: downtime_stops, budget_only: budget_only}
+      rows = runs.filter_map { |each| sweep_run(each, pass) }
+      rows += unreadable_rows unless run || workspace || budget_only
       # Every session of the default tmux server unless a workspace or a run narrows the pass.
-      rows += @reviews.orphan_rows(run, workspace || (run && runs.first&.workspace), pass)
-      record_pass(rows, run, workspace) unless dry_run
+      rows += @reviews.orphan_rows(run, workspace || (run && runs.first&.workspace), pass) unless budget_only
+      record_pass(rows, run, workspace) unless dry_run || budget_only
       rows
     end
 
@@ -269,6 +273,7 @@ module Workspace
     end
 
     def sweep_run(run, pass)
+      return nil if pass[:budget_only] && budget_only_skip?(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "finished", message: "the run has ended") if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
       return paused_row(run) if run.paused
       state = run.steps.fetch(run.current)
@@ -310,6 +315,19 @@ module Workspace
     rescue SystemCallError => e
       program = e.message[/ - (\S+)/, 1]
       WorkflowSweepRows.row(run, "failed", reason: "tool_unavailable", message: "could not run #{program || "a program the sweep needs"}: #{e.message.lines.first.to_s.strip}. Put it on PATH.")
+    end
+
+    # Whether a budget-only pass leaves the run out (no row). It is looked at only when it is going, not paused, and its
+    # running step has a budget with `action: interrupt` that holds a `sent` budget interrupt (its turn-over is decided)
+    # or whose spent plus live tokens have reached the allowance. Reads no pane.
+    def budget_only_skip?(run)
+      return true if WorkflowRunStore::TERMINAL_STATES.include?(run.state) || run.paused
+      return true unless run.steps.fetch(run.current).state == "running"
+      budget = WorkflowBudget.reading(run)
+      return true unless budget && budget["action"] == "interrupt"
+      return false if WorkflowEngine.sweep_marks(run.to_h).dig("budget_interrupt", "state") == "sent"
+      live = @live_usage&.reading(run, now: @clock.call)
+      !(live.is_a?(Integer) && budget["used"] + live >= budget["allowance"])
     end
 
     # A person paused the run: nothing of it is looked at or changed until it is unpaused.
