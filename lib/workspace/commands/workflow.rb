@@ -773,7 +773,7 @@ module Workspace
           refuse_caller!(stored, caller_pane, "workflow resume --accept-guard", "A guard stop is accepted by a person") if accept_guard
           refuse_caller!(stored, caller_pane, "workspace workflow resume #{stored.id} --restart-step", "A step is restarted by a person, from another pane") if restart_step
           refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && !accept_guard && !restart_step && checked_step?(stored)
-          @engine.refuse_resume(stored.to_h, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry) unless restart_step
+          @engine.refuse_resume(stored.to_h, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
           if restart_step
             target = @panes.restart_target(stored.workspace, stored.id, bound: @panes.pane_of(run) || stored.pane, named: (@panes.locate(stored.workspace, pane) if pane), caller: caller_pane)
             pane_id = target["pane"]

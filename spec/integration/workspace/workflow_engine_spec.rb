@@ -4903,6 +4903,32 @@ steps:
         expect_refused("budget_spent") { restart }
       end
 
+      it "refuses a run that used its timeout with run_timed_out, and restarts it once extra_seconds lifts the limit" do
+        start(definition("timeout: 1h\nsteps:\n  build:\n    prompt: B\n"), inputs: {})
+        now[0] += 2 * 3600
+
+        expect_refused("run_timed_out") { restart }
+        expect_refused("run_timed_out") { restart(extra_seconds: 3600) }
+
+        run = restart(extra_seconds: 3601)
+
+        expect(run).to include("state" => "running", "current" => "build", "extra_seconds" => 3601)
+        expect(attempts(run).map { |attempt| attempt["outcome"] }).to eq(["interrupted", nil])
+      end
+
+      it "restarts a run that used its token budget once extra_tokens lifts it" do
+        start(definition("budget: {tokens: 1000}\nsteps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n"), inputs: {})
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+        edit_run(store, "wr_1") { |run| run["steps"]["a"]["attempts"].first["usage"] = {"input_tokens" => 1200, "output_tokens" => 0} }
+
+        expect_refused("budget_spent") { restart(extra_tokens: 200) }
+
+        run = restart(extra_tokens: 201)
+
+        expect(run).to include("state" => "running", "current" => "b", "extra_tokens" => 201)
+        expect(attempts(run, "b").map { |attempt| attempt["outcome"] }).to eq(["interrupted", nil])
+      end
+
       it "refuses --from, --accept-guard, --retry, --extra-rounds and a turn_over as usage errors" do
         start(restart_flow, inputs: {})
         before = run_bytes

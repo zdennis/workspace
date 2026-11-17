@@ -158,7 +158,8 @@ module Workspace
     #   it, starts in a fresh conversation with a brief of HEAD and the plan's tasks; +pane+ is the pane to start it in
     #   (nil: the bound one). Not with +from+, +accept_guard+, +guard_retry+, +turn_over+ or +extra_rounds+
     # @param bound [String, nil] with +restart_step+, what the caller saw of the bound pane: `gone`, `shell`, `failed`,
-    #   `idle`, `busy` or `unknown` (nil reads `unknown`); see {WorkflowTransitions.restart_refusal}
+    #   `idle`, `busy` or `unknown` (nil reads `unknown`), seen before the run lock is taken, so a turn that starts in
+    #   between is not caught; see {WorkflowTransitions.restart_refusal}
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Resumed] the run afterwards, and why nothing was done when it did nothing
     # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` or `budget_spent` when the resume would

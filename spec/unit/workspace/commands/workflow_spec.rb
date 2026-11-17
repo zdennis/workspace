@@ -1271,7 +1271,17 @@ RSpec.describe Workspace::Commands::Workflow do
         expect(engine).to have_received(:resume).with("wr_1", actor: "person", from: nil, note: nil, pane: "%8", turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil,
           accept_guard: false, guard_retry: false, caller_pane: "%3", restart_step: true, bound: "gone")
         expect(panes).not_to have_received(:idle?)
-        expect(engine).not_to have_received(:refuse_resume)
+        expect(engine).to have_received(:refuse_resume)
+      end
+
+      it "refuses a paused run before asking the daemon for a target" do
+        allow(engine).to receive(:refuse_resume).and_raise(Workspace::Error.new("Run wr_1 is paused.", code: "run_paused"))
+        allow(panes).to receive(:restart_target)
+
+        expect { command.resume(run: "wr_1", restart_step: true, caller_pane: "%3") }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_paused") }
+        expect(panes).not_to have_received(:restart_target)
+        expect(engine).not_to have_received(:resume)
       end
 
       it "asks for the target without a named pane when none is given" do
