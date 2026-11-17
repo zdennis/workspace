@@ -228,8 +228,8 @@ module Workspace
     end
 
     # Why a run waits for a person, or for nothing the clock will move: the one rule `workflow sweep` and
-    # `workflow recover` share. A backoff that is only scheduled is no hold (a blocked one is); nor is a
-    # `waiting_lock` reason. First match wins.
+    # `workflow recover` share. A backoff that is only scheduled is no hold (a blocked one is); nor are a
+    # `waiting_lock` reason and the `retry_backoff` reason that scheduled backoff sets. First match wins.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @return [String, nil] `paused`, `retry_blocked`, `budget_hold`, `timeout_hold`, `round_held` (a reviewing step
@@ -242,7 +242,7 @@ module Workspace
       return "timeout_hold" if run["timeout_hold"] && waiting
       step = run.dig("steps", run["current"]) || {}
       reason = run["reason"]
-      reason = nil if reason.is_a?(Hash) && reason["code"] == "waiting_lock"
+      reason = nil if reason.is_a?(Hash) && %w[waiting_lock retry_backoff].include?(reason["code"])
       return "round_held" if step["state"] == "reviewing" && reason
       return "reason" if reason
       return "gate_waiting" if step.dig("gate", "state") == "waiting"

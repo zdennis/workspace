@@ -21,7 +21,7 @@ RSpec.describe Workspace::CLI::Workflow do
     described_class.new(workflow_command: workflow_command, workflow_start_command: start_command, workflow_project: workflow_project,
       status_scope: status_scope, config: config, project_config: project_config, project_detector: project_detector, git: git,
       launch_mode: CLITestHelpers.launch_mode(headless: headless), common: Workspace::CLI::Common.new, names: names, input: input,
-      working_dir: "/src/app", **overrides)
+      working_dir: "/src/app", launcher: double("launcher"), **overrides)
   end
 
   def invocation
@@ -358,7 +358,7 @@ RSpec.describe Workspace::CLI::Workflow do
       names = Workspace::CLI::Names.new(project_config: project_config, project_detector: detector, lineage: CLITestHelpers::FakeLineage.new, working_dir: "/some/dir")
       parser = described_class.new(workflow_command: workflow_command, workflow_start_command: start_command, workflow_project: nil,
         status_scope: status_scope, config: config, project_config: project_config, project_detector: detector, git: git,
-        launch_mode: CLITestHelpers.launch_mode(headless: false), common: Workspace::CLI::Common.new, names: names, input: input, working_dir: "/some/dir")
+        launch_mode: CLITestHelpers.launch_mode(headless: false), common: Workspace::CLI::Common.new, names: names, input: input, working_dir: "/some/dir", launcher: double("launcher"))
       Struct.new(:parser, :invocation) { def run(argv) = parser.call(argv.first, argv.drop(1), invocation) }.new(parser, invocation)
     end
 

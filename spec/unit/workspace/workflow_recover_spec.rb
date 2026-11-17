@@ -68,7 +68,7 @@ end
 # reboot_recoveries).
 class RecoverFakeEngine
   attr_reader :calls, :errors, :refusals
-  attr_accessor :ticked
+  attr_accessor :ticked, :refusal_error
 
   def initialize(dir)
     @dir = dir
@@ -76,12 +76,14 @@ class RecoverFakeEngine
     @errors = Hash.new { |hash, key| hash[key] = [] }
     @refusals = {}
     @ticked = nil
+    @refusal_error = nil
   end
 
   RAISED = %w[run_paused gate_waiting attempts_spent step_attempts_spent budget_spent run_timed_out].freeze
 
   def restart_refusal(run, bound: "unknown")
     @calls << [:restart_refusal, run.id, {bound: bound}]
+    raise @refusal_error if @refusal_error && run.id == "wr_1"
     refusal = @refusals[run.id]
     raise refusal if refusal && RAISED.include?(refusal.code)
     refusal
@@ -377,6 +379,39 @@ RSpec.describe Workspace::WorkflowRecover do
       end
     end
 
+    [
+      ["a retry blocked on a gone pane", {"state" => "waiting", "backoff" => {"to" => "build", "blocked" => "pane_gone"}, "reason" => {"code" => "pane_gone"}}, "retry_blocked"],
+      ["a pane_gone reason", {"reason" => {"code" => "pane_gone"}}, "reason"]
+    ].each do |label, extra, code|
+      it "skips #{label} and says to restore the workspace and resume the run" do
+        add_run("wr_1", "app", 100, extra: extra)
+        found = rows.first
+        expect(found).to include("outcome" => "skipped", "reason" => code)
+        expect(found["message"]).to include("restore the workspace", "workspace workflow resume wr_1")
+        expect(found["next_actions"].map { |each| each["action"] }).to eq(["restore", "workflow resume"])
+        expect(found["next_actions"].last).to include("args" => ["wr_1"], "why" => code)
+        expect(restore.calls).to be_empty
+      end
+    end
+
+    it "gives a paused run with a pane_gone reason the paused row, since a resume would be refused" do
+      add_run("wr_1", "app", 100, extra: {"paused" => true, "reason" => {"code" => "pane_gone"}})
+      found = rows.first
+      expect(found).to include("outcome" => "skipped", "reason" => "paused")
+      expect(found["message"]).not_to include("restore the workspace")
+    end
+
+    %w[pane_has_run pane_changed].each do |blocked|
+      it "gives a retry blocked by #{blocked} the plain held row, since a restore would not unblock it" do
+        add_run("wr_1", "app", 100, extra: {"state" => "waiting", "backoff" => {"to" => "build", "blocked" => blocked}, "reason" => {"code" => "waiting_you"}})
+        found = rows.first
+        expect(found).to include("outcome" => "skipped", "reason" => "retry_blocked")
+        expect(found["message"]).to include("waits for a person")
+        expect(found["message"]).not_to include("restore the workspace")
+        expect(restore.calls).to be_empty
+      end
+    end
+
     it "never sees a cancelled run, which is not going" do
       add_run("wr_1", "app", 100, extra: {"state" => "cancelled"})
       expect(rows).to be_empty
@@ -462,6 +497,16 @@ RSpec.describe Workspace::WorkflowRecover do
       expect(restore.workspaces).to eq(["other"])
     end
 
+    it "gives a run whose later read raises failed/unreadable_run and goes on to other runs" do
+      add_run("wr_1", "app", 200)
+      add_run("wr_2", "other", 100, pane: "%2")
+      engine.refusal_error = KeyError.new("no such key")
+      result = recover.call { {} }
+
+      expect(row_of(result, "wr_1")).to include("outcome" => "failed", "reason" => "unreadable_run", "workspace" => "app")
+      expect(row_of(result, "wr_2")).to include("outcome" => "restarted")
+    end
+
     it "gives each run file the store can't read a failed/unreadable_run row and lists it in extra" do
       add_run("wr_1", "app", 100)
       File.write(path("wr_bad"), "{not json")
@@ -498,7 +543,7 @@ RSpec.describe Workspace::WorkflowRecover do
     end
 
     it "restores a scheduled backoff's workspace, gives the due time and the sweep as next action" do
-      add_run("wr_1", "app", 100, step: "failed", open: false, extra: {"state" => "waiting", "backoff" => {"until" => iso(300), "to" => "build"}})
+      add_run("wr_1", "app", 100, step: "failed", open: false, extra: {"state" => "waiting", "backoff" => {"until" => iso(300), "to" => "build"}, "reason" => {"code" => "retry_backoff", "details" => {"step" => "build"}}})
       found = rows.first
 
       expect(restore.workspaces).to eq(["app"])
@@ -616,7 +661,7 @@ RSpec.describe Workspace::WorkflowRecover do
   describe "dry run" do
     it "writes nothing, calls no tick or resume, and reports would_restart and would_restore" do
       add_run("wr_1", "app", 200)
-      add_run("wr_2", "app", 100, step: "failed", open: false, pane: "%2", extra: {"state" => "waiting", "backoff" => {"until" => iso(300), "to" => "build"}})
+      add_run("wr_2", "app", 100, step: "failed", open: false, pane: "%2", extra: {"state" => "waiting", "backoff" => {"until" => iso(300), "to" => "build"}, "reason" => {"code" => "retry_backoff", "details" => {"step" => "build"}}})
       before = [bytes("wr_1"), bytes("wr_2")]
       result = recover.call(dry_run: true) { {} }
 

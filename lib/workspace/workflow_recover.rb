@@ -90,7 +90,7 @@ module Workspace
         kind.key?("outcome") ? done[run.id] = kind : picked << kind
       end
       picked.group_by { |entry| entry[:run].workspace }.each do |workspace, entries|
-        found = dry_run ? preview(workspace, entries) : recover(workspace, entries, launch)
+        found = dry_run ? preview(workspace, entries) : recover(workspace, entries, launch, max)
         found.each { |row| done[row["run_id"]] = row }
       end
       unreadable = @store.unreadable
@@ -105,16 +105,25 @@ module Workspace
 
     private
 
-    # A row for a run left alone, or `{kind:, run:}` for a run to restart (with the open attempt's `n`, which the
+    # A row for a run left alone (a `failed/unreadable_run` row, built from its id and workspace alone, when the stored
+    # run is not shaped as a run), or `{kind:, run:}` for a run to restart (with the open attempt's `n`, which the
     # restart names to the engine) or wake.
     def classify(run, alive, max, now, dry_run)
+      classify_run(run, alive, max, now, dry_run)
+    rescue KeyError, TypeError, NoMethodError => e
+      unreadable_row(run, e)
+    end
+
+    def classify_run(run, alive, max, now, dry_run)
       facts = read_facts(run, now)
-      return facts if facts.key?("outcome")
       workspace, held, open, infra, recoveries = facts.values_at(:workspace, :held, :open, :infra, :recoveries)
       unless workspace && @project_config.project_root_for(workspace)
         return row(run, "skipped", "workspace_removed", "workspace '#{workspace}' no longer exists; cancel the run (`workspace workflow cancel #{run.id}`)")
       end
-      return row(run, "skipped", held, "the run waits for a person (#{held}); see `workspace workflow status #{run.id}`") if held
+      if held
+        return pane_gone_row(run, held) if held != "paused" && run.to_h.dig("reason", "code") == "pane_gone"
+        return row(run, "skipped", held, "the run waits for a person (#{held}); see `workspace workflow status #{run.id}`")
+      end
       live = alive[workspace]
       return row(run, "skipped", "unknown_liveness", "can't tell whether workspace '#{workspace}' has a tmux session (a custom socket, or tmux did not answer); check `tmux ls`, then run `workspace workflow status #{run.id}`") if live.nil?
       if live
@@ -133,14 +142,21 @@ module Workspace
       {kind: :restart, run: run, n: open.n, typing: typing}
     end
 
-    # What sorting a run reads of it, or a `failed/unreadable_run` row (built from its id and workspace alone) when the
-    # stored run is not shaped as a run.
+    # What sorting a run reads of it.
     def read_facts(run, now)
       {workspace: run.workspace, held: WorkflowTransitions.held_reason(run.to_h), open: open_attempt(run),
        infra: WorkflowTransitions.infra_retry(run.to_h, now), recoveries: run.reboot_recoveries}
-    rescue KeyError, TypeError, NoMethodError => e
+    end
+
+    def unreadable_row(run, error)
       {"workspace" => run.to_h["workspace"], "outcome" => "failed", "reason" => "unreadable_run", "run_id" => run.id, "step" => nil, "attempt" => nil,
-       "message" => "the run could not be read as a run (#{e.class}: #{first_line(e)})"}
+       "message" => "the run could not be read as a run (#{error.class}: #{first_line(error)})"}
+    end
+
+    # A held run whose retry or dispatch found its pane gone: left alone, with the commands to run by hand.
+    def pane_gone_row(run, held)
+      row(run, "skipped", held, "the run is held because its pane is gone; restore the workspace (`workspace restore #{run.workspace}`), then resume the run (`workspace workflow resume #{run.id}`)",
+        actions: manual_actions(run, held, restart: false) + [NextAction.build("workflow resume", run.id, why: held)])
     end
 
     # The engine's refusal of a restart with the pane gone, returned or raised alike.
@@ -177,7 +193,7 @@ module Workspace
       [NextAction.build("restore", run.workspace, why: why)] + (restart ? [NextAction.build("workflow resume", run.id, "--restart-step", why: why)] : [])
     end
 
-    def recover(workspace, entries, launch)
+    def recover(workspace, entries, launch, max)
       failure = restore_failure(workspace) { @restore.call([workspace], &launch) }
       if failure
         return entries.map do |entry|
@@ -186,7 +202,7 @@ module Workspace
         end
       end
       restarts, wakes = entries.partition { |entry| entry[:kind] == :restart }
-      rows = restarts.map { |entry| restart(workspace, entry) }
+      rows = restarts.map { |entry| restart(workspace, entry, max) }
       live = wakes.empty? || @liveness.call([workspace])[workspace] == true
       rows + wakes.map { |entry| live ? wake(workspace, entry[:run]) : no_session_row(workspace, entry[:run]) }
     end
@@ -208,7 +224,7 @@ module Workspace
         actions: manual_actions(run, "restore_failed", restart: false))
     end
 
-    def restart(workspace, entry)
+    def restart(workspace, entry, max)
       run = entry[:run]
       moved = moved_row(entry)
       return moved if moved
@@ -221,12 +237,12 @@ module Workspace
       unless ready.ready?
         return row(run, "failed", "pane_not_ready", "the agent in pane #{pane} did not get ready: #{ready.reason}", actions: manual_actions(run, "pane_not_ready", restart: true))
       end
-      resume(workspace, entry, pane)
+      resume(workspace, entry, pane, max)
     end
 
     # Restarts the step, trying a `step_still_working` refusal again until {STILL_WORKING_SECONDS} pass and a
     # `restart_not_closed` one once; the run is read again before every try.
-    def resume(workspace, entry, pane)
+    def resume(workspace, entry, pane, max)
       run = entry[:run]
       deadline = @clock.call + STILL_WORKING_SECONDS
       closed_tried = false
@@ -235,7 +251,7 @@ module Workspace
         return moved if moved
         begin
           after = @engine.resume(run.id, actor: "person", restart_step: true, bound: "idle", reboot_recovery: {"workspace" => workspace, "attempt" => entry[:n]})
-          return restarted_row(run, after, pane)
+          return restarted_row(run, after, pane, max)
         rescue Workspace::Error => e
           case e.code
           when "step_still_working"
@@ -279,10 +295,9 @@ module Workspace
 
     def moved_on(run) = row(run, "skipped", "moved_on", "the run moved on while it was being recovered; nothing was changed")
 
-    def restarted_row(run, after, pane)
+    def restarted_row(run, after, pane, max)
       attempt = after.dig("steps", run.current, "attempts")&.last&.dig("n")
       count = after["reboot_recoveries"]
-      max = @config.recover_max_per_run
       row(run, "restarted", nil, "restarted step #{run.current} (attempt #{attempt}) in pane #{pane}; reboot recovery #{count} of #{max}").merge("attempt" => attempt)
     end
 

@@ -29,6 +29,16 @@ RSpec.describe "Workspace::WorkflowTransitions.held_reason" do
     expect(held(run_with(backoff: {"to" => "build", "until" => (now + 60).iso8601}))).to be_nil
   end
 
+  it "does not hold a scheduled backoff with the retry_backoff reason the engine writes" do
+    reason = {"code" => "retry_backoff", "details" => {"step" => "build"}}
+    expect(held(run_with(reason: reason, backoff: {"to" => "build", "until" => (now + 60).iso8601}))).to be_nil
+  end
+
+  it "names a blocked backoff even with the retry_backoff reason" do
+    reason = {"code" => "retry_backoff"}
+    expect(held(run_with(reason: reason, backoff: {"to" => "build", "blocked" => true}))).to eq("retry_blocked")
+  end
+
   it "names a budget hold and a timeout hold" do
     expect(held(run_with(budget_hold: {"step" => "build"}))).to eq("budget_hold")
     expect(held(run_with(timeout_hold: {"step" => "build"}))).to eq("timeout_hold")

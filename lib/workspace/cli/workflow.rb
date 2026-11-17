@@ -25,8 +25,8 @@ module Workspace
       # @param names [CLI::Names] the working directory of a named workspace
       # @param input [IO] the input stream `workflow remove` asks on (refused under --no-input)
       # @param working_dir [String] the directory the CLI runs from
-      # @param launcher [CLI::Launcher, nil] launches the workspaces `workflow recover` restores
-      def initialize(workflow_command:, workflow_start_command:, workflow_project:, status_scope:, config:, project_config:, project_detector:, git:, launch_mode:, common:, names:, input:, working_dir:, launcher: nil)
+      # @param launcher [CLI::Launcher] launches the workspaces `workflow recover` restores
+      def initialize(workflow_command:, workflow_start_command:, workflow_project:, status_scope:, config:, project_config:, project_detector:, git:, launch_mode:, common:, names:, input:, working_dir:, launcher:)
         @workflow_command = workflow_command
         @workflow_start_command = workflow_start_command
         @workflow_project = workflow_project

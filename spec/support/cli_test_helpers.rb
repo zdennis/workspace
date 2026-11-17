@@ -64,7 +64,7 @@ module CLITestHelpers
       detacher: relauncher_detacher, program: [RbConfig.ruby, File.join(PROJECT_ROOT, "bin", "workspace")], log_dir: relauncher_log_dir || "/relaunch-logs", clock: -> { Time.utc(2026, 1, 2, 3, 4, 5) }, pid: 4242)
     workflow = Workspace::CLI::Workflow.new(workflow_command: workflow_command, workflow_start_command: keywords[:workflow_start_command], workflow_project: workflow_project,
       status_scope: status_scope, config: keywords[:config], project_config: keywords[:project_config], project_detector: keywords[:project_detector],
-      git: keywords[:git], launch_mode: keywords[:launch_mode], common: common, names: names, input: keywords[:input], working_dir: keywords[:working_dir])
+      git: keywords[:git], launch_mode: keywords[:launch_mode], common: common, names: names, input: keywords[:input], working_dir: keywords[:working_dir], launcher: launcher)
     agent_run = Workspace::CLI::AgentRun.new(**agent_run_commands, config: keywords[:config], agent_client: agent_client,
       project_detector: keywords[:project_detector], common: common, names: names, working_dir: keywords[:working_dir])
     agent = Workspace::CLI::Agent.new(**agent_commands, agent_run: ->(args, invocation) { agent_run.prompt(args, invocation) }, project_detector: keywords[:project_detector], common: common, names: names,
