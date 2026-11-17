@@ -1341,7 +1341,7 @@ A file that is not there is listed with `exists` false and `bytes` null. A symli
 
 ### The `rpiv` preset
 
-`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`rpiv-auto-approve-v2`](#the-rpiv-auto-approve-v2-preset), [`pr-feedback`](#the-pr-feedback-preset), [`investigate`](#the-investigate-preset) and [`explore`](#the-explore-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. `implement` requires `commits: 1` and `plan_status: done`. The agent sets the plan's `status: done` last, and the commit must be made during that attempt, so a rerun (a pass back from `verify`, or a `resume`) has to make a new commit for the fix. The prompt says never to amend or rebase, which makes the proof unproven (`history_rewritten`), and to use `git commit --allow-empty -m '<why>'` when no code change is needed. `verify` requires `command: lint` with `optional: true`, so it passes only when the tests and, if the project sets `commands.lint`, the lint command both exit 0 (a project without one skips that proof, recorded under `proofs`). A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
+`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`rpiv-auto-approve-v2`](#the-rpiv-auto-approve-v2-preset), [`pr-feedback`](#the-pr-feedback-preset), [`investigate`](#the-investigate-preset), [`explore`](#the-explore-preset) and the experimental [`bugfix`](#the-bugfix-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. `implement` requires `commits: 1` and `plan_status: done`. The agent sets the plan's `status: done` last, and the commit must be made during that attempt, so a rerun (a pass back from `verify`, or a `resume`) has to make a new commit for the fix. The prompt says never to amend or rebase, which makes the proof unproven (`history_rewritten`), and to use `git commit --allow-empty -m '<why>'` when no code change is needed. `verify` requires `command: lint` with `optional: true`, so it passes only when the tests and, if the project sets `commands.lint`, the lint command both exit 0 (a project without one skips that proof, recorded under `proofs`). A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
 
 `research` and `plan` are `guard: unchanged`, so `rpiv` needs a clean checkout to start: a dirty tracked file, a stopped git operation or a branch with no commit is refused as `dirty_worktree` before anything is made, and a research or plan step that commits or edits a tracked file fails with the guard code (`head_moved`, `tracked_changed`). The plan and the artifacts are untracked, so writing them is fine. A run that has already started keeps the definition it started with, so runs begun before this guard behave as they did. `workflow run rpiv` (its tree defaults to the workspace's worktree) is refused on uncommitted tracked changes the same way, not only `workflow start`. A project that tracks `IMPLEMENTATION_PLAN.md` inside the repository fails `plan` with `tracked_changed`; clean the checkout and `workflow resume`. `workflow resume --from research` or `--from plan` after `implement` has committed stops with `head_moved`.
 
@@ -1481,6 +1481,35 @@ workspace workflow start explore --prompt "What would make uploads resumable?"
 
 - `survey` (`guard: unchanged`, gate `approve`, 90m) writes the note `<date>-<topic>-survey.md` in the notes directory: the questions, what exists today, each gap with its evidence, and a ranked list for you to prune. `survey.md` in the run's artifacts names the note on its first line, so the gate shows it, and a `review_request` inbox item (`explore:RUN`) links it. Approve with a note to cut the list or change the emphasis, or reject with a hint and it writes the note again.
 - `report` (`guard: config`, 90m) reads the approved note, closes the inbox item, and writes `<date>-<topic>-report.md` in the notes directory with the verdict first, then ranked recommendations, then the detail, has a skeptical sub-agent check the claims against the code, and hands the note back through the `report` pack as a `note` inbox item. `report.md` in the run's artifacts holds the note's file name.
+
+### The `bugfix` preset
+
+**Experimental.** `bugfix` fixes one bug test first: `reproduce`, `fix`, `verify`. Its inputs are `task` (required) and `spec` (a spec or ticket file to read first). `workflow run` fills `task` from the branch when it is left out ([how](#filling-inputs-from-the-branch)).
+
+- `reproduce` (`guard: unchanged`, gate `approve`, 45m) writes one new test file, plus `repro.md` (steps, expected and actual behavior, the test's path and the command that runs it) and `failure.txt` (a short line of failure text only this bug prints). Before the gate, a `require: exec` proof runs `workspace step expect-fail` on `{{changed.tests}}` with `failure.txt` as the match file, so a person at the gate reads a reproduction that is already known to fail. The step fails on any tracked change, so a reproduction that needs a changed spec helper stops with `workspace step done --status fail`.
+- `fix` (3h) makes at least one commit that holds the test and the fix, and is checked with `commands.test` run with no files, the whole suite. It deletes the test files of earlier reproduce attempts and keeps the test as strict as it was.
+- `verify` (90m) reruns the tests, runs the linter when the project has `commands.lint`, and reviews the branch's diff. A failure goes back to `fix` up to three times in the same conversation.
+
+The run's `max_attempts` is 15.
+
+Setup it needs:
+
+```sh
+workspace config set commands.test "bundle exec rspec"
+workspace config set commands.test_files "spec/**/*_spec.rb"
+workspace capabilities --json    # step_expect_fail must be listed
+workspace workflow run bugfix --input task="PROJ-101 export fails on empty invoices"
+```
+
+- `commands.test` must take test files as arguments. A command that ignores them runs everything, and the new test then can't be told from the rest.
+- `commands.test_files` must match the name of the new test file, because `{{changed.tests}}` is built from it. Every untracked file that matches runs, not only the agent's.
+- The `workspace` on the agent daemon's PATH must have `step expect-fail`. An older one fails the proof with its unknown-verb error.
+
+Two choices to know about. `bugfix` is a standalone file, not `extends: rpiv`: a variant can replace a step or add one, but it can't take steps out of the parent, and `bugfix` has a different set of steps and a different instruction text. `verify` has no `uses: test-db`, so two bugfix runs in worktrees of one repository can verify at the same time; add `uses: test-db` in your own copy if your tests share a database.
+
+`deny` blocks `workspace config set*` and `workspace config unset*`, because the proofs read `commands.test` from config and an agent that changed it could make any command the "tests" (see [Denying commands](#denying-commands)).
+
+The fail-first proof has limits: it does not show that the test fails for the right reason, nor that `fix` keeps the test as strict. See [Fail-first proofs](#fail-first-proofs). The reproduction you read at the gate is the real check.
 
 ## Required proofs
 
