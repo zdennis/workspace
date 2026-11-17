@@ -144,8 +144,9 @@ module Workspace
     # restart of the step in the same change, once per attempt: the `infra_retry` sweep mark (`cause`, `n`, `max`,
     # `scheduled_at`, `due`; `n` is the step's {WorkflowTransitions.infra_retries} plus one, `due` is `scheduled_at` plus
     # {WorkflowTransitions::REDELIVER_BACKOFF} entry `n - 1`) and an `infra_retry_scheduled` event (`step`, `attempt`,
-    # `cause`, `n`, `max`, `due`). Nothing is scheduled when `n` would pass `max`; the caller gives up instead
-    # ({#give_up_infra_retry}).
+    # `cause`, `n`, `max`, `due`). When `n` would pass `max` the same change gives the retry up instead, as
+    # {#give_up_infra_retry} does with reason `retries_spent`: a given-up mark (`n` the step's count) and an
+    # `infra_retries_exhausted` event, so a crash cannot leave the stall recorded and the exhaustion not.
     #
     # @param run_id [String]
     # @param step [String] the step the sweep saw the run on
@@ -154,13 +155,14 @@ module Workspace
     # @param data [Hash{String=>Object}] more for the `step_stalled` event
     # @param infra_retry [Hash{Symbol=>Integer}, nil] `{max:}`, the `workflows.infra_retry.max` to schedule under; nil schedules nothing
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
-    # @return [Symbol] :scheduled (recorded, with a retry scheduled), :recorded, :repeat (this cause was recorded for the
+    # @return [Symbol] :scheduled (recorded, with a retry scheduled), :exhausted (recorded, with the retries given up as
+    #   spent), :recorded, :repeat (this cause was recorded for the
     #   attempt already), :moved_on (the run is elsewhere now) or :busy (another process is changing the run)
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
     def note_stall(run_id, actor:, step:, attempt:, cause:, data: {}, infra_retry: nil)
       sweep_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, running: false) do |stored|
         next :repeat unless mark_stall(stored, cause, data)
-        (infra_retry && schedule_infra_retry(stored, cause, infra_retry.fetch(:max))) ? :scheduled : :recorded
+        (infra_retry && schedule_infra_retry(stored, cause, infra_retry.fetch(:max))) || :recorded
       end
     end
 
@@ -864,21 +866,20 @@ module Workspace
       true
     end
 
-    # Writes the `infra_retry` mark and its `infra_retry_scheduled` event for a stall just noted; false when the cause
-    # is not one a restart gets past, the attempt has a mark already, or this retry would pass +max+.
+    # Writes the `infra_retry` mark and its `infra_retry_scheduled` event for a stall just noted (:scheduled), or,
+    # when this retry would pass +max+, gives the retry up as `retries_spent` (:exhausted); nil when the cause is not
+    # one a restart gets past or the attempt has a mark already.
     def schedule_infra_retry(run, cause, max)
       marks = sweep_marks_for(run)
-      return false unless INFRA_RETRY_CAUSES.include?(cause) && !marks.key?("infra_retry")
+      return nil unless INFRA_RETRY_CAUSES.include?(cause) && !marks.key?("infra_retry") && max.is_a?(Integer)
       n = WorkflowTransitions.infra_retries(run, run["current"]) + 1
-      return false unless max.is_a?(Integer) && n <= max
+      return (give_up(run, cause, "retries_spent", max) ? :exhausted : nil) if n > max
       at = @clock.call
-      due = (at + infra_retry_wait(n)).utc.iso8601
+      due = (at + WorkflowTransitions.infra_retry_wait(n)).utc.iso8601
       marks["infra_retry"] = {"cause" => cause, "n" => n, "max" => max, "scheduled_at" => at.utc.iso8601, "due" => due}
       @change.event(run, "infra_retry_scheduled", sweep_event(run, "cause" => cause, "n" => n, "max" => max, "due" => due))
-      true
+      :scheduled
     end
-
-    def infra_retry_wait(n) = WorkflowTransitions::REDELIVER_BACKOFF[(n - 1).clamp(0, WorkflowTransitions::REDELIVER_BACKOFF.size - 1)]
 
     # Sets `given_up` on the current attempt's mark (writing one when there is none) and records
     # `infra_retries_exhausted`; false when the mark has given up or ended already.
@@ -922,7 +923,7 @@ module Workspace
       mark.delete("claimed_at")
       mark.delete("claimed_by")
       mark["released"] = 1
-      mark["due"] = (@clock.call + infra_retry_wait(mark["n"].is_a?(Integer) ? mark["n"] : 1)).utc.iso8601
+      mark["due"] = (@clock.call + WorkflowTransitions.infra_retry_wait(mark["n"].is_a?(Integer) ? mark["n"] : 1)).utc.iso8601
       @change.event(run, "infra_retry_released", sweep_event(run, "cause" => mark["cause"], "n" => mark["n"], "due" => mark["due"]))
     end
 

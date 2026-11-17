@@ -101,7 +101,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(lines("step_stalled").size).to eq(1)
     end
 
-    it "schedules the second retry 300s out, and none past max" do
+    it "schedules the second retry 300s out, and past max gives the retry up as spent in the same change, once" do
       start
       stall
       now[0] += 60
@@ -114,8 +114,17 @@ RSpec.describe Workspace::WorkflowEngine do
       now[0] += 300
       claim
       retry_restart
-      expect(stall).to eq(:recorded)
-      expect(mark).to be_nil
+      expect(stall).to eq(:exhausted)
+      expect(mark).to include("cause" => "agent_gone", "n" => 2, "max" => 2, "given_up" => {"at" => "2026-10-04T12:06:00Z", "reason" => "retries_spent"})
+      expect(lines("infra_retries_exhausted")).to contain_exactly(include("step" => "build", "attempt" => 3, "cause" => "agent_gone", "n" => 2, "max" => 2,
+        "reason" => "retries_spent", "actor" => "sweep"))
+
+      now[0] += 300
+      expect(stall).to eq(:repeat)
+      expect(engine.give_up_infra_retry("wr_1", actor: "sweep", step: "build", attempt: 3, cause: "agent_gone", reason: "retries_spent", max: 2)).to eq(:repeat)
+      expect(lines("infra_retries_exhausted").size).to eq(1)
+      expect(lines("step_stalled").count { |line| line["attempt"] == 3 }).to eq(1)
+      expect(wake).to be_nil
     end
 
     it "schedules nothing without infra_retry, or for a cause a restart does not get past" do
@@ -458,8 +467,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "clears the step's count after the retries were spent, on --restart-step" do
       start
       edit_run(store, "wr_1") { |stored| stored["infra_retries"] = {"build" => 2} }
-      engine.note_stall("wr_1", actor: "sweep", step: "build", attempt: 1, cause: "agent_gone")
-      engine.give_up_infra_retry("wr_1", actor: "sweep", step: "build", attempt: 1, cause: "agent_gone", reason: "retries_spent", max: 2)
+      expect(stall(max: 2)).to eq(:exhausted)
 
       after = engine.resume("wr_1", actor: "person", restart_step: true, bound: "shell")
 

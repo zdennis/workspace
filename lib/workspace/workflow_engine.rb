@@ -193,9 +193,9 @@ module Workspace
     # @return [Hash{String=>Object}, nil] the run afterwards; nil when nothing was done
     def tick(run_id, actor:) = @recovery.tick(run_id, actor: actor)&.to_h
 
-    # Records a stall the sweep found, and with +infra_retry+ (`{max:}`) schedules the step's infra retry in the same
+    # Records a stall the sweep found, and with +infra_retry+ (`{max:}`) schedules the step's infra retry, or gives it up as spent, in the same
     # change. See {WorkflowRecovery#note_stall}.
-    # @return [Symbol] :scheduled, :recorded, :repeat, :moved_on or :busy
+    # @return [Symbol] :scheduled, :exhausted, :recorded, :repeat, :moved_on or :busy
     def note_stall(run_id, actor:, step:, attempt:, cause:, data: {}, infra_retry: nil)
       @recovery.note_stall(run_id, actor: actor, step: step, attempt: attempt, cause: cause, data: data, infra_retry: infra_retry)
     end

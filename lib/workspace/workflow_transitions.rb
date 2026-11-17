@@ -517,9 +517,16 @@ module Workspace
 
     def self.infra_retry_scheduled_due(scheduled_at, n)
       at = stall_time(scheduled_at) or return nil
-      at + REDELIVER_BACKOFF[(n - 1).clamp(0, REDELIVER_BACKOFF.size - 1)]
+      at + infra_retry_wait(n)
     end
     private_class_method :infra_retry_scheduled_due
+
+    # The one rule for how long a step's infra retry +n+ waits after it is scheduled: {REDELIVER_BACKOFF} entry
+    # `n - 1`, the last entry for every retry past it, the first for an +n+ below 1.
+    #
+    # @param n [Integer] the retry's number, from 1
+    # @return [Integer] seconds
+    def self.infra_retry_wait(n) = REDELIVER_BACKOFF[(n - 1).clamp(0, REDELIVER_BACKOFF.size - 1)]
 
     # How many infra retries a step has claimed since it last passed or a person last resumed the run.
     #

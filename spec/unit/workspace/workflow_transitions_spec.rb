@@ -1056,6 +1056,11 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.infra_retries(run.merge("infra_retries" => {"build" => 2}), "build")).to eq(2)
     end
 
+    it "waits 60s, then 300s, then 900s for every retry past the third, and 60s for an n below 1" do
+      expect([1, 2, 3, 4, 9].map { |n| described_class.infra_retry_wait(n) }).to eq([60, 300, 900, 900, 900])
+      expect(described_class.infra_retry_wait(0)).to eq(60)
+    end
+
     it "reads nil for a mark left on an earlier attempt" do
       run = stalled_run(mark)
       run["sweep"]["attempt"] = 0
