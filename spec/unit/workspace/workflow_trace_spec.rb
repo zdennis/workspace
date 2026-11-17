@@ -348,4 +348,56 @@ RSpec.describe Workspace::WorkflowTrace do
       expect(trace[:warnings]).to eq([])
     end
   end
+
+  describe "text and table formatting" do
+    let(:run) do
+      {"id" => "wr_t", "state" => "passed", "started_at" => "2026-11-01T09:00:00Z", "ended_at" => "2026-11-01T09:30:00Z",
+       "definition" => {"steps" => [{"id" => "plan"}]},
+       "steps" => {"plan" => {"state" => "passed", "attempts" => [{"n" => 1, "started_at" => "2026-11-01T09:00:00Z", "ended_at" => "2026-11-01T09:10:00Z", "outcome" => "passed", "usage" => {"input_tokens" => 20000, "output_tokens" => 0}}]}}}
+    end
+    let(:events) do
+      [{"n" => 1, "ts" => "2026-11-01T09:00:00Z", "type" => "run_started", "from_state" => "pending", "to_state" => "running"},
+        {"n" => 2, "ts" => "2026-11-01T09:10:00Z", "type" => "gate_waiting", "step" => "plan", "attempt" => 1},
+        {"n" => 3, "ts" => "2026-11-01T09:22:00Z", "type" => "gate_approved", "step" => "plan", "attempt" => 1, "actor" => "person"},
+        {"n" => 4, "ts" => "2026-11-01T09:30:00Z", "type" => "step_passed", "step" => "plan", "attempt" => 1, "from_state" => "running", "to_state" => "passed", "actor" => "engine", "cause" => "checks_passed"}]
+    end
+    let(:doc) { described_class.new.read(run, events, now: now) }
+    let(:lines) { described_class.text_lines(doc) }
+
+    it "prints a row per event with actor, cause, duration and tokens" do
+      expect(lines).to include("09:30:00  plan#1 running -> passed  actor=engine  cause=checks_passed  480s  20k tok")
+    end
+
+    it "prints a waited line after the row that opens the gap, only past the threshold" do
+      waited = lines.index("          waited 12m (gate)")
+      expect(waited).not_to be_nil
+      expect(lines[waited - 1]).to start_with("09:10:00")
+      expect(lines[waited + 1]).to start_with("09:22:00")
+    end
+
+    it "omits a short wait" do
+      short = events.map { |event| (event["n"] == 3) ? event.merge("ts" => "2026-11-01T09:10:30Z") : event }
+      expect(described_class.text_lines(described_class.new.read(run, short, now: now)).grep(/waited/)).to eq([])
+    end
+
+    it "ends with totals, a reasons-overlap note and no zeros for unknowns" do
+      expect(lines).to include("wall:    30m", "attempts: 1")
+      expect(lines.grep(/^waiting: gate 12m .*overlap/)).not_to be_empty
+      empty = described_class.new.read({"id" => "wr_e", "steps" => {}}, [], now: now)
+      expect(described_class.text_lines(empty)).to include("wall:    -", "tokens:  -", "active:  -")
+    end
+
+    it "gives table rows matching the header, with - for unknowns" do
+      rows = described_class.table_rows(doc)
+      expect(rows.first(1)).to eq([%w[1 2026-11-01T09:00:00Z transition - pending running - - - -]])
+      expect(rows.all? { |row| row.size == described_class::TABLE_HEADER.size }).to be(true)
+    end
+  end
+
+  describe ".format_tokens" do
+    it "uses the k and M tiers" do
+      expect([950, 20_000, 1_500_000].map { |count| described_class.format_tokens(count) }).to eq(%w[950 20k 1.5M])
+      expect(described_class.token_text({total: 1_500_000})).to eq("1.5M")
+    end
+  end
 end

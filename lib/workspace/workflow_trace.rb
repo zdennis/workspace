@@ -51,6 +51,137 @@ module Workspace
       })
     end
 
+    # Gaps shorter than this many seconds are not printed as waits.
+    WAIT_LINE_SECONDS = 60
+
+    # The header of the `--table` grid.
+    TABLE_HEADER = %w[N TS KIND STEP#ATTEMPT FROM TO ACTOR CAUSE DURATION TOKENS].freeze
+
+    # Span kinds that print as a `waited` line.
+    WAIT_KINDS = %w[gate wait stall downtime].freeze
+
+    # The rows of `workflow trace --table`, one array of cells per transition row, `-` where a value is unknown.
+    #
+    # @param doc [Hash] what {#read} returns
+    # @return [Array<Array<String>>] cells matching {TABLE_HEADER}
+    def self.table_rows(doc)
+      doc[:transitions].map do |row|
+        [row[:n], row[:ts], row[:kind], step_label(row, "-"), row[:from], row[:to], row[:actor], row[:cause],
+          row[:duration_ms] && duration_text(row[:duration_ms] / 1000.0), token_text(row[:tokens])].map { |cell| cell.nil? ? "-" : cell.to_s }
+      end
+    end
+
+    # The text `workflow trace` prints: one line per transition row, a `waited` line where a long gate, wait, stall or
+    # downtime span begins, then the totals. Unknown values print as `-` or are left out, never as 0. Pure; the lines
+    # are not escaped for a terminal.
+    #
+    # @param doc [Hash] what {#read} returns
+    # @return [Array<String>]
+    def self.text_lines(doc)
+      rows = doc[:transitions]
+      waits = doc[:spans].select { |span| WAIT_KINDS.include?(span[:kind]) && wait_line?(span) }
+        .sort_by { |span| [parse_time(span[:started_at]) || Time.at(0), span[:span_id].to_s] }
+      lines = []
+      pending = waits.dup
+      rows.each do |row|
+        at = parse_time(row[:ts])
+        while (wait = pending.first) && at && parse_time(wait[:started_at]) < at
+          lines << wait_text(pending.shift)
+        end
+        lines << row_text(row)
+      end
+      pending.each { |wait| lines << wait_text(wait) }
+      lines << "" << "Totals"
+      lines.concat(totals_lines(doc[:totals]))
+    end
+
+    def self.wait_line?(span)
+      from = parse_time(span[:started_at])
+      return false unless from
+      to = parse_time(span[:ended_at])
+      to.nil? || to - from > WAIT_LINE_SECONDS
+    end
+
+    def self.wait_text(span)
+      from = parse_time(span[:started_at])
+      to = parse_time(span[:ended_at])
+      reason = span[:code] || span[:kind]
+      "#{" " * 10}#{to ? "waited #{duration_text(to - from)}" : "waiting since #{clock_text(span[:started_at])}"} (#{reason})"
+    end
+
+    def self.row_text(row)
+      label = step_label(row, row[:type].to_s)
+      states = ((row[:from] || row[:to]) && row[:kind] == "transition") ? "#{row[:from] || "-"} -> #{row[:to] || "-"}" : row[:type]
+      parts = ["#{clock_text(row[:ts])}  #{label} #{states}"]
+      parts << "actor=#{row[:actor]}" if row[:actor]
+      parts << "cause=#{row[:cause]}" if row[:cause]
+      parts << duration_text(row[:duration_ms] / 1000.0) if row[:duration_ms]
+      tokens = token_text(row[:tokens])
+      parts << "#{tokens} tok" if tokens
+      parts.join("  ")
+    end
+
+    def self.totals_lines(totals)
+      lines = []
+      lines << "wall:    #{duration_text(totals[:wall_seconds]) || "-"}"
+      lines << "active:  #{duration_text(totals[:active_seconds]) || "-"}"
+      lines << "stopped: #{duration_text(totals[:stopped_seconds]) || "-"}"
+      waiting = totals[:waiting_seconds]
+      if waiting.is_a?(Hash) && !waiting.empty?
+        lines << "waiting: " + waiting.map { |code, seconds| "#{code} #{duration_text(seconds)}" }.join(", ") + " (reasons can overlap, so they can add up to more than stopped)"
+      end
+      machine = totals[:machine_waiting_seconds]
+      if machine.is_a?(Hash) && !machine.empty?
+        lines << "machine waiting (inside active): " + machine.map { |code, seconds| "#{code} #{duration_text(seconds)}" }.join(", ")
+      end
+      tokens = totals[:tokens] || {}
+      lines << "tokens:  " + (tokens[:total] ? "#{token_text(tokens)} (in #{tokens[:in]}, out #{tokens[:out]}, cache #{tokens[:cache]})" : "-")
+      lines << "loops:   #{totals[:loops] || "-"}"
+      lines << "attempts: #{totals[:attempts] || "-"}"
+      lines
+    end
+
+    def self.step_label(row, fallback)
+      return fallback unless row[:step]
+      row[:attempt] ? "#{row[:step]}##{row[:attempt]}" : row[:step]
+    end
+
+    def self.token_text(tokens)
+      total = tokens && tokens[:total]
+      return nil unless total
+      format_tokens(total)
+    end
+
+    # A token count as short text: `950`, `20k`, `1.5M`. The one rule `workflow stats` and `workflow trace` share.
+    #
+    # @param count [Integer]
+    # @return [String]
+    def self.format_tokens(count)
+      return count.to_s if count < 1000
+      return "#{(count / 1000.0).round}k" if count < 999_500
+      "#{(count / 1_000_000.0).round(1)}M"
+    end
+
+    def self.duration_text(seconds)
+      return nil unless seconds
+      whole = seconds.round
+      if whole >= 3600 then "#{whole / 3600}h#{whole % 3600 / 60}m"
+      elsif whole >= 600 then "#{whole / 60}m"
+      else "#{whole}s"
+      end
+    end
+
+    def self.parse_time(value)
+      value.is_a?(String) ? Time.iso8601(value) : nil
+    rescue ArgumentError
+      nil
+    end
+
+    def self.clock_text(ts)
+      time = parse_time(ts)
+      time ? time.utc.strftime("%H:%M:%S") : "--:--:--"
+    end
+
     private
 
     # The events reader's warnings are plain strings; a Hash passes as it is.

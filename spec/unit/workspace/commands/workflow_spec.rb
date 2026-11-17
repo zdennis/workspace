@@ -4534,4 +4534,119 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(uninstall_output.string).to include("could not be removed")
     end
   end
+
+  describe "#trace" do
+    let(:run_hash) do
+      {"id" => "wr_t", "workflow" => "flow", "workspace" => "app", "state" => "passed", "started_at" => "2026-11-01T09:00:00Z", "ended_at" => "2026-11-01T09:30:00Z",
+       "definition" => {"steps" => [{"id" => "plan"}]},
+       "steps" => {"plan" => {"state" => "passed", "attempts" => [{"n" => 1, "started_at" => "2026-11-01T09:00:00Z", "ended_at" => "2026-11-01T09:10:00Z", "outcome" => "passed", "usage" => {"input_tokens" => 20000, "output_tokens" => 0}}]}}}
+    end
+    let(:events) do
+      [{"n" => 1, "ts" => "2026-11-01T09:00:00Z", "type" => "run_started", "from_state" => "pending", "to_state" => "running"},
+        {"n" => 2, "ts" => "2026-11-01T09:10:00Z", "type" => "step_passed", "step" => "plan", "attempt" => 1, "from_state" => "running", "to_state" => "passed", "actor" => "engine"}]
+    end
+    let(:page) { {"events" => events, "truncated" => false, "next_since" => 2, "warnings" => []} }
+    let(:downtime) { instance_double(Workspace::WorkflowDowntime, spans: []) }
+    let(:trace_command) do
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil,
+        trace: Workspace::WorkflowTrace.new, downtime: downtime, process_tree: process_tree, lock_holder: lock_holder,
+        clock: -> { Time.utc(2026, 11, 1, 10, 0, 0) }, output: output)
+    end
+
+    before do
+      allow(store).to receive(:run).with("wr_t").and_return(run_hash)
+      allow(store).to receive(:events).and_return(page)
+      allow(store).to receive(:event_errors).with("wr_t").and_return([])
+    end
+
+    it "prints a line per row, then the totals" do
+      trace_command.trace(run: "wr_t")
+      expect(output.string).to include("09:10:00  plan#1 running -> passed  actor=engine  20k tok").and include("Totals").and include("attempts: 1")
+    end
+
+    it "starts with a header naming the run, its workflow and state, and saying times are UTC" do
+      trace_command.trace(run: "wr_t")
+      expect(output.string.lines.first.chomp).to eq("Run wr_t  workflow flow  state passed  (times are UTC)")
+    end
+
+    context "with a long gate, a lost event and a control character in the actor" do
+      let(:events) do
+        [{"n" => 1, "ts" => "2026-11-01T09:00:00Z", "type" => "run_started", "from_state" => "pending", "to_state" => "running"},
+          {"n" => 2, "ts" => "2026-11-01T09:12:00Z", "type" => "gate_waiting", "step" => "plan", "attempt" => 1, "from_state" => "running", "to_state" => "waiting"},
+          {"n" => 3, "ts" => "2026-11-01T09:20:00Z", "type" => "gate_approved", "step" => "plan", "attempt" => 1, "from_state" => "waiting", "to_state" => "running", "actor" => "bad\e[31mname"}]
+      end
+      let(:page) { {"events" => events, "truncated" => false, "next_since" => 3, "warnings" => ["bad line"]} }
+
+      it "prints a waited line for the gate in text mode" do
+        trace_command.trace(run: "wr_t")
+        expect(output.string).to include("waited 480s (gate)")
+      end
+
+      it "escapes the control character in text mode" do
+        trace_command.trace(run: "wr_t")
+        expect(output.string).not_to include("\e")
+        expect(output.string).to include("bad")
+      end
+
+      it "prints the warning lines in text mode" do
+        trace_command.trace(run: "wr_t")
+        expect(output.string).to include("Warning: bad line")
+      end
+
+      it "prints the warning lines in table mode" do
+        trace_command.trace(run: "wr_t", table: true)
+        expect(output.string).to include("Warning: bad line")
+      end
+    end
+
+    it "prints a grid with --table" do
+      trace_command.trace(run: "wr_t", table: true)
+      lines = output.string.lines.map(&:split)
+      expect(lines[0]).to eq(%w[N TS KIND STEP#ATTEMPT FROM TO ACTOR CAUSE DURATION TOKENS])
+      expect(lines[2]).to eq(%w[2 2026-11-01T09:10:00Z transition plan#1 running passed engine - - 20k])
+    end
+
+    it "prints the document with --json" do
+      trace_command.trace(run: "wr_t", json: true)
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => true, "run" => "wr_t", "warnings" => [])
+      expect(doc.keys).to include("schema_version", "trace_id", "transitions", "spans", "totals")
+      expect(doc["trace_id"]).to eq(Workspace::WorkflowTrace.new.read(run_hash, events, now: Time.utc(2026, 11, 1, 10))[:trace_id])
+      expect(output.string.lines.size).to eq(1)
+      expect(doc["transitions"].map { |row| row["n"] }).to eq([1, 2])
+    end
+
+    it "pages events while the history is truncated" do
+      allow(store).to receive(:events).with("wr_t", since: 0).and_return({"events" => [events[0]], "truncated" => true, "next_since" => 1, "warnings" => ["bad line"]})
+      allow(store).to receive(:events).with("wr_t", since: 1).and_return({"events" => [events[1]], "truncated" => false, "next_since" => 2, "warnings" => []})
+      trace_command.trace(run: "wr_t", json: true)
+      doc = JSON.parse(output.string)
+      expect(doc["transitions"].size).to eq(2)
+      expect(doc["warnings"].map { |warning| warning["code"] }).to eq(["event_line_skipped"])
+    end
+
+    it "stops when the cursor does not advance" do
+      allow(store).to receive(:events).and_return({"events" => [events[0]], "truncated" => true, "next_since" => 0, "warnings" => []})
+      trace_command.trace(run: "wr_t", json: true)
+      expect(store).to have_received(:events).once
+    end
+
+    it "passes the downtime spans and event errors on" do
+      allow(downtime).to receive(:spans).and_return([{"since" => "2026-11-01T09:12:00Z", "until" => "2026-11-01T09:20:00Z"}])
+      allow(store).to receive(:event_errors).with("wr_t").and_return([{"type" => "step_passed"}])
+      trace_command.trace(run: "wr_t", json: true)
+      doc = JSON.parse(output.string)
+      expect(doc["spans"].map { |span| span["kind"] }).to include("downtime")
+      expect(doc["warnings"].map { |warning| warning["code"] }).to eq(["events_lost"])
+    end
+
+    it "raises unknown_run for a run that is not there" do
+      allow(store).to receive(:run).with("nope").and_raise(Workspace::Error.new("no run", code: "unknown_run"))
+      expect { trace_command.trace(run: "nope") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_run") }
+    end
+
+    it "refuses when no trace reader was wired" do
+      expect { command.trace(run: "wr_t") }.to raise_error(Workspace::Error, /no trace reader/)
+    end
+  end
 end
