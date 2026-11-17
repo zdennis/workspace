@@ -105,6 +105,8 @@ Beyond `input`, nothing that can hold a secret is written: no other command line
 
 `follow_started` gives a follower a cursor to save before any event arrives.
 
+`workspace workflow events RUN --follow --json` follows one run's history and uses the same `follow_started` and `gap` type names, but its lines carry a line number (`since`, `next_since`) instead of this cursor; see [Following a run's events](README.workflow.md#following-a-runs-events).
+
 ### Cursor
 
 A cursor is opaque: save it and pass it back with `--since`, and don't read its contents. Each one covers every source: the event log and every daemon's file. It starts with a format prefix (`1.`).

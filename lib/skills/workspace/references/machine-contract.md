@@ -61,7 +61,7 @@ Under `--json`, stdout holds exactly one JSON value and failures are the envelop
 
 ## Scope
 
-- `sessions --json` panes say what set their state and the kind of a failed turn (null when not recorded). `daemon watch` and `workflow events --follow` are the long-running readers: with `--json` they print one object per line, never a document; resume with `--since`.
+- `sessions --json` panes say what set their state and the kind of a failed turn (null when not recorded). `daemon watch` and `workflow events --follow` are the long-running readers: with `--json` they print one object per line, never a document; resume with `--since`. `workflow events RUN --follow` exits 0 when the run completed, 1 when it ended cancelled, killed or failed, and 75 when `--timeout` ran out (`daemon watch` exits 0 either way).
 - `--name WS` picks the workspace on most commands. Some take it positionally: `spine show [WS]`, `sessions [project]`, `parent [NAME]`.
 - Without `--name`, lifecycle commands (`stop`, `kill`, `finish`, `remove`, `restore`, `dir`) act on the workspace holding the current directory. Outside one they refuse with `not_in_workspace` (`details.path`).
 - Bare `stop` and `restore` act on one workspace. `--all` is required for every one. Older CLIs differ: check `features.lifecycle_current >= 1`.
