@@ -127,7 +127,7 @@ module Workspace
           opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not; install: only the source at position N of workflows.sources (a whole number from 1, written after the flag)") { options[:source] = true }
           opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
           opts.on("--by GROUP", "compare: group the runs by definition (default), version (the definition's `version:`) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
-          opts.on("--runs N", "insights: read this many of the newest runs (default #{WorkflowInsights::DEFAULT_RUNS}; a whole number from 1)") { |v| options[:runs] = v }
+          opts.on("--limit N", "insights: read this many of the newest runs (default #{WorkflowInsights::DEFAULT_RUNS}; a whole number from 1)") { |v| options[:limit] = v }
           opts.on("--last DURATION", "stats, compare, insights: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
           opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
           opts.on("--types A,B", "events: only events of these types (repeatable, or comma-separated)") { |v| (options[:types] ||= []).concat(v.split(",").map(&:strip).reject(&:empty?)) }
@@ -213,7 +213,7 @@ module Workspace
         raise UsageError, "--attempt-of is for `workflow attempts RUN` and `workflow audit RUN`." if options[:attempt_of] && !%w[attempts audit].include?(subcommand)
         raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
         raise UsageError, "--last is for `workflow stats ID`, `workflow compare ID` and `workflow insights ID`." if options[:last] && !%w[stats compare insights].include?(subcommand)
-        raise UsageError, "--runs is for `workflow insights ID`." if options[:runs] && subcommand != "insights"
+        raise UsageError, "--limit is for `workflow insights ID`." if options[:limit] && subcommand != "insights"
         raise UsageError, "--by is for `workflow compare ID`." if options[:compare_by] && subcommand != "compare"
         raise UsageError, "--project is for `workflow status`, `workflow stats`, `workflow compare` and `workflow insights`." if options[:project] && !%w[status stats compare insights].include?(subcommand)
         raise UsageError, "workflow #{subcommand} covers every workspace unless --name or --project narrows it; --all is not needed." if %w[stats compare insights].include?(subcommand) && options[:all]
@@ -317,7 +317,7 @@ module Workspace
           invocation.exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
         when "insights"
           last = workflow_last(options[:last])
-          runs = workflow_runs(options[:runs])
+          runs = workflow_runs(options[:limit])
           scope = @status_scope.resolve(name: options[:name], project: options[:project], all: nil, working_dir: @working_dir) if options[:name] || options[:project]
           result = @workflow_command.insights(workflow: subject, runs: runs, last: last, last_text: options[:last], scope: scope, json: options[:json])
           invocation.exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
@@ -500,7 +500,7 @@ module Workspace
 
       def workflow_runs(text)
         return WorkflowInsights::DEFAULT_RUNS if text.nil?
-        raise UsageError, "--runs needs a whole number from 1 up, got #{text.to_s[0, 40].inspect}." unless text.match?(/\A[1-9]\d{0,8}\z/)
+        raise UsageError, "--limit needs a whole number from 1 up, got #{text.to_s[0, 40].inspect}." unless text.match?(/\A[1-9]\d{0,8}\z/)
         text.to_i
       end
 

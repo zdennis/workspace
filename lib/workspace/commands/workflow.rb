@@ -1373,8 +1373,8 @@ module Workspace
         elsif scope&.project
           flags += ["--project", scope.project.name]
         end
-        actions = [NextAction.build("workflow stats", workflow, *flags, why: "per-step figures for the same workflow and scope; every matching run, not only the --runs newest"),
-          NextAction.build("workflow compare", workflow, "--by", "definition", *flags, why: "the same workflow and scope by definition; every matching run, not only the --runs newest")]
+        actions = [NextAction.build("workflow stats", workflow, *flags, why: "per-step figures for the same workflow and scope; every matching run, not only the --limit newest"),
+          NextAction.build("workflow compare", workflow, "--by", "definition", *flags, why: "the same workflow and scope by definition; every matching run, not only the --limit newest")]
         hot = Array(result["hot_steps"])
         newest = result["enough"] && (hot.find { |row| !Array(row["retry_run_ids"]).empty? }&.dig("retry_run_ids")&.first ||
           hot.find { |row| !Array(row["resume_run_ids"]).empty? }&.dig("resume_run_ids")&.first ||
@@ -1401,7 +1401,7 @@ module Workspace
           print_insight_sections(result)
         else
           @output.puts "Not enough runs (#{result["runs"]}; insights needs #{WorkflowInsights::MIN_RUNS})."
-          @output.puts "More runs are stored (#{result["stored"]}); raise --runs to read them." if result["runs"] < result["stored"]
+          @output.puts "More runs are stored (#{result["stored"]}); raise --limit to read them." if result["runs"] < result["stored"]
         end
         warnings = result["effects"].values.map { |each| each["warning"] }.compact.uniq
         warnings.each { |text| @output.puts text }

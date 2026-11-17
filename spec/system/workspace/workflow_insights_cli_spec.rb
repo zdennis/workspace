@@ -61,7 +61,7 @@ RSpec.describe "workspace workflow insights through build_cli" do
   it "prints one JSON document with next_actions that parse as commands" do
     3.times { |i| put("wr_#{i}", %w[failed passed]) }
 
-    run_cli("rpiv", "--json", "--last", "2w", "--name", "app", "--runs", "2")
+    run_cli("rpiv", "--json", "--last", "2w", "--name", "app", "--limit", "2")
 
     document = JSON.parse(out.string)
     expect(document).to include("ok" => true, "workflow" => "rpiv", "status" => "ok", "runs" => 2, "last" => "2w", "workspace" => "app")
@@ -91,12 +91,12 @@ RSpec.describe "workspace workflow insights through build_cli" do
     expect(exits).to eq([3])
   end
 
-  it "refuses a bad --runs, a bad --last, --runs on another verb, --all and a missing ID" do
-    run_cli("rpiv", "--runs", "0")
-    expect(err.string).to include("--runs needs a whole number from 1 up")
+  it "refuses a bad --limit, a bad --last, --limit on another verb, --all and a missing ID" do
+    run_cli("rpiv", "--limit", "0")
+    expect(err.string).to include("--limit needs a whole number from 1 up")
     expect(exits).to eq([1])
-    run_cli("rpiv", "--runs", "x")
-    expect(err.string).to include("--runs needs a whole number from 1 up")
+    run_cli("rpiv", "--limit", "x")
+    expect(err.string).to include("--limit needs a whole number from 1 up")
     expect(exits).to eq([1])
     run_cli("rpiv", "--last", "soon")
     expect(err.string).to include("--last needs a duration")
@@ -106,10 +106,10 @@ RSpec.describe "workspace workflow insights through build_cli" do
     expect(err.string).to include("needs a workflow ID")
   end
 
-  it "refuses --runs on another verb" do
+  it "refuses --limit on another verb" do
     expect {
-      Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}).run(["workflow", "stats", "rpiv", "--runs", "3"])
+      Workspace.build_cli(output: out, error_output: err, input: StringIO.new, env: {}).run(["workflow", "stats", "rpiv", "--limit", "3"])
     }.to raise_error(SystemExit) { |e| expect(e.status).to eq(1) }
-    expect(err.string).to include("--runs is for `workflow insights ID`.")
+    expect(err.string).to include("--limit is for `workflow insights ID`.")
   end
 end

@@ -883,10 +883,10 @@ module Workspace
         ]
       },
       "insights" => {
-        usage: ["workflow insights ID [--runs N] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
+        usage: ["workflow insights ID [--limit N] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
         summary: "Show where a workflow's recent runs keep retrying, being rejected or stopping",
         about: [
-          "ID is a workflow definition id; it need not exist now. Reads the newest runs of that id (--runs, default 20), going and",
+          "ID is a workflow definition id; it need not exist now. Reads the newest runs of that id (--limit, default 20), going and",
           "finished, in every workspace unless --name or --project narrows it. Read only: it writes nothing and prints counts and run",
           "ids, never a reviewer's write-up, a summary or a prompt. Use the ids with `workflow trace RUN`.",
           "",
@@ -902,7 +902,7 @@ module Workspace
           "since the figures are then incomplete."
         ],
         options: [
-          ["--runs N", "Read this many of the newest runs (a whole number from 1; default 20)"],
+          ["--limit N", "Read this many of the newest runs (a whole number from 1; default 20)"],
           ["--last DURATION", "Only runs started in the last DURATION (30d, 2w, 12h, 90m); a bare number means seconds"],
           name_opt("Only that workspace's runs"),
           ["--project [NAME]", "Only that project's runs (NAME, or the project of the current workspace)"],
@@ -910,7 +910,7 @@ module Workspace
         ],
         examples: [
           ["workspace workflow insights rpiv", "where the last 20 runs of rpiv went wrong"],
-          ["workspace workflow insights rpiv --runs 50 --last 30d", "up to 50 runs, from the last 30 days"],
+          ["workspace workflow insights rpiv --limit 50 --last 30d", "up to 50 runs, from the last 30 days"],
           ["workspace workflow insights rpiv --project --json", "for a script: sections with run ids and next_actions"]
         ]
       },

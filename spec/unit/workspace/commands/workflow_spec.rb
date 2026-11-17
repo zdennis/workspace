@@ -4785,7 +4785,7 @@ RSpec.describe Workspace::Commands::Workflow do
       text = output.string
       expect(text).to include("Insights for flow: 2 runs read", "Not enough runs (2; insights needs 3).", "Compare shows a direction")
       expect(text).not_to include("Hot steps", "Recurring rejections", "Failures")
-      expect(text).to include("More runs are stored (9); raise --runs to read them.")
+      expect(text).to include("More runs are stored (9); raise --limit to read them.")
     end
 
     it "gives no more-runs hint when every stored run was read" do
@@ -4839,7 +4839,7 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json["next_actions"].first(2).map { |each| each["args"] }).to eq(
         [%w[flow --last 1h --name ws1], %w[flow --by definition --last 1h --name ws1]]
       )
-      expect(json["next_actions"].first(2).map { |each| each["why"] }).to all(include("every matching run, not only the --runs newest"))
+      expect(json["next_actions"].first(2).map { |each| each["why"] }).to all(include("every matching run, not only the --limit newest"))
     end
 
     it "carries project scope into the actions" do
