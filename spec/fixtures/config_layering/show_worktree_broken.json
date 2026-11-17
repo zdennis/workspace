@@ -2161,6 +2161,36 @@
       "min": 0
     },
     {
+      "key": "workflows.recover.max_per_run",
+      "scope": "global",
+      "type": "integer",
+      "value": null,
+      "masked": false,
+      "default": 2,
+      "effective": 2,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a",
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "How many times `workspace workflow recover` restarts a workflow run's steps on its own after a reboot or tmux restart took their panes (default `2`), counted per run. `0` turns automatic reboot recovery off",
+      "problems": [],
+      "min": 0
+    },
+    {
       "key": "events.rotate_size",
       "scope": "global",
       "type": "size",

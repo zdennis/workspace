@@ -157,4 +157,29 @@ RSpec.describe Workspace::WorkflowConfig do
       expect(config.infra_retry_max).to eq(2)
     end
   end
+
+  describe "#recover_max_per_run" do
+    def max(value)
+      global["workflows"] = {"recover" => {"max_per_run" => value}}
+      config.recover_max_per_run
+    end
+
+    it "is 2 when unset" do
+      expect(config.recover_max_per_run).to eq(2)
+    end
+
+    it "reads a set value, including 0" do
+      expect([5, "3", 0].map { |v| max(v) }).to eq([5, 3, 0])
+    end
+
+    it "is 2 for a value `config set` would refuse" do
+      expect([-1, "many", "", 1.5].map { |v| max(v) }).to eq([2, 2, 2, 2])
+    end
+
+    it "is 2 when the global file can't be parsed" do
+      allow(project_settings).to receive(:load_global).and_raise(Workspace::ConfigParseError.new("/c/config.yml", "bad"))
+
+      expect(config.recover_max_per_run).to eq(2)
+    end
+  end
 end
