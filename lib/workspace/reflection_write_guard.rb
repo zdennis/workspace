@@ -62,6 +62,32 @@ module Workspace
         "To end this restriction run `workspace binding clear --pane #{pane}`, or close the pane."
     end
 
+    # Ends the pane's reflection binding once its work is done: on `Stop` when the run's
+    # `reflection.md` exists as a regular file with no link on the way to it, on
+    # `SessionEnd` whatever the file's state, except a `clear` (the agent restarts in the same pane and
+    # SessionStart repeats the reflection instructions). Any other hook, no reflection binding or a
+    # stale one does nothing. Errors are logged and swallowed, since a hook must not fail the agent.
+    #
+    # @param pane_id [String, nil] the pane the hook came from
+    # @param hook [String, nil] the payload's hook_event_name
+    # @param reason [String, nil] the SessionEnd payload's `reason`; `clear` keeps the binding
+    # @return [void]
+    def release(pane_id:, hook:, reason: nil)
+      return unless %w[Stop SessionEnd].include?(hook)
+      return if hook == "SessionEnd" && reason == "clear"
+      pane = pane_id.to_s
+      entry = reflection_binding(pane)
+      return unless entry
+      return if stale?(entry, pane)
+      if hook == "Stop"
+        allowed = allowed_path(entry)
+        return unless allowed && written?(allowed)
+      end
+      @pane_bindings.unbind(pane)
+    rescue => e
+      @logger.debug { "session-event: reflection release failed (#{e.class}: #{e.message})" }
+    end
+
     MESSAGES = {
       "outside_file" => "a reflection pane writes only its run's reflection.md. Report this and stop.",
       "bad_id" => "the binding's run id is not a valid run id, so no write is allowed.",
@@ -88,6 +114,17 @@ module Workspace
         server_pid: -> { @tmux.server_pid_for_pane(pane) })
     end
 
+    # The directory above the evidence directory, where the link walk to the file starts.
+    def link_base(allowed)
+      File.dirname(File.dirname(File.dirname(allowed)))
+    end
+
+    def written?(allowed)
+      File.lstat(allowed).file? && !ReviewRoundPath.linked_below?(link_base(allowed), allowed, include_base: false)
+    rescue SystemCallError
+      false
+    end
+
     def allowed_path(entry)
       id = entry["id"]
       return nil unless id.is_a?(String) && RunLiveness::ID_PATTERN.match?(id)
@@ -99,7 +136,7 @@ module Workspace
       raw = raw_path(tool_name, tool_input)
       return "outside_file" if tool_name == "apply_patch" || !cwd.is_a?(String) || cwd.empty? || !raw.is_a?(String) || raw.empty? || raw.match?(/[[:cntrl:]]/) || raw.end_with?("/")
       return "outside_file" unless File.expand_path(raw, cwd) == allowed
-      return "outside_file" if ReviewRoundPath.linked_below?(File.dirname(File.dirname(File.dirname(allowed))), allowed, include_base: false)
+      return "outside_file" if ReviewRoundPath.linked_below?(link_base(allowed), allowed, include_base: false)
       nil
     end
 

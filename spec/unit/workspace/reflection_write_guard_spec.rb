@@ -162,4 +162,74 @@ RSpec.describe Workspace::ReflectionWriteGuard do
     expect(check).to include("could not be checked")
     expect(event_log).to have_received(:record).with(hash_including(data: hash_including("reason" => "check_failed")))
   end
+
+  describe "#release" do
+    let(:bindings) { instance_double(Workspace::PaneBindings, binding_for: entry, stale?: false, unbind: entry) }
+
+    def release(hook, pane_id: "%2", reason: nil)
+      guard.release(pane_id: pane_id, hook: hook, reason: reason)
+    end
+
+    it "unbinds on Stop when reflection.md is a regular file" do
+      File.write(target, "x")
+      release("Stop")
+
+      expect(bindings).to have_received(:unbind).with("%2")
+    end
+
+    it "keeps the binding on Stop without the file, with a symlinked file, or with a directory" do
+      release("Stop")
+      File.symlink(File.join(tmpdir, "elsewhere"), target)
+      File.write(File.join(tmpdir, "elsewhere"), "x")
+      release("Stop")
+      File.delete(target)
+      FileUtils.mkdir_p(target)
+      release("Stop")
+
+      expect(bindings).not_to have_received(:unbind)
+    end
+
+    it "unbinds on SessionEnd whatever the file's state" do
+      release("SessionEnd")
+
+      expect(bindings).to have_received(:unbind).with("%2")
+    end
+
+    it "keeps the binding on a SessionEnd for clear and unbinds for any other reason" do
+      release("SessionEnd", reason: "clear")
+      expect(bindings).not_to have_received(:unbind)
+
+      %w[logout prompt_input_exit other].each { |reason| release("SessionEnd", reason: reason) }
+      expect(bindings).to have_received(:unbind).with("%2").exactly(3).times
+    end
+
+    it "keeps the binding on Stop when the run directory is a symlink" do
+      FileUtils.remove_entry(run_dir)
+      FileUtils.mkdir_p(File.join(tmpdir, "elsewhere"))
+      File.write(File.join(tmpdir, "elsewhere", "reflection.md"), "x")
+      File.symlink(File.join(tmpdir, "elsewhere"), run_dir)
+      release("Stop")
+
+      expect(bindings).not_to have_received(:unbind)
+    end
+
+    it "does nothing for other hooks, other binding kinds, stale bindings or no pane" do
+      File.write(target, "x")
+      release("UserPromptSubmit")
+      release("Stop", pane_id: nil)
+      allow(bindings).to receive(:stale?).and_return(true)
+      release("SessionEnd")
+      allow(bindings).to receive(:stale?).and_return(false)
+      allow(bindings).to receive(:binding_for).and_return(entry.merge("kind" => "run"))
+      release("SessionEnd")
+
+      expect(bindings).not_to have_received(:unbind)
+    end
+
+    it "does not raise when the store raises" do
+      allow(bindings).to receive(:unbind).and_raise(Errno::EACCES)
+
+      expect { release("SessionEnd") }.not_to raise_error
+    end
+  end
 end

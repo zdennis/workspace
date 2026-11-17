@@ -901,6 +901,24 @@ RSpec.describe Workspace::Commands::SessionEvent do
         expect(result).to eq(exit_code: 2)
         expect(stderr).to include("reflection pane for run wr_1", "workspace binding clear --pane %2")
       end
+
+      def hook(name)
+        described_class.new(config: config, tmux: tmux, env: env, reflection_write_guard: guard,
+          input: StringIO.new(JSON.generate({"hook_event_name" => name, "cwd" => tmpdir}))).call
+      end
+
+      it "ends the binding on Stop once reflection.md is written, and on SessionEnd whatever the file's state" do
+        hook("Stop")
+        expect(bindings.binding_for("%2")).not_to be_nil
+
+        File.write(File.join(evidence, "wr_1", "reflection.md"), "x")
+        hook("Stop")
+        expect(bindings.binding_for("%2")).to be_nil
+
+        bindings.bind("%2", "kind" => "reflection", "id" => "wr_1", "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+        hook("SessionEnd")
+        expect(bindings.binding_for("%2")).to be_nil
+      end
     end
 
     context "events it must not forward" do

@@ -29,7 +29,7 @@ RSpec.describe Workspace::Commands::SpineStart do
   let(:pane_rows) { [{"pane_id" => "%20", "kind" => "shell", "state" => "idle"}, {"pane_id" => "%21", "kind" => "claude", "state" => "idle"}] }
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:sender) { instance_double(Workspace::Commands::Send) }
-  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, owned: nil, refuse_owned!: nil) }
+  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, owned: nil, refuse_owned!: nil, reflecting: nil) }
   let(:runner) { instance_double(Workspace::Commands::Run, call: "%23") }
   let(:main_agent) { instance_double(Workspace::MainAgent, spawn_command: "codex --from-config") }
   let(:ready) { Workspace::AgentReadiness::Result.new(ready: true, pane: "0.2", pane_id: "%23", label: "Codex") }

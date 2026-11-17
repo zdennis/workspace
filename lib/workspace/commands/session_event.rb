@@ -209,6 +209,8 @@ module Workspace
         pane_id = @env["TMUX_PANE"]
         return ok { "session-event: not inside tmux, dropped" } unless pane_id
 
+        @reflection_write_guard&.release(pane_id: pane_id, hook: hook, reason: text_field(payload, "reason"))
+
         name = workspace
         unless name
           session = @tmux.session_name_for_pane(pane_id)
