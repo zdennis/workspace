@@ -170,6 +170,21 @@ module Workspace
       needs
     end
 
+    # Whether `workflow resume --restart-step` applies: the step is running, its last attempt is still open and it
+    # has an open `pane_gone` or `agent_gone` stall. A `pane_gone` reason over a closed attempt does not qualify.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time, nil] when given, a line still being typed ({WorkflowTransitions.delivery}) rules it out
+    # @return [Boolean]
+    def self.restartable?(run, now: nil)
+      state = run.dig("steps", run["current"])
+      return false unless state.is_a?(Hash) && state["state"] == "running"
+      last = Array(state["attempts"]).last
+      return false unless last.is_a?(Hash) && !last["ended_at"]
+      return false if now && WorkflowTransitions.delivery(last, now) == :delivering
+      WorkflowTransitions.open_stalls(run).intersect?(%w[pane_gone agent_gone])
+    end
+
     private
 
     # The downtime spans the document being built was read with; one read for each document.
@@ -653,6 +668,7 @@ module Workspace
       resume = NextAction.build("workflow resume", id, needs: plain)
       from = ->(step) { NextAction.build("workflow resume", id, "--from", step.to_s, needs: extra.call(step.to_s)) }
       focus = NextAction.build("focus", run.workspace, "--pane", pane) if pane
+      restart = NextAction.build("workflow resume", id, "--restart-step", needs: extra.call(here)) if self.class.restartable?(run.to_h, now: @clock.call)
       return [NextAction.build("workflow unpause", id), cancel] if reason["code"] == "paused"
       # A held retry would block again on the same pane: the resume has to name another one.
       return [NextAction.build("workflow resume", id, needs: [NextAction.need("pane", "--pane")] + extra.call(here)), cancel] if run.backoff&.dig("blocked") && run.state == "waiting"
@@ -689,7 +705,7 @@ module Workspace
         else
           [resume, from.call(reason.dig("details", "step"))] + accept + [cancel]
         end
-      when "stalled", "idle" then [resume, cancel]
+      when "stalled", "idle" then [resume, restart, cancel]
       # A stopped round: a resume starts a fresh round (after a rejection stopped by an attempt limit, a new attempt);
       # `--from` runs the step again. With every round spent a resume needs `--extra-rounds` (`review_rounds_spent` without it).
       when *WorkflowTransitions::REVIEW_STOPS
@@ -698,7 +714,7 @@ module Workspace
         spent = WorkflowTransitions.rounds_refuse_resume?(run.to_h)
         rounds = NextAction.need("extra_rounds", "--extra-rounds", "min" => WorkflowTransitions.review_extra_rounds_needed(run.to_h, step)) if spent
         [(spent ? NextAction.build("workflow resume", id, needs: [rounds] + plain) : resume), from.call(step), cancel]
-      when "pane_gone" then [NextAction.build("launch", run.workspace), NextAction.build("workflow resume", id, needs: with_pane), cancel]
+      when "pane_gone" then [NextAction.build("launch", run.workspace), NextAction.build("workflow resume", id, needs: with_pane), restart, cancel]
       else [cancel]
       end
     end

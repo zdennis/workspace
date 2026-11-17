@@ -75,6 +75,46 @@ RSpec.describe Workspace::WorkflowSweepActions do
     ])
   end
 
+  describe "a recorded stall and a step restart" do
+    def open_run(stalled, ended_at: nil)
+      attempt = {"n" => 1, "ended_at" => ended_at}.compact
+      Workspace::WorkflowRun.from_h("id" => "wr_1", "workspace" => "api.worktree-x", "state" => "running", "current" => "plan",
+        "sweep" => {"step" => "plan", "attempt" => 1, "stalled" => stalled, "recovered" => {}},
+        "steps" => {"plan" => {"state" => "running", "attempts" => [attempt]}})
+    end
+
+    %w[pane_gone agent_gone].each do |cause|
+      it "offers it for an open #{cause} stall" do
+        allow(store).to receive(:run).and_return(open_run({cause => "2026-10-04T12:41:00Z"}))
+
+        expect(call([row(nil, "outcome" => "recorded", "cause" => cause)])).to eq([
+          {"action" => "workflow resume", "args" => ["wr_1"], "needs" => [], "why" => cause},
+          {"action" => "workflow resume", "args" => ["wr_1", "--restart-step"], "needs" => [], "why" => cause},
+          {"action" => "workflow cancel", "args" => ["wr_1"], "needs" => [], "why" => cause}
+        ])
+      end
+    end
+
+    it "does not offer it while the attempt's line is still being typed" do
+      now = Time.utc(2026, 10, 4, 13, 0, 0)
+      run = Workspace::WorkflowRun.from_h("id" => "wr_1", "workspace" => "api.worktree-x", "state" => "running", "current" => "plan",
+        "sweep" => {"step" => "plan", "attempt" => 1, "stalled" => {"pane_gone" => "2026-10-04T12:41:00Z"}, "recovered" => {}},
+        "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1, "delivery" => "delivering", "delivering_since" => "2026-10-04T12:59:50Z"}]}})
+      allow(store).to receive(:run).and_return(run)
+      timed = described_class.new(store: store, panes: panes, status: status, clock: -> { now })
+
+      result = timed.call([row(nil, "outcome" => "recorded", "cause" => "pane_gone")], run: nil, name: nil)
+
+      expect(result.map { |each| each["args"] }).to eq([["wr_1"], ["wr_1"]])
+    end
+
+    it "does not offer it when the attempt is closed" do
+      allow(store).to receive(:run).and_return(open_run({"pane_gone" => "2026-10-04T12:41:00Z"}, ended_at: "2026-10-04T12:45:00Z"))
+
+      expect(call([row(nil, "outcome" => "recorded", "cause" => "pane_gone")]).map { |each| each["args"] }).to eq([["wr_1"], ["wr_1"]])
+    end
+  end
+
   it "suggests the real sweep once after a dry run, saying how many changes it would make" do
     dry = row(nil, "outcome" => "dry_run", "action" => "record")
 

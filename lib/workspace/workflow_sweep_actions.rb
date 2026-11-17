@@ -9,10 +9,12 @@ module Workspace
     # @param store [WorkflowRunStore] reads a run for its limits and current step
     # @param panes [WorkflowPanes] finds the pane a `prompt` row waits on
     # @param status [WorkflowStatus] gives the needs of a spent budget or time limit ({WorkflowStatus#limit_needs})
-    def initialize(store:, panes:, status:)
+    # @param clock [#call] gives the time a step's delivery is judged at
+    def initialize(store:, panes:, status:, clock: -> { Time.now })
       @store = store
       @panes = panes
       @status = status
+      @clock = clock
     end
 
     # @param rows [Array<Hash>] the sweep's result rows
@@ -40,9 +42,20 @@ module Workspace
       why = row["reason"] || row["cause"]
       id = row["run_id"]
       return [] unless id
-      return [NextAction.build("workflow resume", id, why: why), NextAction.build("workflow cancel", id, why: why)] if row["outcome"] == "recorded"
+      return recorded_actions(id, why) if row["outcome"] == "recorded"
       return [] unless row["outcome"] == "nothing"
       reason_actions(row, id, why)
+    end
+
+    # A recorded stall: resume or cancel, and for a gone pane or agent on a still-open attempt, a restart of the step.
+    def recorded_actions(id, why)
+      stored = lookup { @store.run(id) }
+      restart = if stored && WorkflowStatus.restartable?(stored.to_h, now: @clock.call)
+        [NextAction.build("workflow resume", id, "--restart-step", needs: @status.limit_needs(stored), why: why)]
+      else
+        []
+      end
+      [NextAction.build("workflow resume", id, why: why)] + restart + [NextAction.build("workflow cancel", id, why: why)]
     end
 
     def reason_actions(row, id, why)
