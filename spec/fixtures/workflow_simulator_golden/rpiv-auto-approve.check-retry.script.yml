@@ -1,0 +1,7 @@
+# The script the rpiv-auto-approve check-retry golden plays: verify fails its status check twice and each failure loops back
+# to implement; the third verify attempt passes and the run finishes.
+steps:
+  verify:
+    - {check: fail, log: "2 failures in spec/models"}
+    - {check: fail, log: "1 failure in spec/models"}
+    - {}

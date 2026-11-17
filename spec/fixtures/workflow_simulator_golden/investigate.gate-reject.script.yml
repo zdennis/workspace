@@ -1,0 +1,6 @@
+# The script the investigate gate-reject golden plays: the person rejects the diagnose gate with a note, the step runs again
+# as attempt 2, and the person approves that.
+steps:
+  diagnose:
+    - {gate: reject, note: "the findings miss the flaky retry path, cover it"}
+    - {}
