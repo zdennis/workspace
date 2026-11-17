@@ -11,6 +11,27 @@ module Workspace
     # Seconds a pending interrupt claim holds before another sweep may take it over ({WorkflowTransitions::INTERRUPT_CLAIM_SECONDS}).
     INTERRUPT_CLAIM_SECONDS = WorkflowTransitions::INTERRUPT_CLAIM_SECONDS
 
+    # The stall causes an infra retry restarts the step for ({#note_stall} with +infra_retry+).
+    INFRA_RETRY_CAUSES = %w[pane_gone agent_gone].freeze
+
+    # Refusals a person's own act holds (a pause), or that pass in a moment (a line being typed): the claim leaves
+    # the retry scheduled instead of giving it up.
+    INFRA_RETRY_HELD = %w[run_paused step_still_working].freeze
+
+    # The one form of an infra retry's claimant, as stored in its mark's `claimed_by`.
+    #
+    # @param claimant [Hash] "pid" (Integer) and "started" (String), with String or Symbol keys
+    # @return [Hash{String=>Object}] "pid" and "started"
+    # @raise [ArgumentError] when either is missing
+    def self.infra_retry_claimant(claimant)
+      pid = claimant.is_a?(Hash) ? claimant["pid"] || claimant[:pid] : nil
+      started = claimant.is_a?(Hash) ? claimant["started"] || claimant[:started] : nil
+      unless pid.is_a?(Integer) && started.is_a?(String) && !started.empty?
+        raise ArgumentError, "an infra retry's claimant needs an Integer pid and a String started, got #{claimant.inspect}"
+      end
+      {"pid" => pid, "started" => started}
+    end
+
     # @param change [Workspace::WorkflowRunChange] changes the run under its lock and writes its history
     # @param store [Workspace::WorkflowRunStore] gets the `step_recovered` line of a redelivery
     # @param dispatch [Workspace::WorkflowDispatch] starts a step again after a lock wait or a failed delivery
@@ -119,17 +140,112 @@ module Workspace
     # Records that the step stands in a stall the sweep found, once for each attempt and cause, and changes
     # nothing else. Does not wait for another process that is changing the run.
     #
+    # With +infra_retry+, a `pane_gone` or `agent_gone` stall noted for the first time also schedules an automatic
+    # restart of the step in the same change, once per attempt: the `infra_retry` sweep mark (`cause`, `n`, `max`,
+    # `scheduled_at`, `due`; `n` is the step's {WorkflowTransitions.infra_retries} plus one, `due` is `scheduled_at` plus
+    # {WorkflowTransitions::REDELIVER_BACKOFF} entry `n - 1`) and an `infra_retry_scheduled` event (`step`, `attempt`,
+    # `cause`, `n`, `max`, `due`). Nothing is scheduled when `n` would pass `max`; the caller gives up instead
+    # ({#give_up_infra_retry}).
+    #
     # @param run_id [String]
     # @param step [String] the step the sweep saw the run on
     # @param attempt [Integer, nil] that step's last attempt the sweep saw
     # @param cause [String] `pane_gone`, `agent_gone` or `daemon_down`
     # @param data [Hash{String=>Object}] more for the `step_stalled` event
+    # @param infra_retry [Hash{Symbol=>Integer}, nil] `{max:}`, the `workflows.infra_retry.max` to schedule under; nil schedules nothing
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
-    # @return [Symbol] :recorded, :repeat (this cause was recorded for the attempt already), :moved_on (the run
-    #   is elsewhere now) or :busy (another process is changing the run)
+    # @return [Symbol] :scheduled (recorded, with a retry scheduled), :recorded, :repeat (this cause was recorded for the
+    #   attempt already), :moved_on (the run is elsewhere now) or :busy (another process is changing the run)
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def note_stall(run_id, actor:, step:, attempt:, cause:, data: {})
-      sweep_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, running: false) { |stored| mark_stall(stored, cause, data) ? :recorded : :repeat }
+    def note_stall(run_id, actor:, step:, attempt:, cause:, data: {}, infra_retry: nil)
+      sweep_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, running: false) do |stored|
+        next :repeat unless mark_stall(stored, cause, data)
+        (infra_retry && schedule_infra_retry(stored, cause, infra_retry.fetch(:max))) ? :scheduled : :recorded
+      end
+    end
+
+    # Records that a step's infra retry will not happen: `given_up` (`at`, `reason`) on the current attempt's
+    # `infra_retry` mark, or a given-up mark when there is none (the sweep's `retries_spent`, with the step's count as
+    # `n`), and an `infra_retries_exhausted` event (`step`, `attempt`, `cause`, `n`, `max`, `reason`), once per
+    # attempt. Waits for the run's lock. The run stays as it is, stalled and resumable.
+    #
+    # @param run_id [String]
+    # @param step [String]
+    # @param attempt [Integer, nil]
+    # @param cause [String] `pane_gone` or `agent_gone`
+    # @param reason [String] why, e.g. `retries_spent`, `no_session`, `agent_not_ready` or a refusal's error code
+    # @param max [Integer, nil] the max to record on a mark written here (a mark that exists keeps its own)
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Symbol] :recorded, :repeat (given up, or ended, already) or :moved_on
+    def give_up_infra_retry(run_id, actor:, step:, attempt:, cause:, reason:, max: nil)
+      sweep_change(run_id, actor: actor, cause: "infra_retry", step: step, attempt: attempt, running: false, blocking: true) do |stored|
+        give_up(stored, cause, reason, max) ? :recorded : :repeat
+      end
+    end
+
+    # Takes the right to restart a step whose infra retry is due, under the run's lock, before any pane is split or
+    # daemon asked, so one due retry is restarted by one process. A claim younger than
+    # {WorkflowTransitions::INFRA_RETRY_CLAIM_WINDOW} whose claimant +alive+ says still runs holds; an older one, or one
+    # whose claimant is gone, is taken over as the next retry. Every refusal the run alone can answer gives the retry
+    # up in the same change ({#give_up_infra_retry}): `claim_lost` for a claim taken over at `max`, +refusal+'s error
+    # code, and `agent_kind_unsupported` for a run whose newest closed attempt recorded an agent other than Claude Code
+    # (a run with none recorded is taken as Claude Code). A refusal that does not last ({INFRA_RETRY_HELD}: a pause, a
+    # line being typed) or a resume parked on the run leaves the retry scheduled and answers :not_due, so it wakes again
+    # once the hold is over. Otherwise `claimed_at` and `claimed_by` are written into the
+    # mark, the step's `infra_retries` count is raised to the retry's `n`, and an `infra_retry_claimed` event (`step`,
+    # `attempt`, `cause`, `n`, `max`, and `taken_over: true` for a claim taken over) is recorded.
+    #
+    # @param run_id [String]
+    # @param step [String]
+    # @param attempt [Integer, nil]
+    # @param claimant [Hash] the claiming process: "pid" and "started" ({.infra_retry_claimant})
+    # @param alive [#call, nil] given a claim's `claimed_by`, whether that process still runs; nil takes it as alive
+    # @param refusal [#call] given the stored run, the {Workspace::Error} a restart of it would be refused with, or nil
+    #   ({WorkflowDecisions#restart_refusal})
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Array(Symbol, Integer), Array(Symbol, String), Symbol] [:claimed, n]; [:gave_up, reason]; :not_due (no
+    #   retry due, its claim held, a hold that does not last, or the run elsewhere)
+    # @raise [ArgumentError] for a +claimant+ without both "pid" and "started"
+    def claim_infra_retry(run_id, actor:, step:, attempt:, claimant:, alive:, refusal:)
+      claimant = self.class.infra_retry_claimant(claimant)
+      outcome = sweep_change(run_id, actor: actor, cause: "infra_retry", step: step, attempt: attempt, running: false, blocking: true) do |stored|
+        info = WorkflowTransitions.infra_retry(stored, @clock.call)
+        state = info&.fetch(:state)
+        state = :stale_claim if state == :claimed && alive && !alive.call(info[:claimed_by])
+        next :not_due unless %i[due stale_claim].include?(state)
+        claim_or_give_up(stored, info, state == :stale_claim, claimant, refusal)
+      end
+      (outcome == :moved_on) ? :not_due : outcome
+    end
+
+    # Gives back a claimed infra retry whose restart was refused because the step's agent is at work again
+    # (`step_still_working`), once per mark: the step's `infra_retries` count is lowered by one, the claim cleared,
+    # `released: 1` set and `due` moved one wait ({WorkflowTransitions::REDELIVER_BACKOFF} entry `n - 1`) from now, with
+    # an `infra_retry_released` event (`step`, `attempt`, `cause`, `n`, `due`). A mark released once already is given up
+    # instead, with `reason: still_working`, and the count is not given back again. Only the claimant may release.
+    # Waits for the run's lock.
+    #
+    # @param run_id [String]
+    # @param step [String]
+    # @param attempt [Integer, nil]
+    # @param claimant [Hash] "pid" and "started" of the process that claimed the retry
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Symbol, Array(Symbol, String)] :released; [:gave_up, "still_working"]; :not_claimant (no mark, a given-up
+    #   or ended one, or another process's claim; nothing is changed) or :moved_on
+    # @raise [ArgumentError] for a +claimant+ without both "pid" and "started"
+    def release_infra_retry(run_id, actor:, step:, attempt:, claimant:)
+      claimant = self.class.infra_retry_claimant(claimant)
+      sweep_change(run_id, actor: actor, cause: "infra_retry", step: step, attempt: attempt, running: false, blocking: true) do |stored|
+        mark = WorkflowTransitions.sweep_marks(stored)["infra_retry"]
+        state = WorkflowTransitions.infra_retry(stored, @clock.call)&.fetch(:state)
+        next :not_claimant unless %i[claimed stale_claim].include?(state) && mark["claimed_by"] == claimant
+        if mark["released"]
+          give_up(stored, mark["cause"], "still_working", nil)
+          next [:gave_up, "still_working"]
+        end
+        release(stored, mark)
+        :released
+      end
     end
 
     # Records that the sweep put right a stall it noted, once for each attempt and cause, and only for a cause
@@ -740,10 +856,90 @@ module Workspace
     def mark_recovery(run, cause, action)
       recovered = (sweep_marks_for(run)["recovered"] ||= {})
       close_stall(run, cause)
+      # The claimant's own restart is the retry's outcome: it closes this attempt, and the new one has no mark.
+      end_infra_retry(run, cause, action) unless action == "restarted"
       return false if recovered.key?(cause)
       recovered[cause] = now_iso
       @change.event(run, "step_recovered", sweep_event(run, "action" => action, "cause" => cause))
       true
+    end
+
+    # Writes the `infra_retry` mark and its `infra_retry_scheduled` event for a stall just noted; false when the cause
+    # is not one a restart gets past, the attempt has a mark already, or this retry would pass +max+.
+    def schedule_infra_retry(run, cause, max)
+      marks = sweep_marks_for(run)
+      return false unless INFRA_RETRY_CAUSES.include?(cause) && !marks.key?("infra_retry")
+      n = WorkflowTransitions.infra_retries(run, run["current"]) + 1
+      return false unless max.is_a?(Integer) && n <= max
+      at = @clock.call
+      due = (at + infra_retry_wait(n)).utc.iso8601
+      marks["infra_retry"] = {"cause" => cause, "n" => n, "max" => max, "scheduled_at" => at.utc.iso8601, "due" => due}
+      @change.event(run, "infra_retry_scheduled", sweep_event(run, "cause" => cause, "n" => n, "max" => max, "due" => due))
+      true
+    end
+
+    def infra_retry_wait(n) = WorkflowTransitions::REDELIVER_BACKOFF[(n - 1).clamp(0, WorkflowTransitions::REDELIVER_BACKOFF.size - 1)]
+
+    # Sets `given_up` on the current attempt's mark (writing one when there is none) and records
+    # `infra_retries_exhausted`; false when the mark has given up or ended already.
+    def give_up(run, cause, reason, max)
+      marks = sweep_marks_for(run)
+      mark = marks["infra_retry"]
+      return false if mark.is_a?(Hash) && (mark["given_up"] || mark["ended"])
+      mark = marks["infra_retry"] = {"cause" => cause, "n" => WorkflowTransitions.infra_retries(run, run["current"]), "max" => max} unless mark.is_a?(Hash)
+      mark["given_up"] = {"at" => now_iso, "reason" => reason}
+      @change.event(run, "infra_retries_exhausted", sweep_event(run, "cause" => mark["cause"], "n" => mark["n"], "max" => mark["max"], "reason" => reason))
+      true
+    end
+
+    # Under the lock, for a due retry or a claim to take over: leaves it for a hold that does not last, gives up on
+    # the first lasting refusal, else claims.
+    def claim_or_give_up(run, info, taken_over, claimant, refusal)
+      return :not_due if WorkflowTransitions.parked(run, @clock.call) == :waiting
+      reason = if taken_over && info[:max].is_a?(Integer) && info[:n] >= info[:max]
+        "claim_lost"
+      else
+        refusal.call(run)&.code || ("agent_kind_unsupported" unless restartable_agent?(run))
+      end
+      return :not_due if INFRA_RETRY_HELD.include?(reason)
+      if reason
+        give_up(run, info[:cause], reason, nil)
+        return [:gave_up, reason]
+      end
+      n = taken_over ? info[:n] + 1 : info[:n]
+      mark = WorkflowTransitions.sweep_marks(run)["infra_retry"]
+      mark.merge!("n" => n, "claimed_at" => now_iso, "claimed_by" => claimant)
+      run["infra_retries"] = {} unless run["infra_retries"].is_a?(Hash)
+      run["infra_retries"][run["current"]] = n
+      @change.event(run, "infra_retry_claimed", sweep_event(run, "cause" => mark["cause"], "n" => n, "max" => mark["max"])
+        .merge(taken_over ? {"taken_over" => true} : {}))
+      [:claimed, n]
+    end
+
+    def release(run, mark)
+      step = run["current"]
+      run["infra_retries"][step] = [WorkflowTransitions.infra_retries(run, step) - 1, 0].max if run["infra_retries"].is_a?(Hash)
+      mark.delete("claimed_at")
+      mark.delete("claimed_by")
+      mark["released"] = 1
+      mark["due"] = (@clock.call + infra_retry_wait(mark["n"].is_a?(Integer) ? mark["n"] : 1)).utc.iso8601
+      @change.event(run, "infra_retry_released", sweep_event(run, "cause" => mark["cause"], "n" => mark["n"], "due" => mark["due"]))
+    end
+
+    # A stall that ends without a restart ends the retry scheduled for it, once; a given-up retry is over already.
+    def end_infra_retry(run, cause, action)
+      mark = WorkflowTransitions.sweep_marks(run)["infra_retry"]
+      return unless mark.is_a?(Hash) && mark["cause"] == cause && !mark["ended"] && !mark["given_up"]
+      mark["ended"] = {"at" => now_iso, "reason" => action}
+      @change.event(run, "infra_retry_ended", sweep_event(run, "cause" => cause, "n" => mark["n"], "reason" => action))
+    end
+
+    # Only Claude Code panes are restarted (the dispatch types `/clear`). The run's agent is the one its newest closed
+    # attempt recorded; a run with none recorded yet is taken as Claude Code.
+    def restartable_agent?(run)
+      attempts = run["steps"].values.flat_map { |state| Array(state["attempts"]) }.grep(Hash)
+      latest = attempts.select { |each| each["ended_at"].is_a?(String) && each.dig("agent", "kind").is_a?(String) }.max_by { |each| each["ended_at"] }
+      latest.nil? || latest.dig("agent", "kind") == "claude"
     end
 
     def open_stall(run, cause, since)

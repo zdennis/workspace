@@ -160,7 +160,12 @@ module Workspace
     # @param bound [String, nil] with +restart_step+, what the caller saw of the bound pane: `gone`, `shell`, `failed`,
     #   `idle`, `busy` or `unknown` (nil reads `unknown`), seen before the run lock is taken, so a turn that starts in
     #   between is not caught; see {WorkflowTransitions.restart_refusal}
-    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @param infra_retry [Hash, nil] with +restart_step+, the claimant ("pid", "started") of the step's infra retry
+    #   ({WorkflowRecovery#claim_infra_retry}): the restart is that retry, refused with `infra_retry_not_claimed` unless the
+    #   current attempt's retry is claimed (or its claim stale) by this claimant, and its `run_resumed` carries `infra_retry` (the
+    #   retry's `n`); a claimant without both "pid" and "started" raises ArgumentError
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}; any actor but `daemon` also clears the
+    #   step's `infra_retries` count, so a person's resume gives the run a fresh set of automatic retries
     # @return [Resumed] the run afterwards, and why nothing was done when it did nothing
     # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` or `budget_spent` when the resume would
     #   start an attempt the run has no allowance left for; `budget_spent` or `run_timed_out` when it would start a
@@ -169,25 +174,29 @@ module Workspace
     #   new base, and with +guard_retry+ `guard_cannot_pass` when the retry would stop on `no_commit` or
     #   `operation_in_progress` again; `review_rounds_spent` when it would start a review round past the step's
     #   `max_rounds`, or start again a step a review rejected with every round spent; with +restart_step+, also
-    #   `no_open_attempt`, `step_still_working`, `pane_has_run` and `restart_not_closed`
+    #   `no_open_attempt`, `step_still_working`, `pane_has_run` and `restart_not_closed`; with +infra_retry+, `infra_retry_not_claimed`
     def resume(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
-      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil)
+      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil, infra_retry: nil)
       refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry, extra_rounds: extra_rounds, restart_step: restart_step, turn_over: turn_over)
+      raise UsageError, "infra_retry is the claimant of an automatic restart; it needs restart_step." if infra_retry && !restart_step
+      infra_retry &&= WorkflowRecovery.infra_retry_claimant(infra_retry)
       follow = nil
       unchanged = nil
       run = @change.call(run_id, actor: actor, cause: "resume") do |read, ctx|
         follow = ctx
-        if restart_step
-          next restart_in(read, ctx, note: note, pane: pane, bound: bound,
+        step = read.current
+        changed = if restart_step
+          restart_in(read, ctx, note: note, pane: pane, bound: bound, infra_retry: infra_retry,
             extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
-        end
-        if accept_guard
-          next accept_guard_stop(read, ctx, note: note, pane: pane, guard_retry: guard_retry, caller_pane: caller_pane,
+        elsif accept_guard
+          accept_guard_stop(read, ctx, note: note, pane: pane, guard_retry: guard_retry, caller_pane: caller_pane,
             extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
+        else
+          resumed = apply_resume(read, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
+          unchanged = resumed.unchanged
+          resumed.run
         end
-        resumed = apply_resume(read, ctx: ctx, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds)
-        unchanged = resumed.unchanged
-        resumed.run
+        (actor == "daemon" || unchanged) ? changed : fresh_infra_retries(changed, step)
       end
       Resumed.new(run: @evaluation.finish_follow_ups(run_id, follow, run), unchanged: unchanged)
     end
@@ -323,6 +332,27 @@ module Workspace
       return unless step_state(run).dig("gate", "state") == "waiting"
       raise Workspace::Error.new("Run #{run["id"]} is waiting at the #{run["current"]} gate. Approve or reject it, or pass --from STEP.",
         code: "gate_waiting", details: {"run_id" => run["id"], "step" => run["current"]})
+    end
+
+    # Why a restart of the run's current step would be refused, checked without changing anything, as {#resume} with
+    # +restart_step+ checks it before it closes the attempt: the run's own refusals ({#refuse_resume}), the restart rule
+    # with the bound pane unknown ({WorkflowTransitions.restart_refusal}: an open attempt whose line is not being typed,
+    # with a `pane_gone` or `agent_gone` stall open), then the attempt allowance, budget and timeout ({#refuse_budget},
+    # with no extras). For an infra retry's claim ({WorkflowRecovery#claim_infra_retry}), so nothing is spawned for a
+    # restart that would be refused.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] a stored run that has not finished
+    # @return [Workspace::Error, nil] the refusal (e.g. code `run_paused`, `gate_waiting`, `no_open_attempt`,
+    #   `step_still_working`, `attempts_spent`, `step_attempts_spent`, `budget_spent` or `run_timed_out`), or nil
+    def restart_refusal(run)
+      run = WorkflowRun.from_h(run).to_h
+      refuse_resume(run)
+      refusal = WorkflowTransitions.restart_refusal(run, step_state(run), @clock.call, "unknown")
+      return refusal if refusal
+      refuse_budget(run, extra_attempts: nil, extra_tokens: nil)
+      nil
+    rescue Workspace::Error => e
+      e
     end
 
     # Ends a run: closes its open attempt, gives up its resources and frees its pane. A step being reviewed has no
@@ -691,8 +721,9 @@ module Workspace
     # `interrupted` against the run as it is, so its usage is read from the old pane's session, before the run moves
     # to +pane+. Its stalls end (`restarted`), and the new attempt (`retry_of` the closed one) starts in a fresh
     # conversation with {WorkflowPrompt.interrupted_brief} first in its instructions, then the note.
-    def restart_in(read, ctx, note:, pane:, bound:, extra_attempts:, extra_tokens:, extra_seconds:)
+    def restart_in(read, ctx, note:, pane:, bound:, extra_attempts:, extra_tokens:, extra_seconds:, infra_retry: nil)
       stored = read.thawed
+      retry_n = infra_retry && claimed_retry(stored, infra_retry)
       refuse_resume(stored)
       state = step_state(stored)
       refusal = WorkflowTransitions.restart_refusal(stored, state, @clock.call, bound || "unknown")
@@ -720,8 +751,25 @@ module Workspace
       drop_park(stored, "taken_over")
       stored["pending_context"].unshift(interrupted_brief(stored, closed))
       stored["pending_context"] << WorkflowRun.resume_note(note) if note
-      event(stored, "run_resumed", "step" => step, "state" => "running", "restart_step" => true)
+      event(stored, "run_resumed", {"step" => step, "state" => "running", "restart_step" => true}.merge(retry_n ? {"infra_retry" => retry_n} : {}))
       dispatch(stored, ctx, "resume", context: "fresh", budgeted: true, retry_of: {"attempt" => n})
+      WorkflowRun.from_h(stored)
+    end
+
+    # The `n` of the current attempt's infra retry when +claimant+ holds its claim ({WorkflowTransitions.infra_retry}
+    # reads `:claimed` or `:stale_claim`); refuses `infra_retry_not_claimed` otherwise, also for a retry whose stall ended.
+    def claimed_retry(run, claimant)
+      info = WorkflowTransitions.infra_retry(run, @clock.call)
+      return info[:n] if info && %i[claimed stale_claim].include?(info[:state]) && info[:claimed_by] == claimant
+      raise Workspace::Error.new("Step #{run["current"]} of run #{run["id"]} has no infra retry claimed by process #{claimant["pid"]}, so it was not restarted. Nothing was changed.",
+        code: "infra_retry_not_claimed", details: {"run_id" => run["id"], "step" => run["current"], "pid" => claimant["pid"]})
+    end
+
+    # A person's resume starts the step's automatic infra retries again; the run's `max_attempts` and budget still cap them.
+    def fresh_infra_retries(run, step)
+      return run unless run.to_h["infra_retries"].is_a?(Hash) && run.to_h["infra_retries"].key?(step)
+      stored = run.thawed
+      stored["infra_retries"].delete(step)
       WorkflowRun.from_h(stored)
     end
 
