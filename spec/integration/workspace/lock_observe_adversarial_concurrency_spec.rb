@@ -53,8 +53,15 @@ RSpec.describe "Lock observability (adversarial concurrency)" do
       rotation_lock.flock(File::LOCK_EX)
       appending = Thread.new { second.append(event: "deny", name: "edit", data: {"from" => "second"}) }
       Timeout.timeout(5) { Thread.pass until appending.status == "sleep" }
+      # Rotate the way {Workspace::LockAuditLog} does: `rotate!` then a line
+      # through its own `write_line`, which appends.
+      # A truncating `File.write` here would clobber an appender whose
+      # unlocked write lands in the window after the rename.
       File.rename(audit_path, "#{audit_path}.1")
-      File.write(audit_path, JSON.generate("event" => "deny", "lock" => "edit", "from" => "first") + "\n")
+      File.open(audit_path, "a", 0o600) do |f|
+        f.write(JSON.generate("event" => "deny", "lock" => "edit", "from" => "first") + "\n")
+        f.flush
+      end
     end
     appending.join(5)
 

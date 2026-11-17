@@ -61,8 +61,13 @@ module Workspace
     # Unlocked hint: most appends are nowhere near the threshold and skip
     # the rotation lock entirely. An `O_APPEND` write is atomic, so one that
     # races a rotation still lands whole in one generation or the other.
+    # A concurrent rotation can move the file between the existence check
+    # and the size read; the fresh log then starts over, so read the lost
+    # size as not near and let the unlocked write land whole.
     def near_rotation?(next_bytes)
       File.exist?(@path) && File.size(@path) + next_bytes > @rotate_bytes
+    rescue Errno::ENOENT
+      false
     end
 
     # Re-checked under the rotation lock, since another appender may have

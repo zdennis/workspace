@@ -63,6 +63,17 @@ RSpec.describe Workspace::LockAuditLog do
     expect(lines.map { |e| e["event"] }).to eq(["acquire", "release"])
   end
 
+  it "appends whole when the size read races a rotation (ENOENT between exist? and size)" do
+    allow(File).to receive(:exist?).and_call_original
+    allow(File).to receive(:exist?).with(path).and_return(true)
+    allow(File).to receive(:size).and_call_original
+    allow(File).to receive(:size).with(path).and_raise(Errno::ENOENT)
+
+    log.append(event: "deny", name: "edit", data: {"from" => "racer"})
+
+    expect(lines.map { |e| e["from"] }).to eq(["racer"])
+  end
+
   it "never raises when the directory disappears out from under it" do
     FileUtils.remove_entry(tmpdir)
 
