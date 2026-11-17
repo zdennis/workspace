@@ -113,6 +113,9 @@ module Workspace
         return undetermined(json, unlisted_reason(name, detail), fix: unlisted_fix(name), doc: doc) unless pane_info
         raise Workspace::UsageError, unsupported_pane_message(name, pane_info) unless pane_kind_ok?(pane_info)
 
+        owned = @binder.owned(pane: pane_info["pane_id"])
+        return bound_to_run(json, owned, name, pane_info, doc) if owned
+
         if context_pct && !context_pct.between?(0, 100)
           raise Workspace::UsageError, "--context-pct must be between 0 and 100"
         end
@@ -165,6 +168,9 @@ module Workspace
           raise Workspace::Error, error if error
           pane = calling_pane(name, snapshot) || default_pane(name, snapshot)
         end
+
+        pane_id = locate(name, pane)[:id]
+        @binder.refuse_owned!(pane: pane_id, workspace: name, action: :handoff_new, own_pane: pane_id == @env["TMUX_PANE"])
 
         unless handoff_prompt || handoff_doc
           handoff_doc = resolve_default_doc(name)
@@ -470,6 +476,21 @@ module Workspace
           @error_output.puts "  #{fix.gsub("\n", "\n  ")}"
         end
         {exit_code: 2}
+      end
+
+      # A going run owns the pane: nothing is sent and the exit is 0, the play's "continue".
+      def bound_to_run(json, owned, name, pane_info, doc)
+        refused = @binder.refusal(owned, workspace: name, action: :handoff_check,
+          own_pane: pane_info["pane_id"] == @env["TMUX_PANE"])
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => "bound_to_run",
+                                        "code" => refused[:code], "run" => owned["run"], "paused" => owned["paused"],
+                                        "pane_id" => pane_info["pane_id"], "use" => refused[:details]["use"],
+                                        "next" => "continue", "message" => refused[:message], "doc" => doc})
+        else
+          @error_output.puts refused[:message]
+        end
+        {exit_code: 0}
       end
 
       def ok(json, pct:, threshold:, pane:, doc: nil)

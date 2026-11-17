@@ -3450,8 +3450,11 @@ module Workspace
           "pane bound to a run or review, when the prompt text is too long, or when the daemon is old or does not",
           "answer; the save-state prompt is sent anyway. See docs/README.handoff.md.",
           "",
-          "Exit codes: 0 under the threshold, 1 at or over it (a save-state prompt was sent) or when the run was refused or failed,",
-          "2 when context usage can't be determined (nothing was sent)."
+          "A pane a going workflow run owns is never typed into: the result is status bound_to_run (code pane_bound_to_run) and",
+          "nothing is sent, whatever the usage.",
+          "",
+          "Exit codes: 0 under the threshold or the pane is bound to a going run (nothing was sent), 1 at or over it (a save-state",
+          "prompt was sent) or when the run was refused or failed, 2 when context usage can't be determined (nothing was sent)."
         ],
         options: [HANDOFF_NAME, HANDOFF_PANE,
           ["--threshold PCT", "Context usage percent that triggers a handoff, 1-100 (default: handoff.threshold, or 11)"],
@@ -3482,7 +3485,8 @@ module Workspace
           "Claude Code pane the daemon lists, else the first Codex pane, which may not be yours: to restart a different pane,",
           "pass --pane.",
           "",
-          "Exit codes: 0 the restart started (with --wait, finished), 1 refused or failed. Without --wait, 0 does not mean the",
+          "Exit codes: 0 the restart started (with --wait, finished), 1 refused or failed (a pane a going workflow run owns is",
+          "refused with pane_bound_to_run, nothing restarted). Without --wait, 0 does not mean the",
           "restart worked: a later failure shows only in the agent daemon's log (`workspace daemon log`).",
           "",
           "NAME defaults to the workspace detected from the current directory.",
