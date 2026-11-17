@@ -20,6 +20,9 @@ module Workspace
     # The one key set every span carries, null where it does not apply.
     SPAN_KEYS = %i[span_id kind step attempt round started_at ended_at code outcome actor note tokens head_before head_after retry_of].freeze
 
+    # The `code` of the spans that are not a stored reason: the waiting-time bucket each one counts under.
+    SPAN_CODES = {"stall" => "stalled", "downtime" => "downtime", "gate" => "gate"}.freeze
+
     # Event types that end an attempt, so its tokens sit on the row.
     ATTEMPT_ENDS = %w[step_passed step_failed step_interrupted].freeze
 
@@ -250,12 +253,12 @@ module Workspace
       run.steps.each_key do |step_id|
         WorkflowTransitions.stall_spans(run.to_h, step_id).each do |stall|
           next if unreadable_until?(stall)
-          out << make.call("stall", step_id, nil, nil, code: "stalled", started_at: string(stall["since"]), ended_at: string(stall["until"]))
+          out << make.call("stall", step_id, nil, nil, code: SPAN_CODES["stall"], started_at: string(stall["since"]), ended_at: string(stall["until"]))
         end
       end
       stops.each do |stop|
         next if unreadable_until?(stop)
-        out << make.call("downtime", nil, nil, nil, code: "downtime", started_at: string(stop["since"]), ended_at: string(stop["until"]))
+        out << make.call("downtime", nil, nil, nil, code: SPAN_CODES["downtime"], started_at: string(stop["since"]), ended_at: string(stop["until"]))
       end
       out
     end
@@ -291,7 +294,7 @@ module Workspace
           next unless step
           closed << open[step].merge(ended_at: string(event["ts"])) if open[step]
           open[step] = {step: step, attempt: integer(event["attempt"]) || current_attempt[step], started_at: string(event["ts"]), ended_at: nil,
-            code: "gate", actor: nil, note: nil}
+            code: SPAN_CODES["gate"], actor: nil, note: nil}
         when "gate_approved", "gate_rejected"
           gate = open.delete(step)
           next unless gate
