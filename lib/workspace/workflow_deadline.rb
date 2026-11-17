@@ -50,17 +50,38 @@ module Workspace
     # @return [Float] seconds from the clock's start to its end, less the stretches a person's stop covers, every
     #   step's stalls ({WorkflowTransitions.stall_spans}) and +stops+
     def self.machine_seconds(hash, now, stops: [])
-      attempts = hash["steps"].to_h.values.flat_map { |step| Array(step.is_a?(Hash) ? step["attempts"] : nil) }.grep(Hash)
-      entries = Array(hash["reasons"]) + attempts.flat_map { |attempt| Array(attempt["reasons"]) }
-      entries = entries.grep(Hash)
-      starts = attempts.filter_map { |attempt| time(attempt["started_at"]) }
-      starts += entries.select { |entry| entry["code"] == "waiting_lock" }.filter_map { |entry| time(entry["since"]) }
-      origin = starts.min
-      return 0.0 unless origin
-      finish = time(hash["ended_at"]) || now
-      return 0.0 unless finish > origin
+      entries = reason_entries(hash).map { |found| found["entry"] }
+      window = machine_window(hash, now) or return 0.0
+      origin, finish = window
       stalls = hash["steps"].to_h.keys.flat_map { |step| WorkflowTransitions.stall_spans(hash, step) }
       active_seconds(origin, finish, entries.reject { |entry| MACHINE_CODES.include?(entry["code"]) } + stalls + Array(stops))
+    end
+
+    # @param hash [Hash{String=>Object}] a stored run
+    # @return [Array<Hash{String=>Object}>] the run's own `reasons` then every attempt's `reasons` (Hash entries only),
+    #   each as `{"entry" => the stored Hash, "step" => step id, "attempt" => attempt `n`}`; a run-owned entry's step is
+    #   its own `step` key and its attempt is nil
+    def self.reason_entries(hash)
+      own = Array(hash["reasons"]).grep(Hash).map { |entry| {"entry" => entry, "step" => entry["step"], "attempt" => nil} }
+      owned = hash["steps"].to_h.flat_map do |id, step|
+        Array(step.is_a?(Hash) ? step["attempts"] : nil).grep(Hash).flat_map do |attempt|
+          Array(attempt["reasons"]).grep(Hash).map { |entry| {"entry" => entry, "step" => id, "attempt" => attempt["n"]} }
+        end
+      end
+      own + owned
+    end
+
+    # @param hash [Hash{String=>Object}] a stored run
+    # @param now [Time] where an open stretch ends
+    # @return [Array(Time, Time), nil] the clock's `[origin, finish]` (see the class doc), nil when it has no origin or
+    #   `finish` is not after `origin`
+    def self.machine_window(hash, now)
+      attempts = hash["steps"].to_h.values.flat_map { |step| Array(step.is_a?(Hash) ? step["attempts"] : nil) }.grep(Hash)
+      starts = attempts.filter_map { |attempt| time(attempt["started_at"]) }
+      starts += reason_entries(hash).map { |found| found["entry"] }.select { |entry| entry["code"] == "waiting_lock" }.filter_map { |entry| time(entry["since"]) }
+      origin = starts.min or return nil
+      finish = time(hash["ended_at"]) || now
+      (finish > origin) ? [origin, finish] : nil
     end
 
     # @param origin [Time] where the span starts
@@ -80,6 +101,8 @@ module Workspace
       (finish - origin) - union_length(spans)
     end
 
+    # @param spans [Array<Array(Time, Time)>] spans, each `[from, to]`
+    # @return [Float] seconds the union of the spans covers, overlaps counted once
     def self.union_length(spans)
       total = 0.0
       reach = nil
@@ -97,6 +120,6 @@ module Workspace
     rescue ArgumentError
       nil
     end
-    private_class_method :union_length, :time
+    private_class_method :time
   end
 end

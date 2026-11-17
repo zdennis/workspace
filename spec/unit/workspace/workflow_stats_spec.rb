@@ -348,4 +348,34 @@ RSpec.describe Workspace::WorkflowStats do
 
     expect(build).to include("attempts" => 0, "passed" => 0, "failed" => 0, "unfinished" => 1, "median_seconds" => nil)
   end
+
+  describe ".tokens_count?" do
+    def run_of(state, outcomes)
+      attempts = outcomes.each_with_index.map { |(outcome, extra), i| {"n" => i + 1, "outcome" => outcome, "usage" => {"input_tokens" => 1}}.merge(extra || {}) }
+      Workspace::WorkflowRun.from_h({"id" => "wr_1", "state" => state, "current" => "plan", "steps" => {"plan" => {"state" => "going", "attempts" => attempts}}})
+    end
+
+    def counts(run, index)
+      attempts = run.step("plan").attempts
+      described_class.tokens_count?(run, "plan", attempts, attempts[index])
+    end
+
+    it "leaves out a not_delivered attempt" do
+      expect(counts(run_of("completed", [["not_delivered", nil]]), 0)).to be(false)
+    end
+
+    it "leaves out a redelivered attempt" do
+      expect(counts(run_of("completed", [["passed", {"redelivered" => true}]]), 0)).to be(false)
+    end
+
+    it "leaves out the going attempt of a live run" do
+      run = run_of("running", [["failed", nil], [nil, nil]])
+
+      expect([counts(run, 0), counts(run, 1)]).to eq([true, false])
+    end
+
+    it "counts the last attempt of an ended run, even without an outcome" do
+      expect(counts(run_of("cancelled", [[nil, nil]]), 0)).to be(true)
+    end
+  end
 end
