@@ -372,6 +372,7 @@ require_relative "workspace/workflow_run"
 require_relative "workspace/workflow_run_store"
 require_relative "workspace/workflow_deny"
 require_relative "workspace/review_write_guard"
+require_relative "workspace/reflection_write_guard"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
 require_relative "workspace/workflow_step_check"
@@ -1020,6 +1021,7 @@ module Workspace
     workflow_deny = WorkflowDeny.new(bound_run: bound_run, logger: logger, event_log: event_log,
       run_store: WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, event_errors_path: config.workflow_event_errors_path))
     review_write_guard = ReviewWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, env: env, event_log: event_log, logger: logger)
+    reflection_write_guard = ReflectionWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, config: config, env: env, event_log: event_log, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     recovery_stop_marker = RecoveryStopMarker.new(state_dir: config.state_dir)
     delivery_log = DeliveryLog.new(path: File.join(config.state_dir, "session-event.log"))
@@ -1027,7 +1029,7 @@ module Workspace
       on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
       workspace_for_session: workspace_for_session, delivery_log: delivery_log,
-      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, review_write_guard: review_write_guard, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
+      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, review_write_guard: review_write_guard, reflection_write_guard: reflection_write_guard, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
       dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), recovery_marker: recovery_stop_marker, logger: logger))
     process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, lineage: lineage,

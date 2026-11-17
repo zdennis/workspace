@@ -55,15 +55,28 @@ module Workspace
       return nil if direct && (path.delete_prefix("#{dir}/").include?("/") || File.basename(path) == SUMMARY)
       # No link on the way from the run's directory (or the checkout) down to the file, or
       # the write would land elsewhere. The checkout's own path may hold links.
-      start = linked.empty? ? File.dirname(File.dirname(base)) : File.dirname(base)
-      walked = linked.empty? ? start : base
-      walk = (linked.empty? ? path.delete_prefix("#{start}/") : path.delete_prefix("#{base}/")).split("/")
-      linked.each { |own| return nil if lstat_link?(own) }
-      walk.each do |part|
-        walked = File.join(walked, part)
-        return nil if lstat_link?(walked)
+      if linked.empty?
+        return nil if linked_below?(File.dirname(File.dirname(base)), path, include_base: false)
+      elsif linked_below?(base, path)
+        return nil
       end
       path
+    end
+
+    # Whether a link lies on the way from `base` down to `path`. A part that does not exist
+    # yet is not a link, so a file about to be created passes.
+    #
+    # @param base [String] an absolute directory that `path` is under
+    # @param path [String] an absolute path under `base`
+    # @param include_base [Boolean] whether `base` itself is checked too
+    # @return [Boolean] true when `base` (if included) or any part below it is a link
+    def self.linked_below?(base, path, include_base: true)
+      return true if include_base && lstat_link?(base)
+      walked = base
+      path.delete_prefix("#{base}/").split("/").any? do |part|
+        walked = File.join(walked, part)
+        lstat_link?(walked)
+      end
     end
 
     # @param dir [String] an absolute directory
