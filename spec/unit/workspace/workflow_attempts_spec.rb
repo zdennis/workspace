@@ -12,6 +12,15 @@ RSpec.describe Workspace::WorkflowAttempts do
     expect(rows.map { |row| row["outcome"] }).to eq(%w[overridden passed])
   end
 
+  it "shows an interrupted attempt as its own outcome" do
+    run = {"id" => "wr_1", "definition" => {"steps" => [{"id" => "plan"}]},
+           "steps" => {"plan" => {"attempts" => [{"n" => 1, "outcome" => "interrupted"}, {"n" => 2, "retry_of" => 1}]}}}
+
+    rows = described_class.new.read(run)["attempts"]
+
+    expect(rows.map { |row| row["outcome"] }).to eq(["interrupted", nil])
+  end
+
   it "carries the refusal an attempt recorded, and nil for one without" do
     refusal = {"error" => "pane_busy", "reason" => "working", "seen" => {"state" => "working", "changed_by" => "screen"}}
     run = {"id" => "wr_1", "definition" => {"steps" => [{"id" => "plan"}]},

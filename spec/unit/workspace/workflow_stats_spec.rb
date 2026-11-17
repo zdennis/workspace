@@ -74,6 +74,18 @@ RSpec.describe Workspace::WorkflowStats do
       expect(plan["tokens"]).to include("mean" => 320)
     end
 
+    it "counts an interrupted attempt once as unfinished, with its tokens, beside the passed retry" do
+      put("wr_1", steps: {"plan" => [attempt(1, "interrupted", usage: {"input_tokens" => 100}), attempt(2, "passed", usage: {"input_tokens" => 50}, retry_of: 1)]})
+      plan = row(stats.read(workflow: "rpiv"), "plan")
+      expect(plan).to include("attempts" => 1, "passed" => 1, "unfinished" => 1, "tokens_from_unfinished" => 1)
+      expect(plan["tokens"]).to include("mean" => 150, "runs_counted" => 1, "runs_uncounted" => 0)
+    end
+
+    it "counts a run as uncounted when its interrupted attempt has no usage" do
+      put("wr_1", steps: {"plan" => [attempt(1, "interrupted", usage: nil), attempt(2, "passed", usage: {"input_tokens" => 50}, retry_of: 1)]})
+      expect(row(stats.read(workflow: "rpiv"), "plan")["tokens"]).to include("mean" => nil, "runs_counted" => 0, "runs_uncounted" => 1)
+    end
+
     it "lists an attempt with no outcome as unfinished and leaves it out of everything else" do
       put("wr_1", steps: {"plan" => [attempt(1, nil, usage: nil), attempt(2, "interrupted")]})
       expect(row(stats.read(workflow: "rpiv"), "plan")).to include("attempts" => 0, "unfinished" => 2, "median_seconds" => nil)

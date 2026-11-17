@@ -150,11 +150,12 @@ module Workspace
     end
 
     # In a completed run an attempt with no outcome was passed over (a `resume --from` later step), not passed: a miss.
-    # A `cancelled` attempt (a cancel or kill closed it) is a person's stop, not a miss, like an old one left with no outcome.
+    # A `cancelled` attempt (a cancel or kill closed it) is a person's stop, and an `interrupted` one an infrastructure
+    # stop whose retry is the first try; neither is a miss, like an old one left with no outcome.
     # The engine has stored `outcome` on passed and failed attempts since it first wrote attempts, so an old run is not misread.
     def missed?(attempts, completed)
       # A `checks_passed` attempt waits for its review round to decide it: until it is rewritten it is neither a pass nor a miss.
-      delivered = attempts.reject { |attempt| WorkflowStats.kind_of(attempt) == :not_delivered || attempt.outcome == "checks_passed" }
+      delivered = attempts.reject { |attempt| WorkflowStats.kind_of(attempt) == :not_delivered || %w[checks_passed interrupted].include?(attempt.outcome) }
       delivered.size > 1 || delivered.any? { |attempt| attempt.outcome != "passed" && attempt.outcome != "cancelled" && (completed || !attempt.outcome.nil?) }
     end
 

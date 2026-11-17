@@ -15,8 +15,9 @@ module Workspace
   #   and the tokens.
   # - `unfinished` is any other attempt (no outcome yet because it is still going, it ended `checks_passed` and
   #   waits for its review round to rewrite it as `passed` or `failed`, it was replaced
-  #   without ending, or a cancel or kill closed it with outcome `cancelled`). It is counted apart and left
-  #   out of everything else, its `ended_at` included: it never enters the median.
+  #   without ending, a cancel or kill closed it with outcome `cancelled`,
+  #   or its agent crashed or its pane went away and it closed as `interrupted`, which a retry with `retry_of` follows).
+  #   It is counted apart and left out of everything else, its `ended_at` included: it never enters the median.
   #
   # `median_seconds` is the middle `ended_at - started_at` of the `passed`, `failed` and `overridden` attempts that have both
   # times. `resumes` counts the `run_resumed` events in the run's history, each on the step it resumed (the
@@ -26,7 +27,7 @@ module Workspace
   #
   # Tokens follow {WorkflowBudget}: input, output and cache creation tokens of the main thread and its in-step
   # sub-agents, and of each review round the attempt went through, never cache reads. For each run, a step's figure is the sum over the attempts the budget counts: `passed`,
-  # `failed`, `overridden` and also `unfinished` ones that ended without passing or failing (a cancel, a `resume --from`), so the tokens
+  # `failed`, `overridden` and also `unfinished` ones that ended without passing or failing (a cancel, an `interrupted` attempt, a `resume --from`), so the tokens
   # spent on a cancelled attempt are not lost; not an attempt still going, and not an undelivered one.
   # A run where any of those attempts (or their rounds) has a null `usage` is `runs_uncounted` for that step, not a smaller
   # number; `mean` is over `runs_counted` only and is nil when there are none.

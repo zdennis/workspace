@@ -86,6 +86,12 @@ RSpec.describe Workspace::WorkflowBudget do
     expect(described_class.reading(run([{"n" => 1, "usage" => {"input_tokens" => 900}}], state: "checking"))).to include("used" => 0, "uncounted" => 0)
   end
 
+  it "counts an interrupted attempt\x27s usage once, and still leaves out the running retry" do
+    attempts = [ended({"input_tokens" => 100}, outcome: "interrupted"), {"n" => 2, "retry_of" => 1, "usage" => {"input_tokens" => 900}}]
+
+    expect(described_class.reading(run(attempts, state: "running"))).to include("used" => 100, "counted" => 1, "uncounted" => 0)
+  end
+
   it "counts an attempt left without an outcome when a resume replaced it: its usage if it has one, else as uncounted" do
     attempts = [{"n" => 1, "usage" => {"input_tokens" => 700}}, {"n" => 2}, {"n" => 3}]
 
