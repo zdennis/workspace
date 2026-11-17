@@ -246,6 +246,7 @@ A `--file` row has no workspace, so it gets `[]` and no hint line: a command wit
 | `title`, `status` | From the frontmatter (`status` defaults to `active`); null when there is no file |
 | `state` | See above |
 | `owner_pane`, `pane_state` | The frontmatter's pane, and its state (`working`, `idle`, `waiting`, ...) from the agent daemon; null when unknown |
+| `run` | The id of the going workflow run that owns `owner_pane`, or null (no owner pane, one that is not a `%N` id, or no going run). Text prints `run RUN is going in pane PANE`; when the plan is `paused` the line adds that the run's agent stops at every attempt and that `workspace plan start NAME` sets the plan back to active |
 | `updated_at`, `signature` | The file's modification time (UTC, to the second) and `mtime_ns:size`. The signature changes when the file does, so a reader can skip a re-read when it is the same |
 | `revision` | The SHA-256 of the file's bytes, all 64 hex digits (null without a file). Pass it as `--if-revision` to a [task verb](#task-verbs) to refuse an edit made on an old view |
 | `counts`, `percent`, `current` | See above; `current` is null when nothing is left |

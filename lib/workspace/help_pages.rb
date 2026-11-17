@@ -40,7 +40,9 @@ module Workspace
           "(outside any workspace: not_in_workspace). Give at most one of --name, --project, --all, --file and",
           "--group.",
           "A stalled or blocked row prints a 'next:' line with the first command that helps. In --json every row has",
-          "next_actions (empty for other states and for --file), and the top level lists them all in row order."
+          "next_actions (empty for other states and for --file), and the top level lists them all in row order.",
+          "A row whose owner pane a going workflow run owns prints a 'run RUN is going in pane PANE' line; in --json it",
+          "is the row's run (null otherwise). A paused plan in such a pane says the run's agent stops, and names plan start."
         ],
         options: [NAME_OPT,
           ["--project [NAME]", "Every workspace of a project (NAME, or the project of the current workspace)"],

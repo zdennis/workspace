@@ -158,6 +158,60 @@ RSpec.describe Workspace::Commands::Plan do
   end
 
   describe "#status" do
+    context "with run ownership" do
+      let(:run_panes) { {"%19" => {"run" => "wr_9", "pane" => "%19", "paused" => false}} }
+
+      before { allow(snapshot_client).to receive(:fetch).and_return("panes" => [{"pane_id" => "%19", "state" => "working"}]) }
+
+      it "gives the owning run in --json and prints a run line in text" do
+        write_plan("api", plan_text)
+
+        command.status(names: ["api"], json: true)
+        expect(document["plans"].first["run"]).to eq("wr_9")
+
+        output.truncate(0)
+        output.rewind
+        command.status(names: ["api"])
+        expect(output.string).to include("  run wr_9 is going in pane %19\n")
+        expect(output.string).not_to include("plan start")
+      end
+
+      it "says a paused plan stalls the run's agent and names plan start" do
+        write_plan("api", plan_text.sub("---\ntitle", "---\nstatus: paused\ntitle"))
+
+        command.status(names: ["api"])
+
+        expect(output.string).to include("run wr_9 is going in pane %19; the plan is paused, so the run's agent stops at every attempt: `workspace plan start api` sets it back to active")
+      end
+
+      it "has the key, null, on a missing plan and a --file row" do
+        command.status(names: ["api"], json: true)
+        expect(document["plans"].first).to include("exists" => false, "run" => nil)
+
+        path = File.join(@dir, "other.md")
+        File.write(path, "## Tasks\n- [ ] T1 a\n")
+        output.truncate(0)
+        output.rewind
+        command.status(file: path, json: true)
+        expect(document["plans"].first).to include("run" => nil)
+      end
+
+      it "gives run nil and no line when no run owns the pane, or the owner_pane is not a %N id" do
+        write_plan("api", plan_text.sub("%19", "0.1"))
+
+        command.status(names: ["api"], json: true)
+        expect(document["plans"].first["run"]).to be_nil
+        expect(binder).not_to have_received(:owning_run)
+
+        output.truncate(0)
+        output.rewind
+        write_plan("api", plan_text)
+        run_panes.clear
+        command.status(names: ["api"])
+        expect(output.string).not_to include("run ")
+      end
+    end
+
     it "reports a workspace's plan with its state from the session, the owner pane and the open questions" do
       write_plan("api", plan_text)
       allow(snapshot_client).to receive(:fetch).with("api", timeout: 1.0)

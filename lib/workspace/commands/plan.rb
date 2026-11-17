@@ -287,7 +287,15 @@ module Workspace
       # The row with what a person can do about it. A row with no workspace (`--file`) gets none: a command
       # without `--name` would act on whichever plan the caller stands in.
       def with_next_actions(row)
-        row.merge("next_actions" => next_actions_for(row))
+        row.merge("run" => owning_run_of(row["owner_pane"]), "next_actions" => next_actions_for(row))
+      end
+
+      # The going run that owns the plan's owner pane, or nil (also for a value that is not a `%N` id).
+      def owning_run_of(pane)
+        return nil unless @binder && pane.to_s.match?(OWNER_PANE_ID)
+        @binder.owning_run(pane: pane)
+      rescue Workspace::Error
+        nil
       end
 
       def next_actions_for(row)
@@ -365,6 +373,7 @@ module Workspace
           line = "#{label}  #{row["state"]}  #{counts["done"] + counts["skipped"]}/#{counts["total"]} (#{row["percent"]}%)"
           line += "  #{[current["id"], current["title"]].compact.join(" ")}" if current
           @output.puts "#{indent}#{line}"
+          @output.puts "#{indent}  #{run_line(row)}" if row["run"]
           hint = !summary && %w[stalled blocked].include?(row["state"]) && row["next_actions"].first
           @output.puts "#{indent}  next: workspace #{TerminalText.escape(([hint["action"]] + hint["args"]).join(" "))}" if hint
         else
@@ -374,6 +383,12 @@ module Workspace
           where = warning["line"] ? "line #{warning["line"]}: " : ""
           @output.puts "#{indent}  #{where}#{warning["code"]}: #{warning["message"]}"
         end
+      end
+
+      def run_line(row)
+        line = "run #{TerminalText.escape(row["run"])} is going in pane #{row["owner_pane"]}"
+        return line unless row["status"] == "paused"
+        "#{line}; the plan is paused, so the run's agent stops at every attempt: `#{["workspace plan start", row["workspace"]].compact.join(" ")}` sets it back to active"
       end
 
       def task_title(name)
