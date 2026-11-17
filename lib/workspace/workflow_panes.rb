@@ -115,6 +115,33 @@ module Workspace
       raise Workspace::Error.new(e.message, code: "no_daemon", details: {"workspace" => workspace})
     end
 
+    # The pane a restart of a run's step uses, picked from one daemon snapshot, with what the run's own pane is
+    # like. Nothing is changed.
+    #
+    # The target is, in order: the pane the caller named (a Claude Code agent whose turn is over or failed); the
+    # run's bound pane when it is idle, failed or busy (the engine refuses a busy one); the one Claude Code pane
+    # that is no review pane, bound to no run, not the caller's and whose turn is over.
+    #
+    # @param workspace [String]
+    # @param run_id [String]
+    # @param bound [String, nil] the run's bound pane id
+    # @param named [String, nil] a pane the caller named, already located
+    # @param caller [String, nil] the caller's own pane, never picked on its own
+    # @return [Hash{String=>String}] `"pane"` (a pane id) and `"bound"` (the bound pane's fact: `idle`, `failed`,
+    #   `busy`, `shell` or `gone`)
+    # @raise [Workspace::Error] code `no_daemon`; `no_agent_pane` or `pane_busy` for a named pane, or when none
+    #   qualifies; `pane_ambiguous` (`details.panes`) when several do
+    def restart_target(workspace, run_id, bound:, named: nil, caller: nil)
+      ensure_daemon!(workspace)
+      snapshot = @snapshot_client.fetch(workspace)
+      fact = bound_fact(run_id, bound, row_of(snapshot, bound))
+      return {"pane" => named_target(workspace, run_id, snapshot, named, caller), "bound" => fact} if named
+      return {"pane" => bound, "bound" => fact} if %w[idle failed busy].include?(fact)
+      {"pane" => sole_free_pane(workspace, run_id, snapshot, caller), "bound" => fact}
+    rescue AgentSnapshotClient::Unavailable => e
+      raise Workspace::Error.new(e.message, code: "no_daemon", details: {"workspace" => workspace})
+    end
+
     # @param workspace [String]
     # @param spec [String] a pane id ("%19") or "window.pane" ("0.1")
     # @return [String] the pane's id
@@ -471,6 +498,52 @@ module Workspace
     def stale?(pane, entry)
       @bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane),
         server_pid: -> { @tmux.server_pid_for_pane(pane) })
+    end
+
+    def bound_fact(run_id, bound, row)
+      return "gone" if bound.nil? || !alive?(run_id) || row.nil?
+      return "shell" if row["kind"] == "shell"
+      return "failed" if row["turn_failed"]
+      self.class.turn_over?(row, @clock.call) ? "idle" : "busy"
+    end
+
+    def named_target(workspace, run_id, snapshot, named, caller)
+      row = row_of(snapshot, named)
+      unless row && row["kind"] == "claude"
+        raise Workspace::Error.new("Pane #{named} of '#{workspace}' is not running Claude Code. Nothing was changed.",
+          code: "no_agent_pane", details: {"workspace" => workspace, "pane" => named})
+      end
+      refuse_named(workspace, named, "caller") if named == caller
+      refuse_named(workspace, named, "review") if review_pane?(row)
+      refuse_named(workspace, named, "bound") if live_binding?(named) && run_on(named) != run_id
+      return named if row["turn_failed"] || self.class.turn_over?(row, @clock.call)
+      raise Workspace::Error.new("The agent in pane #{named} is in the middle of a turn. Nothing was changed.",
+        code: "pane_busy", details: {"workspace" => workspace, "pane" => named, "reason" => row["state"]}.compact)
+    end
+
+    def refuse_named(workspace, named, reason)
+      why = {"caller" => "is the pane this command was run from", "review" => "is a review pane", "bound" => "is bound to something else"}.fetch(reason)
+      raise Workspace::Error.new("Pane #{named} of '#{workspace}' #{why}. Nothing was changed.",
+        code: "pane_busy", details: {"workspace" => workspace, "pane" => named, "reason" => reason})
+    end
+
+    def live_binding?(pane)
+      entry = @bindings.binding_for(pane)
+      !entry.nil? && !stale?(pane, entry)
+    end
+
+    def sole_free_pane(workspace, run_id, snapshot, caller)
+      found = Array(snapshot["panes"]).select do |row|
+        id = row["pane_id"]
+        row["kind"] == "claude" && !review_pane?(row) && !live_binding?(id) && id != caller && self.class.turn_over?(row, @clock.call)
+      end.map { |row| row["pane_id"] }
+      return found.first if found.size == 1
+      if found.empty?
+        raise Workspace::Error.new("No idle Claude Code pane of '#{workspace}' is free to restart the step in. Nothing was changed. " \
+          "Start Claude Code in a pane of #{workspace}, or name one with --pane.", code: "no_agent_pane", details: {"workspace" => workspace})
+      end
+      raise Workspace::Error.new("Several idle Claude Code panes of '#{workspace}' could restart the step: #{found.join(", ")}. " \
+        "Nothing was changed. Name one with --pane.", code: "pane_ambiguous", details: {"workspace" => workspace, "run_id" => run_id, "panes" => found})
     end
 
     def ensure_daemon!(workspace)
