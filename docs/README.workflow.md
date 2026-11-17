@@ -53,6 +53,7 @@ workspace step status [--json]
 | `workflow remove` | Delete your `ID.yml` (a link itself, never its target). Asks first unless `--yes` or `--dry-run`; refused with `confirmation_required` under `--no-input`. A preset of the same id is in effect again. See [Removing a definition](#removing-a-definition) |
 | `workflow run` | Start a run in a workspace (the current one, or `--name`). An unset `task` or `pr` is [filled from the branch](#filling-inputs-from-the-branch). `--dry-run` checks the inputs, the project's commands, the packs and the pane, and starts nothing. Run from the pane it would use, the run is made and [parked](#resuming-from-the-runs-own-pane) |
 | `workflow check` | Run one step's `status:` command once, outside a run, in this checkout. Takes no lock and writes no run state; see [Trying a step's check](#trying-a-steps-check) |
+| `workflow graph` | Draw a definition's steps, gates, reviews and loops as ASCII, Mermaid, Graphviz or JSON, and with `--run` where a run stands. Writes nothing; see [Drawing a workflow](#drawing-a-workflow) |
 | `workflow render` | Print the instructions a step's agent would be sent for its first attempt, composed without a run. Writes nothing; see [Rendering a step's instructions](#rendering-a-steps-instructions) |
 | `workflow start` | Make a workspace from a ticket, pull request, issue or branch `REF`, or from `--prompt TEXT`, wait for its coding agent and run the workflow in it. The `ID` may be left out when config names a default. `--dry-run` checks everything and makes nothing. `--ref REF` in place of `ID` picks the workflow from the ref's kind ([routing](#routing-a-ref-to-a-workflow)). See [Starting from a ticket or a prompt](#starting-from-a-ticket-or-a-prompt) and [Default workflows](#default-workflows) |
 | `workflow status` | The runs still going in this workspace, another's (`--name`), a project's (`--project`) or every workspace's (`--all`), or one run (`RUN`). Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck). See [Which runs `status` shows](#which-runs-status-shows). `--table` prints one row per run beside its workspace: [the status table](#the-status-table). `--needs-me` lists only the runs waiting for you: [what needs you](#what-needs-you) |
@@ -477,6 +478,48 @@ The checkout the packs and the project's `commands.test`/`commands.lint` are rea
 Some values belong to a run that does not exist. These are previews: `{{run}}` is `wr_preview`, `{{artifacts}}` (and the binding's artifacts and instructions paths) lie under `.workflow/wr_preview/`, the attempt is 1, and `{{workspace}}` is `<workspace>` when none was found. The text names them on stderr; `--json` lists them under `previews`. Text the runner adds under `## For this attempt` is not added, because it comes from what happens during a run: the run's `--note`; a retry's text (a failed check's log, a rejected gate's note, a backoff's text); a `resume --note`; and, for the step after a gate, the approval's `--note` and the line "The approved note is PATH, sha256 ..." that names the gate's note (`pr-feedback` `fix`, `investigate` `fix`, `explore` `report`). A real first attempt can therefore carry that section: `workflow run --note` reaches attempt 1 of the first step, and an approval or a resume reaches the step it starts. A render never does. A step with `gate: approve` is rendered like any other; stderr says the run would wait after its turn.
 
 On a terminal the text is written with control, bidi and zero-width characters escaped (`\e`, `\u202E`), line by line, tabs kept, because a pack, a definition or an input can hold them. Piped or redirected it is written as is, so it can be saved or diffed. Warnings and preview values are escaped the same way.
+
+### Drawing a workflow
+
+`workflow graph ID` draws a definition: a node for each step, a gate node after a step with `gate: approve`, a review node after a step with `review:`, and an edge for each way a run moves between them. The edges are `next`, `fail` (labelled with its `max`, and `backoff` and `except` when set), `reject` (a gate sends its step back; the label says `--to` can name an earlier step, since that is chosen when the person rejects) and `review_rejected` (a review sends its step back, labelled with `max_rounds`). It reads the definition only, writes nothing and needs no run or tmux session. `--name` picks the workspace whose project's definitions are read first. A step that came from an `extends:` parent carries that parent's id as its `origin` annotation in the model.
+
+```
+      (Start)
+        |
+        v
+      +----------+
+      | Research |
+      +----------+
+        |
+        v
+      +------+
+   +->| Plan |
+   |  +------+
+   |    |
+   |    v
+   |  +===========+
+   +--| Plan gate |  reject (or --to an earlier step)
+      +===========+
+        |
+        v
+      +-----------+
++---->| Implement |
+|     +-----------+
+|       |
+|       v
+|     +--------+
++-----| Verify |  fail: max 3
+      +--------+
+        |
+        v
+      (End)
+
+Run limits: max_attempts 10
+```
+
+`--format` picks the drawing: `ascii` (the default, readable anywhere), `mermaid` (a `stateDiagram-v2` to paste into a Markdown file), `dot` (Graphviz input: `workspace workflow graph rpiv --format dot | dot -Tsvg`) or `json` (the model the others draw). The run limits that apply to every step (`max_attempts`, `timeout`, `timeout_action`, `stall`, `budget`) are the legend: a `Run limits:` line in ASCII, a note in Mermaid and the graph label in DOT.
+
+`--run RUN` draws the definition the run stored, not the file in the catalog, which may have changed since, and marks where the run stands. Each step, gate and review node is `passed`, `current`, `waiting`, `failed` or `pending`; each step shows its passes and attempts, and each `fail` edge the loops the run took. A failed step that is the run's current step while the run waits reads `waiting`: the run waits there, and the attempts show the failures. A gate or review rejected with `--to` another step is `pending` while the run goes on and `failed` once it ended. The run must be of workflow ID: another workflow's run is refused with `usage`, an unknown RUN with `unknown_run`. A run's stored definition carries no `extends:` origin, so a `--run` drawing has none.
 
 ### Trying a step's check
 
@@ -1639,6 +1682,8 @@ A run file in `runs/` that can't be read as a run (not JSON, not readable, namin
 `workflow check --json` prints `{"schema_version":1,"ok":true,"workflow":ID,"step":STEP,"worktree":PATH,"passed":BOOL,"command":TEXT,"exit_code":INT-or-null,"timed_out":BOOL,"error":TEXT-or-null,"timeout":WHOLE-SECONDS,"duration":SECONDS,"log":PATH,"artifacts":PATH,"artifacts_created":BOOL,"base_sha":SHA-or-"","tail":TEXT,"warnings":[{"code":"not_in_checkout","message":TEXT}]}` and exits 1 when `passed` is false (`tail` is the last 40 lines of the log, unescaped; needs `workflow` 26; see [trying a check](#trying-a-steps-check)).
 
 `workflow render --json` prints `{"schema_version":1,"ok":true,"workflow":ID,"step":STEP,"workspace":NAME,"worktree":PATH,"inputs":{},"gate":"approve"-or-null,"packs":[REF,...],"instructions_path":PATH,"previews":[{"name":"run","value":"wr_preview"},...],"warnings":[{"code":"not_in_checkout","message":TEXT}],"text":TEXT}` (`text` is the instructions unescaped; `instructions_path` is where a real attempt's file would go; needs `workflow` 25; see [rendering](#rendering-a-steps-instructions)).
+
+`workflow graph ID --json` (the same as `--format json`) prints `{"schema_version":1,"ok":true,"graph":{"nodes","edges","legend"}}`, the model under `graph` (see [the graph document](README.json.md#actions); needs `workflow` 52). It is not an action document.
 
 `workflow simulate --json` prints `{"schema_version":1,"ok":true,"workflow":ID,"script":PATH,"inputs":{},"outcome":"completed"|"failed"|"cancelled"|"stopped"|"capped","stopped":{"step","attempt","reason"}-or-null,"capped":BOOL,"max_actions":200,"actions":N,"run":{"state","current","reason","loops"},"steps":[{"id","state","attempts":[{"n","outcome","code"[,"reviews":[{"reviewer","verdict","counted","problem"}]]}]}],"budget":{...}-or-null,"transitions":[{"n","at","type",...}]}`. `at` is seconds into the simulated time; each transition carries the keys of the run-history event of that `type`, plus `simulated_agent`, `simulated_reviewers`, `simulated_person`, `simulated_wait` and `simulated_refused` lines for the fake agent's and person's own moves. `reviews` is present only on a reviewed attempt (absent for an unreviewed step), taken from the attempt or, for a round that stopped `review_incomplete`, from its last round. `simulated_reviewers` carries `step`, `attempt`, `round` and `reviews` (the verdicts the script gave, a map of reviewer to verdict), and `rerun` for a rerun of the round's missing reviewers. `budget` is the run's token reading (`used`, `allowance`, `spent`, ...) when the definition declares one.
 
