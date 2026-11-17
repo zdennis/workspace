@@ -66,7 +66,7 @@ module Workspace
         found[key] = step[key] if set?(step[key])
       end
       annotations.delete("context") if annotations["context"] == "fresh"
-      annotations["origin"] = origin if set?(origin)
+      annotations["origin"] = origin if set?(origin) && origin != "own"
       annotations
     end
 

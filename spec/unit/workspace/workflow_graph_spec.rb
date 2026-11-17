@@ -49,9 +49,10 @@ RSpec.describe Workspace::WorkflowGraph do
       expect(verify["annotations"]).not_to have_key("origin")
     end
 
-    it "tags a step with its origin" do
-      tagged = described_class.build(catalog.find("rpiv").to_h, origins: {"plan" => "rpiv"}).to_h
+    it "tags a step with its origin, but not one the definition wrote itself" do
+      tagged = described_class.build(catalog.find("rpiv").to_h, origins: {"plan" => "rpiv", "verify" => "own"}).to_h
       expect(tagged["nodes"].find { |node| node["id"] == "plan" }["annotations"]["origin"]).to eq("rpiv")
+      expect(tagged["nodes"].find { |node| node["id"] == "verify" }["annotations"]).not_to have_key("origin")
     end
 
     it "puts the run limits in the legend" do

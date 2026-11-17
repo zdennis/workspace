@@ -17,6 +17,10 @@ module Workspace
     # @return [Array<Hash{String=>String}>] the workflows extended, nearest first: "id", "source", "path" and "sha256" (of that file's text)
     attr_reader :parents
 
+    # @return [Hash{String=>String}] step id to where the step came from: the `extends:` parent's id (the
+    #   parent's own origin for a step it inherited itself), or "own" for a step this definition adds or replaces; empty without `extends:`
+    attr_reader :origins
+
     # @return [Array<String>] faults in the child's own `extends:`, `replace:` and `steps:`
     attr_reader :problems
 
@@ -36,6 +40,7 @@ module Workspace
       @lookup = lookup
       @chain = chain
       @parents = []
+      @origins = {}
       @problems = []
       @failure = []
       @notes = []
@@ -66,10 +71,20 @@ module Workspace
       merged["inputs"] = merge_inputs(base["inputs"], raw["inputs"]) if raw.key?("inputs")
       merged["reviewers"] = merge_inputs(base["reviewers"], raw["reviewers"]) if raw.key?("reviewers")
       merged["steps"] = merged_steps("#{own} (#{found["path"]})", base["steps"], replacements, raw["steps"])
+      parent_origins = definition.origins
+      @origins = merged["steps"].keys.to_h do |step_id|
+        inherited = base["steps"].is_a?(Hash) && base["steps"].key?(step_id) && merged["steps"][step_id].equal?(base["steps"][step_id])
+        [step_id.to_s, inherited ? inherited_origin(parent_origins[step_id.to_s], own) : "own"]
+      end
       merged
     end
 
     private
+
+    # A step the parent itself inherited keeps that origin; one the parent defined (or that has none recorded) came from the parent.
+    def inherited_origin(parent_origin, parent_id)
+      (parent_origin.nil? || parent_origin == "own") ? parent_id : parent_origin
+    end
 
     # The parent as a definition read and checked on its own, with the file it came from; nil, with {#failure} set, when it can't be used.
     def parent_of(parent_id)

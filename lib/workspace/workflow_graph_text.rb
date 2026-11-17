@@ -19,6 +19,8 @@ module Workspace
     #   `Implement [passed x3]`, `Verify [current, 3 attempts]` or `Plan gate [waiting]`
     def self.node_title(node)
       title = node["title"].to_s
+      origin = node.dig("annotations", "origin")
+      title += " (from #{origin})" if origin
       return title unless node["state"]
       passes = node["passes"].to_i
       attempts = node["attempts"].to_i

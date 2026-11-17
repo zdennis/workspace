@@ -3,7 +3,8 @@ module WorkflowGraphGolden
 
   def self.model(id)
     catalog = Workspace::WorkflowCatalog.new(config: Workspace::Config.new)
-    Workspace::WorkflowGraph.build(catalog.find(id).to_h).to_h
+    definition = catalog.find(id)
+    Workspace::WorkflowGraph.build(definition.to_h, origins: definition.origins).to_h
   end
 
   def self.run(name)

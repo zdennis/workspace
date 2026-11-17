@@ -66,6 +66,13 @@ RSpec.describe Workspace::CLI do
         expect(JSON.parse(first)["graph"].keys).to eq(%w[nodes edges legend])
       end
 
+      it "tags the steps an extending preset inherited with the parent's id" do
+        real_cli.run(["workflow", "graph", "rpiv-auto-approve-v2", "--json"])
+        origins = JSON.parse(out.string)["graph"]["nodes"].to_h { |node| [node["id"], node["annotations"]["origin"]] }
+
+        expect(origins).to include("research" => "rpiv", "plan" => nil)
+      end
+
       it "exits 1 with unknown_workflow for an unknown id" do
         expect { real_cli.run(["workflow", "graph", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
         expect(out.string + err.string).to include("unknown_workflow")

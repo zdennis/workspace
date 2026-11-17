@@ -142,7 +142,12 @@ module Workspace
         raise UsageError, "Unknown graph format #{format.inspect}: use #{GRAPH_FORMATS.join(", ")} (default ascii)." if format && !GRAPH_FORMATS.include?(format)
         raise UsageError, "--json prints the graph as json: drop --format #{format}, or use --format json." if json && format && format != "json"
         format ||= json ? "json" : "ascii"
-        model = run ? run_graph(id, @store.run(run)) : WorkflowGraph.build(@catalog.find(id, project: project).to_h).to_h
+        model = if run
+          run_graph(id, @store.run(run))
+        else
+          definition = @catalog.find(id, project: project)
+          WorkflowGraph.build(definition.to_h, origins: definition.origins).to_h
+        end
         return document("graph" => model) if format == "json"
         @output.puts @graph_renderers.fetch(format).render(model)
       end
