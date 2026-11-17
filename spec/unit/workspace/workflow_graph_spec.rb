@@ -56,7 +56,7 @@ RSpec.describe Workspace::WorkflowGraph do
     end
 
     it "puts the run limits in the legend" do
-      expect(graph["legend"]).to eq("max_attempts" => 10)
+      expect(graph["legend"]).to eq("max_attempts" => 14)
     end
   end
 

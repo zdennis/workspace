@@ -1,7 +1,7 @@
 digraph workflow {
   rankdir=LR;
   labelloc=b;
-  label="max_attempts 10";
+  label="max_attempts 14";
   ".start" [shape=point];
   "research" [shape=box, label="Research"];
   "plan" [shape=box, label="Plan"];

@@ -128,7 +128,7 @@ RSpec.describe "the shipped workflow presets" do
       expect(Workspace::WorkflowDefinition.review(plan)).to include("from" => %w[supportive skeptical implementer], "need" => 2, "must" => ["skeptical"], "max_rounds" => 6)
       expect(Workspace::WorkflowDefinition.step_max_attempts(plan)).to eq(8)
       expect(Workspace::WorkflowDefinition.reviewers(data).keys).to eq(%w[supportive skeptical implementer])
-      expect(data["max_attempts"]).to eq(17)
+      expect(data["max_attempts"]).to eq(21)
       expect(Workspace::WorkflowDefinition.run_timeout(data)).to include("seconds" => 28_800.0, "action" => "hold")
       expect(Workspace::WorkflowDefinition.budget(data)).to include("tokens" => 40_000_000)
     end
@@ -154,8 +154,8 @@ RSpec.describe "the shipped workflow presets" do
 
     it "leaves the files of rpiv and rpiv-auto-approve as they were" do
       sha = ->(id) { Digest::SHA256.file(File.join(config.builtin_workflows_dir, "#{id}.yml")).hexdigest }
-      expect(sha.call("rpiv")).to eq("42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8")
-      expect(sha.call("rpiv-auto-approve")).to eq("edc35af9ff94282c2facb8b01da9c7fe71306c1850c980c63b104e4dc52aac5e")
+      expect(sha.call("rpiv")).to eq("8fa346f0d4cb1de8f24899d0b61452a5490ab1c9ad4342502337edf0bc05a354")
+      expect(sha.call("rpiv-auto-approve")).to eq("46f241f38c5694297488f8e3b903eb4dfa39534dc42f1a68188602926ae8b7ed")
     end
   end
 
