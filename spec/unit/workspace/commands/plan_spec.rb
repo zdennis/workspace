@@ -35,13 +35,23 @@ RSpec.describe Workspace::Commands::Plan do
       allow(log).to receive(:record) { |type:, project:, data: {}| events_log << {type: type, project: project, data: data} }
     end
   end
+  let(:binder) { instance_double(Workspace::Commands::Binding, owning_run: nil, refuse_owned!: nil) }
+  let(:real_binding) { Workspace::Commands::Binding.new(bindings: nil, locator: nil, tmux: nil) }
+  let(:run_panes) { {} }
   subject(:command) do
     described_class.new(notes: notes, access: Workspace::PlanAccess.new(notes: notes, tmux: tmux, event_log: event_log), dispatch: dispatch,
       catalog: catalog, groups: groups, plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config,
-      snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store }, task_store: task_store, clock: -> { now }, output: output)
+      snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store }, task_store: task_store, binder: binder, clock: -> { now }, output: output)
   end
 
   before do
+    allow(binder).to receive(:owning_run) { |pane:| run_panes.dig(pane, "run") }
+    allow(binder).to receive(:refuse_owned!) do |pane:, workspace:, action:, **opts|
+      found = run_panes[pane]
+      next unless found
+      refused = real_binding.refusal(found, workspace: workspace, action: action, **opts)
+      raise Workspace::Error.new(refused[:message], code: refused[:code], details: refused[:details])
+    end
     allow(notes).to receive(:info) do |name:, create: false|
       dir = notes_dirs.fetch(name) { raise Workspace::Error.new("Unknown workspace '#{name}'.", code: "unknown_workspace", details: {"name" => name}) }
       FileUtils.mkdir_p(dir) if create
@@ -148,6 +158,60 @@ RSpec.describe Workspace::Commands::Plan do
   end
 
   describe "#status" do
+    context "with run ownership" do
+      let(:run_panes) { {"%19" => {"run" => "wr_9", "pane" => "%19", "paused" => false}} }
+
+      before { allow(snapshot_client).to receive(:fetch).and_return("panes" => [{"pane_id" => "%19", "state" => "working"}]) }
+
+      it "gives the owning run in --json and prints a run line in text" do
+        write_plan("api", plan_text)
+
+        command.status(names: ["api"], json: true)
+        expect(document["plans"].first["run"]).to eq("wr_9")
+
+        output.truncate(0)
+        output.rewind
+        command.status(names: ["api"])
+        expect(output.string).to include("  run wr_9 is going in pane %19\n")
+        expect(output.string).not_to include("plan start")
+      end
+
+      it "says a paused plan stalls the run's agent and names plan start" do
+        write_plan("api", plan_text.sub("---\ntitle", "---\nstatus: paused\ntitle"))
+
+        command.status(names: ["api"])
+
+        expect(output.string).to include("run wr_9 is going in pane %19; the plan is paused, so the run's agent stops at every attempt: `workspace plan start api` sets it back to active")
+      end
+
+      it "has the key, null, on a missing plan and a --file row" do
+        command.status(names: ["api"], json: true)
+        expect(document["plans"].first).to include("exists" => false, "run" => nil)
+
+        path = File.join(@dir, "other.md")
+        File.write(path, "## Tasks\n- [ ] T1 a\n")
+        output.truncate(0)
+        output.rewind
+        command.status(file: path, json: true)
+        expect(document["plans"].first).to include("run" => nil)
+      end
+
+      it "gives run nil and no line when no run owns the pane, or the owner_pane is not a %N id" do
+        write_plan("api", plan_text.sub("%19", "0.1"))
+
+        command.status(names: ["api"], json: true)
+        expect(document["plans"].first["run"]).to be_nil
+        expect(binder).not_to have_received(:owning_run)
+
+        output.truncate(0)
+        output.rewind
+        write_plan("api", plan_text)
+        run_panes.clear
+        command.status(names: ["api"])
+        expect(output.string).not_to include("run ")
+      end
+    end
+
     it "reports a workspace's plan with its state from the session, the owner pane and the open questions" do
       write_plan("api", plan_text)
       allow(snapshot_client).to receive(:fetch).with("api", timeout: 1.0)
@@ -858,6 +922,71 @@ RSpec.describe Workspace::Commands::Plan do
 
         expect(result).to include("interrupts" => [{"pane" => "%19", "outcome" => "sent"}], "warnings" => [])
         expect(dispatch).to have_received(:interrupt_owners).with("api", have_attributes(tasks: plan.tasks))
+      end
+
+      context "when a going run owns an owner pane" do
+        let(:run_panes) { {"%19" => {"run" => "wr_9", "pane" => "%19", "paused" => false}} }
+
+        it "refuses with pane_bound_to_run naming workflow pause and writes nothing" do
+          write_plan("api", active_text)
+          before = File.binread(plan_path)
+
+          expect { command.pause(name: "api") }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("pane_bound_to_run")
+            expect(e.message).to include("workspace workflow pause wr_9")
+          }
+          expect(File.binread(plan_path)).to eq(before)
+          expect(output.string).to eq("")
+          expect(events_log).to eq([])
+        end
+
+        it "refuses when only a task still left names the run-owned pane" do
+          text = "---\ntitle: T\nstatus: active\n---\n## Tasks\n- [~] T1 a <!-- owner: %19 -->\n- [ ] T2 b\n"
+          write_plan("api", text)
+
+          expect { command.pause(name: "api") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("pane_bound_to_run") }
+          expect(File.read(plan_path)).to eq(text)
+        end
+
+        it "names workflow status when the run is already paused" do
+          run_panes["%19"] = {"run" => "wr_9", "pane" => "%19", "paused" => true}
+          write_plan("api", active_text)
+
+          expect { command.pause(name: "api") }.to raise_error(Workspace::Error, /already paused.*workspace workflow status wr_9/)
+        end
+
+        it "is unchanged, with no error, when the plan is already paused" do
+          write_plan("api", paused_text)
+
+          expect(command.pause(name: "api")["outcome"]).to eq("unchanged")
+          expect(binder).not_to have_received(:refuse_owned!)
+        end
+
+        it "refuses --interrupt on an already paused plan, sending no keys and leaving the file alone" do
+          write_plan("api", paused_text)
+          before = File.binread(plan_path)
+          allow(dispatch).to receive(:interrupt_owners)
+
+          expect { command.pause(name: "api", interrupt: true) }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("pane_bound_to_run")
+          }
+          expect(dispatch).not_to have_received(:interrupt_owners)
+          expect(File.binread(plan_path)).to eq(before)
+        end
+
+        it "skips an owner_pane that is not a %N id and pauses" do
+          write_plan("api", active_text.sub("owner_pane: \"%19\"", "owner_pane: \"0.1\""))
+
+          expect(command.pause(name: "api")["outcome"]).to eq("paused")
+          expect(binder).not_to have_received(:refuse_owned!)
+        end
+      end
+
+      it "pauses as before when no run owns the owner pane" do
+        write_plan("api", active_text)
+
+        expect(command.pause(name: "api")["outcome"]).to eq("paused")
+        expect(binder).to have_received(:refuse_owned!).with(pane: "%19", workspace: "api", action: :pause)
       end
 
       it "is unchanged, and records nothing, when the plan is already paused" do

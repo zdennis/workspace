@@ -19,7 +19,7 @@ RSpec.describe Workspace::Commands::Handoff do
   let(:handoff_config) { instance_double(Workspace::HandoffConfig) }
   let(:restart_agent_command) { instance_double(Workspace::Commands::RestartAgent) }
   let(:notes) { instance_double(Workspace::Commands::Notes) }
-  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}) }
+  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}, owned: nil, refuse_owned!: nil) }
   let(:library) { instance_double(Workspace::Library) }
   let(:notes_dir) { "/notes/myapp" }
   let(:output) { StringIO.new }

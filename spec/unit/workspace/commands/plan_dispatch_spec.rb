@@ -18,7 +18,14 @@ RSpec.describe Workspace::Commands::PlanDispatch do
   let(:tmux) { instance_double(Workspace::Tmux, sessions: ["api", "api-worktree-x"], custom_socket_option: nil, close_pane: true, capture_screen: "") }
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:sender) { instance_double(Workspace::Commands::Send, deliver: {"pane" => "%19", "mode" => "text", "submitted" => true}) }
-  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}) }
+  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}, owned: nil, refuse_owned!: nil) }
+  let(:run_owned) { {"run" => "wr_9", "pane" => "%19", "paused" => false} }
+  let(:real_binding) { Workspace::Commands::Binding.new(bindings: nil, locator: nil, tmux: nil) }
+  let(:run_owned_pane) do
+    allow(binder).to receive(:owned).with(pane: "%19").and_return(run_owned)
+    allow(binder).to receive(:refusal) { |*args, **opts| real_binding.refusal(*args, **opts) }
+    allow(binder).to receive(:refusal_error) { |*args, **opts| real_binding.refusal_error(*args, **opts) }
+  end
   let(:play) { {"ref" => "play/implementation-plan", "path" => "/lib/play/implementation-plan.md"} }
   let(:library) do
     instance_double(Workspace::Library, pack: [play, "body"]).tap do |lib|
@@ -365,6 +372,59 @@ RSpec.describe Workspace::Commands::PlanDispatch do
         allow(Workspace::PlanFile).to receive(:set_owner_pane).and_raise(Errno::EACCES)
 
         expect(start["message"]).to include("could not bind").and include("Could not record the owner pane")
+      end
+    end
+  end
+
+  describe "a pane a going run owns" do
+    let(:pane_rows) { [{"pane_id" => "%19", "kind" => "claude", "state" => "idle"}] }
+
+    before do
+      allow(snapshot_client).to receive(:fetch).with("api", timeout: 1.0).and_return("panes" => pane_rows)
+      allow(sender).to receive(:locate) { |_name, pane| {id: pane, session: "api"} }
+      run_owned_pane
+    end
+
+    def invoke(label)
+      (label == "plan start") ? command.start(name: "api", launch: launcher) : command.start_task(name: "api", task_id: "T2", launch: launcher)
+    end
+
+    def expect_refusal(plan_resumed:)
+      yield
+    rescue Workspace::Error => e
+      expect(e.code).to eq("pane_bound_to_run")
+      expect(e.details).to include("pane" => "%19", "run" => "wr_9", "plan_resumed" => plan_resumed, "use" => "workspace workflow status wr_9")
+      expect(sender).not_to have_received(:deliver)
+      expect(binder).not_to have_received(:bind)
+      e
+    else
+      raise "no refusal"
+    end
+
+    ["plan start", "plan start --task"].each do |label|
+      it "#{label} refuses an active plan and leaves the plan file byte-identical" do
+        write_plan("api", active_text)
+        before = File.binread(plan_path)
+
+        expect_refusal(plan_resumed: false) { invoke(label) }
+
+        expect(File.binread(plan_path)).to eq(before)
+      end
+
+      it "#{label} on a paused plan writes only status: active, then refuses and says so" do
+        write_plan("api", paused_text)
+
+        error = expect_refusal(plan_resumed: true) { invoke(label) }
+
+        expect(File.binread(plan_path)).to eq(active_text)
+        expect(error.message).to include("set back to active")
+      end
+
+      it "#{label} refuses before already_working when the pane works" do
+        pane_rows[0]["state"] = "working"
+        write_plan("api", active_text.sub("- [~] T1 a", "- [~] T1 a <!-- owner: %19 -->"))
+
+        expect_refusal(plan_resumed: false) { invoke(label) }
       end
     end
   end

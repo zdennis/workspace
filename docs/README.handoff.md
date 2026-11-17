@@ -56,7 +56,7 @@ An agent daemon started by an older version of workspace can be listing another 
 
 | Code | Meaning |
 |------|---------|
-| 0 | Under the threshold; nothing was sent |
+| 0 | Under the threshold; nothing was sent. Also when a going workflow run owns the pane: status `bound_to_run`, nothing was sent |
 | 1 | At or over the threshold; the save-state prompt was sent |
 | 2 | Context usage can't be determined; nothing was sent (see below) |
 
@@ -64,7 +64,7 @@ Exit 2 is a deliberate departure from this project's usual `--json` error contra
 
 ## Exit codes (new)
 
-Same as `workspace agent-run restart`: 0 once the restart has started (or, with `--wait`, finished), 1 if it was refused or failed.
+Same as `workspace agent-run restart`: 0 once the restart has started (or, with `--wait`, finished), 1 if it was refused or failed. A pane a going workflow run owns is refused with `pane_bound_to_run` (exit 1) before anything is bound or typed; the pane is located first, so `--pane 0.1` is checked as its `%N` id.
 
 ## Waiting for the restart
 
@@ -124,6 +124,8 @@ With `--json`, the reason and fix go in the JSON object instead of stderr:
 `--context-pct N` skips detection for that call, so you can run a handoff even while detection is broken.
 
 The other two outcomes print `status` (`ok`, or `handoff_sent` / `handoff_send_failed`), `context_pct`, `threshold`, `pane` (the pane's index in its window), `window` (its window index, `0` for an older daemon that does not say) and `pane_id` (its tmux pane id, e.g. `%19`, which a later `--pane` accepts). At or over the threshold they add `delivery` and `landed`. When the prompt landed, `handoff_sent` also carries [`followup`](#follow-ups).
+
+`bound_to_run` means a going workflow run owns the pane (the check comes before the threshold test, so it replaces `ok` there): nothing was sent and the exit is 0, because 0 is the play's "continue" and 1 would make an agent wait for a prompt that never comes. It carries `code` (`pane_bound_to_run`), `run`, `paused`, `pane_id`, `use` (the workflow command to run, `null` for the run's own agent), `next` (`continue`) and `message`; text mode prints the message on stderr.
 
 Every `check --json` document (the three above) also carries `next`, the exit code spelled out so a reader need not keep the table: `"continue"` (exit 0), `"handoff"` (exit 1, for `handoff_sent` and `handoff_send_failed` alike) or `"unknown"` (exit 2); and `doc`, the absolute path of the doc the agent writes and resumes from (`--handoff-doc` expanded, else the default doc), or `null` for `--handoff-prompt` or when the default cannot be worked out. `--json` without `--handoff-doc` reads the notes directory but makes nothing.
 

@@ -40,7 +40,9 @@ module Workspace
           "(outside any workspace: not_in_workspace). Give at most one of --name, --project, --all, --file and",
           "--group.",
           "A stalled or blocked row prints a 'next:' line with the first command that helps. In --json every row has",
-          "next_actions (empty for other states and for --file), and the top level lists them all in row order."
+          "next_actions (empty for other states and for --file), and the top level lists them all in row order.",
+          "A row whose owner pane a going workflow run owns prints a 'run RUN is going in pane PANE' line; in --json it",
+          "is the row's run (null otherwise). A paused plan in such a pane says the run's agent stops, and names plan start."
         ],
         options: [NAME_OPT,
           ["--project [NAME]", "Every workspace of a project (NAME, or the project of the current workspace)"],
@@ -106,7 +108,10 @@ module Workspace
           "and \"Continue the plan.\" (a working pane is left alone).",
           "",
           "With --task, sends that one task to --pane, a new agent pane (--spawn), the task's owner, or the",
-          "main agent pane; the pane is written onto the task line as its owner."
+          "main agent pane; the pane is written onto the task line as its owner.",
+          "",
+          "A pane a going workflow run owns is never typed into: both forms exit 1 with pane_bound_to_run and",
+          "name the workflow command to use. A paused plan is first set back to active, so the run's agent takes it."
         ],
         options: [NAME_OPT,
           ["--task ID", "Send only this task (its id, such as T3)"],
@@ -124,7 +129,8 @@ module Workspace
       "pause" => {
         usage: ["plan pause [--name WORKSPACE] [--interrupt] [--json]"],
         summary: "Set status: paused; the agent stops before its next task",
-        about: ["Writes status: paused into the plan file for real. --interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works."],
+        about: ["Writes status: paused into the plan file for real. --interrupt also presses the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works.",
+          "An owner pane a going workflow run owns is refused (exit 1, pane_bound_to_run) and nothing is written: pausing the plan would not stop the run, so the error names the workflow command to use."],
         options: [NAME_OPT, ["--interrupt", "Interrupt the owner panes that are working"], JSON_OPT],
         examples: [
           ["workspace plan pause", "set status: paused; the agent stops before its next task and nothing is interrupted"],
@@ -1499,6 +1505,7 @@ module Workspace
           "in_progress with that pane as its owner, then types the brief (the play, the spine pack, and the",
           "stage's path and file), then binds the pane. Refuses a stage that is completed or skipped",
           "(stage_done) or whose depends_on stages are not (stage_waiting), and a pane that is busy (pane_busy).",
+          "A pane a going workflow run owns is never typed into (pane_bound_to_run); nothing is written.",
           "",
           "--fan-out starts every sub-stage of STAGE-PATH (the folder named like its file) that is not started",
           "and has no unmet depends_on, each in its own new pane (--spawn, default the main agent's kind), at",
@@ -3446,8 +3453,11 @@ module Workspace
           "pane bound to a run or review, when the prompt text is too long, or when the daemon is old or does not",
           "answer; the save-state prompt is sent anyway. See docs/README.handoff.md.",
           "",
-          "Exit codes: 0 under the threshold, 1 at or over it (a save-state prompt was sent) or when the run was refused or failed,",
-          "2 when context usage can't be determined (nothing was sent)."
+          "A pane a going workflow run owns is never typed into: the result is status bound_to_run (code pane_bound_to_run) and",
+          "nothing is sent, whatever the usage.",
+          "",
+          "Exit codes: 0 under the threshold or the pane is bound to a going run (nothing was sent), 1 at or over it (a save-state",
+          "prompt was sent) or when the run was refused or failed, 2 when context usage can't be determined (nothing was sent)."
         ],
         options: [HANDOFF_NAME, HANDOFF_PANE,
           ["--threshold PCT", "Context usage percent that triggers a handoff, 1-100 (default: handoff.threshold, or 11)"],
@@ -3478,7 +3488,8 @@ module Workspace
           "Claude Code pane the daemon lists, else the first Codex pane, which may not be yours: to restart a different pane,",
           "pass --pane.",
           "",
-          "Exit codes: 0 the restart started (with --wait, finished), 1 refused or failed. Without --wait, 0 does not mean the",
+          "Exit codes: 0 the restart started (with --wait, finished), 1 refused or failed (a pane a going workflow run owns is",
+          "refused with pane_bound_to_run, nothing restarted). Without --wait, 0 does not mean the",
           "restart worked: a later failure shows only in the agent daemon's log (`workspace daemon log`).",
           "",
           "NAME defaults to the workspace detected from the current directory.",

@@ -29,7 +29,7 @@ RSpec.describe Workspace::Commands::SpineStart do
   let(:pane_rows) { [{"pane_id" => "%20", "kind" => "shell", "state" => "idle"}, {"pane_id" => "%21", "kind" => "claude", "state" => "idle"}] }
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:sender) { instance_double(Workspace::Commands::Send) }
-  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil) }
+  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, owned: nil, refuse_owned!: nil) }
   let(:runner) { instance_double(Workspace::Commands::Run, call: "%23") }
   let(:main_agent) { instance_double(Workspace::MainAgent, spawn_command: "codex --from-config") }
   let(:ready) { Workspace::AgentReadiness::Result.new(ready: true, pane: "0.2", pane_id: "%23", label: "Codex") }
@@ -242,6 +242,24 @@ RSpec.describe Workspace::Commands::SpineStart do
     doc = start
 
     expect(doc).to include("outcome" => "already_working", "pane" => "%21", "owner" => "%21", "status" => "in_progress", "revision" => stage_file.revision)
+    expect(stage_text("40-verify.md")).to eq(before)
+    expect(sender).not_to have_received(:deliver)
+  end
+
+  it "refuses a pane a going run owns, even a working one, with no write, no delivery and no binding" do
+    write("40-verify.md", "---\nstatus: in_progress\nowner: \"%21\"\n---\n")
+    before = stage_text("40-verify.md")
+    pane_rows[1]["state"] = "working"
+    owned = {"run" => "wr_9", "pane" => "%21", "paused" => true}
+    allow(binder).to receive(:refuse_owned!).with(pane: "%21", workspace: "api", action: :type)
+      .and_raise(Workspace::Commands::Binding.new(bindings: nil, locator: nil, tmux: nil).refusal_error(owned, workspace: "api", action: :type))
+
+    error = refusal { start }
+    expect(error.code).to eq("pane_bound_to_run")
+    expect(error.details["use"]).to eq("workspace workflow unpause wr_9")
+    expect(error.message).to include("workspace workflow unpause wr_9")
+
+    expect(steps).to eq([])
     expect(stage_text("40-verify.md")).to eq(before)
     expect(sender).not_to have_received(:deliver)
   end

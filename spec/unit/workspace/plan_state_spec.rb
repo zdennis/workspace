@@ -218,4 +218,19 @@ RSpec.describe Workspace::PlanState do
       expect(row.call(600)["state"]).to eq("idle")
     end
   end
+
+  describe ".owner_panes" do
+    it "is the plan owner alone when no task has one" do
+      expect(described_class.owner_panes(plan("- [ ] T1 a", frontmatter: "owner_pane: %19"))).to eq(["%19"])
+    end
+
+    it "adds the owners of tasks still left, leaving out done ones and repeats" do
+      lines = ["- [~] T1 a <!-- owner: %19 -->", "- [ ] T2 b <!-- owner: %7 -->", "- [x] T3 c <!-- owner: %3 -->", "- [!] T4 d -- r <!-- owner: %7 -->"]
+      expect(described_class.owner_panes(plan(*lines, frontmatter: "owner_pane: %19"))).to eq(["%19", "%7"])
+    end
+
+    it "is empty when nothing is owned" do
+      expect(described_class.owner_panes(plan("- [ ] T1 a"))).to eq([])
+    end
+  end
 end

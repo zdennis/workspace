@@ -4,7 +4,7 @@ RSpec.describe Workspace::Commands::Binding do
   let(:dir) { Dir.mktmpdir }
   let(:bindings) { Workspace::PaneBindings.new(path: File.join(dir, "bindings.json")) }
   let(:locator) { instance_double(Workspace::PaneLocator) }
-  let(:tmux) { instance_double(Workspace::Tmux, pane_slot: "app:0.1", session_name_for_pane: "app") }
+  let(:tmux) { instance_double(Workspace::Tmux, pane_slot: "app:0.1", session_name_for_pane: "app", server_pid_for_pane: 42) }
   let(:output) { StringIO.new }
   let(:command) { described_class.new(bindings: bindings, locator: locator, tmux: tmux, output: output) }
 
@@ -176,6 +176,133 @@ RSpec.describe Workspace::Commands::Binding do
     it "has no live binding for an unbound pane, and refuses a pane that is not a pane id" do
       expect(command.live(pane: "%7")).to be_nil
       expect { command.live(pane: "0.1") }.to raise_error(Workspace::UsageError, /pane id/)
+    end
+  end
+
+  describe "run ownership" do
+    let(:going) { {"wr_1" => true} }
+    let(:paused) { {} }
+    let(:runs) do
+      double("runs").tap do |store|
+        allow(store).to receive(:run) do |id|
+          raise Workspace::Error.new("no run", code: "run_not_found") unless going.key?(id)
+          double("run", state: going[id] ? "running" : "completed", paused: paused[id])
+        end
+      end
+    end
+    let(:owner) { described_class.new(bindings: bindings, locator: locator, tmux: tmux, output: output, runs: runs) }
+
+    it "names the going run for a run binding, whatever its role" do
+      owner.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1", role: "author")
+      expect(owner.owning_run(pane: "%5")).to eq("wr_1")
+
+      owner.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1", role: "reviewer")
+      expect(owner.owning_run(pane: "%5")).to eq("wr_1")
+    end
+
+    it "is nil for review, play, unbound and stale panes" do
+      owner.bind(workspace: "app", pane: "%5", kind: "review", id: "wr_1")
+      expect(owner.owning_run(pane: "%5")).to be_nil
+      owner.bind(workspace: "app", pane: "%5", kind: "play", id: "play/notes")
+      expect(owner.owning_run(pane: "%5")).to be_nil
+      expect(owner.owning_run(pane: "%8")).to be_nil
+
+      owner.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
+      allow(tmux).to receive(:session_name_for_pane).with("%5").and_return("other")
+      expect(owner.owning_run(pane: "%5")).to be_nil
+    end
+
+    it "is nil for a run that has ended or an unknown run, and when no store was given" do
+      owner.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_2")
+      expect(owner.owning_run(pane: "%5")).to be_nil
+
+      owner.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
+      going["wr_1"] = false
+      expect(owner.owning_run(pane: "%5")).to be_nil
+
+      going["wr_1"] = true
+      expect(command.owning_run(pane: "%5")).to be_nil
+    end
+
+    it "treats a run file that can't be read as not owned, from one read of the run" do
+      owner.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
+      allow(runs).to receive(:run).and_raise(Workspace::Error.new("unreadable", code: "run_unreadable"))
+      expect(owner.owned(pane: "%5")).to be_nil
+      expect(owner.owning_run(pane: "%5")).to be_nil
+    end
+
+    it "refuses a pane that is not a pane id instead of saying no run owns it" do
+      expect { owner.owned(pane: "0.1") }.to raise_error(Workspace::UsageError, /pane id/)
+      expect { owner.refuse_owned!(pane: "0.1", workspace: "app", action: :type) }.to raise_error(Workspace::UsageError)
+    end
+
+    it "gives a frozen owned hash with the run's paused state" do
+      owner.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
+      expect(owner.owned(pane: "%5")).to eq("run" => "wr_1", "pane" => "%5", "paused" => false)
+      expect(owner.owned(pane: "%5")).to be_frozen
+
+      paused["wr_1"] = {"since" => "t", "by" => "x"}
+      expect(owner.owned(pane: "%5")["paused"]).to be true
+      expect(owner.owned(pane: "%9")).to be_nil
+    end
+
+    describe "#refusal" do
+      let(:live) { {"run" => "wr_1", "pane" => "%5", "paused" => false}.freeze }
+      let(:stopped) { {"run" => "wr_1", "pane" => "%5", "paused" => true}.freeze }
+
+      def refuse(owned, action, **opts) = owner.refusal(owned, workspace: "app", action: action, **opts)
+
+      it "words the type refusal, with the unpause form when the run is paused" do
+        r = refuse(live, :type)
+        expect(r).to be_frozen
+        expect(r[:code]).to eq("pane_bound_to_run")
+        expect(r[:message]).to eq("Pane %5 is bound to workflow run wr_1, which owns what is typed into it; nothing was typed. Use `workspace workflow status wr_1`.")
+        expect(r[:details]).to eq("workspace" => "app", "pane" => "%5", "run" => "wr_1", "paused" => false, "use" => "workspace workflow status wr_1", "plan_resumed" => false)
+        expect(refuse(stopped, :type)[:details]["use"]).to eq("workspace workflow unpause wr_1")
+      end
+
+      it "words the resumed type refusal" do
+        r = refuse(live, :type, resumed: true)
+        expect(r[:message]).to eq("Pane %5 is bound to workflow run wr_1, which owns what is typed into it; nothing was typed. The plan was paused and is set back to active, so the run's agent takes it on its next attempt. Use `workspace workflow status wr_1`.")
+        expect(r[:details]["plan_resumed"]).to be true
+      end
+
+      it "words handoff new for another pane and for the run's own pane" do
+        expect(refuse(stopped, :handoff_new)[:message]).to eq("Pane %5 is bound to workflow run wr_1; handoff would /clear the run's turn, so nothing was restarted. Use `workspace workflow unpause wr_1`.")
+        own = refuse(live, :handoff_new, own_pane: true)
+        expect(own[:message]).to eq("This pane is bound to workflow run wr_1; the run owns its context, so it was not restarted. Finish or record where the step stands, then end your turn; the run checks the step and a retry starts fresh.")
+        expect(own[:details]["use"]).to be_nil
+      end
+
+      it "words handoff check for another pane and for the run's own pane" do
+        expect(refuse(live, :handoff_check)[:message]).to eq("Pane %5 is bound to workflow run wr_1; no save-state prompt was sent. Use `workspace workflow status wr_1`.")
+        own = refuse(live, :handoff_check, own_pane: true)
+        expect(own[:message]).to eq("This pane is bound to workflow run wr_1, which owns its context; no save-state prompt was sent. Keep working on the step; do not hand off.")
+        expect(own[:details]["use"]).to be_nil
+      end
+
+      it "words pause, naming workflow status when the run is already paused" do
+        r = refuse(live, :pause)
+        expect(r[:message]).to eq("Pane %5 is bound to workflow run wr_1; a plan pause would not stop it, so the plan was left as it is. Use `workspace workflow pause wr_1 [--interrupt]`.")
+        expect(r[:details]["use"]).to eq("workspace workflow pause wr_1 [--interrupt]")
+        s = refuse(stopped, :pause)
+        expect(s[:message]).to eq("Pane %5 is bound to workflow run wr_1; a plan pause would not stop it, so the plan was left as it is. Run wr_1 is already paused: `workspace workflow status wr_1`.")
+        expect(s[:details]["use"]).to eq("workspace workflow status wr_1")
+      end
+    end
+
+    describe "#refuse_owned!" do
+      it "raises pane_bound_to_run for an owned pane" do
+        owner.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
+        expect { owner.refuse_owned!(pane: "%5", workspace: "app", action: :type) }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("pane_bound_to_run")
+          expect(e.details).to include("run" => "wr_1", "pane" => "%5")
+        }
+      end
+
+      it "returns nil for a pane no run owns" do
+        expect(owner.refuse_owned!(pane: "%5", workspace: "app", action: :type)).to be_nil
+      end
     end
   end
 end

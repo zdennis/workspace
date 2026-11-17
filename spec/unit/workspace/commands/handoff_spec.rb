@@ -14,7 +14,7 @@ RSpec.describe Workspace::Commands::Handoff do
   let(:handoff_config) { instance_double(Workspace::HandoffConfig) }
   let(:restart_agent_command) { instance_double(Workspace::Commands::RestartAgent) }
   let(:notes) { instance_double(Workspace::Commands::Notes) }
-  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}) }
+  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}, owned: nil, refuse_owned!: nil) }
   let(:library) { instance_double(Workspace::Library) }
   let(:notes_dir) { "/notes/myapp" }
   let(:output) { StringIO.new }
@@ -794,6 +794,98 @@ RSpec.describe Workspace::Commands::Handoff do
       expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "1", prompt: "Resume from HANDOFF.md please", wait: false, json: false)
     end
   end
+  describe "a pane a going run owns" do
+    let(:binder) { Workspace::Commands::Binding.new(bindings: double("bindings"), locator: locator, tmux: tmux) }
+    let(:owned) { {"run" => "wr_1", "pane" => "%1", "paused" => false}.freeze }
+    let(:over_pane) { claude_pane.merge("context_pct" => 42) }
+    let(:notes_dir) { File.join(tmpdir, "notes") }
+
+    before { allow(binder).to receive(:owned).with(pane: "%1").and_return(owned) }
+
+    describe "#check" do
+      before do
+        allow(tmux).to receive(:deliver)
+      end
+
+      it "exits 0, sends nothing, makes no doc and tells the run's own agent to keep working" do
+        env["TMUX_PANE"] = "%1"
+        result = with_sessions([over_pane]) { command.check(name: "myapp") }
+
+        expect(result).to eq(exit_code: 0)
+        expect(tmux).not_to have_received(:deliver)
+        expect(error_output.string).to include("Keep working on the step")
+        expect(error_output.string).not_to include("end your turn")
+        expect(output.string).to eq("")
+        expect(File.exist?(notes_dir)).to be(false)
+      end
+
+      it "rejects an out-of-range --context-pct before the run-owned check" do
+        with_sessions([over_pane]) do
+          expect { command.check(name: "myapp", context_pct: 101) }
+            .to raise_error(Workspace::UsageError, /--context-pct must be between 0 and 100/)
+        end
+      end
+
+      it "prints status bound_to_run and next continue with --json" do
+        env["TMUX_PANE"] = "%1"
+        result = with_sessions([over_pane]) { command.check(name: "myapp", json: true) }
+
+        doc = JSON.parse(output.string)
+        expect(result).to eq(exit_code: 0)
+        expect(doc).to include("ok" => true, "status" => "bound_to_run", "code" => "pane_bound_to_run", "run" => "wr_1",
+          "paused" => false, "pane_id" => "%1", "use" => nil, "next" => "continue")
+        expect(doc["message"]).to include("Keep working")
+        expect(tmux).not_to have_received(:deliver)
+      end
+
+      it "names workflow status RUN for another pane" do
+        result = with_sessions([over_pane]) { command.check(name: "myapp") }
+
+        expect(result).to eq(exit_code: 0)
+        expect(error_output.string).to include("workspace workflow status wr_1")
+        expect(tmux).not_to have_received(:deliver)
+      end
+
+      it "names workflow unpause RUN for another pane when the run is paused" do
+        allow(binder).to receive(:owned).with(pane: "%1").and_return(owned.merge("paused" => true))
+        result = with_sessions([over_pane]) { command.check(name: "myapp") }
+
+        expect(result).to eq(exit_code: 0)
+        expect(error_output.string).to include("workspace workflow unpause wr_1")
+      end
+    end
+
+    describe "#new" do
+      before do
+        allow(restart_agent_command).to receive(:call).and_return({exit_code: 0})
+        allow(binder).to receive(:bind)
+      end
+
+      it "raises pane_bound_to_run with the end-your-turn text for its own pane and restarts nothing" do
+        env["TMUX_PANE"] = "%1"
+        expect { command.new(name: "myapp", pane: "%1") }
+          .to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("pane_bound_to_run")
+            expect(e.message).to include("end your turn")
+          }
+        expect(restart_agent_command).not_to have_received(:call)
+        expect(binder).not_to have_received(:bind)
+      end
+
+      it "names the workflow command for another pane" do
+        expect { command.new(name: "myapp", pane: "%1") }
+          .to raise_error(Workspace::Error, /workspace workflow status wr_1/)
+        expect(restart_agent_command).not_to have_received(:call)
+      end
+
+      it "locates --pane 1.1 to its %N id before the check" do
+        allow(locator).to receive(:locate).with("myapp", "1.1").and_return({id: "%1", session: "myapp"})
+        expect { command.new(name: "myapp", pane: "1.1") }.to raise_error(Workspace::Error, /wr_1/)
+        expect(restart_agent_command).not_to have_received(:call)
+      end
+    end
+  end
+
   describe "when the workspace has a plan" do
     let(:notes_dir) { File.join(tmpdir, "notes") }
     let(:plan_path) { File.join(notes_dir, "IMPLEMENTATION_PLAN.md") }

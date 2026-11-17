@@ -57,8 +57,9 @@ module Workspace
         file, plan = @access.require_plan(name)
         raise @access.plan_done(name, file) if @access.finished?(plan)
         live = @access.session_live?(name, {})
+        return start_in_pane(name, file, plan) unless live == false
         @access.write_status(name, file, "active")
-        (live == false) ? start_by_launch(name, file, plan, launch) : start_in_pane(name, file, plan)
+        start_by_launch(name, file, plan, launch)
       end
 
       # Sends one task to one pane and sets `status: active` once it is not refused: the pane named, a new agent pane, the
@@ -99,8 +100,7 @@ module Workspace
       # @param plan [PlanFile] the plan
       # @return [Array(Array<Hash>, Array<Hash>)] the interrupt rows (`{pane, kind, outcome, message}`) and the warnings (`no_daemon`)
       def interrupt_owners(name, plan)
-        left = plan.tasks.select { |task| PlanState::LEFT_STATES.include?(task.state) }
-        owners = [plan.owner_pane, *left.map(&:owner)].compact.uniq
+        owners = PlanState.owner_panes(plan)
         return [[], []] if owners.empty?
         panes = begin
           @panes.panes(name)
@@ -112,6 +112,16 @@ module Workspace
       end
 
       private
+
+      # A pane a going run owns is never typed into. A paused plan is set back to active first (the one
+      # write), so the run's agent is not stopped by it, and the refusal says so.
+      def refuse_run_owned(name, file, plan, pane_id)
+        owned = @panes.owned(pane_id)
+        return unless owned
+        resumed = plan.status == "paused"
+        @access.write_status(name, file, "active") if resumed
+        raise @panes.bound_error(owned, name, resumed: resumed)
+      end
 
       def task_done(name, file, task)
         Workspace::Error.new("Task #{task.id} of the plan for '#{name}' is #{task.state}, so there is nothing to start. Edit #{file} to reopen it.",
@@ -149,6 +159,7 @@ module Workspace
             "Pause that pane first, or send the task there.", code: "task_owned", details: {"workspace" => name, "task" => task.id, "owner" => owner["pane_id"]})
         end
         @panes.require_agent(name, target, "task")
+        refuse_run_owned(name, file, plan, id)
         if target["state"] == "working" && task.owner == id
           @access.write_status(name, file, "active")
           @output.puts "Task #{task.id} of the plan for #{name} is already being worked on in pane #{id}."
@@ -238,6 +249,8 @@ module Workspace
       def start_in_pane(name, file, plan)
         pane = main_pane(name, plan, @panes.panes(name))
         id = pane["pane_id"]
+        refuse_run_owned(name, file, plan, id)
+        @access.write_status(name, file, "active")
         if pane["state"] == "working"
           @output.puts "The plan for #{name} is already being worked on in pane #{id}."
           return @access.row("already_working", file, pane: id)

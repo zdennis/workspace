@@ -3,7 +3,7 @@ require "spec_helper"
 RSpec.describe Workspace::PaneDispatch do
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:sender) { instance_double(Workspace::Commands::Send) }
-  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}) }
+  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}, owned: nil, refuse_owned!: nil) }
   let(:library) { Workspace::Library.new(config: instance_double(Workspace::Config), lineage: instance_double(Workspace::WorkspaceLineage), project_config: instance_double(Workspace::ProjectConfig)) }
   let(:runner) { instance_double(Workspace::Commands::Run, call: "%23") }
   let(:main_agent) { instance_double(Workspace::MainAgent, spawn_command: "claude") }
@@ -60,6 +60,19 @@ RSpec.describe Workspace::PaneDispatch do
     it "names what had nowhere to go when no pane runs an agent" do
       expect { dispatch.main_pane("api", [panes.first], preferred: nil, what: "the stage") }
         .to raise_error(Workspace::Error, /nowhere to send the stage/) { |e| expect(e.code).to eq("no_agent_pane") }
+    end
+  end
+
+  describe "#refuse_bound" do
+    it "raises what Binding#refuse_owned! raises for a pane a going run owns" do
+      allow(binder).to receive(:refuse_owned!).with(pane: "%2", workspace: "api", action: :type)
+        .and_raise(Workspace::Error.new("bound", code: "pane_bound_to_run"))
+
+      expect { dispatch.refuse_bound("api", "%2") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("pane_bound_to_run") }
+    end
+
+    it "passes for a pane no run owns" do
+      expect { dispatch.refuse_bound("api", "%2") }.not_to raise_error
     end
   end
 

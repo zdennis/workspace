@@ -26,6 +26,13 @@ module Workspace
     # The task states counted in `left`.
     LEFT_STATES = %w[todo in_progress blocked].freeze
 
+    # @param plan [PlanFile]
+    # @return [Array<String>] the plan's owner pane and the owners of its tasks still left, without repeats
+    def self.owner_panes(plan)
+      left = plan.tasks.select { |task| LEFT_STATES.include?(task.state) }
+      [plan.owner_pane, *left.map(&:owner)].compact.uniq
+    end
+
     # @param clock [#call] returns the current Time
     def initialize(clock: -> { Time.now })
       @clock = clock

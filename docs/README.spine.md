@@ -275,6 +275,7 @@ A `--spawn` pane starts in the workspace's checkout, whatever directory `spine s
 | `stale_revision` | `--if-revision` differs from the file's revision |
 | `stage_owned` | Its owner pane is working on it and another pane, or `--spawn`, was asked for (`details.owner`) |
 | `pane_busy` | The pane waits on a person or works on something else (`details.state`) |
+| `pane_bound_to_run` | The chosen pane is bound to a going workflow run, which owns what is typed into it (`--pane` or not, also when the pane works). Nothing is written or typed; the message names `workspace workflow unpause RUN` or `workflow status RUN`. No override flag |
 | `no_agent_pane` | The named pane runs no coding agent the daemon knows, or no pane runs Claude Code or Codex |
 | `no_daemon` | The workspace's agent daemon did not answer |
 | `no_session` | `--pane` or `--spawn` and the workspace has no session |
