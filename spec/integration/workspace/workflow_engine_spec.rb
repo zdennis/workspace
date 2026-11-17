@@ -4697,6 +4697,314 @@ steps:
     end
   end
 
+  describe "#resume with restart_step" do
+    let(:restart_flow) { definition("max_attempts: 5\nsteps:\n  build:\n    prompt: Build it.\n    produces: [out.md]\n  verify:\n    prompt: Verify it.\n") }
+    let(:usages) { [] }
+    let(:recorder) { UsageAttemptRecord.new(usages: usages, guard: guard, clock: -> { now.first }) }
+    subject(:engine) { engine_with(attempt_record: recorder) }
+
+    def attempts(run = stored_run(store, "wr_1"), step = "build") = run["steps"][step]["attempts"]
+
+    def restart(run_id = "wr_1", bound: "idle", **options) = engine.resume(run_id, actor: "person", restart_step: true, bound: bound, **options)
+
+    # The run file and its history as bytes, to show a refusal wrote nothing.
+    def run_bytes(run_id = "wr_1") = [File.binread(File.join(runs_dir, "#{run_id}.json")), File.binread(store.events_path(run_id))]
+
+    def refusal
+      yield
+      nil
+    rescue Workspace::Error => e
+      e
+    end
+
+    def expect_refused(code, before = run_bytes, &block)
+      error = refusal(&block)
+      expect(error&.code).to eq(code)
+      expect(run_bytes).to eq(before)
+      error
+    end
+
+    def write_plan(*lines)
+      FileUtils.mkdir_p(notes_dir)
+      File.write(File.join(notes_dir, Workspace::PlanFile::FILE_NAME), (["## Tasks", ""] + lines).join("\n") + "\n")
+    end
+
+    it "closes the open attempt as interrupted and starts the step again, retry_of it, from the brief and the note" do
+      write_plan("- [x] T1 Wire the parser", "- [ ] T2 Write the docs")
+      start(restart_flow, inputs: {})
+      usages << {"input_tokens" => 120, "output_tokens" => 7}
+      now[0] += 60
+      allow(guard).to receive(:head).and_return("2" * 40)
+
+      run = restart(note: "carry on")
+
+      first, second = attempts(run)
+      expect(first).to include("n" => 1, "outcome" => "interrupted", "ended_at" => "2026-10-04T12:01:00Z", "usage" => {"input_tokens" => 120, "output_tokens" => 7},
+        "head" => {"before" => "1" * 40, "after" => "2" * 40})
+      expect(second).to include("n" => 2, "retry_of" => 1)
+      expect(second).not_to have_key("ended_at")
+      expect(Time.iso8601(second["started_at"])).to be >= Time.iso8601(first["ended_at"])
+      brief = Workspace::WorkflowPrompt.interrupted_brief(head: "2" * 40, head_before: "1" * 40, tasks: Workspace::PlanFile.read(File.join(notes_dir, Workspace::PlanFile::FILE_NAME)).tasks)
+      expect(second["context"]).to eq([brief, "Note from the person who resumed the run: carry on"])
+      expect(brief).to include("Done tasks: T1 Wire the parser", "Open tasks: T2 Write the docs", "HEAD now: #{"2" * 40}")
+      expect(run).to include("state" => "running", "current" => "build", "reason" => nil, "pending_context" => [])
+      expect(panes.kicks.last).to include(pane: "%5", fresh: true)
+      lines = history_lines
+      expect(lines.find { |line| line["type"] == "step_interrupted" }).to include("step" => "build", "attempt" => 1, "pane" => "%5", "usage_counted" => true)
+      expect(lines.find { |line| line["type"] == "run_resumed" }).to include("step" => "build", "restart_step" => true)
+      expect(lines.reverse.find { |line| line["type"] == "step_dispatching" }).to include("attempt" => 2, "cause" => "resume", "retry_of" => 1)
+      expect(lines.map { |line| line["type"] }.last(4)).to eq(%w[step_interrupted run_resumed step_dispatching step_dispatched])
+    end
+
+    it "says usage_counted false when the closed attempt's usage can't be told, and briefs a workspace with no plan" do
+      start(restart_flow, inputs: {})
+
+      run = restart
+
+      expect(attempts(run).first).to include("outcome" => "interrupted", "usage" => nil)
+      expect(history_lines.find { |line| line["type"] == "step_interrupted" }).to include("usage_counted" => false)
+      expect(attempts(run).last["context"].first).to include("This workspace has no plan.")
+    end
+
+    describe "usage read from transcripts" do
+      let(:ledger_path) { File.join(@dir, "ledger.jsonl") }
+      let(:recorder) { Workspace::WorkflowAttemptRecord.new(guard: guard, ledger: Workspace::SessionLedger.new(path: ledger_path), clock: -> { now.first }) }
+
+      def session(pane, id, at)
+        path = File.join(@dir, "#{id}.jsonl")
+        File.write(path, "")
+        File.open(ledger_path, "a") do |file|
+          file.puts JSON.generate("workspace" => "app.worktree-x", "at" => at, "event" => "session_start", "pane_id" => pane, "session_id" => id, "transcript_path" => path)
+        end
+        path
+      end
+
+      def spend(path, at, id, tokens)
+        File.open(path, "a") do |file|
+          file.puts JSON.generate("type" => "assistant", "timestamp" => at, "message" => {"id" => id, "model" => "claude-opus-5-5", "usage" => {"input_tokens" => tokens, "output_tokens" => 1}})
+        end
+      end
+
+      it "gives each attempt the tokens of its own window of a transcript that spans both, none counted twice" do
+        transcript = session("%5", "s1", "2026-10-04T11:59:00Z")
+        start(restart_flow, inputs: {})
+        spend(transcript, "2026-10-04T12:00:10Z", "m1", 100)
+        spend(transcript, "2026-10-04T12:00:40Z", "m2", 20)
+        now[0] += 60
+        restart
+        spend(transcript, "2026-10-04T12:01:30Z", "m3", 5)
+        now[0] += 60
+        artifact("out.md")
+
+        run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+
+        first, second = attempts(run)
+        expect(first).to include("outcome" => "interrupted", "usage" => {"input_tokens" => 120, "output_tokens" => 2})
+        expect(second).to include("outcome" => "passed", "usage" => {"input_tokens" => 5, "output_tokens" => 1})
+      end
+
+      it "reads the closed attempt's usage from the old pane's session when the restart moves to another pane" do
+        old = session("%5", "s1", "2026-10-04T11:59:00Z")
+        other = session("%7", "s2", "2026-10-04T11:59:00Z")
+        start(restart_flow, inputs: {})
+        spend(old, "2026-10-04T12:00:10Z", "m1", 100)
+        spend(other, "2026-10-04T12:00:10Z", "m2", 9000)
+        now[0] += 60
+
+        run = restart(pane: "%7", bound: "gone")
+
+        expect(attempts(run).first).to include("outcome" => "interrupted", "session" => {"id" => "s1", "transcript" => old})
+        expect(attempts(run).first["usage"]).to eq("input_tokens" => 100, "output_tokens" => 1)
+        expect(run["pane"]).to eq("%7")
+        expect(panes.bound.keys).to eq(["%7"])
+        expect(panes.kicks.last).to include(pane: "%7", fresh: true)
+        expect(history_lines.find { |line| line["type"] == "step_interrupted" }).to include("pane" => "%5")
+      end
+    end
+
+    describe "a refusal, which leaves the run byte-identical" do
+      it "refuses a failed step with no_open_attempt" do
+        checked = definition("steps:\n  build:\n    prompt: B\n    status: bin/check\n")
+        start(checked, inputs: {})
+        check_results << {exit_code: 1, timed_out: false}
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+
+        error = expect_refused("no_open_attempt") { restart }
+        expect(error.details).to include("step" => "build", "state" => "failed")
+      end
+
+      it "refuses a step held by the budget with no_open_attempt" do
+        usages << {"input_tokens" => 1200, "output_tokens" => 0}
+        start(definition("budget: {tokens: 1000}\nsteps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n"), inputs: {})
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+        expect(stored_run(store, "wr_1")).to have_key("budget_hold")
+
+        expect_refused("no_open_attempt") { restart }
+      end
+
+      it "refuses a retry waiting out its backoff with no_open_attempt" do
+        waiting = definition("steps:\n  build:\n    prompt: B\n  verify:\n    prompt: V\n    status: bin/check\n    on_fail: {goto: build, max: 3, backoff: 2m}\n")
+        start(waiting, inputs: {})
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+        check_results << {exit_code: 1, timed_out: false}
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+        expect(stored_run(store, "wr_1")).to have_key("backoff")
+
+        expect_refused("no_open_attempt") { restart }
+      end
+
+      it "refuses a busy agent with step_still_working" do
+        start(restart_flow, inputs: {})
+
+        error = expect_refused("step_still_working") { restart(bound: "busy") }
+        expect(error.details).to include("reason" => "working")
+      end
+
+      it "refuses an unknown pane with no stall with step_still_working" do
+        start(restart_flow, inputs: {})
+
+        error = expect_refused("step_still_working") { restart(bound: nil) }
+        expect(error.details).to include("reason" => "unknown")
+      end
+
+      it "refuses a line still being typed with step_still_working" do
+        start(restart_flow, inputs: {})
+        edit_run(store, "wr_1") { |run| run["steps"]["build"]["attempts"].last["delivery"] = "delivering" }
+
+        error = expect_refused("step_still_working") { restart }
+        expect(error.details).to include("reason" => "delivering")
+      end
+
+      it "refuses a paused run with run_paused" do
+        start(restart_flow, inputs: {})
+        engine.pause("wr_1", actor: "person")
+
+        expect_refused("run_paused") { restart }
+      end
+
+      it "refuses a run that spent max_attempts with attempts_spent" do
+        start(definition("max_attempts: 1\nsteps:\n  build:\n    prompt: B\n"), inputs: {})
+
+        expect_refused("attempts_spent") { restart }
+        expect(restart(extra_attempts: 1)["extra_attempts"]).to eq(1)
+      end
+
+      it "refuses a step that spent its own max_attempts with step_attempts_spent" do
+        start(definition("max_attempts: 9\nsteps:\n  build:\n    prompt: B\n    max_attempts: 1\n"), inputs: {})
+
+        expect_refused("step_attempts_spent") { restart }
+      end
+
+      it "refuses a run that used its token budget with budget_spent" do
+        start(definition("budget: {tokens: 1000}\nsteps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n"), inputs: {})
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+        edit_run(store, "wr_1") { |run| run["steps"]["a"]["attempts"].first["usage"] = {"input_tokens" => 1200, "output_tokens" => 0} }
+
+        expect_refused("budget_spent") { restart }
+      end
+
+      it "refuses a run that used its timeout with run_timed_out, and restarts it once extra_seconds lifts the limit" do
+        start(definition("timeout: 1h\nsteps:\n  build:\n    prompt: B\n"), inputs: {})
+        now[0] += 2 * 3600
+
+        expect_refused("run_timed_out") { restart }
+        expect_refused("run_timed_out") { restart(extra_seconds: 3600) }
+
+        run = restart(extra_seconds: 3601)
+
+        expect(run).to include("state" => "running", "current" => "build", "extra_seconds" => 3601)
+        expect(attempts(run).map { |attempt| attempt["outcome"] }).to eq(["interrupted", nil])
+      end
+
+      it "restarts a run that used its token budget once extra_tokens lifts it" do
+        start(definition("budget: {tokens: 1000}\nsteps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n"), inputs: {})
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+        edit_run(store, "wr_1") { |run| run["steps"]["a"]["attempts"].first["usage"] = {"input_tokens" => 1200, "output_tokens" => 0} }
+
+        expect_refused("budget_spent") { restart(extra_tokens: 200) }
+
+        run = restart(extra_tokens: 201)
+
+        expect(run).to include("state" => "running", "current" => "b", "extra_tokens" => 201)
+        expect(attempts(run, "b").map { |attempt| attempt["outcome"] }).to eq(["interrupted", nil])
+      end
+
+      it "refuses --from, --accept-guard, --retry, --extra-rounds and a turn_over as usage errors" do
+        start(restart_flow, inputs: {})
+        before = run_bytes
+
+        expect { restart(from: "build") }.to raise_error(Workspace::UsageError, /--restart-step .*--from/)
+        expect { restart(accept_guard: true, note: "why") }.to raise_error(Workspace::UsageError, /--accept-guard/)
+        expect { restart(guard_retry: true) }.to raise_error(Workspace::UsageError, /--retry/)
+        expect { restart(extra_rounds: 1) }.to raise_error(Workspace::UsageError, /--extra-rounds/)
+        expect { restart(turn_over: {"step" => "build", "attempt" => 1}) }.to raise_error(Workspace::UsageError, /turn_over/)
+        expect(run_bytes).to eq(before)
+      end
+
+      it "refuses another run's pane with pane_has_run" do
+        start(restart_flow, inputs: {})
+        start(restart_flow, inputs: {}, pane: "%6", workspace: "app.worktree-y")
+
+        expect_refused("pane_has_run") { restart(pane: "%6") }
+        expect(panes.bound.keys).to contain_exactly("%5", "%6")
+      end
+
+      it "refuses with restart_not_closed when the attempt could not be closed" do
+        start(restart_flow, inputs: {})
+        allow(recorder).to receive(:abandon) { |run, **| Workspace::WorkflowRun.from_h(run) }
+
+        error = expect_refused("restart_not_closed") { restart(pane: "%7", bound: "gone") }
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "build", "attempt" => 1)
+        expect(panes.bound.keys).to eq(["%5"])
+      end
+    end
+
+    describe "a stalled attempt" do
+      it "refuses a busy agent even with an open agent_gone stall" do
+        start(restart_flow, inputs: {})
+        engine.note_stall("wr_1", actor: "sweep", step: "build", attempt: 1, cause: "agent_gone")
+
+        expect_refused("step_still_working") { restart(bound: "busy") }
+      end
+
+      it "restarts an unknown pane with an open agent_gone stall and closes the stall" do
+        start(restart_flow, inputs: {})
+        engine.note_stall("wr_1", actor: "sweep", step: "build", attempt: 1, cause: "agent_gone")
+        now[0] += 30
+
+        run = restart(bound: "unknown")
+
+        expect(attempts(run).first["stalls"]).to eq([{"cause" => "agent_gone", "since" => "2026-10-04T12:00:00Z", "until" => "2026-10-04T12:00:30Z"}])
+        expect(attempts(run).last).to include("n" => 2, "retry_of" => 1)
+        expect(history_lines.find { |line| line["type"] == "step_recovered" }).to include("action" => "restarted", "cause" => "agent_gone")
+        expect(Workspace::WorkflowTransitions.open_stalls(run)).to eq([])
+      end
+    end
+
+    it "keeps the brief while the restarted attempt waits for a lock, and starts it with the brief once the lock is free" do
+      start(restart_flow, inputs: {})
+      locked = definition("steps:\n  verify:\n    prompt: P\n    uses: [test-db]\n")
+      start(locked, inputs: {}, pane: "%6", workspace: "app.worktree-y")
+      edit_run(store, "wr_1") { |run| run["definition"]["steps"].first["uses"] = ["test-db"] }
+
+      run = restart
+
+      expect(run).to include("state" => "waiting")
+      expect(run["reason"]).to include("code" => "waiting_lock")
+      expect(attempts(run).map { |each| each["outcome"] }).to eq(["interrupted"])
+      expect(run["pending_context"].first).to start_with("What follows is facts about the interrupted attempt")
+      expect(run["retry_of_pending"]).to include("attempt" => 1, "context" => "fresh")
+
+      engine.cancel("wr_2", actor: "person")
+      now[0] += 30
+      run = engine.tick("wr_1", actor: "daemon")
+
+      expect(attempts(run).last).to include("n" => 2, "retry_of" => 1)
+      expect(attempts(run).last["context"].first).to start_with("What follows is facts about the interrupted attempt")
+      expect(panes.kicks.last).to include(pane: "%5", fresh: true)
+    end
+  end
+
   describe "the attempt budget on resume and reject" do
     let(:one_attempt) { definition("max_attempts: 1\nsteps:\n  a:\n    prompt: P\n    status: bin/check\n") }
 

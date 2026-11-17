@@ -218,6 +218,40 @@ RSpec.describe Workspace::CLI do
       expect(workflow_command.calls.map(&:first)).not_to include(:events)
     end
 
+    it "passes resume --restart-step through and answers its success as one action document with exit 0" do
+      cli.run(["workflow", "resume", "wr_1", "--restart-step", "--json"])
+
+      expect(workflow_command.calls.last).to eq([:resume, {run: "wr_1", from: nil, note: nil, pane: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, caller_pane: nil, accept_guard: false, guard_retry: false, restart_step: true}])
+      expect(JSON.parse(output.string)).to include("ok" => true, "status" => "ok")
+    end
+
+    it "carries the restart hint of a plain resume in the --json envelope's result" do
+      hint = "This step's agent looks gone. To close its attempt and start it again in a fresh conversation, run `workspace workflow resume wr_1 --restart-step`."
+      workflow_command.row = workflow_command.row.merge("hint" => hint)
+
+      cli.run(["workflow", "resume", "wr_1", "--json"])
+
+      expect(JSON.parse(output.string)["results"].first).to include("hint" => hint)
+    end
+
+    %w[step_still_working no_open_attempt attempts_spent budget_spent].each do |code|
+      it "answers a --restart-step refused with #{code} as a failure envelope with that code and exit 1" do
+        workflow_command.error = Workspace::Error.new("Refused.", code: code)
+
+        expect { cli.run(["workflow", "resume", "wr_1", "--restart-step", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => code)
+      end
+    end
+
+    it "refuses --restart-step with another way to resume, or on another subcommand, as a usage envelope" do
+      [%w[resume wr_1 --restart-step --from plan], %w[resume wr_1 --restart-step --accept-guard --note x], %w[resume wr_1 --restart-step --retry],
+        %w[resume wr_1 --restart-step --extra-rounds 1], %w[cancel wr_1 --restart-step]].each do |args|
+        expect { cli.run(["workflow", *args, "--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage")
+      end
+      expect(workflow_command.calls).to be_empty
+    end
+
     it "refuses --id outside validate" do
       expect { cli.run(["workflow", "add", "ship", "x.yml", "--id", "other"]) }.to raise_error(FakeSystemExit)
       expect(workflow_command.calls).to eq([])

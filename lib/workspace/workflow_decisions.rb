@@ -153,6 +153,13 @@ module Workspace
     #   `produces`, `require:` and `status:` pass too
     # @param guard_retry [Boolean] with +accept_guard+: run the stopped step again instead, a new attempt held to the allowance and budget
     # @param caller_pane [String, nil] the pane the person ran the command in, recorded on `guard_overridden`
+    # @param restart_step [Boolean] start the current step again as a new attempt (see {#restart_in}): its open attempt is
+    #   closed as `interrupted` (`step_interrupted`: `step`, `attempt`, `pane`, `usage_counted`), and the new one, `retry_of`
+    #   it, starts in a fresh conversation with a brief of HEAD and the plan's tasks; +pane+ is the pane to start it in
+    #   (nil: the bound one). Not with +from+, +accept_guard+, +guard_retry+, +turn_over+ or +extra_rounds+
+    # @param bound [String, nil] with +restart_step+, what the caller saw of the bound pane: `gone`, `shell`, `failed`,
+    #   `idle`, `busy` or `unknown` (nil reads `unknown`), seen before the run lock is taken, so a turn that starts in
+    #   between is not caught; see {WorkflowTransitions.restart_refusal}
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Resumed] the run afterwards, and why nothing was done when it did nothing
     # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` or `budget_spent` when the resume would
@@ -161,14 +168,19 @@ module Workspace
     #   with +accept_guard+, `guard_base_unreadable` (retryable, nothing changed) when the checkout can't be read as a
     #   new base, and with +guard_retry+ `guard_cannot_pass` when the retry would stop on `no_commit` or
     #   `operation_in_progress` again; `review_rounds_spent` when it would start a review round past the step's
-    #   `max_rounds`, or start again a step a review rejected with every round spent
+    #   `max_rounds`, or start again a step a review rejected with every round spent; with +restart_step+, also
+    #   `no_open_attempt`, `step_still_working`, `pane_has_run` and `restart_not_closed`
     def resume(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
-      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil)
-      refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry, extra_rounds: extra_rounds)
+      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil)
+      refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry, extra_rounds: extra_rounds, restart_step: restart_step, turn_over: turn_over)
       follow = nil
       unchanged = nil
       run = @change.call(run_id, actor: actor, cause: "resume") do |read, ctx|
         follow = ctx
+        if restart_step
+          next restart_in(read, ctx, note: note, pane: pane, bound: bound,
+            extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
+        end
         if accept_guard
           next accept_guard_stop(read, ctx, note: note, pane: pane, guard_retry: guard_retry, caller_pane: caller_pane,
             extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
@@ -609,7 +621,13 @@ module Workspace
     def adopt(run, changed) = run.replace(changed.thawed)
 
     # The flags of a guard acceptance that can't go together, refused before the run is read.
-    def refuse_guard_flags(from:, note:, accept_guard:, guard_retry:, extra_rounds: nil)
+    def refuse_guard_flags(from:, note:, accept_guard:, guard_retry:, extra_rounds: nil, restart_step: false, turn_over: nil)
+      if restart_step
+        raise UsageError, "--restart-step starts the current step again; --from can't go with it." if from
+        raise UsageError, "--restart-step starts the current step again; --accept-guard and --retry can't go with it." if accept_guard || guard_retry
+        raise UsageError, "--restart-step starts a new attempt and no review round; --extra-rounds can't go with it." if extra_rounds
+        raise UsageError, "--restart-step starts a new attempt; a turn's end (turn_over) can't go with it." if turn_over
+      end
       raise UsageError, "--retry is for `workflow resume RUN --accept-guard --note WHY`." if guard_retry && !accept_guard
       return unless accept_guard
       raise UsageError, "--extra-rounds adds review rounds to a resume; --accept-guard starts none." if extra_rounds
@@ -665,6 +683,54 @@ module Workspace
         adopt(stored, @evaluation.evaluate_accepted(stored, ctx: ctx))
       end
       WorkflowRun.from_h(stored)
+    end
+
+    # The body of {#resume} with +restart_step+, inside the change. Every refusal comes first, so a refused restart
+    # changes nothing: the run's own ({#refuse_resume}), the restart rule ({WorkflowTransitions.restart_refusal}),
+    # another run's +pane+, then the attempt allowance, budget and timeout. The open attempt is then closed as
+    # `interrupted` against the run as it is, so its usage is read from the old pane's session, before the run moves
+    # to +pane+. Its stalls end (`restarted`), and the new attempt (`retry_of` the closed one) starts in a fresh
+    # conversation with {WorkflowPrompt.interrupted_brief} first in its instructions, then the note.
+    def restart_in(read, ctx, note:, pane:, bound:, extra_attempts:, extra_tokens:, extra_seconds:)
+      stored = read.thawed
+      refuse_resume(stored)
+      state = step_state(stored)
+      refusal = WorkflowTransitions.restart_refusal(stored, state, @clock.call, bound || "unknown")
+      raise refusal if refusal
+      step = stored["current"]
+      n = state["attempts"].last["n"]
+      old_pane = bound_pane(stored)
+      moving = pane && pane != old_pane
+      check_other_pane(pane, stored["id"]) if moving
+      refuse_budget(stored, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds)
+      spend_attempts(stored, extra_attempts, target: step)
+      spend_limits(stored, extra_tokens, extra_seconds)
+      # Against the run as it is, before any rebind: the usage is read from the old pane's session.
+      adopt(stored, @attempt_record.abandon(stored, outcome: "interrupted"))
+      closed = step_state(stored)["attempts"].last
+      # `abandon` never raises: an attempt it could not close is still open here.
+      unless closed["n"] == n && closed["ended_at"]
+        raise Workspace::Error.new("Attempt #{n} of step #{step} of run #{stored["id"]} could not be closed, so the step was not restarted. Run the command again. Nothing was changed.",
+          code: "restart_not_closed", details: {"run_id" => stored["id"], "step" => step, "attempt" => n})
+      end
+      event(stored, "step_interrupted", "step" => step, "attempt" => n, "pane" => old_pane, "usage_counted" => !closed["usage"].nil?)
+      @recovery&.close_stalls(stored, action: "restarted")
+      stored["steps"].each_value { |each| each.delete("redelivery_pending") }
+      rebind(stored, pane) if moving
+      drop_park(stored, "taken_over")
+      stored["pending_context"].unshift(interrupted_brief(stored, closed))
+      stored["pending_context"] << WorkflowRun.resume_note(note) if note
+      event(stored, "run_resumed", "step" => step, "state" => "running", "restart_step" => true)
+      dispatch(stored, ctx, "resume", context: "fresh", budgeted: true, retry_of: {"attempt" => n})
+      WorkflowRun.from_h(stored)
+    end
+
+    # The brief a restarted attempt starts from: HEAD as the closed attempt left it, HEAD at its start, and the tasks of
+    # the workspace's plan (none when it has no notes directory or no plan file).
+    def interrupted_brief(run, closed)
+      dir = @gate_note.notes_dir_of(run["workspace"])
+      plan = dir && PlanFile.read(File.join(dir, PlanFile::FILE_NAME))
+      WorkflowPrompt.interrupted_brief(head: closed.dig("head", "after"), head_before: closed.dig("head", "before"), tasks: plan&.tasks)
     end
 
     # A base the guard can't measure from (HEAD unread though the branch has commits, or the hooks or hidden-file
@@ -1034,9 +1100,14 @@ module Workspace
     def left_alone(run, state, pane, turn_over) = WorkflowTransitions.left_alone(run, state, pane, turn_over, @clock.call, -> { bound_pane(run) }, alive: @holder_alive)
 
     def rebind(run, pane)
-      check_pane(pane, run["id"]) unless @panes.run_on(pane) == run["id"]
+      check_other_pane(pane, run["id"])
       @panes.unbind(run["id"])
       run["pane"] = pane
+    end
+
+    # Refuses +pane+ when another run has it; the run's own pane is never refused.
+    def check_other_pane(pane, run_id)
+      check_pane(pane, run_id) unless @panes.run_on(pane) == run_id
     end
 
     # +run_id+ is the run asking, which a park of its own can't refuse; see {WorkflowDispatch#check_pane}.

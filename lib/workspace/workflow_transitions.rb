@@ -926,6 +926,32 @@ module Workspace
       end
     end
 
+    # Whether `workflow resume --restart-step` may close the step's open attempt as interrupted and start a new one.
+    # Reads nothing but its arguments.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param state [Hash] the current step's state
+    # @param now [Time]
+    # @param bound [String] the bound pane: "gone", "shell", "failed", "idle", "busy" or "unknown"
+    # @return [Workspace::Error, nil] the refusal to raise; nil when the restart may go ahead
+    def self.restart_refusal(run, state, now, bound)
+      last = state["attempts"]&.last
+      ids = {"run_id" => run["id"], "step" => run["current"]}
+      if state["state"] != "running" || last.nil? || last["ended_at"]
+        return Workspace::Error.new("Step #{run["current"]} is #{state["state"]} and has nothing running to restart. " \
+          "`workspace workflow resume #{run["id"]}` moves it on. Nothing was changed.",
+          code: "no_open_attempt", details: ids.merge("state" => state["state"]))
+      end
+      if delivery(last, now) == :delivering
+        return Workspace::Error.new("Step #{run["current"]}'s line is still being typed. Wait a few seconds, then run the command again. Nothing was changed.",
+          code: "step_still_working", details: ids.merge("reason" => "delivering"))
+      end
+      return nil if %w[gone shell failed idle].include?(bound)
+      return nil if bound == "unknown" && (open_stalls(run) & %w[pane_gone agent_gone]).any?
+      Workspace::Error.new("The agent is still working on step #{run["current"]}. Wait for its turn to end, or interrupt it in its pane (Escape), then run the command again. Nothing was changed.",
+        code: "step_still_working", details: ids.merge("reason" => (bound == "busy") ? "working" : "unknown"))
+    end
+
     # The reason a turn's end leaves on a run: a fresh one, or the stored one when it is the same stop (same code,
     # step and attempt) and no new turn has started since, so its `since` holds.
     #

@@ -1250,6 +1250,99 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(engine).to have_received(:resume).with("wr_1", actor: "person", from: nil, note: nil, pane: "%8", turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil).ordered
     end
 
+    describe "--restart-step and its hint" do
+      let(:error_output) { StringIO.new }
+      let(:hint) { "This step's agent looks gone. To close its attempt and start it again in a fresh conversation, run `workspace workflow resume wr_1 --restart-step`." }
+      let(:stalled_attempt) { {"n" => 1, "stalls" => [{"cause" => "pane_gone", "since" => "2026-10-04T12:00:00Z"}]} }
+
+      subject(:command) do
+        described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workspace_facts: workspace_facts, workflow_config: workflow_config, store: store, panes: panes, files: nil, run_files: nil,
+          process_tree: process_tree, lock_holder: lock_holder, pid: 4242, clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output, error_output: error_output)
+      end
+
+      before { stored["definition"] = {"steps" => [{"id" => "plan", "guard" => nil, "status" => nil}]} }
+
+      it "hands the engine the located pane, the bound pane's fact and the restart, skipping the idle path" do
+        allow(panes).to receive(:locate).with("app", "0.2").and_return("%8")
+        allow(panes).to receive(:restart_target).with("app", "wr_1", bound: "%5", named: "%8", caller: "%3").and_return("pane" => "%8", "bound" => "gone")
+
+        command.resume(run: "wr_1", pane: "0.2", restart_step: true, caller_pane: "%3")
+
+        expect(engine).to have_received(:resume).with("wr_1", actor: "person", from: nil, note: nil, pane: "%8", turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil, extra_rounds: nil,
+          accept_guard: false, guard_retry: false, caller_pane: "%3", restart_step: true, bound: "gone")
+        expect(panes).not_to have_received(:idle?)
+        expect(engine).to have_received(:refuse_resume)
+      end
+
+      it "refuses a paused run before asking the daemon for a target" do
+        allow(engine).to receive(:refuse_resume).and_raise(Workspace::Error.new("Run wr_1 is paused.", code: "run_paused"))
+        allow(panes).to receive(:restart_target)
+
+        expect { command.resume(run: "wr_1", restart_step: true, caller_pane: "%3") }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("run_paused") }
+        expect(panes).not_to have_received(:restart_target)
+        expect(engine).not_to have_received(:resume)
+      end
+
+      it "asks for the target without a named pane when none is given" do
+        allow(panes).to receive(:restart_target).with("app", "wr_1", bound: "%5", named: nil, caller: nil).and_return("pane" => "%5", "bound" => "idle")
+
+        command.resume(run: "wr_1", restart_step: true)
+
+        expect(engine).to have_received(:resume).with("wr_1", hash_including(pane: "%5", restart_step: true, bound: "idle"))
+      end
+
+      it "refuses to restart from the run's own pane, and never parks" do
+        allow(panes).to receive(:pane_pid).with("app", "%5").and_return(200)
+        allow(process_tree).to receive(:snapshot).and_return(instance_double(Workspace::ProcessTree::Snapshot, ancestors: [{pid: 4242}, {pid: 200}]))
+        allow(lock_holder).to receive(:current).and_return(nil)
+        allow(panes).to receive(:restart_target)
+
+        expect { command.resume(run: "wr_1", restart_step: true, caller_pane: "%5") }
+          .to raise_error(Workspace::Error, /A step is restarted by a person, from another pane/) { |e| expect(e.code).to eq("bound_pane") }
+        expect(engine).not_to have_received(:resume)
+        expect(panes).not_to have_received(:restart_target)
+      end
+
+      it "hints at --restart-step on stderr and in the row for a plain resume of a step with an open pane_gone stall" do
+        stored["steps"]["plan"]["attempts"] = [stalled_attempt]
+
+        row = command.resume(run: "wr_1")
+
+        expect(error_output.string).to eq("#{hint}\n")
+        expect(row["hint"]).to eq(hint)
+      end
+
+      it "hints for an open agent_gone stall too" do
+        stored["steps"]["plan"]["attempts"] = [{"n" => 1, "stalls" => [{"cause" => "agent_gone", "since" => "2026-10-04T12:00:00Z"}]}]
+
+        expect(command.resume(run: "wr_1")["hint"]).to eq(hint)
+      end
+
+      it "hints when the bound pane is gone and the attempt is open" do
+        allow(panes).to receive(:alive?).with("wr_1").and_return(false)
+        allow(panes).to receive(:default_pane).and_return("%9")
+
+        expect(command.resume(run: "wr_1")["hint"]).to eq(hint)
+      end
+
+      it "does not hint for a healthy run" do
+        row = command.resume(run: "wr_1")
+
+        expect(error_output.string).to be_empty
+        expect(row).not_to have_key("hint")
+      end
+
+      it "does not hint for a pane_gone reason whose attempt is already closed" do
+        stored.merge!("state" => "waiting", "reason" => {"code" => "pane_gone", "details" => {"kind" => "dispatch"}})
+        stored["steps"]["plan"] = {"state" => "waiting", "attempts" => [{"n" => 1, "ended_at" => "2026-10-04T12:00:00Z", "stalls" => [{"cause" => "pane_gone", "since" => "2026-10-04T12:00:00Z"}]}]}
+        allow(panes).to receive(:default_pane).and_return("%9")
+
+        expect(command.resume(run: "wr_1")).not_to have_key("hint")
+        expect(error_output.string).to be_empty
+      end
+    end
+
     it "moves a run whose step could not be started because its pane was gone" do
       stored.merge!("state" => "waiting", "reason" => {"code" => "pane_gone", "details" => {"kind" => "dispatch"}})
       stored["steps"]["plan"]["state"] = "waiting"

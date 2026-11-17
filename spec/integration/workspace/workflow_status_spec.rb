@@ -141,6 +141,36 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(snapshot_client).not_to have_received(:fetch)
   end
 
+  it "offers a step restart for a gone pane whose open attempt has a pane_gone stall" do
+    create(bound: false)
+    edit_run(store, "wr_1") { |run| run["sweep"] = {"step" => "plan", "attempt" => 2, "stalled" => {"pane_gone" => "2026-10-04T12:41:00Z"}, "recovered" => {}} }
+
+    expect(current["reason"]["actions"]).to eq([action("launch", "app"), action("workflow resume", "wr_1"),
+      action("workflow resume", "wr_1", "--restart-step"), action("workflow cancel", "wr_1")])
+  end
+
+  it "offers no step restart for a gone pane with a closed attempt, nor for a healthy running run" do
+    create(bound: false)
+    edit_run(store, "wr_1") do |run|
+      run["sweep"] = {"step" => "plan", "attempt" => 2, "stalled" => {"pane_gone" => "2026-10-04T12:41:00Z"}, "recovered" => {}}
+      run["steps"]["plan"]["attempts"].last["ended_at"] = "2026-10-04T12:45:00Z"
+    end
+    expect(current["reason"]["actions"].map { |each| each["args"] }).not_to include(["wr_1", "--restart-step"])
+
+    create
+    expect(status.run("wr_2")["runs"].first["current"]["reason"]).to be_nil
+  end
+
+  it "offers no step restart while the attempt's line is still being typed" do
+    create(bound: false)
+    edit_run(store, "wr_1") do |run|
+      run["sweep"] = {"step" => "plan", "attempt" => 2, "stalled" => {"pane_gone" => "2026-10-04T12:41:00Z"}, "recovered" => {}}
+      run["steps"]["plan"]["attempts"].last.merge!("delivery" => "delivering", "delivering_since" => "2026-10-04T12:59:50Z")
+    end
+
+    expect(current["reason"]["actions"].map { |each| each["args"] }).not_to include(["wr_1", "--restart-step"])
+  end
+
   it "says waiting_you when the pane shows a permission prompt" do
     create
     snapshot["panes"].first.merge!("state" => "waiting", "waiting_since" => "2026-10-04T12:50:00Z", "waiting_message" => "Claude needs your permission to use Bash")
@@ -1337,7 +1367,15 @@ RSpec.describe Workspace::WorkflowStatus do
       mark(stalled: stall)
 
       expect(current["stuck"]).to eq("code" => "stalled", "cause" => "agent_gone", "since" => "2026-10-04T12:41:00Z",
-        "actions" => [action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+        "actions" => [action("workflow resume", "wr_1"), action("workflow resume", "wr_1", "--restart-step"), action("workflow cancel", "wr_1")])
+    end
+
+    it "offers no restart for a pane_gone stall on a closed attempt" do
+      create
+      edit_run(store, "wr_1") { |run| run["steps"]["plan"]["attempts"].last["ended_at"] = "2026-10-04T12:45:00Z" }
+      mark(stalled: {"pane_gone" => "2026-10-04T12:41:00Z"})
+
+      expect(current["stuck"]["actions"]).to eq([action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
     end
 
     it "is absent for a stale mark on a pane that is working again" do

@@ -70,7 +70,8 @@ module Workspace
 
     # @param attempt [WorkflowRun::Attempt, Hash] a stored attempt
     # @return [Boolean] whether the attempt's tokens count toward a run: every attempt but one never delivered
-    #   (no outcome counts too: a cancel, or a `resume --from`, ends an attempt without one)
+    #   (no outcome counts too: a cancel, or a `resume --from`, ends an attempt without one). An `interrupted` attempt
+    #   counts once; its retry is a separate attempt with its own usage
     def self.counted_attempt?(attempt)
       attempt = WorkflowRun::Attempt.from_h(attempt) unless attempt.is_a?(WorkflowRun::Attempt)
       attempt.outcome != "not_delivered"

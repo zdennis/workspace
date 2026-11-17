@@ -118,6 +118,12 @@ RSpec.describe Workspace::WorkflowCompare do
       expect(group(read, sha("d1"))).to include("settled" => 1, "pass_first_percent" => 100, "cancelled" => 2)
     end
 
+    it "does not count an interrupted attempt as a miss, in a run cancelled or completed on its retry" do
+      put("wr_1", attempts: [attempt(1, "interrupted")], state: "cancelled")
+      put("wr_2", attempts: [attempt(1, "interrupted"), attempt(2, "passed", retry_of: 1)])
+      expect(group(read, sha("d1"))).to include("settled" => 1, "first_try" => 1, "pass_first_percent" => 100, "cancelled" => 1)
+    end
+
     it "leaves a clean cancelled run out" do
       put("wr_1", attempts: [attempt(1, nil)], state: "cancelled")
       put("wr_2", attempts: [attempt(1, "passed")])
@@ -171,7 +177,7 @@ RSpec.describe Workspace::WorkflowCompare do
     end
 
     it "counts a single attempt with an outcome other than passed as a miss" do
-      put("wr_1", attempts: [attempt(1, "interrupted")])
+      put("wr_1", attempts: [attempt(1, "abandoned")])
       expect(group(read, sha("d1"))).to include("first_try" => 0, "pass_first_percent" => 0)
     end
 
