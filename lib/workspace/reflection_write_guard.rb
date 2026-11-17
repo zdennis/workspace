@@ -5,6 +5,8 @@ module Workspace
   #
   # In a pane bound as `kind: reflection`, an Edit, Write, MultiEdit,
   # NotebookEdit or apply_patch is refused unless it names the one file
+  # (for apply_patch: every Add File or Update File header of the patch, and no
+  # Delete File or Move to)
   # `<workflow evidence dir>/<run id>/reflection.md`, with no link on the way
   # down to it. Unlike the review guard it lets the main thread write: the
   # pane's agent writes the file itself. The allowed path comes from
@@ -133,11 +135,36 @@ module Workspace
 
     def refusal(allowed, tool_name, tool_input, cwd)
       return "bad_id" unless allowed
-      raw = raw_path(tool_name, tool_input)
-      return "outside_file" if tool_name == "apply_patch" || !cwd.is_a?(String) || cwd.empty? || !raw.is_a?(String) || raw.empty? || raw.match?(/[[:cntrl:]]/) || raw.end_with?("/")
-      return "outside_file" unless File.expand_path(raw, cwd) == allowed
+      return "outside_file" unless cwd.is_a?(String) && !cwd.empty?
+      raws = (tool_name == "apply_patch") ? patch_paths(tool_input) : [raw_path(tool_name, tool_input)]
+      return "outside_file" if raws.empty?
+      raws.each do |raw|
+        return "outside_file" if !raw.is_a?(String) || raw.empty? || raw.match?(/[[:cntrl:]]/) || raw.end_with?("/")
+        return "outside_file" unless File.expand_path(raw, cwd) == allowed
+      end
       return "outside_file" if ReviewRoundPath.linked_below?(link_base(allowed), allowed, include_base: false)
       nil
+    end
+
+    PATCH_HEADER = /\A\*\*\* (Add|Update|Delete) File: (.*)\z|\A\*\*\* Move to: (.*)\z/
+    private_constant :PATCH_HEADER
+
+    # The files a Codex apply_patch names, from its patch text (`command`, a string or the last
+    # string of an argv). Only `Add File` and `Update File` headers count; a `Delete File`, a
+    # `Move to`, or no patch text at all gives [nil], which is refused.
+    def patch_paths(tool_input)
+      return [nil] unless tool_input.is_a?(Hash)
+      command = tool_input["command"]
+      text = command.is_a?(Array) ? command.grep(String).last : command
+      return [nil] unless text.is_a?(String) && text.include?("*** Begin Patch")
+      paths = []
+      text.each_line(chomp: true) do |line|
+        match = PATCH_HEADER.match(line)
+        next unless match
+        return [nil] unless %w[Add Update].include?(match[1])
+        paths << match[2]
+      end
+      paths.empty? ? [nil] : paths
     end
 
     # The path the tool names: `notebook_path` for NotebookEdit, `file_path` for the rest. Both

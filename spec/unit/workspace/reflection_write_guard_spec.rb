@@ -44,9 +44,23 @@ RSpec.describe Workspace::ReflectionWriteGuard do
     expect(check(input: {"file_path" => "#{target}\n"})).to include("denied")
   end
 
-  it "refuses apply_patch, even aimed at the allowed path" do
+  def patch(*headers)
+    "*** Begin Patch\n#{headers.map { |h| "*** #{h}\n+text\n" }.join}*** End Patch\n"
+  end
+
+  it "allows an apply_patch whose every Add or Update File header names reflection.md" do
+    expect(check(tool: "apply_patch", input: {"command" => patch("Add File: #{target}")})).to be_nil
+    expect(check(tool: "apply_patch", input: {"command" => patch("Update File: reflection.md")}, cwd: run_dir)).to be_nil
+    expect(check(tool: "apply_patch", input: {"command" => ["apply_patch", patch("Add File: #{target}")]})).to be_nil
+  end
+
+  it "refuses an apply_patch with no patch text, another file, a delete or a move" do
     expect(check(tool: "apply_patch", input: {"command" => "x"})).to include("denied")
     expect(check(tool: "apply_patch", input: {"file_path" => target})).to include("denied")
+    expect(check(tool: "apply_patch", input: {"command" => patch("Add File: #{target}", "Add File: #{File.join(tmpdir, "a.rb")}")})).to include("denied")
+    expect(check(tool: "apply_patch", input: {"command" => patch("Delete File: #{target}")})).to include("denied")
+    expect(check(tool: "apply_patch", input: {"command" => "#{patch("Update File: #{target}")}*** Move to: #{File.join(tmpdir, "b.md")}\n"})).to include("denied")
+    expect(check(tool: "apply_patch", input: {"command" => "*** Begin Patch\n*** End Patch\n"})).to include("denied")
   end
 
   it "refuses a path with a control character, a trailing slash, and MultiEdit with a bad path" do

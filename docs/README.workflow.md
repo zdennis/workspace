@@ -1178,7 +1178,7 @@ The command is read only on the run. It takes no run lock, appends no event and 
 
 **The pane's binding.** The pane is bound with kind `reflection` (see [`binding`](README.binding.md)). While the binding lasts:
 
-- A guard on the agent's file tools allows writes to that one `reflection.md` and no other path. It is a tripwire, not a sandbox: shell commands are not covered, so the agent could still write elsewhere through Bash.
+- A guard on the agent's file tools allows writes to that one `reflection.md` and no other path. A Codex `apply_patch` passes when every `Add File` and `Update File` header in the patch names that file and it has no `Delete File` or `Move to`. It is a tripwire, not a sandbox: shell commands are not covered, so the agent could still write elsewhere through Bash.
 - `plan start` and `spine start` do not type into the pane.
 - A second `workflow learn reflect` on the same run is refused with `reflection_in_progress`; its `details.pane` names the pane.
 

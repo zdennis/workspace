@@ -84,6 +84,12 @@ RSpec.describe Workspace::Commands::WorkflowReflect do
     expect(panes).not_to have_received(:spawn)
   end
 
+  it "asks for --agent when the workspace has no agent pane" do
+    allow(main_agent).to receive(:kind).and_return("none")
+    expect { command.call(run: "wr_1") }.to raise_error(Workspace::UsageError, /has no agent pane .*pass --agent KIND/)
+    expect(panes).not_to have_received(:spawn)
+  end
+
   it "raises unknown_run for a run that does not exist" do
     expect { command.call(run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
   end

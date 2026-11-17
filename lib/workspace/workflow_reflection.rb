@@ -62,7 +62,7 @@ module Workspace
     def steps_section(rows)
       return "## Steps\n\nThe run recorded no attempts." if rows.empty?
       lines = rows.map do |row|
-        parts = ["#{esc(row["step"])} attempt #{row["attempt"]}: #{esc(row["outcome"] || "no outcome")}"]
+        parts = ["#{esc(row["step"])} attempt #{row["attempt"].to_i}: #{esc(row["outcome"] || "no outcome")}"]
         parts << "reason #{esc(row["code"])}" if row["code"]
         parts << "check #{check_text(row["check"])}" if row["check"]
         parts << "proofs #{proofs_text(row["proofs"])}" unless Array(row["proofs"]).empty?
@@ -113,7 +113,7 @@ module Workspace
 
     # The attempt's failed check log and its rejecting reviewers' write-ups, from the run's evidence copies only.
     def attempt_blocks(run, row, evidence_dir)
-      label = "#{esc(row["step"])} attempt #{row["attempt"]}"
+      label = "#{esc(row["step"])} attempt #{row["attempt"].to_i}"
       entries = Array(row["evidence"]).grep(Hash)
       blocks = []
       if check_failed?(row["check"])

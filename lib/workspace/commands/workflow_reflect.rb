@@ -140,6 +140,7 @@ module Workspace
       def agent_kind(agent, workspace)
         kind = agent || @main_agent.kind(workspace)
         return kind if PaneDispatch::AGENT_KINDS.include?(kind)
+        raise UsageError, "Workspace #{TerminalText.escape(workspace.to_s)} has no agent pane to take the agent kind from: pass --agent KIND (one of #{PaneDispatch::AGENT_KINDS.join(", ")})." if agent.nil? && kind == "none"
         raise UsageError, "Unknown agent #{TerminalText.escape(kind.to_s)[0, 40].inspect}: one of #{PaneDispatch::AGENT_KINDS.join(", ")}."
       end
 
