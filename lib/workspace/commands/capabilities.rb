@@ -116,7 +116,8 @@ module Workspace
         "launch_prompt_status" => 1,
         "kill_branches" => 1,
         "rename" => 1,
-        "help_json" => 1
+        "help_json" => 1,
+        "step_expect_fail" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

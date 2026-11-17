@@ -45,7 +45,7 @@ module HelpExamplesSpec
     "skills", "skills install", "skills uninstall",
     "spine", "spine show", "spine init", "spine set", "spine check", "spine verify", "spine start", "spine goal",
     "spine goal set",
-    "start", "status", "statusline", "step", "step done", "step status", "stop",
+    "start", "status", "statusline", "step", "step done", "step status", "step expect-fail", "stop",
     "template", "template list", "template status", "template apply", "template adopt", "template backup", "template backups list", "template backups prune", "template restore", "template show", "template path", "template variables", "template render", "template validate", "template diff", "template new", "template edit", "template use", "template export", "template import",
     "ticket", "ticket show", "ticket list", "tile", "tmux", "tmux show",
     "ui", "ui open", "ui open task", "ui open notes", "ui open inbox", "ui status",

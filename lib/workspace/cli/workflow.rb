@@ -11,6 +11,9 @@ module Workspace
       # The verbs of `workflow`, in the order `workflow --help` lists them.
       SUBCOMMANDS = %w[list show graph validate add update remove install uninstall run start render check simulate status events files attempts trace audit stats compare sweep recover resume cancel pause unpause approve reject advance].freeze
 
+      # The verbs of `step`, in the order `step --help` lists them.
+      STEP_SUBCOMMANDS = %w[done status expect-fail].freeze
+
       # @param workflow_command [Workspace::Commands::Workflow, nil] the `workflow` and `step` command; nil refuses both verbs
       # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] the `workflow start` command; nil refuses that verb
       # @param workflow_project [Workspace::WorkflowProject, nil] the one resolver for the project whose workflow definitions are read first;
@@ -511,17 +514,21 @@ module Workspace
         OptionParser.new do |opts|
           opts.banner = HelpPages.overview_usage(HelpPages::STEP)
           opts.separator ""
-          opts.separator "For the agent working on a workflow step, run from the pane the run is bound to."
-          opts.separator "Neither is required: a step is decided when the agent's turn ends, from the files it"
-          opts.separator "was told to leave and the step's check (see `workspace workflow --help`)."
+          opts.separator "done and status are for the agent working on a workflow step, run from the pane the run"
+          opts.separator "is bound to. Neither is required: a step is decided when the agent's turn ends, from the"
+          opts.separator "files it was told to leave and the step's check (see `workspace workflow --help`)."
+          opts.separator "expect-fail is run by a step's `require: exec:` proof, from no pane: it checks that the"
+          opts.separator "given tests fail before the fix."
           opts.separator ""
           HelpPages.overview_verbs(HelpPages::STEP).each { |line| opts.separator line }
           opts.separator "Run `workspace step VERB --help` for a verb's options."
           opts.separator ""
-          opts.on("--status STATUS", "done: pass (default) or fail") { |v| options[:status] = v }
+          opts.on("--status STATUS", "done: pass (default) or fail") { |v| options.update(status: v, status_given: true) }
           opts.on("--summary TEXT", "done: one line about what was done, or what is left") { |v| options[:summary] = v }
           opts.on("--code WORD", "done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)") { |v| options[:code] = v }
-          opts.on("--json", "Print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
+          opts.on("--match-file PATH", "expect-fail: a file whose text (trimmed) the failing tests' output must hold") { |v| options[:match_file] = v }
+          opts.on("--timeout SECONDS", "expect-fail: seconds the tests may run (default #{WorkflowExpectFail::DEFAULT_TIMEOUT})") { |v| options[:timeout] = v }
+          opts.on("--json", "done, status: print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
           opts.on("-h", "--help", "Show this help") { options[:help] = true }
           opts.separator ""
           opts.separator "Examples:"
@@ -529,6 +536,7 @@ module Workspace
           opts.separator "  workspace step done --summary \"Plan written; three commits.\"    # record a pass, then end your turn"
           opts.separator "  workspace step done --status fail --summary \"Two specs still fail in billing.\"    # fail the step at the turn's end"
           opts.separator "  workspace step done --status fail --code not_reproduced --summary \"The failure did not happen locally.\"    # fail it with a word for why"
+          opts.separator "  workspace step expect-fail --match-file .workflow/RUN/failure.txt -- spec/models/invoice_spec.rb    # exits 0 only when the test fails with that text"
         end
       end
 
@@ -539,18 +547,22 @@ module Workspace
         given = args.dup
         parser = step_parser(options)
         @common.refuse_bad_bytes!(args)
-        subcommand = args.shift if %w[done status].include?(args.first)
+        subcommand = args.shift if STEP_SUBCOMMANDS.include?(args.first)
         parser.parse!(args)
-        subcommand ||= args.shift if %w[done status].include?(args.first)
+        subcommand ||= args.shift if STEP_SUBCOMMANDS.include?(args.first)
         return invocation.output.puts(parser.help) if options[:help]
 
         unless subcommand
-          raise UsageError, args.empty? ? "Missing subcommand: done or status.\n\n#{parser.help}" : "Unknown step subcommand: #{args.first}. Run 'workspace step --help'."
+          raise UsageError, args.empty? ? "Missing subcommand: done, status or expect-fail.\n\n#{parser.help}" : "Unknown step subcommand: #{args.first}. Run 'workspace step --help'."
         end
-        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace step --help'." if args.any?
+        step_flags!(subcommand, options)
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace step --help'." if args.any? && subcommand != "expect-fail"
         raise Error, "step is not available: no workflow command was wired" unless @workflow_command
 
-        if subcommand == "status"
+        if subcommand == "expect-fail"
+          result = @workflow_command.step_expect_fail(cwd: @working_dir, files: args, match_file: options[:match_file], timeout: step_timeout(options[:timeout]))
+          invocation.exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+        elsif subcommand == "status"
           @workflow_command.step_status(pane: ENV["TMUX_PANE"], json: options[:json])
         else
           workflow_action(invocation, "step done", options) { @workflow_command.step_done(pane: ENV["TMUX_PANE"], status: options[:status], summary: options[:summary], code: options[:code]) }
@@ -558,6 +570,25 @@ module Workspace
       rescue OptionParser::ParseError, UsageError => e
         raise unless @common.json_requested?(options[:json], given)
         @common.emit_json_error(invocation, JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+      end
+
+      # Refuses a step flag the verb has no use for.
+      def step_flags!(subcommand, options)
+        if subcommand == "expect-fail"
+          used = {"--status" => options[:status_given], "--summary" => options.key?(:summary), "--code" => options.key?(:code), "--json" => options[:json]}
+          flag = used.find { |_, set| set }&.first
+          raise UsageError, "#{flag} is not for `step expect-fail`." if flag
+        else
+          flag = {"--match-file" => :match_file, "--timeout" => :timeout}.find { |_, key| options.key?(key) }&.first
+          raise UsageError, "#{flag} is only for `step expect-fail`." if flag
+        end
+      end
+
+      def step_timeout(text)
+        return WorkflowExpectFail::DEFAULT_TIMEOUT if text.nil?
+        seconds = Integer(text, 10, exception: false)
+        raise UsageError, "--timeout takes a whole number of seconds from 1 up, got #{text[0, 40].inspect}." unless seconds&.positive?
+        seconds
       end
 
       # `workflow start`'s warnings, on success or above its refusal; `--json` carries them in the document.

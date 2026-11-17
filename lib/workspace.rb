@@ -375,6 +375,7 @@ require_relative "workspace/review_write_guard"
 require_relative "workspace/workflow_run_files"
 require_relative "workspace/workflow_check"
 require_relative "workspace/workflow_step_check"
+require_relative "workspace/workflow_expect_fail"
 require_relative "workspace/workflow_guard"
 require_relative "workspace/workflow_require"
 require_relative "workspace/workflow_produced"
@@ -1192,6 +1193,7 @@ module Workspace
       compare: WorkflowCompare.new(loader: workflow_run_loader),
       step_check: WorkflowStepCheck.new(engine: workflow_engine, checker: workflow_checker),
       simulator: WorkflowSimulator.new(engine_factory: ->(**parts) { build_workflow_engine(**parts) }),
+      expect_fail: WorkflowExpectFail.new(lineage: lineage, commands_config: commands_config, checker: workflow_checker),
       engine: workflow_engine,
       status: workflow_status,
       workspace_facts: workflow_workspace_facts,

@@ -141,6 +141,42 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#step_expect_fail" do
+    let(:expect_err) { StringIO.new }
+
+    def wired(result)
+      checker = double("expect fail", call: result)
+      [described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
+        lock_holder: lock_holder, expect_fail: checker, output: output, error_output: expect_err), checker]
+    end
+
+    it "prints the tests' output, then the passing line on stdout, and exits 0" do
+      command, checker = wired(Workspace::WorkflowExpectFail::Result.new(passed: true, message: "expect-fail: the tests failed as expected (exit 1)", output: "1 failure"))
+
+      expect(command.step_expect_fail(cwd: "/src/app", files: ["a_spec.rb"], match_file: "f.txt", timeout: 840)).to eq(exit_code: 0)
+
+      expect(checker).to have_received(:call).with(cwd: "/src/app", files: ["a_spec.rb"], match_file: "f.txt", timeout: 840)
+      expect(output.string).to eq("1 failure\nexpect-fail: the tests failed as expected (exit 1)\n")
+      expect(expect_err.string).to eq("")
+    end
+
+    it "says so above the output when it was cut" do
+      command, = wired(Workspace::WorkflowExpectFail::Result.new(passed: false, message: "expect-fail: the tests passed (exit 0)", output: "last line\n", cut: true))
+
+      command.step_expect_fail(cwd: "/src/app", files: ["a_spec.rb"])
+
+      expect(output.string).to eq("expect-fail: output cut; its last 10 bytes follow\nlast line\n")
+    end
+
+    it "puts a refusal on stderr and exits 1, printing no output for tests that never ran" do
+      command, = wired(Workspace::WorkflowExpectFail::Result.new(passed: false, message: "expect-fail: no test files given", output: nil))
+
+      expect(command.step_expect_fail(cwd: "/src/app", files: [])).to eq(exit_code: 1)
+
+      expect([output.string, expect_err.string]).to eq(["", "expect-fail: no test files given\n"])
+    end
+  end
+
   describe "#list" do
     it "lists the definitions in a table of id, source and description, marking one that is not valid" do
       allow(catalog).to receive(:list).and_return([

@@ -48,6 +48,7 @@ module Workspace
       # @param stats [Workspace::WorkflowStats, nil] reads a workflow's runs into per-step figures (`stats`)
       # @param compare [Workspace::WorkflowCompare, nil] sets a workflow's runs side by side by definition or pack (`compare`)
       # @param simulator [Workspace::WorkflowSimulator, nil] plays a workflow with a scripted fake agent (`simulate`)
+      # @param expect_fail [Workspace::WorkflowExpectFail, nil] runs the fail-first check (`step expect-fail`)
       # @param source_installer [Workspace::WorkflowSourceInstaller, nil] fetches, checks and caches the `workflows.sources` entries (`install`)
       # @param workflow_config [Workspace::WorkflowConfig, nil] reads `workflows.default_stall`, for the stall `show` reports
       # @param infra_retry [Workspace::WorkflowInfraRetry, nil] restarts a step whose infra retry is due (`advance`'s timer look); nil leaves it to `tick`
@@ -59,7 +60,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, trace: nil, downtime: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, trace: nil, downtime: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, expect_fail: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
         clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
@@ -82,6 +83,7 @@ module Workspace
         @compare = compare
         @step_check = step_check
         @simulator = simulator
+        @expect_fail = expect_fail
         @source_installer = source_installer
         @workflow_config = workflow_config
         @infra_retry = infra_retry
@@ -1042,6 +1044,27 @@ module Workspace
           "End your turn now; the step is decided when the turn ends."
         {"workspace" => @store.run(run_id).workspace, "outcome" => "recorded", "reason" => nil, "message" => nil, "run_id" => run_id,
          "step" => reported["step"], "attempt" => reported["attempt"], "reported" => reported["reported"].slice("status", "summary", "code")}
+      end
+
+      # The fail-first check (`step expect-fail`), run by a `require: exec:` proof from no pane: the
+      # tests' output, then one `expect-fail:` line (stdout when they failed as expected, stderr otherwise).
+      #
+      # @param cwd [String] the checkout
+      # @param files [Array<String>] the test files
+      # @param match_file [String, nil] a file whose trimmed text the output must hold
+      # @param timeout [Integer] seconds the tests may run
+      # @return [Hash{Symbol=>Integer}] `exit_code`: 0 when the tests failed as expected, else 1
+      def step_expect_fail(cwd:, files:, match_file: nil, timeout: WorkflowExpectFail::DEFAULT_TIMEOUT)
+        raise Workspace::Error, "step expect-fail is not available: no check was wired" unless @expect_fail
+        result = @expect_fail.call(cwd: cwd, files: files, match_file: match_file, timeout: timeout)
+        unless result.output.to_s.empty?
+          @output.puts "expect-fail: output cut; its last #{result.output.bytesize} bytes follow" if result.cut
+          text = result.output.dup.force_encoding(Encoding::UTF_8).scrub
+          write_text(text.end_with?("\n") ? text : "#{text}\n")
+          @output.flush
+        end
+        (result.passed ? @output : @error_output).puts TerminalText.escape(result.message)
+        {exit_code: result.passed ? 0 : 1}
       end
 
       # Prints the step the calling pane is on (`step status`).

@@ -43,6 +43,7 @@ workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP
 
 workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]
 workspace step status [--json]
+workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 ```
 
 | Subcommand | Description |
@@ -76,6 +77,7 @@ workspace step status [--json]
 | `step done` | For the agent: record what it says about its step, then end the turn. Optional |
 | `workflow simulate` | Play a workflow through the real engine with a scripted fake agent and print the transitions; nothing real runs. See [Simulating a workflow](#simulating-a-workflow) |
 | `step status` | For the agent: which run, step and attempt its pane is on, and whether the files the step must leave exist |
+| `step expect-fail` | Run by a `require: exec:` proof, from no pane: exits 0 only when `commands.test` fails on the given test files (see [Fail-first proofs](#fail-first-proofs)) |
 
 | Option | Description |
 |--------|-------------|
@@ -114,6 +116,8 @@ workspace step status [--json]
 | `--dry-run` | `run`, `start`: report what would start and start nothing. `add`, `update`: run every check and write no definition (the workflows directory and `.ID.yml.lock` may still be created) |
 | `--status pass\|fail` | `step done`: `pass` (default) or `fail` |
 | `--summary TEXT` | `step done`: one line about what was done, or what is left |
+| `--match-file PATH` | `step expect-fail`: a file whose text (trimmed) the failing tests' stdout and stderr must hold |
+| `--timeout SECONDS` | `step expect-fail`: seconds the tests may run (default 240) |
 | `--code WORD` | `step done`: a word for why, kept as the failed step's `details.code` (see [Failure codes](#failure-codes)). Lowercase letters, digits and `_`, starting with a letter, at most 40 characters; anything else is a `usage` error |
 | `--json` | Print one JSON document |
 
@@ -1521,6 +1525,20 @@ A proof that cannot know its facts is unproven, and its program is not run. A te
 The proofs show facts about the repository, not that the work is good: `commits: 1` passes a useless commit. A definition stored before `require:` existed has no `require` in its snapshot and behaves as before. `workflow validate` lists every bad entry (an unknown proof, a repeated proof, a bad value) under `invalid_workflow`. A step with only `require:` has proof, so it does not warn.
 
 The presets use them. `rpiv` and `rpiv-auto-approve` are described above. Every preset step that posts to the inbox on each successful path requires its `inbox_item`: `explore` (`explore:RUN` for `survey`, `explore-report:RUN` for `report`), `pr-feedback` (`pr-feedback:RUN` for `triage`, a stop path included, and `pr-feedback-fix:RUN` for `fix`) and `investigate` (`investigate:RUN` for `diagnose`, `investigate-fix:RUN` for `fix`). Their prompts post with `--reopen`, because a rerun of the step (after a rejected gate or a resume) uses the same key, and an item the person already closed would otherwise be left alone and fail the proof. A step that stops through `step done --status fail` is not checked, and `investigate`'s `reproduce` posts only on its stop paths, so it has no proof. A run already started keeps the definition it was stored with: a change to a preset affects new runs only.
+
+### Fail-first proofs
+
+`workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...` proves a new test fails before the fix. It is meant for an `exec` entry, so it runs from no pane: it finds the workspace from the directory it runs in (the checkout) and never reads `TMUX_PANE` or a pane binding. It reads the workspace's `commands.test` through the usual layers, appends the FILEs shell-escaped and runs the line through `sh -c` in its own process group, then prints the tests' output followed by one line that starts with `expect-fail:`. Only the last 1 MB of the output is printed, after a line saying it was cut; the match is looked for in all of it. It exits 0 only when the command exits non-zero and, with `--match-file`, the tests' stdout and stderr together hold the file's text (trimmed of leading and trailing whitespace) as one exact substring. It exits 1 when no FILE is given, `commands.test` is unset, the match file is missing, a link, not a regular file, empty or over 4096 bytes, the tests pass, the text is not in the output, or the tests run past `--timeout` (default 240 seconds; the line says `tests ran past Ns`). Use it with `{{changed.tests}}`, and have the step write the failure text it expects to a file in the artifacts directory, listed in `produces`:
+
+```yaml
+reproduce:
+  produces: [repro.md, failure.txt]
+  require:
+    - exec: "workspace step expect-fail --match-file {{artifacts}}/failure.txt --timeout 840 -- {{changed.tests}}"
+      timeout: 15m
+```
+
+Give the checker a `--timeout` below the entry's `timeout:` (here 840 seconds under 15 minutes), so a slow run ends with the checker's own message instead of the engine stopping it as unproven. `commands.test` must take test files as arguments (`bundle exec rspec` does; a command that ignores them runs everything), and `{{changed.tests}}` needs `commands.test_files`. The program is the `workspace` on the agent daemon's PATH, outside the checkout, so the agent can't edit it; an older `workspace` without the verb fails the proof with its unknown-verb usage error in the proof log (check for `step_expect_fail` in `workspace capabilities --json`). What it does not prove: that the test fails for the right reason (a load error or a typo fails too), and that a later step keeps the test as strict (a fix step can weaken the repro test until it passes). `--match-file` does not stop a dishonest agent: the agent writes both the test and `failure.txt`, and generic text such as `Failure` matches almost any failure. It only narrows accidental failures, such as a load error, for an honest one; a person reading the reproduction (`repro.md` at a gate) is the real check. The agent can also change what runs: `workspace config set commands.test ...`, or an edit to the config file, makes any command the "tests". A `deny:` entry such as `workspace config set*` catches the first (see [Denying commands](#denying-commands)); keep the config file out of the agent's reach or review it for the second.
 
 ## Denying commands
 

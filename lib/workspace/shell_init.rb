@@ -218,6 +218,10 @@ module Workspace
                   ;;
               esac
             fi
+          elif [ "${words[2]}" = step ] && [ "$CURRENT" -eq 3 ]; then
+            wf_list=(done status expect-fail)
+            compadd -a wf_list
+            return 0
           fi
           _files || :
           return 0
@@ -250,6 +254,8 @@ module Workspace
                 start | show | graph | run | update | remove) wf_list="$(_workspace_wf_ids)" ;;
               esac
             fi
+          elif [ "${COMP_WORDS[1]}" = step ] && [ "$COMP_CWORD" -eq 2 ]; then
+            wf_list="done status expect-fail"
           fi
           for wf_word in $wf_list; do
             case "$wf_word" in

@@ -59,12 +59,12 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["daemon"].keys).to match_array(Workspace::CLI::Agent::DAEMON_SUBCOMMANDS)
       expect(pages["library"].keys).to match_array(Workspace::CLI::LIBRARY_SUBCOMMANDS)
       expect(pages["workflow"].keys).to match_array(Workspace::CLI::Workflow::SUBCOMMANDS)
+      expect(pages["step"].keys).to eq(Workspace::CLI::Workflow::STEP_SUBCOMMANDS)
     end
 
     it "name the verbs of the commands whose verbs are not in a constant" do
       expect(pages["spine"].keys).to match_array(["show", "set", "check", "verify", "goal set", "start", "init"])
       expect(pages["binding"].keys).to match_array(%w[set show clear])
-      expect(pages["step"].keys).to match_array(%w[done status])
       expect(pages["review"].keys).to match_array(%w[show list])
       expect(pages["pr"].keys).to match_array(%w[create feedback])
       expect(pages["ticket"].keys).to match_array(%w[show list])

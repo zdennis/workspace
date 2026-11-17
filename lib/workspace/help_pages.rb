@@ -1757,6 +1757,28 @@ module Workspace
           ["workspace step status --json", "the same as one JSON document, with whether each file is there (produces); outside a run's pane it exits 1 with not_bound"],
           ["workspace step status --json | jq '.step.produces'", "list the files the step must leave, and whether each was written this attempt (current)"]
         ]
+      },
+      "expect-fail" => {
+        usage: ["step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE..."],
+        summary: "Check that the given tests fail (a fail-first proof)",
+        about: [
+          "Run by a step's `require: exec:` proof, from no pane: it finds the workspace from the directory it runs",
+          "in (the checkout) and never reads TMUX_PANE or a pane binding. Runs the workspace's commands.test with the",
+          "FILEs appended (shell-escaped) through `sh -c` in its own process group, prints the tests' output, then one",
+          "line starting `expect-fail:` (only the last 1 MB of output is printed, with a line saying when it was cut).",
+          "Exits 0 only when the tests fail and, with --match-file, their stdout and stderr together hold the file's",
+          "text (trimmed) as one exact substring. Exits 1 when no FILE is given, commands.test is unset, the match file",
+          "is missing, a link, empty or over 4096 bytes, the tests pass, the text is missing, or the tests run past",
+          "--timeout.",
+          "commands.test must take test files as arguments. It does not prove the tests fail for the right reason."
+        ],
+        options: [["--match-file PATH", "A file (at most 4096 bytes, not a link) whose text, trimmed, the failing tests' output must hold as one exact substring; relative to the working directory"],
+          ["--timeout SECONDS", "Seconds the tests may run before they are stopped (default 240)"]],
+        examples: [
+          ["workspace step expect-fail -- spec/models/invoice_spec.rb", "exits 0 only when the test fails"],
+          ["workspace step expect-fail --match-file .workflow/RUN/failure.txt -- spec/models/invoice_spec.rb", "exits 0 only when it fails with the text of failure.txt"],
+          ["workspace step expect-fail --match-file {{artifacts}}/failure.txt --timeout 840 -- {{changed.tests}}", "the exec: line of a fail-first proof (with timeout: 15m on the entry)"]
+        ]
       }
     }.freeze
 
