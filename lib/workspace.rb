@@ -1192,6 +1192,7 @@ module Workspace
       needs_me: workflow_needs_me,
       stats: WorkflowStats.new(store: workflow_store, loader: workflow_run_loader),
       compare: WorkflowCompare.new(loader: workflow_run_loader),
+      insights: WorkflowInsights.new(loader: workflow_run_loader, stats: WorkflowStats.new(store: workflow_store, loader: workflow_run_loader), compare: WorkflowCompare.new(loader: workflow_run_loader)),
       step_check: WorkflowStepCheck.new(engine: workflow_engine, checker: workflow_checker),
       simulator: WorkflowSimulator.new(engine_factory: ->(**parts) { build_workflow_engine(**parts) }),
       expect_fail: WorkflowExpectFail.new(lineage: lineage, commands_config: commands_config, checker: workflow_checker),
