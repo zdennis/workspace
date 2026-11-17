@@ -9,7 +9,7 @@ module Workspace
     # {Invocation} it is given, so `--help --json` captures what it prints.
     class Workflow
       # The verbs of `workflow`, in the order `workflow --help` lists them.
-      SUBCOMMANDS = %w[list show graph validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep recover resume cancel pause unpause approve reject advance].freeze
+      SUBCOMMANDS = %w[list show graph validate add update remove install uninstall run start render check simulate status events files attempts trace audit stats compare sweep recover resume cancel pause unpause approve reject advance].freeze
 
       # @param workflow_command [Workspace::Commands::Workflow, nil] the `workflow` and `step` command; nil refuses both verbs
       # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] the `workflow start` command; nil refuses that verb
@@ -133,7 +133,7 @@ module Workspace
           opts.on("--project [NAME]", "status: all runs of a project, finished too (NAME, or the project of the current workspace)") { |v| options[:project] = v || true }
           opts.on("--all", "status: every workspace's runs, finished too") { options[:all] = true }
           opts.on("--needs-me", "status: the runs still going, in every workspace, that wait for you (a gate, question, prompt, failed check, gone pane, stall), each with the next command; --name or --project narrows it") { options[:needs_me] = true }
-          opts.on("--table", "status: one row per run with its workspace's status and whether its config, tmux session, worktree and state directory exist; finished runs show at every scope") { options[:table] = true }
+          opts.on("--table", "status: one row per run with its workspace's status and whether its config, tmux session, worktree and state directory exist; finished runs show at every scope; trace: one grid row per transition") { options[:table] = true }
           opts.on("--ref REF", "start: run the workflow that fits REF's kind (workflows.by_ref.<kind>, then workflows.default, else the one that fits) instead of naming an ID") { |v| options[:ref] = v }
           opts.on("--force", "start: start although the workflow's applies_to: does not list the REF's kind") { options[:force] = true }
           opts.on("--dry-run", "run, start: report what would start and start nothing; sweep, recover: report what would be done and do nothing (sweep: also --install and --uninstall); add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
@@ -186,7 +186,7 @@ module Workspace
         return invocation.output.puts(parser.help) if options[:help]
 
         unless subcommand
-          raise UsageError, args.empty? ? "Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+          raise UsageError, args.empty? ? "Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
         end
         raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
         subject = args.shift
@@ -194,7 +194,7 @@ module Workspace
         start_ref = args.shift if subcommand == "start"
         render_step = args.shift if %w[render check].include?(subcommand)
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
+        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "trace" => "a RUN id (see `workspace workflow status`)", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
                  "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
         raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
 
@@ -219,7 +219,7 @@ module Workspace
         raise UsageError, "--install, --uninstall and --installed are for `workflow sweep`." if schedule && subcommand != "sweep"
         raise UsageError, "workflow sweep takes one of --install, --uninstall and --installed, and no RUN or --name with it." if schedule && (options[:schedule_flags].size > 1 || subject || options[:name])
         raise UsageError, "--dry-run does not apply to `workflow sweep --installed`: it changes nothing." if schedule == :status && options[:dry_run]
-        raise UsageError, "--table is for `workflow status`." if options[:table] && subcommand != "status"
+        raise UsageError, "--table is for `workflow status` and `workflow trace`." if options[:table] && !%w[status trace].include?(subcommand)
         raise UsageError, "--needs-me is for `workflow status`." if options[:needs_me] && subcommand != "status"
         raise UsageError, "--needs-me lists runs still going and takes no RUN or --table." if options[:needs_me] && (subject || options[:table])
         raise UsageError, "workflow check runs a status: command, which takes no inputs: --input is for run, start and render." if subcommand == "check" && options[:inputs].any?
@@ -296,6 +296,8 @@ module Workspace
           workflow_action(invocation, "workflow remove", options) { @workflow_command.remove(id: subject, yes: options[:yes], dry_run: options[:dry_run], project: project) }
         when "files"
           @workflow_command.files(run: subject, json: options[:json])
+        when "trace"
+          @workflow_command.trace(run: subject, json: options[:json], table: options[:table] || false)
         when "attempts"
           @workflow_command.attempts(run: subject, step: options[:attempt_of], json: options[:json])
         when "stats"

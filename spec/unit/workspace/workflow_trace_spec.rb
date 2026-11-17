@@ -417,6 +417,11 @@ RSpec.describe Workspace::WorkflowTrace do
       expect(described_class.text_lines(empty)).to include("wall:    -", "tokens:  -", "active:  -")
     end
 
+    it "prints loops as none when empty and as edge counts otherwise" do
+      expect(described_class.totals_lines({loops: {}})).to include("loops:   none")
+      expect(described_class.totals_lines({loops: {"a->b" => 2, "c->d" => 1}})).to include("loops:   a->b 2, c->d 1")
+    end
+
     it "gives table rows matching the header, with - for unknowns" do
       rows = described_class.table_rows(doc)
       expect(rows.first(1)).to eq([%w[1 2026-11-01T09:00:00Z transition - pending running - - - -]])

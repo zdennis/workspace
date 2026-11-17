@@ -136,9 +136,15 @@ module Workspace
       end
       tokens = totals[:tokens] || {}
       lines << "tokens:  " + (tokens[:total] ? "#{token_text(tokens)} (in #{tokens[:in]}, out #{tokens[:out]}, cache #{tokens[:cache]})" : "-")
-      lines << "loops:   #{totals[:loops] || "-"}"
+      lines << "loops:   #{loops_text(totals[:loops])}"
       lines << "attempts: #{totals[:attempts] || "-"}"
       lines
+    end
+
+    def self.loops_text(loops)
+      return loops || "-" unless loops.is_a?(Hash)
+      return "none" if loops.empty?
+      loops.map { |edge, count| "#{edge} #{count}" }.join(", ")
     end
 
     def self.step_label(row, fallback)

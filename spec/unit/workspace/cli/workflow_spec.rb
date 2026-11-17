@@ -570,6 +570,30 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(workflow_command.calls).to eq([[:attempts, {run: "wr_1", step: "plan", json: true}]])
     end
 
+    it "delegates trace to the command, with --json and --table" do
+      run("trace", "wr_1")
+      run("trace", "wr_1", "--json")
+      run("trace", "wr_1", "--table")
+
+      expect(workflow_command.calls).to eq([
+        [:trace, {run: "wr_1", json: false, table: false}],
+        [:trace, {run: "wr_1", json: true, table: false}],
+        [:trace, {run: "wr_1", json: false, table: true}]
+      ])
+    end
+
+    it "gives the JSON document when --json and --table are both given" do
+      run("trace", "wr_1", "--json", "--table")
+
+      expect(workflow_command.calls).to eq([[:trace, {run: "wr_1", json: true, table: true}]])
+    end
+
+    it "refuses trace without a RUN and --table on other subcommands" do
+      expect { run("trace") }.to raise_error(Workspace::UsageError, "workflow trace needs a RUN id (see `workspace workflow status`).")
+      expect { run("attempts", "wr_1", "--table") }.to raise_error(Workspace::UsageError, "--table is for `workflow status` and `workflow trace`.")
+      expect(workflow_command.calls).to be_empty
+    end
+
     it "lists a run's files" do
       cli.run(["workflow", "files", "wr_1", "--json"])
 
