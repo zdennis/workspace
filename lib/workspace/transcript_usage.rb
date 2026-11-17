@@ -10,9 +10,20 @@ module Workspace
     # The last bytes of the session ledger read to find an attempt's session; a ledger is never rotated.
     MAX_LEDGER_BYTES = 1024 * 1024
 
+    # The most of one transcript a reader takes at once; the attempt record reads no more than this tail.
+    MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024
+    # An attempt's start is recorded a moment before its session's hook may have been.
+    START_SLACK = 5
+    # A sub-agent transcript's file name, and the most of them one attempt reads (more is uncounted).
+    SUBAGENT_FILE = /\Aagent-[A-Za-z0-9._-]{1,128}\.jsonl\z/
+    MAX_SUBAGENT_FILES = 64
+    # The most directory entries looked at before the attempt gives up as uncounted.
+    MAX_SUBAGENT_ENTRIES = 4096
+
     SESSION_ID = /\A[A-Za-z0-9._-]{1,128}\z/
     TRANSCRIPT_PATH = %r{\A/[^\x00-\x1f\x7f]{1,4095}\.jsonl\z}
     VERSION = /\A[A-Za-z0-9._+-]{1,50}\z/
+    KIND = /\A[a-z][a-z0-9_-]{0,31}\z/
     MODEL = /\A[A-Za-z0-9._:\/\[\]-]{1,100}\z/
     USAGE_KEYS = %w[input_tokens output_tokens cache_creation_input_tokens cache_read_input_tokens].freeze
 
@@ -123,6 +134,73 @@ module Workspace
       end&.fetch("at", nil)
       return nil if end_at && time(end_at) < started
       [start, !end_at.nil?]
+    end
+
+    # @param entry [Hash] a SessionStart ledger entry
+    # @return [String, nil] the coding agent it names (none named is Claude Code), or nil when not a valid kind
+    def self.agent_kind(entry)
+      kind = entry["kind"].nil? ? "claude" : entry["kind"]
+      (kind.is_a?(String) && KIND.match?(kind)) ? kind : nil
+    end
+
+    # Only a startup or a /clear begins a new transcript file; a resume or a compact goes on in the old one.
+    #
+    # @param entry [Hash] the attempt's SessionStart ledger entry
+    # @param started [Time] the attempt's start
+    # @return [Time] how far back a transcript's lines must reach: the session's start for a new file that
+    #   began after the attempt did, else the attempt's start
+    def self.floor(entry, started)
+      at = %w[startup clear].include?(entry["source"]) ? time(entry["at"]) : nil
+      (at && at >= started) ? at : started
+    end
+
+    # A session that began before the attempt (past {START_SLACK}) is carried over into it. It is trusted
+    # without proof only when the pane's tmux server is known and is the one the session started under,
+    # which rules out a restart that reused the pane id; otherwise its transcript has to show a line in the window.
+    #
+    # @param entry [Hash] the attempt's SessionStart ledger entry
+    # @param started [Time] the attempt's start
+    # @param server [Object, nil] the pane's tmux server pid, or nil when unknown
+    # @return [Boolean] whether the session needs a transcript line in the window to be the attempt's
+    def self.carried?(entry, started, server)
+      at = time(entry["at"])
+      return false unless at && at < started - START_SLACK
+      !(server && entry["tmux_server"] && entry["tmux_server"].to_s == server.to_s)
+    end
+
+    # The sub-agent transcripts of a session: each `agent-*.jsonl` under `<transcript dir>/<session id>/subagents/`.
+    # The directory is derived from the session's own transcript path, never from a hook payload, and no link is
+    # followed. A file last written before `from` (past {START_SLACK}) can't hold a line inside the window; it is
+    # left out and not counted toward {MAX_SUBAGENT_FILES}.
+    #
+    # @param path [String] the session's main transcript
+    # @param session_id [Object] the session id, which must be the transcript file's own name
+    # @param from [Time] the window's start
+    # @return [Array<String>, nil] the files' paths, sorted; empty when there is no such directory; nil (uncounted)
+    #   when the session id is not the file's name, a directory is a link, there are more than
+    #   {MAX_SUBAGENT_ENTRIES} entries or {MAX_SUBAGENT_FILES} files, or the directory can't be listed
+    def self.subagent_files(path, session_id, from)
+      return nil unless session_id.is_a?(String) && SESSION_ID.match?(session_id) && !%w[. ..].include?(session_id) &&
+        session_id == File.basename(path, ".jsonl")
+      session_dir = File.join(File.dirname(path), session_id)
+      dir = File.join(session_dir, "subagents")
+      [session_dir, dir].each do |each|
+        return nil unless File.lstat(each).directory?
+      end
+      seen = 0
+      names = []
+      Dir.each_child(dir) do |name|
+        return nil if (seen += 1) > MAX_SUBAGENT_ENTRIES
+        next unless SUBAGENT_FILE.match?(name)
+        next if File.lstat(File.join(dir, name)).mtime < from - START_SLACK
+        names << name
+        return nil if names.size > MAX_SUBAGENT_FILES
+      end
+      names.sort.map { |name| File.join(dir, name) }
+    rescue Errno::ENOENT, Errno::ENOTDIR
+      []
+    rescue SystemCallError, IOError
+      nil
     end
 
     # @param usages [Array<Hash>] usage hashes

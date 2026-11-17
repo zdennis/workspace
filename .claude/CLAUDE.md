@@ -72,6 +72,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_compare.rb` — `workflow compare`: groups a workflow's runs by definition or pack version.
 - `lib/workspace/workflow_audit.rb` — Checks recorded evidence against its stored copies.
 - `lib/workspace/workflow_budget.rb` — Reads a run's token budget and spend.
+- `lib/workspace/workflow_live_usage.rb` — Reads the running attempt's tokens so far, a capped, cached piece of its transcript at a time.
 - `lib/workspace/workflow_deadline.rb` — Reads a run's `timeout:` and elapsed machine time.
 - `lib/workspace/workflow_downtime.rb` — Records the time the workflow daemon was not running, from a heartbeat file and a span file.
 - `lib/workspace/workflow_run_health.rb` — What `doctor` reports about runs and run locks, read only.
