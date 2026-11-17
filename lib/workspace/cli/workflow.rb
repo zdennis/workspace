@@ -9,7 +9,7 @@ module Workspace
     # {Invocation} it is given, so `--help --json` captures what it prints.
     class Workflow
       # The verbs of `workflow`, in the order `workflow --help` lists them.
-      SUBCOMMANDS = %w[list show validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep resume cancel pause unpause approve reject advance].freeze
+      SUBCOMMANDS = %w[list show validate add update remove install uninstall run start render check simulate status events files attempts audit stats compare sweep recover resume cancel pause unpause approve reject advance].freeze
 
       # @param workflow_command [Workspace::Commands::Workflow, nil] the `workflow` and `step` command; nil refuses both verbs
       # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] the `workflow start` command; nil refuses that verb
@@ -25,7 +25,8 @@ module Workspace
       # @param names [CLI::Names] the working directory of a named workspace
       # @param input [IO] the input stream `workflow remove` asks on (refused under --no-input)
       # @param working_dir [String] the directory the CLI runs from
-      def initialize(workflow_command:, workflow_start_command:, workflow_project:, status_scope:, config:, project_config:, project_detector:, git:, launch_mode:, common:, names:, input:, working_dir:)
+      # @param launcher [CLI::Launcher] launches the workspaces `workflow recover` restores
+      def initialize(workflow_command:, workflow_start_command:, workflow_project:, status_scope:, config:, project_config:, project_detector:, git:, launch_mode:, common:, names:, input:, working_dir:, launcher:)
         @workflow_command = workflow_command
         @workflow_start_command = workflow_start_command
         @workflow_project = workflow_project
@@ -39,6 +40,7 @@ module Workspace
         @names = names
         @input = input
         @working_dir = working_dir
+        @launcher = launcher
       end
 
       # Runs one `workflow` or `step` command line.
@@ -130,7 +132,7 @@ module Workspace
           opts.on("--table", "status: one row per run with its workspace's status and whether its config, tmux session, worktree and state directory exist; finished runs show at every scope") { options[:table] = true }
           opts.on("--ref REF", "start: run the workflow that fits REF's kind (workflows.by_ref.<kind>, then workflows.default, else the one that fits) instead of naming an ID") { |v| options[:ref] = v }
           opts.on("--force", "start: start although the workflow's applies_to: does not list the REF's kind") { options[:force] = true }
-          opts.on("--dry-run", "run, start: report what would start and start nothing; sweep: report what would be done and do nothing (also --install and --uninstall); add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
+          opts.on("--dry-run", "run, start: report what would start and start nothing; sweep, recover: report what would be done and do nothing (sweep: also --install and --uninstall); add, update: check and write no definition (the lock file may be created); remove: check and delete nothing") { options[:dry_run] = true }
           opts.on("--install", "sweep: install the launchd entry that runs the sweep every 5 minutes (a per-user LaunchAgent; opt-in; a running agent daemon also sweeps its workspace every 5 minutes)") { options[:schedule_flags] << :install }
           opts.on("--uninstall", "sweep: unload and remove that launchd entry") { options[:schedule_flags] << :uninstall }
           opts.on("--installed", "sweep: say whether that launchd entry is installed and loaded") { options[:schedule_flags] << :status }
@@ -180,7 +182,7 @@ module Workspace
         return invocation.output.puts(parser.help) if options[:help]
 
         unless subcommand
-          raise UsageError, args.empty? ? "Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+          raise UsageError, args.empty? ? "Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
         end
         raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
         subject = args.shift
@@ -307,6 +309,10 @@ module Workspace
             return
           end
           workflow_action_rows(invocation, "workflow sweep", options) { @workflow_command.sweep(run: subject, name: options[:name], dry_run: options[:dry_run], json: options[:json], caller_pane: ENV["TMUX_PANE"], budget_only: options[:budget_only] || false) }
+        when "recover"
+          raise UsageError, "workflow recover takes no RUN; it looks at every run going." if subject
+          raise UsageError, "workflow recover takes no --name; it looks at every run going." if options[:name]
+          workflow_action_rows(invocation, "workflow recover", options) { @workflow_command.recover(dry_run: options[:dry_run] || false) { |missing| @launcher.launch_missing(invocation, missing) } }
         when "events"
           @workflow_command.events(run: subject, since: workflow_since(options[:since]), json: options[:json], follow: options[:follow] || false)
         when "status"

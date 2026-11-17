@@ -83,6 +83,27 @@ module Workspace
         {exit_code: result && result[:exit_code], projects: projects, result: result, plays: by_project, packs: composed, skipped_packs: skipped_packs, prompts: prompts}
       end
 
+      # Launches the workspaces whose session is gone, each the way it was last
+      # launched (headless ones stay headless), as `relaunch` does. Used by `restore` and `workflow recover`.
+      #
+      # @param invocation [Invocation]
+      # @param names [Array<String>]
+      # @return [Hash{String=>String}] workspace => why it could not be launched
+      def launch_missing(invocation, names)
+        @state.load
+        headless, windowed = names.partition { |name| @state.dig(name, "headless") }
+        [[windowed, nil], [headless, true]].each_with_object({}) do |(batch, mode), failures|
+          next if batch.empty?
+
+          launch = launch(invocation, batch.dup, headless: mode)
+          rows(launch[:projects], launch[:result]).each do |row|
+            failures[row["workspace"]] = row["message"] || row["reason"] if row["outcome"] == "failed"
+          end
+        rescue Workspace::Error => e
+          batch.each { |name| failures[name] = e.message }
+        end
+      end
+
       # One `results` row per launched project, from the state Launch wrote. A row carries `packs`
       # only when +packs+ is given, and `prompt_sent` is nil for a project +prompts+ does not list.
       #

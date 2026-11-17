@@ -94,6 +94,53 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#recover" do
+    it "says it is not available when no recover was wired" do
+      expect { command.recover }.to raise_error(Workspace::Error, /workflow recover is not available/)
+    end
+
+    it "delegates to the recover with dry_run and the launch block, prints a line per row and returns its outcome" do
+      row = {"run_id" => "wr_1", "workspace" => "app", "step" => "plan", "outcome" => "would_restart", "reason" => nil, "message" => "would restore workspace 'app'"}
+      outcome = {exit_code: 0, results: [row], status: "dry_run", extra: {}}
+      recover = double("recover")
+      launched = nil
+      allow(recover).to receive(:call) { |dry_run:, &launch| (launched = launch) && outcome }
+      wired = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, recover: recover, output: output)
+
+      expect(wired.recover(dry_run: true) { |missing| missing }).to eq(outcome)
+
+      expect(recover).to have_received(:call).with(dry_run: true)
+      expect(launched.call(["app"])).to eq(["app"])
+      expect(output.string).to include("wr_1  app  step plan  would restore workspace 'app'", "1 would restart.", "Dry run: nothing was changed. Run `workspace workflow recover` to do it.")
+    end
+
+    it "names the manual command on a refused or failed row, counts them as needing you, and says so when there is nothing to recover" do
+      rows = [{"run_id" => "wr_1", "workspace" => "app", "step" => "plan", "outcome" => "restarted", "message" => "restarted step plan"},
+        {"run_id" => "wr_2", "workspace" => "app", "step" => "plan", "outcome" => "refused", "message" => "limit reached",
+         "next_actions" => [{"action" => "restore", "args" => ["app"], "needs" => []}, {"action" => "workflow resume", "args" => ["wr_2", "--restart-step"], "needs" => []}]},
+        {"run_id" => "wr_3", "workspace" => "web", "step" => "plan", "outcome" => "failed", "message" => "no pane"}]
+      recover = double("recover", call: {exit_code: 3, results: rows, status: "partial", extra: {}})
+      wired = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, recover: recover, output: output)
+
+      wired.recover
+
+      expect(output.string).to include("limit reached. Run: `workspace restore app` or `workspace workflow resume wr_2 --restart-step`", "no pane. Run: `workspace workflow status wr_3`", "1 restarted, 2 need you.")
+
+      output.truncate(0)
+      output.rewind
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree, lock_holder: lock_holder,
+        recover: double("recover", call: {exit_code: 1, results: [{"run_id" => nil, "workspace" => nil, "step" => nil, "outcome" => "failed", "message" => "The run file x.json can't be read."}], status: "failed", extra: {}}), output: output).recover
+      expect(output.string).to include("can't be read.\n", "1 needs you.")
+      expect(output.string).not_to include("Run:")
+
+      output.truncate(0)
+      output.rewind
+      described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree, lock_holder: lock_holder,
+        recover: double("recover", call: {exit_code: 0, results: [], status: "ok", extra: {}}), output: output).recover
+      expect(output.string).to eq("No going runs to recover.\n")
+    end
+  end
+
   describe "#list" do
     it "lists the definitions in a table of id, source and description, marking one that is not valid" do
       allow(catalog).to receive(:list).and_return([

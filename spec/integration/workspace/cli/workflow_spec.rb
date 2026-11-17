@@ -40,6 +40,18 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    context "recover" do
+      it "routes to the command with dry_run and a launch block, and prints one action document" do
+        cli.run(["workflow", "recover", "--dry-run", "--json"])
+
+        name, kw = workflow_command.calls.last
+        expect(name).to eq(:recover)
+        expect(kw).to include(dry_run: true)
+        expect(kw[:launch]).to respond_to(:call)
+        expect(JSON.parse(output.string)).to include("action" => "workflow recover", "status" => "dry_run", "results" => [])
+      end
+    end
+
     context "start" do
       let(:start_command) { CLITestHelpers::FakeWorkflowStartCommand.new }
       let(:built) { build_test_cli(workflow_command: workflow_command, workflow_start_command: start_command, project_config: project_config, project_detector: detector, working_dir: "/some/dir") }
@@ -571,7 +583,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, resume, cancel, pause, unpause, approve or reject/,
+        ["workflow"] => /Missing subcommand: list, show, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
         ["workflow", "files"] => /workflow files needs a RUN id/,

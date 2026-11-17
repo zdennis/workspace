@@ -292,16 +292,17 @@ module Workspace
     def sweep_run(run, pass)
       return nil if pass[:budget_only] && budget_only_skip?(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "finished", message: "the run has ended") if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
-      return paused_row(run) if run.paused
+      held = WorkflowTransitions.held_reason(run.to_h)
+      return paused_row(run) if held == "paused"
       state = run.steps.fetch(run.current)
       running = state.state == "running"
       backoff = WorkflowEngine.backoff(run.to_h, @clock.call)
       return sweep_backoff(run, backoff, pass) if backoff
-      return blocked_row(run) if run.backoff&.dig("blocked") && run.state == "waiting"
-      return budget_row(run) if (run.budget_hold || run.timeout_hold) && run.state == "waiting"
+      return blocked_row(run) if held == "retry_blocked"
+      return budget_row(run) if %w[budget_hold timeout_hold].include?(held)
       reviewing = state.state == "reviewing"
       # A round stopped for a person waits for that person: no daemon is started for it, and nothing reads its pane.
-      return @reviews.held_row(run) if reviewing && run.reason && run.reason["code"] != "waiting_lock"
+      return @reviews.held_row(run) if held == "round_held"
       daemon_needed = running || reviewing || state.state == "checking" || run.parked || run.reason&.dig("code") == "waiting_lock"
       if running && !@panes.alive?(run.id)
         pane = run.pane

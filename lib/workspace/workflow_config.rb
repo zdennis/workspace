@@ -5,6 +5,7 @@ module Workspace
     DEFAULT_TURN_FAILED_AFTER = 1800
     DEFAULT_DOWNTIME_AFTER = 120
     DEFAULT_INFRA_RETRY_MAX = 2
+    DEFAULT_RECOVER_MAX_PER_RUN = 2
 
     # @param config_resolver [Workspace::ConfigResolver]
     def initialize(config_resolver:)
@@ -80,6 +81,19 @@ module Workspace
       value.nil? ? DEFAULT_INFRA_RETRY_MAX : ConfigSchema.parse("workflows.infra_retry.max", value)
     rescue ArgumentError, Workspace::ConfigParseError
       DEFAULT_INFRA_RETRY_MAX
+    end
+
+    # How many automatic reboot recoveries (`workflow recover` step restarts) a
+    # run gets: `workflows.recover.max_per_run` from the global file, `2` when
+    # it is unset, when it holds a value `config set` would refuse, or when the
+    # file can not be parsed. `0` turns them off.
+    #
+    # @return [Integer]
+    def recover_max_per_run
+      value = read("", upto: "global", key: "workflows.recover.max_per_run")
+      value.nil? ? DEFAULT_RECOVER_MAX_PER_RUN : ConfigSchema.parse("workflows.recover.max_per_run", value)
+    rescue ArgumentError, Workspace::ConfigParseError
+      DEFAULT_RECOVER_MAX_PER_RUN
     end
 
     private

@@ -81,6 +81,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_review_sweep.rb` — The sweep's rows for a reviewing step and left-over review windows.
 - `lib/workspace/workflow_sweep_rows.rb` — Helpers the two sweep classes share for building rows.
 - `lib/workspace/workflow_sweep_actions.rb` — Turns a sweep's rows into the `next_actions` of `workflow sweep --json`.
+- `lib/workspace/workflow_recover.rb` — `workflow recover`: after a reboot, restores workspaces whose going runs no person holds, restarts mid-turn steps (limited per run) and wakes runs between turns.
 - `lib/workspace/sweep_schedule.rb` — The opt-in launchd entry that runs `workflow sweep`.
 - `lib/workspace/workflow_check.rb` — Runs a step's `status:` command with a time limit, logging output.
 - `lib/workspace/status_scope.rb` — The one rule for which workspaces a status command reports on.
@@ -564,6 +565,7 @@ Do not run the whole suite while working or before a commit. GitHub Actions runs
 3. Find the integration and system specs at risk. Take the constants each changed `lib/` file defines and grep for them: `grep -rlw WorkflowEngine spec/integration spec/system`. Then go one level out: grep `lib/` for the constant to find its direct callers, and grep the integration and system specs for those callers' constants. When the change alters a method signature, a `--json` field, an error code, printed text another class parses, or a file format, follow every caller, not one level. A change inside one private method's body needs only the first level.
 4. Some files reach many commands:
    - `lib/workspace/cli.rb`, `help_pages.rb`, `json_envelope.rb`, `output_gate.rb`, `error_codes.rb`, or `build_cli` in `lib/workspace.rb`: add `spec/system/workspace/cli_spec.rb`, `spec/system/workspace_spec.rb`, and the specs that build the CLI (`grep -rlE 'build_cli|CLI\.new' spec/integration spec/system`).
+   - A new, renamed or removed verb (a `SUBCOMMANDS` list in `cli.rb` or `cli/*.rb`): also `lib/workspace/shell_init.rb`'s completion word lists and `spec/system/workspace/shell_init_spec.rb`.
    - A file in `spec/support/`: every spec that uses the helper (grep its name).
    - A changed public method signature: `spec/unit/fake_contract_spec.rb`, which holds the spec fakes to the real classes' parameters.
    - A new or changed spec file: add `spec/unit/no_peeking_spec.rb`, which reads every spec as text.

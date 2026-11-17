@@ -886,6 +886,33 @@ module Workspace
           ["workspace workflow sweep --installed", "is the schedule installed and loaded?"]
         ]
       },
+      "recover" => {
+        usage: ["workflow recover [--dry-run] [--json]"],
+        summary: "Bring going runs back after a reboot",
+        about: [
+          "After a reboot or the loss of the tmux server, restores each workspace that has a going run no person",
+          "is holding, restarts a step that was mid-turn (a new attempt with a fresh conversation, in the run's own pane), and wakes a run that was",
+          "between turns (reviewing, checking, a retry backoff). It goes through runs oldest first, one workspace at a time.",
+          "",
+          "Run `workspace workflow recover --dry-run` first: it lists each run and what would happen, and changes nothing.",
+          "Restoring a workspace also brings back its other recorded agent panes, not only the run's.",
+          "",
+          "Each run gets one result (restarted, restored, skipped, refused, failed). Skipped means nothing needed",
+          "doing or a person holds the run. Refused and failed mean the run is still stopped, and the row names the",
+          "command to run. With --json, next_actions lists those commands. Exit status: 0, 3 when some results",
+          "failed or were refused, 1 when all were.",
+          "",
+          "A run is restarted at most workflows.recover.max_per_run times (default 2; set it with `workspace config",
+          "set workflows.recover.max_per_run N`), so a run that keeps dying is left for you."
+        ],
+        options: [["--dry-run", "Say what would be done and do nothing"],
+          ["--json", "Print one action document (see docs/README.json.md), one result per going run, and next_actions"]],
+        examples: [
+          ["workspace workflow recover --dry-run", "which going runs would be brought back?"],
+          ["workspace workflow recover", "restore their workspaces and restart or wake them"],
+          ["workspace workflow recover --json", "for a script: one result per run"]
+        ]
+      },
       "events" => {
         usage: ["workflow events RUN [--since N] [--follow] [--json]"],
         summary: "Show a run's history, one line per event",
