@@ -33,6 +33,8 @@ module Workspace
       # @param engine [Workspace::WorkflowEngine]
       # @param status [Workspace::WorkflowStatus]
       # @param workspace_facts [Workspace::WorkflowWorkspaceFacts, nil] reads the workspace facts `status --table` shows
+      # @param trace [Workspace::WorkflowTrace, nil] reads one run into transition rows, spans and totals (`trace`)
+      # @param downtime [Workspace::WorkflowDowntime, nil] the machine downtime the trace subtracts; only `#spans` is called
       # @param store [Workspace::WorkflowRunStore]
       # @param panes [Workspace::WorkflowPanes]
       # @param files [Workspace::WorkflowFiles] writes a user's definitions (`add`)
@@ -57,7 +59,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, trace: nil, downtime: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
         clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
@@ -67,6 +69,8 @@ module Workspace
         @run_files = run_files
         @lint = lint
         @attempts = attempts
+        @trace = trace
+        @downtime = downtime
         @audit = audit
         @sweep = sweep
         @recover = recover
@@ -656,6 +660,34 @@ module Workspace
         result["unowned_reasons"].each do |reason|
           @output.puts "Reason outside any attempt: #{[reason["step"], reason["code"], reason["since"], reason["until"] || "now"].map { |each| TerminalText.escape(each) }.join("  ")}"
         end
+      end
+
+      # Prints the trace of one run: its events as transition rows, the waits between them and the totals (see
+      # {Workspace::WorkflowTrace}). Reads the run, its whole history and the downtime record, and writes nothing.
+      #
+      # @param run [String] a run id
+      # @param json [Boolean] the document: `run`, `trace_id`, `transitions`, `spans`, `totals`, `warnings`
+      # @param table [Boolean] one grid row per transition row
+      # @return [void]
+      # @raise [Workspace::Error] code `unknown_run`
+      def trace(run:, json: false, table: false)
+        raise Workspace::Error, "workflow trace is not available: no trace reader was wired" unless @trace
+        stored = @store.run(run).to_h
+        events, warnings = trace_events(run)
+        now = @clock.call
+        stops = @downtime ? @downtime.spans(now) : []
+        result = @trace.read(stored, events, now: now, event_errors: @store.event_errors(run), stops: stops, warnings: warnings)
+        if json
+          return document("run" => run, "trace_id" => result[:trace_id], "transitions" => result[:transitions], "spans" => result[:spans],
+            "totals" => result[:totals], "warnings" => result[:warnings])
+        end
+        if table
+          print_grid(WorkflowTrace::TABLE_HEADER, WorkflowTrace.table_rows(result))
+        else
+          @output.puts TerminalText.escape("Run #{stored["id"] || run}  workflow #{stored["workflow"] || "-"}  state #{stored["state"] || "-"}  (times are UTC)")
+          WorkflowTrace.text_lines(result).each { |line| @output.puts TerminalText.escape(line) }
+        end
+        result[:warnings].each { |warning| @output.puts TerminalText.escape("Warning: #{warning[:message]}") }
       end
 
       STATS_HEADER = %w[STEP ATTEMPTS PASSED FAILED MEDIAN RESUMES TOKENS/RUN].freeze
@@ -1347,9 +1379,7 @@ module Workspace
       end
 
       def format_tokens(count)
-        return count.to_s if count < 1000
-        return "#{(count / 1000.0).round}k" if count < 999_500
-        "#{(count / 1_000_000.0).round(1)}M"
+        WorkflowTrace.format_tokens(count)
       end
 
       NEEDS_ME_HEADER = %w[RUN WORKSPACE STEP WAITING WHY DO].freeze
@@ -1693,6 +1723,22 @@ module Workspace
       def event_line(event)
         rest = event.except("n", "ts", "type").map { |key, value| "#{key}=#{(value.is_a?(String) && !value.match?(/[[:cntrl:]]/)) ? value : JSON.generate(value)}" }
         [event["n"].to_s.rjust(4), event["ts"], event["type"], *rest].join("  ")
+      end
+
+      # Every event of a run, read a page at a time; stops when a page does not move the cursor on.
+      def trace_events(run)
+        events = []
+        warnings = []
+        since = 0
+        loop do
+          page = @store.events(run, since: since)
+          events.concat(page["events"])
+          warnings.concat(page["warnings"])
+          break unless page["truncated"]
+          break unless page["next_since"].is_a?(Integer) && page["next_since"] > since
+          since = page["next_since"]
+        end
+        [events, warnings]
       end
 
       def document(body)

@@ -131,6 +131,8 @@ The agent daemon's pane list (`sessions --json`) carries a boolean `turn_failed`
 
 `workflow events RUN --follow --json` prints `{"type":"follow_started","run","since","state","current","definition_sha256"}`, one event per line, a `{"type":"gap","at","run","reason":"history_shorter"|"not_retained","next_since"}` line when lines were lost, and a last `{"type":"follow_ended","run","state","reason":"completed"|"cancelled"|"killed"|"failed"|"pruned"|"timeout","next_since":N}`. The exit code is 0, 1 (the run ended cancelled, killed or failed) or 75 (`--timeout` ran out); see [`workflow events`](README.workflow.md#following-a-runs-events). `daemon watch --json` prints one object per line: `source` (`daemon`, `run` or `watch`), `at`, `type`, `workspace`, `run_id`, `event` and an opaque `cursor` to pass back as `--since`; a `--run` watch ends with a `follow_ended` line carrying `state` (see [`daemon watch`](README.daemon.md#watch)).
 
+`workflow trace RUN --json` (needs `workflow` 54; `workflow_trace` 1) prints `{"schema_version":1,"ok":true,"run","trace_id","transitions","spans","totals","warnings"}`; with both `--json` and `--table`, `--json` wins. A value the run never recorded is `null`, never 0. The keys of each part are in [Tracing a run](README.workflow.md#tracing-a-run).
+
 The same pane list carries `waits` per pane: every open wait as `agent_id`, `tool`, `input` and `since` (the main agent's `agent_id` is `null`). `input` is as sensitive as `waiting_input`, and the panes of `snapshot --json` leave `waits` out (see [`sessions`](README.sessions.md)).
 
 `snapshot --json` prints one read-only document of everything a UI polls (see [`snapshot`](README.snapshot.md)). `--json` is required; a source that can't answer is reported as unavailable (null fields, `daemons_unavailable` rows, `warnings`) rather than as clean, and the command still succeeds. Its `cursor` is `ev:<inode>:<byte offset>` of the event log.
@@ -517,6 +519,9 @@ The plan (`rename --dry-run --json`, from `RenamePlan::Plan#to_h`) has these fie
 | `ask_not_answered` | `ask deliver` named a question with no recorded answer (still open or withdrawn). `details.id`, `details.status`. |
 | `use_ask_answer` | `inbox ack` or `inbox snooze` named an `ask:` id; answer the question with `ask answer` (or close it with `ask withdraw`) instead. `details.id`. |
 | `invalid_cursor` | `events --since` or `daemon watch --since` was given something that isn't a cursor a line of that same command printed (for `daemon watch`, of the same workspace). |
+| `events_lost` | A `workflow trace` warning, not an error: events of the run could not be written to its history, so the trace may lack them. Carries `count` and `types`. |
+| `run_steps_unreadable` | A `workflow trace` warning, not an error: the stored run keeps its `steps` in a form the trace cannot read, so it has no waiting reasons, stalls or clock figures. |
+| `event_line_skipped` | A `workflow trace` warning, not an error: a line of the run history could not be read and was skipped; `message` names the line. |
 | `workflow_source_invalid` | `workflow install`: a `workflows.sources` entry is not a usable source (a non-github.com URL, no owner and repository, or an empty path). `details.source`. |
 | `workflow_source_local_missing` | `workflow install`: a local `workflows.sources` entry is not a readable directory. `details.source`. |
 | `workflow_source_gh_missing` | `workflow install`: a GitHub `workflows.sources` entry needs `gh`, which is not installed; install it with `brew install gh`. `details.source`, `details.install`. |

@@ -160,4 +160,66 @@ RSpec.describe Workspace::WorkflowDeadline do
       expect(described_class.active_seconds(origin, finish, stops)).to eq(100.0)
     end
   end
+
+  describe ".union_length" do
+    def span(from, to) = [start + from, start + to]
+
+    it "counts overlapping spans once" do
+      expect(described_class.union_length([span(0, 10), span(5, 20)])).to eq(20.0)
+    end
+
+    it "counts a contained span once" do
+      expect(described_class.union_length([span(0, 20), span(5, 10)])).to eq(20.0)
+    end
+
+    it "adds disjoint spans" do
+      expect(described_class.union_length([span(0, 5), span(10, 15)])).to eq(10.0)
+    end
+
+    it "is zero for no spans" do
+      expect(described_class.union_length([])).to eq(0.0)
+    end
+  end
+
+  describe ".reason_entries" do
+    it "tags an attempt-owned entry with its step and attempt, and a run-owned one with its own step" do
+      backoff = {"code" => "retry_backoff", "since" => "2026-01-01T00:00:10Z"}
+      lock = {"code" => "waiting_lock", "since" => "2026-01-01T00:00:00Z", "step" => "b"}
+      hash = {"reasons" => [lock], "steps" => {"a" => {"attempts" => [{"n" => 2, "reasons" => [backoff]}]}}}
+
+      expect(described_class.reason_entries(hash)).to eq([
+        {"entry" => lock, "step" => "b", "attempt" => nil},
+        {"entry" => backoff, "step" => "a", "attempt" => 2}
+      ])
+    end
+  end
+
+  describe ".machine_window" do
+    def hash_with(attempts: [], ended: nil, reasons: [])
+      {"ended_at" => ended, "reasons" => reasons, "steps" => {"a" => {"attempts" => attempts}}}
+    end
+
+    it "is nil for a run with no attempts" do
+      expect(described_class.machine_window(hash_with, start + 50)).to be_nil
+    end
+
+    it "runs from the first attempt to the end of an ended run" do
+      hash = hash_with(attempts: [{"n" => 1, "started_at" => "2026-01-01T00:00:10Z"}], ended: "2026-01-01T00:00:30Z")
+
+      expect(described_class.machine_window(hash, start + 999)).to eq([start + 10, start + 30])
+    end
+
+    it "runs a live run to now" do
+      hash = hash_with(attempts: [{"n" => 1, "started_at" => "2026-01-01T00:00:10Z"}])
+
+      expect(described_class.machine_window(hash, start + 50)).to eq([start + 10, start + 50])
+    end
+
+    it "starts at a waiting_lock entry before the first attempt" do
+      hash = hash_with(attempts: [{"n" => 1, "started_at" => "2026-01-01T00:00:10Z"}],
+        reasons: [{"code" => "waiting_lock", "since" => "2026-01-01T00:00:02Z"}])
+
+      expect(described_class.machine_window(hash, start + 50)).to eq([start + 2, start + 50])
+    end
+  end
 end

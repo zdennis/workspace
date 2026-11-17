@@ -414,6 +414,7 @@ require_relative "workspace/workflow_status"
 require_relative "workspace/workflow_needs_me"
 require_relative "workspace/workflow_run_loader"
 require_relative "workspace/workflow_stats"
+require_relative "workspace/workflow_trace"
 require_relative "workspace/workflow_graph"
 require_relative "workspace/workflow_graph_text"
 require_relative "workspace/workflow_graph_mermaid"
@@ -1178,6 +1179,8 @@ module Workspace
       lint: WorkflowLint.new(library: library, commands_config: commands_config, lineage: lineage, project_config: project_config,
         workflow_config: WorkflowConfig.new(config_resolver: config_resolver)),
       attempts: WorkflowAttempts.new,
+      trace: WorkflowTrace.new,
+      downtime: workflow_downtime,
       audit: WorkflowAudit.new(attempts: WorkflowAttempts.new, dir: config.workflow_evidence_dir),
       sweep: workflow_sweep,
       recover: workflow_recover,

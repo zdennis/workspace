@@ -755,6 +755,33 @@ module Workspace
           ["workspace workflow attempts RUN --json", "for a script: one row per attempt, with sessions, hashes and reasons"]
         ]
       },
+      "trace" => {
+        usage: ["workflow trace RUN [--table] [--json]"],
+        summary: "Show a run as a timeline: every transition, its spans and where the time went",
+        about: [
+          RUN_ID,
+          "",
+          "A going or finished run, oldest event first. The default is text: one line per transition (time in UTC,",
+          "step, attempt, what happened), then the totals. --table prints one grid row per transition instead.",
+          "A row ends with the time since the step's previous row. A row with no #N is a step-level transition, such as plan",
+          "passed -> waiting at a gate. A running -> running row is a stamped event that did not change state.",
+          "--json prints one document: run, trace_id, transitions, spans (attempt, review_round, gate, wait, stall",
+          "and downtime), totals and warnings; with both --json and --table, --json wins. A value the run never",
+          "recorded is - (null), never 0.",
+          "",
+          "Totals: wall is start to end (or now); active is the time the run's clock ran; stopped is the time it",
+          "stood still (wall minus active, including daemon downtime). The waiting reasons (a gate, a question, a",
+          "failed check and so on) can overlap, so together they can add up to more than stopped. Machine waits",
+          "(a lock, a retry backoff) sit inside active. Tokens, loops and attempts are counted over the run.",
+          "Reads the run file and its events and writes nothing."
+        ],
+        options: [["--table", "One grid row per transition instead of the text timeline"], JSON_OPT],
+        examples: [
+          ["workspace workflow trace RUN", "where a run's time went: the timeline, then the totals"],
+          ["workspace workflow trace RUN --table", "the same transitions as a grid"],
+          ["workspace workflow trace RUN --json", "for a script: transitions, spans, totals and warnings"]
+        ]
+      },
       "audit" => {
         usage: ["workflow audit RUN [--attempt-of STEP] [--json]"],
         summary: "Check a run's kept evidence against the hashes recorded for it",

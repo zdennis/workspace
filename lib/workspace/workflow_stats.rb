@@ -89,6 +89,21 @@ module Workspace
       end
     end
 
+    # {WorkflowBudget}'s rule, so a run's tokens here match its budget's `used`: every attempt but a not_delivered one,
+    # ended without an outcome too (a cancel or `resume --from`), but not the one still going. A redelivered attempt
+    # did no work and is also left out.
+    #
+    # @param run [WorkflowRun]
+    # @param id [String] the step id
+    # @param attempts [Array<WorkflowRun::Attempt>] the step's attempts, as `run.step(id).attempts` gives them
+    # @param attempt [WorkflowRun::Attempt] one of the objects in +attempts+, not a copy (the going attempt is found by identity with the last)
+    # @return [Boolean]
+    def self.tokens_count?(run, id, attempts, attempt)
+      return false unless WorkflowBudget.counted_attempt?(attempt) && kind_of(attempt) != :not_delivered
+      going = !WorkflowRunStore::TERMINAL_STATES.include?(run.state) && id == run.current && attempt.equal?(attempts.last) && attempt.outcome.nil?
+      !going
+    end
+
     private
 
     def order(rows, first)
@@ -146,7 +161,7 @@ module Workspace
             seconds = seconds_of(attempt)
             t["durations"] << seconds if seconds
           end
-          paid << attempt if tokens_count?(run, id, attempts, attempt, kind)
+          paid << attempt if self.class.tokens_count?(run, id, attempts, attempt)
         end
         t["unfinished_tokens"] = paid.count { |attempt| kind_of(attempt) == :unfinished && WorkflowBudget.attempt_tokens(attempt) }
         sums = paid.map { |attempt| WorkflowBudget.attempt_tokens(attempt) }
@@ -156,15 +171,6 @@ module Workspace
         end
         [id, t]
       end
-    end
-
-    # {WorkflowBudget}'s rule, so a run's tokens here match its budget's `used`: every attempt but a not_delivered one,
-    # ended without an outcome too (a cancel or `resume --from`), but not the one still going. A redelivered attempt
-    # did no work and is also left out.
-    def tokens_count?(run, id, attempts, attempt, kind)
-      return false unless WorkflowBudget.counted_attempt?(attempt) && kind != :not_delivered
-      going = !WorkflowRunStore::TERMINAL_STATES.include?(run.state) && id == run.current && attempt.equal?(attempts.last) && attempt.outcome.nil?
-      !going
     end
 
     def kind_of(attempt) = self.class.kind_of(attempt)

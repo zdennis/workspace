@@ -132,6 +132,45 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    context "trace" do
+      let(:root) { Dir.mktmpdir }
+      let(:out) { StringIO.new }
+      let(:err) { StringIO.new }
+      let(:real_cli) do
+        FileUtils.mkdir_p(File.join(root, "runs"))
+        File.write(File.join(root, "runs", "wr_simulated.json"), File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/looped_twice.json")))
+        store = Workspace::WorkflowRunStore.new(dir: File.join(root, "runs"), archive_dir: File.join(root, "archive"))
+        command = Workspace::Commands::Workflow.new(lint: nil, catalog: nil, engine: nil, status: nil, store: store, panes: nil, files: nil, run_files: nil, process_tree: nil, lock_holder: nil,
+          trace: Workspace::WorkflowTrace.new, output: out)
+        build_test_cli(workflow_command: command, output: out, error_output: err)[0]
+      end
+
+      after { FileUtils.remove_entry(root) }
+
+      it "prints the trace document with --json" do
+        real_cli.run(["workflow", "trace", "wr_simulated", "--json"])
+
+        doc = JSON.parse(out.string)
+        expect(doc).to include("ok" => true, "run" => "wr_simulated")
+        expect(doc.keys).to include("trace_id", "transitions", "spans", "totals", "warnings")
+      end
+
+      it "prints text and a table without a process" do
+        real_cli.run(["workflow", "trace", "wr_simulated"])
+        expect(out.string).to include("Run wr_simulated")
+        out.truncate(0)
+        out.rewind
+
+        real_cli.run(["workflow", "trace", "wr_simulated", "--table"])
+        expect(out.string.lines.first.split).to eq(%w[N TS KIND STEP#ATTEMPT FROM TO ACTOR CAUSE DURATION TOKENS])
+      end
+
+      it "exits 1 with unknown_run for an unknown run" do
+        expect { real_cli.run(["workflow", "trace", "wr_nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(out.string + err.string).to include("unknown_run")
+      end
+    end
+
     context "recover" do
       it "routes to the command with dry_run and a launch block, and prints one action document" do
         cli.run(["workflow", "recover", "--dry-run", "--json"])
@@ -488,7 +527,7 @@ RSpec.describe Workspace::CLI do
 
     it "refuses --table on the other subcommands, and with a RUN and a scope flag" do
       expect { cli.run(["workflow", "show", "rpiv", "--table"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("--table is for `workflow status`.")
+      expect(error_output.string).to include("--table is for `workflow status` and `workflow trace`.")
 
       expect { cli.run(["workflow", "status", "wr_1", "--table", "--name", "X"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("workflow status RUN takes no --name, --project or --all")
@@ -675,7 +714,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects bad usage, as an envelope under --json" do
       {
-        ["workflow"] => /Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject/,
+        ["workflow"] => /Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject/,
         ["workflow", "validate"] => /workflow validate needs a PATH, or - for stdin/,
         ["workflow", "events"] => /workflow events needs a RUN id/,
         ["workflow", "files"] => /workflow files needs a RUN id/,

@@ -23,6 +23,7 @@ workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [-
 workspace workflow status --needs-me [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow events RUN [--since N] [--types A,B] [--follow [--timeout DURATION]] [--json]
 workspace workflow files RUN [--json]
+workspace workflow trace RUN [--table] [--json]
 workspace workflow attempts RUN [--attempt-of STEP] [--json]
 workspace workflow audit RUN [--attempt-of STEP] [--json]
 workspace workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
@@ -58,6 +59,7 @@ workspace step status [--json]
 | `workflow start` | Make a workspace from a ticket, pull request, issue or branch `REF`, or from `--prompt TEXT`, wait for its coding agent and run the workflow in it. The `ID` may be left out when config names a default. `--dry-run` checks everything and makes nothing. `--ref REF` in place of `ID` picks the workflow from the ref's kind ([routing](#routing-a-ref-to-a-workflow)). See [Starting from a ticket or a prompt](#starting-from-a-ticket-or-a-prompt) and [Default workflows](#default-workflows) |
 | `workflow status` | The runs still going in this workspace, another's (`--name`), a project's (`--project`) or every workspace's (`--all`), or one run (`RUN`). Each shows its step and, when it is not moving, [why](#where-a-run-is-stuck). See [Which runs `status` shows](#which-runs-status-shows). `--table` prints one row per run beside its workspace: [the status table](#the-status-table). `--needs-me` lists only the runs waiting for you: [what needs you](#what-needs-you) |
 | `workflow events` | A run's history (going or finished), one line per event, oldest first. `--since N` gives only the events after line N; at most 1000 at a time. `--types A,B` keeps only those types; `--follow` keeps reading and `--timeout` bounds it. See [Reading a run's events](#reading-a-runs-events) |
+| `workflow trace` | A run as a timeline, going or finished: every transition, its spans and where the time went (active, stopped, waiting by reason, tokens, loops). `--table` prints a grid, `--json` one document. Reads the run file and its events and writes nothing. See [Tracing a run](#tracing-a-run) |
 | `workflow attempts` | What a run recorded about each attempt, going or finished: outcome, failure code, HEAD before and after, hashes, packs, outputs, check, agent, session, tokens and reasons. Reads the run file and writes nothing. See [Reading a run's attempts](#reading-a-runs-attempts) |
 | `workflow audit` | Check the evidence copies a run kept against the hashes recorded for them, going or finished. Exits 1 when a copy changed, is gone or was replaced. Reads the run file and the evidence directory and writes nothing. With `--json`, `next_actions` says what to look at after a mismatch. See [Auditing a run's evidence](#auditing-a-runs-evidence) |
 | `workflow stats` | How each step of a workflow went across its runs, going and finished, in every workspace unless `--name` or `--project` narrows it: attempts, passes, failures, median time, resumes and tokens per run. `--last DURATION` keeps the runs started in that window. Reads the run files and writes nothing. See [Step statistics](#step-statistics) |
@@ -954,6 +956,80 @@ Without `--interrupt` the agent keeps working until its turn ends, and the run t
 - `run_not_active`: the run has finished or was cancelled.
 - `run_paused`: `workflow resume` (or a resume from the run's own pane) on a paused run; unpause it first.
 - `bound_pane`: `workflow unpause`, or `workflow pause --interrupt`, from a pane bound to a run or a process under the run's own pane, so the run's agent cannot lift a person's hold. A plain `pause` is allowed there.
+
+### Tracing a run
+
+Use `workflow trace RUN` to see where one run's time went. [`workflow events`](#reading-a-runs-events) is the raw event stream, [`workflow attempts`](#reading-a-runs-attempts) shows what the run file recorded about each attempt, and [`workflow stats`](#step-statistics) totals steps across many runs. `trace` reads the run file and its events, going or finished, and writes nothing. It needs the `workflow_trace` feature (`workflow` revision 54).
+
+```
+Run wr_261111011632jzju  workflow rpiv-auto-approve-local-ship  state waiting  (times are UTC)
+01:16:32  run_started - -> running
+...
+01:23:04  implement#1 - -> running
+01:23:07  implement#1 running -> running  3s
+          waited 301s (turn_ended_background)
+01:28:46  implement#1 running -> passed  339s  103k tok
+01:43:43  ship#1 step_reported  156s
+01:43:52  ship#1 running -> failed  cause=reported  9s  82k tok
+          waiting since 01:43:52 (failed_check)
+Totals
+wall:    158h33m
+active:  21m
+stopped: 158h12m
+waiting: turn_ended_background 316s, turn_ended_incomplete 36s, failed_check 158h6m (reasons can overlap, so they can add up to more than stopped)
+tokens:  821k (in 242, out 50368, cache 770598)
+loops:   none
+attempts: 9
+```
+
+The same run with `--table`:
+
+```
+N   TS                    KIND        STEP#ATTEMPT  FROM     TO       ACTOR  CAUSE  DURATION  TOKENS
+1   2026-11-11T01:16:32Z  transition  -             -        running  -      -      -         -
+2   2026-11-11T01:16:32Z  transition  research#1    -        running  -      -      -         -
+3   2026-11-11T01:16:36Z  transition  research#1    running  running  -      -      4s        -
+4   2026-11-11T01:18:12Z  marker      research#1    -        -        -      -      96s       -
+```
+
+The first line names the run, its workflow and its state. A row is the time in UTC, `step#attempt` (or the event type for a run-level row such as `run_started`), then the state change (`from -> to`, `-` for no earlier state) or, for an event that does not change state, its type. After that come `actor=` and `cause=` when set, the time since the step's previous row, and the attempt's tokens on the row that ends it. A step's first row has no previous row, so the text output leaves its duration out (`--table` prints `-`). An indented line is a wait of more than a few seconds: `waited 301s (REASON)` once over, `waiting since TIME (REASON)` while it goes on. The [reasons](#where-a-run-is-stuck) are the codes `workflow status` shows. A `Totals` block follows (`wall`, `active`, `stopped`, `waiting`, `tokens`, `loops`, `attempts`). `--table` prints one grid row per transition, with the header `N TS KIND STEP#ATTEMPT FROM TO ACTOR CAUSE DURATION TOKENS`. `--json` prints one document, and wins when both are given.
+
+The totals use the run's `timeout:` clock (see [Active time](#active-time)). `wall` is start to end, or to now for a going run. `clock` (`clock_seconds` in `--json`; the text prints only its two parts) is the window that clock covers, split into `active` (the clock ran) and `stopped` (it stood still). It stops for the waits that belong to a person (a pause, a park, a failed check, waiting on you, a gate), for a stall the sweep recorded, and for time the workflow daemon was not running. It keeps running for a lock wait (`waiting_lock`) and a retry backoff (`retry_backoff`); those show as `machine_waiting_seconds` and sit inside `active`. For example, a clock of 100s can be `active` 70s plus `stopped` 30s. If the run was stalled for 20s and paused for 15s, `waiting` lists `stalled 20s` and `paused 15s`, 35s in all, more than the 30s stopped, because the two overlapped for 5s. `stopped` is the exact figure; `waiting` is by reason.
+
+#### Trace keys
+
+`workflow trace --json` prints `{"schema_version":1,"ok":true,"run":ID,"trace_id":HEX,"transitions":[...],"spans":[...],"totals":{...},"warnings":[...]}`. `trace_id` is the first 32 hex digits of the SHA256 of the run id, so it is the same on every read. A value the run never recorded is `null`, never 0.
+
+Each transition has 17 keys: `n` (the event's line number; rows follow `n`, never `ts`), `ts`, `kind` (`transition` for an event that changes state, `marker` for any other), `type` (the event type), `from` and `to` (the run's state before and after), `step`, `attempt`, `round`, `cause`, `actor`, `duration_ms` (the time since the step's previous row), `tokens`, `exit_code`, `code`, `evidence` (the copies the step kept, each `name`, `kind`, `source`, `sha256`, `bytes`) and `derived`. `derived` is `true` when the event did not stamp both `from_state` and `to_state` (an older run, or a marker), so `from` or `to` was worked out from the event's type and the step's earlier rows. `tokens` is `{"total","in","out","cache"}` and sits on exactly one row of each attempt, the one that ends it; it is `null` when the attempt has no readable usage or was never delivered (a redelivered or not-delivered attempt), as `totals.tokens` does not count it. `cache` counts cache-creation tokens only, not cache reads.
+
+Every span has the same 15 keys, `null` where one does not apply: `span_id` (16 hex digits, stable across reads), `kind`, `step`, `attempt`, `round`, `started_at`, `ended_at` (`null` while the span is open), `code`, `outcome`, `actor`, `note`, `tokens`, `head_before`, `head_after` and `retry_of`. `kind` is one of:
+
+| `kind` | Covers |
+|---|---|
+| `attempt` | One attempt of a step: `outcome`, `code`, `tokens`, `head_before`, `head_after` and `retry_of`. |
+| `review_round` | One review round that ran in a pane, with its own `tokens`. Those tokens are already in the attempt span's `tokens`, so adding every span's tokens counts them twice. |
+| `gate` | The time a step waited at a gate, from `gate_waiting` to the next `gate_approved` or `gate_rejected`, with `actor` and `note`. A reject followed by another wait gives two spans. |
+| `wait` | One reason the run's clock stood still or the run waited, with the reason as `code` (`unknown` when none is recorded). A gate's own wait is not repeated here. |
+| `stall` | A stretch the run stalled, `code` `stalled`. |
+| `downtime` | A stretch the workflow daemon was not running. |
+
+`totals` holds:
+
+| Key | Meaning |
+|---|---|
+| `wall_seconds` | Start to end, or to now for a going run. |
+| `clock_seconds` | The run's clock window. |
+| `active_seconds` | The time the run's clock ran. |
+| `stopped_seconds` | The time it stood still, daemon downtime included. `active_seconds` plus `stopped_seconds` is `clock_seconds` to the millisecond. |
+| `waiting_seconds` | Seconds by reason: every person or machine-free reason code, plus `gate`, `stalled`, `downtime` and `unknown`. Reasons can overlap (a pause during a stall), so the figures can add up to more than `stopped_seconds`. They add up to less when events were lost, because the spans come from events; `stopped_seconds` is the exact figure. |
+| `machine_waiting_seconds` | Seconds by reason for waits the clock counts as active (`waiting_lock`, `retry_backoff`). They sit inside `active_seconds`. |
+| `tokens` | `{"total","in","out","cache"}` over the run's attempts; all `null` when none count or a counted attempt has no readable usage. |
+| `loops` | Loop counts by edge (`{"EDGE":COUNT}`, empty when the run looped nowhere). |
+| `attempts` | Attempts in the run. |
+
+The clock figures, `waiting_seconds` and `machine_waiting_seconds` are `null` when the clock has no origin.
+
+`warnings` holds objects with a `code` and a `message`. `events_lost` also has `count` and `types` (the lines the history lost, and their types): the spans then miss time, and `waiting_seconds` can fall short of `stopped_seconds`. `event_line_skipped` means a line of the history could not be read and was skipped. `run_steps_unreadable` means the run file's `steps` could not be read: the trace then has no wait or stall spans and the clock figures are null.
 
 ### Reading a run's attempts
 
