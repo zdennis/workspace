@@ -137,8 +137,9 @@ module Workspace
 
     # Why a restart of the run's current step would be refused, without changing anything. See {WorkflowDecisions#restart_refusal}.
     # @param run [WorkflowRun, Hash{String=>Object}]
+    # @param bound [String] what the caller knows of the bound pane (`unknown` by default)
     # @return [Workspace::Error, nil]
-    def restart_refusal(run) = @decisions.restart_refusal(run)
+    def restart_refusal(run, bound: "unknown") = @decisions.restart_refusal(run, bound: bound)
 
     # Stores a resume for later, with {#resume}'s arguments. See {WorkflowDecisions#park}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}

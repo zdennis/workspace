@@ -160,9 +160,11 @@ module Workspace
     # @param bound [String, nil] with +restart_step+, what the caller saw of the bound pane: `gone`, `shell`, `failed`,
     #   `idle`, `busy` or `unknown` (nil reads `unknown`), seen before the run lock is taken, so a turn that starts in
     #   between is not caught; see {WorkflowTransitions.restart_refusal}
-    # @param reboot_recovery [Hash, nil] with +restart_step+ (UsageError without), `{"workspace" => name}` of a reboot recovery:
-    #   once every refusal has passed, the run's `reboot_recoveries` rises by one and `reboot_recovered` (`workspace`,
-    #   `outcome` `restarted`, `count`) is queued in the same change
+    # @param reboot_recovery [Hash, nil] with +restart_step+ (UsageError without), `{"workspace" => name, "attempt" => n}` of a
+    #   reboot recovery: under the run's lock it is refused `no_open_attempt` when the open attempt is no longer `n` (nil
+    #   checks none), and `infra_retry_not_claimed` while the step's infra retry is claimed (a live claim: the claimant
+    #   restarts it); once every refusal has passed, the run's `reboot_recoveries` rises by one and `reboot_recovered`
+    #   (`workspace`, `outcome` `restarted`, `count`) is queued in the same change
     # @param infra_retry [Hash, nil] with +restart_step+, the claimant ("pid", "started") of the step's infra retry
     #   ({WorkflowRecovery#claim_infra_retry}): the restart is that retry, refused with `infra_retry_not_claimed` unless the
     #   current attempt's retry is claimed (or its claim stale) by this claimant, and its `run_resumed` carries `infra_retry` (the
@@ -348,12 +350,14 @@ module Workspace
     # restart that would be refused.
     #
     # @param run [WorkflowRun, Hash{String=>Object}] a stored run that has not finished
+    # @param bound [String] what the caller knows of the bound pane, as {#resume}'s +bound+ (`workflow recover` asks
+    #   with `gone`: the pane its restore brings back is judged later)
     # @return [Workspace::Error, nil] the refusal (e.g. code `run_paused`, `gate_waiting`, `no_open_attempt`,
     #   `step_still_working`, `attempts_spent`, `step_attempts_spent`, `budget_spent` or `run_timed_out`), or nil
-    def restart_refusal(run)
+    def restart_refusal(run, bound: "unknown")
       run = WorkflowRun.from_h(run).to_h
       refuse_resume(run)
-      refusal = WorkflowTransitions.restart_refusal(run, step_state(run), @clock.call, "unknown")
+      refusal = WorkflowTransitions.restart_refusal(run, step_state(run), @clock.call, bound)
       return refusal if refusal
       refuse_budget(run, extra_attempts: nil, extra_tokens: nil)
       nil
@@ -736,6 +740,7 @@ module Workspace
       raise refusal if refusal
       step = stored["current"]
       n = state["attempts"].last["n"]
+      refuse_reboot_recovery(stored, n, reboot_recovery) if reboot_recovery && !infra_retry
       old_pane = bound_pane(stored)
       moving = pane && pane != old_pane
       check_other_pane(pane, stored["id"]) if moving
@@ -761,6 +766,20 @@ module Workspace
       event(stored, "run_resumed", {"step" => step, "state" => "running", "restart_step" => true}.merge(retry_n ? {"infra_retry" => retry_n} : {}))
       dispatch(stored, ctx, "resume", context: "fresh", budgeted: true, retry_of: {"attempt" => n})
       WorkflowRun.from_h(stored)
+    end
+
+    # A reboot recovery restarts only the attempt it saw, and never one whose infra retry another process has claimed.
+    def refuse_reboot_recovery(stored, n, reboot_recovery)
+      ids = {"run_id" => stored["id"], "step" => stored["current"]}
+      expected = reboot_recovery["attempt"]
+      if expected && expected != n
+        raise Workspace::Error.new("Step #{stored["current"]} of run #{stored["id"]} is on attempt #{n} now, not attempt #{expected}, so it was not restarted. Nothing was changed.",
+          code: "no_open_attempt", details: ids.merge("state" => step_state(stored)["state"], "attempt" => n, "expected" => expected))
+      end
+      info = WorkflowTransitions.infra_retry(stored, @clock.call)
+      return unless info && info[:state] == :claimed
+      raise Workspace::Error.new("Step #{stored["current"]} of run #{stored["id"]} has its infra retry claimed by another process, which restarts it, so it was not restarted. Nothing was changed.",
+        code: "infra_retry_not_claimed", details: ids.merge("pid" => info[:claimed_by]&.dig("pid")))
     end
 
     # Raises the run's `reboot_recoveries` by one and queues `reboot_recovered` with the new count, once the restart is certain.

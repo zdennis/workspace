@@ -81,6 +81,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_review_sweep.rb` — The sweep's rows for a reviewing step and left-over review windows.
 - `lib/workspace/workflow_sweep_rows.rb` — Helpers the two sweep classes share for building rows.
 - `lib/workspace/workflow_sweep_actions.rb` — Turns a sweep's rows into the `next_actions` of `workflow sweep --json`.
+- `lib/workspace/workflow_recover.rb` — `workflow recover`: after a reboot, restores workspaces whose going runs no person holds, restarts mid-turn steps (limited per run) and wakes runs between turns.
 - `lib/workspace/sweep_schedule.rb` — The opt-in launchd entry that runs `workflow sweep`.
 - `lib/workspace/workflow_check.rb` — Runs a step's `status:` command with a time limit, logging output.
 - `lib/workspace/status_scope.rb` — The one rule for which workspaces a status command reports on.
