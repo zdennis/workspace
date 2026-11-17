@@ -27,6 +27,8 @@ module Workspace
 
     NAME_OPT = name_opt
     RUN_ID = "RUN is a workflow run id (see `workspace workflow status`).".freeze
+    # The defaulting rule the run-id verbs' pages share: a left-out RUN resolves as {Commands::Workflow#default_run}.
+    DEFAULT_RUN = "With RUN left out, the run this pane is bound to is used, else the one run going in this checkout; several going runs refuse with ambiguous_run and RUN is needed.".freeze
     PANE_OPT = ["--pane PANE", "The pane to run in (%19 or 0.1) instead of the workspace's Claude pane"].freeze
     REVISION_OPT = ["--if-revision REV", "Refuse with stale_revision unless the plan's revision is REV"].freeze
     AGENT_KINDS = "claude, codex, opencode, pi".freeze
@@ -738,10 +740,11 @@ module Workspace
         ]
       },
       "attempts" => {
-        usage: ["workflow attempts RUN [--attempt-of STEP] [--json]"],
+        usage: ["workflow attempts [RUN] [--attempt-of STEP] [--json]"],
         summary: "Show what a run recorded about each attempt",
         about: [
           RUN_ID,
+          DEFAULT_RUN,
           "",
           "A going or finished run, oldest attempt first: step, attempt, outcome, code, HEAD before>after, how long it",
           "took and the main thread's tokens (in/out). --json adds the agent, session, hashes, packs, outputs, the",
@@ -783,10 +786,11 @@ module Workspace
         ]
       },
       "audit" => {
-        usage: ["workflow audit RUN [--attempt-of STEP] [--json]"],
+        usage: ["workflow audit [RUN] [--attempt-of STEP] [--json]"],
         summary: "Check a run's kept evidence against the hashes recorded for it",
         about: [
           RUN_ID,
+          DEFAULT_RUN,
           "",
           "Compares each prompt, check log and output the engine copied to the state directory with the SHA-256 it",
           "recorded, for a going or finished run. OK: the copy matches. CHANGED, MISSING, REPLACED: the copy no longer",
@@ -1034,10 +1038,11 @@ module Workspace
         ]
       },
       "events" => {
-        usage: ["workflow events RUN [--since N] [--types A,B] [--follow [--timeout DURATION]] [--json]"],
+        usage: ["workflow events [RUN] [--since N] [--types A,B] [--follow [--timeout DURATION]] [--json]"],
         summary: "Show a run's history, one line per event",
         about: [
           RUN_ID,
+          DEFAULT_RUN,
           "",
           "A going or finished run: n (its line number), ts, type and the rest; oldest first, at most 1000 after",
           "--since N. --json adds truncated and next_since to continue from.",
@@ -1072,10 +1077,11 @@ module Workspace
         ]
       },
       "files" => {
-        usage: ["workflow files RUN [--json]"],
+        usage: ["workflow files [RUN] [--json]"],
         summary: "List the files a run keeps",
         about: [
           RUN_ID,
+          DEFAULT_RUN,
           "",
           "Each attempt's prompt and check log, and each step's produces entries, with whether each exists and",
           "its size (a link is reported, never followed)."
@@ -1088,11 +1094,12 @@ module Workspace
         ]
       },
       "resume" => {
-        usage: ["workflow resume RUN [--from STEP | --restart-step] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--extra-rounds N] [--json]",
-          "workflow resume RUN --accept-guard --note WHY [--retry] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
+        usage: ["workflow resume [RUN] [--from STEP | --restart-step] [--note TEXT] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--extra-rounds N] [--json]",
+          "workflow resume [RUN] --accept-guard --note WHY [--retry] [--pane PANE] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
         summary: "Get a run going again",
         about: [
           RUN_ID,
+          DEFAULT_RUN,
           "",
           "Asks for its lock again, runs a failed or undelivered step again, looks again at a step whose files",
           "were missing, or moves it to the workspace's Claude pane when its own is gone. --from at a waiting",
@@ -1185,9 +1192,9 @@ module Workspace
         ]
       },
       "cancel" => {
-        usage: ["workflow cancel RUN [--json]"],
+        usage: ["workflow cancel [RUN] [--json]"],
         summary: "End a run and release the locks it holds",
-        about: [RUN_ID, "", "It does not type into the pane: the agent there is left as it is. A run that has ended is refused.",
+        about: [RUN_ID, DEFAULT_RUN, "", "It does not type into the pane: the agent there is left as it is. A run that has ended is refused.",
           "A step being reviewed has its round ended (the round's usage recorded) and its review window closed."],
         options: [JSON_OPT],
         examples: [
@@ -1197,9 +1204,9 @@ module Workspace
         ]
       },
       "pause" => {
-        usage: ["workflow pause RUN [--interrupt] [--reason TEXT] [--json]"],
+        usage: ["workflow pause [RUN] [--interrupt] [--reason TEXT] [--json]"],
         summary: "Hold a run: nothing new starts until you unpause it",
-        about: [RUN_ID, "",
+        about: [RUN_ID, DEFAULT_RUN, "",
           "Pausing does not stop the agent's current turn unless you give --interrupt. When that turn ends, the run",
           "holds instead of starting the next step. While paused, no step, retry or review round starts, and the",
           "step's and round's time limits stop counting. Run `workflow unpause` to let it go on.",
@@ -1221,9 +1228,9 @@ module Workspace
         ]
       },
       "unpause" => {
-        usage: ["workflow unpause RUN [--json]"],
+        usage: ["workflow unpause [RUN] [--json]"],
         summary: "Let a paused run go on, doing what the pause held",
-        about: [RUN_ID, "",
+        about: [RUN_ID, DEFAULT_RUN, "",
           "Starts the step, line or review round the pause held back, or looks at a turn that ended while paused. If",
           "`pause --interrupt` stopped the agent, it is told to continue once its pane is idle. An agent that is still",
           "working is left alone. `unpaused` in --json says what was done: `action`, `held`, and `continued` or",
@@ -1239,10 +1246,11 @@ module Workspace
         ]
       },
       "approve" => {
-        usage: ["workflow approve RUN [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]"],
+        usage: ["workflow approve [RUN] [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]"],
         summary: "Pass a run's gate",
         about: [
           RUN_ID,
+          DEFAULT_RUN,
           "",
           "Refused from a pane a run is bound to and from a process under the run's own pane, so an agent",
           "doesn't pass its own plan by mistake. When the gated step's first file starts with `note: FILE`, the",
@@ -1261,10 +1269,11 @@ module Workspace
         ]
       },
       "reject" => {
-        usage: ["workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
+        usage: ["workflow reject [RUN] --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]"],
         summary: "Turn a run's gate down",
         about: [
           RUN_ID,
+          DEFAULT_RUN,
           "",
           "The gated step (or --to an earlier one) runs again with the note. Refused from a pane a run is bound",
           "to and from a process under the run's own pane, as approve is. It is refused (attempts_spent) when",

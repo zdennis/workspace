@@ -752,12 +752,34 @@ RSpec.describe Workspace::CLI do
         expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit)
         expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage")
       end
-      expect(workflow_command.calls).to be_empty
+      # The verbs with a defaultable id ask the run resolver when the positional is left out
+      # (it answers nil here: no pane binding, no going run); the verb itself is never reached.
+      expect(workflow_command.calls.reject { |name, _| name.to_s.start_with?("default_") }).to be_empty
+    end
+
+    it "resolves a bound pane's run for a verb given no id" do
+      stub_env("TMUX_PANE" => "%5")
+      workflow_command.default_run_id = "wr_9"
+
+      cli.run(["workflow", "events"])
+
+      expect(workflow_command.calls).to include([:default_run, {caller_pane: "%5", workspace: "detected-ws", author_only: false}], [:events, {run: "wr_9", since: 0, json: false, follow: false, types: nil, timeout: nil}])
+    end
+
+    it "answers an ambiguous checkout with the ambiguous_run envelope" do
+      stub_env("TMUX_PANE" => nil)
+      command = double("workflow command")
+      allow(command).to receive(:default_run).and_raise(Workspace::Error.new("Several workflow runs are going in workspace detected-ws: wr_1, wr_2. Pass the RUN id to name one.",
+        code: "ambiguous_run", details: {"workspace" => "detected-ws", "runs" => [{"id" => "wr_2"}, {"id" => "wr_1"}]}))
+      built = build_test_cli(workflow_command: command, project_detector: detector)
+
+      expect { built[0].run(["workflow", "cancel", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(built[1].string.lines.last)).to include("ok" => false, "code" => "ambiguous_run")
     end
 
     it "prints help, also from the main help" do
       cli.run(["workflow", "--help"])
-      expect(output.string).to include("Usage: workspace workflow list [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events RUN [--since N] [--types A,B] [--follow [--timeout DURATION]] [--json]").and include("--since N").and include("workflow files RUN [--json]").and include("--id ID").and include("--input KEY=VALUE")
+      expect(output.string).to include("Usage: workspace workflow list [--json]").and include("workflow validate PATH|- [--id ID]").and include("workflow add ID PATH|- [--dry-run] [--json]").and include("add, update: check and write no definition").and include("workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]").and include("--if-sha256 SHA").and include("workflow events [RUN] [--since N] [--types A,B] [--follow [--timeout DURATION]] [--json]").and include("--since N").and include("workflow files [RUN] [--json]").and include("--id ID").and include("--input KEY=VALUE")
       output.truncate(0)
       output.rewind
       cli.run(["workflow", "status", "--help"])

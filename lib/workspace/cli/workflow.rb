@@ -14,6 +14,15 @@ module Workspace
       # The verbs of `step`, in the order `step --help` lists them.
       STEP_SUBCOMMANDS = %w[done status expect-fail].freeze
 
+      # The verbs a left-out RUN id defaults to a resolved run (see {Commands::Workflow#default_run}):
+      # the value says whether a reviewer binding is refused (true for the mutating verbs, so a review
+      # pane resolves nothing and gets the usage error instead of a run it could act on).
+      RUN_DEFAULTS = {"events" => false, "files" => false, "attempts" => false, "audit" => false, "resume" => true,
+                      "cancel" => true, "pause" => true, "unpause" => true, "approve" => true, "reject" => true}.freeze
+
+      # The verbs a left-out ID defaults to the resolved run's workflow.
+      DEFINITION_DEFAULTS = %w[show graph stats compare].freeze
+
       # @param workflow_command [Workspace::Commands::Workflow, nil] the `workflow` and `step` command; nil refuses both verbs
       # @param workflow_reflect_command [Workspace::Commands::WorkflowReflect, nil] the `workflow learn reflect` command; nil refuses that verb
       # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] the `workflow start` command; nil refuses that verb
@@ -206,6 +215,7 @@ module Workspace
         start_ref = args.shift if subcommand == "start"
         render_step = args.shift if %w[render check].include?(subcommand)
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow #{"learn " if subcommand == "learn"}--help'." if args.any?
+        subject ||= default_subject(subcommand, options)
         needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "trace" => "a RUN id (see `workspace workflow status`)", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "insights" => "a workflow ID (see `workspace workflow show`)", "learn" => "a RUN id (see `workspace workflow status`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
                  "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
         raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
@@ -412,6 +422,33 @@ module Workspace
       rescue OptionParser::ParseError, UsageError => e
         raise unless @common.json_requested?(options[:json], given)
         @common.emit_json_error(invocation, JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+      end
+
+      # The id a left-out positional defaults to for the verbs {RUN_DEFAULTS} and {DEFINITION_DEFAULTS}
+      # name: the resolved run's id, or its workflow's id; nil for every other verb, and when nothing
+      # resolves (the `needs` check then raises the usage error it always did). `show --source` keeps
+      # needing an explicit ID.
+      #
+      # @param subcommand [String]
+      # @param options [Hash]
+      # @return [String, nil]
+      def default_subject(subcommand, options)
+        if RUN_DEFAULTS.key?(subcommand)
+          @workflow_command.default_run(caller_pane: ENV["TMUX_PANE"], workspace: workflow_default_workspace, author_only: RUN_DEFAULTS[subcommand])
+        elsif DEFINITION_DEFAULTS.include?(subcommand) && !(subcommand == "show" && options[:source])
+          @workflow_command.default_workflow(caller_pane: ENV["TMUX_PANE"], workspace: workflow_default_workspace)
+        end
+      end
+
+      # The workspace the run defaulting matches a going run by, from the working directory alone
+      # (`--name` never takes part). Outside any workspace: nil, never an error.
+      #
+      # @return [String, nil]
+      def workflow_default_workspace
+        workflow_workspace({})
+      rescue Workspace::Error => e
+        raise unless e.code == "not_in_workspace"
+        nil
       end
 
       # The project whose workflow definitions every `workflow` reader looks in first, from {WorkflowProject}: the parent
