@@ -9,7 +9,7 @@ module Workspace
     # {Invocation} it is given, so `--help --json` captures what it prints.
     class Workflow
       # The verbs of `workflow`, in the order `workflow --help` lists them.
-      SUBCOMMANDS = %w[list show graph validate add update remove install uninstall run start render check simulate status events files attempts trace audit stats compare sweep recover resume cancel pause unpause approve reject advance].freeze
+      SUBCOMMANDS = %w[list show graph validate add update remove install uninstall run start render check simulate status events files attempts trace audit stats compare insights sweep recover resume cancel pause unpause approve reject advance].freeze
 
       # The verbs of `step`, in the order `step --help` lists them.
       STEP_SUBCOMMANDS = %w[done status expect-fail].freeze
@@ -18,7 +18,7 @@ module Workspace
       # @param workflow_start_command [Workspace::Commands::WorkflowStart, nil] the `workflow start` command; nil refuses that verb
       # @param workflow_project [Workspace::WorkflowProject, nil] the one resolver for the project whose workflow definitions are read first;
       #   nil reads none and finds the workspace through the project detector
-      # @param status_scope [Workspace::StatusScope, nil] resolves --name, --project and --all for `status`, `stats` and `compare`
+      # @param status_scope [Workspace::StatusScope, nil] resolves --name, --project and --all for `status`, `stats`, `compare` and `insights`
       # @param config [Workspace::Config] names the definition directories in the help page
       # @param project_config [Workspace::ProjectConfig] the checkout root of a detected workspace
       # @param project_detector [Workspace::ProjectDetector] finds the workspace of the working directory when there is no workflow_project
@@ -127,7 +127,8 @@ module Workspace
           opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not; install: only the source at position N of workflows.sources (a whole number from 1, written after the flag)") { options[:source] = true }
           opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
           opts.on("--by GROUP", "compare: group the runs by definition (default), version (the definition's `version:`) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
-          opts.on("--last DURATION", "stats, compare: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
+          opts.on("--runs N", "insights: read this many of the newest runs (default #{WorkflowInsights::DEFAULT_RUNS}; a whole number from 1)") { |v| options[:runs] = v }
+          opts.on("--last DURATION", "stats, compare, insights: only runs started in the last DURATION (30d, 2w, 12h, 90m; a run that started exactly then counts)") { |v| options[:last] = v }
           opts.on("--since N", "events: only events after line N of the history (default 0)") { |v| options[:since] = v }
           opts.on("--types A,B", "events: only events of these types (repeatable, or comma-separated)") { |v| (options[:types] ||= []).concat(v.split(",").map(&:strip).reject(&:empty?)) }
           opts.on("--timeout DURATION", "events --follow: stop waiting after this long (30s, 5m, 1h) and exit 75") { |v| options[:timeout] = @common.parse_duration_option("--timeout", v, positive: true) }
@@ -189,7 +190,7 @@ module Workspace
         return invocation.output.puts(parser.help) if options[:help]
 
         unless subcommand
-          raise UsageError, args.empty? ? "Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+          raise UsageError, args.empty? ? "Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, insights, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
         end
         raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
         subject = args.shift
@@ -197,7 +198,7 @@ module Workspace
         start_ref = args.shift if subcommand == "start"
         render_step = args.shift if %w[render check].include?(subcommand)
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
-        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "trace" => "a RUN id (see `workspace workflow status`)", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
+        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "trace" => "a RUN id (see `workspace workflow status`)", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "insights" => "a workflow ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
                  "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
         raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
 
@@ -211,10 +212,11 @@ module Workspace
         raise UsageError, "--timeout is for `workflow events RUN --follow`." if options[:timeout] && !(subcommand == "events" && options[:follow])
         raise UsageError, "--attempt-of is for `workflow attempts RUN` and `workflow audit RUN`." if options[:attempt_of] && !%w[attempts audit].include?(subcommand)
         raise UsageError, "--id is for `workflow validate PATH`." if options[:id] && subcommand != "validate"
-        raise UsageError, "--last is for `workflow stats ID` and `workflow compare ID`." if options[:last] && !%w[stats compare].include?(subcommand)
+        raise UsageError, "--last is for `workflow stats ID`, `workflow compare ID` and `workflow insights ID`." if options[:last] && !%w[stats compare insights].include?(subcommand)
+        raise UsageError, "--runs is for `workflow insights ID`." if options[:runs] && subcommand != "insights"
         raise UsageError, "--by is for `workflow compare ID`." if options[:compare_by] && subcommand != "compare"
-        raise UsageError, "--project is for `workflow status`, `workflow stats` and `workflow compare`." if options[:project] && !%w[status stats compare].include?(subcommand)
-        raise UsageError, "workflow #{subcommand} covers every workspace unless --name or --project narrows it; --all is not needed." if %w[stats compare].include?(subcommand) && options[:all]
+        raise UsageError, "--project is for `workflow status`, `workflow stats`, `workflow compare` and `workflow insights`." if options[:project] && !%w[status stats compare insights].include?(subcommand)
+        raise UsageError, "workflow #{subcommand} covers every workspace unless --name or --project narrows it; --all is not needed." if %w[stats compare insights].include?(subcommand) && options[:all]
         raise UsageError, "workflow sweep takes a RUN or --name WORKSPACE, not both." if subcommand == "sweep" && subject && options[:name]
         raise UsageError, "--budget-only is for `workflow sweep`." if options[:budget_only] && subcommand != "sweep"
         schedule = options[:schedule_flags].first
@@ -312,6 +314,12 @@ module Workspace
           last = workflow_last(options[:last])
           scope = @status_scope.resolve(name: options[:name], project: options[:project], all: nil, working_dir: @working_dir) if options[:name] || options[:project]
           result = @workflow_command.compare(workflow: subject, by: options[:compare_by] || "definition", last: last, last_text: options[:last], scope: scope, json: options[:json])
+          invocation.exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+        when "insights"
+          last = workflow_last(options[:last])
+          runs = workflow_runs(options[:runs])
+          scope = @status_scope.resolve(name: options[:name], project: options[:project], all: nil, working_dir: @working_dir) if options[:name] || options[:project]
+          result = @workflow_command.insights(workflow: subject, runs: runs, last: last, last_text: options[:last], scope: scope, json: options[:json])
           invocation.exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
         when "audit"
           result = @workflow_command.audit(run: subject, step: options[:attempt_of], json: options[:json])
@@ -488,6 +496,12 @@ module Workspace
       rescue ArgumentError => e
         detail = e.message.start_with?("must be") ? e.message.sub(/, got .*/, "") : "needs a duration like 30d, 2w, 12h or 90m"
         raise UsageError, "--last #{detail}, got #{text.to_s[0, 40].inspect}."
+      end
+
+      def workflow_runs(text)
+        return WorkflowInsights::DEFAULT_RUNS if text.nil?
+        raise UsageError, "--runs needs a whole number from 1 up, got #{text.to_s[0, 40].inspect}." unless text.match?(/\A[1-9]\d{0,8}\z/)
+        text.to_i
       end
 
       def workflow_since(text)

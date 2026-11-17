@@ -221,7 +221,7 @@ RSpec.describe Workspace::CLI do
       it "refuses --project after --prompt TEXT as a flag of another subcommand" do
         expect { cli.run(["workflow", "start", "rpiv", "--prompt", "add a script", "--project"]) }.to raise_error(FakeSystemExit)
 
-        expect(error_output.string).to include("--project is for `workflow status`, `workflow stats` and `workflow compare`.")
+        expect(error_output.string).to include("--project is for `workflow status`, `workflow stats`, `workflow compare` and `workflow insights`.")
         expect(start_command.calls).to be_empty
       end
 
@@ -468,7 +468,7 @@ RSpec.describe Workspace::CLI do
 
     it "refuses --project on the other subcommands, and lists it in the help beside --prompt" do
       expect { cli.run(["workflow", "show", "rpiv", "--project"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("--project is for `workflow status`, `workflow stats` and `workflow compare`.")
+      expect(error_output.string).to include("--project is for `workflow status`, `workflow stats`, `workflow compare` and `workflow insights`.")
 
       cli.run(["workflow", "--help"])
       expect(output.string).to include("--project [NAME]").and include("--prompt TEXT")
