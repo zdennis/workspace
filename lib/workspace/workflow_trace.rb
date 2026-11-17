@@ -17,6 +17,9 @@ module Workspace
       "run_timed_out" => "timed_out"
     }.freeze
 
+    # The one key set every span carries, null where it does not apply.
+    SPAN_KEYS = %i[span_id kind step attempt round started_at ended_at code outcome actor note tokens head_before head_after retry_of].freeze
+
     # Event types that end an attempt, so its tokens sit on the row.
     ATTEMPT_ENDS = %w[step_passed step_failed step_interrupted].freeze
 
@@ -25,23 +28,182 @@ module Workspace
 
     # @param run [WorkflowRun, Hash] the stored run
     # @param events [Array<Hash>] the run's events, each with `n`, `ts` and `type`, as the store reads them
-    # @param event_errors [Array<Hash>] the run's event-errors log (placeholder for later parts)
-    # @param now [Time] the reading time (placeholder for later parts)
-    # @param stops [Array] the daemon's downtime spans (placeholder for later parts)
+    # @param event_errors [Array<Hash>] the run's event-errors log; a non-empty one gives an `events_lost` warning
+    # @param now [Time] where an open stretch ends
+    # @param stops [Array<Hash{String=>Object}>] the daemon's downtime spans (`since`, optional `until`)
+    # @param warnings [Array<Hash>] warnings the caller already holds (the events reader's bad-line warnings), passed through
     # @return [Hash{Symbol=>Object}] frozen: `trace_id`, `transitions` (rows ordered by event `n`, with every key null
-    #   when unknown, never 0), and the empty `spans`, `totals` and `warnings`
-    def read(run, events, now:, event_errors: [], stops: [])
+    #   when unknown, never 0), `spans` (kinds attempt, review_round, gate, wait, stall and downtime, each with a
+    #   `span_id`), `totals` and `warnings`. In `totals`, `stopped_seconds` is `clock_seconds - active_seconds`, the
+    #   exact time the clock stood still; the `waiting_seconds` buckets can overlap, so their sum can exceed it.
+    #   `machine_waiting_seconds` (`waiting_lock`, `retry_backoff`) sits inside `active_seconds`. `clock_seconds`,
+    #   `active_seconds`, `stopped_seconds` and both bucket hashes are null when the clock has no origin.
+    def read(run, events, now:, event_errors: [], stops: [], warnings: [])
       run = WorkflowRun.new(run) unless run.is_a?(WorkflowRun)
+      ordered_events = ordered(events).map(&:first)
+      spans = spans(run, ordered_events, now, Array(stops).grep(Hash))
       WorkflowRun.deep_freeze({
         trace_id: Digest::SHA256.hexdigest(run.id.to_s)[0, 32],
         transitions: transitions(run, events),
-        spans: [],
-        totals: {},
-        warnings: []
+        spans: spans,
+        totals: totals(run, spans, now, Array(stops).grep(Hash)),
+        warnings: caller_warnings(warnings) + lost_warning(event_errors)
       })
     end
 
     private
+
+    # The events reader's warnings are plain strings; a Hash passes as it is.
+    def caller_warnings(warnings)
+      Array(warnings).filter_map do |warning|
+        case warning
+        when Hash then warning
+        when String then {code: "event_line_skipped", message: warning}
+        end
+      end
+    end
+
+    def lost_warning(event_errors)
+      errors = Array(event_errors).grep(Hash)
+      return [] if errors.empty?
+      types = errors.filter_map { |error| string(error["type"]) }.uniq
+      [{code: "events_lost", message: "#{errors.size} event(s) could not be written to the history, so the trace may lack them.", count: errors.size, types: types}]
+    end
+
+    # The attempts of a step whose stored record is a Hash.
+    def stored_attempts(step)
+      stored = Array(step.to_h["attempts"])
+      step.attempts.each_with_index.select { |_, i| stored[i].is_a?(Hash) }.map(&:first)
+    end
+
+    # An entry's `until` the clock cannot read is ignored by the clock; so is its span.
+    def unreadable_until?(entry)
+      entry["until"] && time(entry["until"]).nil?
+    end
+
+    def spans(run, events, now, stops)
+      counts = Hash.new(0)
+      make = lambda do |kind, step, attempt, round, fields|
+        index = counts[[step, attempt, round, kind]]
+        counts[[step, attempt, round, kind]] += 1
+        id = Digest::SHA256.hexdigest([run.id, step, attempt, round, kind, index].join("\0"))[0, 16]
+        SPAN_KEYS.to_h { |key| [key, nil] }.merge(span_id: id, kind: kind, step: step, attempt: attempt, round: round).merge(fields)
+      end
+      out = []
+      run.steps.each do |step_id, step|
+        stored_attempts(step).each do |attempt|
+          out << make.call("attempt", step_id, attempt.n, nil, started_at: string(attempt.started_at), ended_at: string(attempt.ended_at),
+            outcome: string(attempt.outcome), code: string(attempt.code), head_before: head_of(attempt, "before"), head_after: head_of(attempt, "after"),
+            tokens: tokens(attempt), retry_of: integer(attempt.retry_of))
+          WorkflowBudget.rounds_of(attempt).each do |round|
+            out << make.call("review_round", step_id, attempt.n, integer(round["round"]), started_at: string(round["started_at"]),
+              ended_at: string(round["ended_at"]), tokens: usage_tokens(round["usage"]))
+          end
+        end
+      end
+      gate_spans(events).each { |gate| out << make.call("gate", gate[:step], gate[:attempt], nil, gate.except(:step, :attempt)) }
+      WorkflowDeadline.reason_entries(run.to_h).each do |found|
+        entry = found["entry"]
+        next if entry["code"] == "waiting_you" && entry.dig("details", "kind") == "gate"
+        next if unreadable_until?(entry)
+        out << make.call("wait", string(found["step"]), integer(found["attempt"]), nil, code: string(entry["code"]) || "unknown",
+          started_at: string(entry["since"]), ended_at: string(entry["until"]))
+      end
+      run.steps.each_key do |step_id|
+        WorkflowTransitions.stall_spans(run.to_h, step_id).each do |stall|
+          next if unreadable_until?(stall)
+          out << make.call("stall", step_id, nil, nil, code: "stalled", started_at: string(stall["since"]), ended_at: string(stall["until"]))
+        end
+      end
+      stops.each do |stop|
+        next if unreadable_until?(stop)
+        out << make.call("downtime", nil, nil, nil, code: "downtime", started_at: string(stop["since"]), ended_at: string(stop["until"]))
+      end
+      out
+    end
+
+    def head_of(attempt, key)
+      attempt.head.is_a?(Hash) ? string(attempt.head[key]) : nil
+    end
+
+    # Each `gate_waiting` opens a span the step's next `gate_approved` or `gate_rejected` closes; open while still waiting.
+    def gate_spans(events)
+      open = {}
+      closed = []
+      current_attempt = {}
+      events.each do |event|
+        step = string(event["step"])
+        current_attempt[step] = integer(event["attempt"]) if step && integer(event["attempt"])
+        case event["type"]
+        when "gate_waiting"
+          next unless step
+          closed << open[step].merge(ended_at: string(event["ts"])) if open[step]
+          open[step] = {step: step, attempt: integer(event["attempt"]) || current_attempt[step], started_at: string(event["ts"]), ended_at: nil,
+            code: "gate", actor: nil, note: nil}
+        when "gate_approved", "gate_rejected"
+          gate = open.delete(step)
+          next unless gate
+          closed << gate.merge(ended_at: string(event["ts"]), actor: string(event["actor"]), note: string(event["note"]))
+        end
+      end
+      closed + open.values
+    end
+
+    def totals(run, spans, now, stops)
+      hash = run.to_h
+      window = WorkflowDeadline.machine_window(hash, now)
+      clock_ms = window && ((window[1] - window[0]) * 1000).round
+      active_ms = window && (WorkflowDeadline.machine_seconds(hash, now, stops: stops) * 1000).round
+      counted = counted_attempts(run)
+      {
+        wall_seconds: wall_seconds(run, now),
+        clock_seconds: clock_ms && clock_ms / 1000.0,
+        active_seconds: active_ms && active_ms / 1000.0,
+        stopped_seconds: window && (clock_ms - active_ms) / 1000.0,
+        waiting_seconds: window ? buckets(spans, window) { |code| !WorkflowDeadline::MACHINE_CODES.include?(code) } : nil,
+        machine_waiting_seconds: window ? buckets(spans, window) { |code| WorkflowDeadline::MACHINE_CODES.include?(code) } : nil,
+        tokens: token_totals(counted),
+        loops: run.loops,
+        attempts: run.steps.sum { |_, step| stored_attempts(step).size }
+      }
+    end
+
+    def wall_seconds(run, now)
+      from = time(run.started_at) or return nil
+      to = time(run.ended_at) || now
+      (to >= from) ? (to - from).round(3) : nil
+    end
+
+    # Each bucket is the union of its spans clamped to the clock's window; one per code the block admits.
+    def buckets(spans, window)
+      origin, finish = window
+      by_code = {}
+      spans.each do |span|
+        code = span[:code]
+        next unless code && %w[wait gate stall downtime].include?(span[:kind]) && yield(code)
+        from = time(span[:started_at]) or next
+        to = span[:ended_at] ? time(span[:ended_at]) : finish
+        next unless to
+        from = [from, origin].max
+        to = [to, finish].min
+        (by_code[code] ||= []) << [from, to] if to > from
+      end
+      by_code.transform_values { |list| WorkflowDeadline.union_length(list).round(3) }
+    end
+
+    def counted_attempts(run)
+      run.steps.flat_map do |id, step|
+        attempts = stored_attempts(step)
+        attempts.select { |attempt| WorkflowStats.tokens_count?(run, id, attempts, attempt) }
+      end
+    end
+
+    def token_totals(counted)
+      sums = counted.map { |attempt| WorkflowBudget.attempt_tokens(attempt) }
+      return {total: nil, in: nil, out: nil, cache: nil} if counted.empty? || !sums.all?
+      splits = counted.map { |attempt| tokens(attempt) }
+      {total: sums.sum, in: splits.sum { |t| t[:in] }, out: splits.sum { |t| t[:out] }, cache: splits.sum { |t| t[:cache] }}
+    end
 
     def transitions(run, events)
       rows = []
@@ -129,8 +291,19 @@ module Workspace
       return nil unless WorkflowBudget.counted_attempt?(attempt)
       return nil unless WorkflowBudget.attempt_tokens(attempt)
       usages = [attempt.usage] + WorkflowBudget.rounds_of(attempt).map { |round| round["usage"] }
+      split(usages, WorkflowBudget.attempt_tokens(attempt))
+    end
+
+    # One review round's tokens, from its own usage; nil when it has none readable.
+    def usage_tokens(usage)
+      total = WorkflowBudget.tokens_of(usage)
+      total && split([usage], total)
+    end
+
+    def split(usages, total)
       in_key, out_key, cache_key = WorkflowBudget::COUNTED_KEYS
       {
+        total: total,
         in: usages.sum { |usage| usage[in_key] || 0 },
         out: usages.sum { |usage| usage[out_key] || 0 },
         cache: usages.sum { |usage| usage[cache_key] || 0 }
