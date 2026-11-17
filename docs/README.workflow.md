@@ -263,13 +263,15 @@ The other columns say whether each piece exists: `yes`, `no`, or `?` when it cou
 
 ## Which run the verbs default to
 
-The run-id verbs (`events`, `files`, `attempts`, `audit`, `resume`, `cancel`, `pause`, `unpause`, `approve`, `reject`) and the definition-id verbs (`show`, `graph`, `stats`, `compare`) take their RUN or ID argument as optional. With the argument left out, the verb resolves a run:
+The run-id verbs (`events`, `files`, `attempts`, `audit`, `resume`, `cancel`, `pause`, `unpause`, `approve`, `reject`) and the definition-id verbs (`graph`, `stats`, `compare`) take their RUN or ID argument as optional. With the argument left out, the verb resolves a run:
 
 1. the run the calling pane is bound to (as its author, or as a reviewer for the read verbs) — for a mutating verb a review pane resolves nothing;
 2. else the one run still going in the workspace of the working directory (its `workspace` field is the match key; `--name` never takes part);
-3. else nothing, and the verb raises the usage error it always gave (`workflow events needs a RUN id.`), and bare `workflow show` lists every definition.
+3. else nothing, and the verb raises the usage error it always gave (`workflow events needs a RUN id.`).
 
 Several going runs on the checkout are refused with `ambiguous_run` (details `workspace` and `runs`, newest first) rather than a guess: name the run. A run a verb reaches through the resolver is the same one an explicit id names — the gate verbs still refuse a pane bound to a run or the run's own agent pane, and a run that is stored no more fails as `unknown_run` (with `stats` and `compare`, in place of the `unknown_workflow` an unknown explicit id gives).
+
+`--name` and `--project` never take part in the resolution: a verb they narrow (and a run-id verb given with one of them) keeps the usage error it always gave, rather than acting on another scope's run. `workflow graph --run RUN` takes its ID from that run, so the two name the same workflow by construction. Bare `workflow show` is never defaulted: it lists every definition whatever runs are going.
 
 ## Starting from a ticket or a prompt
 

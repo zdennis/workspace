@@ -964,6 +964,12 @@ module CLITestHelpers
       @default_workflow_id
     end
 
+    def workflow_of_run(id)
+      @calls << [:workflow_of_run, {id: id}]
+      raise @error if @error
+      @default_workflow_id
+    end
+
     %i[show graph validate render simulate status events files attempts trace advance step_status].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]

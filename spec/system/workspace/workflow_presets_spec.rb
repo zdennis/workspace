@@ -66,6 +66,28 @@ RSpec.describe "the shipped workflow presets" do
       end
     end
 
+    it "pins on_fail and the run allowance the loop default was tuned against" do
+      expect(catalog.find("rpiv").to_h["max_attempts"]).to eq(14)
+      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to eq(68)
+      expect(catalog.find("rpiv-auto-approve-v2").to_h["max_attempts"]).to eq(21)
+
+      rpiv = catalog.find("rpiv").to_h["steps"].find { |step| step["id"] == "verify" }
+      expect(rpiv["on_fail"]).to include("goto" => "implement", "max" => 3)
+
+      auto = catalog.find("rpiv-auto-approve").to_h["steps"].to_h { |step| [step["id"], step["on_fail"]] }
+      expect(auto).to include(
+        "review_supportive" => {"goto" => "plan", "max" => 3, "context" => "fresh"},
+        "review_skeptical" => {"goto" => "plan", "max" => 3, "context" => "fresh"},
+        "review_implementer" => {"goto" => "plan", "max" => 3, "context" => "fresh"},
+        "plan_review" => {"goto" => "plan", "max" => 9, "context" => "fresh", "except" => ["stale_plan_revision", "guard", "check_error"]}
+      )
+
+      # A step whose failure is a deliberate stop for a person never loops.
+      stops = ->(id, *names) { catalog.find(id).to_h["steps"].to_h { |step| [step["id"], step["on_fail"]] }.values_at(*names) }
+      expect(stops.call("investigate", "reproduce", "diagnose", "fix")).to all(eq("stop"))
+      expect(stops.call("pr-feedback", "fix")).to all(eq("stop"))
+    end
+
     %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2].each do |id|
       it "#{id} refuses a dirty checkout at preflight and accepts a clean one" do
         definition = catalog.find(id)

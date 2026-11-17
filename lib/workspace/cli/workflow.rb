@@ -20,8 +20,9 @@ module Workspace
       RUN_DEFAULTS = {"events" => false, "files" => false, "attempts" => false, "audit" => false, "resume" => true,
                       "cancel" => true, "pause" => true, "unpause" => true, "approve" => true, "reject" => true}.freeze
 
-      # The verbs a left-out ID defaults to the resolved run's workflow.
-      DEFINITION_DEFAULTS = %w[show graph stats compare].freeze
+      # The verbs a left-out ID defaults to the resolved run's workflow. Bare `show` is not here:
+      # it lists every definition, whatever runs are going.
+      DEFINITION_DEFAULTS = %w[graph stats compare].freeze
 
       # @param workflow_command [Workspace::Commands::Workflow, nil] the `workflow` and `step` command; nil refuses both verbs
       # @param workflow_reflect_command [Workspace::Commands::WorkflowReflect, nil] the `workflow learn reflect` command; nil refuses that verb
@@ -424,18 +425,23 @@ module Workspace
         @common.emit_json_error(invocation, JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
       end
 
-      # The id a left-out positional defaults to for the verbs {RUN_DEFAULTS} and {DEFINITION_DEFAULTS}
+      # The id a left-out positional defaults to for the verbs {RUN_DEFAULTS} and {DEFINITION_DEFAULTS}:
       # name: the resolved run's id, or its workflow's id; nil for every other verb, and when nothing
-      # resolves (the `needs` check then raises the usage error it always did). `show --source` keeps
-      # needing an explicit ID.
+      # resolves (the `needs` check then raises the usage error it always did). `graph --run RUN` takes
+      # its ID from that run. `--name` and `--project` never take part: a verb narrowed to another
+      # scope keeps the usage error it always gave, rather than another workspace's run.
       #
       # @param subcommand [String]
       # @param options [Hash]
       # @return [String, nil]
       def default_subject(subcommand, options)
-        if RUN_DEFAULTS.key?(subcommand)
+        if subcommand == "graph" && options[:graph_run]
+          @workflow_command.workflow_of_run(options[:graph_run])
+        elsif options[:name] || options[:project]
+          nil
+        elsif RUN_DEFAULTS.key?(subcommand)
           @workflow_command.default_run(caller_pane: ENV["TMUX_PANE"], workspace: workflow_default_workspace, author_only: RUN_DEFAULTS[subcommand])
-        elsif DEFINITION_DEFAULTS.include?(subcommand) && !(subcommand == "show" && options[:source])
+        elsif DEFINITION_DEFAULTS.include?(subcommand)
           @workflow_command.default_workflow(caller_pane: ENV["TMUX_PANE"], workspace: workflow_default_workspace)
         end
       end

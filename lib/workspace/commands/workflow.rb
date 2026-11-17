@@ -1160,7 +1160,7 @@ module Workspace
         going.first.id
       end
 
-      # The workflow id the definition-id verbs (`show`, `graph`, `stats`, `compare`) default to:
+      # The workflow id the definition-id verbs (`graph`, `stats`, `compare`) default to:
       # the resolved run's `workflow` field. Nil when no run resolves.
       #
       # @param caller_pane [String, nil] `$TMUX_PANE` of the calling pane
@@ -1169,7 +1169,16 @@ module Workspace
       # @raise [Workspace::Error] code `ambiguous_run` when several going runs sit on the workspace
       def default_workflow(caller_pane:, workspace:)
         id = default_run(caller_pane: caller_pane, workspace: workspace, author_only: false)
-        id && @store.run(id).workflow
+        id && workflow_of_run(id)
+      end
+
+      # The workflow id of one stored run, for `graph --run RUN` with the ID left out.
+      #
+      # @param id [String] a run id
+      # @return [String] the run's `workflow` field
+      # @raise [Workspace::Error] code `unknown_run` when no run is stored under the id
+      def workflow_of_run(id)
+        @store.run(id).workflow
       end
 
       private

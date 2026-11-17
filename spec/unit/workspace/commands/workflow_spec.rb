@@ -4990,4 +4990,20 @@ RSpec.describe Workspace::Commands::Workflow do
       }
     end
   end
+
+  describe "#workflow_of_run" do
+    it "gives the run's workflow field" do
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h({"id" => "wr_1", "workflow" => "flow"}))
+
+      expect(command.workflow_of_run("wr_1")).to eq("flow")
+    end
+
+    it "raises unknown_run when no run is stored under the id" do
+      allow(store).to receive(:run).with("wr_gone").and_raise(Workspace::Error.new("No workflow run has that id.", code: "unknown_run"))
+
+      expect { command.workflow_of_run("wr_gone") }.to raise_error(Workspace::Error) { |error|
+        expect(error.code).to eq("unknown_run")
+      }
+    end
+  end
 end

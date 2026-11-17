@@ -517,13 +517,12 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(workflow_command.calls).to eq([[:check, {id: "rpiv", step: "verify", worktree: "/work/api", artifacts: "/some/dir/fixture", json: false, project: nil}]])
     end
 
-    it "shows every definition, or one" do
+    it "shows every definition, or one, and never asks the run resolver" do
       cli.run(["workflow", "show"])
       cli.run(["workflow", "show", "rpiv", "--json"])
 
-      # Bare `workflow show` asks the run resolver first; with none (the fake answers nil) it lists all.
-      expect(workflow_command.calls).to eq([[:default_workflow, {caller_pane: nil, workspace: "detected-ws"}],
-        [:show, {id: nil, json: false, source: false, project: nil}], [:show, {id: "rpiv", json: true, source: false, project: nil}]])
+      # Bare `workflow show` lists every definition whatever runs are going; it never defaults.
+      expect(workflow_command.calls).to eq([[:show, {id: nil, json: false, source: false, project: nil}], [:show, {id: "rpiv", json: true, source: false, project: nil}]])
     end
 
     it "passes --source to show" do
@@ -1013,15 +1012,45 @@ RSpec.describe Workspace::CLI::Workflow do
       run("graph")
       run("stats")
       run("compare")
-      run("show")
 
       expect(workflow_command.calls).to include(
         [:default_workflow, {caller_pane: nil, workspace: "app"}],
         [:graph, hash_including(id: "rpiv")],
         [:stats, hash_including(workflow: "rpiv")],
-        [:compare, hash_including(workflow: "rpiv")],
-        [:show, hash_including(id: "rpiv")]
+        [:compare, hash_including(workflow: "rpiv")]
       )
+    end
+
+    it "takes graph's ID from --run, so the two name the same workflow" do
+      workflow_command.default_workflow_id = "rpiv"
+
+      run("graph", "--run", "wr_9")
+
+      expect(workflow_command.calls).to eq([[:workflow_of_run, {id: "wr_9"}], [:graph, {id: "rpiv", format: nil, json: false, project: "app", run: "wr_9"}]])
+    end
+
+    it "never defaults a verb that --name or --project narrows" do
+      expect { run("cancel", "--name", "other") }.to raise_error(Workspace::UsageError, "workflow cancel needs a RUN id.")
+      expect { run("stats", "--project") }.to raise_error(Workspace::UsageError, "workflow stats needs a workflow ID (see `workspace workflow show`).")
+
+      expect(workflow_command.calls).to be_empty
+    end
+
+    it "asks the resolver with each run verb's own author_only" do
+      stub_env("TMUX_PANE" => "%19")
+      workflow_command.default_run_id = "wr_9"
+
+      Workspace::CLI::Workflow::RUN_DEFAULTS.each do |subcommand, author_only|
+        begin
+          run(subcommand)
+        rescue Workspace::UsageError
+          nil # reject's --note and the like: the resolver call is what this asserts
+        end
+
+        expect(workflow_command.calls).to include([:default_run, hash_including(caller_pane: "%19", author_only: author_only)]),
+          "expected #{subcommand} to resolve with author_only: #{author_only}"
+        workflow_command.calls.clear
+      end
     end
 
     it "keeps `show --source` needing an explicit ID" do
