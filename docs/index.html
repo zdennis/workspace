@@ -119,11 +119,24 @@ workspace launch my-project</code></pre>
   </div>
 
   <h2>Run a workflow</h2>
-  <p>A workflow is an ordered list of steps — research, plan, implement, verify — run by the agent in a workspace's pane, with gates, checks and locks. <code>rpiv</code> is the built-in preset: research, plan (behind an approve gate), implement, verify.</p>
+  <p>A workflow is an ordered list of steps — research, plan, implement, verify — run by the agent in a workspace's pane, with gates, checks and locks. There are three ways to start one:</p>
+  <ul>
+    <li><code>go</code> — one argument; it picks the workflow and the place.</li>
+    <li><code>workflow run</code> — in a workspace that already exists.</li>
+    <li><code>workflow start</code> — makes the workspace (a new checkout) first.</li>
+  </ul>
+  <p><code>go</code> reads its argument — a JIRA key, a pull request (<code>#123</code>), an issue, a branch or plain text — picks the workflow for it, and runs the workflow in the worktree workspace you are standing in or in a new checkout it makes. With free text, name the workflow yourself:</p>
+  <div class="card">
+    <pre><code>workspace go --workflow rpiv-auto-approve "add a retry to the uploader"
+workspace go PROJ-101</code></pre>
+  </div>
+  <p class="muted">Add <code>--dry-run</code> to see which workflow and which checkout <code>go</code> would pick, and make nothing.</p>
+  <p><code>workflow run</code> starts a workflow in a workspace that already exists — by default the one your directory is in:</p>
   <div class="card">
     <pre><code>workspace workflow run rpiv --input task="PROJ-101 invoice PDF export"</code></pre>
   </div>
-  <p class="muted">Add <code>--dry-run</code> first to preview what would start. For work no one watches, the recommended preset is <code>rpiv-auto-approve-v2</code>:</p>
+  <p class="muted">Add <code>--dry-run</code> first to preview what would start.</p>
+  <p><code>workflow start</code> makes the workspace itself — a fresh checkout of a ref, or a new branch from a <code>--prompt</code> — and runs the workflow there. For work no one watches, the recommended preset is <code>rpiv-auto-approve-v2</code>:</p>
   <div class="card">
     <pre><code>workspace workflow start rpiv-auto-approve-v2 --prompt "add a retry to the uploader"</code></pre>
   </div>
