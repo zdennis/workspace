@@ -543,7 +543,18 @@ module Workspace
       ROUND_INTERRUPT_KEYS.find { |_, key| interrupt_mark_live?(marks[key], now) }&.first
     end
 
-    # A round mark that stands for a press: `sent`, or `pending` and younger than {INTERRUPT_CLAIM_SECONDS}.
+    # Whether the sweep's keys went out, or are going out, for the run's current attempt under any of
+    # {INTERRUPT_MARK_KEYS}: one press serves every cause due on the attempt.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Boolean]
+    def self.attempt_interrupt_held?(run, now)
+      marks = sweep_marks(run)
+      INTERRUPT_MARK_KEYS.values.any? { |key| interrupt_mark_live?(marks[key], now) }
+    end
+
+    # A mark that stands for a press: `sent`, or `pending` and younger than {INTERRUPT_CLAIM_SECONDS}.
     def self.interrupt_mark_live?(mark, now)
       return false unless mark.is_a?(Hash)
       return true if mark["state"] == "sent"

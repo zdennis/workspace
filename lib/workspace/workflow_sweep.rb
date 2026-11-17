@@ -45,7 +45,8 @@ module Workspace
   #   definition's `stall`, or the step is past its `timeout` and has
   #   `on_timeout` `interrupt` or `fail`, or the run has used its `timeout:` (either
   #   `timeout_action`, since the hold only comes at the next attempt's start), or
-  #   the sweep interrupted it earlier:
+  #   the run's `budget` with `action: interrupt` is used counting the running attempt's live figure, or
+  #   the sweep interrupted it earlier (any of its three marks sent):
   #   decides the step as {WorkflowEngine#resume} does when given the same proof
   #   (`step_stalled` cause `idle_turn_over`, `step_recovered` action
   #   `evaluated`); with `on_timeout: fail`, a decision that is a
@@ -62,6 +63,18 @@ module Workspace
   #   under the cause `run_timed_out` and its own mark, never failing the step;
   #   the turn then ends and the next attempt's start holds the run as
   #   `run_timed_out`
+  # - the agent is working and the run's `budget` has `action: interrupt`, and the ended attempts' tokens plus the
+  #   running attempt's live figure ({WorkflowLiveUsage}; nil reads as not due) reach the allowance, with neither
+  #   timeout due with an action of its own: the same claim, press and confirm under the cause `budget_spent` and its
+  #   own mark (`step_stalled` carries `used`, `allowance` and `live`), which also writes the attempt's
+  #   `budget_interrupt` record ({WorkflowBudget.reading}). `action: stop` never presses; the next attempt's start
+  #   holds the run as `budget_spent`. A dry run reads the live figure too, which may refresh that reader's own cache
+  #   (derived data, not run state)
+  #
+  # One press serves every interrupt cause of an attempt, whichever came due first: a press of the step timeout,
+  # the run timeout or the budget whose mark stands for this attempt ({WorkflowTransitions.attempt_interrupt_held?})
+  # makes any other's row `already_interrupted`, and an `on_timeout: fail` step after any sent press is failed
+  # without pressing again
   #
   # For a run whose step waits on a line that was never delivered (`not_delivered`, a failure a later try can
   # get past), see {WorkflowEngine.redelivery}: once the backoff (1, 5, then 15 minutes after the failed attempt
@@ -108,10 +121,13 @@ module Workspace
     # @param last_path [String, nil] `sweep-last.json`, which every pass but a dry run writes at its end (nil: none)
     # @param log_limit [Integer] bytes the log may reach before it is cut
     # @param log_keep [Integer] bytes of the log's end kept when it is cut
+    # @param live_usage [Workspace::WorkflowLiveUsage, nil] the tokens a run's running attempt has used so far, read only
+    #   for a run whose `budget` has `action: interrupt`; pruned to the going runs on every pass that lists them (nil: none)
     # @param clock [#call] returns the current Time
     def initialize(store:, engine:, panes:, interrupter:, reviews:, default_stall: -> {}, turn_failed_after: -> {},
-      recovery_entry: ->(*) {}, clock: -> { Time.now }, downtime: nil,
+      recovery_entry: ->(*) {}, clock: -> { Time.now }, downtime: nil, live_usage: nil,
       log_path: nil, last_path: nil, log_limit: 1024 * 1024, log_keep: 256 * 1024)
+      @live_usage = live_usage
       @log_path = log_path
       @last_path = last_path
       @log_limit = log_limit
@@ -145,7 +161,9 @@ module Workspace
     def call(run: nil, workspace: nil, dry_run: false, allow: nil)
       beat
       trim_log
-      runs = run ? [@store.run(run)] : @store.going
+      going = run ? nil : @store.going
+      prune_live(going)
+      runs = run ? [@store.run(run)] : going
       runs = runs.select { |each| each.workspace == workspace } if workspace
       # Downtime is read once for the pass, after the beat has recorded any gap since the last one.
       pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, default_stall: @default_stall.call, turn_failed_after: @turn_failed_after.call,
@@ -222,6 +240,13 @@ module Workspace
         data["last_full"] = entry if scope == "all"
       end
     rescue
+      nil
+    end
+
+    # The live readings' caches of runs that are no longer going; a pass naming one run lists no others, so it prunes none.
+    def prune_live(going)
+      @live_usage&.prune(going.map(&:id)) if going
+    rescue SystemCallError
       nil
     end
 
@@ -406,23 +431,29 @@ module Workspace
       deadline = WorkflowDeadline.reading(run, @clock.call, stops: pass[:stops])
       run_spent = deadline && deadline["spent"]
       run_due = run_spent && deadline["action"] == "interrupt"
+      budget = WorkflowBudget.reading(run)
+      live = (budget && budget["action"] == "interrupt") ? @live_usage&.reading(run, now: @clock.call) : nil
+      budget_due = live.is_a?(Integer) && budget["used"] + live >= budget["allowance"]
       if WorkflowPanes.turn_over?(shown, @clock.call) && elapsed >= WorkflowSweepRows::IDLE_GRACE && idle_for >= WorkflowSweepRows::IDLE_FLOOR
         marks = WorkflowEngine.sweep_marks(run.to_h)
-        cause = if marks.dig("interrupt", "state") == "sent" || marks.dig("run_interrupt", "state") == "sent" then "interrupted"
-        elsif (stall && idle_for >= stall) || (timed_out && on_timeout != "warn") || run_spent then "idle_turn_over"
+        cause = if WorkflowTransitions::INTERRUPT_MARK_KEYS.each_value.any? { |key| marks.dig(key, "state") == "sent" } then "interrupted"
+        elsif (stall && idle_for >= stall) || (timed_out && on_timeout != "warn") || run_spent || budget_due then "idle_turn_over"
         end
         return WorkflowSweepRows.row(run, "nothing", reason: "idle", message: idle_message(defined_stall, pass[:default_stall])) unless cause
         return evaluate(run, attempt, pass, pane, shown, cause, idle_for, (timed_out && on_timeout == "fail") ? {"elapsed" => elapsed, "timeout" => timeout} : nil)
       end
-      return WorkflowSweepRows.row(run, "nothing", reason: "healthy", message: nil) unless timed_out || run_due
-      if timed_out && on_timeout == "warn" && !run_due
+      return WorkflowSweepRows.row(run, "nothing", reason: "healthy", message: nil) unless timed_out || run_due || budget_due
+      if timed_out && on_timeout == "warn" && !run_due && !budget_due
         return WorkflowSweepRows.row(run, "nothing", reason: "timed_out", message: "step #{run.current} is past its #{timeout} second timeout (on_timeout: warn)")
       end
+      # A step timeout with an action of its own presses first, then the run's timeout, then the budget: one press serves all.
       unless timed_out && on_timeout != "warn"
-        return press_for_run_deadline(run, attempt, pass, shown, pane, deadline)
+        return press_for_run_deadline(run, attempt, pass, shown, pane, deadline) if run_due
+        return press_for_budget(run, attempt, pass, shown, pane, elapsed, budget, live)
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "not_working", message: "step #{run.current} is past its timeout, but pane #{pane} does not show the agent working") unless shown["state"] == "working"
-      press_and_confirm(run, attempt, pass, shown, pane, elapsed, timeout, then_fail: on_timeout == "fail")
+      press_and_confirm(run, attempt, pass, shown, pane, elapsed, timeout, then_fail: on_timeout == "fail",
+        message: "step #{run.current} is #{elapsed.round} seconds in, past its #{timeout} second timeout")
     end
 
     # What clears each stall cause on the step's own pane, and the `step_recovered` action that records it.
@@ -526,18 +557,19 @@ module Workspace
     end
 
     # Claims under the run's lock, presses with it given up, confirms under it. For `fail` the confirmation is the failure itself.
-    # With +cause+ `run_timed_out` it is the run's `timeout_action: interrupt`: its own mark and cause, so a step's
-    # `on_timeout: interrupt` on the same attempt does not collide; +elapsed+ is the machine time used and +timeout+
-    # the run's limit. It never fails the step, and the run is held by the next attempt's start, as for `hold`.
-    def press_and_confirm(run, attempt, pass, shown, pane, elapsed, timeout, then_fail:, cause: "timed_out")
-      message = if cause == "run_timed_out"
-        "the run has used #{elapsed.round} seconds of its #{timeout} second time limit"
-      else
-        "step #{run.current} is #{elapsed.round} seconds in, past its #{timeout} second timeout"
-      end
+    # With +cause+ `run_timed_out` it is the run's `timeout_action: interrupt`, and with `budget_spent` the run's
+    # `budget` `action: interrupt`: each has its own mark and cause, so a step's `on_timeout: interrupt` on the same
+    # attempt does not collide. Neither fails the step, and the run is held by the next attempt's start, as for
+    # `hold`. +message+ says why on every row; +details+ and +budget+ go to {WorkflowEngine#claim_interrupt}.
+    def press_and_confirm(run, attempt, pass, shown, pane, elapsed, timeout, then_fail:, message:, cause: "timed_out", details: nil, budget: nil)
       action = then_fail ? "fail" : "interrupt"
-      held = WorkflowEngine.sweep_marks(run.to_h)[WorkflowTransitions::INTERRUPT_MARK_KEYS.fetch(cause, "interrupt")]
-      return time_out(run, attempt, pass, elapsed, timeout, nil) if then_fail && held && held["state"] == "sent"
+      # One press serves every cause due on the attempt, whichever came due first.
+      marks = WorkflowEngine.sweep_marks(run.to_h)
+      sent = WorkflowTransitions::INTERRUPT_MARK_KEYS.each_value.any? { |key| marks.dig(key, "state") == "sent" }
+      return time_out(run, attempt, pass, elapsed, timeout, nil) if then_fail && sent
+      if WorkflowTransitions.attempt_interrupt_held?(run.to_h, @clock.call)
+        return WorkflowSweepRows.row(run, "nothing", reason: "already_interrupted", message: message, cause: cause)
+      end
       keys = AgentProvider.find(shown["kind"].to_s)&.interrupt_keys.to_a
       if keys.empty?
         return WorkflowSweepRows.row(run, "nothing", reason: "no_interrupt_key", cause: cause, message: "#{message}, and workspace knows no interrupt key for #{shown["kind"] || "this agent"}")
@@ -546,7 +578,8 @@ module Workspace
       refusal = pass[:allow]&.call(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: cause) if refusal
       step_ref = {step: run.current, attempt: attempt.n}
-      claim, claim_at = @engine.claim_interrupt(run.id, actor: "sweep", **step_ref, elapsed: elapsed, timeout: timeout, cause: cause)
+      claim, claim_at = @engine.claim_interrupt(run.id, actor: "sweep", **step_ref, elapsed: elapsed, timeout: timeout, cause: cause,
+        details: details, budget: budget)
       unless claim == :claimed
         return WorkflowSweepRows.row(run, "nothing", reason: "already_interrupted", message: message, cause: cause) if claim == :repeat
         return WorkflowSweepRows.engine_row(run, claim, "interrupted", cause: cause, message: message, action: action)
@@ -566,7 +599,20 @@ module Workspace
       unless shown["state"] == "working"
         return WorkflowSweepRows.row(run, "nothing", reason: "not_working", cause: "run_timed_out", message: "the run's time limit is used, but pane #{pane} does not show the agent working")
       end
-      press_and_confirm(run, attempt, pass, shown, pane, deadline["used"], deadline["limit"], then_fail: false, cause: "run_timed_out")
+      press_and_confirm(run, attempt, pass, shown, pane, deadline["used"], deadline["limit"], then_fail: false, cause: "run_timed_out",
+        message: "the run has used #{deadline["used"].round} seconds of its #{deadline["limit"]} second time limit")
+    end
+
+    # The ended attempts' tokens and the running attempt's live figure have reached the budget's allowance. The turn
+    # the press ends is decided, and the next attempt's start holds the run as `budget_spent`.
+    def press_for_budget(run, attempt, pass, shown, pane, elapsed, budget, live)
+      used, allowance = budget.values_at("used", "allowance")
+      message = "the run has used #{used + live} of its #{allowance} token budget"
+      unless shown["state"] == "working"
+        return WorkflowSweepRows.row(run, "nothing", reason: "not_working", cause: "budget_spent", message: "#{message}, but pane #{pane} does not show the agent working")
+      end
+      press_and_confirm(run, attempt, pass, shown, pane, elapsed, nil, then_fail: false, cause: "budget_spent", message: message,
+        details: {"used" => used, "allowance" => allowance, "live" => live}, budget: {tokens: live, used: used, allowance: allowance})
     end
 
     # Read just before the press: the same agent still works in the pane, and the pane is still this run's.
