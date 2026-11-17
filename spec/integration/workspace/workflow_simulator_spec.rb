@@ -479,4 +479,15 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
       expect(types(result).count("simulated_reviewers")).to eq(1)
     end
   end
+
+  it "simulates a step whose exec proof uses {{changed.tests}} and a program that is not installed" do
+    exec_definition = definition("schema_version: 1\nid: demo\ntitle: D\nmax_attempts: 10\nsteps:\n  build:\n    prompt: p\n    produces: [b.md]\n    require:\n      - exec: \"nosuchprog_zz -- {{changed.tests}}\"\n")
+
+    result = play(exec_definition, "steps: {}\n")
+    expect(result["outcome"]).to eq("completed")
+
+    failed = play(exec_definition, "steps:\n  build: [{require: {exec: fail}}, {}]\n")
+    expect(failed["steps"].first["attempts"].first).to include("code" => "require_exec")
+    expect(failed).to include("outcome" => "stopped")
+  end
 end

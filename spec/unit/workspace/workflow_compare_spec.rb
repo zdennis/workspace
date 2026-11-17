@@ -302,9 +302,54 @@ RSpec.describe Workspace::WorkflowCompare do
     end
   end
 
+  describe "--by version" do
+    def put_versioned(id, version, **rest)
+      put(id, attempts: [attempt(1, "passed")], **rest)
+      file = File.join(archive_dir, "#{id}.json")
+      run = JSON.parse(File.read(file))
+      run["definition"]["version"] = version unless version.nil?
+      File.write(file, JSON.generate(run))
+    end
+
+    it "groups runs by the stored definition's version and keeps sha equal to key" do
+      put_versioned("wr_1", 2)
+      put_versioned("wr_2", 2, definition: sha("other"))
+      put_versioned("wr_3", 3)
+
+      result = read(by: "version")
+
+      expect(result["by"]).to eq("version")
+      expect(result["groups"].map { |each| [each["key"], each["sha"], each["runs"]] }).to eq([["2", "2", 2], ["3", "3", 1]])
+    end
+
+    it "puts a run whose definition has no version, or a bad one, in unknown, last" do
+      put_versioned("wr_old", nil)
+      put_versioned("wr_bad", "7")
+      put_versioned("wr_1", 1)
+
+      result = read(by: "version")
+
+      expect(result["groups"].map { |each| each["key"] }).to eq(%w[1 unknown])
+      expect(result["groups"].last["runs"]).to eq(2)
+    end
+
+    it "sorts numerically, so 10 comes after 2" do
+      put_versioned("wr_a", 10)
+      put_versioned("wr_b", 2)
+      put_versioned("wr_c", 2)
+
+      expect(read(by: "version")["groups"].map { |each| each["key"] }).to eq(%w[2 10])
+    end
+
+    it "adds key to definition groups too" do
+      put("wr_1", attempts: [attempt(1, "passed")])
+      expect(read["groups"].first).to include("key" => sha("d1"), "sha" => sha("d1"))
+    end
+  end
+
   it "refuses a --by that is neither definition nor pack:NAME" do
     ["", "pack:", "packs:x", "pack:a b", "sha"].each do |by|
-      expect { read(by: by) }.to raise_error(Workspace::UsageError, /--by needs definition or pack:NAME/)
+      expect { read(by: by) }.to raise_error(Workspace::UsageError, /--by needs definition, version or pack:NAME/)
     end
   end
 

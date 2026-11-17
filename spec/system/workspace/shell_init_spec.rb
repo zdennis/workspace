@@ -508,6 +508,9 @@ RSpec.describe Workspace::ShellInit do
       bash_text = described_class.text("bash")
       expect(zsh_text).to include("wf_list=(#{subcommands.join(" ")})", "wf_list=(#{verbs.join(" ")})")
       expect(bash_text).to include(%(wf_list="#{subcommands.join(" ")}"), %(wf_list="#{verbs.join(" ")}"))
+      steps = Workspace::CLI::Workflow::STEP_SUBCOMMANDS.join(" ")
+      expect(zsh_text).to include("wf_list=(#{steps})")
+      expect(bash_text).to include(%(wf_list="#{steps}"))
     end
 
     context "in bash" do
@@ -522,6 +525,12 @@ RSpec.describe Workspace::ShellInit do
 
       it "offers the workflow verbs" do
         expect(bash_tab(["workspace", "workflow", ""])).to eq(verbs)
+      end
+
+      it "offers the step verbs" do
+        expect(bash_tab(["workspace", "step", ""])).to eq(Workspace::CLI::Workflow::STEP_SUBCOMMANDS)
+        expect(bash_tab(%w[workspace step ex])).to eq(%w[expect-fail])
+        expect(bash_tab(["workspace", "step", "expect-fail", ""])).to eq([])
       end
 
       it "offers only valid ids after workflow start, and runs nothing for an odd one" do
@@ -559,6 +568,11 @@ RSpec.describe Workspace::ShellInit do
       it "narrows by prefix and offers the workflow verbs" do
         expect(zsh_tab(%w[workspace workflow st])).to eq(["add start", "add status", "add stats", "rc=0"])
         expect(zsh_tab(["workspace", "workflow", ""])).to eq(verbs.map { |w| "add #{w}" } + ["rc=0"])
+      end
+
+      it "offers the step verbs, then files" do
+        expect(zsh_tab(["workspace", "step", ""])).to eq(Workspace::CLI::Workflow::STEP_SUBCOMMANDS.map { |w| "add #{w}" } + ["rc=0"])
+        expect(zsh_tab(["workspace", "step", "expect-fail", ""])).to eq(["files", "rc=0"])
       end
 
       it "offers only valid ids after workflow start, and runs nothing for an odd one" do

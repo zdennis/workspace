@@ -789,7 +789,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "rejects bad usage, as an envelope under --json" do
-      {["step"] => /Missing subcommand: done or status/, ["step", "skip"] => /Unknown step subcommand: skip/,
+      {["step"] => /Missing subcommand: done, status or expect-fail/, ["step", "skip"] => /Unknown step subcommand: skip/,
        ["step", "done", "extra"] => /Unexpected argument: extra/}.each do |argv, message|
         cli, _, error_output = build_test_cli(workflow_command: workflow_command)
         expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }

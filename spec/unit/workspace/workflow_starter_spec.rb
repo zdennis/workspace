@@ -164,4 +164,25 @@ RSpec.describe Workspace::WorkflowStarter do
       expect(starter.start(definition: definition, actor: "person", workspace: "app", worktree: worktree, inputs: {"task" => "x"}, pane: "%3").task).to be_nil
     end
   end
+
+  describe "exec programs" do
+    let(:yaml) { "title: Flow\nsteps:\n  one:\n    prompt: Go.\n    require:\n      - exec: \"nosuchprog_zz --flag\"\n" }
+
+    it "refuses a program that is not on PATH with workflow_program_missing by default" do
+      error = refusal { starter.preflight(definition: definition, workspace: "app", worktree: worktree, inputs: {}, pane: "%3") }
+
+      expect(error.code).to eq("workflow_program_missing")
+      expect(error.details["program"]).to eq("nosuchprog_zz")
+    end
+
+    it "asks only the injected checker" do
+      checker = double("exec program")
+      allow(checker).to receive(:problem).and_return(nil)
+      lenient = described_class.new(change: change, store: store, prompt: prompt, dispatch: dispatch, lineage: lineage,
+        commands_config: commands_config, guard: guard, gate_note: gate_note, exec_program: checker, clock: clock)
+
+      expect(refusal { lenient.preflight(definition: definition, workspace: "app", worktree: worktree, inputs: {}, pane: "%3") }).to be_nil
+      expect(checker).to have_received(:problem).with("nosuchprog_zz", anything)
+    end
+  end
 end

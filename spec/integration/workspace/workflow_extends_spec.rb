@@ -53,6 +53,15 @@ RSpec.describe "workflow extends" do
 
   before { write(builtin_dir, "base", parent_yaml) }
 
+  it "does not inherit the parent's version, and keeps the child's own" do
+    write(builtin_dir, "base", "version: 3\n#{parent_yaml}")
+    write(global_dir, "plain", "extends: base\n")
+    write(global_dir, "own", "extends: base\nversion: 9\n")
+
+    expect(catalog.find("plain").to_h).not_to have_key("version")
+    expect(catalog.find("own").to_h["version"]).to eq(9)
+  end
+
   it "lays the child over the parent: its keys replace, its inputs add, replace swaps a step in place, steps adds after a step" do
     write(global_dir, "child", <<~YAML)
       extends: base

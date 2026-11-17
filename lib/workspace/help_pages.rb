@@ -363,7 +363,7 @@ module Workspace
           "project of the current workspace or --name; a worktree reads its parent project's), then",
           "~/.config/workspace/workflows/ID.yml, then each directory of the workflows.sources config key in list order",
           "(source:1, source:2, ...), then the presets that ship with workspace (rpiv, rpiv-auto-approve,",
-          "rpiv-auto-approve-v2, pr-feedback, investigate, explore). A file in an earlier place hides the same id in a later one; each row",
+          "rpiv-auto-approve-v2, pr-feedback, investigate, explore, bugfix). A file in an earlier place hides the same id in a later one; each row",
           "says which (project, global, source:N or builtin). Nothing is read from a repository. See docs/README.workflow.md.",
           "",
           "A definition with extends: ID starts from another workflow's steps; show prints the result, with an",
@@ -846,11 +846,12 @@ module Workspace
         ]
       },
       "compare" => {
-        usage: ["workflow compare ID [--by definition | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
-        summary: "Set a workflow's runs side by side, grouped by definition or pack text",
+        usage: ["workflow compare ID [--by definition | --by version | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]"],
+        summary: "Set a workflow's runs side by side, grouped by definition, version or pack text",
         about: [
           "ID is a workflow definition id; it need not exist now. Covers the runs going and finished, in every workspace unless",
           "--name or --project narrows it. --by definition (the default) groups runs by the sha256 of the definition they ran;",
+          "--by version groups them by the `version:` of the definition they stored (a run with none is in the unknown group; numeric order);",
           "--by pack:NAME groups them by the sha256 of that pack's text in the instructions their agent was sent. A run counts in one",
           "group. If a pack's text changed between a run's attempts, the run is in the mixed group; a run stored without the hash",
           "is in the unknown group. A run that did not use the pack, or never delivered an attempt, is counted apart and in no group,",
@@ -868,7 +869,7 @@ module Workspace
           "is only one group. A run file that cannot be read exits 3 (status partial), as in `workflow stats`."
         ],
         options: [
-          ["--by GROUP", "definition (default) or pack:NAME, a pack's name such as plan-review"],
+          ["--by GROUP", "definition (default), version or pack:NAME, a pack's name such as plan-review"],
           ["--last DURATION", "Only runs started in the last DURATION (30d, 2w, 12h, 90m); a bare number means seconds"],
           name_opt("Only that workspace's runs"),
           ["--project [NAME]", "Only that project's runs (NAME, or the project of the current workspace)"],
@@ -876,6 +877,7 @@ module Workspace
         ],
         examples: [
           ["workspace workflow compare rpiv-auto-approve", "runs grouped by the definition they ran"],
+          ["workspace workflow compare rpiv --by version", "did a newer version of the definition change the results?"],
           ["workspace workflow compare rpiv-auto-approve --by pack:plan-review", "did changing that pack's text change the results?"],
           ["workspace workflow compare rpiv --by pack:commits --last 30d --json", "for a script: groups with full shas, counts and the warning"]
         ]
@@ -1754,6 +1756,28 @@ module Workspace
           ["workspace step status", "which workflow run, step and attempt this pane is on, and the files the step must leave"],
           ["workspace step status --json", "the same as one JSON document, with whether each file is there (produces); outside a run's pane it exits 1 with not_bound"],
           ["workspace step status --json | jq '.step.produces'", "list the files the step must leave, and whether each was written this attempt (current)"]
+        ]
+      },
+      "expect-fail" => {
+        usage: ["step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE..."],
+        summary: "Check that the given tests fail (a fail-first proof)",
+        about: [
+          "Run by a step's `require: exec:` proof, from no pane: it finds the workspace from the directory it runs",
+          "in (the checkout) and never reads TMUX_PANE or a pane binding. Runs the workspace's commands.test with the",
+          "FILEs appended (shell-escaped) through `sh -c` in its own process group, prints the tests' output, then one",
+          "line starting `expect-fail:` (only the last 1 MB of output is printed, with a line saying when it was cut).",
+          "Exits 0 only when the tests fail and, with --match-file, their stdout and stderr together hold the file's",
+          "text (trimmed) as one exact substring. Exits 1 when no FILE is given, commands.test is unset, the match file",
+          "is missing, a link, empty or over 4096 bytes, the tests pass, the text is missing, or the tests run past",
+          "--timeout.",
+          "commands.test must take test files as arguments. It does not prove the tests fail for the right reason."
+        ],
+        options: [["--match-file PATH", "A file (at most 4096 bytes, not a link) whose text, trimmed, the failing tests' output must hold as one exact substring; relative to the working directory"],
+          ["--timeout SECONDS", "Seconds the tests may run before they are stopped (default 240)"]],
+        examples: [
+          ["workspace step expect-fail -- spec/models/invoice_spec.rb", "exits 0 only when the test fails"],
+          ["workspace step expect-fail --match-file .workflow/RUN/failure.txt -- spec/models/invoice_spec.rb", "exits 0 only when it fails with the text of failure.txt"],
+          ["workspace step expect-fail --match-file {{artifacts}}/failure.txt --timeout 840 -- {{changed.tests}}", "the exec: line of a fail-first proof (with timeout: 15m on the entry)"]
         ]
       }
     }.freeze

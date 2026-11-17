@@ -71,7 +71,7 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports the workflow feature" do
       command.call(json: true)
 
-      expect(document["features"]).to include("workflow" => 54, "workflow_events_follow" => 2, "workflow_trace" => 1)
+      expect(document["features"]).to include("workflow" => 55, "workflow_events_follow" => 2, "workflow_trace" => 1)
     end
 
     it "reports the restore feature" do
@@ -263,6 +263,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       command.call(json: true)
 
       expect(document["features"]).to include("help_json" => 1)
+    end
+
+    it "reports step_expect_fail 1 once step expect-fail checks that tests fail" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("step_expect_fail" => 1)
     end
 
     it "reports launch_prompt_status 1 once the closing line tells a lost prompt" do

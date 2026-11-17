@@ -61,7 +61,7 @@ A branch from `wfp` is refused the same way when the workflow needs a `task`, as
 
 ### Completion
 
-Tab completes top-level subcommands, `workflow` verbs, and workflow ids after `workflow start|show|run|update|remove` and after `wf -w`. Anywhere else it falls back to file completion.
+Tab completes top-level subcommands, `workflow` and `step` verbs, and workflow ids after `workflow start|show|run|update|remove` and after `wf -w`. Anywhere else it falls back to file completion.
 
 A tab at a workflow id runs `workspace workflow show`, which takes about 0.6s.
 

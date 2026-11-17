@@ -16,6 +16,32 @@ RSpec.describe Workspace::WorkflowDefinition do
 
   let(:minimal) { "steps:\n  build:\n    prompt: Build it.\n" }
 
+  describe "version" do
+    it "accepts a positive whole number and keeps it in to_h and through the class reader" do
+      [1, 7].each do |n|
+        definition = parse("version: #{n}\n#{minimal}")
+        expect(definition.to_h["version"]).to eq(n)
+        expect(described_class.version(definition.to_h)).to eq(n)
+      end
+    end
+
+    it "leaves version out of to_h when unset" do
+      expect(parse(minimal).to_h).not_to have_key("version")
+      expect(described_class.version(parse(minimal).to_h)).to be_nil
+      expect(described_class.version(nil)).to be_nil
+    end
+
+    it "reads no version from a string, zero or a float" do
+      ["7", 0, 1.5].each { |value| expect(described_class.version({"version" => value})).to be_nil }
+    end
+
+    it "refuses zero, negatives, floats, strings and booleans" do
+      ["0", "-1", "1.5", "\"1\"", "true", "false"].each do |value|
+        expect(problems("version: #{value}\n#{minimal}")).to include(a_string_matching(/version must be a whole number of 1 or more/))
+      end
+    end
+  end
+
   describe "redeliver" do
     it "defaults to 3 in a new definition, reads a number from 0 to 10, and reads 0 from a definition without the key" do
       expect(parse(minimal).to_h["redeliver"]).to eq(3)
@@ -602,7 +628,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, timeout, timeout_action, deny, reviewers, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, version, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, timeout, timeout_action, deny, reviewers, steps)",
       "schema_version must be one of 0.1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",
@@ -729,7 +755,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       end
     end
 
-    %w[investigate explore pr-feedback].each do |id|
+    %w[investigate explore pr-feedback bugfix].each do |id|
       it "is false for #{id}" do
         definition = preset(id)
 

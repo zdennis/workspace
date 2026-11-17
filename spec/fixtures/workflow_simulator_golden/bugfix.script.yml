@@ -1,0 +1,8 @@
+# The script the bugfix golden plays: the person approves the reproduce gate, then verify fails its status check once
+# and loops back to fix; the second verify attempt passes and the run finishes.
+steps:
+  reproduce:
+    - {gate: approve}
+  verify:
+    - {check: fail, log: "1 failure in spec/models"}
+    - {}

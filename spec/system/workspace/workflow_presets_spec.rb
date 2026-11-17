@@ -12,7 +12,7 @@ RSpec.describe "the shipped workflow presets" do
   after { FileUtils.remove_entry(dir) }
 
   it "parses every file in lib/workflows" do
-    expect(ids).to include("rpiv", "rpiv-auto-approve", "rpiv-auto-approve-v2", "pr-feedback", "investigate", "explore")
+    expect(ids).to include("rpiv", "rpiv-auto-approve", "rpiv-auto-approve-v2", "pr-feedback", "investigate", "explore", "bugfix")
     ids.each { |id| expect(catalog.find(id).source).to eq("builtin") }
   end
 
@@ -30,6 +30,7 @@ RSpec.describe "the shipped workflow presets" do
 
   it "proves the inbox item of exactly the steps that post one on every successful path" do
     expected = {
+      "bugfix" => [],
       "explore" => %w[survey report],
       "pr-feedback" => %w[triage fix],
       "investigate" => %w[diagnose fix],
@@ -202,6 +203,49 @@ RSpec.describe "the shipped workflow presets" do
       survey, report = steps.map { |step| [step["prompt"].gsub(/\s+/, " "), step["require"].first["inbox_item"]] }
       expect(survey.last).not_to eq(report.last)
       expect(report.first).to include("workspace inbox done --dedupe-key #{survey.last}").and include("--dedupe-key #{report.last} --reopen")
+    end
+  end
+
+  describe "bugfix" do
+    let(:definition) { catalog.find("bugfix") }
+    let(:data) { definition.to_h }
+    let(:by_id) { data["steps"].to_h { |step| [step["id"], step] } }
+
+    it "stands alone at version 1, is marked experimental and validates with no warnings" do
+      expect(data["steps"].map { |step| step["id"] }).to eq(%w[reproduce fix verify])
+      expect(data).not_to have_key("extends")
+      expect(data["version"]).to eq(1)
+      expect(data["use_when"]).to start_with("Experimental:").and include("commands.test_files").and include("step expect-fail")
+      expect(definition.warnings).to eq([])
+    end
+
+    it "proves the new test fails with failure.txt's text before the reproduce gate, with the checker timing out first" do
+      reproduce = by_id["reproduce"]
+      expect(reproduce).to include("guard" => "unchanged", "gate" => "approve", "produces" => %w[repro.md failure.txt])
+      exec = reproduce["require"].first
+      expect(exec["exec"]).to eq(%w[workspace step expect-fail --timeout 840 --match-file {{artifacts}}/failure.txt -- {{changed.tests}}])
+      expect(exec["timeout"]).to eq(900.0)
+    end
+
+    it "requires a commit and the tests to fix, lint to verify, and loops verify back to fix three times within the caps" do
+      expect(by_id["fix"]["require"]).to eq([{"commits" => 1}])
+      expect(by_id["fix"]["status"]).to include("command" => "test")
+      expect(by_id["verify"]["status"]).to include("command" => "test")
+      expect(by_id["verify"]["require"]).to eq([{"command" => "lint", "optional" => true}])
+      expect(by_id["verify"]["uses"]).to eq([])
+      expect(by_id["verify"]["on_fail"]).to include("goto" => "fix", "max" => 3, "context" => "continue", "log_tail" => 40)
+      expect(by_id.transform_values { |step| Workspace::WorkflowDefinition.step_max_attempts(step) }).to eq("reproduce" => 4, "fix" => 6, "verify" => 5)
+      expect(data["max_attempts"]).to eq(15)
+    end
+
+    it "keeps one untracked test for the proof: reproduce clears an earlier attempt's tests and fix drops strays" do
+      reproduce, fix = %w[reproduce fix].map { |id| by_id[id]["prompt"].gsub(/\s+/, " ") }
+      expect(reproduce).to include("runs every untracked file that matches commands.test_files").and include("exactly one new test file is untracked")
+      expect(fix).to include("delete the test files an earlier reproduce attempt of this run wrote").and include("leave any other")
+    end
+
+    it "denies the agent changing the config the proofs read the test command from" do
+      expect(data["deny"]).to eq(["workspace config set*", "workspace config unset*"])
     end
   end
 end

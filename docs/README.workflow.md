@@ -27,7 +27,7 @@ workspace workflow trace RUN [--table] [--json]
 workspace workflow attempts RUN [--attempt-of STEP] [--json]
 workspace workflow audit RUN [--attempt-of STEP] [--json]
 workspace workflow stats ID [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
-workspace workflow compare ID [--by definition | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
+workspace workflow compare ID [--by definition | --by version | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]
 workspace workflow sweep [RUN | --name WORKSPACE] [--dry-run] [--json]
 workspace workflow sweep --install | --uninstall [--dry-run] [--json]
 workspace workflow sweep --installed [--json]
@@ -43,6 +43,7 @@ workspace workflow reject RUN --note TEXT [--step STEP [--attempt N]] [--to STEP
 
 workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]
 workspace step status [--json]
+workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 ```
 
 | Subcommand | Description |
@@ -76,6 +77,7 @@ workspace step status [--json]
 | `step done` | For the agent: record what it says about its step, then end the turn. Optional |
 | `workflow simulate` | Play a workflow through the real engine with a scripted fake agent and print the transitions; nothing real runs. See [Simulating a workflow](#simulating-a-workflow) |
 | `step status` | For the agent: which run, step and attempt its pane is on, and whether the files the step must leave exist |
+| `step expect-fail` | Run by a `require: exec:` proof, from no pane: exits 0 only when `commands.test` fails on the given test files (see [Fail-first proofs](#fail-first-proofs)) |
 
 | Option | Description |
 |--------|-------------|
@@ -114,6 +116,8 @@ workspace step status [--json]
 | `--dry-run` | `run`, `start`: report what would start and start nothing. `add`, `update`: run every check and write no definition (the workflows directory and `.ID.yml.lock` may still be created) |
 | `--status pass\|fail` | `step done`: `pass` (default) or `fail` |
 | `--summary TEXT` | `step done`: one line about what was done, or what is left |
+| `--match-file PATH` | `step expect-fail`: a file whose text (trimmed) the failing tests' stdout and stderr must hold |
+| `--timeout SECONDS` | `step expect-fail`: seconds the tests may run (default 240) |
 | `--code WORD` | `step done`: a word for why, kept as the failed step's `details.code` (see [Failure codes](#failure-codes)). Lowercase letters, digits and `_`, starting with a letter, at most 40 characters; anything else is a `usage` error |
 | `--json` | Print one JSON document |
 
@@ -402,6 +406,7 @@ Top-level keys:
 | `timeout_action` | `hold` (the default) or `interrupt`: what happens past the timeout. `hold` stops the next attempt from starting; `interrupt` also lets `workflow sweep` press the interrupt keys of the agent working past the limit, once, under the sweep cause `run_timed_out`. Warns `timeout_action_without_timeout` without a `timeout`. Needs `workflow` 33. |
 | `stall` | A duration such as `20m`, or left out: how long a step's pane may sit idle, its agent's turn over, before `workflow sweep` decides the step. Only the sweep reads it. Left out, the sweep uses the global `workflows.default_stall` (10 minutes unless you set it; `off` or `0` turns the default off, so a definition with no `stall` is never decided for being idle). `workflow show ID` prints the stall a workflow runs with |
 | `redeliver` | A whole number from 0 to 10 (default 3): how many times `workflow sweep` types a step's line again when it was not delivered (see [Sweeping stopped runs](#sweeping-stopped-runs)). `0` turns the retry off. A run stored before the key existed reads as `0` and is never retried |
+| `version` | A whole number of 1 or more, the revision of this definition; `workflow show` prints it and a run stores it in its definition. Left out: none. Not inherited through `extends`; a child sets its own. Needs `workflow` 55 |
 | `use_when` | One line (at most 200 characters) saying when to pick the workflow; shown by `workflow show` and listed by `workflow show --json`. Left out: none |
 | `applies_to` | A list of the ref kinds the workflow is for: `jira`, `github_pr`, `github_issue`, `branch`. `workflow start` with a `REF` of another kind is refused with `workflow_not_for_ref` unless `--force`. Left out (the default): every kind, no check. A run stored before the key existed has none |
 | `deny` | A list of shell-glob patterns (at most 50, each at most 200 characters with at most 8 `*` or `?`) for Bash commands the run's agent may not run; see [Denying commands](#denying-commands). A run stored before the key existed has none |
@@ -451,7 +456,7 @@ steps:
     produces: [plan-approval.md]
 ```
 
-How the result is built: the parent's top-level keys, then this file's over them (a key it sets replaces the parent's value whole), except `inputs` and `reviewers`, which merge by name with this file's winning (a reviewer this file names replaces the parent's whole entry, and a step of this file may name a reviewer of the parent; the names are checked after the merge). `replace:` swaps a parent step whole (nothing of the old step is kept, so say `gate:` again if you want it); each added step goes after the step its `after:` names, or at the end, and several added after the same step keep the order written. `id` is always this file's. A parent's `prompt_file:`, on a step or a reviewer, is read from the parent's directory. A `replace:` step that leaves out the `review:` of the step it replaces gets the `review_dropped` warning.
+How the result is built: the parent's top-level keys, then this file's over them (a key it sets replaces the parent's value whole), except `inputs` and `reviewers`, which merge by name with this file's winning (a reviewer this file names replaces the parent's whole entry, and a step of this file may name a reviewer of the parent; the names are checked after the merge). `replace:` swaps a parent step whole (nothing of the old step is kept, so say `gate:` again if you want it); each added step goes after the step its `after:` names, or at the end, and several added after the same step keep the order written. `id` and `version` are always this file's, never the parent's. A parent's `prompt_file:`, on a step or a reviewer, is read from the parent's directory. A `replace:` step that leaves out the `review:` of the step it replaces gets the `review_dropped` warning.
 
 The parent is found like any workflow id (`~/.config/workspace/workflows/` first, then the presets), so your own file named `rpiv` replaces the preset for every workflow that extends it, `rpiv-auto-approve` included. A file may extend the id it shadows: your `rpiv.yml` with `extends: rpiv` starts from the preset `rpiv` (only the sources after its own are searched), which is the way to change a preset and keep the rest. `show` prints each parent with its source and path, so you can see which file was read. A parent may extend another, up to 4 above the one you read.
 
@@ -584,7 +589,7 @@ A bad `reviews:` is refused as `invalid_script` with problems such as `steps.des
 
 An attempt the list has no entry for does the plain thing. A script with a key, step, input, file or proof the workflow does not have, a bad value, a `code:` the engine sets itself (as `step done --code` refuses), or text that is not YAML is refused with `invalid_script`, listing every problem in `details.problems`. Problems for the pause keys read `pause must be true or a non-empty reason of at most 4000 characters (omit the key for no pause)`, `unpause must be true` and `unpause is set, and the attempt does not pause`. The composed instructions are the workflow's and the step's own text, without library packs: use `workflow render` for the real text.
 
-Limits: the checkout stub reads no repository, so a `guard:` can never fail and no `guard` failure can be scripted; `start`'s refusals for an unset `commands.test`/`lint` and for a first-step pack the library can't find are not made here (use `workflow validate`); locks are always free, so a `uses:` wait is not simulated; there is no daemon, so a sweep, a timeout or a lost turn is not either; a person's `resume` is not scripted, so a stop ends the simulation; a reviewed step's round is delivered at once with no review window, and every verdict the script gives is proven (the daemon's hook log is not read), so `review_unproven` and the other proof failures can't be scripted, and the checkout cannot change under a round (`review_guard`).
+Limits: programs of `require: exec:` entries are not looked up (the proofs do not run, so one that is not installed here does not stop the simulation) and `{{changed.tests}}` needs no `commands.test_files`; the checkout stub reads no repository, so a `guard:` can never fail and no `guard` failure can be scripted; `start`'s refusals for an unset `commands.test`/`lint` and for a first-step pack the library can't find are not made here (use `workflow validate`); locks are always free, so a `uses:` wait is not simulated; there is no daemon, so a sweep, a timeout or a lost turn is not either; a person's `resume` is not scripted, so a stop ends the simulation; a reviewed step's round is delivered at once with no review window, and every verdict the script gives is proven (the daemon's hook log is not read), so `review_unproven` and the other proof failures can't be scripted, and the checkout cannot change under a round (`review_guard`).
 
 ### Adding a definition
 
@@ -1074,7 +1079,7 @@ Where other attempts go: an attempt that was never delivered to the agent (`not_
 
 ### Comparing runs
 
-`workflow compare ID [--by definition | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]` sets the runs of definition `ID` side by side, to see whether a change to the definition or to a pack moved the results:
+`workflow compare ID [--by definition | --by version | --by pack:NAME] [--last DURATION] [--name WORKSPACE | --project [NAME]] [--json]` sets the runs of definition `ID` side by side, to see whether a change to the definition or to a pack moved the results:
 
 ```
 $ workspace workflow compare rpiv-auto-approve --by pack:plan-review
@@ -1084,13 +1089,14 @@ SHA       RUNS  PASS-1ST  RESUMES/RUN
 Too few runs to call this a difference; tasks also differ between runs, so this shows a direction and does not prove a cause.
 ```
 
-Scope, `--last`, `--name`, `--project` (`--all` is refused), an `ID` with no definition on disk and the damaged-file behaviour are those of [`workflow stats`](#step-statistics): unreadable run files make `status` `partial`, exit 3 and a warning. `--by` is `definition` (the default) or `pack:NAME`; any other text is a usage error. It reads only what each run stored, so older runs can lack the hashes.
+Scope, `--last`, `--name`, `--project` (`--all` is refused), an `ID` with no definition on disk and the damaged-file behaviour are those of [`workflow stats`](#step-statistics): unreadable run files make `status` `partial`, exit 3 and a warning. `--by` is `definition` (the default), `version` or `pack:NAME`; any other text is a usage error. It reads only what each run stored, so older runs can lack the hashes.
 
 A run counts in exactly one group:
 
 | `--by` | The run's group |
 |--------|-----------------|
 | `definition` | The run's `definition_sha256` (the definition it was started from, kept whole in the run, so it cannot change mid-run), else the one `definition_sha256` its attempts agree on |
+| `version` | The `version:` of the definition the run stored, as a number; a run whose stored definition has none (stored before the key existed) is in the `unknown` group. Groups sort by number, `unknown` last, and the first column reads `VERSION` |
 | `pack:NAME` | The `sha256` of pack `NAME` (its name or its full ref) in the `packs` its delivered attempts recorded. The pack's text can change between attempts of one run: such a run is in the `mixed` group, under neither sha |
 
 A run with no readable hash is in the `unknown` group: for `pack:`, a run whose delivered attempts recorded no `packs` at all (stored before they were recorded) or no hash for the pack. A run whose attempts recorded `packs` without `NAME`, and a run that never delivered an attempt (`not_delivered` only, or none), are in no group and are counted apart (`without_pack`, `no_attempts`). A `NAME` no run used is not an error: the groups are empty (exit 0), because an archived run may not have kept it, and the output says so.
@@ -1104,7 +1110,7 @@ A run with no readable hash is in the `unknown` group: for `pack:`, a run whose 
 
 The output always ends with the sample warning, and `--json` always carries it as `warning`. Its first clause, `Too few runs to call this a difference;`, is dropped once every group has at least 20 settled runs and there are at least two groups. The rest stays: the tasks differ between runs, so compare shows a direction and does not prove a cause.
 
-`--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"by":"definition"|"pack:NAME","runs":N,"matched":N,"without_pack":N,"no_attempts":N,"unreadable":N,"undated":N,"warning":TEXT,"groups":[...]}`, each group `{"sha","runs","settled","first_try","pass_first_percent":N-or-null,"running","cancelled","stuck","resumes","resumes_per_run"}`. `runs` counts the runs read and `matched` those in a group. Needs `workflow` 24 in `capabilities`.
+`--json` prints `{"schema_version":1,"ok":true,"workflow":ID,"status":"ok"|"partial","last":TEXT-or-null,"since":ISO-time-or-null,"workspace":NAME-or-null,"project":NAME-or-null,"by":"definition"|"version"|"pack:NAME","runs":N,"matched":N,"without_pack":N,"no_attempts":N,"unreadable":N,"undated":N,"warning":TEXT,"groups":[...]}`, each group `{"key","sha","runs","settled","first_try","pass_first_percent":N-or-null,"running","cancelled","stuck","resumes","resumes_per_run"}`. `runs` counts the runs read and `matched` those in a group. `key` is the group's name (a sha, a version number as text, `unknown` or `mixed`); `sha` holds the same text and is kept for older readers. Needs `workflow` 24 in `capabilities`, and 55 for `--by version` and `key`.
 
 ### Auditing a run's evidence
 
@@ -1335,7 +1341,7 @@ A file that is not there is listed with `exists` false and `bytes` null. A symli
 
 ### The `rpiv` preset
 
-`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`rpiv-auto-approve-v2`](#the-rpiv-auto-approve-v2-preset), [`pr-feedback`](#the-pr-feedback-preset), [`investigate`](#the-investigate-preset) and [`explore`](#the-explore-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. `implement` requires `commits: 1` and `plan_status: done`. The agent sets the plan's `status: done` last, and the commit must be made during that attempt, so a rerun (a pass back from `verify`, or a `resume`) has to make a new commit for the fix. The prompt says never to amend or rebase, which makes the proof unproven (`history_rewritten`), and to use `git commit --allow-empty -m '<why>'` when no code change is needed. `verify` requires `command: lint` with `optional: true`, so it passes only when the tests and, if the project sets `commands.lint`, the lint command both exit 0 (a project without one skips that proof, recorded under `proofs`). A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
+`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`rpiv-auto-approve-v2`](#the-rpiv-auto-approve-v2-preset), [`pr-feedback`](#the-pr-feedback-preset), [`investigate`](#the-investigate-preset), [`explore`](#the-explore-preset) and the experimental [`bugfix`](#the-bugfix-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. `implement` requires `commits: 1` and `plan_status: done`. The agent sets the plan's `status: done` last, and the commit must be made during that attempt, so a rerun (a pass back from `verify`, or a `resume`) has to make a new commit for the fix. The prompt says never to amend or rebase, which makes the proof unproven (`history_rewritten`), and to use `git commit --allow-empty -m '<why>'` when no code change is needed. `verify` requires `command: lint` with `optional: true`, so it passes only when the tests and, if the project sets `commands.lint`, the lint command both exit 0 (a project without one skips that proof, recorded under `proofs`). A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
 
 `research` and `plan` are `guard: unchanged`, so `rpiv` needs a clean checkout to start: a dirty tracked file, a stopped git operation or a branch with no commit is refused as `dirty_worktree` before anything is made, and a research or plan step that commits or edits a tracked file fails with the guard code (`head_moved`, `tracked_changed`). The plan and the artifacts are untracked, so writing them is fine. A run that has already started keeps the definition it started with, so runs begun before this guard behave as they did. `workflow run rpiv` (its tree defaults to the workspace's worktree) is refused on uncommitted tracked changes the same way, not only `workflow start`. A project that tracks `IMPLEMENTATION_PLAN.md` inside the repository fails `plan` with `tracked_changed`; clean the checkout and `workflow resume`. `workflow resume --from research` or `--from plan` after `implement` has committed stops with `head_moved`.
 
@@ -1476,6 +1482,35 @@ workspace workflow start explore --prompt "What would make uploads resumable?"
 - `survey` (`guard: unchanged`, gate `approve`, 90m) writes the note `<date>-<topic>-survey.md` in the notes directory: the questions, what exists today, each gap with its evidence, and a ranked list for you to prune. `survey.md` in the run's artifacts names the note on its first line, so the gate shows it, and a `review_request` inbox item (`explore:RUN`) links it. Approve with a note to cut the list or change the emphasis, or reject with a hint and it writes the note again.
 - `report` (`guard: config`, 90m) reads the approved note, closes the inbox item, and writes `<date>-<topic>-report.md` in the notes directory with the verdict first, then ranked recommendations, then the detail, has a skeptical sub-agent check the claims against the code, and hands the note back through the `report` pack as a `note` inbox item. `report.md` in the run's artifacts holds the note's file name.
 
+### The `bugfix` preset
+
+**Experimental.** `bugfix` fixes one bug test first: `reproduce`, `fix`, `verify`. Its inputs are `task` (required) and `spec` (a spec or ticket file to read first). `workflow run` fills `task` from the branch when it is left out ([how](#filling-inputs-from-the-branch)).
+
+- `reproduce` (`guard: unchanged`, gate `approve`, 45m) writes one new test file, plus `repro.md` (steps, expected and actual behavior, the test's path and the command that runs it) and `failure.txt` (a short line of failure text only this bug prints). Before the gate, a `require: exec` proof runs `workspace step expect-fail` on `{{changed.tests}}` with `failure.txt` as the match file, so a person at the gate reads a reproduction that is already known to fail. The step fails on any tracked change, so a reproduction that needs a changed spec helper stops with `workspace step done --status fail`.
+- `fix` (3h) makes at least one commit that holds the test and the fix, and is checked with `commands.test` run with no files, the whole suite. It deletes the test files of earlier reproduce attempts and keeps the test as strict as it was.
+- `verify` (90m) reruns the tests, runs the linter when the project has `commands.lint`, and reviews the branch's diff. A failure goes back to `fix` up to three times in the same conversation.
+
+The run's `max_attempts` is 15.
+
+Setup it needs:
+
+```sh
+workspace config set commands.test "bundle exec rspec"
+workspace config set commands.test_files "spec/**/*_spec.rb"
+workspace capabilities --json    # step_expect_fail must be listed
+workspace workflow run bugfix --input task="PROJ-101 export fails on empty invoices"
+```
+
+- `commands.test` must take test files as arguments. A command that ignores them runs everything, and the new test then can't be told from the rest.
+- `commands.test_files` must match the name of the new test file, because `{{changed.tests}}` is built from it. Every untracked file that matches runs, not only the agent's.
+- The `workspace` on the agent daemon's PATH must have `step expect-fail`. An older one fails the proof with its unknown-verb error.
+
+Two choices to know about. `bugfix` is a standalone file, not `extends: rpiv`: a variant can replace a step or add one, but it can't take steps out of the parent, and `bugfix` has a different set of steps and a different instruction text. `verify` has no `uses: test-db`, so two bugfix runs in worktrees of one repository can verify at the same time; add `uses: test-db` in your own copy if your tests share a database.
+
+`deny` blocks `workspace config set*` and `workspace config unset*`, because the proofs read `commands.test` from config and an agent that changed it could make any command the "tests" (see [Denying commands](#denying-commands)).
+
+The fail-first proof has limits: it does not show that the test fails for the right reason, nor that `fix` keeps the test as strict. See [Fail-first proofs](#fail-first-proofs). The reproduction you read at the gate is the real check.
+
 ## Required proofs
 
 A step's `require:` is a list of proofs the engine checks when the agent's turn ends, after the `produces` files are accepted and before the `status:` command runs (a step the agent reported as failed is not checked: it already failed). Each entry is one proof; the first that fails stops the check:
@@ -1519,6 +1554,20 @@ A proof that cannot know its facts is unproven, and its program is not run. A te
 The proofs show facts about the repository, not that the work is good: `commits: 1` passes a useless commit. A definition stored before `require:` existed has no `require` in its snapshot and behaves as before. `workflow validate` lists every bad entry (an unknown proof, a repeated proof, a bad value) under `invalid_workflow`. A step with only `require:` has proof, so it does not warn.
 
 The presets use them. `rpiv` and `rpiv-auto-approve` are described above. Every preset step that posts to the inbox on each successful path requires its `inbox_item`: `explore` (`explore:RUN` for `survey`, `explore-report:RUN` for `report`), `pr-feedback` (`pr-feedback:RUN` for `triage`, a stop path included, and `pr-feedback-fix:RUN` for `fix`) and `investigate` (`investigate:RUN` for `diagnose`, `investigate-fix:RUN` for `fix`). Their prompts post with `--reopen`, because a rerun of the step (after a rejected gate or a resume) uses the same key, and an item the person already closed would otherwise be left alone and fail the proof. A step that stops through `step done --status fail` is not checked, and `investigate`'s `reproduce` posts only on its stop paths, so it has no proof. A run already started keeps the definition it was stored with: a change to a preset affects new runs only.
+
+### Fail-first proofs
+
+`workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...` proves a new test fails before the fix. It is meant for an `exec` entry, so it runs from no pane: it finds the workspace from the directory it runs in (the checkout) and never reads `TMUX_PANE` or a pane binding. It reads the workspace's `commands.test` through the usual layers, appends the FILEs shell-escaped and runs the line through `sh -c` in its own process group, then prints the tests' output followed by one line that starts with `expect-fail:`. Only the last 1 MB of the output is printed, after a line saying it was cut; the match is looked for in all of it. It exits 0 only when the command exits non-zero and, with `--match-file`, the tests' stdout and stderr together hold the file's text (trimmed of leading and trailing whitespace) as one exact substring. It exits 1 when no FILE is given, a FILE starts with `-` (the test command would read it as an option; write `./-x_spec.rb`), `commands.test` is unset, the match file is missing, a link, not a regular file, empty or over 4096 bytes, the tests pass, the text is not in the output, or the tests run past `--timeout` (default 240 seconds; the line says `tests ran past Ns`). Use it with `{{changed.tests}}`, and have the step write the failure text it expects to a file in the artifacts directory, listed in `produces`:
+
+```yaml
+reproduce:
+  produces: [repro.md, failure.txt]
+  require:
+    - exec: "workspace step expect-fail --match-file {{artifacts}}/failure.txt --timeout 840 -- {{changed.tests}}"
+      timeout: 15m
+```
+
+Give the checker a `--timeout` below the entry's `timeout:` (here 840 seconds under 15 minutes), so a slow run ends with the checker's own message instead of the engine stopping it as unproven. `commands.test` must take test files as arguments (`bundle exec rspec` does; a command that ignores them runs everything), and `{{changed.tests}}` needs `commands.test_files`. The program is the `workspace` on the agent daemon's PATH, outside the checkout, so the agent can't edit it; an older `workspace` without the verb fails the proof with its unknown-verb usage error in the proof log (check for `step_expect_fail` in `workspace capabilities --json`). What it does not prove: that the test fails for the right reason (a load error or a typo fails too), and that a later step keeps the test as strict (a fix step can weaken the repro test until it passes). `--match-file` does not stop a dishonest agent: the agent writes both the test and `failure.txt`, and generic text such as `Failure` matches almost any failure. It only narrows accidental failures, such as a load error, for an honest one; a person reading the reproduction (`repro.md` at a gate) is the real check. The agent can also change what runs: `workspace config set commands.test ...`, or an edit to the config file, makes any command the "tests". A `deny:` entry such as `workspace config set*` catches the first (see [Denying commands](#denying-commands)); keep the config file out of the agent's reach or review it for the second.
 
 ## Denying commands
 

@@ -51,7 +51,7 @@ module Workspace
         "library_installed" => 1,
         "instructions" => 1,
         "restore" => 1,
-        "workflow" => 54,
+        "workflow" => 55,
         "workflow_trace" => 1,
         "workflow_events_follow" => 2,
         "window_state" => 1,
@@ -116,7 +116,8 @@ module Workspace
         "launch_prompt_status" => 1,
         "kill_branches" => 1,
         "rename" => 1,
-        "help_json" => 1
+        "help_json" => 1,
+        "step_expect_fail" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

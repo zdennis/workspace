@@ -4,7 +4,7 @@ require "fileutils"
 require "json"
 
 module WorkflowSimulatorScenarios
-  PRESETS = %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2 pr-feedback investigate explore].freeze
+  PRESETS = %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2 pr-feedback investigate explore bugfix].freeze
   SCENARIOS = %w[check-retry gate-reject review-reject].freeze
   NOT_APPLICABLE = {
     ["rpiv", "review-reject"] => "no step has a review:",
@@ -16,7 +16,8 @@ module WorkflowSimulatorScenarios
     ["investigate", "check-retry"] => "no step has a status: check",
     ["investigate", "review-reject"] => "no step has a review:",
     ["explore", "check-retry"] => "no step has a status: check",
-    ["explore", "review-reject"] => "no step has a review:"
+    ["explore", "review-reject"] => "no step has a review:",
+    ["bugfix", "review-reject"] => "bugfix has no review: step"
   }.freeze
 end
 

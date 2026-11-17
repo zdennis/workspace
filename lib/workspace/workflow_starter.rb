@@ -19,9 +19,10 @@ module Workspace
     # @param gate_note [Workspace::WorkflowGateNote] names a workspace's notes directory
     # @param task_store [Workspace::TaskStore, nil] names the workspace's task in the run
     # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
+    # @param exec_program [#problem] judges argument 1 of each `exec` proof, as {WorkflowExecProgram} does (default); `workflow simulate` gives one that accepts every program
     # @param clock [#call] returns the current Time
     def initialize(change:, store:, prompt:, dispatch:, lineage:, commands_config:, guard:, gate_note:,
-      task_store: nil, workspace_known: nil, clock: -> { Time.now })
+      task_store: nil, workspace_known: nil, exec_program: WorkflowExecProgram, clock: -> { Time.now })
       @change = change
       @store = store
       @prompt = prompt
@@ -32,6 +33,7 @@ module Workspace
       @gate_note = gate_note
       @task_store = task_store
       @workspace_known = workspace_known
+      @exec_program = exec_program
       @clock = clock
     end
 
@@ -245,7 +247,7 @@ module Workspace
     # judged in +tree+, the checkout that exists; nil (a worktree not made yet) leaves it unjudged, since the branch may add it.
     def check_exec_programs(data, tree)
       missing = exec_steps(data).filter_map do |step, argv|
-        reason = WorkflowExecProgram.problem(argv.first, checkout: tree)
+        reason = @exec_program.problem(argv.first, checkout: tree)
         {"step" => step, "program" => argv.first, "problem" => reason} if reason
       end
       return if missing.empty?

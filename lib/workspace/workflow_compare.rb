@@ -6,6 +6,9 @@ module Workspace
   # What a run counts under, from what the run file stored:
   # - `definition`: the run's `definition_sha256`, else the one `definition_sha256` its attempts agree on. A run
   #   with neither is in the `unknown` group.
+  # - `version`: the whole-number `version` of the definition the run stored ({WorkflowDefinition.version}), as text.
+  #   A run whose stored definition has none (stored before the key existed) is in the `unknown` group. Groups sort
+  #   by number, `unknown` last.
   # - `pack:NAME`: the `sha256` of the pack (matched by its name, or its full `ref`) in the `packs` list that each
   #   delivered attempt recorded. A pack's text can change between attempts of one run: a run whose attempts
   #   saw more than one text is in the `mixed` group, never under either sha. A run whose delivered attempts
@@ -14,7 +17,8 @@ module Workspace
   #   `without_pack`; a run with no delivered attempt in `no_attempts`. Neither is in any group, and a name that
   #   matches no run gives no groups, not an error: an archived run may simply not have kept it.
   #
-  # Per group: `runs` (all of them), `first_try`, `settled`, `pass_first_percent` (`first_try` of `settled`, nil
+  # Per group: `key` (what the group is named: a sha, a version number as text, `unknown` or `mixed`; `sha` holds the
+  # same text, kept for older readers), `runs` (all of them), `first_try`, `settled`, `pass_first_percent` (`first_try` of `settled`, nil
   # with none settled), `running` (not settled, still going), `cancelled` (stopped by a person without a miss),
   # `stuck` (settled runs not ended: waiting on `failed_check`, `budget_spent` or `run_timed_out` after a miss), `resumes`
   # (all `run_resumed` events) and `resumes_per_run`.
@@ -56,14 +60,15 @@ module Workspace
       small ? "Too few runs to call this a difference; #{sentence}" : sentence.sub(/\A[a-z]/, &:upcase)
     end
 
-    # @param by [String] "definition" or "pack:NAME"
-    # @return [Array(Symbol, String, nil)] :definition, or :pack and the name
+    # @param by [String] "definition", "version" or "pack:NAME"
+    # @return [Array(Symbol, String, nil)] :definition or :version, or :pack and the name
     # @raise [Workspace::UsageError] for any other text
     def self.parse_by(by)
       return [:definition, nil] if by == "definition"
+      return [:version, nil] if by == "version"
       name = by.to_s[/\Apack:(.+)\z/, 1]
       return [:pack, name] if name&.match?(/\A[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}\z/)
-      raise UsageError, "--by needs definition or pack:NAME (a pack name like plan-review), got #{by.to_s[0, 40].inspect}."
+      raise UsageError, "--by needs definition, version or pack:NAME (a pack name like plan-review), got #{by.to_s[0, 40].inspect}."
     end
 
     # @param workflow [String]
@@ -81,7 +86,11 @@ module Workspace
       loaded["runs"].each do |stored|
         raise TypeError, "a run is a Hash" unless stored.is_a?(Hash) || stored.is_a?(WorkflowRun)
         run = WorkflowRun.from_h(stored)
-        key = (kind == :pack) ? pack_key(run, name) : definition_key(run)
+        key = case kind
+        when :pack then pack_key(run, name)
+        when :version then version_key(run)
+        else definition_key(run)
+        end
         figures = figures_of(run)
       rescue NoMethodError, TypeError, ArgumentError, Workspace::Error
         counts["malformed"] += 1
@@ -93,7 +102,12 @@ module Workspace
         else (groups[key] ||= []) << figures
         end
       end
-      rows = groups.map { |sha, list| row(sha, list) }.sort_by { |each| [[UNKNOWN, MIXED].include?(each["sha"]) ? 1 : 0, -each["runs"], each["sha"]] }
+      rows = groups.map { |sha, list| row(sha, list) }
+      rows = if kind == :version
+        rows.sort_by { |each| [(each["key"] == UNKNOWN) ? 1 : 0, each["key"].to_i] }
+      else
+        rows.sort_by { |each| [[UNKNOWN, MIXED].include?(each["key"]) ? 1 : 0, -each["runs"], each["key"]] }
+      end
       small = rows.size < 2 || rows.any? { |each| each["settled"] < MIN_SETTLED }
       {"by" => by, "runs" => counts["read"], "matched" => rows.sum { |each| each["runs"] }, "without_pack" => counts["without_pack"],
        "no_attempts" => counts["no_attempts"], "unreadable" => loaded["unreadable"] + counts["malformed"], "undated" => loaded["undated"],
@@ -117,6 +131,10 @@ module Workspace
       return sha_of(run.definition_sha256) if run.definition_sha256
       shas = attempts_of(run).map(&:definition_sha256).compact.map { |sha| sha_of(sha) }.uniq
       (shas.size > 1) ? MIXED : (shas.first || UNKNOWN)
+    end
+
+    def version_key(run)
+      WorkflowDefinition.version(run.definition)&.to_s || UNKNOWN
     end
 
     def pack_key(run, name)
@@ -163,7 +181,7 @@ module Workspace
       settled = list.select { |each| %i[settled stuck].include?(each[:state]) }
       clean = settled.count { |each| each[:first_try] }
       resumes = list.sum { |each| each[:resumes] }
-      {"sha" => sha, "runs" => list.size, "settled" => settled.size, "first_try" => clean,
+      {"key" => sha, "sha" => sha, "runs" => list.size, "settled" => settled.size, "first_try" => clean,
        "pass_first_percent" => settled.empty? ? nil : (clean * 100.0 / settled.size).round,
        "running" => list.count { |each| each[:state] == :running }, "cancelled" => list.count { |each| each[:state] == :cancelled },
        "stuck" => list.count { |each| each[:state] == :stuck },

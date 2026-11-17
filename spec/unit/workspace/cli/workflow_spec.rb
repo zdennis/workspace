@@ -370,6 +370,39 @@ RSpec.describe Workspace::CLI::Workflow do
   end
 
   describe "step" do
+    it "runs expect-fail in the working directory with every file after --, and no pane" do
+      expect(run("expect-fail", "--match-file", "f.txt", "--timeout", "840", "--", "spec/a_spec.rb", "-odd_spec.rb", verb: "step")).to be_nil
+
+      expect(workflow_command.calls).to eq([[:step_expect_fail, {cwd: "/src/app", files: ["spec/a_spec.rb", "-odd_spec.rb"], match_file: "f.txt", timeout: 840}]])
+    end
+
+    it "gives expect-fail the default limit and no match file when none is given" do
+      run("expect-fail", "spec/a_spec.rb", verb: "step")
+
+      expect(workflow_command.calls).to eq([[:step_expect_fail, {cwd: "/src/app", files: ["spec/a_spec.rb"], match_file: nil, timeout: 240}]])
+    end
+
+    it "exits with the code expect-fail answers" do
+      command = double("workflow command", step_expect_fail: {exit_code: 1})
+
+      expect(run("expect-fail", "spec/a_spec.rb", verb: "step", workflow_command: command)).to eq(1)
+    end
+
+    it "refuses a --timeout that is not a whole number of seconds from 1 up" do
+      %w[0 -5 1.5 soon].each do |value|
+        expect { run("expect-fail", "--timeout", value, "spec/a_spec.rb", verb: "step") }.to raise_error(Workspace::UsageError, /\A--timeout takes a whole number of seconds/)
+      end
+      expect(workflow_command.calls).to be_empty
+    end
+
+    it "refuses the flags of done on expect-fail, and the flags of expect-fail on done and status" do
+      expect { run("expect-fail", "--status", "pass", "a", verb: "step") }.to raise_error(Workspace::UsageError, "--status is not for `step expect-fail`.")
+      expect { run("expect-fail", "--code", "x", "a", verb: "step") }.to raise_error(Workspace::UsageError, "--code is not for `step expect-fail`.")
+      expect { run("done", "--match-file", "f", verb: "step") }.to raise_error(Workspace::UsageError, "--match-file is only for `step expect-fail`.")
+      expect { run("status", "--timeout", "5", verb: "step") }.to raise_error(Workspace::UsageError, "--timeout is only for `step expect-fail`.")
+      expect(workflow_command.calls).to be_empty
+    end
+
     it "records a step's end for the pane" do
       run("done", "--status", "fail", "--summary", "Two specs fail.", "--code", "specs_fail", verb: "step")
 
@@ -385,7 +418,7 @@ RSpec.describe Workspace::CLI::Workflow do
     end
 
     it "names its verbs when none is given" do
-      expect { run(verb: "step") }.to raise_error(Workspace::UsageError, /\AMissing subcommand: done or status\./)
+      expect { run(verb: "step") }.to raise_error(Workspace::UsageError, /\AMissing subcommand: done, status or expect-fail\./)
     end
 
     it "answers a usage error with --json as one error document" do

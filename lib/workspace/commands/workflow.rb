@@ -48,6 +48,7 @@ module Workspace
       # @param stats [Workspace::WorkflowStats, nil] reads a workflow's runs into per-step figures (`stats`)
       # @param compare [Workspace::WorkflowCompare, nil] sets a workflow's runs side by side by definition or pack (`compare`)
       # @param simulator [Workspace::WorkflowSimulator, nil] plays a workflow with a scripted fake agent (`simulate`)
+      # @param expect_fail [Workspace::WorkflowExpectFail, nil] runs the fail-first check (`step expect-fail`)
       # @param source_installer [Workspace::WorkflowSourceInstaller, nil] fetches, checks and caches the `workflows.sources` entries (`install`)
       # @param workflow_config [Workspace::WorkflowConfig, nil] reads `workflows.default_stall`, for the stall `show` reports
       # @param infra_retry [Workspace::WorkflowInfraRetry, nil] restarts a step whose infra retry is due (`advance`'s timer look); nil leaves it to `tick`
@@ -59,7 +60,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, trace: nil, downtime: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, trace: nil, downtime: nil, audit: nil, sweep: nil, recover: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, expect_fail: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, graph_renderers: DEFAULT_GRAPH_RENDERERS, pid: Process.pid,
         clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
@@ -82,6 +83,7 @@ module Workspace
         @compare = compare
         @step_check = step_check
         @simulator = simulator
+        @expect_fail = expect_fail
         @source_installer = source_installer
         @workflow_config = workflow_config
         @infra_retry = infra_retry
@@ -121,6 +123,7 @@ module Workspace
         @output.puts "#{data["id"]}: #{data["title"]} (#{definition.source}, #{definition.path})"
         @output.puts data["description"] if data["description"]
         @output.puts "Use when: #{data["use_when"]}" if data["use_when"]
+        @output.puts "Version: #{data["version"]}" if data["version"]
         definition.parents.each { |parent| @output.puts "Extends: #{parent["id"]} (#{parent["source"]}, #{parent["path"]})" }
         @output.puts "Applies to: #{data["applies_to"].join(", ")}" if data["applies_to"].any?
         @output.puts "Inputs:" if data["inputs"].any?
@@ -1043,6 +1046,27 @@ module Workspace
          "step" => reported["step"], "attempt" => reported["attempt"], "reported" => reported["reported"].slice("status", "summary", "code")}
       end
 
+      # The fail-first check (`step expect-fail`), run by a `require: exec:` proof from no pane: the
+      # tests' output, then one `expect-fail:` line (stdout when they failed as expected, stderr otherwise).
+      #
+      # @param cwd [String] the checkout
+      # @param files [Array<String>] the test files
+      # @param match_file [String, nil] a file whose trimmed text the output must hold
+      # @param timeout [Integer] seconds the tests may run
+      # @return [Hash{Symbol=>Integer}] `exit_code`: 0 when the tests failed as expected, else 1
+      def step_expect_fail(cwd:, files:, match_file: nil, timeout: WorkflowExpectFail::DEFAULT_TIMEOUT)
+        raise Workspace::Error, "step expect-fail is not available: no check was wired" unless @expect_fail
+        result = @expect_fail.call(cwd: cwd, files: files, match_file: match_file, timeout: timeout)
+        unless result.output.to_s.empty?
+          @output.puts "expect-fail: output cut; its last #{result.output.bytesize} bytes follow" if result.cut
+          text = result.output.dup.force_encoding(Encoding::UTF_8).scrub
+          write_text(text.end_with?("\n") ? text : "#{text}\n")
+          @output.flush
+        end
+        (result.passed ? @output : @error_output).puts TerminalText.escape(result.message)
+        {exit_code: result.passed ? 0 : 1}
+      end
+
       # Prints the step the calling pane is on (`step status`).
       #
       # @param pane [String, nil] the pane the agent runs in (`$TMUX_PANE`)
@@ -1320,7 +1344,9 @@ module Workspace
           what = result["by"].start_with?("pack:") ? "run of #{name}#{window} used #{by.sub("pack:", "pack ")}" : "run of #{name}#{window}"
           @output.puts "No #{what}."
         else
-          rows = [COMPARE_HEADER] + groups.map { |each| compare_cells(each).map { |cell| TerminalText.escape(cell) } }
+          by_version = result["by"] == "version"
+          header = by_version ? ["VERSION"] + COMPARE_HEADER.drop(1) : COMPARE_HEADER
+          rows = [header] + groups.map { |each| compare_cells(each, version: by_version).map { |cell| TerminalText.escape(cell) } }
           widths = rows.transpose.map { |column| column.map(&:length).max }
           rows.each { |line| @output.puts line.each_with_index.map { |cell, i| i.zero? ? cell.ljust(widths[i]) : cell.rjust(widths[i]) }.join("  ") }
           @output.puts "#{result["matched"]} #{(result["matched"] == 1) ? "run" : "runs"} of #{name}#{window}, grouped by #{by}."
@@ -1331,15 +1357,19 @@ module Workspace
         @output.puts "#{running} run#{"s" unless running == 1} still going and #{cancelled} cancelled with no miss, left out of PASS-1ST." if running.positive? || cancelled.positive?
         @output.puts "#{result["without_pack"]} run#{"s" unless result["without_pack"] == 1} did not use #{by.sub("pack:", "pack ")} and #{(result["without_pack"] == 1) ? "is" : "are"} in no group." if result["without_pack"].positive?
         @output.puts "#{result["no_attempts"]} run#{"s" unless result["no_attempts"] == 1} never delivered an attempt and #{(result["no_attempts"] == 1) ? "is" : "are"} in no group." if result["no_attempts"].positive?
-        @output.puts "unknown: runs stored without the hash; mixed: runs that saw more than one." if groups.any? { |each| %w[unknown mixed].include?(each["sha"]) }
+        if result["by"] == "version"
+          @output.puts "unknown: runs whose stored definition has no version." if groups.any? { |each| each["key"] == "unknown" }
+        elsif groups.any? { |each| %w[unknown mixed].include?(each["key"]) }
+          @output.puts "unknown: runs stored without the hash; mixed: runs that saw more than one."
+        end
         @output.puts result["warning"]
         @output.puts "Warning: #{result["undated"]} run#{"s" unless result["undated"] == 1} with no start time left out of the window." if result["undated"].positive?
         @output.puts "Warning: #{result["unreadable"]} run file#{"s" unless result["unreadable"] == 1} could not be read; the figures are incomplete." if result["unreadable"].positive?
       end
 
-      def compare_cells(group)
+      def compare_cells(group, version: false)
         percent = group["pass_first_percent"] ? "#{group["pass_first_percent"]}%" : "-"
-        [group["sha"].to_s[0, 8], group["runs"], percent, format("%.1f", group["resumes_per_run"])].map(&:to_s)
+        [version ? group["key"].to_s : group["sha"].to_s[0, 8], group["runs"], percent, format("%.1f", group["resumes_per_run"])].map(&:to_s)
       end
 
       def print_stats(workflow, last_text, result)

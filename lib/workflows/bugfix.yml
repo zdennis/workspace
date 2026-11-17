@@ -1,0 +1,116 @@
+schema_version: 0.1
+id: bugfix
+version: 1
+title: Reproduce, Fix, Verify
+description: One bug fixed test first, with a failing test proven before a gate, a fix, and a test-backed verify loop.
+
+use_when: "Experimental: a bug to fix test first. Needs commands.test that takes test files, commands.test_files, and a `workspace` with `step expect-fail` on the agent daemon's PATH."
+
+inputs:
+  task:
+    description: The bug to fix. A ticket key with a sentence, or a path to a spec in the worktree. `workflow run` fills it from the open pull request, else `Branch NAME`, when left out.
+    required: true
+  spec:
+    description: Optional spec or ticket file to read first.
+
+instructions: |
+  You are fixing {{inputs.task}} in workspace {{workspace}}, branch {{branch}}.
+  Spec (may be empty): {{inputs.spec}}
+  Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
+  inputs; read them before you start.
+  Never change the project's config (`workspace config set` or `unset`): the run's proofs
+  read the test command from it.
+
+# The proofs read commands.test from config, so the agent must not change it.
+deny:
+  - "workspace config set*"
+  - "workspace config unset*"
+
+# Only verify has an on_fail; reproduce's and fix's extra attempts come from a person's gate
+# rejection or resume. Reproduce up to 4, fix up to 6 and verify up to 5 (verify's three trips
+# back to fix, each also running fix again, plus room for resumes) make 15.
+max_attempts: 15
+
+steps:
+  reproduce:
+    title: Reproduce
+    prompt: |
+      Reproduce {{inputs.task}} with a test that fails now and will pass once the bug is fixed.
+      Read the code it touches and the tests that cover it. Don't change tracked files or commit:
+      the test must be a new file (a case that belongs in an existing test file goes in a new
+      file now; the fix step may move it), named so the project's commands.test_files match it.
+      If the reproduction needs a tracked file changed (a spec helper, a factory), don't change
+      it: the run fails the step on any tracked change. Run `workspace step done --status fail
+      --summary "<the tracked file it needs and why>"` and end your turn.
+      The run's check runs every untracked file that matches commands.test_files, not only yours.
+      On a rerun (after a rejected gate or a resume), delete or replace the test files an earlier
+      attempt wrote. Always, on the first attempt too, exactly one new test file is untracked when
+      your turn ends.
+      Write {{artifacts}}/repro.md: the steps to reproduce, expected and actual behavior, the new
+      test file's path, and the command that runs it.
+      Write {{artifacts}}/failure.txt: one line, a short fragment of the failure text the test
+      prints that only this bug produces (an assertion message, not a load error). Copy it from a
+      plain run with output piped to a file or `cat`, not a terminal, so it holds no color codes.
+      Pick a fragment that reads the same on every run: no object ids, addresses, line numbers,
+      timestamps or random seeds. The run checks that the new test fails with that text before
+      the gate.
+    produces: [repro.md, failure.txt]
+    guard: unchanged
+    require:
+      # --timeout must stay below this entry's timeout: 15m (840s < 900s)
+      - exec: "workspace step expect-fail --timeout 840 --match-file {{artifacts}}/failure.txt -- {{changed.tests}}"
+        timeout: 15m
+    gate: approve
+    timeout: 45m
+    max_attempts: 4
+
+  fix:
+    title: Fix
+    prompt: |
+      Fix the bug that {{artifacts}}/repro.md describes. Before committing, delete the test files an
+      earlier reproduce attempt of this run wrote, other than the one repro.md names; leave any other
+      untracked file alone and list it in fix.md. Commit the reproduction test with the fix
+      (moving it into an existing test file is fine); keep it as strict as it was (don't weaken,
+      skip or delete it to make it pass). Run the relevant tests before each commit. When your
+      turn ends the run checks this step by running the project's commands.test with no files,
+      the whole suite, which must pass.
+      Write {{artifacts}}/fix.md: the cause, the change, the reproduction test's final path (say so
+      if it moved from the path in repro.md), and the commits you made. Make at least one
+      commit. On a rerun (after a failed verify, or a resume), make a new commit for the fix and never
+      amend or rebase, which the run's commit check can't follow. If no code change is needed,
+      run `git commit --allow-empty -m '<why>'`.
+    produces: [fix.md]
+    require:
+      - commits: 1
+    status:
+      command: test
+    timeout: 3h
+    max_attempts: 6
+
+  verify:
+    title: Verify
+    include: [review]
+    prompt: |
+      Verify the fix against {{artifacts}}/repro.md. Check the reproduction test at the final path
+      {{artifacts}}/fix.md names is still as strict as repro.md describes. Run the tests for the
+      files the change touched, their obvious neighbors, and the tests the change obviously
+      impacts. When your turn ends the run checks this step by running the project's
+      commands.test with no files, the whole suite, which must pass. Run the linter (the project's
+      lint command, when it has one, must pass: the run checks it), then review the branch's diff
+      against its base.
+      Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
+      If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
+      and end your turn.
+    produces: [verify.md]
+    status:
+      command: test
+    require:
+      - command: lint
+        optional: true
+    timeout: 90m
+    max_attempts: 5
+    on_fail:
+      goto: fix
+      max: 3
+      context: continue
+      log_tail: 40
