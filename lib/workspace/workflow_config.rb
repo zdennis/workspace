@@ -4,6 +4,7 @@ module Workspace
     DEFAULT_STALL = 600
     DEFAULT_TURN_FAILED_AFTER = 1800
     DEFAULT_DOWNTIME_AFTER = 120
+    DEFAULT_INFRA_RETRY_MAX = 2
 
     # @param config_resolver [Workspace::ConfigResolver]
     def initialize(config_resolver:)
@@ -66,6 +67,19 @@ module Workspace
       value.nil? ? DEFAULT_DOWNTIME_AFTER : ConfigSchema.parse("workflows.downtime_after", value)
     rescue ArgumentError, Workspace::ConfigParseError
       DEFAULT_DOWNTIME_AFTER
+    end
+
+    # How many times a step is restarted on its own after `agent_gone` or
+    # `pane_gone`: `workflows.infra_retry.max` from the global file, `2` when it
+    # is unset, when it holds a value `config set` would refuse, or when the
+    # file can not be parsed. `0` turns automatic restarts off.
+    #
+    # @return [Integer]
+    def infra_retry_max
+      value = read("", upto: "global", key: "workflows.infra_retry.max")
+      value.nil? ? DEFAULT_INFRA_RETRY_MAX : ConfigSchema.parse("workflows.infra_retry.max", value)
+    rescue ArgumentError, Workspace::ConfigParseError
+      DEFAULT_INFRA_RETRY_MAX
     end
 
     private
