@@ -178,6 +178,28 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(json).to eq("schema_version" => 1, "ok" => true, "workflows" => entries)
     end
 
+    it "prints the version after use_when, and has it in the JSON" do
+      data = Workspace::WorkflowDefinition.parse("use_when: Go.\nversion: 4\nsteps:\n  a:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(data)
+
+      command.show(id: "flow")
+      expect(output.string).to include("Use when: Go.\nVersion: 4\n")
+
+      output.truncate(0)
+      output.rewind
+      command.show(id: "flow", json: true)
+      expect(json.dig("workflow", "version")).to eq(4)
+    end
+
+    it "prints no Version line when unset" do
+      data = Workspace::WorkflowDefinition.parse("steps:\n  a:\n    prompt: Go.\n", id: "flow", source: "global", path: "/defs/flow.yml")
+      allow(catalog).to receive(:find).with("flow", project: anything).and_return(data)
+
+      command.show(id: "flow")
+
+      expect(output.string).not_to include("Version:")
+    end
+
     it "says so when there are none" do
       allow(catalog).to receive(:list).and_return([])
 

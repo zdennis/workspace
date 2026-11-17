@@ -48,7 +48,7 @@ module Workspace
 
     # @param raw [Hash] the definition's YAML mapping
     # @return [Hash] the mapping to check: the same one when it extends nothing, else the parent's with this one laid over it.
-    #   A key the child sets replaces the parent's value, except `inputs` and `reviewers`, which merge by name. `replace:` swaps whole steps in
+    #   A key the child sets replaces the parent's value, except `inputs` and `reviewers`, which merge by name; `id`, `schema_version` and `version` are never inherited. `replace:` swaps whole steps in
     #   place; `steps:` adds new ones, each after the step its `after:` names, else at the end.
     def resolve(raw)
       raw = raw.dup
@@ -67,7 +67,7 @@ module Workspace
       definition, found = parent
       @parents = [{"id" => own, "source" => found["source"], "path" => found["path"], "sha256" => Digest::SHA256.hexdigest(found["text"].to_s)}] + definition.parents
       base = anchor_prompt_files(definition.resolved_raw, found["path"])
-      merged = base.except("id", "schema_version").merge(raw.except("steps"))
+      merged = base.except("id", "schema_version", "version").merge(raw.except("steps"))
       merged["inputs"] = merge_inputs(base["inputs"], raw["inputs"]) if raw.key?("inputs")
       merged["reviewers"] = merge_inputs(base["reviewers"], raw["reviewers"]) if raw.key?("reviewers")
       merged["steps"] = merged_steps("#{own} (#{found["path"]})", base["steps"], replacements, raw["steps"])

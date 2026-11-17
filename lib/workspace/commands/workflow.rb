@@ -121,6 +121,7 @@ module Workspace
         @output.puts "#{data["id"]}: #{data["title"]} (#{definition.source}, #{definition.path})"
         @output.puts data["description"] if data["description"]
         @output.puts "Use when: #{data["use_when"]}" if data["use_when"]
+        @output.puts "Version: #{data["version"]}" if data["version"]
         definition.parents.each { |parent| @output.puts "Extends: #{parent["id"]} (#{parent["source"]}, #{parent["path"]})" }
         @output.puts "Applies to: #{data["applies_to"].join(", ")}" if data["applies_to"].any?
         @output.puts "Inputs:" if data["inputs"].any?

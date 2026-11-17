@@ -34,7 +34,7 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny reviewers steps].freeze
+    TOP_KEYS = %w[schema_version id title description version use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny reviewers steps].freeze
     STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts review after].freeze
 
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
@@ -293,6 +293,15 @@ module Workspace
       (value.is_a?(String) && !value.strip.empty? && value.length <= MAX_USE_WHEN && !value.match?(/[\r\n]/)) ? value : nil
     end
 
+    # The `version` of a definition hash: the whole number its author gives to a revision of it.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Integer, nil] nil when unset, stored before the key existed, or a bad stored value
+    def self.version(definition)
+      value = definition.is_a?(Hash) ? definition["version"] : nil
+      (value.is_a?(Integer) && value >= 1) ? value : nil
+    end
+
     # The `applies_to` of a definition hash: the kinds of ref the workflow is for.
     #
     # @param definition [Hash] {#to_h}, or a stored run's definition
@@ -505,6 +514,10 @@ module Workspace
       unless max_attempts.is_a?(Integer) && max_attempts >= 1
         problem "max_attempts must be a whole number of 1 or more, got #{max_attempts.inspect}"
       end
+      version = raw["version"]
+      if raw.key?("version") && !(version.is_a?(Integer) && version >= 1)
+        problem "version must be a whole number of 1 or more, got #{version.inspect[0, 40]}"
+      end
       redeliver = raw.fetch("redeliver", DEFAULT_REDELIVER)
       unless redeliver.is_a?(Integer) && redeliver.between?(0, MAX_REDELIVER)
         problem "redeliver must be a whole number from 0 to #{MAX_REDELIVER}, got #{redeliver.inspect}"
@@ -532,7 +545,8 @@ module Workspace
         "redeliver" => redeliver,
         "deny" => deny_from(raw["deny"]),
         "steps" => steps
-      }.merge(budget ? {"budget" => budget} : {})
+      }.merge((version.is_a?(Integer) && version >= 1) ? {"version" => version} : {})
+        .merge(budget ? {"budget" => budget} : {})
         .merge(reviewers.any? ? {"reviewers" => reviewers} : {})
         .merge(timeout ? {"timeout" => timeout} : {})
         .merge(((timeout || raw.key?("timeout_action")) && TIMEOUT_ACTIONS.include?(timeout_action)) ? {"timeout_action" => timeout_action} : {})

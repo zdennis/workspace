@@ -629,6 +629,16 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(catalog.find("kid").resolved_sha256).not_to eq(stored["definition_sha256"])
     end
 
+    it "stores the definition's version in the run record" do
+      defs = FileUtils.mkdir_p(File.join(@dir, "defs")).first
+      File.write(File.join(defs, "ver.yml"), "version: 5\nsteps:\n  plan:\n    prompt: Plan it.\n    produces: [plan.md]\n")
+      catalog = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: defs, builtin_workflows_dir: File.join(@dir, "none")))
+
+      start(catalog.find("ver"), inputs: {})
+
+      expect(stored_run(store, "wr_1")["definition"]["version"]).to eq(5)
+    end
+
     it "writes the run, the first step's instructions and the pane's binding, then types one line into the pane" do
       run = start(note: "Keep it small.")
       prompt = File.join(worktree, ".workflow", "wr_1", "steps", "plan.1.prompt.md")
