@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>workspace — install</title>
+<style>
+  :root {
+    --bg: #f6f8fa;
+    --card: #ffffff;
+    --text: #1f2328;
+    --muted: #59636e;
+    --border: #d1d9e0;
+    --accent: #0969da;
+    --code-bg: #f6f8fa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --text: #e6edf3;
+      --muted: #9198a1;
+      --border: #3d444d;
+      --accent: #4493f8;
+      --code-bg: #21262d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 3rem 1rem;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 680px; margin: 0 auto; }
+  h1 { font-size: 2rem; margin: 0 0 0.25rem; }
+  h1 code { font-size: 2rem; }
+  .tagline { color: var(--muted); font-size: 1.05rem; margin: 0 0 2rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+  }
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.875em;
+    background: var(--code-bg);
+    border-radius: 6px;
+    padding: 0.15em 0.4em;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  ul { padding-left: 1.4rem; }
+  li { margin: 0.3rem 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .muted { color: var(--muted); font-size: 0.9rem; }
+  footer { margin-top: 3rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1><code>workspace</code></h1>
+  <p class="tagline">A macOS CLI for managing tmuxinator-based development workspaces in iTerm2 — launch, focus, kill and relaunch projects with automatic window positioning.</p>
+
+  <h2>Requirements</h2>
+  <ul>
+    <li><strong>macOS</strong> (uses AppleScript and Accessibility APIs)</li>
+    <li><strong>Ruby</strong> 3.x</li>
+    <li><strong><a href="https://iterm2.com/">iTerm2</a></strong></li>
+    <li><strong><a href="https://github.com/tmux/tmux">tmux</a></strong> and <strong><a href="https://github.com/tmuxinator/tmuxinator">tmuxinator</a></strong></li>
+    <li><strong><a href="https://github.com/zdennis/window-tool">window-tool</a></strong> and <strong>git</strong></li>
+  </ul>
+  <p class="muted">A <a href="https://github.com/zdennis/workspace/blob/main/docs/README.launch.md#headless">headless</a> launch needs only Ruby, tmux, tmuxinator and git — no macOS, iTerm2 or window-tool.</p>
+
+  <div class="card">
+    <pre><code>brew install tmux tmuxinator gh
+brew install zdennis/bin/window-tool</code></pre>
+  </div>
+
+  <h2>Install</h2>
+  <p>Clone the repo and put <code>bin/</code> on your PATH:</p>
+  <div class="card">
+    <pre><code>git clone https://github.com/zdennis/workspace.git ~/source/opensource/workspace
+export PATH="$HOME/source/opensource/workspace/bin:$PATH"</code></pre>
+    <p class="muted">Add the <code>export</code> line to your <code>~/.zshrc</code> to keep it across shells.</p>
+  </div>
+
+  <h2>Set up</h2>
+  <p>Create the config directories and install the agent hooks:</p>
+  <div class="card">
+    <pre><code>workspace init</code></pre>
+  </div>
+  <p>Then verify everything is in place:</p>
+  <div class="card">
+    <pre><code>workspace doctor</code></pre>
+  </div>
+  <p class="muted"><code>doctor</code> checks for the required tools and prints install instructions for anything missing.</p>
+
+  <h2>First run</h2>
+  <p>The first AppleScript call asks whether your terminal may control iTerm2 — click <strong>OK</strong>. Also grant your terminal (and <code>window-tool</code>) access under <strong>System Settings → Privacy &amp; Security → Accessibility</strong>. Without it, <code>workspace launch</code> and <code>focus</code> can't position windows.</p>
+  <p>Then add a project and launch it:</p>
+  <div class="card">
+    <pre><code>cd ~/source/my-project
+workspace add
+workspace launch my-project</code></pre>
+  </div>
+
+  <footer>
+    <p class="muted">Full documentation in the <a href="https://github.com/zdennis/workspace">repo README</a> and <a href="https://github.com/zdennis/workspace/tree/main/docs">docs/</a>.</p>
+  </footer>
+</main>
+</body>
+</html>
