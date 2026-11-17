@@ -914,6 +914,37 @@ module Workspace
           ["workspace workflow insights rpiv --project --json", "for a script: sections with run ids and next_actions"]
         ]
       },
+      "learn reflect" => {
+        usage: ["workflow learn reflect RUN [--agent KIND] [--json]"],
+        summary: "Ask an agent in a new pane to look back at a finished run and write reflection.md",
+        about: [
+          RUN_ID,
+          "",
+          "RUN must be finished (completed, failed or cancelled; a run still going is refused with run_not_finished). Opens a new split",
+          "pane in the run's workspace and types one line into it that points at instructions the command writes to",
+          "reflection.prompt.md in the run's evidence directory. The agent reads the run's recorded evidence, which the instructions fence as",
+          "data, and writes reflection.md next to it. The run's own pane is never used and the run is not changed.",
+          "",
+          "The pane is bound with kind reflection and a guard keeps its file tools to that one reflection.md. This is a tripwire,",
+          "not a sandbox: shell commands are not covered. The binding ends when the agent's turn ends with the file written, or",
+          "with the session; end it sooner with `workspace binding clear --pane ID` or by closing the pane. While it lasts, a second",
+          "reflection on the same run is refused with reflection_in_progress and plan start and spine start do not type into the pane.",
+          "",
+          "When reflection.md already exists the command prints its text and path and starts nothing; delete the file to reflect again.",
+          "reflection.md and reflection.prompt.md live in the run's evidence directory, <state dir>/.workflows/evidence/RUN/ (the",
+          "state dir is ~/.local/state/workspace unless XDG_STATE_HOME says otherwise). Nothing ever reads reflection.md into another",
+          "prompt, and it is removed with the run's evidence."
+        ],
+        options: [
+          ["--agent KIND", "The coding agent the pane runs: #{AGENT_KINDS} (default: the workspace's main agent)"],
+          JSON_OPT
+        ],
+        examples: [
+          ["workspace workflow learn reflect wr_261117195535omsd", "start a reflection pane on a finished run, or print the one already written"],
+          ["workspace workflow learn reflect wr_261117195535omsd --agent claude", "choose the agent kind instead of the workspace's main agent"],
+          ["workspace workflow learn reflect wr_261117195535omsd --agent codex --json", "for a script: the pane id and the path the agent will write"]
+        ]
+      },
       "sweep" => {
         usage: ["workflow sweep [RUN | --name WORKSPACE] [--budget-only] [--dry-run] [--json]", "workflow sweep --install | --uninstall [--dry-run] [--json]", "workflow sweep --installed [--json]"],
         summary: "One pass over the runs going: act on the ones that have stopped",
@@ -1702,7 +1733,7 @@ module Workspace
 
     BINDING = {
       "set" => {
-        usage: ["binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--name NAME] [--json]"],
+        usage: ["binding set [WORKSPACE] [--pane PANE] --kind run|review|play|reflection --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--name NAME] [--json]"],
         summary: "Bind a pane to a workflow run, a PR review or a library play",
         about: [
           "When the agent in a bound pane starts a session (startup, /clear, resume or compact), session-event",
@@ -1713,7 +1744,7 @@ module Workspace
         ],
         options: [name_opt("Workspace name (default: the project detected from the current directory)"),
           ["--pane PANE", "Pane id (%19) or window.pane (0.1) of the workspace's own session; defaults to $TMUX_PANE"],
-          ["--kind KIND", "run, review or play"],
+          ["--kind KIND", "run, review, play or reflection"],
           ["--id ID", "Run id, review id such as acme/api#835, or play/NAME"],
           ["--step STEP", "Step name"],
           ["--attempt N", "Step attempt, 1 or more"],

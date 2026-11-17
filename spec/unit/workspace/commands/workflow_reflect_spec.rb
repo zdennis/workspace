@@ -80,7 +80,7 @@ RSpec.describe Workspace::Commands::WorkflowReflect do
   end
 
   it "refuses an agent kind it does not know before anything is made" do
-    expect { command.call(run: "wr_1", agent: "vim") }.to raise_error(Workspace::UsageError, /Unknown agent/)
+    expect { command.call(run: "wr_1", agent: "vim") }.to raise_error(Workspace::UsageError, /Unknown agent "vim": one of claude, codex, opencode, pi\./)
     expect(panes).not_to have_received(:spawn)
   end
 

@@ -58,7 +58,7 @@ RSpec.describe Workspace::HelpPages do
       )
       expect(pages["daemon"].keys).to match_array(Workspace::CLI::Agent::DAEMON_SUBCOMMANDS)
       expect(pages["library"].keys).to match_array(Workspace::CLI::LIBRARY_SUBCOMMANDS)
-      expect(pages["workflow"].keys).to match_array(Workspace::CLI::Workflow::SUBCOMMANDS)
+      expect(pages["workflow"].keys).to match_array(Workspace::CLI::Workflow::SUBCOMMANDS - ["learn"] + ["learn reflect"])
       expect(pages["step"].keys).to eq(Workspace::CLI::Workflow::STEP_SUBCOMMANDS)
     end
 
