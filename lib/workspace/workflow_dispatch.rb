@@ -522,7 +522,7 @@ module Workspace
       else
         run["reason"] = reason("run_timed_out", WorkflowTransitions.deadline_details(run, deadline))
       end
-      @change.event(run, "budget_spent", reading.slice("used", "allowance", "counted", "uncounted").merge("step" => run["current"])) if budget
+      @change.event(run, "budget_spent", reading.slice("used", "allowance", "counted", "uncounted", "estimated").merge("step" => run["current"])) if budget
       @change.event(run, "run_timed_out", deadline.slice("used", "limit", "timeout", "extra_seconds").merge("step" => run["current"])) if time
       true
     end

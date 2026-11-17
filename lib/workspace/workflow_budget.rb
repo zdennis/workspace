@@ -15,6 +15,12 @@ module Workspace
   # is `uncounted` too. `counted` and `uncounted` count ended attempts and review rounds, each with its own `usage`,
   # so the total is a minimum, never a figure that reads null as zero.
   #
+  # An attempt whose `usage` is null but that the sweep interrupted for the budget counts the live figure its
+  # `budget_interrupt` record holds (written by {WorkflowRecovery#claim_interrupt}, so it is stored data and
+  # {.reading} stays pure), counted under `estimated` too. A readable `usage` always wins over the record (it means the
+  # transcript tail reached the attempt's start, so it is the measured figure), so an attempt is never counted twice; a record whose `tokens` is not a non-negative Integer leaves the attempt uncounted. Without
+  # it, a runaway attempt the transcript tail cannot cover would read uncounted and let the next attempt start.
+  #
   # A run whose ended attempts and review rounds are all uncounted has a total of 0, which is under any budget, so its budget never
   # stops it; `measured` is false then, and status says the budget is not being measured. Stopping would mean
   # acting on a figure nobody has, and a budget that ends every non-Claude run after one attempt helps no one.
@@ -30,6 +36,7 @@ module Workspace
     # @return [Hash{String=>Object}, nil] nil unless the run's definition declares a budget (a stored run from
     #   before the key, or a bad value, reads nil); else "tokens", "action", "extra_tokens", "allowance",
     #   "used" (a minimum), "counted" and "uncounted" (ended attempts and review rounds with and without a readable `usage`),
+    #   "estimated" (how many of the counted attempts were counted from their `budget_interrupt` record),
     #   "measured" (false when nothing was counted but some attempt or round ended), "spent" (used has reached the allowance),
     #   "needed" (the least `--extra-tokens` that lets another attempt start, nil unless spent) and "suggested"
     def self.reading(run, live: true)
@@ -42,14 +49,18 @@ module Workspace
       used = 0
       counted = 0
       uncounted = 0
+      estimated = 0
       run.steps.each do |id, step|
         stored = Array(step.to_h["attempts"])
         # A reviewing step's attempt has ended (`checks_passed`) with its usage, so it counts.
         running = (live && id == run.current && %w[running checking].include?(step.state)) ? step.attempts.last : nil
         step.attempts.each_with_index do |attempt, index|
           next unless stored[index].is_a?(Hash) && counted_attempt?(attempt) && !attempt.equal?(running)
-          ([attempt.usage] + rounds_of(attempt).map { |round| round["usage"] }).each do |usage|
-            tokens = tokens_of(usage)
+          own = tokens_of(attempt.usage)
+          if own.nil? && (own = interrupt_tokens(attempt))
+            estimated += 1
+          end
+          ([own] + rounds_of(attempt).map { |round| tokens_of(round["usage"]) }).each do |tokens|
             if tokens
               used += tokens
               counted += 1
@@ -62,7 +73,7 @@ module Workspace
       spent = used >= allowance
       needed = spent ? used - allowance + 1 : nil
       {"tokens" => budget["tokens"], "action" => budget["action"], "extra_tokens" => extra, "allowance" => allowance,
-       "used" => used, "counted" => counted, "uncounted" => uncounted, "measured" => !(counted.zero? && uncounted.positive?),
+       "used" => used, "counted" => counted, "uncounted" => uncounted, "estimated" => estimated, "measured" => !(counted.zero? && uncounted.positive?),
        "spent" => spent, "needed" => needed, "suggested" => needed && (needed.fdiv(ROUND_TO).ceil * ROUND_TO)}
     rescue NoMethodError, TypeError
       nil
@@ -86,12 +97,22 @@ module Workspace
     end
 
     # The tokens an attempt and its review rounds used, by {.tokens_of}: nil when any of them has no readable `usage`.
+    # Measured `usage` only: an attempt's `budget_interrupt` estimate is never read here, so `workflow stats` reports
+    # what the transcripts recorded, while {.reading} falls back to the estimate to hold the budget.
     #
     # @param attempt [WorkflowRun::Attempt] a stored attempt
     # @return [Integer, nil]
     def self.attempt_tokens(attempt)
       sums = ([attempt.usage] + rounds_of(attempt).map { |round| round["usage"] }).map { |usage| tokens_of(usage) }
       sums.all? ? sums.sum : nil
+    end
+
+    # @param attempt [WorkflowRun::Attempt] a stored attempt
+    # @return [Integer, nil] the `tokens` of its `budget_interrupt` record; nil with no record or one not that shape
+    def self.interrupt_tokens(attempt)
+      record = attempt.budget_interrupt
+      tokens = record.is_a?(Hash) ? record["tokens"] : nil
+      (tokens.is_a?(Integer) && tokens >= 0) ? tokens : nil
     end
 
     # @param usage [Object] an attempt's or a review round's stored `usage`

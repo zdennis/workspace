@@ -121,6 +121,7 @@
     "used": 0,
     "counted": 7,
     "uncounted": 3,
+    "estimated": 0,
     "measured": true,
     "spent": false,
     "needed": null,

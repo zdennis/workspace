@@ -75,6 +75,31 @@ RSpec.describe Workspace::WorkflowBudget do
     end
   end
 
+  describe "an attempt the sweep interrupted for the budget" do
+    def interrupted(usage, record) = ended(usage, outcome: "interrupted").merge("budget_interrupt" => record)
+
+    let(:record) { {"tokens" => 1200, "used" => 1200, "allowance" => 1000, "at" => "2026-11-17T00:00:00Z"} }
+
+    it "counts the record's live figure when the usage could not be read, and says it is an estimate" do
+      expect(described_class.reading(run([interrupted(nil, record)]))).to include("used" => 1200, "counted" => 1, "uncounted" => 0, "estimated" => 1, "spent" => true, "measured" => true)
+    end
+
+    it "counts a readable usage alone, never the record as well" do
+      expect(described_class.reading(run([interrupted({"input_tokens" => 900}, record)]))).to include("used" => 900, "counted" => 1, "estimated" => 0, "spent" => false)
+    end
+
+    it "leaves an attempt with a record that is not the recorded shape uncounted" do
+      attempts = [interrupted(nil, record.merge("tokens" => "lots")), interrupted(nil, record.merge("tokens" => -5)), interrupted(nil, "lots"), interrupted(nil, nil)]
+
+      expect(described_class.reading(run(attempts))).to include("used" => 0, "counted" => 0, "uncounted" => 4, "estimated" => 0)
+    end
+
+    it "keeps attempt_tokens, which workflow stats reads, to the measured usage" do
+      expect(described_class.attempt_tokens(Workspace::WorkflowRun::Attempt.from_h(interrupted(nil, record)))).to be_nil
+      expect(described_class.attempt_tokens(Workspace::WorkflowRun::Attempt.from_h(interrupted({"input_tokens" => 900}, record)))).to eq(900)
+    end
+  end
+
   it "is not measured when every ended attempt is uncounted, and never spent" do
     reading = described_class.reading(run([ended(nil), ended(nil)]))
 

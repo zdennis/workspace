@@ -329,9 +329,13 @@ module Workspace
     #   all may be due on one attempt and each presses once
     # @param details [Hash{String=>Object}, nil] what the `step_stalled` event carries besides the cause; by default
     #   `elapsed` and `timeout`, and `budget_spent` gives `used`, `allowance` and `live`
+    # @param budget [Hash{Symbol=>Integer}, nil] for `budget_spent` only: `tokens` (the attempt's live figure), `used` and
+    #   `allowance`, written on the attempt as `budget_interrupt` in the same change as the claim, so a retry that a
+    #   hook-driven advance starts before {#interrupt_sent} is still held when the transcript tail cannot give the
+    #   attempt's `usage` ({WorkflowBudget.reading}); other causes ignore it
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`] to hand to {#interrupt_sent}; or :repeat, :moved_on or :busy
-    def claim_interrupt(run_id, actor:, step:, attempt:, elapsed:, timeout:, cause: "timed_out", details: nil)
+    def claim_interrupt(run_id, actor:, step:, attempt:, elapsed:, timeout:, cause: "timed_out", details: nil, budget: nil)
       at = nil
       details ||= {"elapsed" => elapsed.round, "timeout" => timeout}
       key = interrupt_key(cause)
@@ -341,13 +345,15 @@ module Workspace
         at = now_iso
         marks[key] = {"state" => "pending", "at" => at}
         mark_stall(stored, cause, details)
+        record_budget_interrupt(stored, budget, at) if cause == "budget_spent" && budget
         :claimed
       end
       (outcome == :claimed) ? [:claimed, at] : outcome
     end
 
     # Ends a {#claim_interrupt}. Sent: the mark becomes `sent`, and with +record+ the recovery is written. Not
-    # sent: the claim is given back, so a later sweep tries again. Waits for the run's lock, so neither is dropped.
+    # sent: the claim is given back, so a later sweep tries again, and a `budget_spent` claim's `budget_interrupt`
+    # record is dropped from the attempt, since no keys were pressed. Waits for the run's lock, so neither is dropped.
     #
     # @param run_id [String]
     # @param step [String]
@@ -365,6 +371,7 @@ module Workspace
         next :taken_over unless marks.dig(key, "at") == claim_at
         unless sent
           marks.delete(key)
+          step_state(stored)["attempts"].last&.delete("budget_interrupt") if cause == "budget_spent"
           next :released
         end
         marks[key] = {"state" => "sent", "at" => now_iso}
@@ -699,6 +706,12 @@ module Workspace
       marks = WorkflowTransitions.sweep_marks(run)
       return marks unless marks.empty?
       run["sweep"] = {"step" => run["current"], "attempt" => step_state(run)["attempts"].last&.fetch("n", nil), "stalled" => {}, "recovered" => {}}
+    end
+
+    def record_budget_interrupt(run, budget, at)
+      attempt = step_state(run)["attempts"].last
+      return unless attempt
+      attempt["budget_interrupt"] = {"tokens" => budget[:tokens], "used" => budget[:used], "allowance" => budget[:allowance], "at" => at}
     end
 
     def interrupt_key(cause) = WorkflowTransitions::INTERRUPT_MARK_KEYS.fetch(cause, "interrupt")

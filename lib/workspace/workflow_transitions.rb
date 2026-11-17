@@ -1000,7 +1000,7 @@ module Workspace
     # @param reading [Hash] its {WorkflowBudget.reading}
     # @return [Hash]
     def self.budget_details(run, reading)
-      {"run_id" => run["id"], "step" => run["current"]}.merge(reading.slice("used", "allowance", "counted", "uncounted", "needed", "suggested"))
+      {"run_id" => run["id"], "step" => run["current"]}.merge(reading.slice("used", "allowance", "counted", "uncounted", "estimated", "needed", "suggested"))
         .merge("tokens" => reading["tokens"], "extra_tokens" => reading["extra_tokens"])
     end
 

@@ -854,6 +854,39 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(stalled.last).not_to include("elapsed", "timeout")
     end
 
+    describe "the budget_interrupt record" do
+      let(:budget) { {tokens: 5200, used: 5200, allowance: 5000} }
+      let(:details) { {"used" => 5200, "allowance" => 5000, "live" => true} }
+
+      def last_attempt = store.runs["wr_1"]["steps"]["build"]["attempts"].last
+
+      it "is written on the attempt in the claim's own change, and kept when the keys were pressed" do
+        stored
+        _, at = recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 0, timeout: 0, cause: "budget_spent", details: details, budget: budget)
+
+        expect(last_attempt["budget_interrupt"]).to eq("tokens" => 5200, "used" => 5200, "allowance" => 5000, "at" => at)
+        recovery.interrupt_sent("wr_1", actor: "sweep", step: "build", attempt: 1, claim_at: at, sent: true, cause: "budget_spent")
+        expect(last_attempt["budget_interrupt"]).to eq("tokens" => 5200, "used" => 5200, "allowance" => 5000, "at" => at)
+      end
+
+      it "is dropped when the claim is given back" do
+        stored
+        _, at = recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 0, timeout: 0, cause: "budget_spent", details: details, budget: budget)
+
+        expect(recovery.interrupt_sent("wr_1", actor: "sweep", step: "build", attempt: 1, claim_at: at, sent: false, cause: "budget_spent")).to eq(:released)
+        expect(last_attempt).not_to have_key("budget_interrupt")
+      end
+
+      it "is not written by a timeout's claim, or a budget claim without figures" do
+        stored
+        recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 700, timeout: 600, budget: budget)
+        recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 700, timeout: 650, cause: "run_timed_out", budget: budget)
+        recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 0, timeout: 0, cause: "budget_spent", details: details)
+
+        expect(last_attempt).not_to have_key("budget_interrupt")
+      end
+    end
+
     it "lets a later sweep take over a pending claim past its hold" do
       stored
       recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 700, timeout: 600)
