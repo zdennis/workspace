@@ -3179,11 +3179,20 @@ RSpec.describe Workspace::Commands::Workflow do
       }
       let(:follow_command) do
         described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: real_store, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
-          lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper)
+          lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper, clock: -> { tick.first })
+      end
+      let(:tick) { [Time.utc(2026, 10, 25, 9, 30, 0)] }
+
+      def advance(seconds)
+        tick[0] += seconds
       end
 
-      def finish_run
-        real_store.change("wr_2610250930abcd") { |run| Workspace::WorkflowRun.from_h(run.to_h.merge("state" => "completed")) }
+      def finish_run(attrs = {"state" => "completed"})
+        real_store.change("wr_2610250930abcd") { |run| Workspace::WorkflowRun.from_h(run.to_h.merge(attrs)) }
+      end
+
+      def json_lines
+        output.string.lines.map { |line| JSON.parse(line) }
       end
 
       it "prints events appended between polls and stops once the run is archived and drained" do
@@ -3226,9 +3235,256 @@ RSpec.describe Workspace::Commands::Workflow do
 
         follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
 
-        expect(output.string.lines.map { |line| JSON.parse(line) }).to eq([
-          {"type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "completed", "next_since" => 4}
+        expect(json_lines).to eq([
+          {"type" => "follow_started", "run" => "wr_2610250930abcd", "since" => 4, "state" => "running", "current" => "research", "definition_sha256" => nil},
+          {"type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "completed", "reason" => "completed", "next_since" => 4}
         ])
+      end
+
+      it "prints no follow_started line in text mode" do
+        fixture_run
+        steps << -> { finish_run }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, follow: true, max_polls: 10)
+
+        expect(output.string).not_to include("follow_started")
+      end
+
+      {
+        "a completed run" => [{"state" => "completed"}, "completed", "completed", 0],
+        "a cancelled run" => [{"state" => "cancelled", "cancelled_by" => "cancel"}, "cancelled", "cancelled", 1],
+        "a run cancelled by a workspace kill" => [{"state" => "cancelled", "cancelled_by" => "kill"}, "cancelled", "killed", 1],
+        "a run cancelled by workspace_killed" => [{"state" => "cancelled", "cancelled_by" => "workspace_killed"}, "cancelled", "killed", 1],
+        "a failed run" => [{"state" => "failed"}, "failed", "failed", 1]
+      }.each do |name, (attrs, state, reason, code)|
+        it "ends #{name} with reason #{reason} and exit code #{code}" do
+          fixture_run
+          steps << -> { finish_run(attrs) }
+
+          result = follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
+
+          expect(json_lines.last).to eq("type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => state, "reason" => reason, "next_since" => 4)
+          expect(result).to eq(exit_code: code)
+        end
+      end
+
+      it "names the reason in the text end line when it differs from the state" do
+        fixture_run
+        steps << -> { finish_run("state" => "cancelled", "cancelled_by" => "kill") }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, follow: true, max_polls: 10)
+
+        expect(output.string.lines.last).to eq("Run wr_2610250930abcd cancelled (killed); no more events.\n")
+      end
+
+      it "prints only the --types events in a plain read, with next_since from the store" do
+        fixture_run
+
+        events_command.events(run: "wr_2610250930abcd", json: true, types: %w[step_done])
+
+        shown = JSON.parse(output.string)
+        expect(shown["events"].map { |event| event["type"] }).to eq(%w[step_done])
+        expect(shown["next_since"]).to eq(4)
+        output.truncate(0)
+        output.rewind
+        follow_command.events(run: "wr_2610250930abcd", types: %w[nothing])
+        expect(output.string).to start_with("No events for wr_2610250930abcd.")
+      end
+
+      it "follows only the --types events, always printing follow_started and follow_ended, and resumes without repeat or skip" do
+        fixture_run
+        steps << -> {
+          real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "plan", "attempt" => 1)
+          real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+          finish_run
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", json: true, follow: true, types: %w[step_done run_finished], max_polls: 10)
+
+        lines = json_lines
+        expect(lines.map { |line| line["type"] }).to eq(%w[follow_started step_done run_finished follow_ended])
+        expect(lines.last["next_since"]).to eq(6)
+        output.truncate(0)
+        output.rewind
+        follow_command.events(run: "wr_2610250930abcd", json: true, follow: true, since: 4, types: %w[step_done run_finished step_dispatched], max_polls: 10)
+        expect(json_lines.map { |line| [line["type"], line["n"]] }).to eq([["follow_started", nil], ["step_dispatched", 5], ["run_finished", 6], ["follow_ended", nil]])
+      end
+
+      it "advances next_since over a poll whose events all fail the --types filter" do
+        fixture_run
+        steps << -> { real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "plan", "attempt" => 1) }
+        steps << -> {
+          real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+          finish_run
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", json: true, follow: true, since: 4, types: %w[run_finished], max_polls: 10)
+
+        lines = json_lines
+        expect(lines.map { |line| line["type"] }).to eq(%w[follow_started run_finished follow_ended])
+        expect(lines.last["next_since"]).to eq(6)
+      end
+
+      it "stops with reason timeout and exit 75 when the deadline passes while the run is going" do
+        fixture_run
+        steps << -> { advance(200) }
+        steps << -> { advance(200) }
+
+        result = follow_command.events(run: "wr_2610250930abcd", follow: true, timeout: 300, max_polls: 10)
+
+        expect(output.string.lines.last).to eq("Stopped following wr_2610250930abcd after 5m; run is running.\n")
+        expect(result).to eq(exit_code: 75)
+        expect(sleeps.size).to eq(2)
+      end
+
+      it "prints the timeout as follow_ended with the current state and next_since in JSON" do
+        fixture_run
+        steps << -> { advance(31) }
+
+        result = follow_command.events(run: "wr_2610250930abcd", json: true, follow: true, timeout: 30, max_polls: 10)
+
+        expect(json_lines.last).to eq("type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "running", "reason" => "timeout", "next_since" => 4)
+        expect(result).to eq(exit_code: 75)
+      end
+
+      it "reports completed, not timeout, when the run finishes in the poll the deadline passes" do
+        fixture_run
+        steps << -> {
+          advance(600)
+          real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+          finish_run
+        }
+
+        result = follow_command.events(run: "wr_2610250930abcd", json: true, follow: true, timeout: 300, max_polls: 10)
+
+        expect(json_lines.last).to include("type" => "follow_ended", "state" => "completed", "reason" => "completed")
+        expect(result).to eq(exit_code: 0)
+      end
+
+      it "stops on the deadline in the middle of a backlog read in pages, without sleeping" do
+        fixture_run
+        6.times { |i| real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "s#{i}", "attempt" => 1) }
+        ticking = Class.new(SimpleDelegator) do
+          def initialize(store, ticker)
+            super(store)
+            @ticker = ticker
+          end
+
+          def events(id, since: 0, limit: 1000)
+            @ticker.call
+            super(id, since: since, limit: 2)
+          end
+        end.new(real_store, -> { advance(1) })
+        paged = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: ticking, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
+          lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper, clock: -> { tick.first })
+
+        result = paged.events(run: "wr_2610250930abcd", json: true, follow: true, timeout: 2, max_polls: 20)
+
+        expect(result).to eq(exit_code: 75)
+        expect(sleeps).to eq([])
+        ended = json_lines.last
+        expect(ended).to include("reason" => "timeout", "state" => "running")
+        expect(ended["next_since"]).to be < 10
+        expect(ended["next_since"]).to be > 0
+      end
+
+      it "drains the backlog of a finished run past the deadline and ends with its own reason" do
+        fixture_run
+        6.times { |i| real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "s#{i}", "attempt" => 1) }
+        real_store.record_event("wr_2610250930abcd", "run_finished", "state" => "completed")
+        finish_run
+        ticking = Class.new(SimpleDelegator) do
+          def initialize(store, ticker)
+            super(store)
+            @ticker = ticker
+          end
+
+          def events(id, since: 0, limit: 1000)
+            @ticker.call
+            super(id, since: since, limit: 2)
+          end
+        end.new(real_store, -> { advance(1) })
+        paged = described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, store: ticking, panes: panes, files: nil, run_files: nil, process_tree: process_tree,
+          lock_holder: lock_holder, output: output, error_output: errors, sleeper: sleeper, clock: -> { tick.first })
+
+        result = paged.events(run: "wr_2610250930abcd", json: true, follow: true, timeout: 2, max_polls: 20)
+
+        expect(result).to eq(exit_code: 0)
+        expect(json_lines.last).to include("type" => "follow_ended", "state" => "completed", "reason" => "completed")
+        expect(json_lines.count { |line| line["type"] == "step_dispatched" }).to eq(7)
+      end
+
+      it "answers exit code 0 for a plain read, max_polls and a closed pipe" do
+        fixture_run
+        expect(follow_command.events(run: "wr_2610250930abcd")).to eq(exit_code: 0)
+        expect(follow_command.events(run: "wr_2610250930abcd", json: true)).to eq(exit_code: 0)
+        expect(follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 1)).to eq(exit_code: 0)
+        steps << -> { raise Interrupt }
+        expect(follow_command.events(run: "wr_2610250930abcd", follow: true, max_polls: 5)).to eq(exit_code: 0)
+      end
+
+      it "prints a gap and ends as pruned when the run is pruned mid-follow" do
+        fixture_run
+        allow(real_store).to receive(:events).and_return({"events" => [], "truncated" => false, "next_since" => 4, "last_n" => 4, "warnings" => []})
+          .and_raise(Workspace::Error.new("no run", code: "unknown_run"))
+
+        result = follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
+
+        lines = json_lines
+        expect(lines[1]).to include("type" => "gap", "run" => "wr_2610250930abcd", "reason" => "not_retained", "next_since" => 4, "at" => match(/\A\d{4}-\d\d-\d\dT[\d:.]+Z\z/))
+        expect(lines.last).to eq("type" => "follow_ended", "run" => "wr_2610250930abcd", "state" => "finished", "reason" => "pruned", "next_since" => 4)
+        expect(result).to eq(exit_code: 0)
+      end
+
+      it "prints a gap and resets the cursor when the history is shorter than the cursor" do
+        fixture_run
+        path = real_store.events_path("wr_2610250930abcd")
+        steps << -> { File.write(path, File.readlines(path).first(1).join) }
+        steps << -> {
+          real_store.record_event("wr_2610250930abcd", "step_dispatched", "step" => "research", "attempt" => 2)
+          finish_run
+        }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 4, follow: true, max_polls: 10)
+
+        lines = output.string.lines.map(&:chomp)
+        expect(lines[0]).to eq("Gap in wr_2610250930abcd's history (history_shorter); continuing from line 1.")
+        expect(lines[1]).to match(/\A\s+2\s+\S+\s+step_dispatched/)
+        expect(lines.last).to eq("Run wr_2610250930abcd completed; no more events.")
+      end
+
+      it "prints no gap and replays nothing in the archive window" do
+        fixture_run
+        id = "wr_2610250930abcd"
+        live = real_store.events_path(id)
+        archive_dir = File.join(File.dirname(@runs), "archive")
+        state_live = File.join(File.dirname(live), "#{id}.json")
+        steps << -> {
+          real_store.record_event(id, "run_finished", "state" => "completed")
+          FileUtils.mkdir_p(archive_dir)
+          FileUtils.mv(live, File.join(archive_dir, File.basename(live)))
+        }
+        steps << -> {
+          File.write(state_live, JSON.generate(JSON.parse(File.read(state_live)).merge("state" => "completed")))
+          FileUtils.mv(state_live, File.join(archive_dir, File.basename(state_live)))
+        }
+
+        follow_command.events(run: id, json: true, follow: true, max_polls: 10)
+
+        lines = json_lines
+        expect(lines.select { |l| l["type"] == "gap" }).to be_empty
+        expect(lines.filter_map { |l| l["n"] }).to eq([1, 2, 4, 5])
+        expect(lines.last).to include("type" => "follow_ended", "reason" => "completed")
+      end
+
+      it "prints no gap for --since past a history file that does not exist yet" do
+        fixture_run
+        FileUtils.rm_f(real_store.events_path("wr_2610250930abcd"))
+        steps << -> { finish_run }
+
+        follow_command.events(run: "wr_2610250930abcd", since: 7, json: true, follow: true, max_polls: 10)
+
+        expect(json_lines.map { |l| l["type"] }).to eq(%w[follow_started follow_ended])
       end
 
       it "ends as finished when the archive prunes the run before its state is read" do
@@ -3243,7 +3499,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
         follow_command.events(run: "wr_2610250930abcd", since: 4, json: true, follow: true, max_polls: 10)
 
-        expect(JSON.parse(output.string.lines.last)).to include("type" => "follow_ended", "state" => "finished")
+        expect(JSON.parse(output.string.lines.last)).to include("type" => "follow_ended", "state" => "finished", "reason" => "pruned")
       end
 
       it "stops after max_polls while the run is going" do

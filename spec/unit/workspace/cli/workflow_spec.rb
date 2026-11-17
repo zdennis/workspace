@@ -150,13 +150,13 @@ RSpec.describe Workspace::CLI::Workflow do
       run("events", "wr_1", "--since", "4")
       run("attempts", "wr_1", "--attempt-of", "plan")
 
-      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 4, json: false, follow: false}], [:attempts, {run: "wr_1", step: "plan", json: false}]])
+      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 4, json: false, follow: false, types: nil, timeout: nil}], [:attempts, {run: "wr_1", step: "plan", json: false}]])
     end
 
     it "parses events --follow and refuses it elsewhere" do
       run("events", "wr_1", "--follow", "--json")
 
-      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: true, follow: true}]])
+      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: true, follow: true, types: nil, timeout: nil}]])
       expect { run("status", "--follow") }.to raise_error(Workspace::UsageError, /--follow is for `workflow events RUN`/)
     end
 
@@ -172,6 +172,34 @@ RSpec.describe Workspace::CLI::Workflow do
 
       expect(run("status", "--needs-me")).to eq(3)
       expect(status_scope.calls).to eq([[:resolve_needs_me, {name: nil, project: nil, all: false, working_dir: "/src/app"}]])
+    end
+
+    it "parses events --types (repeatable, comma-separated) and --timeout" do
+      run("events", "wr_1", "--follow", "--types", "step_done, run_finished", "--types", "gap", "--timeout", "5m")
+
+      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: false, follow: true, types: %w[step_done run_finished gap], timeout: 300.0}]])
+      run("events", "wr_1", "--types", "step_done")
+      expect(workflow_command.calls.last[1]).to include(types: %w[step_done], timeout: nil, follow: false)
+    end
+
+    it "refuses --timeout without --follow, a bad --timeout, and --types on another subcommand" do
+      expect { run("events", "wr_1", "--timeout", "5m") }.to raise_error(Workspace::UsageError, /--timeout is for `workflow events RUN --follow`/)
+      expect { run("status", "--follow", "--timeout", "5m") }.to raise_error(Workspace::UsageError, /--follow is for|--timeout is for/)
+      expect { run("events", "wr_1", "--follow", "--timeout", "0") }.to raise_error(Workspace::UsageError, /--timeout/)
+      expect { run("status", "--types", "x") }.to raise_error(Workspace::UsageError, /--types is for `workflow events RUN`/)
+    end
+
+    it "exits 75 for the events command's timeout code" do
+      workflow_command.status_result = {exit_code: 75}
+      expect(run("events", "wr_1", "--follow", "--timeout", "1m")).to eq(75)
+    end
+
+    it "exits with the events command's non-zero code and not for zero" do
+      workflow_command.status_result = {exit_code: 1}
+      expect(run("events", "wr_1", "--follow")).to eq(1)
+
+      workflow_command.status_result = {exit_code: 0}
+      expect(run("events", "wr_1", "--follow")).to be_nil
     end
 
     it "checks a step at the repository root outside a workspace" do
@@ -533,7 +561,7 @@ RSpec.describe Workspace::CLI::Workflow do
       cli.run(["workflow", "events", "wr_1"])
       cli.run(["workflow", "events", "wr_1", "--since", "40", "--json"])
 
-      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: false, follow: false}], [:events, {run: "wr_1", since: 40, json: true, follow: false}]])
+      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: false, follow: false, types: nil, timeout: nil}], [:events, {run: "wr_1", since: 40, json: true, follow: false, types: nil, timeout: nil}]])
     end
 
     it "lists a run's attempts, of one step" do

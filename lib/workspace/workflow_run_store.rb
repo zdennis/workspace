@@ -287,14 +287,18 @@ module Workspace
     #   `truncated` (more events follow the last one), `next_since` (the line number to pass as `since`
     #   to continue: the last event's when truncated, else the last line read) and `warnings`
     #   (a complete line that is not a JSON object is skipped and named here; a last line with no
-    #   newline yet is being written, so it is left for the next call)
+    #   newline yet is being written, so it is left for the next call) and `last_n` (the number of the
+    #   last complete line the read reached: the history's line count unless `truncated`; `nil` when
+    #   there is no history file, 0 when it is empty)
     # @raise [Workspace::Error] code `unknown_run` when no run has that id
     def events(id, since: 0, limit: EVENTS_LIMIT)
       run(id)
-      result = {"events" => [], "truncated" => false, "next_since" => since, "warnings" => []}
+      result = {"events" => [], "truncated" => false, "next_since" => since, "warnings" => [], "last_n" => nil}
       File.open(events_path(id), "r") do |file|
+        result["last_n"] = 0
         file.each_line.with_index(1) do |line, n|
           break unless line.end_with?("\n")
+          result["last_n"] = n
           next if n <= since
           event = parse_event(line)
           if event.nil?

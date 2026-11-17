@@ -956,7 +956,7 @@ module CLITestHelpers
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error
-        (name == :status) ? @status_result : nil
+        %i[status events].include?(name) ? @status_result : nil
       end
     end
 
