@@ -121,7 +121,7 @@ RSpec.describe Workspace::WorkflowSweep, "infra retries" do
         stand(cause)
         row = only_row
         expect(row).to include("outcome" => "recorded", "cause" => cause, "action" => "infra_retries_exhausted")
-        expect(row["message"]).to include("2 automatic restarts are spent")
+        expect(row["message"]).to include("Its 2 automatic restarts are used up (#{Workspace::WorkflowStatus.infra_cause_words(cause)}); resume or cancel the run (limit: workflows.infra_retry.max).")
         expect(engine.stall_calls.last.last).to eq(cause: cause, infra_retry: {max: 2})
         expect(engine.given_up("wr_1")).to eq("reason" => "retries_spent")
 
@@ -186,7 +186,7 @@ RSpec.describe Workspace::WorkflowSweep, "infra retries" do
     row = sweep.call(dry_run: true).first
 
     expect(row).to include("outcome" => "dry_run", "action" => "infra_retry_scheduled")
-    expect(row["message"]).to include("restarted on its own in 1m (restart 1 of 2)")
+    expect(row["message"]).to include("restarts on its own in 1m (")
     expect(engine.calls).to be_empty
   end
 end

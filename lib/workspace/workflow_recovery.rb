@@ -887,7 +887,10 @@ module Workspace
       marks = sweep_marks_for(run)
       mark = marks["infra_retry"]
       return false if mark.is_a?(Hash) && (mark["given_up"] || mark["ended"])
-      mark = marks["infra_retry"] = {"cause" => cause, "n" => WorkflowTransitions.infra_retries(run, run["current"]), "max" => max} unless mark.is_a?(Hash)
+      unless mark.is_a?(Hash)
+        n = WorkflowTransitions.infra_retries(run, run["current"])
+        mark = marks["infra_retry"] = {"cause" => cause, "n" => n, "max" => max || n}
+      end
       mark["given_up"] = {"at" => now_iso, "reason" => reason}
       @change.event(run, "infra_retries_exhausted", sweep_event(run, "cause" => mark["cause"], "n" => mark["n"], "max" => mark["max"], "reason" => reason))
       true

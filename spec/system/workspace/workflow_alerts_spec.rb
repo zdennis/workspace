@@ -59,6 +59,51 @@ RSpec.describe Workspace::WorkflowAlerts do
     expect(sent.map { |env| env["WORKSPACE_ALERT_CAUSE"] }).to eq(["agent_gone"])
   end
 
+  describe "a stall with an automatic restart" do
+    let(:stall) { {"pane_gone" => "t"} }
+    let(:mark) { {"cause" => "pane_gone", "n" => 1, "max" => 2, "scheduled_at" => "2026-10-04T12:00:00Z", "due" => "2026-10-04T12:01:00Z"} }
+
+    def with_mark(extra = {}, stalled: stall, recovered: nil)
+      run = run(stalled: stalled)
+      run["sweep"]["infra_retry"] = mark.merge(extra)
+      run["sweep"]["recovered"] = recovered if recovered
+      run
+    end
+
+    it "holds the stalled alert while the restart is scheduled, due, claimed or stale" do
+      [{}, {"due" => "2020-01-01T00:00:00Z"}, {"claimed_at" => Time.now.utc.iso8601}, {"claimed_at" => "2020-01-01T00:00:00Z"}].each do |extra|
+        expect(alerts.marks(with_mark(extra))[:stalled]).to eq([])
+      end
+      alerts.fire(alerts.marks(run), with_mark)
+      expect(sent).to eq([])
+    end
+
+    it "fires one stalled alert when the restarts give up" do
+      held = with_mark
+      alerts.fire(alerts.marks(run), held)
+      gave_up = with_mark({"given_up" => {"at" => "t", "reason" => "retries_spent"}})
+      alerts.fire(alerts.marks(held), gave_up)
+      alerts.fire(alerts.marks(gave_up), gave_up)
+
+      expect(sent.map { |env| [env["WORKSPACE_ALERT_EVENT"], env["WORKSPACE_ALERT_CAUSE"]] }).to eq([%w[stalled pane_gone]])
+    end
+
+    it "does not hold a stall whose mark ended, or whose stall recovered with the mark never ended" do
+      expect(alerts.marks(with_mark({"ended" => {"at" => "t", "reason" => "recovered"}}))[:stalled]).to eq([["plan:1", "pane_gone"]])
+      expect(alerts.marks(with_mark(recovered: {"pane_gone" => "t"}))[:stalled]).to eq([["plan:1", "pane_gone"]])
+    end
+
+    it "alerts for a cause the mark does not name" do
+      held = with_mark(stalled: {"pane_gone" => "t", "agent_gone" => "t"}).tap { |r| r["sweep"]["infra_retry"]["cause"] = "pane_gone" }
+      expect(alerts.marks(held)[:stalled]).to eq([["plan:1", "agent_gone"]])
+    end
+
+    it "alerts as today for a stall with no restart" do
+      alerts.fire(alerts.marks(run), run(stalled: stall))
+      expect(sent.map { |env| env["WORKSPACE_ALERT_EVENT"] }).to eq(%w[stalled])
+    end
+  end
+
   it "fires a stall for a turn that failed on an API error" do
     alerts.fire(alerts.marks(run), run(stalled: {"turn_failed" => "t"}))
 

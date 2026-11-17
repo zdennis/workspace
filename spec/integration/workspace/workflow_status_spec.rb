@@ -112,7 +112,7 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(result["runs"]).to eq([{
       "id" => "wr_1", "workflow" => "rpiv", "title" => "RPIV", "workspace" => "app", "project" => "app", "worktree" => "/src/app", "state" => "running",
       "created_at" => "2026-10-04T12:00:00Z", "started_at" => "2026-10-04T12:00:00Z", "ended_at" => nil, "cancelled_by" => nil,
-      "current" => {"step" => "plan", "attempt" => 2, "state" => "running", "reason" => nil, "flags" => []},
+      "current" => {"step" => "plan", "attempt" => 2, "state" => "running", "reason" => nil, "flags" => [], "infra_retry" => nil},
       "steps" => [{"id" => "research", "title" => "Research", "state" => "passed", "attempts" => 1, "gate" => nil, "gate_note" => nil, "gate_file" => nil, "note_changed" => false},
         {"id" => "plan", "title" => "Plan", "state" => "running", "attempts" => 2, "gate" => nil, "gate_note" => nil, "gate_file" => nil, "note_changed" => false}],
       "base_sha" => nil, "pane" => "%5", "task" => "t1", "inputs" => {"task" => "X-1"}, "loops" => {}, "artifacts_dir" => "/src/app/.workflow/wr",
@@ -1469,6 +1469,62 @@ RSpec.describe Workspace::WorkflowStatus do
       mark(stalled: stall)
       expect(current["reason"]["code"]).to eq("pane_gone")
       expect(current).not_to have_key("stuck")
+    end
+  end
+
+  describe "current.infra_retry" do
+    let(:mark) { {"cause" => "pane_gone", "n" => 1, "max" => 2, "scheduled_at" => "2026-10-04T12:58:00Z", "due" => "2026-10-04T13:04:00Z"} }
+
+    def retry_mark(extra = {}, stalled: {"pane_gone" => "2026-10-04T12:58:00Z"}, recovered: {})
+      edit_run(store, "wr_1") do |run|
+        run["sweep"] = {"step" => "plan", "attempt" => 2, "stalled" => stalled, "recovered" => recovered, "infra_retry" => mark.merge(extra)}
+      end
+    end
+
+    before { snapshot["panes"].first["state"] = "idle" }
+
+    it "is nil for a run with no mark" do
+      create
+      expect(current["infra_retry"]).to be_nil
+    end
+
+    it "shows a waiting or due restart as scheduled, and the stall's code stays stalled" do
+      create
+      retry_mark
+      expect(current["infra_retry"]).to eq("cause" => "pane_gone", "n" => 1, "max" => 2, "due" => "2026-10-04T13:04:00Z", "state" => "scheduled", "reason" => nil)
+      expect(current["stuck"]).to include("code" => "stalled", "cause" => "pane_gone")
+      now[0] = Time.utc(2026, 10, 4, 13, 5, 0)
+      expect(current["infra_retry"]["state"]).to eq("scheduled")
+    end
+
+    it "shows a claimed restart, fresh or stale, as restarting" do
+      create
+      retry_mark({"claimed_at" => "2026-10-04T12:59:00Z", "claimed_by" => {"pid" => 1, "started" => "x"}})
+      expect(current["infra_retry"]["state"]).to eq("restarting")
+      now[0] = Time.utc(2026, 10, 4, 13, 10, 0)
+      expect(current["infra_retry"]["state"]).to eq("restarting")
+    end
+
+    it "shows a given-up restart as exhausted with its reason, still stalled" do
+      create
+      retry_mark({"given_up" => {"at" => "2026-10-04T13:00:00Z", "reason" => "retries_spent"}})
+      expect(current["infra_retry"]).to include("state" => "exhausted", "reason" => "retries_spent")
+      expect(current["stuck"]["code"]).to eq("stalled")
+    end
+
+    it "shows nothing for an ended mark, or a recovered stall whose mark was never ended" do
+      create
+      retry_mark({"ended" => {"at" => "2026-10-04T12:59:00Z", "reason" => "recovered"}})
+      expect(current["infra_retry"]).to be_nil
+      retry_mark({}, recovered: {"pane_gone" => "2026-10-04T12:59:00Z"})
+      expect(current["infra_retry"]).to be_nil
+    end
+
+    it "still shows a scheduled restart while the run is paused" do
+      create(paused: {"since" => "2026-10-04T12:59:00Z", "by" => "zach"})
+      retry_mark
+      expect(current["infra_retry"]).to include("state" => "scheduled")
+      expect(current["reason"]["code"]).to eq("paused")
     end
   end
 

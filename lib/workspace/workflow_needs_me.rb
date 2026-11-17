@@ -45,6 +45,7 @@ module Workspace
       stuck = current["stuck"]
       source = reason || stuck
       return nil unless source
+      return nil if stuck && !reason && %w[scheduled restarting].include?(current.dig("infra_retry", "state"))
       since = parse(source["since"])
       return nil unless needs_person?(reason, stuck, since)
       actions = Array(source["actions"])

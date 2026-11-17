@@ -542,6 +542,44 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).not_to include("\e")
     end
 
+    describe "an automatic restart" do
+      def printed(retry_row, reason: nil)
+        row = shown("current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => reason, "flags" => [], "infra_retry" => retry_row})
+        allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [row], "warnings" => [])
+        command.status(scope: workspace_scope("app"))
+        output.string
+      end
+
+      let(:base) { {"cause" => "pane_gone", "n" => 1, "max" => 2, "due" => "2026-10-04T13:04:00Z", "state" => "scheduled", "reason" => nil} }
+
+      it "says when a scheduled restart comes due" do
+        expect(printed(base)).to include("  step restarts on its own: restart 1 of 2 in 4m\n")
+      end
+
+      it "says a restart whose time has come is due now" do
+        expect(printed(base.merge("due" => "2026-10-04T12:59:00Z"))).to include("  step restarts on its own: restart 1 of 2 due now\n")
+      end
+
+      it "says a pause holds the restart" do
+        paused = {"code" => "paused", "since" => "2026-10-04T12:55:00Z", "actions" => []}
+        expect(printed(base, reason: paused)).to include("  step restart held (run paused): restart 1 of 2; unpause the run to continue\n")
+      end
+
+      it "says a claimed restart is under way" do
+        expect(printed(base.merge("state" => "restarting"))).to include("  restarting the step now (restart 1 of 2)\n")
+      end
+
+      it "says the retries are spent, or the reason that ended them" do
+        expect(printed(base.merge("state" => "exhausted", "reason" => "retries_spent"))).to include("  automatic restarts used up (pane closed): resume, resume --restart-step, or cancel\n")
+        expect(printed(base.merge("state" => "exhausted", "cause" => "agent_gone", "reason" => "agent_not_ready"))).to include("  automatic restart stopped (agent exited): the new agent never became ready\n")
+        expect(printed(base.merge("state" => "exhausted", "reason" => "odd\e[31m"))).to include('automatic restart stopped (pane closed): odd\e[31m' + "\n")
+      end
+
+      it "prints nothing for a row with no restart" do
+        expect(printed(nil)).not_to include("retry")
+      end
+    end
+
     it "prints the run timeout with the clock it is measured on" do
       timed = shown("deadline" => {"clock" => "active", "used" => 11400.0, "limit" => 28800, "timeout" => 28800, "spent" => false})
       allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [timed], "warnings" => [])

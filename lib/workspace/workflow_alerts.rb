@@ -12,6 +12,9 @@ module Workspace
   # that made the change, once for that change, however often the run is read
   # or swept afterwards. Nothing here needs the agent daemon.
   #
+  # A stall whose attempt has an automatic restart under way (see {WorkflowTransitions.infra_retry}) is left out of
+  # {#marks}, so `stalled` does not fire for it; once the restarts give up the stall shows and the alert fires once.
+  #
   # The command gets the alert only as `WORKSPACE_ALERT_*` environment
   # variables. Their values come from the run file, so they are escaped for a
   # terminal and cut short. The run's suggested next action is never passed on.
@@ -27,6 +30,9 @@ module Workspace
   class WorkflowAlerts
     # The names `alerts.workflow` accepts.
     EVENTS = %w[gate failed stalled finished].freeze
+
+    # The {WorkflowTransitions.infra_retry} states in which a stall's `stalled` alert is held back.
+    HELD_STATES = %i[waiting due claimed stale_claim].freeze
 
     # The longest an environment value is, in characters.
     MAX_VALUE = 200
@@ -50,13 +56,15 @@ module Workspace
     # @param log_path [String, nil] where the supervisor's reports go (nil discards them)
     # @param timeout [Numeric] seconds a notify command may run
     # @param spawner [#call] starts a detached process: `(argv, env, log_path)`; injected for tests
+    # @param clock [#call] returns the current Time, which a restart's claim age is judged at
     # @param error_output [IO] where a problem starting the alert is reported
-    def initialize(alert_config:, log_path: nil, timeout: TIMEOUT, spawner: nil, error_output: $stderr)
+    def initialize(alert_config:, log_path: nil, timeout: TIMEOUT, spawner: nil, error_output: $stderr, clock: -> { Time.now })
       @alert_config = alert_config
       @log_path = log_path
       @timeout = timeout
       @spawner = spawner || method(:spawn_detached)
       @error_output = error_output
+      @clock = clock
     end
 
     # What a run stands in now, for {#fire} to compare with a later reading.
@@ -72,7 +80,7 @@ module Workspace
       {
         gate: (step if run.step(step)&.gate_waiting?),
         failed: (step if run.state == "failed" || %w[failed_check budget_spent run_timed_out].include?(run.reason&.dig("code"))),
-        stalled: stalled.is_a?(Hash) ? stalled.keys.map { |cause| ["#{swept["step"]}:#{swept["attempt"]}", cause.to_s] } : [],
+        stalled: stalled.is_a?(Hash) ? (stalled.keys.map(&:to_s) - held_causes(run)).map { |cause| ["#{swept["step"]}:#{swept["attempt"]}", cause] } : [],
         finished: run.state == "completed"
       }
     rescue
@@ -110,6 +118,13 @@ module Workspace
     end
 
     private
+
+    # The stall cause an automatic restart holds: its mark is waiting, due or claimed (a pause holds it too). A restart
+    # that gave up or ended holds nothing, so its stall alerts.
+    def held_causes(run)
+      info = WorkflowEngine.infra_retry(run.to_h, @clock.call)
+      (info && HELD_STATES.include?(info[:state])) ? [info[:cause].to_s] : []
+    end
 
     def spawn_detached(argv, env, log)
       sink = log ? (rotate(log) && [log, "a"]) : File::NULL

@@ -531,7 +531,7 @@ module Workspace
     def note(run, pass, cause, message, data = {}, infra: false)
       return WorkflowSweepRows.row(run, "nothing", reason: "already_recorded", message: message, cause: cause) if WorkflowEngine.sweep_marks(run.to_h).dig("stalled", cause)
       plan = infra ? infra_plan(run, pass) : nil
-      return WorkflowSweepRows.row(run, "dry_run", message: infra_message(message, plan), cause: cause, action: plan ? plan[:action] : "record") if pass[:dry_run]
+      return WorkflowSweepRows.row(run, "dry_run", message: infra_message(message, plan, cause), cause: cause, action: plan ? plan[:action] : "record") if pass[:dry_run]
       step_ref = {step: run.current, attempt: WorkflowSweepRows.attempt_of(run)}
       # The plan only words the dry run and the message; the engine's answer under the run's lock decides.
       outcome = @engine.note_stall(run.id, actor: "sweep", **step_ref, cause: cause, data: data, infra_retry: plan && {max: plan[:max]})
@@ -540,7 +540,7 @@ module Workspace
         done = (outcome == :scheduled) ? "infra_retry_scheduled" : "infra_retries_exhausted"
         n = WorkflowTransitions.infra_retries(run.to_h, run.current) + 1
         said = (done == plan[:action]) ? plan : infra_plan_for(done, plan[:max], n)
-        WorkflowSweepRows.row(run, "recorded", cause: cause, message: infra_message(message, said), action: done)
+        WorkflowSweepRows.row(run, "recorded", cause: cause, message: infra_message(message, said, cause), action: done)
       else WorkflowSweepRows.engine_row(run, outcome, "recorded", cause: cause, message: message, action: "record")
       end
     end
@@ -562,12 +562,12 @@ module Workspace
     end
 
     # +message+ with what +plan+ ({#infra_plan}) does about it; +message+ alone for none.
-    def infra_message(message, plan)
+    def infra_message(message, plan, cause)
       return message unless plan
       if plan[:action] == "infra_retry_scheduled"
-        "#{message} The step is restarted on its own in #{Duration.humanize(plan[:wait])} (restart #{plan[:n]} of #{plan[:max]})."
+        "#{message} The step restarts on its own in #{Duration.humanize(plan[:wait])} (#{WorkflowStatus.infra_cause_words(cause)}; restart #{plan[:n]} of #{plan[:max]})."
       else
-        "#{message} Its #{plan[:max]} automatic restart#{(plan[:max] == 1) ? " is" : "s are"} spent (workflows.infra_retry.max), so a person decides."
+        "#{message} Its #{plan[:max]} automatic restart#{(plan[:max] == 1) ? " is" : "s are"} used up (#{WorkflowStatus.infra_cause_words(cause)}); resume or cancel the run (limit: workflows.infra_retry.max)."
       end
     end
 

@@ -187,6 +187,42 @@ module Workspace
       WorkflowTransitions.open_stalls(run).intersect?(%w[pane_gone agent_gone])
     end
 
+    # The stall causes an automatic restart handles, in the words a person reads.
+    INFRA_CAUSE_WORDS = {"agent_gone" => "agent exited", "pane_gone" => "pane closed"}.freeze
+
+    # Why an automatic restart gave up, in plain words; a code with no entry is shown as it is, escaped for a terminal.
+    INFRA_REASON_WORDS = {
+      "agent_kind_unsupported" => "only Claude Code agents restart on their own",
+      "agent_waiting_sign_in" => "the new agent is waiting for sign-in",
+      "agent_waiting_trust" => "the new agent is waiting for trust",
+      "agent_waiting_approval" => "the new agent is waiting for approval",
+      "agent_not_ready" => "the new agent never became ready",
+      "no_session" => "the workspace's tmux session is gone",
+      "spawn_failed" => "a new pane could not be started",
+      "restart_refused" => "the restart was refused",
+      "restart_error" => "the restart failed; see the run's events",
+      "claim_lost" => "a restart began but never finished",
+      "still_working" => "the agent was busy again",
+      "attempts_spent" => "the step has no attempts left",
+      "step_attempts_spent" => "the step has no attempts left",
+      "budget_spent" => "the token budget is used",
+      "run_timed_out" => "the run's time limit is used",
+      "gate_waiting" => "a gate is waiting for approval",
+      "run_paused" => "the run is paused"
+    }.freeze
+
+    # @param cause [String, nil] a stall cause (`agent_gone`, `pane_gone`)
+    # @return [String] "agent exited", "pane closed", or the cause escaped
+    def self.infra_cause_words(cause)
+      INFRA_CAUSE_WORDS.fetch(cause.to_s) { TerminalText.escape(cause.to_s) }
+    end
+
+    # @param reason [String, nil] an automatic restart's give-up reason
+    # @return [String] its plain words, or the code escaped
+    def self.infra_reason_words(reason)
+      INFRA_REASON_WORDS.fetch(reason.to_s) { TerminalText.escape(reason.to_s) }
+    end
+
     private
 
     # The downtime spans the document being built was read with; one read for each document.
@@ -278,7 +314,7 @@ module Workspace
         "current" => {"step" => run.current, "attempt" => state.last_attempt&.n, "state" => state.state,
                       "reason" => shown_reason(run, reason, review_pane || pane),
                       "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state))
-            .merge(finished ? {} : stuck_row(run, state, reason, shown, pane)).merge(finished ? {} : turn_failed_row(run, state, reason, shown, pane)).merge(finished ? {} : review_row(run, state)).merge(finished ? {} : refusal_row(run, state)),
+            .merge(infra_retry_row(run, state, finished)).merge(finished ? {} : stuck_row(run, state, reason, shown, pane)).merge(finished ? {} : turn_failed_row(run, state, reason, shown, pane)).merge(finished ? {} : review_row(run, state)).merge(finished ? {} : refusal_row(run, state)),
         "steps" => run.definition["steps"].map { |step| step_row(step, run.steps.fetch(step["id"]), run) },
         "base_sha" => run.base_sha, "pane" => pane, "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
         "artifacts_dir" => run.artifacts_dir, "events_path" => @store.events_path(run.id),
@@ -339,6 +375,20 @@ module Workspace
       end
       {"stuck" => {"code" => code, "cause" => cause, "since" => since.is_a?(String) ? since : nil,
                    "actions" => actions(run, {"code" => code, "details" => {}}, pane)}}
+    end
+
+    # The row's `infra_retry` for each state of {WorkflowTransitions.infra_retry}; an `:ended` mark shows nothing.
+    INFRA_RETRY_STATES = {waiting: "scheduled", due: "scheduled", claimed: "restarting", stale_claim: "restarting", exhausted: "exhausted"}.freeze
+
+    # Where the current attempt's automatic restart stands ({WorkflowTransitions.infra_retry}): `infra_retry` with `cause`,
+    # `n` (this restart's number), `max`, `due` (ISO time or nil), `state` and `reason`. `state` is `scheduled` (waiting
+    # or due, not yet claimed), `restarting` (claimed) or `exhausted` (given up; `reason` says why, `retries_spent` once
+    # the restarts ran out). The value is nil for a finished run, a step that is not running, no mark, or an ended one
+    # (its stall closed). It shows while the run is paused too, since a pause holds the restart. The stall's `code` stays `stalled`.
+    def infra_retry_row(run, state, finished)
+      info = (finished || state.state != "running") ? nil : WorkflowEngine.infra_retry(run.to_h, @clock.call)
+      shown = info && INFRA_RETRY_STATES[info[:state]]
+      {"infra_retry" => shown && {"cause" => info[:cause], "n" => info[:n], "max" => info[:max], "due" => info[:due], "state" => shown, "reason" => info[:reason]}}
     end
 
     # A running step whose pane shows an agent turn that ended on an API error: `turn_failed` with `since`, the

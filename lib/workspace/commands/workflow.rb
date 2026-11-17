@@ -1814,6 +1814,7 @@ module Workspace
         reason = current["reason"]
         @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason && !(reason["code"] == "retry_backoff" && wait_kind == "backoff")
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
+        @output.puts "  #{infra_retry_text(current["infra_retry"], paused: reason&.fetch("code", nil) == "paused")}" if current["infra_retry"]
         if (deadline = run["deadline"])
           @output.puts "  time: #{deadline["clock"]} #{Duration.humanize(deadline["used"].to_f)} of #{Duration.humanize(deadline["limit"].to_f)}"
         end
@@ -1830,6 +1831,35 @@ module Workspace
         @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }
+      end
+
+      # The automatic restart of a stalled step in words, from the status row's `infra_retry`: `step restarts on its own:
+      # restart 1 of 2 in 4m` (`due now` once its time has come), `step restart held (run paused): restart 1 of 2; ...`,
+      # `restarting the step now (restart 1 of 2)`, and once given up `automatic restarts used up (agent exited): ...`
+      # (`automatic restart stopped (agent exited): WHY` for any other reason).
+      def infra_retry_text(info, paused: false)
+        count = "restart #{info["n"]} of #{info["max"]}"
+        case info["state"]
+        when "restarting" then "restarting the step now (#{count})"
+        when "exhausted"
+          cause = WorkflowStatus.infra_cause_words(info["cause"])
+          if info["reason"] == "retries_spent"
+            "automatic restarts used up (#{cause}): resume, resume --restart-step, or cancel"
+          else
+            "automatic restart stopped (#{cause}): #{WorkflowStatus.infra_reason_words(info["reason"])}"
+          end
+        else
+          due = begin
+            Time.iso8601(info["due"].to_s)
+          rescue ArgumentError
+            nil
+          end
+          left = due ? (due - @clock.call).ceil : 0
+          if paused then "step restart held (run paused): #{count}; unpause the run to continue"
+          elsif left > 0 then "step restarts on its own: #{count} in #{Duration.humanize(left)}"
+          else "step restarts on its own: #{count} due now"
+          end
+        end
       end
 
       # The failed agent turn of a running step: how long ago and how far recovery has got, all from the status row.
