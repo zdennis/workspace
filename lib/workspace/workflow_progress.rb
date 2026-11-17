@@ -263,6 +263,7 @@ module Workspace
     def passed(run, ctx)
       state = step_state(run)
       state["state"] = "passed"
+      run["infra_retries"].delete(run["current"]) if run["infra_retries"].is_a?(Hash)
       event(run, "step_passed", "step" => run["current"], "attempt" => state["attempts"].last["n"])
       return go_on(run, ctx) unless step_def(run)["gate"]
 

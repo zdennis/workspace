@@ -74,6 +74,7 @@
   "current": "build",
   "pane": "%5",
   "loops": {},
+  "infra_retries": {},
   "pending_context": [],
   "reason": null,
   "steps": {

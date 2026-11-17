@@ -78,6 +78,9 @@ module Workspace
         when :backoff
           acted = true
           start_retry(stored, ctx, "backoff_ended")
+        when :infra_retry
+          # `workflow advance` restarts the agent outside the lock (tmux and daemon calls); tick does nothing.
+          nil
         when :lock
           acted = true
           # A review round waiting for its `review.uses` asks for the lock again through the round's own start, never

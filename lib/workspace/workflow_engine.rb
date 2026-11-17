@@ -36,6 +36,8 @@ module Workspace
     BACKGROUND_HOLD = WorkflowTransitions::BACKGROUND_HOLD
     # Seconds a pending interrupt claim holds before another sweep may take it over.
     INTERRUPT_CLAIM_SECONDS = WorkflowRecovery::INTERRUPT_CLAIM_SECONDS
+    # Seconds an infra retry's claim holds before another advance may take it over.
+    INFRA_RETRY_CLAIM_WINDOW = WorkflowTransitions::INFRA_RETRY_CLAIM_WINDOW
     GUARD_TEXT = WorkflowTransitions::GUARD_TEXT
 
     # The class methods below forward to {WorkflowTransitions}, which holds the rules.
@@ -53,6 +55,8 @@ module Workspace
     def self.lost_check?(run, now) = WorkflowTransitions.lost_check?(run, now)
     def self.lost_round?(run, now, stops: []) = WorkflowTransitions.lost_round?(run, now, stops: stops)
     def self.sweep_marks(run) = WorkflowTransitions.sweep_marks(run)
+    def self.infra_retry(run, now) = WorkflowTransitions.infra_retry(run, now)
+    def self.infra_retries(run, step) = WorkflowTransitions.infra_retries(run, step)
 
     # {Workspace.build_workflow_engine} builds the phases over one shared {WorkflowRunChange}.
     #

@@ -64,6 +64,17 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(dispatch.calls).to eq([[:release, "wr_1"]])
       expect(change.events.map { |event| event[1] }).to eq(%w[step_passed gate_waiting])
     end
+
+    it "clears the passed step's infra retry count and keeps the other steps'" do
+      run = progress.pass_step(run_hash("infra_retries" => {"plan" => 2, "build" => 1}), ctx: ctx)
+
+      expect(run.infra_retries).to eq("build" => 1)
+      expect(Workspace::WorkflowTransitions.infra_retries(run.to_h, "plan")).to eq(0)
+    end
+
+    it "passes a run stored without infra retry counts" do
+      expect(progress.pass_step(run_hash, ctx: ctx).infra_retries).to be_nil
+    end
   end
 
   describe "#pass_overridden" do
