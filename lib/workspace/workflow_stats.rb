@@ -75,6 +75,15 @@ module Workspace
       {"runs" => used, "unreadable" => loaded["unreadable"] + malformed, "undated" => loaded["undated"], "steps" => steps, "unattributed_resumes" => unattributed}
     end
 
+    # A step's attempts whose stored entry is a Hash.
+    #
+    # @param step [WorkflowRun::Step]
+    # @return [Array<WorkflowRun::Attempt>]
+    def self.stored_attempts(step)
+      stored = Array(step.to_h["attempts"])
+      step.attempts.each_with_index.select { |_, index| stored[index].is_a?(Hash) }.map(&:first)
+    end
+
     # How one attempt counts: `:passed`, `:failed` and `:overridden` by its stored outcome, `:not_delivered` for one that never
     # reached the agent (or was typed again), `:unfinished` for anything else.
     #
@@ -152,8 +161,7 @@ module Workspace
     # Per step id: counts, durations and the run's token figure (an Integer, :uncounted, or nil with nothing finished).
     def tally(run)
       run.steps.to_h do |id, step|
-        stored = Array(step.to_h["attempts"])
-        attempts = step.attempts.each_with_index.select { |_, index| stored[index].is_a?(Hash) }.map(&:first)
+        attempts = self.class.stored_attempts(step)
         t = {"passed" => 0, "failed" => 0, "overridden" => 0, "not_delivered" => 0, "unfinished" => 0, "durations" => [], "unfinished_tokens" => 0}
         paid = []
         attempts.each do |attempt|

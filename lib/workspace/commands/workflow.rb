@@ -725,7 +725,7 @@ module Workspace
         {exit_code: partial ? 3 : 0}
       end
 
-      INSIGHTS_STORE_NOTE = "The store as a whole keeps only the newest 200 finished runs, so older ones are gone."
+      INSIGHTS_STORE_NOTE = "The store as a whole keeps only the newest #{WorkflowRunStore::ARCHIVE_LIMIT} finished runs, so older ones are gone."
 
       # Prints what recurs across a workflow's newest runs: steps that retry or resume, reviewer rejections that
       # recur, failures, holds and the effect of definition or pack changes (see {Workspace::WorkflowInsights}).

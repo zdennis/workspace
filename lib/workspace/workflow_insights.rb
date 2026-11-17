@@ -50,11 +50,12 @@ module Workspace
     def read(workflow:, runs: DEFAULT_RUNS, last: nil, include: nil)
       loaded = @loader.load(workflow: workflow, last: last, include: include)
       stored = loaded["runs"].size
-      narrowed = loaded.merge("runs" => loaded["runs"].first(runs))
       memo = {}
       resumes = ->(run) { memo[run.id] ||= @loader.resumes(run) }
+      kept, ones = keep(workflow, loaded, loaded["runs"].first(runs), resumes)
+      narrowed = loaded.merge("runs" => kept, "unreadable" => loaded["unreadable"] + (loaded["runs"].first(runs).size - kept.size))
       stats = @stats.read(workflow: workflow, loaded: narrowed, resumes: resumes)
-      found = scan(narrowed["runs"], resumes)
+      found = merge(ones)
       enough = stats["runs"] >= MIN_RUNS
       themes, observations = rejections(found[:rejections]).partition { |row| row["run_ids"].size >= THEME_MIN_RUNS }
       {"runs" => stats["runs"], "stored" => stored, "unreadable" => stats["unreadable"], "undated" => stats["undated"], "enough" => enough,
@@ -65,20 +66,37 @@ module Workspace
 
     private
 
-    def scan(runs, resumes)
+    # One rule for a run to count anywhere: stats reads it and the scan does not raise on it.
+    def keep(workflow, loaded, candidates, resumes)
+      kept = []
+      ones = []
+      candidates.each do |stored|
+        alone = loaded.merge("runs" => [stored], "unreadable" => 0, "undated" => 0)
+        next unless @stats.read(workflow: workflow, loaded: alone, resumes: resumes)["runs"] == 1
+        one = scan_one(stored, resumes) or next
+        kept << stored
+        ones << one
+      end
+      [kept, ones]
+    end
+
+    def scan_one(stored, resumes)
+      run = WorkflowRun.from_h(stored)
+      one_run(run, resumes).merge(id: run.id)
+    rescue NoMethodError, TypeError, ArgumentError, Workspace::Error
+      nil
+    end
+
+    def merge(ones)
       found = {retry: Hash.new { |h, k| h[k] = [] }, resume: Hash.new { |h, k| h[k] = [] }, token: Hash.new { |h, k| h[k] = [] },
                rejections: {}, failures: {}, holds: {}, packs: Hash.new(0)}
-      runs.each do |stored|
-        run = WorkflowRun.from_h(stored)
-        one = one_run(run, resumes)
-      rescue NoMethodError, TypeError, ArgumentError, Workspace::Error
-        next
-      else
-        one[:retry].each { |step| found[:retry][step] << run.id }
-        one[:resume].each { |step| found[:resume][step] << run.id }
-        one[:token].each { |step| found[:token][step] << run.id }
+      ones.each do |one|
+        id = one[:id]
+        one[:retry].each { |step| found[:retry][step] << id }
+        one[:resume].each { |step| found[:resume][step] << id }
+        one[:token].each { |step| found[:token][step] << id }
         %i[rejections failures holds].each do |kind|
-          one[kind].each { |key, count| add(found[kind], key, count, run.id) }
+          one[kind].each { |key, count| add(found[kind], key, count, id) }
         end
         one[:packs].each { |name| found[:packs][name] += 1 }
       end
@@ -96,8 +114,7 @@ module Workspace
       one[:resume] = resumes.call(run).select { |step, count| step && count.positive? }.keys
       Array(run.reasons).grep(Hash).each { |reason| hold(one, run_step(reason), reason) }
       run.steps.each do |id, step|
-        stored = Array(step.to_h["attempts"])
-        attempts = step.attempts.each_with_index.select { |_, index| stored[index].is_a?(Hash) }.map(&:first)
+        attempts = WorkflowStats.stored_attempts(step)
         delivered = attempts.reject { |attempt| WorkflowStats.kind_of(attempt) == :not_delivered }
         one[:retry] << id if delivered.size > 1 || attempts.any?(&:retry_of)
         paid = attempts.select { |attempt| WorkflowStats.tokens_count?(run, id, attempts, attempt) }
@@ -113,25 +130,25 @@ module Workspace
       one
     end
 
-    def run_step(reason) = reason["step"].is_a?(String) ? cut(reason["step"]) : nil
+    def run_step(reason) = (reason["step"].is_a?(String) && !reason["step"].empty?) ? reason["step"] : nil
 
     def failure(one, step, attempt)
       code = cut(attempt.code)
-      one[:failures][[cut(step), code]] += 1 if attempt.outcome == "failed" && code
+      one[:failures][[step, code]] += 1 if attempt.outcome == "failed" && code
     end
 
     def hold(one, step, reason)
       code = reason["code"]
-      one[:holds][[cut(step), code]] += 1 if step && HOLD_CODES.include?(code)
+      one[:holds][[step, code]] += 1 if step && HOLD_CODES.include?(code)
     end
 
     def review(one, step, round)
       Array(round["reviews"]).grep(Hash).each do |row|
         reviewer = cut(row["reviewer"])
         next unless reviewer
-        one[:rejections][[cut(step), reviewer, "reject", nil]] += 1 if row["verdict"] == "reject" && row["counted"] != false
+        one[:rejections][[step, reviewer, "reject", nil]] += 1 if row["verdict"] == "reject" && row["counted"] != false
         problem = cut(row["problem"])
-        one[:rejections][[cut(step), reviewer, nil, problem]] += 1 if problem
+        one[:rejections][[step, reviewer, nil, problem]] += 1 if problem
       end
     end
 

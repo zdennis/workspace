@@ -163,10 +163,7 @@ module Workspace
 
     # Per step, its attempts that are stored as Hashes.
     def steps_of(run)
-      run.steps.values.map do |step|
-        stored = Array(step.to_h["attempts"])
-        step.attempts.each_with_index.select { |_, index| stored[index].is_a?(Hash) }.map(&:first)
-      end
+      run.steps.values.map { |step| WorkflowStats.stored_attempts(step) }
     end
 
     # In a completed run an attempt with no outcome was passed over (a `resume --from` later step), not passed: a miss.

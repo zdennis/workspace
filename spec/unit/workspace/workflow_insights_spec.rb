@@ -216,6 +216,26 @@ RSpec.describe Workspace::WorkflowInsights do
       File.write(File.join(runs_dir, "broken.json"), "{nope")
       expect(read).to include("runs" => 1, "stored" => 1, "unreadable" => 1)
     end
+
+    it "counts a run stats rejects as unreadable and keeps it out of every id list" do
+      put("run-1", attempts: [attempt(1, "failed", code: "boom"), attempt(2, "passed")], extra: {"definition" => "not a hash"},
+        reasons: [{"step" => "plan", "code" => "failed_check"}])
+      put("run-2")
+      result = read
+      expect(result).to include("runs" => 1, "unreadable" => 1)
+      ids = [result["hot_steps"].flat_map { |r| r.values_at("retry_run_ids", "resume_run_ids", "token_run_ids") },
+        result["failures"], result["holds"], result["themes"], result["observations"]].flatten
+      expect(ids.grep(/run-1/)).to be_empty
+      expect(result["effects"]["definition"]["groups"].flat_map { |g| g["run_ids"] }).not_to include("run-1")
+    end
+  end
+
+  it "keeps a step id longer than the code limit whole, so a failures row joins its hot_steps row" do
+    id = "s" * 80
+    put("run-1", step: id, attempts: [attempt(1, "failed", code: "boom"), attempt(2, "passed")])
+    result = read
+    expect(result["failures"].map { |r| r["step"] }).to eq([id])
+    expect(result["hot_steps"].map { |r| r["step"] }).to include(id)
   end
 
   it "leaves the filesystem as it was" do
