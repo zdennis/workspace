@@ -6,6 +6,15 @@ module WorkflowGraphGolden
     Workspace::WorkflowGraph.build(catalog.find(id).to_h).to_h
   end
 
+  def self.run(name)
+    Workspace::WorkflowRun.from_h(JSON.parse(File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "workflow_runs", "#{name}.json"))))
+  end
+
+  def self.looped_model
+    run = run("looped_twice")
+    Workspace::WorkflowGraphStates.mark(Workspace::WorkflowGraph.build(run.definition).to_h, run)
+  end
+
   def self.pin(actual, file)
     path = File.join(FIXTURES, file)
     File.write(path, actual) if ENV["UPDATE_GOLDEN"]

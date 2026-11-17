@@ -204,17 +204,28 @@ RSpec.describe Workspace::CLI::Workflow do
     it "routes graph with its id, format and project" do
       run("graph", "rpiv", "--format", "dot", "--name", "web")
 
-      expect(workflow_command.calls).to eq([[:graph, {id: "rpiv", format: "dot", json: false, project: "web"}]])
+      expect(workflow_command.calls).to eq([[:graph, {id: "rpiv", format: "dot", json: false, project: "web", run: nil}]])
     end
 
     it "passes --json and no format when only --json is given" do
       run("graph", "rpiv", "--json")
 
-      expect(workflow_command.calls).to eq([[:graph, {id: "rpiv", format: nil, json: true, project: "app"}]])
+      expect(workflow_command.calls).to eq([[:graph, {id: "rpiv", format: nil, json: true, project: "app", run: nil}]])
     end
 
     it "refuses graph without an id" do
       expect { run("graph") }.to raise_error(Workspace::UsageError, "workflow graph needs an ID (see `workspace workflow show`).")
+    end
+
+    it "routes graph --run with the run id" do
+      run("graph", "rpiv", "--run", "wr_261117123627abcd", "--format", "mermaid")
+
+      expect(workflow_command.calls).to eq([[:graph, {id: "rpiv", format: "mermaid", json: false, project: "app", run: "wr_261117123627abcd"}]])
+    end
+
+    it "refuses --run on another verb" do
+      expect { run("show", "rpiv", "--run", "wr_261117123627abcd") }.to raise_error(Workspace::UsageError, "--run is for `workflow graph ID`.")
+      expect(workflow_command.calls).to be_empty
     end
 
     it "refuses --format on another verb" do

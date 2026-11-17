@@ -10,6 +10,11 @@ RSpec.describe Workspace::WorkflowGraphDot do
     expect(actual).to eq(WorkflowGraphGolden.pin(actual, "rpiv.dot"))
   end
 
+  it "marks the looped rpiv run as in rpiv-looped.dot" do
+    actual = described_class.render(WorkflowGraphGolden.looped_model)
+    expect(actual).to eq(WorkflowGraphGolden.pin(actual, "rpiv-looped.dot"))
+  end
+
   it "double-quotes every id in node and edge statements" do
     nodes = text.scan(/^  (#{quoted}) \[/).flatten
     edges = text.scan(/^  (#{quoted}) -> (#{quoted})/).flatten

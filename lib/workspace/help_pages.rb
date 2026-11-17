@@ -384,25 +384,31 @@ module Workspace
         ]
       },
       "graph" => {
-        usage: ["workflow graph ID [--format mermaid|dot|ascii|json] [--json]"],
+        usage: ["workflow graph ID [--run RUN] [--format mermaid|dot|ascii|json] [--json]"],
         summary: "Draw a workflow's steps, gates, reviews and loops",
         about: [
           "Draws the definition as a graph: a node for each step, a gate node after a step with gate: approve,",
           "a review node after a step with review:, and an edge for each way a run moves between them (next,",
           "fail with its max, reject, review_rejected). Reads the definition only; no run is needed.",
           "",
+          "--run RUN draws the definition that run stored (not the catalog's file, which may have changed since)",
+          "and marks each step, gate and review node passed, current, waiting, failed or pending, with each step's",
+          "passes and attempts, and each fail edge with the loops the run took. The run must be of workflow ID:",
+          "another workflow's run is refused with usage, and an unknown RUN with unknown_run.",
+          "",
           "--format picks the drawing: ascii (the default, readable with no tools), mermaid (a stateDiagram-v2 to",
           "paste into a Markdown file), dot (Graphviz) or json (the model the others draw). --json is the same as",
           "--format json: one document with the model under \"graph\" as {nodes, edges, legend}. --json with another",
           "--format is refused. An unknown ID is refused with unknown_workflow."
         ],
-        options: [["--format FMT", "mermaid, dot, ascii (default) or json"],
+        options: [["--run RUN", "Mark where that run of ID stands, on the definition it stored"], ["--format FMT", "mermaid, dot, ascii (default) or json"],
           name_opt("The workspace whose project's definitions are read first (default: the current workspace)"), JSON_OPT],
         examples: [
           ["workspace workflow graph rpiv", "see the steps, the gate and the verify loop as text"],
           ["workspace workflow graph rpiv --format mermaid", "a diagram to paste into a README"],
           ["workspace workflow graph rpiv --format dot", "Graphviz input: pipe it to `dot -Tsvg`"],
-          ["workspace workflow graph rpiv --json", "the nodes and edges as one document, for a script"]
+          ["workspace workflow graph rpiv --json", "the nodes and edges as one document, for a script"],
+          ["workspace workflow graph rpiv --run wr_261117123627abcd", "where that run is, and how often verify sent it back"]
         ]
       },
       "validate" => {

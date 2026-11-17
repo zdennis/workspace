@@ -1,0 +1,24 @@
+stateDiagram-v2
+    state "Research [passed]" as n0
+    state "Plan [passed]" as n1
+    state "Plan gate [passed]" as n2
+    state "Implement [passed x3]" as n3
+    state "Verify [current, 3 attempts]" as n4
+    [*] --> n0
+    n0 --> n1
+    n1 --> n2
+    n2 --> n3
+    n3 --> n4
+    n4 --> [*]
+    n4 --> n3 : fail: max 3 (looped 2)
+    n2 --> n1 : reject (or --to an earlier step)
+    classDef passed fill:#d4edda,stroke:#28a745
+    classDef current fill:#cce5ff,stroke:#0366d6,stroke-width:3px
+    class n0 passed
+    class n1 passed
+    class n2 passed
+    class n3 passed
+    class n4 current
+    note right of n0
+        max_attempts 10
+    end note

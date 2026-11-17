@@ -120,6 +120,7 @@ module Workspace
           opts.on("--note-sha256 HEX", "approve: the sha256 of the gate's note you read (gate_file.sha256); refused with stale_revision when it changed") { |v| options[:note_sha256] = v }
           opts.on("--script FILE", "simulate: the YAML script of what the fake agent does on each attempt and how each check comes out") { |v| options[:script] = v }
           opts.on("--format FMT", "graph: how to draw it, mermaid, dot, ascii (default) or json") { |v| options[:format] = v }
+          opts.on("--run RUN", "graph: draw the definition RUN stored, marked with each step's state and the loops it took") { |v| options[:graph_run] = v }
           opts.on("--source", "show ID: the file's text, sha256 of its bytes and problems, valid or not; install: only the source at position N of workflows.sources (a whole number from 1, written after the flag)") { options[:source] = true }
           opts.on("--attempt-of STEP", "attempts, audit: only this step's attempts") { |v| options[:attempt_of] = v }
           opts.on("--by GROUP", "compare: group the runs by definition (default) or pack:NAME, the text of that pack their agent was sent") { |v| options[:compare_by] = v }
@@ -196,6 +197,7 @@ module Workspace
         raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
 
         raise UsageError, "--format is for `workflow graph ID`." if options[:format] && subcommand != "graph"
+        raise UsageError, "--run is for `workflow graph ID`." if options[:graph_run] && subcommand != "graph"
         raise UsageError, "--script is for `workflow simulate ID`." if options[:script] && subcommand != "simulate"
         raise UsageError, "workflow simulate needs --script FILE (what the fake agent does; see `workspace workflow simulate --help`)." if subcommand == "simulate" && options[:script].nil?
         raise UsageError, "--since is for `workflow events RUN`." if options[:since] && subcommand != "events"
@@ -253,7 +255,7 @@ module Workspace
         case subcommand
         when "list" then @workflow_command.list(json: options[:json], project: workflow_project(options))
         when "show" then @workflow_command.show(id: subject, json: options[:json], source: options[:source], project: workflow_project(options))
-        when "graph" then @workflow_command.graph(id: subject, format: options[:format], json: options[:json], project: workflow_project(options))
+        when "graph" then @workflow_command.graph(id: subject, format: options[:format], json: options[:json], project: workflow_project(options), run: options[:graph_run])
         when "uninstall" then workflow_action(invocation, "workflow uninstall", options) { @workflow_command.uninstall(yes: options[:yes], dry_run: options[:dry_run], json: options[:json]) }
         when "validate" then @workflow_command.validate(path: subject, id: options[:id], json: options[:json], project: workflow_project(options))
         when "render"

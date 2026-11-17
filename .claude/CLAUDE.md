@@ -74,6 +74,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_graph_mermaid.rb` — Draws a workflow graph model as Mermaid `stateDiagram-v2` text.
 - `lib/workspace/workflow_graph_dot.rb` — Draws a workflow graph model as Graphviz DOT.
 - `lib/workspace/workflow_graph_ascii.rb` — Draws a workflow graph model as plain text boxes with a rail for loop edges.
+- `lib/workspace/workflow_graph_states.rb` — Marks a workflow graph model with one run's node states, pass counts and loop counts.
 - `lib/workspace/workflow_run_loader.rb` — The run loading `workflow stats` and `compare` share.
 - `lib/workspace/workflow_compare.rb` — `workflow compare`: groups a workflow's runs by definition or pack version.
 - `lib/workspace/workflow_audit.rb` — Checks recorded evidence against its stored copies.

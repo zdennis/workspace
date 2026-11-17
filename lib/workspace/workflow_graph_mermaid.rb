@@ -1,8 +1,18 @@
 module Workspace
   # Draws a {WorkflowGraph} model as Mermaid `stateDiagram-v2` text. A model id is never written as a state id:
   # each non-terminal node is numbered `n0`, `n1`, ... in model order and declared with its quoted label, and the
-  # `.start` and `.end` terminals are `[*]`. Pure: reads the model hash only.
+  # `.start` and `.end` terminals are `[*]`. A node a run marked ({WorkflowGraphStates}) gets the `classDef` of its
+  # state. Pure: reads the model hash only.
   module WorkflowGraphMermaid
+    # The `classDef` of each node state {WorkflowGraphStates} marks.
+    STATE_STYLES = {
+      "passed" => "fill:#d4edda,stroke:#28a745",
+      "current" => "fill:#cce5ff,stroke:#0366d6,stroke-width:3px",
+      "waiting" => "fill:#fff3cd,stroke:#d39e00",
+      "failed" => "fill:#f8d7da,stroke:#cb2431",
+      "pending" => "fill:#f6f8fa,stroke:#959da5"
+    }.freeze
+
     # @param model [Hash] {WorkflowGraph#to_h}
     # @return [String] the diagram, ending in a newline
     def self.render(model)
@@ -16,6 +26,9 @@ module Workspace
         label = WorkflowGraphText.edge_label(edge)
         lines << "    #{ids.fetch(edge["from"], "[*]")} --> #{ids.fetch(edge["to"], "[*]")}#{" : #{text(label)}" if label}"
       end
+      marked = model["nodes"].select { |node| ids.key?(node["id"]) && STATE_STYLES.key?(node["state"]) }
+      marked.map { |node| node["state"] }.uniq.each { |state| lines << "    classDef #{state} #{STATE_STYLES[state]}" }
+      marked.each { |node| lines << "    class #{ids[node["id"]]} #{node["state"]}" }
       legend = WorkflowGraphText.legend_line(model["legend"])
       if legend && ids.any?
         lines << "    note right of #{ids.values.first}" << "        #{text(legend)}" << "    end note"

@@ -294,6 +294,53 @@ RSpec.describe Workspace::Commands::Workflow do
 
       expect { command.graph(id: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
     end
+
+    describe "with run:" do
+      let(:looped) { JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/workflow_runs/looped_twice.json"))) }
+      let(:looped_run) { Workspace::WorkflowRun.from_h(looped) }
+      let(:marked) { Workspace::WorkflowGraphStates.mark(Workspace::WorkflowGraph.build(looped_run.definition).to_h, looped_run) }
+
+      it "draws the run's stored definition marked with its states, without reading the catalog" do
+        allow(store).to receive(:run).with("wr_simulated").and_return(looped_run)
+        allow(catalog).to receive(:find)
+
+        command.graph(id: "rpiv", run: "wr_simulated")
+
+        expect(output.string).to eq(Workspace::WorkflowGraphAscii.render(marked))
+        expect(catalog).not_to have_received(:find)
+      end
+
+      it "prints the marked model under graph with --json" do
+        allow(store).to receive(:run).with("wr_simulated").and_return(looped_run)
+
+        command.graph(id: "rpiv", run: "wr_simulated", json: true)
+
+        verify = json["graph"]["nodes"].find { |node| node["id"] == "verify" }
+        expect(verify).to include("state" => "current", "passes" => 0, "attempts" => 3)
+      end
+
+      it "raises the store's unknown_run for an unknown run" do
+        allow(store).to receive(:run).with("wr_nope").and_raise(Workspace::Error.new("No workflow run \"wr_nope\".", code: "unknown_run"))
+
+        expect { command.graph(id: "rpiv", run: "wr_nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_run") }
+      end
+
+      it "refuses a run of another workflow by its workflow key" do
+        allow(store).to receive(:run).with("wr_simulated").and_return(looped_run)
+
+        expect { command.graph(id: "demo", run: "wr_simulated") }.to raise_error(Workspace::UsageError, /of workflow "rpiv", not "demo"/)
+        expect(output.string).to be_empty
+      end
+
+      it "falls back to the stored definition's id for a legacy run with no workflow key" do
+        legacy = Workspace::WorkflowRun.from_h(looped.except("workflow"))
+        allow(store).to receive(:run).with("wr_simulated").and_return(legacy)
+
+        expect { command.graph(id: "demo", run: "wr_simulated") }.to raise_error(Workspace::UsageError, /of workflow "rpiv", not "demo"/)
+        command.graph(id: "rpiv", run: "wr_simulated")
+        expect(output.string).to eq(Workspace::WorkflowGraphAscii.render(marked))
+      end
+    end
   end
 
   describe "#show stall" do

@@ -127,20 +127,22 @@ module Workspace
       end
 
       # Draws one definition's steps, gates, reviews and loops. The default format is ascii; `json: true`
-      # is `format: "json"` and prints the model under `graph` in one document.
+      # is `format: "json"` and prints the model under `graph` in one document. With +run+ it draws the
+      # definition that run stored, marked with where the run stands ({WorkflowGraphStates}).
       #
       # @param id [String]
       # @param format [String, nil] one of {GRAPH_FORMATS}
       # @param json [Boolean]
       # @param project [String, nil] the project whose definitions come first (see {Workspace::WorkflowCatalog})
+      # @param run [String, nil] a run id of workflow +id+
       # @return [void]
-      # @raise [Workspace::UsageError] for an unknown format, or --json with a format other than json
-      # @raise [Workspace::Error] code `unknown_workflow`
-      def graph(id:, format: nil, json: false, project: nil)
+      # @raise [Workspace::UsageError] for an unknown format, --json with a format other than json, or a run of another workflow
+      # @raise [Workspace::Error] code `unknown_workflow` or `unknown_run`
+      def graph(id:, format: nil, json: false, project: nil, run: nil)
         raise UsageError, "Unknown graph format #{format.inspect}: use #{GRAPH_FORMATS.join(", ")} (default ascii)." if format && !GRAPH_FORMATS.include?(format)
         raise UsageError, "--json prints the graph as json: drop --format #{format}, or use --format json." if json && format && format != "json"
         format ||= json ? "json" : "ascii"
-        model = WorkflowGraph.build(@catalog.find(id, project: project).to_h).to_h
+        model = run ? run_graph(id, @store.run(run)) : WorkflowGraph.build(@catalog.find(id, project: project).to_h).to_h
         return document("graph" => model) if format == "json"
         @output.puts @graph_renderers.fetch(format).render(model)
       end
@@ -1038,6 +1040,15 @@ module Workspace
       end
 
       private
+
+      def run_graph(id, stored)
+        definition = stored.definition.is_a?(Hash) ? stored.definition : {}
+        workflow = stored.workflow || definition["id"]
+        unless workflow == id
+          raise UsageError, "Run #{stored.id} is of workflow #{workflow.to_s[0, 60].inspect}, not #{id.to_s[0, 60].inspect}: use `workspace workflow graph #{TerminalText.escape(workflow.to_s[0, 60])} --run #{stored.id}`."
+        end
+        WorkflowGraphStates.mark(WorkflowGraph.build(definition).to_h, stored)
+      end
 
       # The stall `show` reports: the definition's own, else the global default (read now, not at build time).
       def stall_fields(data)

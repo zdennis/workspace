@@ -8,6 +8,11 @@ RSpec.describe Workspace::WorkflowGraphMermaid do
     expect(actual).to eq(WorkflowGraphGolden.pin(actual, "rpiv.mmd"))
   end
 
+  it "marks the looped rpiv run as in rpiv-looped.mmd" do
+    actual = described_class.render(WorkflowGraphGolden.looped_model)
+    expect(actual).to eq(WorkflowGraphGolden.pin(actual, "rpiv-looped.mmd"))
+  end
+
   describe "ids" do
     let(:text) { described_class.render(tricky) }
     let(:declared) { text.scan(/^    state ".*" as (\S+)$/).flatten }

@@ -8,6 +8,11 @@ RSpec.describe Workspace::WorkflowGraphAscii do
     end
   end
 
+  it "marks the looped rpiv run as in rpiv-looped.txt" do
+    actual = described_class.render(WorkflowGraphGolden.looped_model)
+    expect(actual).to eq(WorkflowGraphGolden.pin(actual, "rpiv-looped.txt"))
+  end
+
   describe "a hostile title" do
     let(:text) { described_class.render(Workspace::WorkflowGraph.build(WorkflowGraphGolden::TRICKY).to_h) }
 
