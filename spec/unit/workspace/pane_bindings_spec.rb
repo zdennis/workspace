@@ -340,6 +340,14 @@ RSpec.describe Workspace::PaneBindings do
       expect(store.stale?(entry, session: nil, pane_slot: nil)).to be true
     end
 
+    it "is true for a reflection binding once the tmux server is another one, and judged by slot otherwise" do
+      reflection = entry.merge("kind" => "reflection", "server_pid" => "42")
+
+      expect(store.stale?(reflection, session: "app", pane_slot: "app:0.1", server_pid: "42")).to be false
+      expect(store.stale?(reflection, session: "app", pane_slot: "app:0.1", server_pid: -> { "43" })).to be true
+      expect(store.stale?(reflection, session: "app", pane_slot: "app:0.2", server_pid: "42")).to be true
+    end
+
     it "judges a binding stored without a slot by its session alone" do
       expect(store.stale?(entry.merge("pane_slot" => nil), session: "app", pane_slot: "app:9.9")).to be false
       expect(store.stale?(entry.merge("pane_slot" => nil), session: "other", pane_slot: nil)).to be true
@@ -398,6 +406,28 @@ RSpec.describe Workspace::PaneBindings do
     it "describes a review with its focus" do
       expect(store.context_for("kind" => "review", "id" => "acme/api#835", "focus" => "security"))
         .to eq("This pane is bound to review acme/api#835.\nFocus: security.")
+    end
+  end
+
+  describe "a reflection binding" do
+    let(:fields) { {"kind" => "reflection", "id" => "wr_1", "artifacts" => "/state/evidence/wr_1", "instructions" => "/state/evidence/wr_1/reflect.md", "workspace" => "api"} }
+
+    it "is accepted and stored with its fields" do
+      expect(store.bind("%5", fields)).to include("kind" => "reflection", "id" => "wr_1", "artifacts" => "/state/evidence/wr_1")
+      expect(store.binding_for("%5")["kind"]).to eq("reflection")
+    end
+
+    it "still refuses an unknown kind and an id that is not one line" do
+      expect { store.bind("%5", fields.merge("kind" => "reflect")) }.to raise_error(Workspace::UsageError, /Unknown binding kind/)
+      expect { store.bind("%5", fields.merge("id" => "")) }.to raise_error(Workspace::UsageError, /id must be one line/)
+    end
+
+    it "tells the agent the run, the prompt file and the one file to write" do
+      expect(store.context_for(fields)).to eq(
+        "This pane is a reflection pane for workflow run wr_1 in api.\n" \
+        "Instructions: /state/evidence/wr_1/reflect.md. Reread them if your context was compacted.\n" \
+        "Write only /state/evidence/wr_1/reflection.md; when it is written, end your turn."
+      )
     end
   end
 

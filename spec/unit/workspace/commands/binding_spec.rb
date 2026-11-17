@@ -37,6 +37,37 @@ RSpec.describe Workspace::Commands::Binding do
     end
   end
 
+  describe "reflection bindings" do
+    it "records the tmux server's pid, as a reviewer binding does" do
+      entry = command.bind(workspace: "app", pane: "%5", kind: "reflection", id: "wr_1")
+
+      expect(entry["server_pid"]).to eq(42)
+      expect(command.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1")).not_to have_key("server_pid")
+    end
+
+    describe "#reflecting" do
+      it "returns the pane's live reflection binding" do
+        command.bind(workspace: "app", pane: "%5", kind: "reflection", id: "wr_1")
+
+        expect(command.reflecting(pane: "%5")).to include("kind" => "reflection", "id" => "wr_1")
+      end
+
+      it "is nil for a stale binding, another kind, an unbound pane" do
+        command.bind(workspace: "app", pane: "%5", kind: "reflection", id: "wr_1")
+        allow(tmux).to receive(:server_pid_for_pane).with("%5").and_return(43)
+        expect(command.reflecting(pane: "%5")).to be_nil
+
+        command.bind(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
+        expect(command.reflecting(pane: "%5")).to be_nil
+        expect(command.reflecting(pane: "%8")).to be_nil
+      end
+
+      it "refuses a value that is not a pane id" do
+        expect { command.reflecting(pane: "0.1") }.to raise_error(Workspace::UsageError)
+      end
+    end
+  end
+
   describe "packs" do
     it "stores the packs given to set and reports them" do
       entry = command.set(workspace: "app", pane: "%5", kind: "play", id: "play/notes", packs: %w[notes handoff])

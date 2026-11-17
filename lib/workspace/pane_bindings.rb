@@ -14,8 +14,9 @@ module Workspace
   #
   # Only short structured fields are stored, never prompt text.
   class PaneBindings
-    # Subjects a pane can be bound to.
-    KINDS = %w[run review play].freeze
+    # Subjects a pane can be bound to. A `reflection` binding's `id` is the run reflected on, `artifacts` its
+    # evidence directory (for display only) and `instructions` the prompt file.
+    KINDS = %w[run review play reflection].freeze
 
     # Optional single-line text fields of an entry.
     TEXT_FIELDS = %w[step focus instructions artifacts].freeze
@@ -50,7 +51,7 @@ module Workspace
     # @param pane_id [String] a tmux pane id (e.g. "%5")
     # @param fields [Hash{String=>Object}] `kind` and `id` (required), `attempt`, `packs`, `plays`
     #   (names of library packs the agent was sent; stored as `[]` when absent),
-    #   `server_pid` (the tmux server's pid, recorded for a reviewer binding), `role` (one of {ROLES}; no role is the author) and `round` (a whole number of 1 or more, for a
+    #   `server_pid` (the tmux server's pid, recorded for a reviewer or reflection binding), `role` (one of {ROLES}; no role is the author) and `round` (a whole number of 1 or more, for a
     #   reviewer), and any of {TEXT_FIELDS}; plus the `workspace`, tmux `session` and `pane_slot` it was made for
     # @return [Hash{String=>Object}] the stored entry
     # @raise [Workspace::UsageError] for an unknown kind, a missing or oversized id, an
@@ -196,7 +197,7 @@ module Workspace
     # A binding only counts for the tmux session and pane slot it was made in:
     # a pane id from another session, or one reused after a tmux restart, is
     # not the same pane. The SessionStart hook stays quiet for a stale binding,
-    # `binding show` marks it, and `instructions compose` leaves it out. A reviewer binding
+    # `binding show` marks it, and `instructions compose` leaves it out. A reflection binding is also stale once its recorded tmux server is another one. A reviewer binding
     # is compared by session and tmux server, not slot: its window is made for one round, and a window index that
     # shifts (tmux `renumber-windows`) must not strand the round.
     #
@@ -208,7 +209,8 @@ module Workspace
     # @return [Boolean] true when the pane is in another session or slot than the binding's
     def stale?(entry, session:, pane_slot:, server_pid: nil)
       return true unless entry["session"] == session
-      return reviewer_server_changed?(entry, server_pid) if role_of(entry) == "reviewer"
+      return server_changed?(entry, server_pid) if role_of(entry) == "reviewer"
+      return true if entry["kind"] == "reflection" && server_changed?(entry, server_pid)
       !entry["pane_slot"].nil? && entry["pane_slot"] != pane_slot
     end
 
@@ -222,6 +224,7 @@ module Workspace
       return play_context(entry, where) if entry["kind"] == "play"
 
       return reviewer_context(entry, where) if reviewer?(entry)
+      return reflection_context(entry, where) if entry["kind"] == "reflection"
 
       subject = (entry["kind"] == "review") ? "review" : "workflow run"
       lines = ["This pane is bound to #{subject} #{entry["id"]}#{where}."]
@@ -267,6 +270,14 @@ module Workspace
       lines.join("\n")
     end
 
+    # What a reflection pane is told: its run, the prompt file and the one file it may write.
+    def reflection_context(entry, where)
+      lines = ["This pane is a reflection pane for workflow run #{entry["id"]}#{where}."]
+      lines << "Instructions: #{entry["instructions"]}. Reread them if your context was compacted." if entry["instructions"]
+      lines << "Write only #{entry["artifacts"]}/reflection.md; when it is written, end your turn." if entry["artifacts"]
+      lines.join("\n")
+    end
+
     def reviewer?(entry)
       entry["kind"] == "run" && role_of(entry) == "reviewer"
     end
@@ -276,9 +287,9 @@ module Workspace
       (entry["role"] == "reviewer") ? "reviewer" : "author"
     end
 
-    # A reviewer binding that recorded its tmux server is stale once the server is another one (pane ids start
+    # A reviewer or reflection binding that recorded its tmux server is stale once the server is another one (pane ids start
     # over when tmux restarts); one with none recorded is judged by its session alone.
-    def reviewer_server_changed?(entry, server_pid)
+    def server_changed?(entry, server_pid)
       recorded = entry["server_pid"]
       return false if recorded.nil?
       current = server_pid.respond_to?(:call) ? server_pid.call : server_pid

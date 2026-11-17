@@ -38,6 +38,12 @@ RSpec.describe Workspace::BoundRun do
     expect(bound_run.run_id).to be_nil
   end
 
+  it "is nil for a pane bound to a reflection" do
+    bind("%4", "kind" => "reflection")
+
+    expect(bound_run.run_id).to be_nil
+  end
+
   it "is nil outside tmux, without asking tmux" do
     bind("%4")
 
