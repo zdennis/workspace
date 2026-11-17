@@ -414,7 +414,7 @@ RSpec.describe "workflow extends" do
     it "carries its own caps, budget and reviewers over rpiv's inputs" do
       data = v2.to_h
 
-      expect(data).to include("max_attempts" => 17, "timeout" => 28_800.0, "timeout_action" => "hold", "budget" => {"action" => "stop", "tokens" => 40_000_000})
+      expect(data).to include("max_attempts" => 21, "timeout" => 28_800.0, "timeout_action" => "hold", "budget" => {"action" => "stop", "tokens" => 40_000_000})
       expect(data["inputs"]).to eq(rpiv.to_h["inputs"])
       expect(data["reviewers"].keys).to eq(%w[supportive skeptical implementer])
       expect(v2.warnings).to eq([])

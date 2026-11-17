@@ -1948,7 +1948,10 @@ module Workspace
         traits << "uses #{step["uses"].join(", ")}" if step["uses"].any?
         traits << "check" if step["status"]
         traits << "gate: #{step["gate"]}" if step["gate"]
-        traits << "on fail: back to #{step["on_fail"]["goto"]}, #{step["on_fail"]["max"]} time(s)" if step["on_fail"]
+        case step["on_fail"]
+        when Hash then traits << "on fail: back to #{step["on_fail"]["goto"]}, #{step["on_fail"]["max"]} time(s)"
+        when "stop" then traits << "on fail: stop"
+        end
         traits << "continues the conversation" if step["context"] == "continue"
         traits.join("; ")
       end

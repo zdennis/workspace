@@ -122,32 +122,37 @@ RSpec.describe "the rpiv-auto-approve-v2 preset in the simulator" do
     expect(result["outcome"]).to eq("completed")
   end
 
-  it "spends exactly the run's 17 attempts on research 1, plan 8 (two failed checks resumed, six rounds) and implement and verify 4 each" do
-    answers.push({on: "failed_check", resume: {}}, {on: "failed_check", resume: {}})
+  it "spends the run's attempts on the implicit and the explicit loops: research 3, plan 8 (two failed checks looping back to research, six rounds), implement 4 and verify 4" do
     plan = [{"check" => "fail"}, {"check" => "fail"}] + Array.new(5) { {"reviews" => skeptic_rejects} } + [{"reviews" => approve_all}]
-    result = play("plan" => plan, "verify" => [{"check" => "fail"}, {"check" => "fail"}, {"check" => "fail"}, {}])
+    result = play("plan" => plan, "verify" => Array.new(8) { {"check" => "fail"} })
 
-    expect(result["outcome"]).to eq("completed")
+    expect(result["outcome"]).to eq("stopped")
+    # verify's own on_fail (back to implement, max 3) is spent at the 4th failed check.
+    expect(result["stopped"]).to eq("step" => "verify", "attempt" => 4, "reason" => "failed_check")
     expect(outcomes(result, "plan").size).to eq(8)
     expect(outcomes(result, "implement").size).to eq(4)
-    expect(outcomes(result, "verify")).to eq(%w[failed failed failed passed])
-    expect(result["steps"].sum { |each| each["attempts"].size }).to eq(17)
+    expect(outcomes(result, "verify")).to eq(%w[failed failed failed failed])
+    expect(result["steps"].sum { |each| each["attempts"].size }).to eq(19)
+    expect(events(result, "step_looped").map { |each| [each["from"], each["to"], each["count"]] }).to eq(
+      [["plan", "research", 1], ["plan", "research", 2], ["verify", "implement", 1], ["verify", "implement", 2], ["verify", "implement", 3]]
+    )
     expect(events(result, "review_started").map { |each| each["round"] }).to eq((1..6).to_a)
+    expect(person.answered).to be_empty
+    expect(person.refused).to be_empty
   end
 
-  it "reports the run's cap first once the 17 attempts are spent, before the plan's own 8" do
-    answers.push({on: "failed_check", resume: {}}, {on: "failed_check", resume: {}}, {on: "failed_check", resume: {}})
-    plan = [{"check" => "fail"}, {"check" => "fail"}] + Array.new(5) { {"reviews" => skeptic_rejects} } + [{"reviews" => approve_all}]
-    result = play("plan" => plan, "verify" => Array.new(4) { {"check" => "fail"} })
+  it "stops for a person once the plan has spent its own 8 attempts on the default loops, and never enters it again" do
+    result = play("plan" => Array.new(9) { {"check" => "fail"} })
 
-    expect(result["stopped"]).to eq("step" => "verify", "attempt" => 4, "reason" => "failed_check")
-    expect(result["steps"].sum { |each| each["attempts"].size }).to eq(17)
-    expect(person.refused).to eq([%w[failed_check attempts_spent]])
+    expect(result["outcome"]).to eq("stopped")
+    expect(result["stopped"]).to eq("step" => "plan", "attempt" => 8, "reason" => "failed_check")
+    expect(outcomes(result, "research").size).to eq(8)
+    expect(events(result, "step_looped").map { |each| [each["from"], each["count"]] }).to eq((1..7).map { |n| ["plan", n] })
+    expect(person.refused).to be_empty
   end
 
   it "meets the plan's 6 rounds and its 8 attempts together when two failed checks spent its spare attempts" do
-    answers.push({on: "failed_check", resume: {}}, {on: "failed_check", resume: {}},
-      {on: "review_rejected", resume: {}}, {on: "review_rejected", resume: {extra_rounds: 1}}, {on: "review_rejected", resume: {extra_rounds: 1, extra_attempts: 1}})
+    answers.push({on: "review_rejected", resume: {}}, {on: "review_rejected", resume: {extra_rounds: 1}}, {on: "review_rejected", resume: {extra_rounds: 1, extra_attempts: 1}})
     plan = [{"check" => "fail"}, {"check" => "fail"}] + Array.new(6) { {"reviews" => skeptic_rejects} } + [{"reviews" => approve_all}]
 
     result = play("plan" => plan)
@@ -158,6 +163,7 @@ RSpec.describe "the rpiv-auto-approve-v2 preset in the simulator" do
     expect(events(result, "review_started").map { |each| each["round"] }).to eq((1..7).to_a)
     expect(result["outcome"]).to eq("completed")
   end
+
 
   it "holds the round start when the token budget is spent, and starts that same round on a resume with --extra-tokens" do
     answers.push({on: "budget_spent", resume: {extra_tokens: 1_000_000}})

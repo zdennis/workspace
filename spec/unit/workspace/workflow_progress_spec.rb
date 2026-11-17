@@ -253,6 +253,46 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run.reason["code"]).to eq("failed_check")
       expect(dispatch.calls.map(&:first)).to eq([:release])
     end
+
+    it "loops back to the step before on a failure the default can retry, telling it what failed" do
+      definition = [{"id" => "plan", "produces" => ["plan.md"]}, {"id" => "build", "produces" => []}]
+      run = run_hash(definition_steps: definition, "current" => "build")
+      run["steps"]["build"] = {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:30:00.000Z"}]}
+      context = ctx
+
+      run = progress.fail_step(run, failure, ctx: context)
+
+      text = "The build step failed and sent the run back to this step (time 1): #{Workspace::WorkflowTransitions.failure_text(failure)}. " \
+        "Its files are in /work/.workflow/wr_1. Fix what it found."
+      expect(run.current).to eq("plan")
+      expect(run.state).to eq("running")
+      expect(run.to_h["loops"]).to eq("build->plan" => 1)
+      expect(run.pending_context).to eq([text])
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "loop", context: nil, budgeted: true, retry_of: {"text" => text}}]])
+      expect(log_tail.calls).to be_empty
+      expect(change.events.last).to eq(["wr_1", "step_looped", {"from" => "build", "to" => "plan", "count" => 1}])
+    end
+
+    it "stops for a person when the default loop's failure is infrastructural" do
+      definition = [{"id" => "plan", "produces" => ["plan.md"]}, {"id" => "build", "produces" => []}]
+      run = run_hash(definition_steps: definition, "current" => "build")
+      run["steps"]["build"] = {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:30:00.000Z"}]}
+
+      run = progress.fail_step(run, {"cause" => "guard", "code" => "head_moved"}, ctx: ctx)
+
+      expect(run.state).to eq("waiting")
+      expect(run.reason["code"]).to eq("failed_check")
+      expect(run.current).to eq("build")
+      expect(dispatch.calls.map(&:first)).to eq([:release])
+    end
+
+    it "stops for a person when the step says on_fail: stop" do
+      run = progress.fail_step(run_hash(definition_steps: steps("on_fail" => "stop")), failure, ctx: ctx)
+
+      expect(run.state).to eq("waiting")
+      expect(run.reason["code"]).to eq("failed_check")
+      expect(dispatch.calls.map(&:first)).to eq([:release])
+    end
   end
 
   describe "#start_retry" do

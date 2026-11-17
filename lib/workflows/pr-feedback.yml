@@ -106,6 +106,9 @@ steps:
       `review_request`, `--link-pr <n> --link-run {{run}} --dedupe-key pr-feedback-fix:{{run}} --reopen`.
       Your final message names `workspace push` as the person's next step.
     produces: [fix.md]
+    # The stop codes this step reports with `step done --status fail` are deliberate stops
+    # for a person; on_fail: stop keeps them stops under the engine's loop default.
+    on_fail: stop
     require:
       - inbox_item: "pr-feedback-fix:{{run}}"
     timeout: 2h

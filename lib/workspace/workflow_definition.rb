@@ -4,7 +4,9 @@ require "digest"
 module Workspace
   # One workflow definition: a YAML file of ordered steps, checked and turned
   # into the plain hash a run keeps a copy of. A step runs in the workspace's
-  # agent pane; the only way back to an earlier step is `on_fail: {goto, max}`.
+  # agent pane; the way back to an earlier step is `on_fail: {goto, max}`, and
+  # a step with no `on_fail` sends the run back to the step before it, at most
+  # until the run's attempts are spent (an `on_fail: stop` stands for a person).
   #
   # Every problem in a file is collected and reported at once, with code
   # `invalid_workflow`, so a definition is fixed in one pass.
@@ -203,7 +205,7 @@ module Workspace
     #   "title", "description", "inputs" (name to "description" and "required"), "include",
     #   "instructions", "max_attempts" and "steps", an ordered list where each step has "id",
     #   "title", "prompt", "include", "produces", "status" (nil, or "command" or "run" with
-    #   "timeout" seconds), "gate", "guard" (nil, "unchanged" or "config"), "require" (a list of one-key proofs such as `{"commits" => 1}`), "uses", "on_fail" (nil, or "goto", "max", "context", and, only when set, "log_tail" and "backoff" seconds),
+    #   "timeout" seconds), "gate", "guard" (nil, "unchanged" or "config"), "require" (a list of one-key proofs such as `{"commits" => 1}`), "uses", "on_fail" (nil, "stop", or "goto", "max", "context", and, only when set, "log_tail" and "backoff" seconds),
     #   "context" and "timeout" (seconds or nil)
     def to_h
       @data
@@ -407,7 +409,8 @@ module Workspace
     def step_attempt_warnings
       by_id = steps.to_h { |step| [step["id"], step] }
       loops = steps.filter_map do |step|
-        on_fail = step["on_fail"] or next
+        on_fail = step["on_fail"]
+        next unless on_fail.is_a?(Hash)
         cap = self.class.step_max_attempts(by_id[on_fail["goto"]]) or next
         next if on_fail["max"] + 1 <= cap
         {"code" => "on_fail_exceeds_step_attempts", "step" => step["id"],
@@ -434,7 +437,8 @@ module Workspace
     def retry_warnings
       ids = steps.map { |step| step["id"] }
       steps.each_with_index.filter_map do |step, index|
-        on_fail = step["on_fail"] or next
+        on_fail = step["on_fail"]
+        next unless on_fail.is_a?(Hash)
         goto = ids.index(on_fail["goto"])
         first = steps[0...index].sum { |each| WorkflowReviewSpec.attempt_weight(each) } + 1
         span = steps[goto...index].sum { |each| WorkflowReviewSpec.attempt_weight(each) } + 1
@@ -931,7 +935,8 @@ module Workspace
 
     def on_fail_from(value, earlier, where)
       return nil if value.nil?
-      return problem("#{where}: on_fail must be a mapping with goto and max") unless value.is_a?(Hash)
+      return "stop" if value == "stop"
+      return problem("#{where}: on_fail must be stop, or a mapping with goto and max") unless value.is_a?(Hash)
       unknown_keys(value, ON_FAIL_KEYS, "#{where}: on_fail")
       goto = value["goto"].to_s
       unless earlier.include?(goto)
