@@ -177,7 +177,20 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(run.reason).to include("code" => "budget_spent")
       expect(run.reason["details"]).to include("kind" => "budget", "run_id" => "wr_1", "used" => 150, "allowance" => 100)
       expect(run.step("plan").attempts.size).to eq(1)
-      expect(change.events.last).to eq(["wr_1", "budget_spent", {"used" => 150, "allowance" => 100, "counted" => 1, "uncounted" => 0, "step" => "plan"}])
+      expect(change.events.last).to eq(["wr_1", "budget_spent", {"used" => 150, "allowance" => 100, "counted" => 1, "uncounted" => 0, "estimated" => 0, "step" => "plan"}])
+    end
+
+    it "holds the attempt on an interrupted attempt's budget_interrupt record when its usage could not be read" do
+      record = {"tokens" => 120, "used" => 120, "allowance" => 100, "at" => "2026-11-10T12:00:00Z"}
+      spent = run_hash("definition" => run_hash["definition"].merge("budget" => {"tokens" => 100}),
+        "steps" => {"plan" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "interrupted", "usage" => nil, "budget_interrupt" => record}]}})
+
+      run = dispatch.dispatch(spent, ctx: ctx, cause: "retry")
+
+      expect(run.reason).to include("code" => "budget_spent")
+      expect(run.reason["details"]).to include("used" => 120, "allowance" => 100, "counted" => 1, "uncounted" => 0, "estimated" => 1)
+      expect(change.events.last).to eq(["wr_1", "budget_spent", {"used" => 120, "allowance" => 100, "counted" => 1, "uncounted" => 0, "estimated" => 1, "step" => "plan"}])
+      expect(run.step("plan").attempts.size).to eq(1)
     end
 
     it "records the attempt a review rejected as the new attempt's retry_of, and keeps it on a hold" do
@@ -301,7 +314,7 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(run.reason["details"]).to include("kind" => "budget", "step" => "plan", "used" => 150, "allowance" => 100, "review_round" => 2)
       expect(run.step("plan").state).to eq("reviewing")
       expect(resources.calls.map(&:first)).to eq([:release])
-      expect(change.events.last).to eq(["wr_1", "budget_spent", {"used" => 150, "allowance" => 100, "counted" => 1, "uncounted" => 0, "step" => "plan"}])
+      expect(change.events.last).to eq(["wr_1", "budget_spent", {"used" => 150, "allowance" => 100, "counted" => 1, "uncounted" => 0, "estimated" => 0, "step" => "plan"}])
     end
 
     it "holds a round past the run's timeout with run_timed_out" do

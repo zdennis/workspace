@@ -280,6 +280,14 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(after["reasons"]).to include(include("code" => "waiting_you"))
     end
 
+    it "keeps the budget_interrupt record the sweep wrote, through #finish and #abandon" do
+      mark = {"tokens" => 5200, "used" => 5200, "allowance" => 5000, "at" => "2026-10-04T12:29:00Z"}
+      run["steps"]["plan"]["attempts"].last["budget_interrupt"] = mark
+
+      expect(record.finish(run: run, step: step, attempt: run["steps"]["plan"]["attempts"].last).budget_interrupt).to eq(mark)
+      expect(record.abandon(run).current_step.last_attempt.budget_interrupt).to eq(mark)
+    end
+
     it "leaves an attempt that has ended" do
       run["steps"]["plan"]["attempts"].last["ended_at"] = "2026-10-04T12:00:00Z"
 

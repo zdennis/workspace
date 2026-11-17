@@ -31,8 +31,10 @@ RSpec.describe Workspace::WorkflowStatus do
     described_class.new(store: store, panes: panes, snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store },
       gate_note: Workspace::WorkflowGateNote.new(notes: notes), clock: -> { now.first },
       snapshot_timeout: snapshot_timeout, list_grace: list_grace,
-      recovery_entry: ->(_workspace, _pane) { @recovery_entry })
+      recovery_entry: ->(_workspace, _pane) { @recovery_entry }, live_usage: live_usage)
   end
+
+  let(:live_usage) { instance_double(Workspace::WorkflowLiveUsage, reading: nil) }
 
   before do
     allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0) { snapshot }
@@ -821,10 +823,29 @@ RSpec.describe Workspace::WorkflowStatus do
         budgeted(1500, reason: held, budget_hold: {})
         row = status.run("wr_1")["runs"].first
 
-        expect(row["budget"]).to eq("tokens" => 1000, "action" => "stop", "extra_tokens" => 0, "allowance" => 1000, "used" => 1500, "counted" => 1, "uncounted" => 0,
-          "measured" => true, "spent" => true, "minimum" => true)
+        expect(row["budget"]).to eq("tokens" => 1000, "action" => "stop", "extra_tokens" => 0, "allowance" => 1000, "used" => 1500, "counted" => 1, "uncounted" => 0, "estimated" => 0,
+          "measured" => true, "spent" => true, "minimum" => true, "live" => nil, "live_spent" => false)
         need = [{"name" => "extra_tokens", "flag" => "--extra-tokens", "min" => 501, "suggested" => 100_000}]
         expect(row["current"]["reason"]["actions"]).to eq([action("workflow resume", "wr_1", needs: need), action("workflow cancel", "wr_1")])
+      end
+
+      it "shows the live figure beside the stored one, and live_spent once their sum reaches the allowance" do
+        budgeted(600)
+        allow(live_usage).to receive(:reading).and_return(300)
+        budget = status.run("wr_1")["runs"].first["budget"]
+
+        expect(budget).to include("used" => 600, "spent" => false, "live" => 300, "live_spent" => false)
+
+        allow(live_usage).to receive(:reading).and_return(400)
+        budget = status.run("wr_1")["runs"].first["budget"]
+
+        expect(budget).to include("used" => 600, "spent" => false, "live" => 400, "live_spent" => true)
+      end
+
+      it "shows live as null when the reader has no figure" do
+        budgeted(600)
+
+        expect(status.run("wr_1")["runs"].first["budget"]).to include("live" => nil, "live_spent" => false)
       end
 
       it "offers resume with --extra-tokens alone for a held review round, which asks no attempt allowance" do

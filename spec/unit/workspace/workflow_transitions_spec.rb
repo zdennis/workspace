@@ -526,6 +526,18 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class.sweep_marks(run)).to eq("step" => "a", "attempt" => 2, "stalled" => {})
       expect(described_class.sweep_marks(run.merge("sweep" => {"step" => "a", "attempt" => 1}))).to eq({})
     end
+
+    it "keeps the budget's interrupt mark" do
+      marks = {"step" => "a", "attempt" => 2, "budget_interrupt" => {"state" => "sent", "at" => "2026-10-04T12:00:00Z"}}
+      expect(described_class.sweep_marks(run.merge("sweep" => marks))).to eq(marks)
+    end
+  end
+
+  describe "INTERRUPT_MARK_KEYS" do
+    it "gives each interrupt cause its own mark, and the budget's does not pause the clock" do
+      expect(described_class::INTERRUPT_MARK_KEYS).to eq("timed_out" => "interrupt", "run_timed_out" => "run_interrupt", "budget_spent" => "budget_interrupt")
+      expect(described_class::STALL_CAUSES).not_to include("budget_spent")
+    end
   end
 
   describe ".park_timeout_message" do

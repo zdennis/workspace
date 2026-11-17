@@ -550,6 +550,24 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to include("  time: active 3h 10m of 8h 0m\n")
     end
 
+    it "prints the token spend, adding the live figure and marking it" do
+      budgeted = shown("budget" => {"allowance" => 40_000_000, "used" => 12_000_000, "live" => 400_000, "spent" => false, "live_spent" => false})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [budgeted], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  tokens: spent 12.4M of 40M (live)\n")
+    end
+
+    it "prints the stored token spend alone when there is no live figure" do
+      budgeted = shown("budget" => {"allowance" => 40_000_000, "used" => 12_000_000, "live" => nil, "spent" => false, "live_spent" => false})
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [budgeted], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  tokens: spent 12M of 40M\n")
+    end
+
     it "prints where a parked resume waits and until when" do
       parked = shown("state" => "running", "current" => {"step" => "plan", "attempt" => 1, "state" => "running", "flags" => ["parked"], "reason" => nil,
                                                          "parked" => {"pane" => "%5", "expires_at" => "2026-10-04T14:00:00Z"}})

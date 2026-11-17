@@ -510,6 +510,10 @@ module Workspace
       !elapsed.nil? && elapsed > review_timeout(run)
     end
 
+    # The sweep mark each cause of an attempt's interrupt keeps its claim under, so each presses once: the step's
+    # `timeout:`, the run's `timeout_action: interrupt` and the run's spent token budget.
+    INTERRUPT_MARK_KEYS = {"timed_out" => "interrupt", "run_timed_out" => "run_interrupt", "budget_spent" => "budget_interrupt"}.freeze
+
     # The sweep's interrupt causes a review round's own marks (`review.sweep`) keep apart, each pressed once for the
     # round: its `review.timeout` and the run's `timeout_action: interrupt`.
     ROUND_INTERRUPT_KEYS = {"review_timed_out" => "interrupt", "run_timed_out" => "run_interrupt"}.freeze
@@ -539,7 +543,18 @@ module Workspace
       ROUND_INTERRUPT_KEYS.find { |_, key| interrupt_mark_live?(marks[key], now) }&.first
     end
 
-    # A round mark that stands for a press: `sent`, or `pending` and younger than {INTERRUPT_CLAIM_SECONDS}.
+    # Whether the sweep's keys went out, or are going out, for the run's current attempt under any of
+    # {INTERRUPT_MARK_KEYS}: one press serves every cause due on the attempt.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Boolean]
+    def self.attempt_interrupt_held?(run, now)
+      marks = sweep_marks(run)
+      INTERRUPT_MARK_KEYS.values.any? { |key| interrupt_mark_live?(marks[key], now) }
+    end
+
+    # A mark that stands for a press: `sent`, or `pending` and younger than {INTERRUPT_CLAIM_SECONDS}.
     def self.interrupt_mark_live?(mark, now)
       return false unless mark.is_a?(Hash)
       return true if mark["state"] == "sent"
@@ -841,7 +856,7 @@ module Workspace
     private_class_method :background_expired?
 
     # The marks the sweep left on the run's current attempt: "stalled" and "recovered" (cause => time) and
-    # "interrupt" (a step timeout's press) and "run_interrupt" (the run timeout's press), each `state` `pending`
+    # "interrupt" (a step timeout's press) and "run_interrupt" (the run timeout's press) and "budget_interrupt" (the token budget's press), each `state` `pending`
     # or `sent` and `at`. Empty once the run is on another step or attempt.
     #
     # @param run [Hash{String=>Object}] a stored run
@@ -996,7 +1011,7 @@ module Workspace
     # @param reading [Hash] its {WorkflowBudget.reading}
     # @return [Hash]
     def self.budget_details(run, reading)
-      {"run_id" => run["id"], "step" => run["current"]}.merge(reading.slice("used", "allowance", "counted", "uncounted", "needed", "suggested"))
+      {"run_id" => run["id"], "step" => run["current"]}.merge(reading.slice("used", "allowance", "counted", "uncounted", "estimated", "needed", "suggested"))
         .merge("tokens" => reading["tokens"], "extra_tokens" => reading["extra_tokens"])
     end
 

@@ -1419,6 +1419,92 @@ RSpec.describe Workspace::WorkflowSweep do
     end
   end
 
+  describe "a run whose token budget with action: interrupt is used by the running attempt" do
+    let(:budgeted) do
+      Workspace::WorkflowDefinition.parse(<<~YAML, id: "flow", source: "global", path: "/defs/flow.yml")
+        budget: {tokens: 1000, action: interrupt}
+        steps:
+          build:
+            prompt: Build it.
+            produces: [out.md]
+            context: continue
+          verify:
+            prompt: Verify it.
+            context: continue
+      YAML
+    end
+    # The live figure of build's running attempt; nil once it has closed, as the real reader gives for no running attempt.
+    let(:live) do
+      Class.new do
+        def reading(run, now:) = (run.current == "build" && run.current_step.state == "running") ? 1000 : nil
+
+        def prune(_going_ids) = []
+      end.new
+    end
+
+    def budget_engine(usage)
+      record = UsageAttemptRecord.new(usages: {"build" => [usage].compact}, guard: guard, clock: -> { now.first })
+      Workspace.build_workflow_engine(store: store, resources: resources, composer: composer, panes: panes,
+        checker: ->(**) { {exit_code: 0, timed_out: false} }, commands_config: commands_config, lineage: lineage, git: git, guard: guard,
+        excludes: Workspace::GitExclude.new(git: git), gate_note: gate_note, attempt_record: record, clock: -> { now.first })
+    end
+
+    def budget_sweep(engine)
+      reviews = Workspace::WorkflowReviewSweep.new(engine: engine, panes: panes, interrupter: interrupter, clock: -> { now.first })
+      described_class.new(store: store, engine: engine, panes: panes, interrupter: interrupter, reviews: reviews, live_usage: live, clock: -> { now.first })
+    end
+
+    # Presses once over two passes, lets the turn end and returns the engine; the next attempt's start holds the run.
+    def interrupt_and_hold(usage)
+      engine = budget_engine(usage)
+      engine.start(actor: "person", definition: budgeted, workspace: "app.worktree-x", worktree: worktree, inputs: {}, pane: "%5")
+      sweep = budget_sweep(engine)
+      advance(600)
+      pane_shows("working", idle_seconds: 2)
+
+      expect(only_row(sweep.call)).to include("outcome" => "interrupted", "cause" => "budget_spent")
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "already_interrupted", "cause" => "budget_spent")
+      expect(pressed).to eq([["app.worktree-x", "%5", Workspace::AgentProvider.find("claude").interrupt_keys]])
+
+      artifact
+      pane_shows("idle", idle_seconds: 30)
+      expect(only_row(sweep.call)).to include("outcome" => "evaluated", "cause" => "interrupted")
+      run = stored_run(store, "wr_1")
+      expect(run).to include("state" => "waiting", "current" => "verify")
+      expect(run["reason"]).to include("code" => "budget_spent")
+      expect(run["steps"]["build"]["attempts"].size).to eq(1)
+      expect(run["steps"]["build"]["attempts"].first["ended_at"]).not_to be_nil
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "budget_spent")
+      engine
+    end
+
+    def resume_and_count(engine, used:, estimated:)
+      expect(Workspace::WorkflowBudget.reading(store.run("wr_1"))).to include("used" => used, "counted" => 1, "estimated" => estimated, "spent" => true)
+      engine.resume("wr_1", actor: "person", extra_tokens: 5000)
+
+      run = store.run("wr_1")
+      expect(run.state).to eq("running")
+      expect(run.current).to eq("verify")
+      expect(Workspace::WorkflowBudget.reading(run)).to include("used" => used, "counted" => 1, "estimated" => estimated, "spent" => false)
+      expect(pressed.size).to eq(1)
+    end
+
+    it "counts the closed attempt once from the usage finish reads" do
+      engine = interrupt_and_hold({"input_tokens" => 1500})
+
+      resume_and_count(engine, used: 1500, estimated: 0)
+    end
+
+    it "counts the closed attempt once from its budget_interrupt record when finish reads no usage" do
+      engine = interrupt_and_hold(nil)
+      attempt = stored_run(store, "wr_1")["steps"]["build"]["attempts"].first
+      expect(attempt["usage"]).to be_nil
+      expect(attempt["budget_interrupt"]).to include("tokens" => 1000, "used" => 0, "allowance" => 1000)
+
+      resume_and_count(engine, used: 1000, estimated: 1)
+    end
+  end
+
   describe "a run held by its timeout" do
     it "is reported as nothing with the reason run_timed_out, and names --extra-time" do
       begin_run

@@ -68,7 +68,7 @@ module Workspace
 
     # What a `budget:` may hold, and the most tokens it may name.
     BUDGET_KEYS = %w[tokens action].freeze
-    BUDGET_ACTIONS = %w[stop].freeze
+    BUDGET_ACTIONS = %w[stop interrupt].freeze
     MAX_BUDGET_TOKENS = 1_000_000_000_000
 
     # What the run `timeout_action:` may be: hold the next attempt start (the default), or also interrupt the
@@ -313,7 +313,7 @@ module Workspace
     def self.budget(definition)
       value = definition.is_a?(Hash) ? definition["budget"] : nil
       return nil unless value.is_a?(Hash) && value["tokens"].is_a?(Integer) && value["tokens"].between?(1, MAX_BUDGET_TOKENS)
-      {"tokens" => value["tokens"], "action" => BUDGET_ACTIONS.first}
+      {"tokens" => value["tokens"], "action" => BUDGET_ACTIONS.include?(value["action"]) ? value["action"] : "stop"}
     end
 
     # The run `timeout` of a definition hash: the machine time a run may use before the next attempt is held.
@@ -546,7 +546,7 @@ module Workspace
     def budget_from(value)
       return nil if value.nil?
       unless value.is_a?(Hash)
-        problem "budget must be a mapping like {tokens: 4000000, action: stop}, got #{value.inspect[0, 60]}"
+        problem "budget must be a mapping like {tokens: 40000000, action: stop|interrupt}, got #{value.inspect[0, 60]}"
         return nil
       end
       unknown_keys(value, BUDGET_KEYS, "budget")

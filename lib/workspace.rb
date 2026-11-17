@@ -380,8 +380,10 @@ require_relative "workspace/workflow_require"
 require_relative "workspace/workflow_produced"
 require_relative "workspace/review_verdict_proof"
 require_relative "workspace/workflow_review_tally"
+require_relative "workspace/transcript_usage"
 require_relative "workspace/workflow_attempt_record"
 require_relative "workspace/workflow_budget"
+require_relative "workspace/workflow_live_usage"
 require_relative "workspace/workflow_deadline"
 require_relative "workspace/workflow_downtime"
 require_relative "workspace/workflow_evidence"
@@ -1072,6 +1074,14 @@ module Workspace
     review_shell = "/bin/sh" unless review_shell.start_with?("/") && File.executable?(review_shell)
     # One key presser for `pause --interrupt` and the sweep's time limits.
     workflow_interrupter = ->(workspace, pane, keys) { send_command.deliver(name: workspace, pane: pane, keys: keys) }
+    workflow_session_names = ->(workspace) { [workspace, tmux.session_name_for(workspace)].uniq }
+    # nil is also what a pane that is gone gives (a cancel or a kill), so the record never takes it as
+    # proof of anything; its transcript test guards that case. Under the run's lock: 2s at most.
+    workflow_server_for = ->(pane) do
+      tmux.server_pid_for_pane(pane, timeout: 2)
+    rescue
+      nil
+    end
     workflow_engine = build_workflow_engine(
       store: workflow_store,
       resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
@@ -1084,14 +1094,7 @@ module Workspace
       git: git,
       guard: workflow_guard,
       attempt_record: WorkflowAttemptRecord.new(guard: workflow_guard, ledger: session_ledger, evidence: workflow_evidence,
-        session_names: ->(workspace) { [workspace, tmux.session_name_for(workspace)].uniq },
-        # nil is also what a pane that is gone gives (a cancel or a kill), so the record never takes it as
-        # proof of anything; its transcript test guards that case. Under the run's lock: 2s at most.
-        server_for: ->(pane) do
-          tmux.server_pid_for_pane(pane, timeout: 2)
-        rescue
-          nil
-        end),
+        session_names: workflow_session_names, server_for: workflow_server_for),
       require_check: WorkflowRequire.new(guard: workflow_guard, notes_dir_of: workflow_gate_note.method(:notes_dir_of),
         commands_config: commands_config, checker: workflow_checker,
         inbox_for: workflow_inbox_for),
@@ -1119,8 +1122,10 @@ module Workspace
     rescue Workspace::Error
       nil
     end
+    workflow_live_usage = WorkflowLiveUsage.new(dir: File.join(config.workflow_runs_dir, "live"), ledger: session_ledger,
+      session_names: workflow_session_names, server_for: workflow_server_for)
     workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for,
-      gate_note: workflow_gate_note, recovery_entry: workflow_recovery_entry, downtime: workflow_downtime)
+      gate_note: workflow_gate_note, recovery_entry: workflow_recovery_entry, downtime: workflow_downtime, live_usage: workflow_live_usage)
     workflow_workspace_facts = WorkflowWorkspaceFacts.new(liveness: Liveness.new(tmux: tmux), project_config: project_config, config: config,
       agents: ProjectAgents.new(client: agent_snapshot_client))
     workflow_review_orphans = WorkflowReviewOrphans.new(tmux: tmux, store: workflow_store, panes: workflow_panes)
@@ -1130,7 +1135,7 @@ module Workspace
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
       interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall,
       turn_failed_after: -> { workflow_config.turn_failed_after },
-      recovery_entry: workflow_recovery_entry, downtime: workflow_downtime,
+      recovery_entry: workflow_recovery_entry, downtime: workflow_downtime, live_usage: workflow_live_usage,
       log_path: config.sweep_log_path, last_path: config.workflow_sweep_last_path)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
       launchctl: launchctl || ->(args) do

@@ -324,26 +324,36 @@ module Workspace
     # @param attempt [Integer, nil]
     # @param elapsed [Numeric] seconds since the attempt began
     # @param timeout [Numeric] the step's `timeout:`
-    # @param cause [String] `timed_out` (the step's `timeout:`) or `run_timed_out` (the run's `timeout_action: interrupt`);
-    #   each keeps its own mark, so both may be due on one attempt and each presses once
+    # @param cause [String] `timed_out` (the step's `timeout:`), `run_timed_out` (the run's `timeout_action: interrupt`) or
+    #   `budget_spent` (the run's token budget); each keeps its own mark ({WorkflowTransitions::INTERRUPT_MARK_KEYS}), so
+    #   all may be due on one attempt; the sweep presses once per attempt, and that press serves every cause
+    # @param details [Hash{String=>Object}, nil] what the `step_stalled` event carries besides the cause; by default
+    #   `elapsed` and `timeout`, and `budget_spent` gives `used`, `allowance` and `live`
+    # @param budget [Hash{Symbol=>Integer}, nil] for `budget_spent` only: `tokens` (the attempt's live figure), `used` and
+    #   `allowance`, written on the attempt as `budget_interrupt` in the same change as the claim, so a retry that a
+    #   hook-driven advance starts before {#interrupt_sent} is still held when the transcript tail cannot give the
+    #   attempt's `usage` ({WorkflowBudget.reading}); other causes ignore it
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`] to hand to {#interrupt_sent}; or :repeat, :moved_on or :busy
-    def claim_interrupt(run_id, actor:, step:, attempt:, elapsed:, timeout:, cause: "timed_out")
+    def claim_interrupt(run_id, actor:, step:, attempt:, elapsed:, timeout:, cause: "timed_out", details: nil, budget: nil)
       at = nil
+      details ||= {"elapsed" => elapsed.round, "timeout" => timeout}
       key = interrupt_key(cause)
       outcome = sweep_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, running: true) do |stored|
         marks = sweep_marks_for(stored)
         next :repeat if interrupt_held?(marks[key])
         at = now_iso
         marks[key] = {"state" => "pending", "at" => at}
-        mark_stall(stored, cause, {"elapsed" => elapsed.round, "timeout" => timeout})
+        mark_stall(stored, cause, details)
+        record_budget_interrupt(stored, budget, at) if cause == "budget_spent" && budget
         :claimed
       end
       (outcome == :claimed) ? [:claimed, at] : outcome
     end
 
     # Ends a {#claim_interrupt}. Sent: the mark becomes `sent`, and with +record+ the recovery is written. Not
-    # sent: the claim is given back, so a later sweep tries again. Waits for the run's lock, so neither is dropped.
+    # sent: the claim is given back, so a later sweep tries again, and a `budget_spent` claim's `budget_interrupt`
+    # record is dropped from the attempt, since no keys were pressed. Waits for the run's lock, so neither is dropped.
     #
     # @param run_id [String]
     # @param step [String]
@@ -361,6 +371,7 @@ module Workspace
         next :taken_over unless marks.dig(key, "at") == claim_at
         unless sent
           marks.delete(key)
+          step_state(stored)["attempts"].last&.delete("budget_interrupt") if cause == "budget_spent"
           next :released
         end
         marks[key] = {"state" => "sent", "at" => now_iso}
@@ -697,7 +708,13 @@ module Workspace
       run["sweep"] = {"step" => run["current"], "attempt" => step_state(run)["attempts"].last&.fetch("n", nil), "stalled" => {}, "recovered" => {}}
     end
 
-    def interrupt_key(cause) = (cause == "run_timed_out") ? "run_interrupt" : "interrupt"
+    def record_budget_interrupt(run, budget, at)
+      attempt = step_state(run)["attempts"].last
+      return unless attempt
+      attempt["budget_interrupt"] = {"tokens" => budget[:tokens], "used" => budget[:used], "allowance" => budget[:allowance], "at" => at}
+    end
+
+    def interrupt_key(cause) = WorkflowTransitions::INTERRUPT_MARK_KEYS.fetch(cause, "interrupt")
 
     def interrupt_held?(claim)
       return false unless claim
