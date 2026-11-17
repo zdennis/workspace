@@ -6,7 +6,7 @@ module Workspace
     # task through {PlanTask#add}. Every refusal happens before anything is written, and nothing
     # is typed into any pane: the run's agent takes the task the next time it reads the plan.
     class GoTask
-      PAUSED_WARNING = "The plan is paused, so the agent will not take the task until someone resumes it with `workspace plan start`."
+      PAUSED_WARNING = "The plan is paused, so the agent will not take the task until someone resumes it with `workspace plan start` (in a pane a workflow run owns, that sets the plan back to active and types nothing)."
 
       # @param run_store [Workspace::WorkflowRunStore] answers which run holds a checkout
       # @param plan_task [Workspace::Commands::PlanTask] adds the task

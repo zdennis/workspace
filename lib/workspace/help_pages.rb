@@ -106,7 +106,10 @@ module Workspace
           "and \"Continue the plan.\" (a working pane is left alone).",
           "",
           "With --task, sends that one task to --pane, a new agent pane (--spawn), the task's owner, or the",
-          "main agent pane; the pane is written onto the task line as its owner."
+          "main agent pane; the pane is written onto the task line as its owner.",
+          "",
+          "A pane a going workflow run owns is never typed into: both forms exit 1 with pane_bound_to_run and",
+          "name the workflow command to use. A paused plan is first set back to active, so the run's agent takes it."
         ],
         options: [NAME_OPT,
           ["--task ID", "Send only this task (its id, such as T3)"],

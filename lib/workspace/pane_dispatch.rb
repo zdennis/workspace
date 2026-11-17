@@ -114,6 +114,29 @@ module Workspace
     end
 
     # @param name [String] the workspace
+    # @param pane_id [String] the pane's id ("%19")
+    # @return [void]
+    # @raise [Workspace::Error] `pane_bound_to_run` when a going workflow run owns the pane
+    def refuse_bound(name, pane_id)
+      @binder.refuse_owned!(pane: pane_id, workspace: name, action: :type)
+    end
+
+    # @param pane_id [String] the pane's id ("%19")
+    # @return [Hash, nil] {Commands::Binding#owned}: nil when no going run owns the pane
+    def owned(pane_id)
+      @binder.owned(pane: pane_id)
+    end
+
+    # @param owned [Hash] what {#owned} returned
+    # @param name [String] the workspace
+    # @param resumed [Boolean] whether a paused plan was set back to active
+    # @return [Workspace::Error] the `pane_bound_to_run` refusal, to raise
+    def bound_error(owned, name, resumed: false)
+      refused = @binder.refusal(owned, workspace: name, action: :type, resumed: resumed)
+      Workspace::Error.new(refused[:message], code: refused[:code], details: refused[:details])
+    end
+
+    # @param name [String] the workspace
     # @param pane [Hash] the pane's row
     # @param noun [String] what was to be typed ("task", "stage")
     # @return [void]
