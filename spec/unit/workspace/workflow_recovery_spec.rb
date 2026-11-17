@@ -833,6 +833,27 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(step_claim.first).to eq(:claimed)
     end
 
+    it "keeps the budget's cause on its own mark, with the usage in step_stalled and no clock pause" do
+      stored
+      step_claim = recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 700, timeout: 600)
+      run_claim = recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 700, timeout: 650, cause: "run_timed_out")
+      details = {"used" => 5200, "allowance" => 5000, "live" => true}
+      budget_claim = recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 0, timeout: 0, cause: "budget_spent", details: details)
+      expect([step_claim.first, run_claim.first, budget_claim.first]).to eq(%i[claimed claimed claimed])
+      expect(recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 0, timeout: 0, cause: "budget_spent", details: details)).to eq(:repeat)
+
+      expect(recovery.interrupt_sent("wr_1", actor: "sweep", step: "build", attempt: 1, claim_at: budget_claim.last, sent: true, cause: "budget_spent")).to eq(:recorded)
+      marks = store.runs["wr_1"]["sweep"]
+      expect(marks["budget_interrupt"]["state"]).to eq("sent")
+      expect(marks["interrupt"]["state"]).to eq("pending")
+      expect(marks["run_interrupt"]["state"]).to eq("pending")
+      expect(marks["recovered"].keys).to eq(%w[budget_spent])
+      expect(store.runs["wr_1"]["steps"]["build"]["attempts"].last).not_to have_key("stalls")
+      stalled = event_types.find { |type, data| type == "step_stalled" && data["cause"] == "budget_spent" }
+      expect(stalled.last).to include("used" => 5200, "allowance" => 5000, "live" => true)
+      expect(stalled.last).not_to include("elapsed", "timeout")
+    end
+
     it "lets a later sweep take over a pending claim past its hold" do
       stored
       recovery.claim_interrupt("wr_1", actor: "sweep", step: "build", attempt: 1, elapsed: 700, timeout: 600)

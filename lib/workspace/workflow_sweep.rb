@@ -536,7 +536,7 @@ module Workspace
         "step #{run.current} is #{elapsed.round} seconds in, past its #{timeout} second timeout"
       end
       action = then_fail ? "fail" : "interrupt"
-      held = WorkflowEngine.sweep_marks(run.to_h)[(cause == "run_timed_out") ? "run_interrupt" : "interrupt"]
+      held = WorkflowEngine.sweep_marks(run.to_h)[WorkflowTransitions::INTERRUPT_MARK_KEYS.fetch(cause, "interrupt")]
       return time_out(run, attempt, pass, elapsed, timeout, nil) if then_fail && held && held["state"] == "sent"
       keys = AgentProvider.find(shown["kind"].to_s)&.interrupt_keys.to_a
       if keys.empty?

@@ -324,19 +324,23 @@ module Workspace
     # @param attempt [Integer, nil]
     # @param elapsed [Numeric] seconds since the attempt began
     # @param timeout [Numeric] the step's `timeout:`
-    # @param cause [String] `timed_out` (the step's `timeout:`) or `run_timed_out` (the run's `timeout_action: interrupt`);
-    #   each keeps its own mark, so both may be due on one attempt and each presses once
+    # @param cause [String] `timed_out` (the step's `timeout:`), `run_timed_out` (the run's `timeout_action: interrupt`) or
+    #   `budget_spent` (the run's token budget); each keeps its own mark ({WorkflowTransitions::INTERRUPT_MARK_KEYS}), so
+    #   all may be due on one attempt and each presses once
+    # @param details [Hash{String=>Object}, nil] what the `step_stalled` event carries besides the cause; by default
+    #   `elapsed` and `timeout`, and `budget_spent` gives `used`, `allowance` and `live`
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`] to hand to {#interrupt_sent}; or :repeat, :moved_on or :busy
-    def claim_interrupt(run_id, actor:, step:, attempt:, elapsed:, timeout:, cause: "timed_out")
+    def claim_interrupt(run_id, actor:, step:, attempt:, elapsed:, timeout:, cause: "timed_out", details: nil)
       at = nil
+      details ||= {"elapsed" => elapsed.round, "timeout" => timeout}
       key = interrupt_key(cause)
       outcome = sweep_change(run_id, actor: actor, cause: cause, step: step, attempt: attempt, running: true) do |stored|
         marks = sweep_marks_for(stored)
         next :repeat if interrupt_held?(marks[key])
         at = now_iso
         marks[key] = {"state" => "pending", "at" => at}
-        mark_stall(stored, cause, {"elapsed" => elapsed.round, "timeout" => timeout})
+        mark_stall(stored, cause, details)
         :claimed
       end
       (outcome == :claimed) ? [:claimed, at] : outcome
@@ -697,7 +701,7 @@ module Workspace
       run["sweep"] = {"step" => run["current"], "attempt" => step_state(run)["attempts"].last&.fetch("n", nil), "stalled" => {}, "recovered" => {}}
     end
 
-    def interrupt_key(cause) = (cause == "run_timed_out") ? "run_interrupt" : "interrupt"
+    def interrupt_key(cause) = WorkflowTransitions::INTERRUPT_MARK_KEYS.fetch(cause, "interrupt")
 
     def interrupt_held?(claim)
       return false unless claim

@@ -510,6 +510,10 @@ module Workspace
       !elapsed.nil? && elapsed > review_timeout(run)
     end
 
+    # The sweep mark each cause of an attempt's interrupt keeps its claim under, so each presses once: the step's
+    # `timeout:`, the run's `timeout_action: interrupt` and the run's spent token budget.
+    INTERRUPT_MARK_KEYS = {"timed_out" => "interrupt", "run_timed_out" => "run_interrupt", "budget_spent" => "budget_interrupt"}.freeze
+
     # The sweep's interrupt causes a review round's own marks (`review.sweep`) keep apart, each pressed once for the
     # round: its `review.timeout` and the run's `timeout_action: interrupt`.
     ROUND_INTERRUPT_KEYS = {"review_timed_out" => "interrupt", "run_timed_out" => "run_interrupt"}.freeze
@@ -841,7 +845,7 @@ module Workspace
     private_class_method :background_expired?
 
     # The marks the sweep left on the run's current attempt: "stalled" and "recovered" (cause => time) and
-    # "interrupt" (a step timeout's press) and "run_interrupt" (the run timeout's press), each `state` `pending`
+    # "interrupt" (a step timeout's press) and "run_interrupt" (the run timeout's press) and "budget_interrupt" (the token budget's press), each `state` `pending`
     # or `sent` and `at`. Empty once the run is on another step or attempt.
     #
     # @param run [Hash{String=>Object}] a stored run

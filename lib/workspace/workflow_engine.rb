@@ -220,8 +220,8 @@ module Workspace
     # Takes the right to interrupt a step past its `timeout:`. See {WorkflowRecovery#claim_interrupt}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Array(Symbol, String), Symbol] [:claimed, the claim's `at`]; or :repeat, :moved_on or :busy
-    def claim_interrupt(run_id, actor:, step:, attempt:, elapsed:, timeout:, cause: "timed_out")
-      @recovery.claim_interrupt(run_id, actor: actor, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout, cause: cause)
+    def claim_interrupt(run_id, actor:, step:, attempt:, elapsed:, timeout:, cause: "timed_out", details: nil)
+      @recovery.claim_interrupt(run_id, actor: actor, step: step, attempt: attempt, elapsed: elapsed, timeout: timeout, cause: cause, details: details)
     end
 
     # Ends a {#claim_interrupt}. See {WorkflowRecovery#interrupt_sent}.
