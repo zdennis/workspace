@@ -40,6 +40,7 @@ module Workspace
       # @param simulator [Workspace::WorkflowSimulator, nil] plays a workflow with a scripted fake agent (`simulate`)
       # @param source_installer [Workspace::WorkflowSourceInstaller, nil] fetches, checks and caches the `workflows.sources` entries (`install`)
       # @param workflow_config [Workspace::WorkflowConfig, nil] reads `workflows.default_stall`, for the stall `show` reports
+      # @param infra_retry [Workspace::WorkflowInfraRetry, nil] restarts a step whose infra retry is due (`advance`'s timer look); nil leaves it to `tick`
       # @param process_tree [Workspace::ProcessTree] says whether this process runs under that pane
       # @param lock_holder [Workspace::LockHolder] names the agent a refusal was made for
       # @param lint [Workspace::WorkflowLint] the checks `validate` makes against the library and the project's commands
@@ -48,7 +49,7 @@ module Workspace
       # @param output [IO]
       # @param input [IO] read for `validate -` and `add ID -`
       # @param error_output [IO] gets the problems `show --source` finds in a file's text
-      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, pid: Process.pid,
+      def initialize(lint:, catalog:, engine:, status:, store:, panes:, files:, run_files:, process_tree:, lock_holder:, workspace_facts: nil, attempts: nil, audit: nil, sweep: nil, sweep_actions: nil, schedule: nil, needs_me: nil, branch_inputs: nil, stats: nil, compare: nil, step_check: nil, simulator: nil, source_installer: nil, workflow_config: nil, infra_retry: nil, pid: Process.pid,
         clock: -> { Time.now }, sleeper: ->(seconds) { sleep(seconds) }, output: $stdout, input: $stdin, error_output: $stderr)
         @process_tree = process_tree
         @lock_holder = lock_holder
@@ -70,6 +71,7 @@ module Workspace
         @simulator = simulator
         @source_installer = source_installer
         @workflow_config = workflow_config
+        @infra_retry = infra_retry
         @engine = engine
         @status = status
         @workspace_facts = workspace_facts
@@ -894,7 +896,9 @@ module Workspace
       # What the agent daemon runs when a turn ends in a bound pane, and on
       # its timer for a run nothing else would wake. A parked resume is looked at
       # here, by either: it is carried out once the turn in its pane is proven over,
-      # and ended when the pane or its agent is gone or its time is up. Prints nothing.
+      # and ended when the pane or its agent is gone or its time is up. On the timer's
+      # look, a run whose infra retry is due goes to {WorkflowInfraRetry#call} instead of
+      # the engine's tick. Prints nothing.
       #
       # @param run [String] a run id
       # @param turn_ended [Boolean] a turn ended; false is the timer's look
@@ -918,6 +922,11 @@ module Workspace
           refuse_caller!(stored, caller_pane, "workflow advance", "A guarded or checked step is decided by the agent daemon")
         end
         return release_parked(stored, caller_pane) if stored&.parked
+        # A due infra retry splits a pane and restarts the agent, outside the run lock that tick holds.
+        if !turn_ended && infra_retry_due?(stored)
+          @infra_retry.call(stored)
+          return nil
+        end
         turn_ended ? @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || []) : @engine.tick(run, actor: "daemon")
         nil
       end
@@ -1590,6 +1599,11 @@ module Workspace
       # A plain resume of a step with an open attempt whose agent or pane is gone: the one where --restart-step is the better fit.
       def restart_hint(stored)
         "This step's agent looks gone. To close its attempt and start it again in a fresh conversation, run `workspace workflow resume #{stored.id} --restart-step`."
+      end
+
+      # The timer's look at a run whose infra retry is due ({WorkflowTransitions.wakeable?} `:infra_retry`).
+      def infra_retry_due?(stored)
+        @infra_retry && stored && WorkflowEngine.wakeable?(stored.to_h, @clock.call) == :infra_retry
       end
 
       def restart_hint?(stored)

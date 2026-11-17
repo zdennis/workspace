@@ -407,6 +407,7 @@ require_relative "workspace/workflow_progress"
 require_relative "workspace/workflow_evaluation"
 require_relative "workspace/workflow_decisions"
 require_relative "workspace/workflow_recovery"
+require_relative "workspace/workflow_infra_retry"
 require_relative "workspace/workflow_starter"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
@@ -1150,7 +1151,9 @@ module Workspace
     workflow_needs_me = WorkflowNeedsMe.new
     protected_branch = ProtectedBranch.new(git: git)
     branch_inputs = WorkflowBranchInputs.new(git: git, start_ref: start_ref, protected_branch: protected_branch, pull_request_status: PullRequestStatus.new)
+    workflow_infra_retry = WorkflowInfraRetry.new(engine: workflow_engine, store: workflow_store, dispatch: pane_dispatch, lock_holder: lock_holder, agent_commands: agent_commands)
     workflow_command = Commands::Workflow.new(
+      infra_retry: workflow_infra_retry,
       source_installer: workflow_source_installer,
       workflow_config: workflow_config,
       branch_inputs: branch_inputs,

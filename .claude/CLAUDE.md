@@ -44,6 +44,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_evaluation.rb` — Decides a step whose agent's turn ended: guard, produces, proofs, status check and review.
 - `lib/workspace/workflow_decisions.rb` — A person's commands on a run: approve, reject, resume, park, cancel.
 - `lib/workspace/workflow_recovery.rb` — Wakes or puts right a run nothing else will move: tick and the sweep's acts.
+- `lib/workspace/workflow_infra_retry.rb` — Restarts a step whose pane or agent is gone once its infra retry is due: claim, new pane, resume.
 - `lib/workspace/workflow_step_check.rb` — `workflow check`: runs one step's `status:` command outside a run.
 - `lib/workspace/workflow_simulator.rb` — `workflow simulate`: plays a script through a real engine over fakes.
 - `lib/workspace/workflow_sim_script.rb` — Parses and checks a simulator script against a definition.
