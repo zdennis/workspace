@@ -108,6 +108,11 @@ RSpec.describe Workspace::WorkflowBudget do
     expect(reading).to include("spent" => true, "needed" => 120_001, "suggested" => 200_000)
   end
 
+  it "carries the stored interrupt action" do
+    reading = described_class.reading(run([ended({"input_tokens" => 10})], budget: {"tokens" => 1000, "action" => "interrupt"}))
+    expect(reading).to include("action" => "interrupt")
+  end
+
   it "adds the run's extra_tokens to the allowance, and ignores one that is not a whole number" do
     attempts = [ended({"input_tokens" => 1200})]
 

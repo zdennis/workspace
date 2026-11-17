@@ -44,6 +44,12 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(parse("budget: {tokens: 4000000, action: stop}\n#{minimal}").to_h["budget"]).to eq("tokens" => 4_000_000, "action" => "stop")
       expect(parse("budget: {tokens: 5}\n#{minimal}").to_h["budget"]).to eq("tokens" => 5, "action" => "stop")
       expect(described_class.budget({"budget" => {"tokens" => 7, "action" => "other"}})).to eq("tokens" => 7, "action" => "stop")
+      expect(described_class.budget({"budget" => {"tokens" => 7}})).to eq("tokens" => 7, "action" => "stop")
+    end
+
+    it "accepts the interrupt action and reads it back from a stored definition" do
+      expect(parse("budget: {tokens: 5, action: interrupt}\n#{minimal}").to_h["budget"]).to eq("tokens" => 5, "action" => "interrupt")
+      expect(described_class.budget({"budget" => {"tokens" => 7, "action" => "interrupt"}})).to eq("tokens" => 7, "action" => "interrupt")
     end
 
     it "refuses a non-mapping, a missing or bad tokens, an unknown key and another action" do
@@ -52,7 +58,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(problems("budget: {tokens: 0}\n#{minimal}")).to include(a_string_matching(/budget tokens must be a whole number from 1/))
       expect(problems("budget: {tokens: 1.5}\n#{minimal}")).to include(a_string_matching(/budget tokens/))
       expect(problems("budget: {tokens: 5, dollars: 2}\n#{minimal}")).to include(a_string_matching(/budget has unknown key dollars \(known: tokens, action\)/))
-      expect(problems("budget: {tokens: 5, action: pause}\n#{minimal}")).to include(a_string_matching(/budget action must be stop, got "pause"/))
+      expect(problems("budget: {tokens: 5, action: pause}\n#{minimal}")).to include(a_string_matching(/budget action must be stop or interrupt, got "pause"/))
     end
   end
 
