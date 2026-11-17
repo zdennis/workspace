@@ -2131,6 +2131,36 @@
       "unit": "seconds"
     },
     {
+      "key": "workflows.infra_retry.max",
+      "scope": "global",
+      "type": "integer",
+      "value": null,
+      "masked": false,
+      "default": 2,
+      "effective": 2,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a",
+        "main.worktree-b"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "How many times `workflow advance` restarts a workflow step on its own after its agent or pane is gone (`agent_gone` or `pane_gone`) in a live workspace (default `2`). `0` turns automatic restarts off. The waits follow the redelivery schedule: 60s before the first, then 300s",
+      "problems": [],
+      "min": 0
+    },
+    {
       "key": "events.rotate_size",
       "scope": "global",
       "type": "size",

@@ -165,7 +165,7 @@ module Workspace
         "base_sha" => base["base_sha"], "base_guard" => base["base_guard"],
         "task" => task_id(workspace), "inputs" => checked["inputs"], "note" => note,
         "state" => "waiting", "created_at" => now, "started_at" => now, "ended_at" => nil,
-        "current" => data["steps"].first["id"], "pane" => pane, "loops" => {}, "pending_context" => [],
+        "current" => data["steps"].first["id"], "pane" => pane, "loops" => {}, "infra_retries" => {}, "pending_context" => [],
         "reason" => reason("waiting_you", "kind" => "dispatch", "step" => data["steps"].first["id"], "pane" => pane, "workspace" => workspace,
           "error" => "not_started", "message" => "the run was created and its first step never started"),
         "steps" => data["steps"].to_h { |step| [step["id"], {"state" => "pending", "attempts" => []}] }

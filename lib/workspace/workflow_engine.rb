@@ -36,6 +36,8 @@ module Workspace
     BACKGROUND_HOLD = WorkflowTransitions::BACKGROUND_HOLD
     # Seconds a pending interrupt claim holds before another sweep may take it over.
     INTERRUPT_CLAIM_SECONDS = WorkflowRecovery::INTERRUPT_CLAIM_SECONDS
+    # Seconds an infra retry's claim holds before another advance may take it over.
+    INFRA_RETRY_CLAIM_WINDOW = WorkflowTransitions::INFRA_RETRY_CLAIM_WINDOW
     GUARD_TEXT = WorkflowTransitions::GUARD_TEXT
 
     # The class methods below forward to {WorkflowTransitions}, which holds the rules.
@@ -53,6 +55,8 @@ module Workspace
     def self.lost_check?(run, now) = WorkflowTransitions.lost_check?(run, now)
     def self.lost_round?(run, now, stops: []) = WorkflowTransitions.lost_round?(run, now, stops: stops)
     def self.sweep_marks(run) = WorkflowTransitions.sweep_marks(run)
+    def self.infra_retry(run, now) = WorkflowTransitions.infra_retry(run, now)
+    def self.infra_retries(run, step) = WorkflowTransitions.infra_retries(run, step)
 
     # {Workspace.build_workflow_engine} builds the phases over one shared {WorkflowRunChange}.
     #
@@ -121,14 +125,20 @@ module Workspace
 
     # Gets a run that is not moving going again, or with +restart_step+ starts its current step again: the open
     # attempt is closed as `interrupted` (a `step_interrupted` event: `step`, `attempt`, `pane`, `usage_counted`) and a
-    # new one starts. See {WorkflowDecisions#resume}.
+    # new one starts; with +infra_retry+ (the claimant of {#claim_infra_retry}) that restart is the step's infra retry.
+    # See {WorkflowDecisions#resume}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was done
     def resume(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
-      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil)
+      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil, infra_retry: nil)
       resumed_h(@decisions.resume(run_id, actor: actor, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
-        accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane, restart_step: restart_step, bound: bound))
+        accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane, restart_step: restart_step, bound: bound, infra_retry: infra_retry))
     end
+
+    # Why a restart of the run's current step would be refused, without changing anything. See {WorkflowDecisions#restart_refusal}.
+    # @param run [WorkflowRun, Hash{String=>Object}]
+    # @return [Workspace::Error, nil]
+    def restart_refusal(run) = @decisions.restart_refusal(run)
 
     # Stores a resume for later, with {#resume}'s arguments. See {WorkflowDecisions#park}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
@@ -183,9 +193,38 @@ module Workspace
     # @return [Hash{String=>Object}, nil] the run afterwards; nil when nothing was done
     def tick(run_id, actor:) = @recovery.tick(run_id, actor: actor)&.to_h
 
-    # Records a stall the sweep found. See {WorkflowRecovery#note_stall}.
-    # @return [Symbol] :recorded, :repeat, :moved_on or :busy
-    def note_stall(run_id, actor:, step:, attempt:, cause:, data: {}) = @recovery.note_stall(run_id, actor: actor, step: step, attempt: attempt, cause: cause, data: data)
+    # Records a stall the sweep found, and with +infra_retry+ (`{max:}`) schedules the step's infra retry, or gives it up as spent, in the same
+    # change. See {WorkflowRecovery#note_stall}.
+    # @return [Symbol] :scheduled, :exhausted, :recorded, :repeat, :moved_on or :busy
+    def note_stall(run_id, actor:, step:, attempt:, cause:, data: {}, infra_retry: nil)
+      @recovery.note_stall(run_id, actor: actor, step: step, attempt: attempt, cause: cause, data: data, infra_retry: infra_retry)
+    end
+
+    # Records that a step's infra retry will not happen. See {WorkflowRecovery#give_up_infra_retry}.
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Symbol] :recorded, :repeat or :moved_on
+    def give_up_infra_retry(run_id, actor:, step:, attempt:, cause:, reason:, max: nil)
+      @recovery.give_up_infra_retry(run_id, actor: actor, step: step, attempt: attempt, cause: cause, reason: reason, max: max)
+    end
+
+    # Takes the right to restart a step whose infra retry is due, giving it up on any refusal the run can answer
+    # ({#restart_refusal}). See {WorkflowRecovery#claim_infra_retry}.
+    # @param claimant [Hash] "pid" and "started" of the claiming process; ArgumentError without both
+    # @param alive [#call, nil] given a claim's `claimed_by`, whether that process still runs
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Array(Symbol, Integer), Array(Symbol, String), Symbol] [:claimed, n], [:gave_up, reason] or :not_due
+    def claim_infra_retry(run_id, actor:, step:, attempt:, claimant:, alive:)
+      @recovery.claim_infra_retry(run_id, actor: actor, step: step, attempt: attempt, claimant: claimant, alive: alive,
+        refusal: ->(run) { @decisions.restart_refusal(run) })
+    end
+
+    # Gives back a claimed infra retry whose restart met a working agent, once per mark. See {WorkflowRecovery#release_infra_retry}.
+    # @param claimant [Hash] "pid" and "started" of the process that claimed the retry; ArgumentError without both
+    # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @return [Symbol, Array(Symbol, String)] :released, [:gave_up, "still_working"], :not_claimant or :moved_on
+    def release_infra_retry(run_id, actor:, step:, attempt:, claimant:)
+      @recovery.release_infra_retry(run_id, actor: actor, step: step, attempt: attempt, claimant: claimant)
+    end
 
     # Records that the sweep put right a stall it noted. See {WorkflowRecovery#note_recovery}.
     # @return [Symbol] :recorded, :repeat, :moved_on

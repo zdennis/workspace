@@ -42,9 +42,19 @@ module Workspace
       why = row["reason"] || row["cause"]
       id = row["run_id"]
       return [] unless id
+      return scheduled_actions(id, row["cause"]) if row["outcome"] == "recorded" && row["action"] == "infra_retry_scheduled"
       return recorded_actions(id, why) if row["outcome"] == "recorded"
       return [] unless row["outcome"] == "nothing"
       reason_actions(row, id, why)
+    end
+
+    # A stall the pass recorded with an automatic restart scheduled: nothing for a person to do but wait; the run's
+    # status shows when the restart is due. A row of `infra_retries_exhausted` gets the stall's actions below.
+    def scheduled_actions(id, cause)
+      stored = lookup { @store.run(id) }
+      info = stored && WorkflowEngine.infra_retry(stored.to_h, @clock.call)
+      at = info&.fetch(:due) ? " at #{info[:due]}" : ""
+      [NextAction.build("workflow status", id, why: "wait: the step restarts on its own (#{WorkflowStatus.infra_cause_words(cause)})#{at}; no action needed")]
     end
 
     # A recorded stall: resume or cancel, and for a gone pane or agent on a still-open attempt, a restart of the step.

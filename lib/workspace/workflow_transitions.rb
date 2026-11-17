@@ -25,6 +25,10 @@ module Workspace
     # between the claim and the press. Past it a pending mark no longer counts as a press under way.
     INTERRUPT_CLAIM_SECONDS = 60
 
+    # Seconds an infra retry's claim holds before another advance may take it over: longer than splitting a pane
+    # plus the agent's readiness wait, so a claim younger than this is a restart under way.
+    INFRA_RETRY_CLAIM_WINDOW = 180
+
     # How long a `turn_ended_background` hold lasts after the last Stop that listed tasks.
     BACKGROUND_HOLD = 90 * 60
 
@@ -472,6 +476,69 @@ module Workspace
       end
     end
 
+    # The one rule for where the current attempt's infra retry stands: the `infra_retry` sweep mark
+    # ({.sweep_marks}) that schedules an automatic restart of a step whose pane or agent is gone. A mark with
+    # `ended`, or whose `cause` is no longer among {.open_stalls} (given up or not), is `:ended`: it never
+    # wakes, is never claimed and holds nothing. A given-up mark whose stall is open is `:exhausted`. A claimed
+    # mark is `:claimed` while its claim is younger than {INFRA_RETRY_CLAIM_WINDOW}, `:stale_claim` after (by time alone; whether the claimant still runs
+    # is the caller's to ask). Otherwise it is `:waiting` until its `due` time and `:due` from then. A `due` that
+    # can't be read is taken from `scheduled_at` plus {REDELIVER_BACKOFF} entry `n - 1`, and as now when neither
+    # can be read: a wait must not outlast what could be measured.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [Hash, nil] nil when the current attempt has no mark; else :state (`:waiting`, `:due`, `:claimed`,
+    #   `:stale_claim`, `:exhausted`, `:ended`), :cause, :n (this retry's number), :max, :due (ISO time, nil when
+    #   unreadable), :wait (seconds left, 0 when due), :claimed_by (the claimant Hash, or nil), :released
+    #   (the mark's release count, or nil) and :reason (the give-up's reason, or nil)
+    def self.infra_retry(run, now)
+      mark = sweep_marks(run)["infra_retry"]
+      return nil unless mark.is_a?(Hash)
+      n = mark["n"].is_a?(Integer) ? mark["n"] : 1
+      given_up = mark["given_up"]
+      stored_due = stall_time(mark["due"])
+      due_at = stored_due || infra_retry_scheduled_due(mark["scheduled_at"], n)
+      wait = due_at ? [(due_at - now).ceil, 0].max : 0
+      info = {cause: mark["cause"], n: n, max: mark["max"], due: stored_due ? mark["due"] : due_at&.utc&.iso8601, wait: wait,
+              claimed_by: mark["claimed_by"].is_a?(Hash) ? mark["claimed_by"] : nil,
+              released: mark["released"].is_a?(Integer) ? mark["released"] : nil, reason: given_up.is_a?(Hash) ? given_up["reason"] : nil}
+      state = if mark["ended"] || !open_stalls(run).include?(mark["cause"])
+        :ended
+      elsif given_up
+        :exhausted
+      elsif mark["claimed_at"]
+        claimed = stall_time(mark["claimed_at"])
+        (claimed && now - claimed < INFRA_RETRY_CLAIM_WINDOW) ? :claimed : :stale_claim
+      else
+        (wait > 0) ? :waiting : :due
+      end
+      info.merge(state: state)
+    end
+
+    def self.infra_retry_scheduled_due(scheduled_at, n)
+      at = stall_time(scheduled_at) or return nil
+      at + infra_retry_wait(n)
+    end
+    private_class_method :infra_retry_scheduled_due
+
+    # The one rule for how long a step's infra retry +n+ waits after it is scheduled: {REDELIVER_BACKOFF} entry
+    # `n - 1`, the last entry for every retry past it, the first for an +n+ below 1.
+    #
+    # @param n [Integer] the retry's number, from 1
+    # @return [Integer] seconds
+    def self.infra_retry_wait(n) = REDELIVER_BACKOFF[(n - 1).clamp(0, REDELIVER_BACKOFF.size - 1)]
+
+    # How many infra retries a step has claimed since it last passed or a person last resumed the run.
+    #
+    # @param run [Hash{String=>Object}] a stored run (one stored before infra retries reads 0)
+    # @param step [String] a step id
+    # @return [Integer]
+    def self.infra_retries(run, step)
+      retries = run["infra_retries"]
+      count = retries.is_a?(Hash) ? retries.fetch(step, 0) : 0
+      count.is_a?(Integer) ? count : 0
+    end
+
     def self.stall_time(value)
       value.is_a?(String) ? Time.iso8601(value) : nil
     rescue ArgumentError
@@ -787,7 +854,7 @@ module Workspace
     # @param alive [#call, nil] given a review round's `holder`, whether it still runs (see {.round_delivery}); nil
     #   takes every holder as alive, so a lapsed round with a holder is not woken
     # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
-    # @return [Symbol, nil] :parked, :continue, :continue_expired, :backoff (a retry's wait is over), :lock, :background, :round, :unanswered, :review, :check, or nil
+    # @return [Symbol, nil] :parked, :continue, :continue_expired, :backoff (a retry's wait is over), :infra_retry (a running step's infra retry is due or its claim is stale, {.infra_retry}), :lock, :background, :round, :unanswered, :review, :check, or nil
     def self.wakeable?(run, now, alive: nil, stops: [])
       return nil if run["paused"]
       return :parked if run["parked"]
@@ -796,6 +863,7 @@ module Workspace
       when :expired then return :continue_expired
       end
       return :backoff if backoff(run, now)&.fetch(:state) == :due
+      return :infra_retry if infra_retry_wakes?(run, now)
       return :lock if run.dig("reason", "code") == "waiting_lock"
       return :background if background_expired?(run["reason"], now)
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
@@ -845,6 +913,13 @@ module Workspace
       timeout = step.dig("status", "timeout") || WorkflowDefinition::DEFAULT_CHECK_TIMEOUT
       started.nil? || now - Time.iso8601(started) > timeout + 60
     end
+
+    # A running step whose infra retry is due, or whose claim is older than {INFRA_RETRY_CLAIM_WINDOW}.
+    def self.infra_retry_wakes?(run, now)
+      return false unless run.dig("steps", run["current"], "state") == "running"
+      %i[due stale_claim].include?(infra_retry(run, now)&.fetch(:state))
+    end
+    private_class_method :infra_retry_wakes?
 
     # A hold with no readable `seen_at` has nothing to measure it by, so it counts as expired.
     def self.background_expired?(reason, now)

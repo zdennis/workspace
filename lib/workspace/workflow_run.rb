@@ -11,7 +11,7 @@ module Workspace
       id schema_version workflow title definition definition_source definition_path definition_sha256
       workspace project worktree base_sha base_guard task inputs note state created_at started_at ended_at
       current pane loops pending_context reason reasons artifacts_dir parked paused continue_pending backoff budget_hold timeout_hold sweep
-      extra_tokens extra_attempts extra_seconds guard_config_seen cancelled_by
+      extra_tokens extra_attempts extra_seconds guard_config_seen cancelled_by infra_retries
     ].freeze
 
     # A frozen deep copy of a parsed value, or the value itself when it is already frozen all the way down.
@@ -405,7 +405,7 @@ module Workspace
     # What the sweep noted on the run (+sweep+): the step and attempt it saw, and the +stalled+ and +recovered+ causes with their times.
     class SweepMarks
       # Keys the engine writes; each is a reader that returns the stored value, nil when absent.
-      KEYS = %w[step attempt stalled recovered interrupt].freeze
+      KEYS = %w[step attempt stalled recovered interrupt infra_retry].freeze
 
       # @param hash [Hash{String=>Object}, nil]
       # @return [SweepMarks]

@@ -985,4 +985,121 @@ RSpec.describe Workspace::WorkflowTransitions do
       end
     end
   end
+  describe ".infra_retry" do
+    let(:scheduled) { now }
+    let(:window) { described_class::INFRA_RETRY_CLAIM_WINDOW }
+
+    def stalled_run(mark, cause: "agent_gone", stall: {}, step_state: "running", **fields)
+      sweep = {"step" => "build", "attempt" => 1, "stalled" => {cause => scheduled.iso8601}}.merge(stall)
+      sweep["infra_retry"] = mark if mark
+      run_with(steps: {"build" => step(step_state, {"n" => 1, "started_at" => (scheduled - 600).iso8601})}, **fields.merge("sweep" => sweep))
+    end
+
+    def mark(n: 1, **fields)
+      due = scheduled + described_class::REDELIVER_BACKOFF[n - 1]
+      {"cause" => "agent_gone", "n" => n, "max" => 2, "scheduled_at" => scheduled.iso8601, "due" => due.iso8601}.merge(fields.transform_keys(&:to_s))
+    end
+
+    it "waits before the first retry is due and is due 60s after it was scheduled" do
+      run = stalled_run(mark)
+      expect(described_class.infra_retry(run, scheduled + 59)).to include(state: :waiting, wait: 1, n: 1, max: 2, cause: "agent_gone")
+      expect(described_class.infra_retry(run, scheduled + 60)).to include(state: :due, wait: 0, due: (scheduled + 60).iso8601)
+      expect(described_class.wakeable?(run, scheduled + 59)).to be_nil
+      expect(described_class.wakeable?(run, scheduled + 60)).to eq(:infra_retry)
+    end
+
+    it "waits 300s for the second retry" do
+      run = stalled_run(mark(n: 2))
+      expect(described_class.infra_retry(run, scheduled + 299)).to include(state: :waiting)
+      expect(described_class.wakeable?(run, scheduled + 300)).to eq(:infra_retry)
+    end
+
+    it "takes the due time from scheduled_at when the stored one cannot be read" do
+      run = stalled_run(mark(n: 2, due: "garbled"))
+      expect(described_class.infra_retry(run, scheduled + 299)).to include(state: :waiting, due: (scheduled + 300).iso8601)
+    end
+
+    it "does not wake while a claim is younger than the window and wakes once it is older" do
+      claimed = mark(claimed_at: (scheduled + 60).iso8601, claimed_by: {"pid" => 41, "started" => "x"})
+      run = stalled_run(claimed)
+      expect(described_class.infra_retry(run, scheduled + 60 + window - 1)).to include(state: :claimed, claimed_by: {"pid" => 41, "started" => "x"})
+      expect(described_class.wakeable?(run, scheduled + 60 + window - 1)).to be_nil
+      expect(described_class.infra_retry(run, scheduled + 60 + window)).to include(state: :stale_claim)
+      expect(described_class.wakeable?(run, scheduled + 60 + window)).to eq(:infra_retry)
+    end
+
+    it "does not wake after the retries gave up" do
+      run = stalled_run(mark(given_up: {"at" => scheduled.iso8601, "reason" => "retries_spent"}))
+      expect(described_class.infra_retry(run, scheduled + 600)).to include(state: :exhausted, reason: "retries_spent")
+      expect(described_class.wakeable?(run, scheduled + 600)).to be_nil
+    end
+
+    it "does not wake when the step is not running" do
+      expect(described_class.wakeable?(stalled_run(mark, step_state: "checking"), scheduled + 60)).not_to eq(:infra_retry)
+    end
+
+    it "does not wake a paused or parked run" do
+      expect(described_class.wakeable?(stalled_run(mark, "paused" => {"since" => scheduled.iso8601}), scheduled + 60)).to be_nil
+      expect(described_class.wakeable?(stalled_run(mark, "parked" => {"expires_at" => (scheduled + 3600).iso8601}), scheduled + 60)).to eq(:parked)
+    end
+
+    it "ranks after a due backoff" do
+      run = stalled_run(mark, "state" => "waiting", "backoff" => {"until" => scheduled.iso8601, "to" => "build"})
+      expect(described_class.wakeable?(run, scheduled + 60)).to eq(:backoff)
+    end
+
+    it "reads nil for a run without the mark or the counts" do
+      run = stalled_run(nil)
+      expect(described_class.infra_retry(run, scheduled + 600)).to be_nil
+      expect(described_class.wakeable?(run, scheduled + 600)).to be_nil
+      expect(described_class.infra_retries(run, "build")).to eq(0)
+      expect(described_class.infra_retries(run.merge("infra_retries" => {"build" => 2}), "build")).to eq(2)
+    end
+
+    it "waits 60s, then 300s, then 900s for every retry past the third, and 60s for an n below 1" do
+      expect([1, 2, 3, 4, 9].map { |n| described_class.infra_retry_wait(n) }).to eq([60, 300, 900, 900, 900])
+      expect(described_class.infra_retry_wait(0)).to eq(60)
+    end
+
+    it "reads nil for a mark left on an earlier attempt" do
+      run = stalled_run(mark)
+      run["sweep"]["attempt"] = 0
+      expect(described_class.infra_retry(run, scheduled + 60)).to be_nil
+    end
+
+    it "is ended when the mark has ended" do
+      run = stalled_run(mark(ended: {"at" => scheduled.iso8601, "reason" => "daemon_respawned"}))
+      expect(described_class.infra_retry(run, scheduled + 60)).to include(state: :ended)
+      expect(described_class.wakeable?(run, scheduled + 60)).to be_nil
+    end
+
+    it "is ended when its stall was recovered though the mark has no ended" do
+      run = stalled_run(mark, stall: {"recovered" => {"agent_gone" => (scheduled + 30).iso8601}})
+      expect(described_class.infra_retry(run, scheduled + 60)).to include(state: :ended)
+      expect(described_class.wakeable?(run, scheduled + 60)).to be_nil
+    end
+
+    it "is ended when its stalls entry has an until though the mark has no ended" do
+      run = stalled_run(mark, stall: {"stalled" => {}})
+      run["steps"]["build"]["attempts"].last["stalls"] = [{"cause" => "agent_gone", "since" => scheduled.iso8601, "until" => (scheduled + 30).iso8601}]
+      expect(described_class.infra_retry(run, scheduled + 60)).to include(state: :ended)
+      expect(described_class.wakeable?(run, scheduled + 60)).to be_nil
+    end
+
+    it "is due while its stalls entry is still open" do
+      run = stalled_run(mark, stall: {"stalled" => {}})
+      run["steps"]["build"]["attempts"].last["stalls"] = [{"cause" => "agent_gone", "since" => scheduled.iso8601}]
+      expect(described_class.infra_retry(run, scheduled + 60)).to include(state: :due)
+    end
+
+    it "is ended, not exhausted, when a given-up mark's stall closed" do
+      run = stalled_run(mark(given_up: {"reason" => "retries_spent"}), stall: {"recovered" => {"agent_gone" => scheduled.iso8601}})
+      expect(described_class.infra_retry(run, scheduled + 60)).to include(state: :ended)
+    end
+
+    it "reads the release count, nil when the mark has none" do
+      expect(described_class.infra_retry(stalled_run(mark), scheduled + 60)).to include(released: nil)
+      expect(described_class.infra_retry(stalled_run(mark(released: 1)), scheduled + 60)).to include(released: 1, state: :due)
+    end
+  end
 end

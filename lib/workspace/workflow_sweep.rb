@@ -71,6 +71,14 @@ module Workspace
   #   holds the run as `budget_spent`. A dry run reads the live figure too, which may refresh that reader's own cache
   #   (derived data, not run state)
   #
+  # A step `pane_gone` or `agent_gone` stall, the first time it is recorded for an attempt, in a workspace whose tmux
+  # session is up (asked once for each workspace in a pass) and with `workflows.infra_retry.max` above 0: while the
+  # step's restarts ({WorkflowTransitions.infra_retries}) are under the max, the same change schedules the step's
+  # automatic restart (action `infra_retry_scheduled`, due after {WorkflowTransitions.infra_retry_wait}); once they
+  # reach it, the same change records `infra_retries_exhausted` (reason `retries_spent`, action
+  # `infra_retries_exhausted`). With the max at 0 or no session, the stall is only recorded (action `record`). A
+  # `turn_failed` stall, a review round's and the `pane_gone` of a line never delivered schedule nothing.
+  #
   # One press serves every interrupt cause of an attempt, whichever came due first: a press of the step timeout,
   # the run timeout or the budget whose mark stands for this attempt ({WorkflowTransitions.attempt_interrupt_held?})
   # makes any other's row `already_interrupted`, and an `on_timeout: fail` step after any sent press is failed
@@ -123,10 +131,14 @@ module Workspace
     # @param log_keep [Integer] bytes of the log's end kept when it is cut
     # @param live_usage [Workspace::WorkflowLiveUsage, nil] the tokens a run's running attempt has used so far, read only
     #   for a run whose `budget` has `action: interrupt`; pruned to the going runs on every pass that lists them (nil: none)
+    # @param infra_retry_max [#call] returns `workflows.infra_retry.max`, how many automatic restarts a step whose
+    #   pane or agent is gone may get ({WorkflowConfig#infra_retry_max}); called once for each pass. The default, 0,
+    #   schedules none, so a sweep built without it acts as it did before infra retries
     # @param clock [#call] returns the current Time
     def initialize(store:, engine:, panes:, interrupter:, reviews:, default_stall: -> {}, turn_failed_after: -> {},
-      recovery_entry: ->(*) {}, clock: -> { Time.now }, downtime: nil, live_usage: nil,
+      recovery_entry: ->(*) {}, clock: -> { Time.now }, downtime: nil, live_usage: nil, infra_retry_max: -> { 0 },
       log_path: nil, last_path: nil, log_limit: 1024 * 1024, log_keep: 256 * 1024)
+      @infra_retry_max = infra_retry_max
       @live_usage = live_usage
       @log_path = log_path
       @last_path = last_path
@@ -155,7 +167,7 @@ module Workspace
     #   `evaluated`, `interrupted`, `timed_out`, `respawned`, `redelivered`, `retried`, `stopped` (a review round stopped
     #   for a person), `closed` (an orphan review window), `failed`, `dry_run`), "reason" (for a retry also `backoff`, `pane_busy`,
     #   `not_delivered`, `waiting_lock`), "message", "run_id",
-    #   "step", "attempt", "cause", "action"
+    #   "step", "attempt", "cause", "action" (for a recorded stall `record`, `infra_retry_scheduled` or `infra_retries_exhausted`)
     #   A dry run still trims the log, like the heartbeat; a pass that raises records nothing, so a reader sees it as stale.
     # @param budget_only [Boolean] only the token budget with `action: interrupt` is looked at: a run whose running step
     #   has no such budget, or whose spent plus live tokens are under the allowance and that holds no `sent` budget
@@ -170,8 +182,8 @@ module Workspace
       runs = run ? [@store.run(run)] : going
       runs = runs.select { |each| each.workspace == workspace } if workspace
       # Downtime is read once for the pass, after the beat has recorded any gap since the last one.
-      pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, default_stall: @default_stall.call, turn_failed_after: @turn_failed_after.call,
-              stops: downtime_stops, budget_only: budget_only}
+      pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, sessions: {}, default_stall: @default_stall.call, turn_failed_after: @turn_failed_after.call,
+              stops: downtime_stops, budget_only: budget_only, infra_retry_max: budget_only ? 0 : @infra_retry_max.call.to_i}
       rows = runs.filter_map { |each| sweep_run(each, pass) }
       rows += unreadable_rows unless run || workspace || budget_only
       # Every session of the default tmux server unless a workspace or a run narrows the pass.
@@ -272,6 +284,11 @@ module Workspace
       pass[:down].fetch(workspace) { pass[:down][workspace] = !@panes.daemon_running?(workspace) }
     end
 
+    # Whether the workspace has a tmux session, asked once for each workspace in a pass.
+    def session_live?(workspace, pass)
+      pass[:sessions].fetch(workspace) { pass[:sessions][workspace] = @panes.session_live?(workspace) }
+    end
+
     def sweep_run(run, pass)
       return nil if pass[:budget_only] && budget_only_skip?(run)
       return WorkflowSweepRows.row(run, "nothing", reason: "finished", message: "the run has ended") if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
@@ -288,7 +305,7 @@ module Workspace
       daemon_needed = running || reviewing || state.state == "checking" || run.parked || run.reason&.dig("code") == "waiting_lock"
       if running && !@panes.alive?(run.id)
         pane = run.pane
-        return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", "pane" => pane)
+        return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", {"pane" => pane}, infra: true)
       end
       seen = {}
       if running
@@ -380,12 +397,12 @@ module Workspace
       what = "step #{run.current}'s line was not delivered to pane #{pane} (#{info[:code]})"
       case info[:state]
       when :exhausted
-        return note(run, pass, "redelivery_exhausted", "#{what}, and it was retried #{info[:retries]} time#{"s" unless info[:retries] == 1}; resume the run (`workspace workflow resume #{run.id}`) once the pane is ready", "code" => info[:code], "retries" => info[:retries])
+        return note(run, pass, "redelivery_exhausted", "#{what}, and it was retried #{info[:retries]} time#{"s" unless info[:retries] == 1}; resume the run (`workspace workflow resume #{run.id}`) once the pane is ready", {"code" => info[:code], "retries" => info[:retries]})
       when :waiting
         return WorkflowSweepRows.row(run, "nothing", reason: "backoff", cause: "undelivered", message: "#{what}; retry #{info[:retries] + 1} of #{info[:limit]} in #{info[:wait]} seconds")
       end
       unless @panes.alive?(run.id)
-        return note(run, pass, "pane_gone", "pane #{pane} is gone, so #{what} cannot be retried. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", "pane" => pane)
+        return note(run, pass, "pane_gone", "pane #{pane} is gone, so #{what} cannot be retried. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", {"pane" => pane})
       end
       return respawn(run, pass) if daemon_down?(run.workspace, pass)
       shown = pane && @panes.pane_row(run.workspace, pane)
@@ -438,7 +455,7 @@ module Workspace
       shown = shown_row(run, seen)
       return WorkflowSweepRows.row(run, "nothing", reason: "unknown", message: "the agent daemon did not say what pane #{pane} shows") unless shown
       if WorkflowPanes.agent_gone_row?(shown)
-        return note(run, pass, "agent_gone", "pane #{pane} shows a shell: the agent has exited, so nothing will end this step. Resume the run to start it again.", "pane" => pane)
+        return note(run, pass, "agent_gone", "pane #{pane} shows a shell: the agent has exited, so nothing will end this step. Resume the run to start it again.", {"pane" => pane}, infra: true)
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "pane #{pane} waits for an answer") if shown["state"] == "waiting"
       return turn_failed(run, attempt, pass, pane, shown, elapsed, timeout, timed_out && on_timeout == "fail") if shown["turn_failed"]
@@ -509,11 +526,49 @@ module Workspace
       seen.fetch(:row) { seen[:row] = @panes.pane_row(run.workspace, @panes.pane_of(run.id)) }
     end
 
-    def note(run, pass, cause, message, data = {})
+    # Records a stall once for each attempt and cause. With +infra+ (a step `pane_gone` or `agent_gone`), the first
+    # record also schedules the step's automatic restart ({#infra_plan}), or records that its restarts are spent.
+    def note(run, pass, cause, message, data = {}, infra: false)
       return WorkflowSweepRows.row(run, "nothing", reason: "already_recorded", message: message, cause: cause) if WorkflowEngine.sweep_marks(run.to_h).dig("stalled", cause)
-      return WorkflowSweepRows.row(run, "dry_run", message: message, cause: cause, action: "record") if pass[:dry_run]
-      outcome = @engine.note_stall(run.id, actor: "sweep", step: run.current, attempt: WorkflowSweepRows.attempt_of(run), cause: cause, data: data)
-      WorkflowSweepRows.engine_row(run, outcome, "recorded", cause: cause, message: message, action: "record")
+      plan = infra ? infra_plan(run, pass) : nil
+      return WorkflowSweepRows.row(run, "dry_run", message: infra_message(message, plan, cause), cause: cause, action: plan ? plan[:action] : "record") if pass[:dry_run]
+      step_ref = {step: run.current, attempt: WorkflowSweepRows.attempt_of(run)}
+      # The plan only words the dry run and the message; the engine's answer under the run's lock decides.
+      outcome = @engine.note_stall(run.id, actor: "sweep", **step_ref, cause: cause, data: data, infra_retry: plan && {max: plan[:max]})
+      case outcome
+      when :scheduled, :exhausted
+        done = (outcome == :scheduled) ? "infra_retry_scheduled" : "infra_retries_exhausted"
+        n = WorkflowTransitions.infra_retries(run.to_h, run.current) + 1
+        said = (done == plan[:action]) ? plan : infra_plan_for(done, plan[:max], n)
+        WorkflowSweepRows.row(run, "recorded", cause: cause, message: infra_message(message, said, cause), action: done)
+      else WorkflowSweepRows.engine_row(run, outcome, "recorded", cause: cause, message: message, action: "record")
+      end
+    end
+
+    # What a newly found `pane_gone` or `agent_gone` stall does about restarting the step: nil when infra retries are
+    # off (`max` 0) or the workspace has no tmux session (bringing a session back is not a restart's to do); else
+    # `:action` `infra_retry_scheduled` while the step's restarts (since it last passed or a person resumed it) are
+    # under `max`, `infra_retries_exhausted` once they reach it, with `:max`, `:n` (the restart's number) and `:wait`.
+    def infra_plan(run, pass)
+      max = pass[:infra_retry_max]
+      return nil unless max.positive? && session_live?(run.workspace, pass)
+      n = WorkflowTransitions.infra_retries(run.to_h, run.current) + 1
+      infra_plan_for((n > max) ? "infra_retries_exhausted" : "infra_retry_scheduled", max, n)
+    end
+
+    def infra_plan_for(action, max, n)
+      return {action: action, max: max, n: n - 1} if action == "infra_retries_exhausted"
+      {action: action, max: max, n: n, wait: WorkflowTransitions.infra_retry_wait(n)}
+    end
+
+    # +message+ with what +plan+ ({#infra_plan}) does about it; +message+ alone for none.
+    def infra_message(message, plan, cause)
+      return message unless plan
+      if plan[:action] == "infra_retry_scheduled"
+        "#{message} The step restarts on its own in #{Duration.humanize(plan[:wait])} (#{WorkflowStatus.infra_cause_words(cause)}; restart #{plan[:n]} of #{plan[:max]})."
+      else
+        "#{message} Its #{plan[:max]} automatic restart#{(plan[:max] == 1) ? " is" : "s are"} used up (#{WorkflowStatus.infra_cause_words(cause)}); resume or cancel the run (limit: workflows.infra_retry.max)."
+      end
     end
 
     # The agent's turn ended on an API error. Recovery may still bring it back, so the step counts as stalled only
@@ -537,14 +592,14 @@ module Workspace
         return WorkflowSweepRows.row(run, "nothing", reason: "turn_failed", message: "#{what}; #{wait}")
       end
       note(run, pass, "turn_failed", "#{what}, so nothing will end step #{run.current}. Resume the run once the agent can work again (`workspace workflow resume #{run.id}`).",
-        "pane" => pane, "since" => since, "recovery_phase" => entry&.dig("phase"), "recovery_attempts" => entry&.dig("attempts"))
+        {"pane" => pane, "since" => since, "recovery_phase" => entry&.dig("phase"), "recovery_attempts" => entry&.dig("attempts")})
     end
 
     # Starts the workspace's daemon. The run is not acted on again in this pass.
     def respawn(run, pass, notes: true)
       workspace = run.workspace
       message = "the agent daemon of '#{workspace}' is not running, so no turn's end is seen"
-      unless @panes.session_live?(workspace)
+      unless session_live?(workspace, pass)
         return WorkflowSweepRows.row(run, "nothing", reason: "workspace_stopped", cause: "daemon_down", message: "#{message}, and the workspace has no tmux session, so none is started")
       end
       return WorkflowSweepRows.row(run, "dry_run", message: message, cause: "daemon_down", action: "respawn_daemon") if pass[:dry_run]

@@ -127,4 +127,34 @@ RSpec.describe Workspace::WorkflowConfig do
       expect(config.downtime_after).to eq(120)
     end
   end
+
+  describe "#infra_retry_max" do
+    def max(value)
+      global["workflows"] = {"infra_retry" => {"max" => value}}
+      config.infra_retry_max
+    end
+
+    it "is 2 when unset" do
+      expect(config.infra_retry_max).to eq(2)
+    end
+
+    it "reads a set value" do
+      expect(max(5)).to eq(5)
+      expect(max("3")).to eq(3)
+    end
+
+    it "reads 0, which turns restarts off" do
+      expect(max(0)).to eq(0)
+    end
+
+    it "is 2 for a value `config set` would refuse" do
+      expect([-1, "many", "", 1.5].map { |v| max(v) }).to eq([2, 2, 2, 2])
+    end
+
+    it "is 2 when the global file can't be parsed" do
+      allow(project_settings).to receive(:load_global).and_raise(Workspace::ConfigParseError.new("/c/config.yml", "bad"))
+
+      expect(config.infra_retry_max).to eq(2)
+    end
+  end
 end

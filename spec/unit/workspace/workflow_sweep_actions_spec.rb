@@ -75,6 +75,30 @@ RSpec.describe Workspace::WorkflowSweepActions do
     ])
   end
 
+  describe "a recorded stall with an automatic restart" do
+    it "gives a scheduled restart a wait, not a resume or cancel" do
+      result = call([row(nil, "outcome" => "recorded", "cause" => "pane_gone", "action" => "infra_retry_scheduled")])
+
+      expect(result).to eq([{"action" => "workflow status", "args" => ["wr_1"], "needs" => [], "why" => "wait: the step restarts on its own (pane closed); no action needed"}])
+    end
+
+    it "includes the due time when the run's mark has one" do
+      run = Workspace::WorkflowRun.from_h("id" => "wr_1", "workspace" => "api.worktree-x", "state" => "running", "current" => "plan",
+        "sweep" => {"step" => "plan", "attempt" => 1, "stalled" => {"agent_gone" => "2026-10-04T12:41:00Z"}, "recovered" => {},
+                    "infra_retry" => {"cause" => "agent_gone", "n" => 1, "max" => 2, "scheduled_at" => "2026-10-04T12:41:00Z", "due" => "2026-10-04T12:42:00Z"}},
+        "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1}]}})
+      allow(store).to receive(:run).and_return(run)
+
+      result = call([row(nil, "outcome" => "recorded", "cause" => "agent_gone", "action" => "infra_retry_scheduled")])
+
+      expect(result.first["why"]).to eq("wait: the step restarts on its own (agent exited) at 2026-10-04T12:42:00Z; no action needed")
+    end
+
+    it "gives a later pass's already_recorded row for the same stall no action" do
+      expect(call([row("already_recorded", "cause" => "pane_gone", "action" => "infra_retry_scheduled")])).to eq([])
+    end
+  end
+
   describe "a recorded stall and a step restart" do
     def open_run(stalled, ended_at: nil)
       attempt = {"n" => 1, "ended_at" => ended_at}.compact
@@ -93,6 +117,13 @@ RSpec.describe Workspace::WorkflowSweepActions do
           {"action" => "workflow cancel", "args" => ["wr_1"], "needs" => [], "why" => cause}
         ])
       end
+    end
+
+    it "gives restarts that ran out resume, resume --restart-step and cancel" do
+      allow(store).to receive(:run).and_return(open_run({"pane_gone" => "2026-10-04T12:41:00Z"}))
+      result = call([row(nil, "outcome" => "recorded", "cause" => "pane_gone", "action" => "infra_retries_exhausted")])
+
+      expect(result.map { |each| each["args"] }).to eq([["wr_1"], ["wr_1", "--restart-step"], ["wr_1"]])
     end
 
     it "does not offer it while the attempt's line is still being typed" do

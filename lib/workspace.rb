@@ -407,6 +407,7 @@ require_relative "workspace/workflow_progress"
 require_relative "workspace/workflow_evaluation"
 require_relative "workspace/workflow_decisions"
 require_relative "workspace/workflow_recovery"
+require_relative "workspace/workflow_infra_retry"
 require_relative "workspace/workflow_starter"
 require_relative "workspace/workflow_engine"
 require_relative "workspace/workflow_status"
@@ -1134,7 +1135,7 @@ module Workspace
       orphans: workflow_review_orphans, holder_alive: round_holder.method(:alive?))
     workflow_sweep = WorkflowSweep.new(store: workflow_store, engine: workflow_engine, panes: workflow_panes,
       interrupter: workflow_interrupter, reviews: workflow_review_sweep, default_stall: sweep_default_stall,
-      turn_failed_after: -> { workflow_config.turn_failed_after },
+      turn_failed_after: -> { workflow_config.turn_failed_after }, infra_retry_max: -> { workflow_config.infra_retry_max },
       recovery_entry: workflow_recovery_entry, downtime: workflow_downtime, live_usage: workflow_live_usage,
       log_path: config.sweep_log_path, last_path: config.workflow_sweep_last_path)
     sweep_schedule = SweepSchedule.new(agents_dir: File.join(skills_home, "Library", "LaunchAgents"),
@@ -1150,7 +1151,9 @@ module Workspace
     workflow_needs_me = WorkflowNeedsMe.new
     protected_branch = ProtectedBranch.new(git: git)
     branch_inputs = WorkflowBranchInputs.new(git: git, start_ref: start_ref, protected_branch: protected_branch, pull_request_status: PullRequestStatus.new)
+    workflow_infra_retry = WorkflowInfraRetry.new(engine: workflow_engine, store: workflow_store, dispatch: pane_dispatch, lock_holder: lock_holder, agent_commands: agent_commands)
     workflow_command = Commands::Workflow.new(
+      infra_retry: workflow_infra_retry,
       source_installer: workflow_source_installer,
       workflow_config: workflow_config,
       branch_inputs: branch_inputs,

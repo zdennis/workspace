@@ -28,9 +28,10 @@ RSpec.describe Workspace::Commands::Workflow do
   let(:workspace_facts) { nil }
   let(:default_stall) { 600 }
   let(:workflow_config) { instance_double(Workspace::WorkflowConfig, default_stall: default_stall) }
+  let(:infra_retry) { nil }
   subject(:command) do
     described_class.new(lint: nil, catalog: catalog, engine: engine, status: status, workspace_facts: workspace_facts, workflow_config: workflow_config, store: store, panes: panes, files: nil, run_files: nil,
-      process_tree: process_tree, lock_holder: lock_holder, pid: 4242,
+      process_tree: process_tree, lock_holder: lock_holder, infra_retry: infra_retry, pid: 4242,
       clock: -> { Time.utc(2026, 10, 4, 13, 0, 0) }, output: output)
   end
 
@@ -539,6 +540,44 @@ RSpec.describe Workspace::Commands::Workflow do
 
       expect(output.string).to include("  recovery: Move HEAD back to abc\\e[31m123, then resume.\n    workspace workflow resume wr_1\n")
       expect(output.string).not_to include("\e")
+    end
+
+    describe "an automatic restart" do
+      def printed(retry_row, reason: nil)
+        row = shown("current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => reason, "flags" => [], "infra_retry" => retry_row})
+        allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [row], "warnings" => [])
+        command.status(scope: workspace_scope("app"))
+        output.string
+      end
+
+      let(:base) { {"cause" => "pane_gone", "n" => 1, "max" => 2, "due" => "2026-10-04T13:04:00Z", "state" => "scheduled", "reason" => nil} }
+
+      it "says when a scheduled restart comes due" do
+        expect(printed(base)).to include("  step restarts on its own: restart 1 of 2 in 4m\n")
+      end
+
+      it "says a restart whose time has come is due now" do
+        expect(printed(base.merge("due" => "2026-10-04T12:59:00Z"))).to include("  step restarts on its own: restart 1 of 2 due now\n")
+      end
+
+      it "says a pause holds the restart" do
+        paused = {"code" => "paused", "since" => "2026-10-04T12:55:00Z", "actions" => []}
+        expect(printed(base, reason: paused)).to include("  step restart held (run paused): restart 1 of 2; unpause the run to continue\n")
+      end
+
+      it "says a claimed restart is under way" do
+        expect(printed(base.merge("state" => "restarting"))).to include("  restarting the step now (restart 1 of 2)\n")
+      end
+
+      it "says the retries are spent, or the reason that ended them" do
+        expect(printed(base.merge("state" => "exhausted", "reason" => "retries_spent"))).to include("  automatic restarts used up (pane closed): resume, resume --restart-step, or cancel\n")
+        expect(printed(base.merge("state" => "exhausted", "cause" => "agent_gone", "reason" => "agent_not_ready"))).to include("  automatic restart stopped (agent exited): the new agent never became ready\n")
+        expect(printed(base.merge("state" => "exhausted", "reason" => "odd\e[31m"))).to include('automatic restart stopped (pane closed): odd\e[31m' + "\n")
+      end
+
+      it "prints nothing for a row with no restart" do
+        expect(printed(nil)).not_to include("retry")
+      end
     end
 
     it "prints the run timeout with the clock it is measured on" do
@@ -2217,6 +2256,46 @@ RSpec.describe Workspace::Commands::Workflow do
 
       expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: tasks)
       expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
+    end
+
+    context "with a run whose infra retry is due" do
+      let(:infra_retry) { instance_double(Workspace::WorkflowInfraRetry, call: [:restarted, 1, "%9"]) }
+      let(:due_run) do
+        Workspace::WorkflowRun.from_h("id" => "wr_1", "workspace" => "app", "current" => "plan", "state" => "running", "definition" => {"steps" => [{"id" => "plan"}]},
+          "steps" => {"plan" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => "2026-10-04T12:00:00Z"}]}},
+          "sweep" => {"step" => "plan", "attempt" => 1, "stalled" => {"agent_gone" => {"at" => "2026-10-04T12:50:00Z"}},
+                      "infra_retry" => {"cause" => "agent_gone", "n" => 1, "max" => 2, "scheduled_at" => "2026-10-04T12:50:00Z", "due" => "2026-10-04T12:51:00Z"}})
+      end
+
+      before do
+        allow(store).to receive(:run).with("wr_1").and_return(due_run)
+        allow(engine).to receive(:tick)
+        allow(engine).to receive(:turn_ended)
+      end
+
+      it "hands it to the infra retry on the timer's look, instead of the engine's tick" do
+        expect(command.advance(run: "wr_1")).to be_nil
+
+        expect(infra_retry).to have_received(:call).with(due_run)
+        expect(engine).not_to have_received(:tick)
+      end
+
+      it "still tells the engine a turn ended, and never starts the retry for it" do
+        command.advance(run: "wr_1", turn_ended: true, pane: "%5")
+
+        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
+        expect(infra_retry).not_to have_received(:call)
+      end
+
+      it "ticks a run whose retry is still waiting" do
+        waiting = Workspace::WorkflowRun.from_h(due_run.to_h.merge("sweep" => due_run.to_h["sweep"].merge("infra_retry" => due_run.to_h["sweep"]["infra_retry"].merge("due" => "2026-10-04T13:05:00Z"))))
+        allow(store).to receive(:run).with("wr_1").and_return(waiting)
+
+        command.advance(run: "wr_1")
+
+        expect(engine).to have_received(:tick).with("wr_1", actor: "daemon")
+        expect(infra_retry).not_to have_received(:call)
+      end
     end
   end
 

@@ -116,6 +116,28 @@ RSpec.describe Workspace::WorkflowNeedsMe do
     expect(rows.map { |row| row.values_at("run", "code", "detail", "waiting_seconds") }).to eq([["wr_1", "stalled", "agent_gone", 1800], ["wr_2", "idle", nil, nil]])
   end
 
+  describe "a stall with an automatic restart" do
+    let(:stalled) { {"code" => "stalled", "cause" => "pane_gone", "since" => "2026-10-04T12:30:00Z", "actions" => [resume("wr_1"), cancel("wr_1")]} }
+
+    def with_retry(state)
+      run("wr_1", stuck: stalled, state: "running").tap { |r| r["current"]["infra_retry"] = {"cause" => "pane_gone", "n" => 1, "max" => 2, "due" => nil, "state" => state, "reason" => nil} }
+    end
+
+    it "leaves out a run whose restart is scheduled or under way" do
+      expect(needs_me.rows([with_retry("scheduled"), with_retry("restarting")])).to eq([])
+    end
+
+    it "lists a run whose restarts are spent, and one whose mark ended (no infra_retry shows)" do
+      expect(needs_me.rows([with_retry("exhausted")]).map { |row| row["code"] }).to eq(["stalled"])
+      expect(needs_me.rows([run("wr_1", stuck: stalled, state: "running").tap { |r| r["current"]["infra_retry"] = nil }]).size).to eq(1)
+    end
+
+    it "still lists a paused run, which waits for an unpause" do
+      paused = run("wr_1", reason: reason("paused"), state: "waiting").tap { |r| r["current"]["infra_retry"] = {"state" => "scheduled"} }
+      expect(needs_me.rows([paused]).map { |row| row["code"] }).to eq(["paused"])
+    end
+  end
+
   it "lists a run stalled by a turn that failed on an API error" do
     stalled = {"code" => "stalled", "cause" => "turn_failed", "since" => "2026-10-04T12:30:00Z", "actions" => [resume("wr_1"), cancel("wr_1")]}
     rows = needs_me.rows([run("wr_1", stuck: stalled, state: "running")])
