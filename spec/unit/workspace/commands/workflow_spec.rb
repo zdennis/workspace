@@ -4879,4 +4879,115 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { command.insights(workflow: "flow", runs: 20) }.to raise_error(Workspace::Error, /no insights reader/)
     end
   end
+
+  describe "#default_run" do
+    def run(id, workspace, created_at, state: "running")
+      Workspace::WorkflowRun.from_h({"id" => id, "workflow" => "flow", "workspace" => workspace, "state" => state, "created_at" => created_at})
+    end
+
+    let(:going) { [] }
+
+    before do
+      allow(panes).to receive(:bound_on).and_return(nil)
+      allow(store).to receive(:going).and_return(going)
+    end
+
+    it "returns the author-bound run's id whatever author_only asks" do
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
+
+      expect(command.default_run(caller_pane: "%5", workspace: "app", author_only: true)).to eq("wr_1")
+      expect(command.default_run(caller_pane: "%5", workspace: "app", author_only: false)).to eq("wr_1")
+    end
+
+    it "returns a reviewer-bound run's id for a read verb" do
+      allow(panes).to receive(:bound_on).with("%9").and_return({run_id: "wr_1", role: "reviewer"})
+      going << run("wr_2", "app", "2026-11-17T10:00:00Z")
+
+      expect(command.default_run(caller_pane: "%9", workspace: "app", author_only: false)).to eq("wr_1")
+      expect(store).not_to have_received(:going)
+    end
+
+    it "resolves nothing for a mutating verb on a review pane, not even the going-run fallback" do
+      allow(panes).to receive(:bound_on).with("%9").and_return({run_id: "wr_1", role: "reviewer"})
+      going << run("wr_1", "app", "2026-11-17T10:00:00Z")
+
+      expect(command.default_run(caller_pane: "%9", workspace: "app", author_only: true)).to be_nil
+      expect(store).not_to have_received(:going)
+    end
+
+    it "returns the single going run on the workspace for an unbound pane" do
+      going << run("wr_1", "app", "2026-11-17T10:00:00Z")
+
+      expect(command.default_run(caller_pane: nil, workspace: "app", author_only: true)).to eq("wr_1")
+    end
+
+    it "ignores going runs on other workspaces" do
+      going << run("wr_2", "other", "2026-11-17T10:00:00Z")
+
+      expect(command.default_run(caller_pane: nil, workspace: "app", author_only: true)).to be_nil
+    end
+
+    it "returns nil when no pane is bound, no run is going, or no workspace resolves" do
+      expect(command.default_run(caller_pane: "", workspace: "app", author_only: true)).to be_nil
+      expect(command.default_run(caller_pane: nil, workspace: "app", author_only: true)).to be_nil
+      going << run("wr_1", "app", "2026-11-17T10:00:00Z")
+      expect(command.default_run(caller_pane: nil, workspace: nil, author_only: true)).to be_nil
+    end
+
+    it "refuses to pick between several going runs with ambiguous_run, newest first" do
+      going << run("wr_old", "app", "2026-11-17T09:00:00Z") << run("wr_new", "app", "2026-11-17T10:00:00Z")
+
+      expect { command.default_run(caller_pane: nil, workspace: "app", author_only: true) }
+        .to raise_error(Workspace::Error, /Several workflow runs are going in workspace app: wr_new, wr_old/) do |error|
+          expect(error.code).to eq("ambiguous_run")
+          expect(error.details["runs"].map { |each| each["id"] }).to eq(%w[wr_new wr_old])
+          expect(error.details["runs"].first).to include("workflow" => "flow", "state" => "running", "created_at" => "2026-11-17T10:00:00Z")
+          expect(error.details["workspace"]).to eq("app")
+      end
+    end
+
+    it "returns a bound run's id even when it has finished" do
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_done", role: "author"})
+
+      expect(command.default_run(caller_pane: "%5", workspace: "app", author_only: true)).to eq("wr_done")
+    end
+  end
+
+  describe "#default_workflow" do
+    it "gives the resolved run's workflow id" do
+      allow(panes).to receive(:bound_on).and_return(nil)
+      allow(store).to receive(:going).and_return([Workspace::WorkflowRun.from_h({"id" => "wr_1", "workflow" => "flow", "workspace" => "app", "state" => "running"})])
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h({"id" => "wr_1", "workflow" => "flow"}))
+
+      expect(command.default_workflow(caller_pane: nil, workspace: "app")).to eq("flow")
+    end
+
+    it "is nil when no run resolves" do
+      allow(panes).to receive(:bound_on).and_return(nil)
+      allow(store).to receive(:going).and_return([])
+
+      expect(command.default_workflow(caller_pane: nil, workspace: "app")).to be_nil
+    end
+
+    it "raises ambiguous_run when several going runs sit on the workspace" do
+      allow(panes).to receive(:bound_on).and_return(nil)
+      allow(store).to receive(:going).and_return([
+        Workspace::WorkflowRun.from_h({"id" => "wr_old", "workflow" => "flow", "workspace" => "app", "created_at" => "2026-11-17T09:00:00Z"}),
+        Workspace::WorkflowRun.from_h({"id" => "wr_new", "workflow" => "flow", "workspace" => "app", "created_at" => "2026-11-17T10:00:00Z"})
+      ])
+
+      expect { command.default_workflow(caller_pane: nil, workspace: "app") }.to raise_error(Workspace::Error) { |error|
+        expect(error.code).to eq("ambiguous_run")
+      }
+    end
+
+    it "raises unknown_run when the bound run is no longer stored" do
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_gone", role: "author"})
+      allow(store).to receive(:run).with("wr_gone").and_raise(Workspace::Error.new("No workflow run has that id.", code: "unknown_run"))
+
+      expect { command.default_workflow(caller_pane: "%5", workspace: "app") }.to raise_error(Workspace::Error) { |error|
+        expect(error.code).to eq("unknown_run")
+      }
+    end
+  end
 end

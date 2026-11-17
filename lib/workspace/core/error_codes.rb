@@ -311,6 +311,7 @@ module Workspace
       "evidence_dir_linked" => "workflow learn reflect found the evidence root or the run's evidence directory reached through a symbolic link, so nothing was written or started. details.run_id.",
       "reflection_path_not_file" => "workflow learn reflect found reflection.md in the run's evidence directory but it is not a regular file (a link, a directory or something else); nothing was started or written. Remove it, then run the command again. details.run_id, details.path.",
       "unknown_run" => "No workflow run has that id.",
+      "ambiguous_run" => "Several workflow runs are going in this checkout, so no run-id verb can default to one. details.workspace, details.runs (newest first, each with id, workflow, state, created_at); pass a RUN id.",
       "unknown_step" => "workflow attempts or audit --attempt-of named a step the run doesn't have, or workflow render a step the definition doesn't have. details.run_id (not for render), details.workflow (render only), details.step, details.steps (the step ids).",
       "unknown_goal" => "goal show: REF matches no workspace, run, task, ticket or branch. details.ref, details.tried.",
       "ambiguous_goal" => "goal show: REF matches more than one workspace (a branch checked out in two projects). details.ref, details.matches (workspace, project, branch).",
