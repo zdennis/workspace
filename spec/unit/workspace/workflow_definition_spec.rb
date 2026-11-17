@@ -751,7 +751,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       end
     end
 
-    %w[investigate explore pr-feedback].each do |id|
+    %w[investigate explore pr-feedback bugfix].each do |id|
       it "is false for #{id}" do
         definition = preset(id)
 

@@ -1,0 +1,6 @@
+# The script the bugfix gate-reject golden plays: the person rejects the reproduce gate with a note, the step runs again
+# as attempt 2, and the person approves that.
+steps:
+  reproduce:
+    - {gate: reject, note: "the test fails on a load error, not the bug; assert the wrong total"}
+    - {}

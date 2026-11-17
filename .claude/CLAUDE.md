@@ -99,7 +99,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_workspace_facts.rb` — What `workflow status --table` says about each workspace now.
 - `lib/workspace/workflow_nudger.rb` — The daemon's part that starts `workflow advance` when a bound pane's turn ends.
 - `lib/workspace/workflow_config.rb` — Reads the global default workflow packs.
-- `lib/workflows/` — The workflow presets that ship (rpiv, rpiv-auto-approve, pr-feedback, investigate, explore).
+- `lib/workflows/` — The workflow presets that ship (rpiv, rpiv-auto-approve, pr-feedback, investigate, explore, bugfix).
 - `lib/workspace/commands/workflow.rb` — The `workflow` and `step` subcommands: shows definitions, starts a run in a workspace's agent pane, shows where runs stand, and lets a person move one (resume, cancel, approve, reject) or the run's own agent report on its step.
 - `lib/workspace/workflow_argv.rb` — Turns the string of a `require: exec:` entry into an argument vector, checks it, and fills in its placeholders.
 - `lib/workspace/workflow_exec_program.rb` — The one rule for whether the program of a `require: exec:` entry (argument 1 of its argv) can run.

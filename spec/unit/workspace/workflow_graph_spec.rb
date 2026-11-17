@@ -2,7 +2,7 @@ require "spec_helper"
 
 RSpec.describe Workspace::WorkflowGraph do
   let(:catalog) { Workspace::WorkflowCatalog.new(config: Workspace::Config.new) }
-  let(:presets) { %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2 pr-feedback investigate explore] }
+  let(:presets) { %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2 pr-feedback investigate explore bugfix] }
 
   def graph_of(id)
     described_class.build(catalog.find(id).to_h).to_h

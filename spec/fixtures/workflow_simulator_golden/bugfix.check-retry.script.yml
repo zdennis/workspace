@@ -1,0 +1,8 @@
+# The script the bugfix check-retry golden plays: verify fails its status check three times, each failure loops back
+# to fix (on_fail max: 3), and the fourth verify attempt passes, inside fix's and verify's max_attempts.
+steps:
+  verify:
+    - {check: fail, log: "3 failures in spec/models"}
+    - {check: fail, log: "2 failures in spec/models"}
+    - {check: fail, log: "1 failure in spec/models"}
+    - {}
