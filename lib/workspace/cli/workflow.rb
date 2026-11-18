@@ -112,6 +112,7 @@ module Workspace
           opts.separator ""
           opts.separator "`run` and `start` really start a run (start also makes a worktree); --dry-run checks and starts nothing."
           opts.separator "`start` may leave out the ID: config names it (workflows.by_ref.<kind>, else workflows.default)."
+          opts.separator "`start --file PATH` runs a definition file that is not installed; it names its own id (an `id:` key, or the file name), and you vouch for the file."
           opts.separator "RUN is a workflow run id (see `workspace workflow status`)."
           opts.separator ""
           opts.on("--name WORKSPACE", "run: the workspace to run in; render, check: the workspace whose packs and commands are read; show, validate, render, check, simulate, add, update, remove: the workspace whose project's definitions are read first (default: the current workspace); status: that workspace's runs still going (default: the current workspace); sweep: only that workspace's runs (default: every run going)") { |v| options[:name] = v }
@@ -163,6 +164,10 @@ module Workspace
           opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
           opts.on("--branch BRANCH", "start: the branch for a --prompt (default: the prompt's words); refused with a REF") { |v| options[:branch] = v }
           opts.on("--slug", "start: add the ticket title's words to a JIRA or issue branch, as `workspace start --slug`") { options[:slug] = true }
+          opts.on("--file PATH", "start: run the workflow definition in this YAML file instead of an installed ID (needs an `id:` key or an ID.yml name)") { |v|
+            raise UsageError, "--file is given once." if options[:file]
+            options[:file] = v
+          }
           opts.on("--base REF", "start: the branch or ref a new branch starts from") { |v| options[:base] = v }
           opts.on("--[no-]headless", "start: start the session in plain tmux, as `workspace start --headless`") { |v| options[:headless] = v }
           opts.on("--agent-kind KIND", "start: the coding agent the main agent pane runs: #{AgentProvider.all.map(&:key).join(", ")}") { |v| options[:agent_kind] = v }
@@ -268,7 +273,7 @@ module Workspace
         extra_seconds = workflow_extra_time(subcommand, options[:extra_time])
         extra_rounds = workflow_extra_rounds(subcommand, options[:extra_rounds])
 
-        start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout, "--force" => :force, "--ref" => :ref}
+        start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout, "--force" => :force, "--ref" => :ref, "--file" => :file}
         if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
           raise UsageError, "#{flag.first} is for `workflow start [ID] [REF]`."
         end
@@ -279,6 +284,11 @@ module Workspace
             raise UsageError, "--ref takes the place of the workflow ID and the REF: use `workflow start --ref REF`, or `workflow start ID REF`." if subject || start_ref
             raise UsageError, "--ref is a REF to route; --prompt has no kind to route by. Name a workflow: `workflow start ID --prompt TEXT`." unless options[:prompt].nil?
             raise UsageError, "--ref needs a REF." if options[:ref].strip.empty?
+          end
+          if options[:file]
+            raise UsageError, "--file takes the place of the workflow ID: use `workflow start --file PATH REF`." if start_ref
+            raise UsageError, "--file and --ref both pick the workflow: use one." if options[:ref]
+            raise UsageError, "--file needs a PATH." if options[:file].strip.empty?
           end
           raise UsageError, "workflow start needs a REF (a ticket, pull request, issue or branch) or --prompt TEXT." if subject.nil? && options[:ref].nil? && options[:prompt].to_s.strip.empty?
           raise Error, "workflow start is not available: no workflow start command was wired" unless @workflow_start_command
@@ -395,7 +405,7 @@ module Workspace
           inputs = Workflow.inputs(options[:inputs])
           workflow_action(invocation, "workflow start", options) do
             begin
-              row = @workflow_start_command.call(id: start_ref && subject, ref: options[:ref] || start_ref, positional: (start_ref || options[:ref]) ? nil : subject, route: !options[:ref].nil?, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
+              row = @workflow_start_command.call(id: start_ref && subject, ref: options[:ref] || start_ref || (subject if options[:file]), positional: (start_ref || options[:ref] || options[:file]) ? nil : subject, file: options[:file], route: !options[:ref].nil?, prompt: options[:prompt], branch: options[:branch], slug: options[:slug] == true, inputs: inputs,
                 note: options[:note], base: options[:base], headless: @launch_mode.resolve(options[:headless]).headless?, agent_kind: options[:agent_kind],
                 prompt_timeout: options[:prompt_timeout], dry_run: options[:dry_run], force: options[:force] == true)
             rescue Workspace::Error => e
