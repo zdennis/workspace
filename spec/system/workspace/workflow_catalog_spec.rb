@@ -585,6 +585,18 @@ RSpec.describe Workspace::WorkflowCatalog do
       expect(definition.id).to eq(Workspace::IdPatterns::FILE_ID)
     end
 
+    it "load_file! reads a file that names its id" do
+      definition = catalog.load_file!(file("ok.yml", "id: claimed\nsteps:\n  a:\n    prompt: P\n"))
+
+      expect(definition.id).to eq("claimed")
+    end
+
+    it "load_file! refuses a file whose id fell back to the file id, as a run must" do
+      path = file("My Flow.yml", "steps:\n  a:\n    prompt: P\n")
+
+      expect { catalog.load_file!(path) }.to raise_error(Workspace::UsageError, "#{path} has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml).")
+    end
+
     it "raises a UsageError for a file that is not there" do
       expect { catalog.load_file(File.join(@dir, "nope.yml")) }.to raise_error(Workspace::UsageError, /Can't read .*nope\.yml/) { |e| expect(e.message).not_to match(/@ rb_sysopen/) }
     end

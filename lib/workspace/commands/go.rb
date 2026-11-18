@@ -446,13 +446,10 @@ module Workspace
         [id, source, @catalog.find(id, project: tied)]
       end
 
-      # `--file` skips the id lookup: the definition names its own id, and one that fell all the way
-      # back to the file id is refused as `workflow start --file` refuses it.
+      # `--file` skips the id lookup: the definition names its own id, read through
+      # {WorkflowCatalog#load_file!}, which refuses a file that names none.
       def choose_file(file, tied)
-        definition = @catalog.load_file(file, project: tied)
-        if definition.id == IdPatterns::FILE_ID
-          raise Workspace::UsageError, "#{file} has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml)."
-        end
+        definition = @catalog.load_file!(file, project: tied)
         [definition.id, "file", definition]
       end
 

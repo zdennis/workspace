@@ -22,5 +22,20 @@ module Workspace
 
     # The states a plan task may be in, in the order the counts list them.
     TASK_STATES = %w[done in_progress skipped blocked todo].freeze
+
+    # A string `id:` in a definition's text, if it parses far enough to have one.
+    def self.claimed_id(text)
+      value = YAML.safe_load(text)&.then { |doc| doc["id"] if doc.is_a?(Hash) }
+      value if value.is_a?(String)
+    rescue Psych::Exception, ArgumentError
+      nil
+    end
+
+    # The id a definition file with no string `id:` key is read as: its name without the extension
+    # when that is a workflow id, else {FILE_ID}.
+    def self.file_id(path)
+      name = File.basename(path, ".*")
+      WORKFLOW_ID.match?(name) ? name : FILE_ID
+    end
   end
 end

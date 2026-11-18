@@ -767,12 +767,12 @@ RSpec.describe Workspace::Commands::Go do
   describe "--file" do
     let(:file_definition) { Workspace::WorkflowDefinition.parse(yaml, id: "mine", source: "file", path: "/tmp/mine.yml") }
 
-    before { allow(catalog).to receive(:load_file).and_return(file_definition) }
+    before { allow(catalog).to receive(:load_file!).and_return(file_definition) }
 
     it "outranks config, skips the id lookup and reports the file as the source" do
       row = command.call(argument: "other", file: "/tmp/mine.yml")
 
-      expect(catalog).to have_received(:load_file).with("/tmp/mine.yml", project: "app")
+      expect(catalog).to have_received(:load_file!).with("/tmp/mine.yml", project: "app")
       expect(catalog).not_to have_received(:find)
       expect(workflow_defaults).not_to have_received(:lookup)
       expect(output.string).to include("go: mine (read from --file)")
@@ -798,8 +798,8 @@ RSpec.describe Workspace::Commands::Go do
     end
 
     it "refuses a file that fell back to the file id before printing anything" do
-      fallback = Workspace::WorkflowDefinition.parse(yaml, id: "file", source: "file", path: "/tmp/x.yml")
-      allow(catalog).to receive(:load_file).and_return(fallback)
+      allow(catalog).to receive(:load_file!)
+        .and_raise(Workspace::UsageError, "/tmp/x.yml has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml).")
 
       expect { command.call(argument: "other", file: "/tmp/x.yml") }.to raise_error(Workspace::UsageError, /add an `id:` key/)
       expect(output.string).to eq("")

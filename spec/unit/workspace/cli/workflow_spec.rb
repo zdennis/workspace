@@ -343,6 +343,12 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(start_command.calls.first).to include(file: "x/flow.yml", ref: "PROJ-1", id: nil, positional: nil, route: false)
     end
 
+    it "passes --file through with --prompt and no REF" do
+      run("start", "--file", "x/flow.yml", "--prompt", "add a hello script")
+
+      expect(start_command.calls.first).to include(file: "x/flow.yml", prompt: "add a hello script", ref: nil, id: nil, route: false)
+    end
+
     it "refuses --file beside an ID and a REF, --ref, a second --file or an empty PATH" do
       expect { run("start", "--file", "f.yml", "rpiv", "PROJ-1") }.to raise_error(Workspace::UsageError, /--file takes the place of the workflow ID/)
       expect { run("start", "--file", "f.yml", "--ref", "PROJ-1") }.to raise_error(Workspace::UsageError, /--file and --ref both pick/)

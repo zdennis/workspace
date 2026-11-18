@@ -204,7 +204,7 @@ module Workspace
       def validate(path:, id: nil, json: false, project: nil)
         stdin = path == "-"
         text = read_text(path, stdin)
-        id ||= claimed_id(text) || (stdin ? STDIN_ID : file_id(path))
+        id ||= IdPatterns.claimed_id(text) || (stdin ? STDIN_ID : IdPatterns.file_id(path))
         lookup, chain = draft_lookup(id, text, project)
         definition = WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file",
           path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain)
@@ -537,7 +537,7 @@ module Workspace
       #   `outcome` is "parked" for a run parked from its own pane
       # @raise [Workspace::Error] see {Workspace::WorkflowEngine#preflight}
       def run(workspace:, worktree:, id: nil, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false, definition: nil, file: nil)
-        definition ||= file ? load_run_file(file, project) : @catalog.find(id, project: project)
+        definition ||= file ? @catalog.load_file!(file, project: project) : @catalog.find(id, project: project)
         id ||= definition.to_h["id"]
         warn_sweep_missing(definition)
         filled, from = (fill_from_branch && @branch_inputs) ? @branch_inputs.call(definition, worktree, inputs) : [inputs, {}]
@@ -558,18 +558,6 @@ module Workspace
         end
         row(@engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id, actor: "person", note: note), "started").merge("inputs_from" => from)
       end
-
-      # Loads the definition file of `run --file`. Like WorkflowStart's file loading it refuses the fallback id; unlike
-      # it, it does not warn about an installed definition of the same id: the person named the file, and nothing
-      # resolves the id again later.
-      def load_run_file(file, project)
-        definition = @catalog.load_file(file, project: project)
-        if definition.id == IdPatterns::FILE_ID
-          raise UsageError, "#{file} has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml)."
-        end
-        definition
-      end
-      private :load_run_file
 
       # Prints where runs stand: one run, or the runs of a scope.
       #
@@ -1743,7 +1731,6 @@ module Workspace
 
       # The id a text with no --id is checked as when it names none.
       STDIN_ID = IdPatterns::STDIN_ID
-      FILE_ID = IdPatterns::FILE_ID
 
       # A run that has ended: its park is gone with it, and there is nothing to record.
       RUN_ENDED_CODES = %w[run_not_active unknown_run].freeze
@@ -1752,14 +1739,6 @@ module Workspace
         (stdin ? @input.read : File.binread(path)).to_s.dup.force_encoding(Encoding::UTF_8)
       rescue SystemCallError => e
         raise UsageError, "Can't read #{path}: #{e.message.sub(/ (@ .*)?- .*\z/, "")}"
-      end
-
-      # A string `id:` in the text, if it parses far enough to have one.
-      def claimed_id(text)
-        value = YAML.safe_load(text)&.then { |doc| doc["id"] if doc.is_a?(Hash) }
-        value if value.is_a?(String)
-      rescue Psych::Exception, ArgumentError
-        nil
       end
 
       # How a definition being read finds the workflow its `extends:` names.
@@ -1817,11 +1796,6 @@ module Workspace
         return {} if children.empty?
         @error_output.puts "warning: #{children.join(", ")} #{(children.size == 1) ? "extends" : "extend"} #{id}, directly or through another workflow, so this change affects #{(children.size == 1) ? "it" : "them"}."
         {"extended_by" => children}
-      end
-
-      def file_id(path)
-        name = File.basename(path, ".*")
-        IdPatterns::WORKFLOW_ID.match?(name) ? name : FILE_ID
       end
 
       # A definition file in a directory a lookup reaches later than another file of its id is never the one a

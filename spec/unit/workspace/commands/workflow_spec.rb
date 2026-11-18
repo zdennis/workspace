@@ -531,7 +531,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
     it "loads a definition file through the catalog and runs it without a find" do
       loaded = instance_double(Workspace::WorkflowDefinition, id: "from-file", to_h: {"id" => "from-file"})
-      allow(catalog).to receive(:load_file).with("x/f.yml", project: "proj").and_return(loaded)
+      allow(catalog).to receive(:load_file!).with("x/f.yml", project: "proj").and_return(loaded)
       allow(catalog).to receive(:find).and_raise("catalog must not be asked")
       allow(panes).to receive(:default_pane).with("app").and_return("%5")
       allow(engine).to receive(:start).and_return("id" => "wr_1", "workspace" => "app")
@@ -539,13 +539,13 @@ RSpec.describe Workspace::Commands::Workflow do
 
       command.run(file: "x/f.yml", workspace: "app", worktree: "/src/app", project: "proj")
 
-      expect(catalog).to have_received(:load_file).with("x/f.yml", project: "proj")
+      expect(catalog).to have_received(:load_file!).with("x/f.yml", project: "proj")
       expect(engine).to have_received(:start).with(hash_including(definition: loaded))
     end
 
     it "names a dry run of a file by the loaded definition's id" do
       loaded = instance_double(Workspace::WorkflowDefinition, id: "from-file", to_h: {"id" => "from-file"})
-      allow(catalog).to receive(:load_file).and_return(loaded)
+      allow(catalog).to receive(:load_file!).and_return(loaded)
       allow(panes).to receive(:default_pane).and_return("%5")
       allow(engine).to receive(:preflight).and_return("step" => "plan", "inputs" => {}, "packs" => [])
 
@@ -556,8 +556,8 @@ RSpec.describe Workspace::Commands::Workflow do
     end
 
     it "refuses a file that names no id" do
-      nameless = instance_double(Workspace::WorkflowDefinition, id: Workspace::IdPatterns::FILE_ID)
-      allow(catalog).to receive(:load_file).and_return(nameless)
+      allow(catalog).to receive(:load_file!)
+        .and_raise(Workspace::UsageError, "x/f.yml has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml).")
 
       expect { command.run(file: "x/f.yml", workspace: "app", worktree: "/src/app") }
         .to raise_error(Workspace::UsageError, "x/f.yml has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml).")

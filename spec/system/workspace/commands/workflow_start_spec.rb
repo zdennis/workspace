@@ -1701,7 +1701,7 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       allow(git).to receive(:root).and_return(dir)
       allow(git).to receive(:worktree_exists?) { |path| path == checkout }
       allow(workflow).to receive(:run).and_return({"workspace" => "app.proj-1", "outcome" => "started", "run" => "r1"})
-      allow(catalog).to receive(:load_file).with("x/flow.yml", project: nil).and_return(file_definition)
+      allow(catalog).to receive(:load_file!).with("x/flow.yml", project: nil).and_return(file_definition)
       allow(catalog).to receive(:locate).and_return(nil)
     end
 
@@ -1722,14 +1722,15 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
 
     it "refuses a file that names no id, telling the person to add an id: key" do
-      nameless = Workspace::WorkflowDefinition.parse(yaml, id: "file", source: "file", path: "/tmp/x/a b.yml")
-      allow(catalog).to receive(:load_file).with("x/flow.yml", project: nil).and_return(nameless)
+      allow(catalog).to receive(:load_file!)
+        .with("x/flow.yml", project: nil)
+        .and_raise(Workspace::UsageError, "x/flow.yml has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml).")
 
       expect { command.call(file: "x/flow.yml", ref: "PROJ-1", here: here) }.to raise_error(Workspace::UsageError, /add an `id:` key/)
     end
 
     it "passes a missing file's UsageError through" do
-      allow(catalog).to receive(:load_file).and_raise(Workspace::UsageError, "Can't read nope.yml: No such file or directory")
+      allow(catalog).to receive(:load_file!).and_raise(Workspace::UsageError, "Can't read nope.yml: No such file or directory")
 
       expect { command.call(file: "nope.yml", ref: "PROJ-1") }.to raise_error(Workspace::UsageError, /Can't read nope.yml/)
     end
@@ -1757,6 +1758,16 @@ RSpec.describe Workspace::Commands::WorkflowStart do
       expect { command.call(file: "x/flow.yml", ref: "PROJ-1") }.to raise_error(Workspace::Error) do |e|
         expect(e.details["next"].first).to start_with("workspace workflow run --file /tmp/x/flow.yml --name app.proj-1")
       end
+    end
+
+    it "hands the loaded definition to the run a new workspace starts" do
+      allow(start).to receive(:payload).and_return({exit_code: 0, json: {"workspace" => "app.proj-1", "path" => checkout, "branch" => "PROJ-1", "created" => true}})
+      allow(tmux).to receive(:session_name_for).with("app.proj-1").and_return("app-wt")
+      allow(readiness).to receive(:wait).and_return(ready)
+
+      command.call(file: "x/flow.yml", ref: "PROJ-1")
+
+      expect(workflow).to have_received(:run).with(hash_including(definition: file_definition))
     end
 
     it "keeps unknown_workflow for a name given without --file" do

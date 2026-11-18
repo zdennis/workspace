@@ -225,14 +225,11 @@ module Workspace
           code: "branch_exists", details: {"branch" => plan.branch, "path" => plan.path, "worktree" => @git.worktree_exists?(plan.path)})
       end
 
-      # The definition in a `--file`, which must name itself: a file with no `id:` key and no id-shaped
-      # name would otherwise run as "file". An installed definition of the same id is said so in +warnings+,
-      # since `workflow run ID` and the run's recovery lines read that one, not this file.
+      # The definition in a `--file`, read through {WorkflowCatalog#load_file!}, which refuses a file that names
+      # no id. An installed definition of the same id is said so in +warnings+, since `workflow run ID` and the
+      # run's recovery lines read that one, not this file.
       def load_file!(file, project, warnings)
-        definition = @catalog.load_file(file, project: project)
-        if definition.id == IdPatterns::FILE_ID
-          raise Workspace::UsageError, "#{file} has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml)."
-        end
+        definition = @catalog.load_file!(file, project: project)
         installed = @catalog.locate(definition.id, project: project)
         if installed && File.expand_path(installed.last) != definition.path
           warnings << "A #{installed.first} definition of #{definition.id} (#{installed.last}) is installed; this run uses #{definition.path} instead, and `workflow run #{definition.id}` would read the installed one."
