@@ -163,7 +163,7 @@ RSpec.describe Workspace::Commands::Finish do
             expect(kill_command).not_to receive(:call)
 
             expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
-              Workspace::Error, /detached HEAD.*Check out a branch first/m
+              Workspace::Error, /detached HEAD.*Check out a branch first.*rerun with --force/m
             )
           end
 
@@ -172,7 +172,7 @@ RSpec.describe Workspace::Commands::Finish do
             expect(kill_command).not_to receive(:call)
 
             expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
-              Workspace::Error, /push -u origin feature\/x/
+              Workspace::Error, /push -u origin feature\/x.*rerun with --force/m
             )
           end
 
@@ -186,7 +186,7 @@ RSpec.describe Workspace::Commands::Finish do
               expect(kill_command).not_to receive(:call)
 
               expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
-                Workspace::Error, /2 commit\(s\) ahead of origin\/feature\/x/
+                Workspace::Error, /2 commit\(s\) ahead of origin\/feature\/x.*rerun with --force/m
               )
             end
 
