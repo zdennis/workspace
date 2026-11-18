@@ -77,12 +77,14 @@ RSpec.describe "workspace workflow simulate through build_cli" do
   end
 
   it "stops, with exit 0, where a person is needed" do
-    path = script("inputs: {task: x}\nsteps:\n  implement:\n    - {require: {commits: fail}}\n")
+    # verify's check fails until the run's attempt allowance is spent: the implicit loops back to
+    # implement cannot fix it, so the run stops for a person.
+    path = script("inputs: {task: x}\nsteps:\n  verify:\n#{Array.new(9) { "    - {check: fail}\n" }.join}")
     run_cli("rpiv", "--script", path, "--json")
     doc = JSON.parse(out.string)
 
     expect(exits).to eq([])
-    expect(doc).to include("outcome" => "stopped", "stopped" => {"step" => "implement", "attempt" => 1, "reason" => "failed_check"})
+    expect(doc).to include("outcome" => "stopped", "stopped" => {"step" => "verify", "attempt" => 4, "reason" => "failed_check"})
   end
 
   it "lists every problem of a bad script under invalid_script, as an envelope under --json" do

@@ -459,6 +459,23 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(step["on_fail"]).to eq("goto" => "a", "max" => 1, "context" => nil)
   end
 
+  it "parses on_fail: stop as an explicit stand for a person" do
+    step = parse("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: stop\n").steps.last
+
+    expect(step["on_fail"]).to eq("stop")
+  end
+
+  it "collects a problem for any other on_fail word" do
+    expect(problems("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: retry\n"))
+      .to eq(["step b: on_fail must be stop, or a mapping with goto and max"])
+  end
+
+  it "skips the on_fail validators for on_fail: stop" do
+    definition = parse("max_attempts: 6\nsteps:\n  a:\n    prompt: P\n    produces: [a.md]\n  b:\n    prompt: P\n    produces: [b.md]\n    on_fail: stop\n")
+
+    expect(definition.warnings).to eq([])
+  end
+
   describe "on_fail log_tail and backoff" do
     def on_fail(text) = parse("steps:\n  a:\n    prompt: P\n  b:\n    prompt: P\n    on_fail: #{text}\n").steps.last["on_fail"]
 

@@ -64,6 +64,13 @@ steps:
       plan_revision: REV
     produces: [approval-supportive.md]
     guard: unchanged
+    # A reviewer that failed (no verdict file, mostly) sends the run back to the plan, which
+    # rewrites it and starts the round again; the implicit default would send it to another
+    # reviewer, which would review the same unchanged plan.
+    on_fail:
+      goto: plan
+      max: 3
+      context: fresh
     timeout: 30m
 
   review_skeptical:
@@ -86,6 +93,11 @@ steps:
       plan_revision: REV
     produces: [approval-skeptical.md]
     guard: unchanged
+    # Back to the plan, as review_supportive: the implicit default would re-run the reviewer before.
+    on_fail:
+      goto: plan
+      max: 3
+      context: fresh
     timeout: 30m
 
   review_implementer:
@@ -107,6 +119,11 @@ steps:
       plan_revision: REV
     produces: [approval-implementer.md]
     guard: unchanged
+    # Back to the plan, as review_supportive: the implicit default would re-run the reviewer before.
+    on_fail:
+      goto: plan
+      max: 3
+      context: fresh
     timeout: 30m
 
   plan_review:

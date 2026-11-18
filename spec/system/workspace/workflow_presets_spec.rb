@@ -53,6 +53,7 @@ RSpec.describe "the shipped workflow presets" do
 
         expect(by_id.call("implement")["require"]).to eq([{"commits" => 1}, {"plan_status" => "done"}])
         expect(by_id.call("verify")["require"]).to eq([{"command" => "lint", "optional" => true}])
+        expect(by_id.call("verify")["status"]).to eq({"command" => "test", "timeout" => 2400.0})
         expect(by_id.call("implement")["prompt"]).to include("then set the plan's\n`status: done`")
       end
     end
@@ -64,6 +65,28 @@ RSpec.describe "the shipped workflow presets" do
           "review_supportive" => "unchanged", "review_skeptical" => "unchanged", "review_implementer" => "unchanged", "plan_review" => "unchanged"
         } : {})), id
       end
+    end
+
+    it "pins on_fail and the run allowance the loop default was tuned against" do
+      expect(catalog.find("rpiv").to_h["max_attempts"]).to eq(14)
+      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to eq(68)
+      expect(catalog.find("rpiv-auto-approve-v2").to_h["max_attempts"]).to eq(21)
+
+      rpiv = catalog.find("rpiv").to_h["steps"].find { |step| step["id"] == "verify" }
+      expect(rpiv["on_fail"]).to include("goto" => "implement", "max" => 3)
+
+      auto = catalog.find("rpiv-auto-approve").to_h["steps"].to_h { |step| [step["id"], step["on_fail"]] }
+      expect(auto).to include(
+        "review_supportive" => {"goto" => "plan", "max" => 3, "context" => "fresh"},
+        "review_skeptical" => {"goto" => "plan", "max" => 3, "context" => "fresh"},
+        "review_implementer" => {"goto" => "plan", "max" => 3, "context" => "fresh"},
+        "plan_review" => {"goto" => "plan", "max" => 9, "context" => "fresh", "except" => ["stale_plan_revision", "guard", "check_error"]}
+      )
+
+      # A step whose failure is a deliberate stop for a person never loops.
+      stops = ->(id, *names) { catalog.find(id).to_h["steps"].to_h { |step| [step["id"], step["on_fail"]] }.values_at(*names) }
+      expect(stops.call("investigate", "reproduce", "diagnose", "fix")).to all(eq("stop"))
+      expect(stops.call("pr-feedback", "fix")).to all(eq("stop"))
     end
 
     %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2].each do |id|
@@ -128,7 +151,7 @@ RSpec.describe "the shipped workflow presets" do
       expect(Workspace::WorkflowDefinition.review(plan)).to include("from" => %w[supportive skeptical implementer], "need" => 2, "must" => ["skeptical"], "max_rounds" => 6)
       expect(Workspace::WorkflowDefinition.step_max_attempts(plan)).to eq(8)
       expect(Workspace::WorkflowDefinition.reviewers(data).keys).to eq(%w[supportive skeptical implementer])
-      expect(data["max_attempts"]).to eq(17)
+      expect(data["max_attempts"]).to eq(21)
       expect(Workspace::WorkflowDefinition.run_timeout(data)).to include("seconds" => 28_800.0, "action" => "hold")
       expect(Workspace::WorkflowDefinition.budget(data)).to include("tokens" => 40_000_000)
     end
@@ -154,8 +177,8 @@ RSpec.describe "the shipped workflow presets" do
 
     it "leaves the files of rpiv and rpiv-auto-approve as they were" do
       sha = ->(id) { Digest::SHA256.file(File.join(config.builtin_workflows_dir, "#{id}.yml")).hexdigest }
-      expect(sha.call("rpiv")).to eq("42ab432dcbe289966f1f62008b081904e5eef1f32659a0bf220261965f7aa1e8")
-      expect(sha.call("rpiv-auto-approve")).to eq("edc35af9ff94282c2facb8b01da9c7fe71306c1850c980c63b104e4dc52aac5e")
+      expect(sha.call("rpiv")).to eq("0e8a96e72473e9ff0c0e7c328cfeacb3420f302f42f67a01cce253ba1150d6be")
+      expect(sha.call("rpiv-auto-approve")).to eq("46f241f38c5694297488f8e3b903eb4dfa39534dc42f1a68188602926ae8b7ed")
     end
   end
 

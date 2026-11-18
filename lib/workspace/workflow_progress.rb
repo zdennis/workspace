@@ -628,7 +628,7 @@ module Workspace
         return wait_to_retry(run, step, on_fail, text, wait, attempt) if wait
         run["pending_context"] << text
         run["current"] = next_move[:to]
-        return dispatch(run, ctx, "loop", {context: on_fail["context"], retry_of: {"text" => text}})
+        return dispatch(run, ctx, "loop", {context: on_fail.is_a?(Hash) ? on_fail["context"] : nil, retry_of: {"text" => text}})
       end
       @dispatch.release(run)
       run["state"] = "waiting"
@@ -679,7 +679,8 @@ module Workspace
     end
 
     def loop_context(run, step, on_fail, failure, count)
-      text = "The #{step["id"]} step failed and sent the run back to this step (time #{count} of #{on_fail["max"]}): #{WorkflowTransitions.failure_text(failure)}. " \
+      cap = on_fail.is_a?(Hash) ? " of #{on_fail["max"]}" : ""
+      text = "The #{step["id"]} step failed and sent the run back to this step (time #{count}#{cap}): #{WorkflowTransitions.failure_text(failure)}. " \
         "Its files are in #{run["artifacts_dir"]}. Fix what it found."
       lines = WorkflowDefinition.log_tail(on_fail)
       tail = (lines && failure["log"].is_a?(String)) ? @log_tail.block(failure["log"], lines: lines) : nil

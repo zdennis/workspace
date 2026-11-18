@@ -22,7 +22,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/run_liveness.rb` — Whether a workflow run is still alive, from its run file.
 - `lib/workspace/run_resources.rb` — Holds a workflow step's `uses:` locks for the run.
 - `lib/workspace/workflow_review_spec.rb` — Parses the `reviewers:` and step `review:` parts of a workflow definition.
-- `lib/workspace/workflow_definition.rb` — One workflow definition (YAML): checks every key, collects problems and fills defaults.
+- `lib/workspace/workflow_definition.rb` — One workflow definition (YAML): checks every key, collects problems and fills defaults, `on_fail: stop` included.
 - `lib/workspace/workflow_extends.rb` — Resolves a definition's `extends:` against its parent definitions.
 - `lib/workspace/workflow_lint.rb` — `workflow validate`'s checks that need the person's setup, as warnings.
 - `lib/workspace/workflow_defaults.rb` — Reads which workflow id config names for a ref kind.
@@ -32,7 +32,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_run.rb` — `WorkflowRun`, a frozen value over a stored run hash, with steps and attempts.
 - `lib/workspace/workflow_run_store.rb` — Run files under `~/.local/state/workspace/.workflows/`; the one way a run changes.
 - `lib/workspace/workflow_engine.rb` — Every transition of a run; delegates to the phase classes it is built from.
-- `lib/workspace/workflow_transitions.rb` — The engine's rules over plain values: attempts, delivery, backoff, sweep marks and review limits.
+- `lib/workspace/workflow_transitions.rb` — The engine's rules over plain values: attempts, delivery, backoff, the default one-step failure loop, sweep marks and review limits.
 - `lib/workspace/workflow_run_change.rb` — The one way the engine changes a run: lock, change, events, alerts and follow-ups.
 - `lib/workspace/workflow_prompt.rb` — Composes and writes a step's (and a review round's) instructions.
 - `lib/workspace/workflow_starter.rb` — What starts a run: preflight, render and the first step.

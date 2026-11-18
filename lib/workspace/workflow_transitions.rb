@@ -1083,9 +1083,12 @@ module Workspace
     end
 
     # Where a failed step goes, read once its failed attempt is stored: back along its `on_fail` (`to` its goto,
-    # `count` the edge's loop count after this one, `wait` the backoff seconds or nil), or `:stop` for a person when it has
-    # none, its loops or the run's attempts are used up, its goto step's own cap is spent (`limit: :step`,
-    # `step:` the goto; only that step is checked, though a loop re-runs every step from it to the failing one), or the failure's code or cause is one of its `except:`
+    # `count` the edge's loop count after this one, `wait` the backoff seconds or nil), or, when the step has none,
+    # back to the step before it in the definition ({implicit_loop_stops?} and guard and unproven failures
+    # excepted — a loop cannot fix them — and never past the first step, which stops for a person). `:stop` for a
+    # person also when the loops or the run's attempts are used up, the goto step's own cap is spent (`limit: :step`,
+    # `step:` the goto; only that step is checked, though a loop re-runs every step from it to the failing one), the
+    # failure's code or cause is one of its `except:`, or the step says `on_fail: stop`
     # (so a run is never sent into a step that cannot pass against the same facts).
     #
     # @param run [Hash{String=>Object}] a stored run at the failed step
@@ -1094,13 +1097,44 @@ module Workspace
     def self.after_failure(run, failure)
       step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
       on_fail = step["on_fail"]
-      return {kind: :stop} unless on_fail
+      return implicit_failure_move(run, step, failure) if on_fail.nil?
+      return {kind: :stop} if on_fail == "stop"
       edge = "#{step["id"]}->#{on_fail["goto"]}"
       count = run["loops"].fetch(edge, 0)
       excepted = Array(on_fail["except"]).any? { |name| name == failure["code"] || name == failure["cause"] }
       return {kind: :stop} if excepted || count >= on_fail["max"] || attempts_made(run) >= attempt_allowance(run)
       return {kind: :stop, limit: :step, step: on_fail["goto"]} if step_attempts_spent?(run, on_fail["goto"])
       {kind: :loop, edge: edge, to: on_fail["goto"], count: count + 1, wait: WorkflowDefinition.backoff(on_fail)}
+    end
+
+    # Whether a failure is one no loop can fix, read from the fail sites: a guard stop is the
+    # checkout disagreeing with the run, an `unproven` require proof is one the engine could not
+    # decide, `check_error` is the check or guard not having run at all, and `step_timed_out` the
+    # step outliving its time. (`check_timed_out` loops: an agent's own code can hang a check.)
+    #
+    # @param failure [Hash{String=>Object}] a step failure's "cause" and "code"
+    # @return [Boolean]
+    def self.implicit_loop_stops?(failure)
+      failure["cause"] == "guard" || failure["unproven"] == true || %w[check_error step_timed_out].include?(failure["code"])
+    end
+
+    # @param run [Hash{String=>Object}] a stored run at the failed step
+    # @param step [Hash{String=>Object}] the failing step's definition
+    # @param failure [Hash{String=>Object}] its "cause" and "code"
+    # @return [Hash{Symbol=>Object}] `{kind: :loop, edge:, to:, count:, wait: nil}` or `{kind: :stop}`
+    def self.implicit_failure_move(run, step, failure)
+      return {kind: :stop} if implicit_loop_stops?(failure)
+      steps = run["definition"]["steps"]
+      index = steps.index { |each| each["id"] == step["id"] }
+      return {kind: :stop} if index.to_i.zero?
+      prev = steps[index - 1]["id"]
+      return {kind: :stop} if attempts_made(run) >= attempt_allowance(run)
+      # The loop hands the failure to the step before and, once it passes, runs this step again,
+      # so both its own cap and the one before's are checked.
+      return {kind: :stop, limit: :step, step: step["id"]} if step_attempts_spent?(run, step["id"])
+      return {kind: :stop, limit: :step, step: prev} if step_attempts_spent?(run, prev)
+      edge = "#{step["id"]}->#{prev}"
+      {kind: :loop, edge: edge, to: prev, count: run["loops"].fetch(edge, 0) + 1, wait: nil}
     end
 
     # The `details` of a `budget_spent` refusal or hold.

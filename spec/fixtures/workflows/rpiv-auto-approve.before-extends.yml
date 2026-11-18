@@ -86,6 +86,7 @@ steps:
       plan_revision: REV
     produces: [approval-supportive.md]
     guard: unchanged
+    on_fail: {goto: plan, max: 3, context: fresh}
     timeout: 30m
 
   review_skeptical:
@@ -107,6 +108,7 @@ steps:
       plan_revision: REV
     produces: [approval-skeptical.md]
     guard: unchanged
+    on_fail: {goto: plan, max: 3, context: fresh}
     timeout: 30m
 
   review_implementer:
@@ -127,6 +129,7 @@ steps:
       plan_revision: REV
     produces: [approval-implementer.md]
     guard: unchanged
+    on_fail: {goto: plan, max: 3, context: fresh}
     timeout: 30m
 
   plan_review:
@@ -222,6 +225,9 @@ steps:
     uses: [test-db]
     status:
       command: test
+      # The check runs the project's whole test command, which on a sizable
+      # suite can outrun the 20-minute default; the step itself allows 90m.
+      timeout: 40m
     require:
       - command: lint
         optional: true

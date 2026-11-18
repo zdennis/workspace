@@ -18,8 +18,10 @@ instructions: |
   Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
   inputs; read them before you start.
 
-# Four steps, one plan rejection and three trips back from verify fit in ten.
-max_attempts: 10
+# Four steps fit in ten: one plan rejection and three trips back from verify. A failed
+# check or report now also loops the run back one step by default (research and plan and
+# implement can each spend a spare attempt that way), so 14 leaves the headroom.
+max_attempts: 14
 
 steps:
   research:
@@ -90,6 +92,9 @@ steps:
     uses: [test-db]
     status:
       command: test
+      # The check runs the project's whole test command, which on a sizable
+      # suite can outrun the 20-minute default; the step itself allows 90m.
+      timeout: 40m
     require:
       - command: lint
         optional: true

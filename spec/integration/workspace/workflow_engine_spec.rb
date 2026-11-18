@@ -420,7 +420,8 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "closes a failed-check entry on a resume to another step" do
       check_results << {exit_code: 1, timed_out: false}
-      two = definition("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n    status: {command: test, timeout: 5m}\n")
+      # on_fail: stop leaves the run waiting for a person, which is what the resume closes.
+      two = definition("steps:\n  a:\n    prompt: A\n  b:\n    prompt: B\n    status: {command: test, timeout: 5m}\n    on_fail: stop\n")
       start(two, inputs: {})
       engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       engine.turn_ended("wr_1", actor: "agent", pane: "%5")
@@ -1988,7 +1989,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "stops the run with the code, source and what was found when no loop is left" do
-        edit_run(store, "wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = nil }
+        edit_run(store, "wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = "stop" }
         commit_counts[0] = 0
 
         run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
@@ -2000,7 +2001,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "fails as unproven when the attempt has no recorded starting commit" do
         edit_run(store, "wr_1") do |stored|
-          stored["definition"]["steps"][1]["on_fail"] = nil
+          stored["definition"]["steps"][1]["on_fail"] = "stop"
           stored["steps"]["build"]["attempts"].last.delete("head")
         end
 
@@ -2011,7 +2012,7 @@ RSpec.describe Workspace::WorkflowEngine do
       end
 
       it "fails on a dirty tracked tree with the paths" do
-        edit_run(store, "wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = nil }
+        edit_run(store, "wr_1") { |stored| stored["definition"]["steps"][1]["on_fail"] = "stop" }
         allow(guard).to receive(:dirty_paths).and_return(["a.rb"])
 
         expect(engine.turn_ended("wr_1", actor: "agent", pane: "%5")["reason"]["details"]).to include("code" => "require_tracked_clean", "paths" => ["a.rb"])
@@ -5457,14 +5458,14 @@ steps:
       engine.turn_ended("wr_1", actor: "agent", pane: "%5")
     end
 
-    it "stays during the first run again, and is gone after a resume of a failed rerun" do
+    it "stays while the failed rerun loops back, and is gone when the rejected step runs again" do
       to_second_gate
       engine.reject("wr_1", actor: "person", note: "No.")
 
       expect(stored_run(store, "wr_1")["steps"]["second"]["gate"]).to include("state" => "rejected", "attempt" => 1)
       engine.report("wr_1", actor: "agent", status: "fail", summary: "x")
-      engine.turn_ended("wr_1", actor: "agent", pane: "%5")
-      engine.resume("wr_1", actor: "person")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5") # the failed rerun loops back to the first step
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5") # the first step passes and the second starts again
 
       expect(stored_run(store, "wr_1")["steps"]["second"]).not_to have_key("gate")
     end

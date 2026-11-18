@@ -629,7 +629,7 @@ RSpec.describe Workspace::WorkflowTransitions do
       end
     end
 
-    it "stops a step with no on_fail" do
+    it "stops the first step's failure with no on_fail: there is no earlier step to hand it to" do
       expect(described_class.after_failure(failed_run(nil), failure)).to eq(kind: :stop)
     end
 
@@ -653,6 +653,65 @@ RSpec.describe Workspace::WorkflowTransitions do
     it "stops on a code or cause on_fail excepts" do
       expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 2, "except" => ["check_failed"]}), failure)).to eq(kind: :stop)
       expect(described_class.after_failure(failed_run({"goto" => "verify", "max" => 2, "except" => ["check"]}), failure)).to eq(kind: :stop)
+    end
+  end
+
+  describe ".after_failure with no on_fail (the implicit loop)" do
+    let(:failure) { {"cause" => "check", "code" => "check_failed"} }
+
+    def implicit_run(attempts: 1, loops: {}, first: false)
+      steps = {"plan" => step("passed", {"n" => 1}), "implement" => step("failed", *Array.new(attempts) { |index| {"n" => index + 1} })}
+      steps = {"implement" => step("failed", *Array.new(attempts) { |index| {"n" => index + 1} })} if first
+      run_with(steps: steps, current: "implement").merge("loops" => loops)
+    end
+
+    it "loops back to the step before, with no wait" do
+      expect(described_class.after_failure(implicit_run, failure)).to eq(kind: :loop, edge: "implement->plan", to: "plan", count: 1, wait: nil)
+    end
+
+    it "counts the edge's loops" do
+      expect(described_class.after_failure(implicit_run(loops: {"implement->plan" => 1}), failure)).to include(kind: :loop, to: "plan", count: 2)
+    end
+
+    it "stops on the first step's failure" do
+      expect(described_class.after_failure(implicit_run(first: true), failure)).to eq(kind: :stop)
+    end
+
+    it "stops once the run's attempts are spent" do
+      expect(described_class.after_failure(implicit_run(attempts: 3), failure)).to eq(kind: :stop)
+    end
+
+    it "stops, naming the step and limit, when the step before has spent its own cap" do
+      run = implicit_run
+      run["definition"]["steps"][0]["max_attempts"] = 1
+
+      expect(described_class.after_failure(run, failure)).to eq(kind: :stop, limit: :step, step: "plan")
+    end
+
+    it "stops, naming the failing step and limit, when it has spent its own cap: the loop would run it again" do
+      run = implicit_run
+      run["definition"]["steps"][1]["max_attempts"] = 1
+
+      expect(described_class.after_failure(run, failure)).to eq(kind: :stop, limit: :step, step: "implement")
+    end
+
+    it "stops on an infrastructural failure: a guard, an unproven proof, a check that could not run, a step past its time" do
+      expect(described_class.after_failure(implicit_run, {"cause" => "guard", "code" => "head_moved"})).to eq(kind: :stop)
+      expect(described_class.after_failure(implicit_run, {"cause" => "require", "unproven" => true, "code" => "require_commits"})).to eq(kind: :stop)
+      expect(described_class.after_failure(implicit_run, {"cause" => "check", "code" => "check_error"})).to eq(kind: :stop)
+      expect(described_class.after_failure(implicit_run, {"cause" => "timeout", "code" => "step_timed_out"})).to eq(kind: :stop)
+    end
+
+    it "retries an agent-reported failure and a check that timed out" do
+      expect(described_class.after_failure(implicit_run, {"cause" => "reported", "code" => "reported"})).to include(kind: :loop)
+      expect(described_class.after_failure(implicit_run, {"cause" => "check", "code" => "check_timed_out"})).to include(kind: :loop)
+    end
+
+    it "stops when the step says on_fail: stop" do
+      run = implicit_run
+      run["definition"]["steps"][1]["on_fail"] = "stop"
+
+      expect(described_class.after_failure(run, failure)).to eq(kind: :stop)
     end
   end
 

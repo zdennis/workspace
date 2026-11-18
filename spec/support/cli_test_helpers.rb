@@ -942,14 +942,32 @@ module CLITestHelpers
 
   # Records each `workflow`/`step` call; mutations return the row the real command returns.
   class FakeWorkflowCommand
-    CONTROL_METHODS = %i[calls error error= row row= status_result status_result=].freeze
+    CONTROL_METHODS = %i[calls error error= row row= status_result status_result= default_run_id default_run_id= default_workflow_id default_workflow_id=].freeze
 
     attr_reader :calls
-    attr_accessor :error, :row, :status_result
+    attr_accessor :error, :row, :status_result, :default_run_id, :default_workflow_id
 
     def initialize
       @calls = []
       @row = {"workspace" => "app", "outcome" => "started", "reason" => nil, "message" => nil, "run" => {"id" => "wr_1", "state" => "running"}}
+    end
+
+    def default_run(caller_pane:, workspace:, author_only:)
+      @calls << [:default_run, {caller_pane: caller_pane, workspace: workspace, author_only: author_only}]
+      raise @error if @error
+      @default_run_id
+    end
+
+    def default_workflow(caller_pane:, workspace:)
+      @calls << [:default_workflow, {caller_pane: caller_pane, workspace: workspace}]
+      raise @error if @error
+      @default_workflow_id
+    end
+
+    def workflow_of_run(id)
+      @calls << [:workflow_of_run, {id: id}]
+      raise @error if @error
+      @default_workflow_id
     end
 
     %i[show graph validate render simulate status events files attempts trace advance step_status].each do |name|

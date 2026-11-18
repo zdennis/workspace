@@ -517,10 +517,11 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(workflow_command.calls).to eq([[:check, {id: "rpiv", step: "verify", worktree: "/work/api", artifacts: "/some/dir/fixture", json: false, project: nil}]])
     end
 
-    it "shows every definition, or one" do
+    it "shows every definition, or one, and never asks the run resolver" do
       cli.run(["workflow", "show"])
       cli.run(["workflow", "show", "rpiv", "--json"])
 
+      # Bare `workflow show` lists every definition whatever runs are going; it never defaults.
       expect(workflow_command.calls).to eq([[:show, {id: nil, json: false, source: false, project: nil}], [:show, {id: "rpiv", json: true, source: false, project: nil}]])
     end
 
@@ -832,7 +833,8 @@ RSpec.describe Workspace::CLI::Workflow do
     }.each do |args, message|
       it "refuses `workflow #{args.join(" ")[0, 40]}` before the command is called" do
         expect { cli.run(["workflow", *args]) }.to raise_error(Workspace::UsageError, Regexp.new(Regexp.escape(message)))
-        expect(workflow_command.calls).to be_empty
+        # The run resolver may answer the missing RUN id first; the verb itself is never reached.
+        expect(workflow_command.calls.reject { |name, _| name.to_s.start_with?("default_") }).to be_empty
       end
     end
 
@@ -972,6 +974,109 @@ RSpec.describe Workspace::CLI::Workflow do
 
         expect(output.string).to include("Usage: workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]").and include("end your turn")
       end
+    end
+  end
+  describe "the run defaulting" do
+    include CLITestHelpers::EnvStub
+
+    before { stub_env("TMUX_PANE" => nil) }
+
+    it "fills a left-out RUN id from the resolver, author_only per verb" do
+      workflow_command.default_run_id = "wr_9"
+      stub_env("TMUX_PANE" => "%19")
+
+      run("events")
+      run("cancel")
+
+      expect(workflow_command.calls).to include(
+        [:default_run, {caller_pane: "%19", workspace: "app", author_only: false}],
+        [:default_run, {caller_pane: "%19", workspace: "app", author_only: true}]
+      )
+      expect(workflow_command.calls).to include([:events, hash_including(run: "wr_9")], [:cancel, hash_including(run: "wr_9")])
+    end
+
+    it "uses the explicit id and never asks the resolver" do
+      run("events", "wr_1")
+
+      expect(workflow_command.calls).to eq([[:events, {run: "wr_1", since: 0, json: false, follow: false, types: nil, timeout: nil}]])
+    end
+
+    it "keeps the usage error when nothing resolves" do
+      expect { run("events") }.to raise_error(Workspace::UsageError, "workflow events needs a RUN id.")
+      expect(workflow_command.calls).to eq([[:default_run, {caller_pane: nil, workspace: "app", author_only: false}]])
+    end
+
+    it "fills the definition verbs' id from the resolved run's workflow" do
+      workflow_command.default_workflow_id = "rpiv"
+
+      run("graph")
+      run("stats")
+      run("compare")
+
+      expect(workflow_command.calls).to include(
+        [:default_workflow, {caller_pane: nil, workspace: "app"}],
+        [:graph, hash_including(id: "rpiv")],
+        [:stats, hash_including(workflow: "rpiv")],
+        [:compare, hash_including(workflow: "rpiv")]
+      )
+    end
+
+    it "takes graph's ID from --run, so the two name the same workflow" do
+      workflow_command.default_workflow_id = "rpiv"
+
+      run("graph", "--run", "wr_9")
+
+      expect(workflow_command.calls).to eq([[:workflow_of_run, {id: "wr_9"}], [:graph, {id: "rpiv", format: nil, json: false, project: "app", run: "wr_9"}]])
+    end
+
+    it "never defaults a verb that --name or --project narrows" do
+      expect { run("cancel", "--name", "other") }.to raise_error(Workspace::UsageError, "workflow cancel needs a RUN id.")
+      expect { run("stats", "--project") }.to raise_error(Workspace::UsageError, "workflow stats needs a workflow ID (see `workspace workflow show`).")
+
+      expect(workflow_command.calls).to be_empty
+    end
+
+    it "asks the resolver with each run verb's own author_only" do
+      stub_env("TMUX_PANE" => "%19")
+      workflow_command.default_run_id = "wr_9"
+
+      Workspace::CLI::Workflow::RUN_DEFAULTS.each do |subcommand, author_only|
+        begin
+          run(subcommand)
+        rescue Workspace::UsageError
+          nil # reject's --note and the like: the resolver call is what this asserts
+        end
+
+        expect(workflow_command.calls).to include([:default_run, hash_including(caller_pane: "%19", author_only: author_only)]),
+          "expected #{subcommand} to resolve with author_only: #{author_only}"
+        workflow_command.calls.clear
+      end
+    end
+
+    it "keeps `show --source` needing an explicit ID" do
+      expect { run("show", "--source") }.to raise_error(Workspace::UsageError, "workflow show --source needs an ID (see `workspace workflow show`).")
+      expect(workflow_command.calls).to be_empty
+    end
+
+    it "stays quiet outside any workspace and outside tmux" do
+      expect { run("events", workflow_project: nil, project_detector: RecordingProjectDetector.new("/src/app" => nil)) }
+        .to raise_error(Workspace::UsageError, "workflow events needs a RUN id.")
+      expect(workflow_command.calls).to eq([[:default_run, {caller_pane: nil, workspace: nil, author_only: false}]])
+    end
+
+    it "reads the workspace through the workflow project resolver and takes not_in_workspace as none" do
+      project = double("workflow project")
+      allow(project).to receive(:workspace).and_raise(Workspace::Error.new("No workspace could be detected.", code: "not_in_workspace"))
+      expect { run("events", workflow_project: project) }.to raise_error(Workspace::UsageError, "workflow events needs a RUN id.")
+
+      other = double("workflow project")
+      allow(other).to receive(:workspace).and_raise(Workspace::Error.new("No config has that name.", code: "unknown_workspace"))
+      expect { run("events", workflow_project: other) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workspace") }
+    end
+
+    it "does not default advance" do
+      expect { run("advance") }.to raise_error(Workspace::UsageError, "workflow advance needs a RUN id.")
+      expect(workflow_command.calls).to be_empty
     end
   end
 end

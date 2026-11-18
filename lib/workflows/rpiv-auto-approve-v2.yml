@@ -8,8 +8,10 @@ use_when: A feature or change to build end to end when no person will review the
 
 # Estimates, to replace with `workflow stats` once there are runs. Research 1, plan up to 8
 # (6 review rounds plus 2 spare for a failed status: or an undelivered line), and implement
-# and verify up to 4 each (verify's on_fail goes back to implement 3 times) make 17.
-max_attempts: 17
+# and verify up to 4 each (verify's on_fail goes back to implement 3 times) make 17. A
+# research or implement failure now also loops the run back one step by default, so 21
+# leaves the headroom for one of those.
+max_attempts: 21
 # Parallel reviewers make a round the slowest reviewer rather than the sum: 6 rounds of about
 # 15 minutes of planning and 15 of review, research, and implement plus verify come to about
 # 7.5 hours of machine time.

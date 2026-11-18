@@ -1137,7 +1137,59 @@ module Workspace
         @output.puts "Reported: #{info["reported"]["status"]}#{" (#{info["reported"]["summary"]})" if info["reported"]["summary"]}" if info["reported"]
       end
 
+      # The run a verb with no RUN id defaults to: the run the calling pane is bound to (either
+      # role for a read verb, the author's role only for a mutating one), else the one going run
+      # on the named workspace (the checkout the command runs in). A mutating verb on a review
+      # pane resolves nothing, so the pane can never reach the run it reviews through a default.
+      #
+      # @param caller_pane [String, nil] `$TMUX_PANE` of the calling pane
+      # @param workspace [String, nil] the workspace the command runs in (the checkout match key)
+      # @param author_only [Boolean] whether a reviewer binding counts
+      # @return [String, nil] the run id, or nil when nothing resolves (the caller's usage error stands)
+      # @raise [Workspace::Error] code `ambiguous_run` when several going runs sit on the workspace
+      def default_run(caller_pane:, workspace:, author_only:)
+        bound = caller_pane.to_s.empty? ? nil : @panes.bound_on(caller_pane)
+        if bound
+          return bound[:run_id] if bound[:role] == "author" || !author_only
+          return nil
+        end
+        return nil unless workspace
+        going = @store.going.select { |run| run.workspace == workspace }
+        return nil if going.empty?
+        raise ambiguous_run_error(workspace, going) if going.size > 1
+        going.first.id
+      end
+
+      # The workflow id the definition-id verbs (`graph`, `stats`, `compare`) default to:
+      # the resolved run's `workflow` field. Nil when no run resolves.
+      #
+      # @param caller_pane [String, nil] `$TMUX_PANE` of the calling pane
+      # @param workspace [String, nil] the workspace the command runs in
+      # @return [String, nil] the workflow id, or nil when nothing resolves
+      # @raise [Workspace::Error] code `ambiguous_run` when several going runs sit on the workspace
+      def default_workflow(caller_pane:, workspace:)
+        id = default_run(caller_pane: caller_pane, workspace: workspace, author_only: false)
+        id && workflow_of_run(id)
+      end
+
+      # The workflow id of one stored run, for `graph --run RUN` with the ID left out.
+      #
+      # @param id [String] a run id
+      # @return [String] the run's `workflow` field
+      # @raise [Workspace::Error] code `unknown_run` when no run is stored under the id
+      def workflow_of_run(id)
+        @store.run(id).workflow
+      end
+
       private
+
+      def ambiguous_run_error(workspace, going)
+        runs = going.sort_by { |run| run.to_h["created_at"].to_s }.reverse
+          .map { |run| {"id" => run.id, "workflow" => run.workflow, "state" => run.state, "created_at" => run.to_h["created_at"]} }
+        Workspace::Error.new("Several workflow runs are going in workspace #{workspace}: #{runs.map { |each| each["id"] }.join(", ")}. " \
+          "Pass the RUN id to name one.",
+          code: "ambiguous_run", details: {"workspace" => workspace, "runs" => runs})
+      end
 
       def run_graph(id, stored)
         definition = stored.definition.is_a?(Hash) ? stored.definition : {}
@@ -1905,7 +1957,10 @@ module Workspace
         traits << "uses #{step["uses"].join(", ")}" if step["uses"].any?
         traits << "check" if step["status"]
         traits << "gate: #{step["gate"]}" if step["gate"]
-        traits << "on fail: back to #{step["on_fail"]["goto"]}, #{step["on_fail"]["max"]} time(s)" if step["on_fail"]
+        case step["on_fail"]
+        when Hash then traits << "on fail: back to #{step["on_fail"]["goto"]}, #{step["on_fail"]["max"]} time(s)"
+        when "stop" then traits << "on fail: stop"
+        end
         traits << "continues the conversation" if step["context"] == "continue"
         traits.join("; ")
       end
