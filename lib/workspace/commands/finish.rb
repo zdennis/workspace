@@ -151,7 +151,7 @@ module Workspace
         if changed > 0
           raise Workspace::Error,
             "'#{project}' has #{changed} changed file(s) at #{worktree_path}.\n" \
-            "Commit or stash them before finishing."
+            "Commit or stash them before finishing, or rerun with --force to finish anyway."
         end
 
         branch = @git.worktree_branch(worktree_path)
@@ -175,7 +175,7 @@ module Workspace
         if ahead > 0
           raise Workspace::Error,
             "'#{project}' branch '#{branch}' is #{ahead} commit(s) ahead of #{upstream}.\n" \
-            "Push before finishing: git -C #{worktree_path} push"
+            "Push before finishing: git -C #{worktree_path} push, or rerun with --force to finish anyway."
         end
       end
 

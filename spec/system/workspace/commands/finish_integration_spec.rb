@@ -73,4 +73,34 @@ RSpec.describe Workspace::Commands::Finish, "with a real repository" do
 
     expect(outcome).to eq("merged")
   end
+
+  context "with --force" do
+    def forced_outcome
+      command.call("app.worktree-feature", force: true, json: true, working_dir: @dir)
+      JSON.parse(output.string)
+    end
+
+    it "finishes a dirty worktree whose commits are all on its upstream" do
+      File.write(File.join(worktree, "work"), "rewritten locally")
+
+      expect { command.call("app.worktree-feature", working_dir: @dir) }
+        .to raise_error(Workspace::Error, /changed file\(s\).*rerun with --force/m)
+
+      expect(forced_outcome).to include("ok" => true, "outcome" => "pushed")
+      expect(kill_command).to have_received(:call).with("app.worktree-feature", confirm: false, force: true, quiet: true, working_dir: @dir, outcome: "pushed")
+    end
+
+    it "records discarded when the branch is ahead of its upstream" do
+      commit(worktree, "extra")
+
+      expect(forced_outcome).to include("ok" => true, "outcome" => "discarded")
+      expect(kill_command).to have_received(:call).with("app.worktree-feature", confirm: false, force: true, quiet: true, working_dir: @dir, outcome: "discarded")
+    end
+
+    it "records discarded when the branch has no upstream" do
+      git(worktree, "branch", "--unset-upstream")
+
+      expect(forced_outcome).to include("outcome" => "discarded")
+    end
+  end
 end

@@ -547,7 +547,7 @@ module Workspace
           doctor          Check that all required dependencies are installed
           event-log       Show or compact the event log (state changes and agent activity)
           events          Read or follow the event log and every agent's hook events as one stream
-          finish          Verify a worktree is clean and pushed, then remove it (default: the current one; optionally opens a PR)
+          finish          Verify a worktree is clean and pushed, then remove it (default: the current one; optionally opens a PR; --force finishes anyway)
           focus           Bring a project's iTerm window to the front, centered and dimmed by focus.chain (not for headless projects)
           go              Start a workflow on a ticket, pull request, branch or free text; says which and why
           handoff         Check context usage and hand off to a fresh conversation
@@ -1162,9 +1162,10 @@ module Workspace
     def cmd_finish(args)
       pr = false
       json = false
+      force = false
       name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace finish [--name WS] [--pr] [--json] [project]"
+        opts.banner = "Usage: workspace finish [--name WS] [--pr] [-f | --force] [--json] [project]"
         opts.separator ""
         opts.separator "Verify a worktree project is clean and fully pushed, then remove it"
         opts.separator "the same way 'workspace kill' does (session, worktree, config, state)."
@@ -1176,13 +1177,18 @@ module Workspace
         opts.separator ""
         opts.separator "Refuses when the branch has uncommitted changes to tracked files"
         opts.separator "(untracked files don't count), has no upstream, or is ahead of its"
-        opts.separator "upstream. There is no override; push or commit first."
+        opts.separator "upstream. --force skips these checks and finishes anyway; the changed"
+        opts.separator "or unpushed work is removed with the worktree."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--name NAME", "The worktree workspace to finish (default: the one detected from the current directory)") { |v| name = v }
         opts.on("--pr", "Open a PR with `gh pr create --fill` (or reuse an existing one) first;",
           "skipped with a note if `gh` isn't installed") do
           pr = true
+        end
+        opts.on("-f", "--force", "Skip the clean-and-pushed checks and finish even with changed or",
+          "unpushed work; it is removed with the worktree") do
+          force = true
         end
         opts.on("--json", "Emit the documented JSON schema instead of plain text (see docs/README.finish.md)") do
           json = true
@@ -1191,6 +1197,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace finish    # remove the worktree workspace you are in (session, worktree, config), once it is clean and pushed; the branch is kept"
         opts.separator "  workspace finish --pr    # open (or reuse) a PR for the branch first, then remove the workspace"
+        opts.separator "  workspace finish -f    # finish despite changed or unpushed work; it is removed with the worktree"
         opts.separator "  workspace finish --name myproject.worktree-PROJ-123    # finish a named worktree workspace, from anywhere"
         opts.separator "  workspace finish myproject.worktree-PROJ-123 --json    # the same, scripted; JSON on stdout"
       end
@@ -1199,11 +1206,11 @@ module Workspace
 
       if json
         # No post_kill hook here: its output would land on stdout next to the JSON.
-        result = @finish_command.call(target, pr: pr, json: true, working_dir: @working_dir)
+        result = @finish_command.call(target, pr: pr, json: true, force: force, working_dir: @working_dir)
         @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
         return
       end
-      @finish_command.call(target, pr: pr, json: false, working_dir: @working_dir) do |project|
+      @finish_command.call(target, pr: pr, json: false, force: force, working_dir: @working_dir) do |project|
         @hook_runner.run(project, "post_kill")
       end
     rescue OptionParser::ParseError, UsageError => e

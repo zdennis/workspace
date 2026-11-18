@@ -14,9 +14,8 @@ workspace finish [options] [project]
 |--------|-------------|
 | `--name WS` | The worktree workspace to finish, the same as the positional `project` (giving both with different values is a usage error) |
 | `--pr` | Open a PR with `gh pr create --fill` (or reuse an existing one) before cleanup |
+| `-f`, `--force` | Skip the clean-and-pushed checks and finish even with changed or unpushed work; it is removed with the worktree |
 | `--json` | Emit the JSON schema below instead of plain text |
-
-There is no `--force`/override for the clean-and-pushed check — see "Details".
 
 ## Details
 
@@ -28,7 +27,7 @@ Before touching anything, `finish` checks:
 2. **On a branch, with an upstream** — the worktree must have a branch checked out (a detached HEAD is refused, with a hint to check out a branch first), and the branch must be tracking a remote branch. Without one, `finish` refuses with a hint: `git push -u origin <branch>`.
 3. **Not ahead of its upstream** — if HEAD has commits the upstream doesn't, `finish` refuses with a hint: `git push`.
 
-If git can't answer one of these checks, `finish` refuses rather than guess. There's no flag to skip this — if you want to discard work, use `workspace kill --force` instead.
+If git can't answer one of these checks, `finish` refuses rather than guess. `--force` skips these checks entirely and finishes anyway — a tracked-and-locally-modified file (`.bundle/config` rewritten by `bundle config set`, say), a branch that was never pushed — and the changed or unpushed work is removed with the worktree. Use it when you know the work is disposable or already somewhere else.
 
 `finish` checks against the upstream branch as it was last fetched; it doesn't fetch first. If a teammate pushed to the same branch since your last fetch, run `git fetch` before `finish` to get an accurate check.
 
@@ -40,9 +39,11 @@ If git can't answer one of these checks, `finish` refuses rather than guess. The
 
 The same outcome goes in the `worktree_finished` event and the `--json` document. A PR found or created by `--pr` does not change it; the URL is `pr_url`.
 
+With `--force` the clean-and-pushed check never ran, so the outcome is computed from git facts alone and says what happened to the branch's work: `merged` when the branch is on the default branch, `pushed` when the branch has an upstream and no commits the upstream lacks (every commit is on the remote), else `discarded`. A PR found by `--pr` never makes unpushed work read `pushed`: the PR step looks up or opens a PR but does not push. One mixed case is known: with every commit pushed but uncommitted changes present, a forced finish records `pushed` even though the destroyed edits went nowhere — the one-word outcome cannot express both.
+
 With `--pr`, `finish` looks for an existing PR for the branch (`gh pr view`) and prints its URL if found, or opens one (`gh pr create --fill`) otherwise. This is the same step [`pr create`](README.pr.md) runs, without its push or its check for commits: `finish` has already required the branch to be pushed. If `gh` isn't installed, this step is skipped with a one-line note and `finish` keeps going. If `gh` fails (not authenticated, no fill-able commits, etc.), `finish` reports the error and stops — the worktree is *not* removed.
 
-Once the checks (and optional PR step) pass, `finish` removes the project the same way `workspace kill` does, without the confirmation prompt but *with* its unsaved-work check (`finish` never uses `--force`). That check runs again right before the worktree is removed, so work committed or edited after the checks above (while the PR step ran, say) is refused rather than deleted. The worktree is then removed with `git worktree remove --force`, so untracked files go with it.
+Once the checks (and optional PR step) pass, `finish` removes the project the same way `workspace kill` does, without the confirmation prompt but *with* its unsaved-work check (unless `--force` was given, which skips that check too). That check runs again right before the worktree is removed, so work committed or edited after the checks above (while the PR step ran, say) is refused rather than deleted. The worktree is then removed with `git worktree remove --force`, so untracked files go with it.
 
 ### Running `finish` from inside the session it kills
 
@@ -73,7 +74,7 @@ Error (nothing was removed):
 {"schema_version": 1, "ok": false, "error": "'myproject.worktree-PROJ-123' has 2 changed file(s) at /path/to/worktree.\nCommit or stash them before finishing.", "code": "unsaved_work"}
 ```
 
-- `outcome` is `merged` (the branch's commits are on the default branch) or `pushed` (clean and pushed, not known to be merged).
+- `outcome` is `merged` (the branch's commits are on the default branch), `pushed` (clean and pushed, not known to be merged), or, under `--force`, also `discarded` (the branch's work was not all on its remote and is removed with the worktree — see "Details").
 - `schema_version` is bumped only on a breaking change to this shape.
 - `notes_inside_worktree` and `warnings` are present only when the workspace's notes directory was inside the worktree and held files, which finishing deleted: `{"schema_version": 1, "ok": true, "project": "…", "notes_inside_worktree": {"dir": "/abs/tmp/workspace-notes", "files": 3}, "warnings": ["The notes directory /abs/tmp/workspace-notes holds 3 files and is inside the worktree; removing the worktree deletes them."]}`. `warnings` is a list of sentences. In plain-text mode `finish` prints the same sentence, prefixed `Warning:`, before it removes anything.
 - `pr_url` is always present: the URL of the pull request `--pr` found or opened, or `null` without `--pr`, when `gh` is not installed, or when no URL came back.
@@ -95,8 +96,11 @@ workspace finish --name myproject.worktree-PROJ-123
 
 # The same, scripted
 workspace finish myproject.worktree-PROJ-123 --json
+
+# Finish despite changed or unpushed work (it is removed with the worktree)
+workspace finish --force
 ```
 
 ## See also
 
-[`workspace pr create`](README.pr.md) opens a pull request and keeps the workspace. `workspace kill` removes a worktree unconditionally (with an unsaved-work check that `--force` can skip); `finish` never skips its clean/pushed check.
+[`workspace pr create`](README.pr.md) opens a pull request and keeps the workspace. `workspace kill` removes a worktree unconditionally (with an unsaved-work check that `--force` can skip); `finish --force` skips its clean-and-pushed checks the same way.
