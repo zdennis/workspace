@@ -55,7 +55,7 @@
         "guard": "unchanged",
         "require": [],
         "uses": [],
-        "on_fail": null,
+        "on_fail": "stop",
         "context": "fresh",
         "timeout": 2700.0,
         "on_timeout": "warn",
@@ -80,7 +80,7 @@
           }
         ],
         "uses": [],
-        "on_fail": null,
+        "on_fail": "stop",
         "context": "continue",
         "timeout": 3600.0,
         "on_timeout": "warn",
@@ -108,7 +108,7 @@
         "uses": [
           "test-db"
         ],
-        "on_fail": null,
+        "on_fail": "stop",
         "context": "fresh",
         "timeout": 7200.0,
         "on_timeout": "warn",
@@ -119,7 +119,7 @@
   },
   "definition_source": "preset",
   "definition_path": "<ROOT>/lib/workflows/investigate.yml",
-  "definition_sha256": "b4a4dfca4dc0572ff93b697884a73f1bb47195b00f4e68f760232a8d74a3ddf1",
+  "definition_sha256": "2589a54d653c2319e3753243a19feb61d68acaa5180d292aff0c9800e6ee20fe",
   "workspace": "app.worktree-x",
   "project": "app",
   "worktree": "<TMP>/app",
@@ -171,7 +171,7 @@
             "before": "1111111111111111111111111111111111111111",
             "after": "1111111111111111111111111111111111111111"
           },
-          "definition_sha256": "b4a4dfca4dc0572ff93b697884a73f1bb47195b00f4e68f760232a8d74a3ddf1",
+          "definition_sha256": "2589a54d653c2319e3753243a19feb61d68acaa5180d292aff0c9800e6ee20fe",
           "prompt_sha256": "<PROMPT_SHA>",
           "packs": [
             {
@@ -206,7 +206,7 @@
             "before": "1111111111111111111111111111111111111111",
             "after": "1111111111111111111111111111111111111111"
           },
-          "definition_sha256": "b4a4dfca4dc0572ff93b697884a73f1bb47195b00f4e68f760232a8d74a3ddf1",
+          "definition_sha256": "2589a54d653c2319e3753243a19feb61d68acaa5180d292aff0c9800e6ee20fe",
           "prompt_sha256": "<PROMPT_SHA>",
           "packs": [
             {
