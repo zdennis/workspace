@@ -1725,8 +1725,8 @@ module Workspace
       end
 
       # The id a text with no --id is checked as when it names none.
-      STDIN_ID = "stdin"
-      FILE_ID = "file"
+      STDIN_ID = IdPatterns::STDIN_ID
+      FILE_ID = IdPatterns::FILE_ID
 
       # A run that has ended: its park is gone with it, and there is nothing to record.
       RUN_ENDED_CODES = %w[run_not_active unknown_run].freeze

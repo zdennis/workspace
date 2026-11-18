@@ -49,6 +49,27 @@ module Workspace
       WorkflowDefinition.parse(File.read(path, encoding: Encoding::UTF_8), id: id.to_s, source: source, path: path, parent_lookup: parent_lookup(project))
     end
 
+    # Reads a definition from a file path (`--file`), the one way a path becomes a definition. The id is a string
+    # `id:` in the file, else the file name without its extension when that is a workflow id, else
+    # {IdPatterns::FILE_ID}; the caller decides whether that last fallback is acceptable. Its `extends:` resolves
+    # through {#parent}, as for an installed definition. Nothing is installed or looked up by id.
+    #
+    # @param path [String] the file; a relative path is expanded against the current directory
+    # @param project [String, nil] the project whose definitions an `extends:` finds first
+    # @return [Workspace::WorkflowDefinition] with source "file" and the absolute path
+    # @raise [Workspace::UsageError] when the file can't be read
+    # @raise [Workspace::Error] code `invalid_workflow` when it doesn't pass the checks
+    def load_file(path, project: nil)
+      full = File.expand_path(path.to_s)
+      text = begin
+        File.binread(full).force_encoding(Encoding::UTF_8)
+      rescue SystemCallError => e
+        raise UsageError, "Can't read #{path}: #{e.message.sub(/ (@ .*)?- .*\z/, "")}"
+      end
+      id = claimed_id(text) || file_id(full)
+      WorkflowDefinition.parse(text, id: id, source: "file", path: full, parent_lookup: parent_lookup(project))
+    end
+
     # The file an id is read from: the project's, else a user's, else a preset.
     #
     # @param id [String]
@@ -200,6 +221,19 @@ module Workspace
     end
 
     private
+
+    # A string `id:` in the text, if it parses far enough to have one.
+    def claimed_id(text)
+      value = YAML.safe_load(text)&.then { |doc| doc["id"] if doc.is_a?(Hash) }
+      value if value.is_a?(String)
+    rescue Psych::Exception, ArgumentError
+      nil
+    end
+
+    def file_id(path)
+      name = File.basename(path, ".*")
+      IdPatterns::WORKFLOW_ID.match?(name) ? name : IdPatterns::FILE_ID
+    end
 
     # The names of the directories that hold workflows under the user's config (a name that could not be a project
     # has no directory in {#dirs}, so it reads as empty).

@@ -11,6 +11,10 @@ module Workspace
     # The rule {WORKFLOW_ID} checks, in words, for messages.
     WORKFLOW_ID_RULE = "lowercase letters, digits, '-' and '_'"
 
+    # The ids a definition read from stdin or from a file path gets when its text names none and its file name is not an id.
+    STDIN_ID = "stdin"
+    FILE_ID = "file"
+
     # The background task types that hold a step (the labels Claude Code lists), and the shape of a
     # task id. The Stop hook boundary and `workflow advance --background-task` both check against these.
     BACKGROUND_TASK_TYPES = ["subagent", "workflow", "shell", "monitor", "MCP task", "cloud session"].freeze

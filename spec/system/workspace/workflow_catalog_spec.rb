@@ -548,4 +548,76 @@ RSpec.describe Workspace::WorkflowCatalog do
       expect(with_sources.parent("base", project: nil)["source"]).to eq("source:1")
     end
   end
+
+  describe "#load_file" do
+    def file(name, yaml)
+      path = File.join(@dir, name)
+      File.write(path, yaml)
+      path
+    end
+
+    it "reads a definition by path, with its extends: resolved from an installed layer" do
+      path = file("mine.yml", "extends: rpiv\n")
+
+      definition = catalog.load_file(path)
+
+      expect([definition.source, definition.path, definition.id]).to eq(["file", path, "mine"])
+      expect(definition.to_h["steps"].map { |step| step["id"] }).to eq(["a"])
+    end
+
+    it "expands a relative path to an absolute one" do
+      path = file("rel.yml", "steps:\n  a:\n    prompt: P\n")
+
+      definition = Dir.chdir(@dir) { catalog.load_file("rel.yml") }
+
+      expect(definition.path).to eq(File.realpath(path))
+    end
+
+    it "takes the id from a string id: key over the file name" do
+      definition = catalog.load_file(file("whatever.yml", "id: claimed\nsteps:\n  a:\n    prompt: P\n"))
+
+      expect(definition.id).to eq("claimed")
+    end
+
+    it "falls back to the file id when the name is not a workflow id and the file names none" do
+      definition = catalog.load_file(file("My Flow.yml", "steps:\n  a:\n    prompt: P\n"))
+
+      expect(definition.id).to eq(Workspace::IdPatterns::FILE_ID)
+    end
+
+    it "raises a UsageError for a file that is not there" do
+      expect { catalog.load_file(File.join(@dir, "nope.yml")) }.to raise_error(Workspace::UsageError, /Can't read .*nope\.yml/) { |e| expect(e.message).not_to match(/@ rb_sysopen/) }
+    end
+
+    it "raises invalid_workflow for a file that fails the checks" do
+      expect { catalog.load_file(file("bad.yml", "steps: 3\n")) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+    it "raises invalid_workflow for invalid YAML in a file with a valid name" do
+      expect { catalog.load_file(file("broken.yml", "steps: [unclosed\n")) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_workflow") }
+    end
+
+    it "does not take a non-string id: for the id, so the definition's own id check rejects it" do
+      expect { catalog.load_file(file("named.yml", "id: 3\nsteps:\n  a:\n    prompt: P\n")) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_workflow")
+        expect(e.message).to include('"named"')
+      }
+    end
+
+    it "finds an extends: in the project's layer first" do
+      write(File.join(@dir, "projects", "proj", "workflows"), "rpiv", "title: Project's\nsteps:\n  p:\n    prompt: P\n")
+      path = file("child.yml", "extends: rpiv\n")
+
+      expect(catalog.load_file(path, project: "proj").to_h["steps"].map { |step| step["id"] }).to eq(["p"])
+      expect(catalog.load_file(path).to_h["steps"].map { |step| step["id"] }).to eq(["a"])
+    end
+
+    it "names the file's id in invalid_workflow for empty or non-mapping YAML" do
+      ["", "- a\n"].each_with_index do |text, index|
+        expect { catalog.load_file(file("odd#{index}.yml", text)) }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("invalid_workflow")
+          expect(e.message).to include("'odd#{index}'", "must be a YAML mapping")
+        }
+      end
+    end
+  end
 end
