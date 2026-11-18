@@ -112,7 +112,7 @@ module Workspace
           opts.separator ""
           opts.separator "`run` and `start` really start a run (start also makes a worktree); --dry-run checks and starts nothing."
           opts.separator "`start` may leave out the ID: config names it (workflows.by_ref.<kind>, else workflows.default)."
-          opts.separator "`start --file PATH` runs a definition file that is not installed; it names its own id (an `id:` key, or the file name), and you vouch for the file."
+          opts.separator "`run --file PATH` and `start --file PATH` run a definition file that is not installed (no ID with it); it names its own id (an `id:` key, or the file name), and you vouch for the file."
           opts.separator "RUN is a workflow run id (see `workspace workflow status`)."
           opts.separator ""
           opts.on("--name WORKSPACE", "run: the workspace to run in; render, check: the workspace whose packs and commands are read; show, validate, render, check, simulate, add, update, remove: the workspace whose project's definitions are read first (default: the current workspace); status: that workspace's runs still going (default: the current workspace); sweep: only that workspace's runs (default: every run going)") { |v| options[:name] = v }
@@ -164,7 +164,7 @@ module Workspace
           opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
           opts.on("--branch BRANCH", "start: the branch for a --prompt (default: the prompt's words); refused with a REF") { |v| options[:branch] = v }
           opts.on("--slug", "start: add the ticket title's words to a JIRA or issue branch, as `workspace start --slug`") { options[:slug] = true }
-          opts.on("--file PATH", "start: run the workflow definition in this YAML file instead of an installed ID (needs an `id:` key or an ID.yml name)") { |v|
+          opts.on("--file PATH", "run, start: run the workflow definition in this YAML file instead of an installed ID (needs an `id:` key or an ID.yml name)") { |v|
             raise UsageError, "--file is given once." if options[:file]
             options[:file] = v
           }
@@ -222,8 +222,9 @@ module Workspace
         render_step = args.shift if %w[render check].include?(subcommand)
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow #{"learn " if subcommand == "learn"}--help'." if args.any?
         subject ||= default_subject(subcommand, options)
-        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`)", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "trace" => "a RUN id (see `workspace workflow status`)", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "insights" => "a workflow ID (see `workspace workflow show`)", "learn" => "a RUN id (see `workspace workflow status`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
+        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`) or --file PATH", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "trace" => "a RUN id (see `workspace workflow status`)", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "insights" => "a workflow ID (see `workspace workflow show`)", "learn" => "a RUN id (see `workspace workflow status`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
                  "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
+        needs = nil if subcommand == "run" && options[:file]
         raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
 
         raise UsageError, "--agent is for `workflow learn reflect RUN`." if options[:agent] && subcommand != "learn"
@@ -274,8 +275,12 @@ module Workspace
         extra_rounds = workflow_extra_rounds(subcommand, options[:extra_rounds])
 
         start_flags = {"--prompt" => :prompt, "--branch" => :branch, "--slug" => :slug, "--base" => :base, "--[no-]headless" => :headless, "--agent-kind" => :agent_kind, "--prompt-timeout" => :prompt_timeout, "--force" => :force, "--ref" => :ref, "--file" => :file}
-        if subcommand != "start" && (flag = start_flags.find { |_, key| !options[key].nil? })
-          raise UsageError, "#{flag.first} is for `workflow start [ID] [REF]`."
+        if (flag = start_flags.find { |_, key| !options[key].nil? }) && !(subcommand == "run" && flag.last == :file) && subcommand != "start"
+          raise UsageError, (flag.last == :file) ? "--file is for `workflow start` and `workflow run`." : "#{flag.first} is for `workflow start [ID] [REF]`."
+        end
+        if subcommand == "run" && options[:file]
+          raise UsageError, "--file takes the place of the workflow ID: use `workflow run --file PATH`." if subject
+          raise UsageError, "--file needs a PATH." if options[:file].strip.empty?
         end
         if subcommand == "start"
           raise UsageError, "workflow start makes its own workspace: --name is for `workflow run`." if options[:name]
@@ -397,7 +402,7 @@ module Workspace
             project = workflow_project(options)
             # The checkout's root, where the run's files go: the named workspace's, or the detected one's.
             root = options[:name] ? @names.working_dir_for(name) : @project_config.project_root_for(name)
-            @workflow_command.run(id: subject, workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: inputs,
+            @workflow_command.run(id: subject, file: options[:file], workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: inputs,
               pane: options[:pane], note: options[:note], dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"], project: project,
               fill_from_branch: !root.nil?)
           end

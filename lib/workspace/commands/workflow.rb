@@ -531,11 +531,14 @@ module Workspace
       #   given; only the CLI's `workflow run` passes true, and only for a checkout it resolved
       # @param definition [Workspace::WorkflowDefinition, nil] a definition already resolved (for example loaded from a file);
       #   when given, +id+ names it and the catalog is not asked
+      # @param file [String, nil] a definition file to run instead of an installed +id+; loaded through
+      #   {Workspace::WorkflowCatalog#load_file}, and the definition's own id then names the run
       # @return [Hash{String=>Object}] the action row, with `inputs_from` (which inputs the branch filled);
       #   `outcome` is "parked" for a run parked from its own pane
       # @raise [Workspace::Error] see {Workspace::WorkflowEngine#preflight}
-      def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false, definition: nil)
-        definition ||= @catalog.find(id, project: project)
+      def run(workspace:, worktree:, id: nil, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false, definition: nil, file: nil)
+        definition ||= file ? load_run_file(file, project) : @catalog.find(id, project: project)
+        id ||= definition.to_h["id"]
         warn_sweep_missing(definition)
         filled, from = (fill_from_branch && @branch_inputs) ? @branch_inputs.call(definition, worktree, inputs) : [inputs, {}]
         if dry_run
@@ -555,6 +558,18 @@ module Workspace
         end
         row(@engine.start(definition: definition, workspace: workspace, worktree: worktree, inputs: filled, pane: pane_id, actor: "person", note: note), "started").merge("inputs_from" => from)
       end
+
+      # Loads the definition file of `run --file`. Like WorkflowStart's file loading it refuses the fallback id; unlike
+      # it, it does not warn about an installed definition of the same id: the person named the file, and nothing
+      # resolves the id again later.
+      def load_run_file(file, project)
+        definition = @catalog.load_file(file, project: project)
+        if definition.id == IdPatterns::FILE_ID
+          raise UsageError, "#{file} has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml)."
+        end
+        definition
+      end
+      private :load_run_file
 
       # Prints where runs stand: one run, or the runs of a scope.
       #

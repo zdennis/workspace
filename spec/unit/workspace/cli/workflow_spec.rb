@@ -307,6 +307,20 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(keywords).to include(id: "rpiv", workspace: "web", worktree: "/src/web", inputs: {"task" => "x"}, note: "hi", dry_run: true, project: "web", fill_from_branch: true)
     end
 
+    it "passes --file through without an ID" do
+      run("run", "--file", "x/flow.yml", "--name", "web", "--dry-run")
+
+      kind, keywords = workflow_command.calls.first
+      expect(kind).to eq(:run)
+      expect(keywords).to include(id: nil, file: "x/flow.yml", workspace: "web")
+    end
+
+    it "refuses --file beside an ID, a second --file or an empty PATH on run" do
+      expect { run("run", "rpiv", "--file", "f.yml", "--name", "web") }.to raise_error(Workspace::UsageError, /--file takes the place of the workflow ID/)
+      expect { run("run", "--file", "f.yml", "--file", "g.yml", "--name", "web") }.to raise_error(Workspace::UsageError, /given once/)
+      expect { run("run", "--file", " ", "--name", "web") }.to raise_error(Workspace::UsageError, /--file needs a PATH/)
+    end
+
     it "exits 1 when the run's row failed" do
       workflow_command.row = {"workspace" => "app", "outcome" => "failed"}
 
@@ -337,7 +351,10 @@ RSpec.describe Workspace::CLI::Workflow do
     end
 
     it "refuses --file for another subcommand" do
-      expect { run("run", "rpiv", "--file", "f.yml") }.to raise_error(Workspace::UsageError, "--file is for `workflow start [ID] [REF]`.")
+      %w[render check].each do |verb|
+        expect { run(verb, "rpiv", "plan", "--file", "f.yml") }.to raise_error(Workspace::UsageError, "--file is for `workflow start` and `workflow run`.")
+      end
+      expect { run("status", "--file", "f.yml") }.to raise_error(Workspace::UsageError, "--file is for `workflow start` and `workflow run`.")
     end
 
     it "refuses --name for workflow start" do
@@ -715,7 +732,7 @@ RSpec.describe Workspace::CLI::Workflow do
     it "starts a run in the detected workspace, from its working directory" do
       cli.run(["workflow", "run", "rpiv", "--input", "task=PROJ-1 export=pdf", "--input", "spec=", "--note", "Keep it small."])
 
-      expect(workflow_command.calls).to eq([[:run, {id: "rpiv", workspace: "detected-ws", worktree: "/some/dir",
+      expect(workflow_command.calls).to eq([[:run, {id: "rpiv", file: nil, workspace: "detected-ws", worktree: "/some/dir",
                                                     inputs: {"task" => "PROJ-1 export=pdf", "spec" => ""}, pane: nil, note: "Keep it small.", dry_run: false, caller_pane: ENV["TMUX_PANE"], project: nil, fill_from_branch: false}]])
     end
 
