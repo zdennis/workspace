@@ -10,6 +10,9 @@ module Workspace
     # The words in `details.code` the engine sets itself; `step done --code` refuses them, so `code_source: agent` never carries one.
     ENGINE_CODES = (WorkflowGuard::CODES + [WorkflowGuard::CONFIG_CHANGED] + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported step_timed_out review_rejected review_incomplete review_stale review_tampered review_guard review_no_change]).freeze
 
+    # The default recorded with the ask a stated `needs_input` makes.
+    ASK_DEFAULT = "workflow held; no default taken"
+
     # The most of a failed check's log the `report_code` reading looks at.
     CHECK_CODE_TAIL_BYTES = 4096
 
@@ -53,8 +56,10 @@ module Workspace
     #   round is tallied at once, under the lock that saw it end)
     # @param transcript [#last_assistant_message, nil] reads the last assistant message of a transcript path ({TranscriptSummary}), for the
     #   status line a turn ended with (default: none, so no status is read)
+    # @param ask_for [#call, nil] given a workspace name, its ask store ({AskStore}), where a stated `needs_input` with a detail
+    #   records one `workspace ask` entry (default: none, so none is recorded)
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil,
+    def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, ask_for: nil, review_round: nil, review_tally: nil, review_closer: nil,
       review_revision: nil, round_rerun: nil, transcript: nil, clock: -> { Time.now })
       @change = change
       @store = store
@@ -65,6 +70,7 @@ module Workspace
       @guard = guard
       @commands_config = commands_config
       @inbox_for = inbox_for
+      @ask_for = ask_for
       @review_round = review_round
       @review_tally = review_tally || NoReviewTally.new
       @review_closer = review_closer
@@ -439,7 +445,21 @@ module Workspace
       run["state"] = "waiting"
       details = {"step" => step["id"], "attempt" => attempt["n"], "state" => stated["state"], "detail" => stated["detail"].to_s}
       run["reason"] = stop_reason(run["reason"], turn_started, "waiting_agent_input", details)
+      record_ask(run, attempt, stated)
       true
+    end
+
+    # A stated `needs_input` with a detail records one `workspace ask` entry, so it shows in `sessions` and the derived
+    # inbox rows. `asked_input` on the attempt keeps a repeat judging of the same hold from recording another; it is
+    # set only once the entry is written. `stuck` states a reason, not a question, so it records none.
+    def record_ask(run, attempt, stated)
+      return unless @ask_for && stated["state"] == "needs_input" && !attempt["asked_input"]
+      question = stated["detail"].to_s.strip
+      return if question.empty?
+      @ask_for.call(run["workspace"]).add(question: question, default: ASK_DEFAULT, pane: run["pane"], worktree: run["worktree"])
+      attempt["asked_input"] = true
+    rescue Workspace::Error, SystemCallError
+      nil
     end
 
     # Whether the turn that just ended said `running` and no out-of-band report overrides it.

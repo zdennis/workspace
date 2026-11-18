@@ -14,12 +14,13 @@ RSpec.describe Workspace::WorkflowEvaluation do
   let(:guard) { RecordingGuard.new }
   let(:commands) { RecordingCommandsConfig.new(test: "rake test") }
   let(:inbox) { RecordingInbox.new }
+  let(:asks) { RecordingAskStore.new }
 
   after { FileUtils.rm_rf(dir) }
 
   def evaluation(**overrides)
     described_class.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
-      guard: guard, commands_config: commands, inbox_for: ->(_workspace) { inbox }, clock: -> { now }, **overrides)
+      guard: guard, commands_config: commands, inbox_for: ->(_workspace) { inbox }, ask_for: ->(_workspace) { asks }, clock: -> { now }, **overrides)
   end
 
   def step(**overrides)
@@ -311,8 +312,8 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
     def attempt = store.runs["wr_1"]["steps"]["plan"]["attempts"].last
 
-    def end_turn(**args)
-      evaluation(transcript: reader).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl", **args)
+    def end_turn(overrides: {}, **args)
+      evaluation(transcript: reader, **overrides).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl", **args)
     end
 
     context "when needs_input" do
@@ -331,6 +332,56 @@ RSpec.describe Workspace::WorkflowEvaluation do
         expect(run.step("plan").state).to eq("running")
       end
 
+      it "records one ask with the detail as the question and no default taken" do
+        stored
+
+        end_turn
+
+        expect(asks.calls).to eq([{"question" => "which database?", "default" => "workflow held; no default taken",
+                                   "context" => nil, "pane" => "%3", "worktree" => dir}])
+        expect(attempt["asked_input"]).to be(true)
+      end
+
+      it "records no second ask when the same attempt ends another turn in the hold" do
+        stored
+
+        end_turn
+        expect(attempt["asked_input"]).to be(true)
+        run = end_turn
+
+        expect(run.reason).to include("code" => "waiting_agent_input")
+        expect(attempt["asked_input"]).to be(true)
+        expect(asks.calls.size).to eq(1)
+      end
+
+      it "records no ask when the agent reported its outcome out of band" do
+        produce
+        stored(run_hash.tap { |run| run["steps"]["plan"]["attempts"].last["reported"] = {"status" => "pass"} })
+
+        run = end_turn
+
+        expect(run.reason).to be_nil.or(satisfy { |reason| reason["code"] != "waiting_agent_input" })
+        expect(progress.calls).to eq([[:pass_step, "plan"]])
+        expect(asks.calls).to be_empty
+      end
+
+      [Workspace::Error.new("ask store unreadable"), Errno::EACCES.new("asks.json")].each do |error|
+        it "still holds, leaves asked_input unset and asks on the next advance when the ask write raises #{error.class}" do
+          stored
+          failing = ->(_workspace) { raise error }
+
+          run = end_turn(overrides: {ask_for: failing})
+
+          expect(run.reason).to include("code" => "waiting_agent_input")
+          expect(run.state).to eq("waiting")
+          expect(attempt).not_to have_key("asked_input")
+
+          end_turn
+          expect(asks.calls.map { |call| call["question"] }).to eq(["which database?"])
+          expect(attempt["asked_input"]).to be(true)
+        end
+      end
+
       it "does not hold when the agent reported its outcome out of band" do
         produce
         stored(run_hash.tap { |run| run["steps"]["plan"]["attempts"].last["reported"] = {"status" => "pass"} })
@@ -341,8 +392,30 @@ RSpec.describe Workspace::WorkflowEvaluation do
       end
     end
 
+    context "when needs_input with no detail" do
+      let(:line) { "WORKFLOW_STATUS: needs_input" }
+
+      it "holds but records no ask" do
+        stored
+
+        run = end_turn
+
+        expect(run.reason).to include("code" => "waiting_agent_input")
+        expect(asks.calls).to be_empty
+        expect(attempt).not_to have_key("asked_input")
+      end
+    end
+
     context "when stuck" do
       let(:line) { "WORKFLOW_STATUS: stuck — cannot reach the registry" }
+
+      it "records no ask" do
+        stored
+
+        end_turn
+
+        expect(asks.calls).to be_empty
+      end
 
       it "holds with the detail as the reason" do
         stored
