@@ -164,9 +164,9 @@ module Workspace
       LIST_HEADER = ["ID", "SOURCE", "DESCRIPTION", "PATH"].freeze
 
       # Lists every workflow definition the catalog can find, as a table of id, source
-      # (project, global, source:N or builtin), the path of the file each id resolves
-      # to and a description (the definition's `description:`, else its title). An
-      # unusable definition's description names its first problem instead.
+      # (project, global, source:N or builtin), a description (the definition's
+      # `description:`, else its title) and the path of the file each id resolves to.
+      # An unusable definition's description names its first problem instead.
       #
       # @param json [Boolean]
       # @param project [String, nil] the project whose definitions come first
@@ -2205,7 +2205,10 @@ module Workspace
         current = run["current"]
         where = %w[completed cancelled failed].include?(run["state"]) ? "" : "  step #{current["step"]}#{" (attempt #{current["attempt"]})" if current["attempt"]}, #{current["state"]}"
         @output.puts "#{run["id"]}  #{run["workflow"]}  #{run["workspace"]}  #{run["state"]}#{where}"
-        @output.puts "  workflow: #{run["definition_source"]}, #{run["definition_path"]}" if run["definition_path"]
+        if run["definition_path"]
+          source = run["definition_source"] ? "#{run["definition_source"]}, " : ""
+          @output.puts "  definition: #{source}#{TerminalText.escape(run["definition_path"])}"
+        end
         reason = current["reason"]
         @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason && !(reason["code"] == "retry_backoff" && wait_kind == "backoff")
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }

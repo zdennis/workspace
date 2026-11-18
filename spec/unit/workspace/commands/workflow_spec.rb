@@ -185,7 +185,7 @@ RSpec.describe Workspace::Commands::Workflow do
   end
 
   describe "#list" do
-    it "lists the definitions in a table of id, source, path and description, marking one that is not valid" do
+    it "lists the definitions in a table of id, source, description and path, marking one that is not valid" do
       allow(catalog).to receive(:list).and_return([
         {"id" => "bad", "title" => "bad", "source" => "global", "path" => "/defs/bad.yml", "problems" => ["steps must be a mapping"]},
         {"id" => "rpiv", "title" => "Research, Plan, Implement, Verify", "source" => "builtin", "path" => "/lib/rpiv.yml", "problems" => []}
@@ -855,7 +855,17 @@ RSpec.describe Workspace::Commands::Workflow do
 
       command.status(scope: workspace_scope("app"))
 
-      expect(output.string).to include("  workflow: builtin, /lib/rpiv.yml\n")
+      expect(output.string).to include("  definition: builtin, /lib/rpiv.yml\n")
+    end
+
+    it "prints the path alone when a run records no definition source" do
+      unsourced = shown("definition_source" => nil, "definition_path" => "/lib/rpiv.yml")
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [unsourced], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  definition: /lib/rpiv.yml\n")
+      expect(output.string).not_to include("  definition: , ")
     end
 
     it "prints no definition line for a run that does not record where its definition came from" do
@@ -863,7 +873,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       command.status(scope: workspace_scope("app"))
 
-      expect(output.string).not_to include("workflow:")
+      expect(output.string).not_to include("definition:")
     end
 
     it "prints the run timeout with the clock it is measured on" do

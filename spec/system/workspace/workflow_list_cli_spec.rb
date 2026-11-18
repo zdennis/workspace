@@ -44,7 +44,7 @@ RSpec.describe "workspace workflow list through build_cli" do
   let(:source_dir) { File.join(@home, "src") }
   let(:yaml) { "title: Ship\ndescription: One feature end to end.\nsteps:\n  a:\n    prompt: P\n" }
 
-  it "prints a table of id, source, path and description over the presets and a source" do
+  it "prints a table of id, source, description and path over the presets and a source" do
     write(source_dir, "ship", yaml)
     run_cli("config", "set", "workflows.sources", source_dir, "--scope", "global")
     expect(exits).to eq([])
