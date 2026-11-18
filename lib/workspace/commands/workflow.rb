@@ -135,6 +135,21 @@ module Workspace
         data["steps"].each { |step| @output.puts "  #{step["id"].ljust(12)} #{step_traits(step)}".rstrip }
       end
 
+      # Resolves the file a definition id names the way the catalog does (project, then user, then
+      # source, then preset) and hands its path to +opener+. The file is never parsed or written, so
+      # one with broken YAML or failed checks still opens.
+      #
+      # @param id [String]
+      # @param project [String, nil] the project whose definitions come first (see {Workspace::WorkflowCatalog})
+      # @param opener [#call, nil] called with the file's path
+      # @return [Hash{Symbol=>Object}] +workflow+ (the id), +path+ and +source+ (the catalog's file read), the `--json` action row
+      # @raise [Workspace::Error] code `unknown_workflow` when no file has that id
+      def edit(id:, project: nil, opener: nil)
+        source = @catalog.source(id, project: project)
+        opener&.call(source["path"])
+        {workflow: id, path: source["path"], source: source}
+      end
+
       # Draws one definition's steps, gates, reviews and loops. The default format is ascii; `json: true`
       # is `format: "json"` and prints the model under `graph` in one document. With +run+ it draws the
       # definition that run stored, marked with where the run stands ({WorkflowGraphStates}).

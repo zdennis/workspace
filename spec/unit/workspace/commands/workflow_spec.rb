@@ -2927,6 +2927,71 @@ RSpec.describe Workspace::Commands::Workflow do
     end
   end
 
+  describe "#edit" do
+    let(:dir) { Dir.mktmpdir }
+    let(:global_dir) { File.join(dir, "global") }
+    let(:builtin_dir) { File.join(dir, "builtin") }
+    let(:project_dir) { File.join(dir, "project") }
+    let(:config) do
+      instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: builtin_dir, workspace_projects_dir: File.join(dir, "no-projects")).tap do |c|
+        allow(c).to receive(:project_workflows_dir).with("app").and_return(project_dir)
+      end
+    end
+    let(:real_catalog) { Workspace::WorkflowCatalog.new(config: config) }
+    let(:valid) { "title: Flow\nsteps:\n  plan:\n    prompt: Plan.\n" }
+    subject(:command) do
+      described_class.new(lint: nil, catalog: real_catalog, engine: engine, status: status, store: store, panes: panes, files: nil, run_files: nil, process_tree: process_tree, lock_holder: lock_holder, output: output)
+    end
+
+    before { FileUtils.mkdir_p([global_dir, builtin_dir, project_dir]) }
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "answers the project file's path when the project has one" do
+      File.write(File.join(project_dir, "flow.yml"), valid)
+      File.write(File.join(global_dir, "flow.yml"), valid)
+
+      row = command.edit(id: "flow", project: "app")
+
+      expect(row).to include(workflow: "flow", path: File.join(project_dir, "flow.yml"))
+      expect(row[:source]).to include("source" => "project", "path" => File.join(project_dir, "flow.yml"))
+    end
+
+    it "falls through to the user's file, then the preset's" do
+      File.write(File.join(global_dir, "mine.yml"), valid)
+      File.write(File.join(builtin_dir, "stock.yml"), valid)
+
+      expect(command.edit(id: "mine", project: "app")[:path]).to eq(File.join(global_dir, "mine.yml"))
+      expect(command.edit(id: "stock", project: "app")).to include(path: File.join(builtin_dir, "stock.yml"))
+    end
+
+    it "raises unknown_workflow with the known ids for an unknown id" do
+      File.write(File.join(global_dir, "mine.yml"), valid)
+
+      expect { command.edit(id: "nope", project: "app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_workflow")
+        expect(e.details["known"]).to include("mine")
+      }
+    end
+
+    it "answers the path of a file with broken YAML" do
+      File.write(File.join(global_dir, "bad.yml"), "steps: [unclosed\n  - : :\n")
+
+      expect(command.edit(id: "bad")[:path]).to eq(File.join(global_dir, "bad.yml"))
+    end
+
+    it "calls the opener with the path, and writes nothing" do
+      File.write(File.join(global_dir, "flow.yml"), valid)
+      opened = []
+
+      command.edit(id: "flow", opener: ->(path) { opened << path })
+
+      expect(opened).to eq([File.join(global_dir, "flow.yml")])
+      expect(output.string).to eq("")
+      expect(File.read(File.join(global_dir, "flow.yml"))).to eq(valid)
+    end
+  end
+
   describe "#files" do
     around do |example|
       Dir.mktmpdir("wf-files") do |dir|

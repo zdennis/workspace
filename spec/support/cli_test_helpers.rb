@@ -970,7 +970,7 @@ module CLITestHelpers
       @default_workflow_id
     end
 
-    %i[show graph validate render simulate status events files attempts trace advance step_status].each do |name|
+    %i[show edit graph validate render simulate status events files attempts trace advance step_status].each do |name|
       define_method(name) do |**kw|
         @calls << [name, kw]
         raise @error if @error
