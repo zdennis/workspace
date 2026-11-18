@@ -2628,8 +2628,40 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { command.step_done(pane: "%5", status: "fail", code: "a" * 40) }.not_to raise_error
     end
 
-    it "refuses a status other than pass or fail" do
-      expect { command.step_done(pane: "%5", status: "done") }.to raise_error(Workspace::UsageError, '--status must be pass or fail, got "done".')
+    it "refuses a status outside the vocabulary" do
+      expect { command.step_done(pane: "%5", status: "bogus") }.to raise_error(Workspace::UsageError, '--status must be one of pass, fail, done, running, needs_input, stuck, got "bogus".')
+    end
+
+    %w[done running needs_input stuck].each do |state|
+      it "refuses --code with #{state}" do
+        expect { command.step_done(pane: "%5", status: state, code: "not_reproduced") }
+          .to raise_error(Workspace::UsageError, "--code applies to pass/fail reports, not to --status #{state}.")
+      end
+    end
+
+    %w[pass fail].each do |state|
+      it "still accepts a valid --code with #{state}" do
+        allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+        allow(engine).to receive(:report).and_return("run_id" => "wr_1", "step" => "s", "attempt" => 1, "reported" => {"status" => state, "summary" => nil, "code" => "why_not"})
+        allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
+
+        expect(command.step_done(pane: "%5", status: state, code: "why_not")["reported"]).to include("code" => "why_not")
+      end
+    end
+
+    %w[done running needs_input stuck].each do |state|
+      it "records #{state} as a stated status with the summary as its detail" do
+        allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+        allow(engine).to receive(:report).with("wr_1", actor: "agent", status: state, summary: "why", code: nil)
+          .and_return("run_id" => "wr_1", "step" => "plan", "attempt" => 1,
+            "reported" => {"state" => state, "detail" => "why", "at" => "t", "source" => "report"})
+        allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
+
+        row = command.step_done(pane: "%5", status: state, summary: "why")
+
+        expect(row["reported"]).to eq("status" => state, "summary" => "why")
+        expect(output.string).to start_with("Recorded #{state} for step plan")
+      end
     end
 
     it "refuses outside a run's pane, and outside tmux" do

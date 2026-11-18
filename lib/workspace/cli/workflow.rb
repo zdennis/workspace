@@ -611,7 +611,7 @@ module Workspace
           HelpPages.overview_verbs(HelpPages::STEP).each { |line| opts.separator line }
           opts.separator "Run `workspace step VERB --help` for a verb's options."
           opts.separator ""
-          opts.on("--status STATUS", "done: pass (default) or fail") { |v| options.update(status: v, status_given: true) }
+          opts.on("--status STATUS", "done: pass (default), fail, or a stated status: done, running, needs_input, stuck") { |v| options.update(status: v, status_given: true) }
           opts.on("--summary TEXT", "done: one line about what was done, or what is left") { |v| options[:summary] = v }
           opts.on("--code WORD", "done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)") { |v| options[:code] = v }
           opts.on("--match-file PATH", "expect-fail: a file whose text (trimmed) the failing tests' output must hold") { |v| options[:match_file] = v }

@@ -1822,7 +1822,7 @@ module Workspace
 
     STEP = {
       "done" => {
-        usage: ["step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]"],
+        usage: ["step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--json]"],
         summary: "Record what you say about a workflow step, then end your turn",
         about: [
           "For the agent working on a workflow step, run from the pane the run is bound to. --status fail fails",
@@ -1830,7 +1830,7 @@ module Workspace
           "agent's turn ends, from the files it was told to leave and the step's check (see `workspace",
           "workflow --help`)."
         ],
-        options: [["--status STATUS", "pass (default) or fail"],
+        options: [["--status STATUS", "pass (default), fail, or a stated status: done, running, needs_input, stuck (--summary is its detail)"],
           ["--summary TEXT", "One line about what was done, or what is left"],
           ["--code WORD", "A word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)"],
           JSON_OPT],

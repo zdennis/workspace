@@ -70,6 +70,27 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(evaluation.report("wr_1", actor: "agent", status: "pass").reported).to eq("status" => "pass", "summary" => nil, "at" => "2026-11-10T12:00:00Z")
     end
 
+    %w[done running needs_input stuck].each do |state|
+      it "stores a #{state} report as the attempt's status_report with source report, not as reported" do
+        stored
+
+        reported = evaluation.report("wr_1", actor: "agent", status: state, summary: "why")
+
+        expected = {"state" => state, "detail" => "why", "at" => "2026-11-10T12:00:00Z", "source" => "report"}
+        expect(reported.reported).to eq(expected)
+        attempt = store.runs["wr_1"]["steps"]["plan"]["attempts"].last
+        expect(attempt["status_report"]).to eq(expected)
+        expect(attempt).not_to have_key("reported")
+        expect(change.events).to eq([["wr_1", "step_reported", {"step" => "plan", "attempt" => 1, "status" => state}]])
+      end
+    end
+
+    it "stores an empty detail when a stated status has no summary" do
+      stored
+
+      expect(evaluation.report("wr_1", actor: "agent", status: "done").reported).to include("detail" => "")
+    end
+
     it "refuses a step that is not being worked on" do
       stored(run_hash(state: "passed"))
 
@@ -298,6 +319,137 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
     it "leaves the step judged as before" do
       evaluation(transcript: reader).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+  end
+
+  describe "#turn_ended after a stated report from `step done`" do
+    let(:line) { "WORKFLOW_STATUS: done" }
+    let(:reader) do
+      msg = -> { {"text" => "Finished.\n#{line}"} }
+      Class.new { define_method(:last_assistant_message) { |_path| msg.call } }.new
+    end
+
+    def attempt = store.runs["wr_1"]["steps"]["plan"]["attempts"].last
+
+    def end_turn
+      evaluation(transcript: reader).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+    end
+
+    it "holds on a reported needs_input over a parsed done line and consumes the report" do
+      produce
+      stored
+      evaluation.report("wr_1", actor: "agent", status: "needs_input", summary: "which database?")
+
+      run = end_turn
+
+      expect(progress.calls).to be_empty
+      expect(run.reason).to include("code" => "waiting_agent_input")
+      expect(run.reason["details"]).to include("state" => "needs_input", "detail" => "which database?")
+      expect(attempt).not_to have_key("status_report")
+    end
+
+    it "decides only the first judging: a later turn on current evidence passes" do
+      produce
+      stored
+      evaluation.report("wr_1", actor: "agent", status: "needs_input", summary: "which database?")
+      end_turn
+      expect(progress.calls).to be_empty
+
+      run = end_turn
+
+      expect(run.step("plan").state).to eq("passed")
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+
+    it "does not wake forever on a reported running" do
+      stored
+      evaluation.report("wr_1", actor: "agent", status: "running")
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      run = evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(run.reason).to include("code" => "turn_ended_incomplete")
+    end
+
+    it "does not let a consumed done mask a later parsed needs_input" do
+      produce
+      stored
+      evaluation.report("wr_1", actor: "agent", status: "done")
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+      store.runs["wr_1"]["steps"]["plan"]["state"] = "running"
+      store.runs["wr_1"]["state"] = "running"
+      line_reader = Class.new { def last_assistant_message(_path) = {"text" => "x\nWORKFLOW_STATUS: needs_input — q"} }.new
+
+      run = evaluation(transcript: line_reader).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+
+      expect(run.reason).to include("code" => "waiting_agent_input")
+    end
+
+    it "is overwritten by a fresh step done" do
+      stored
+      evaluation.report("wr_1", actor: "agent", status: "needs_input", summary: "first")
+      evaluation.report("wr_1", actor: "agent", status: "stuck", summary: "second")
+
+      expect(attempt["status_report"]).to include("state" => "stuck", "detail" => "second", "source" => "report")
+    end
+
+    it "caps the stored detail at the parser's bound" do
+      stored
+      evaluation.report("wr_1", actor: "agent", status: "needs_input", summary: "q" * 500)
+
+      expect(attempt["status_report"]["detail"].size).to eq(Workspace::WorkflowReportedStatus::TAIL_CHARS)
+    end
+
+    it "lets a reported fail win over a later explicit needs_input" do
+      produce
+      stored
+      evaluation.report("wr_1", actor: "agent", status: "fail", summary: "broke")
+      evaluation.report("wr_1", actor: "agent", status: "needs_input", summary: "q")
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(progress.calls.map(&:first)).to eq([:fail_step])
+    end
+
+    it "lets a reported done fall through to the checks over a parsed needs_input line" do
+      produce
+      stored
+      evaluation.report("wr_1", actor: "agent", status: "done")
+      @line = nil
+
+      line_reader = Class.new { def last_assistant_message(_path) = {"text" => "x\nWORKFLOW_STATUS: needs_input — q"} }.new
+      evaluation(transcript: line_reader).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+      expect(attempt).not_to have_key("status_report")
+    end
+
+    it "wakes on a reported running when a file is missing" do
+      stored
+      evaluation.report("wr_1", actor: "agent", status: "running")
+
+      run = evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(run.reason).to include("code" => "turn_ended_background")
+    end
+
+    it "still holds when a resume judges the attempt with no stated line" do
+      produce
+      stored
+      evaluation.report("wr_1", actor: "agent", status: "stuck", summary: "blocked")
+
+      run = evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(run.reason).to include("code" => "waiting_agent_input")
+    end
+
+    it "does not let a stored parsed status_report hold a later judging" do
+      produce
+      stored(run_hash.tap { |r| r["steps"]["plan"]["attempts"].last["status_report"] = {"state" => "needs_input", "detail" => "q", "at" => "t"} })
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
 
       expect(progress.calls).to eq([[:pass_step, "plan"]])
     end

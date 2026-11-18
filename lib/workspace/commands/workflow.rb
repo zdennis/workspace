@@ -20,7 +20,7 @@ module Workspace
       RENDER_WORKSPACE = "<workspace>".freeze
 
       # What `step done --status` accepts.
-      REPORT_STATUSES = %w[pass fail].freeze
+      REPORT_STATUSES = (%w[pass fail] + WorkflowReportedStatus::STATES).freeze
 
       # The drawings `graph` makes, by `--format`; json prints the model itself.
       GRAPH_FORMATS = %w[mermaid dot ascii json].freeze
@@ -1063,13 +1063,14 @@ module Workspace
       # The agent's own report on its step (`step done`).
       #
       # @param pane [String, nil] the pane the agent runs in (`$TMUX_PANE`)
-      # @param status [String] "pass" or "fail"
+      # @param status [String] "pass" or "fail", or "done", "running", "needs_input" or "stuck" (stored as the step's stated status)
       # @param summary [String, nil]
       # @param code [String, nil] a word for why, matching {WorkflowDefinition::CODE_PATTERN} (`usage` otherwise)
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `not_bound` outside a run's pane, `review_pane_bound` in a review pane, `step_not_running`
       def step_done(pane:, status: "pass", summary: nil, code: nil)
-        raise UsageError, "--status must be pass or fail, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
+        raise UsageError, "--status must be one of #{REPORT_STATUSES.join(", ")}, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
+        raise UsageError, "--code applies to pass/fail reports, not to --status #{status}." if code && WorkflowReportedStatus::STATES.include?(status)
         raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || WorkflowDefinition::CODE_PATTERN.match?(code)
         if (refusal = WorkflowDefinition.engine_code_refusal(code))
           raise UsageError, "--code #{refusal}"
@@ -1078,8 +1079,10 @@ module Workspace
         reported = @engine.report(run_id, actor: "agent", status: status, summary: summary, code: code)
         @output.puts "Recorded #{status} for step #{reported["step"]} (attempt #{reported["attempt"]}) of run #{run_id}. " \
           "End your turn now; the step is decided when the turn ends."
+        row = reported["reported"]
+        row = {"status" => row["state"], "summary" => row["detail"]} if row.key?("state")
         {"workspace" => @store.run(run_id).workspace, "outcome" => "recorded", "reason" => nil, "message" => nil, "run_id" => run_id,
-         "step" => reported["step"], "attempt" => reported["attempt"], "reported" => reported["reported"].slice("status", "summary", "code")}
+         "step" => reported["step"], "attempt" => reported["attempt"], "reported" => row.slice("status", "summary", "code")}
       end
 
       # The fail-first check (`step expect-fail`), run by a `require: exec:` proof from no pane: the

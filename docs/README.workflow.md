@@ -43,7 +43,7 @@ workspace workflow unpause [RUN] [--json]
 workspace workflow approve [RUN] [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
 workspace workflow reject [RUN] --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]
 
-workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]
+workspace step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--json]
 workspace step status [--json]
 workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 ```

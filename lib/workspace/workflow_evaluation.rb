@@ -126,7 +126,8 @@ module Workspace
     # Records what the agent says about its current attempt. Nothing moves until the turn ends.
     #
     # @param run_id [String]
-    # @param status [String] "pass" or "fail"
+    # @param status [String] "pass" or "fail", or one of {WorkflowReportedStatus::STATES}; the latter is stored as the
+    #   attempt's `status_report` (source "report", the summary its detail) and judged as a stated line is
     # @param summary [String, nil] one line about the attempt
     # @param code [String, nil] a word the agent chose for why (stored; a failed step's `details.code`)
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
@@ -142,6 +143,12 @@ module Workspace
             code: "step_not_running", details: {"run_id" => run_id, "step" => stored["current"], "state" => state["state"]})
         end
         attempt = state["attempts"].last
+        if WorkflowReportedStatus::STATES.include?(status)
+          attempt["status_report"] = {"state" => status, "detail" => summary.to_s[0, WorkflowReportedStatus::TAIL_CHARS], "at" => now_iso, "source" => "report"}
+          event(stored, "step_reported", "step" => stored["current"], "attempt" => attempt["n"], "status" => status)
+          result = Reported.new(run_id: run_id, step: stored["current"], attempt: attempt["n"], reported: attempt["status_report"])
+          next WorkflowRun.from_h(stored)
+        end
         attempt["reported"] = {"status" => status, "summary" => summary, "code" => code, "at" => now_iso}.reject { |key, value| key == "code" && value.nil? }
         event(stored, "step_reported", "step" => stored["current"], "attempt" => attempt["n"], "status" => status)
         result = Reported.new(run_id: run_id, step: stored["current"], attempt: attempt["n"], reported: attempt["reported"])
@@ -389,7 +396,13 @@ module Workspace
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
-      attempt["status_report"] = status_report if status_report
+      # An explicit `step done` report (source "report") decides the first judging after it was stored and beats that
+      # turn's parsed line. It is then consumed, so a resume, the sweep or a later turn judges current evidence only.
+      stored_report = attempt["status_report"]
+      explicit = stored_report if stored_report.is_a?(Hash) && stored_report["source"] == "report"
+      attempt.delete("status_report") if explicit
+      attempt["status_report"] = status_report if status_report && !explicit
+      status_report = explicit || status_report
       # A turn that ended on the attempt shows its line reached the agent.
       attempt.delete("delivery")
       attempt.delete("proofs")
