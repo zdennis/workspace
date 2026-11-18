@@ -161,12 +161,12 @@ module Workspace
         @output.puts @graph_renderers.fetch(format).render(model)
       end
 
-      LIST_HEADER = ["ID", "SOURCE", "DESCRIPTION"].freeze
+      LIST_HEADER = ["ID", "SOURCE", "DESCRIPTION", "PATH"].freeze
 
       # Lists every workflow definition the catalog can find, as a table of id, source
-      # (project, global, source:N or builtin) and description (the definition's
-      # `description:`, else its title). An unusable definition's description names its
-      # first problem instead.
+      # (project, global, source:N or builtin), the path of the file each id resolves
+      # to and a description (the definition's `description:`, else its title). An
+      # unusable definition's description names its first problem instead.
       #
       # @param json [Boolean]
       # @param project [String, nil] the project whose definitions come first
@@ -182,7 +182,7 @@ module Workspace
           else
             entry["description"] || entry["title"] || ""
           end
-          [entry["id"], entry["source"], description]
+          [entry["id"], entry["source"], description, entry["path"]]
         end
         print_grid(LIST_HEADER, rows)
       end

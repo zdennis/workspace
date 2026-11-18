@@ -185,7 +185,7 @@ RSpec.describe Workspace::Commands::Workflow do
   end
 
   describe "#list" do
-    it "lists the definitions in a table of id, source and description, marking one that is not valid" do
+    it "lists the definitions in a table of id, source, path and description, marking one that is not valid" do
       allow(catalog).to receive(:list).and_return([
         {"id" => "bad", "title" => "bad", "source" => "global", "path" => "/defs/bad.yml", "problems" => ["steps must be a mapping"]},
         {"id" => "rpiv", "title" => "Research, Plan, Implement, Verify", "source" => "builtin", "path" => "/lib/rpiv.yml", "problems" => []}
@@ -194,9 +194,9 @@ RSpec.describe Workspace::Commands::Workflow do
       command.list
 
       expect(output.string).to eq(
-        "ID    SOURCE   DESCRIPTION\n" \
-        "bad   global   INVALID: steps must be a mapping\n" \
-        "rpiv  builtin  Research, Plan, Implement, Verify\n"
+        "ID    SOURCE   DESCRIPTION                        PATH\n" \
+        "bad   global   INVALID: steps must be a mapping   /defs/bad.yml\n" \
+        "rpiv  builtin  Research, Plan, Implement, Verify  /lib/rpiv.yml\n"
       )
     end
 
@@ -713,7 +713,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
       command.show
 
-      expect(output.string).to eq("ID    SOURCE  DESCRIPTION\nmine  global  INVALID: /defs/mine.yml is a link to a file that is not there\n")
+      expect(output.string).to eq("ID    SOURCE  DESCRIPTION                                                    PATH\nmine  global  INVALID: /defs/mine.yml is a link to a file that is not there  /defs/mine.yml\n")
     end
   end
 
