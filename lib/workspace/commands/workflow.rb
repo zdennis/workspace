@@ -529,11 +529,13 @@ module Workspace
       #   created and parked, so nothing is typed into the caller
       # @param fill_from_branch [Boolean] fill +task+ and +pr+ from the branch checked out at +worktree+ when not
       #   given; only the CLI's `workflow run` passes true, and only for a checkout it resolved
+      # @param definition [Workspace::WorkflowDefinition, nil] a definition already resolved (for example loaded from a file);
+      #   when given, +id+ names it and the catalog is not asked
       # @return [Hash{String=>Object}] the action row, with `inputs_from` (which inputs the branch filled);
       #   `outcome` is "parked" for a run parked from its own pane
       # @raise [Workspace::Error] see {Workspace::WorkflowEngine#preflight}
-      def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false)
-        definition = @catalog.find(id, project: project)
+      def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false, definition: nil)
+        definition ||= @catalog.find(id, project: project)
         warn_sweep_missing(definition)
         filled, from = (fill_from_branch && @branch_inputs) ? @branch_inputs.call(definition, worktree, inputs) : [inputs, {}]
         if dry_run

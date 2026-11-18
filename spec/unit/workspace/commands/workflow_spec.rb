@@ -516,6 +516,19 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to eq("wr_1  flow  app  running  step plan (attempt 1), running\n")
     end
 
+    it "starts the run from a definition it is given without asking the catalog" do
+      other = instance_double(Workspace::WorkflowDefinition, to_h: {"id" => "flow"})
+      allow(catalog).to receive(:find).and_raise("catalog must not be asked")
+      allow(panes).to receive(:default_pane).with("app").and_return("%5")
+      allow(engine).to receive(:start).and_return("id" => "wr_1", "workspace" => "app")
+      allow(status).to receive(:run).with("wr_1").and_return("runs" => [shown], "warnings" => [])
+
+      command.run(id: "flow", workspace: "app", worktree: "/src/app", definition: other)
+
+      expect(catalog).not_to have_received(:find)
+      expect(engine).to have_received(:start).with(hash_including(definition: other))
+    end
+
     it "resolves a pane the caller named" do
       allow(panes).to receive(:locate).with("app", "0.1").and_return("%7")
       allow(engine).to receive(:start).and_return("id" => "wr_1", "workspace" => "app")
