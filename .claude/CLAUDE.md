@@ -35,6 +35,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_transitions.rb` — The engine's rules over plain values: attempts, delivery, backoff, the default one-step failure loop, sweep marks and review limits.
 - `lib/workspace/workflow_run_change.rb` — The one way the engine changes a run: lock, change, events, alerts and follow-ups.
 - `lib/workspace/workflow_prompt.rb` — Composes and writes a step's (and a review round's) instructions.
+- `lib/workspace/workflow_reported_status.rb` — The status line an agent ends its turn with, and a tolerant reader of it.
 - `lib/workspace/workflow_starter.rb` — What starts a run: preflight, render and the first step.
 - `lib/workspace/workflow_dispatch.rb` — What starts a step and types its line: locks, budget, attempt record, pane binding.
 - `lib/workspace/workflow_progress.rb` — What follows a step's outcome: pass, gate, next step, finish, retry and review rounds.
