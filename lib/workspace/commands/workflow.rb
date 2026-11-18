@@ -2205,6 +2205,7 @@ module Workspace
         current = run["current"]
         where = %w[completed cancelled failed].include?(run["state"]) ? "" : "  step #{current["step"]}#{" (attempt #{current["attempt"]})" if current["attempt"]}, #{current["state"]}"
         @output.puts "#{run["id"]}  #{run["workflow"]}  #{run["workspace"]}  #{run["state"]}#{where}"
+        @output.puts "  workflow: #{run["definition_source"]}, #{run["definition_path"]}" if run["definition_path"]
         reason = current["reason"]
         @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason && !(reason["code"] == "retry_backoff" && wait_kind == "backoff")
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }

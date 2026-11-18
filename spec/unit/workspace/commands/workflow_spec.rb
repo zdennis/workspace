@@ -849,6 +849,23 @@ RSpec.describe Workspace::Commands::Workflow do
       end
     end
 
+    it "prints the source and file the run's definition was read from" do
+      sourced = shown("definition_source" => "builtin", "definition_path" => "/lib/rpiv.yml")
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [sourced], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  workflow: builtin, /lib/rpiv.yml\n")
+    end
+
+    it "prints no definition line for a run that does not record where its definition came from" do
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [shown], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).not_to include("workflow:")
+    end
+
     it "prints the run timeout with the clock it is measured on" do
       timed = shown("deadline" => {"clock" => "active", "used" => 11400.0, "limit" => 28800, "timeout" => 28800, "spent" => false})
       allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [timed], "warnings" => [])

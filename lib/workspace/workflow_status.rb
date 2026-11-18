@@ -319,7 +319,15 @@ module Workspace
         "base_sha" => run.base_sha, "pane" => pane, "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
         "artifacts_dir" => run.artifacts_dir, "events_path" => @store.events_path(run.id),
         "guard_warnings" => guard_warnings(run)
-      }.merge(budget_row(run)).merge(deadline_row(run))
+      }.merge(budget_row(run)).merge(deadline_row(run)).merge(definition_row(run))
+    end
+
+    # The source and file a run's definition was read from at start, so status can say
+    # where the workflow came from. Runs started before the run record carried these
+    # have no path, and get no keys.
+    def definition_row(run)
+      return {} unless run.definition_path
+      {"definition_source" => run.definition_source, "definition_path" => run.definition_path}
     end
 
     # What the guard warned of on any attempt, oldest first; the run went on past each.
