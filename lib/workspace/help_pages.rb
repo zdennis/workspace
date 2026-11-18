@@ -1319,7 +1319,7 @@ module Workspace
       },
       "advance" => {
         hidden: true,
-        usage: ["workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--stopped-at AT] [--background-task TYPE:ID]...]"],
+        usage: ["workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--stopped-at AT] [--background-task TYPE:ID]... [--transcript-path PATH]]"],
         summary: "Move a run on; the agent daemon runs this when a turn ends",
         about: ["It is not meant to be typed. #{RUN_ID} It prints nothing.", "",
           "Typed by hand it decides the run's step as the daemon would, so use `workflow resume` instead."],
@@ -1327,7 +1327,8 @@ module Workspace
           ["--pane PANE", "The run's pane"],
           ["--turn-started AT", "When that turn began (ISO 8601)"],
           ["--stopped-at AT", "When the daemon saw that turn end (ISO 8601)"],
-          ["--background-task TYPE:ID", "A background task still going when the turn ended (repeatable)"]],
+          ["--background-task TYPE:ID", "A background task still going when the turn ended (repeatable)"],
+          ["--transcript-path PATH", "The agent's transcript, for the status line its last message ends with"]],
         examples: [
           ["workspace workflow advance RUN", "nudge a stuck run: it waits on a lock, or its check never finished; it moves on if it can"],
           ["workspace workflow advance RUN --turn-ended --pane %19", "what the agent daemon runs when the agent in pane %19 finishes answering, so the run can go to its next step"],

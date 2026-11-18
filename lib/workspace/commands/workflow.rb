@@ -1034,11 +1034,12 @@ module Workspace
       # @param turn_started [Time, nil] when the turn that ended began, when the daemon knows
       # @param stopped_at [Time, nil] when the daemon saw the turn end
       # @param background [Array<Hash>, nil] the tasks (`"id"`, `"type"`) the Stop listed as still going
+      # @param transcript_path [String, nil] the agent's transcript, for the status line its last message ends with
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [void]
       # @raise [Workspace::Error] code `bound_pane` for a step with a guard or a status check, from a pane
       #   bound to the run or a process under it
-      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, caller_pane: nil)
+      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, transcript_path: nil, caller_pane: nil)
         stored = begin
           @store.run(run)
         rescue Workspace::Error
@@ -1055,7 +1056,7 @@ module Workspace
           @infra_retry.call(stored)
           return nil
         end
-        turn_ended ? @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || []) : @engine.tick(run, actor: "daemon")
+        turn_ended ? @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || [], transcript_path: transcript_path) : @engine.tick(run, actor: "daemon")
         nil
       end
 

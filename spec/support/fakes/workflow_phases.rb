@@ -921,7 +921,7 @@ class RecordingEvaluation
     @calls = []
   end
 
-  def evaluate(run, ctx:, turn_started: nil, background: [])
+  def evaluate(run, ctx:, turn_started: nil, background: [], status_report: nil)
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:evaluate, run.current]
     ctx.check(@check) if @check

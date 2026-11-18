@@ -345,8 +345,8 @@ class RecordingNudger
     @calls = []
   end
 
-  def turn_ended(workspace, pane_id, turn_started: nil, background: nil, hook_log: nil)
-    @calls << [:turn_ended, workspace, pane_id, {turn_started: turn_started, background: background, hook_log: hook_log}]
+  def turn_ended(workspace, pane_id, turn_started: nil, background: nil, transcript_path: nil, hook_log: nil)
+    @calls << [:turn_ended, workspace, pane_id, {turn_started: turn_started, background: background, transcript_path: transcript_path, hook_log: hook_log}]
     @order << [@label, :turn_ended]
     nil
   end

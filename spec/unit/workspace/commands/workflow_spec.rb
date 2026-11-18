@@ -2190,8 +2190,14 @@ RSpec.describe Workspace::Commands::Workflow do
       it "still hands a turn end to the engine, which evaluates it" do
         command.advance(run: "wr_1", turn_ended: true, pane: "%5", stopped_at: now)
 
-        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: now, background: [])
+        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: now, background: [], transcript_path: nil)
         expect(engine).not_to have_received(:tick)
+      end
+
+      it "hands the transcript path on to the engine" do
+        command.advance(run: "wr_1", turn_ended: true, pane: "%5", stopped_at: now, transcript_path: "/t/s.jsonl")
+
+        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: now, background: [], transcript_path: "/t/s.jsonl")
       end
 
       it "hands a tick without a turn end to the engine's tick" do
@@ -2469,7 +2475,7 @@ RSpec.describe Workspace::Commands::Workflow do
         command.advance(run: "wr_1", turn_ended: true, pane: "%5", caller_pane: nil)
         command.advance(run: "wr_1", caller_pane: "%3")
 
-        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
+        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
         expect(engine).to have_received(:tick).with("wr_1", actor: "daemon")
       end
 
@@ -2486,7 +2492,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
         command.advance(run: "wr_9", turn_ended: true, caller_pane: "%5")
 
-        expect(engine).to have_received(:turn_ended).with("wr_9", actor: "daemon", pane: nil, turn_started: nil, stopped_at: nil, background: [])
+        expect(engine).to have_received(:turn_ended).with("wr_9", actor: "daemon", pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
       end
     end
 
@@ -2509,8 +2515,8 @@ RSpec.describe Workspace::Commands::Workflow do
       command.advance(run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12))
       command.advance(run: "wr_1")
 
-      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
-      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12), stopped_at: nil, background: [])
+      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
+      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12), stopped_at: nil, background: [], transcript_path: nil)
       expect(engine).to have_received(:tick).with("wr_1", actor: "daemon")
       expect(output.string).to eq("")
     end
@@ -2520,11 +2526,11 @@ RSpec.describe Workspace::Commands::Workflow do
       allow(engine).to receive(:turn_ended)
       tasks = [{"id" => "k12345678", "type" => "MCP task"}]
 
-      command.advance(run: "wr_1", turn_ended: true, pane: "%5", background: tasks)
+      command.advance(run: "wr_1", turn_ended: true, pane: "%5", background: tasks, transcript_path: nil)
       command.advance(run: "wr_1", turn_ended: true, pane: "%5", background: nil)
 
-      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: tasks)
-      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
+      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: tasks, transcript_path: nil)
+      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
     end
 
     context "with a run whose infra retry is due" do
@@ -2552,7 +2558,7 @@ RSpec.describe Workspace::Commands::Workflow do
       it "still tells the engine a turn ended, and never starts the retry for it" do
         command.advance(run: "wr_1", turn_ended: true, pane: "%5")
 
-        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
+        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
         expect(infra_retry).not_to have_received(:call)
       end
 

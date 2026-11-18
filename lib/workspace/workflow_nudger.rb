@@ -59,16 +59,18 @@ module Workspace
     # @param turn_started [Time, nil] when that turn began, when it is known; lets the
     #   run tell its step's own turn from one that was under way before the step started
     # @param background [Array<Hash>, nil] the tasks (`"id"`, `"type"`) the Stop listed as still going
+    # @param transcript_path [String, nil] the Stop hook's transcript; passed on as `--transcript-path` when it is a non-empty String
     # @param hook_log [Workspace::HookEventLog, nil] the workspace's log, given by the caller that holds it; nil writes nothing
     # @return [String, nil] the run that was woken; nil for a pane bound to none
-    def turn_ended(workspace, pane_id, turn_started: nil, background: nil, hook_log: nil)
+    def turn_ended(workspace, pane_id, turn_started: nil, background: nil, transcript_path: nil, hook_log: nil)
       # A review pane's turn ends its round, so a pane bound in any role wakes its run.
       run_id = @panes.bound_on(pane_id)&.fetch(:run_id)
       return nil unless run_id
       started = turn_started ? ["--turn-started", turn_started.utc.iso8601(3)] : []
       tasks = Array(background).flat_map { |task| ["--background-task", "#{task["type"]}:#{task["id"]}"] }
+      transcript = (transcript_path.is_a?(String) && !transcript_path.empty?) ? ["--transcript-path", transcript_path] : []
       record(hook_log, "workflow_advance_started", pane_id, "run_id" => run_id, "cause" => "turn_ended")
-      advance(workspace, run_id, hook_log, "--turn-ended", "--pane", pane_id, *started, "--stopped-at", @clock.call.utc.iso8601(3), *tasks)
+      advance(workspace, run_id, hook_log, "--turn-ended", "--pane", pane_id, *started, "--stopped-at", @clock.call.utc.iso8601(3), *tasks, *transcript)
       run_id
     rescue => e
       @logger.debug { "workflow: could not wake the run on #{pane_id} (#{e.class}: #{e.message})" }

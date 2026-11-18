@@ -51,9 +51,11 @@ module Workspace
     # @param review_revision [#call, nil] given `run:`, `step:` and `stop_when:`, the revision of what the round judges now
     #   ({WorkflowReviewRevision}), computed again with the lock given up when a round ends (default: none, and the
     #   round is tallied at once, under the lock that saw it end)
+    # @param transcript [#last_assistant_message, nil] reads the last assistant message of a transcript path ({TranscriptSummary}), for the
+    #   status line a turn ended with (default: none, so no status is read)
     # @param clock [#call] returns the current Time
     def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil,
-      review_revision: nil, round_rerun: nil, clock: -> { Time.now })
+      review_revision: nil, round_rerun: nil, transcript: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @progress = progress
@@ -68,6 +70,7 @@ module Workspace
       @review_closer = review_closer
       @review_revision = review_revision
       @round_rerun = round_rerun
+      @transcript = transcript
       @clock = clock
     end
 
@@ -84,11 +87,14 @@ module Workspace
     # @param turn_started [Time, nil] when the turn that ended began; one that began before the step's attempt did decides nothing
     # @param stopped_at [Time, nil] when the turn's end was seen; one from before the attempt began decides nothing
     # @param background [Array<Hash>] the background tasks the agent still listed when its turn ended
+    # @param transcript_path [String, nil] the hook payload's transcript; the status line its last assistant message ends with is stored
+    #   on the attempt as `status_report` (stored only, nothing is judged by it)
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [])
+    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
       follow = nil
+      status_report = read_status_report(transcript_path)
       run = @change.call(run_id, actor: actor, cause: "turn_ended") do |read, ctx|
         stored = read.to_h
         next if stored["parked"]
@@ -104,7 +110,7 @@ module Workspace
         next if pane && bound_pane(stored) != pane
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
         next if stopped_at && stopped_at < Time.iso8601(state["attempts"].last["started_at"])
-        judged = evaluate(without_continue_marks(read), ctx: ctx, turn_started: turn_started, background: background)
+        judged = evaluate(without_continue_marks(read), ctx: ctx, turn_started: turn_started, background: background, status_report: status_report)
         follow = ctx
         judged
       end
@@ -148,9 +154,9 @@ module Workspace
     # @param turn_started [Time, nil]
     # @param background [Array<Hash>] see {#turn_ended}
     # @return [WorkflowRun] the run afterwards
-    def evaluate(run, ctx:, turn_started: nil, background: [])
+    def evaluate(run, ctx:, turn_started: nil, background: [], status_report: nil)
       work = WorkflowRun.from_h(run).thawed
-      judge(work, ctx, turn_started, background)
+      judge(work, ctx, turn_started, background, status_report: status_report)
       WorkflowRun.from_h(work)
     end
 
@@ -373,10 +379,11 @@ module Workspace
       false
     end
 
-    def judge(run, ctx, turn_started, background, guard: true)
+    def judge(run, ctx, turn_started, background, guard: true, status_report: nil)
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
+      attempt["status_report"] = status_report if status_report
       # A turn that ended on the attempt shows its line reached the agent.
       attempt.delete("delivery")
       attempt.delete("proofs")
@@ -655,6 +662,15 @@ module Workspace
 
     def step_state(run)
       run["steps"].fetch(run["current"])
+    end
+
+    # The status line the last assistant message of +path+ ends with, as the attempt stores it; nil when there is no reader,
+    # no path, no message or no line.
+    def read_status_report(path)
+      return nil unless @transcript && path
+      message = @transcript.last_assistant_message(path)
+      parsed = WorkflowReportedStatus.parse(message && message["text"])
+      parsed && {"state" => parsed[:state], "detail" => parsed[:detail], "at" => now_iso}
     end
 
     def now_iso

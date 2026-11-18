@@ -243,6 +243,65 @@ RSpec.describe Workspace::WorkflowEvaluation do
     end
   end
 
+  describe "#turn_ended status_report" do
+    let(:reads) { [] }
+    let(:message) { {"text" => "All done.\nWORKFLOW_STATUS: done — plan written"} }
+    let(:reader) do
+      reads_log = reads
+      msg = -> { message }
+      Class.new do
+        define_method(:last_assistant_message) { |path| reads_log << path && msg.call }
+      end.new
+    end
+
+    def attempt = store.runs["wr_1"]["steps"]["plan"]["attempts"].last
+
+    before do
+      produce
+      stored
+    end
+
+    it "stores the state, detail and time of the status line on the attempt" do
+      evaluation(transcript: reader).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+
+      expect(reads).to eq(["/t/s.jsonl"])
+      expect(attempt["status_report"]).to eq("state" => "done", "detail" => "plan written", "at" => "2026-11-10T12:00:00Z")
+    end
+
+    it "stores nothing without a transcript path, and reads nothing" do
+      evaluation(transcript: reader).turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(reads).to be_empty
+      expect(attempt).not_to have_key("status_report")
+    end
+
+    it "stores nothing when no reader is injected" do
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+
+      expect(attempt).not_to have_key("status_report")
+    end
+
+    it "stores nothing for a message with no status line" do
+      message["text"] = "All done, nothing else to say."
+      evaluation(transcript: reader).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+
+      expect(attempt).not_to have_key("status_report")
+    end
+
+    it "stores nothing when there is no message" do
+      empty = Class.new { def last_assistant_message(_path) = nil }.new
+      evaluation(transcript: empty).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+
+      expect(attempt).not_to have_key("status_report")
+    end
+
+    it "leaves the step judged as before" do
+      evaluation(transcript: reader).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+  end
+
   describe "a step being reviewed" do
     let(:tally) { RecordingReviewTally.new(outcome: :approved, reviews: [{"reviewer" => "skeptic"}]) }
     let(:round) { {"round" => 1, "delivery" => nil, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "pending" => ["skeptic"], "redeliveries" => 0} }

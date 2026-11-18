@@ -7151,4 +7151,38 @@ steps:
       expect(run).not_to include("timeout_hold")
     end
   end
+  describe "the status line a turn ended with" do
+    let(:plan_flow) { definition("steps:\n  plan:\n    prompt: Plan.\n    produces: [plan.md]\n") }
+    let(:transcript) { File.join(@dir, "session.jsonl") }
+
+    def write_transcript(text)
+      File.write(transcript, [
+        {type: "user", message: {role: "user", content: "go"}},
+        {type: "assistant", timestamp: "2026-10-04T12:00:00Z", message: {role: "assistant", content: [{type: "text", text: text}]}}
+      ].map { |entry| JSON.generate(entry) }.join("\n") + "\n")
+    end
+
+    def attempt = stored_run(store, "wr_1")["steps"]["plan"]["attempts"].last
+
+    it "is stored on the attempt when the last assistant message ends with it" do
+      write_transcript("Plan written.\nWORKFLOW_STATUS: done — plan.md is ready")
+      start(plan_flow, inputs: {})
+      artifact("plan.md")
+
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5", transcript_path: transcript)
+
+      expect(attempt["status_report"]).to eq("state" => "done", "detail" => "plan.md is ready", "at" => "2026-10-04T12:00:00Z")
+      expect(attempt["outcome"]).to eq("passed")
+    end
+
+    it "is not stored when the last assistant message has no status line" do
+      write_transcript("Plan written.")
+      start(plan_flow, inputs: {})
+      artifact("plan.md")
+
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5", transcript_path: transcript)
+
+      expect(attempt).not_to have_key("status_report")
+    end
+  end
 end

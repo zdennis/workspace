@@ -47,6 +47,12 @@ RSpec.describe Workspace::HookFanout do
       expect(spawned).to be_empty
     end
 
+    it "hands the stop event's transcript path to the nudger" do
+      fanout.session_event(event("stop", "transcript_path" => "/t/s.jsonl"))
+
+      expect(nudger.calls.last.last[:transcript_path]).to eq("/t/s.jsonl")
+    end
+
     it "tells the nudger when the turn that ended began, and forgets it at a new session" do
       subject = fanout
       subject.session_event(event("user_prompt"))
@@ -55,8 +61,8 @@ RSpec.describe Workspace::HookFanout do
       subject.session_event(event("stop"))
 
       expect(nudger.calls).to eq([
-        [:turn_ended, "myapp", "%1", {turn_started: now, background: ["b1"], hook_log: hook_log}],
-        [:turn_ended, "myapp", "%1", {turn_started: nil, background: nil, hook_log: hook_log}]
+        [:turn_ended, "myapp", "%1", {turn_started: now, background: ["b1"], transcript_path: nil, hook_log: hook_log}],
+        [:turn_ended, "myapp", "%1", {turn_started: nil, background: nil, transcript_path: nil, hook_log: hook_log}]
       ])
     end
 
