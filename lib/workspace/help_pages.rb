@@ -705,7 +705,6 @@ module Workspace
           ["workspace workflow start rpiv PROJ-101", "make a workspace for the ticket and run rpiv in it"],
           ["workspace workflow start --ref PROJ-101", "the same, and with no key set, the one workflow that fits a JIRA ref"],
           ["workspace workflow start --file ./scratch/rpiv.yml PROJ-101", "make a workspace for the ticket and run a definition file that is not installed anywhere"],
-          ["workspace workflow start rpiv PROJ-101 --dry-run", "read the ticket and check everything, making nothing"],
           ["workspace workflow start rpiv --prompt \"add a hello script\"", "no ticket: start from a sentence, with the branch named from its words"],
           ["workspace workflow start rpiv --prompt \"add a hello script\" --branch hello-script", "choose the branch's name yourself"],
           ["workspace workflow start pr-feedback '#123'", "work through the review feedback on pull request 123 (needs gh)"],
