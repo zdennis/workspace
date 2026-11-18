@@ -126,6 +126,17 @@ RSpec.describe Workspace::Commands::Finish do
             expect(JSON.parse(output.string)).to include("outcome" => "discarded")
           end
 
+          it "records discarded on a detached HEAD instead of raising" do
+            allow(git).to receive(:changed_files_count).with(worktree_path).and_return(0)
+            allow(git).to receive(:worktree_branch).with(worktree_path).and_return(nil)
+            allow(git).to receive(:merged_into_base?).with(worktree_path, nil).and_return(nil)
+            allow(git).to receive(:upstream_branch).with(worktree_path).and_return(nil)
+
+            command.call("myproject.worktree-PROJ-123", force: true, json: true, working_dir: tmpdir)
+
+            expect(JSON.parse(output.string)).to include("outcome" => "discarded")
+          end
+
           it "does not let an existing PR turn unpushed work into pushed" do
             pr = double("pull_request", find_or_create: {"outcome" => "existing", "url" => "https://github.com/org/repo/pull/1"})
             forced = described_class.new(git: git, project_config: project_config, kill_command: kill_command,

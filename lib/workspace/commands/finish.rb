@@ -70,7 +70,7 @@ module Workspace
         {exit_code: 1}
       end
 
-      def finish!(project, pr:, working_dir:, quiet: false, force: false, &after_remove)
+      def finish!(project, pr:, working_dir:, force:, quiet: false, &after_remove)
         @pr_url = nil
         @outcome = nil
         project ||= @project_detector.detect(working_dir)
@@ -158,14 +158,15 @@ module Workspace
         if branch.nil?
           raise Workspace::Error,
             "'#{project}' is on a detached HEAD at #{worktree_path}.\n" \
-            "Check out a branch first (git -C #{worktree_path} switch -c <branch>), push it, then rerun finish."
+            "Check out a branch first (git -C #{worktree_path} switch -c <branch>), push it, then rerun finish,\n" \
+            "or rerun with --force to finish anyway."
         end
 
         upstream = @git.upstream_branch(worktree_path)
         if upstream.nil?
           raise Workspace::Error,
             "'#{project}' branch '#{branch}' has no upstream.\n" \
-            "Push it first: git -C #{worktree_path} push -u origin #{branch}"
+            "Push it first: git -C #{worktree_path} push -u origin #{branch}, or rerun with --force to finish anyway."
         end
 
         ahead = @git.commits_ahead_of_upstream(worktree_path)

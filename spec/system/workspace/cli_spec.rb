@@ -1383,6 +1383,16 @@ RSpec.describe Workspace::CLI do
       expect(finish_command).to have_received(:call).with("myproject.worktree-x", pr: false, json: false, force: true, working_dir: anything)
     end
 
+    it "passes the long --force form through the same way" do
+      finish_command = instance_double(Workspace::Commands::Finish)
+      allow(finish_command).to receive(:call).and_return("myproject.worktree-x")
+      cli, = build_test_cli(finish_command: finish_command)
+
+      cli.run(["finish", "--name", "myproject.worktree-x", "--force"])
+
+      expect(finish_command).to have_received(:call).with("myproject.worktree-x", pr: false, json: false, force: true, working_dir: anything)
+    end
+
     it "emits a JSON usage error and exits 1 for a bad flag with --json" do
       cli, output, _ = build_test_cli
       expect { cli.run(["finish", "--json", "--bogus-flag"]) }.to raise_error(FakeSystemExit) { |e|

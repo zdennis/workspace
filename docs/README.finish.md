@@ -27,7 +27,7 @@ Before touching anything, `finish` checks:
 2. **On a branch, with an upstream** — the worktree must have a branch checked out (a detached HEAD is refused, with a hint to check out a branch first), and the branch must be tracking a remote branch. Without one, `finish` refuses with a hint: `git push -u origin <branch>`.
 3. **Not ahead of its upstream** — if HEAD has commits the upstream doesn't, `finish` refuses with a hint: `git push`.
 
-If git can't answer one of these checks, `finish` refuses rather than guess. `--force` skips these checks entirely and finishes anyway — a tracked-and-locally-modified file (`.bundle/config` rewritten by `bundle config set`, say), a branch that was never pushed — and the changed or unpushed work is removed with the worktree. Use it when you know the work is disposable or already somewhere else.
+If git can't answer one of these checks, `finish` refuses rather than guess. `--force` skips these checks entirely and finishes anyway — a tracked-and-locally-modified file (`.bundle/config` rewritten by `bundle config set`, say), a branch that was never pushed — and the changed or unpushed work, and any untracked files, are removed with the worktree. Use it when you know the work is disposable or already somewhere else.
 
 `finish` checks against the upstream branch as it was last fetched; it doesn't fetch first. If a teammate pushed to the same branch since your last fetch, run `git fetch` before `finish` to get an accurate check.
 
@@ -71,7 +71,7 @@ Success:
 Error (nothing was removed):
 
 ```json
-{"schema_version": 1, "ok": false, "error": "'myproject.worktree-PROJ-123' has 2 changed file(s) at /path/to/worktree.\nCommit or stash them before finishing.", "code": "unsaved_work"}
+{"schema_version": 1, "ok": false, "error": "'myproject.worktree-PROJ-123' has 2 changed file(s) at /path/to/worktree.\nCommit or stash them before finishing, or rerun with --force to finish anyway.", "code": "unsaved_work"}
 ```
 
 - `outcome` is `merged` (the branch's commits are on the default branch), `pushed` (clean and pushed, not known to be merged), or, under `--force`, also `discarded` (the branch's work was not all on its remote and is removed with the worktree — see "Details").

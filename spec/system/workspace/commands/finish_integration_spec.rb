@@ -102,5 +102,12 @@ RSpec.describe Workspace::Commands::Finish, "with a real repository" do
 
       expect(forced_outcome).to include("outcome" => "discarded")
     end
+
+    it "records merged when the branch's commits are on the default branch" do
+      File.write(File.join(worktree, "work"), "rewritten locally")
+      git(worktree, "push", "-q", "origin", "feature:main")
+
+      expect(forced_outcome).to include("ok" => true, "outcome" => "merged")
+    end
   end
 end

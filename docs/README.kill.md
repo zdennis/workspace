@@ -101,7 +101,7 @@ workspace kill --delete-remote
 
 ## See also
 
-`workspace finish` also removes a worktree, but requires the branch to be clean and fully pushed (no override), and can optionally open a PR first.
+`workspace finish` also removes a worktree, but requires the branch to be clean and fully pushed unless its `--force` is given (see [README.finish.md](README.finish.md)), and can optionally open a PR first.
 
 ## JSON output
 
