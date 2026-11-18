@@ -5651,7 +5651,7 @@ module Workspace
 
     def go_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace go [REF | \"TEXT\"] [--workflow ID] [--input KEY=VALUE]... [--here] [--text] [--base REF] [--dry-run] [--json]"
+        opts.banner = "Usage: workspace go [REF | \"TEXT\"] [--workflow ID | --file PATH] [--input KEY=VALUE]... [--here] [--text] [--base REF] [--dry-run] [--json]"
         opts.separator ""
         opts.separator "Start a workflow with one argument. A ticket, pull request, issue or branch is the ref; text with a space"
         opts.separator "is free text that names a new branch, unless it holds one pull request, issue or ticket (see below)."
@@ -5664,6 +5664,7 @@ module Workspace
         opts.separator "request, issue or ticket (a key in uppercase) is read as that ref, with the sentence as the task; --text keeps it plain."
         opts.separator ""
         opts.on("--workflow ID", "Use this workflow instead of the configured one") { |v| options[:workflow] = v }
+        opts.on("--file PATH", "Run the workflow definition in this YAML file instead of an installed one (needs an `id:` key or an ID.yml name); not with --workflow") { |v| options[:file] = v }
         opts.on("--input KEY=VALUE", "Set a workflow input; repeatable") { |v| options[:inputs] << v }
         opts.on("--here", "Run free text in this worktree workspace instead of making a new one; refused where go can't run in place") { options[:here] = true }
         opts.on("--text", "Treat the quoted sentence as plain text; find no ticket, pull request or issue in it") { options[:text] = true }
@@ -5695,12 +5696,14 @@ module Workspace
       if args.size > 1
         raise UsageError, "go takes one argument, got #{args.size}. Quote free text, as in workspace go \"try the thing\". Run 'workspace go --help'."
       end
+      raise UsageError, "--file and --workflow both pick the workflow: use one." if options[:file] && options[:workflow]
+      raise UsageError, "--file needs a PATH." if options[:file]&.strip&.empty?
       raise Error, "go is not available: no go command was wired" unless @go_command
 
       inputs = workflow_inputs(options[:inputs])
       workflow_action("go", options) do
         @go_command.call(argument: args.first, workflow: options[:workflow], inputs: inputs, headless: @launch_mode.resolve(nil).headless?,
-          dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"], here: options.fetch(:here, false), base: options[:base], text: options.fetch(:text, false))
+          dry_run: options[:dry_run], caller_pane: ENV["TMUX_PANE"], here: options.fetch(:here, false), base: options[:base], text: options.fetch(:text, false), file: options[:file])
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)

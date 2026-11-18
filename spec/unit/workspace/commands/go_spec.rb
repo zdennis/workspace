@@ -308,7 +308,7 @@ RSpec.describe Workspace::Commands::Go do
       row = command.call(argument: "also this", here: true, workflow: "investigate", inputs: {"a" => "b"}, dry_run: true)
 
       expect(row).to eq(task_row)
-      expect(go_task).to have_received(:add).with(running, "also this", an_object_having_attributes(workspace: detected), flags: {workflow: "investigate", inputs: {"a" => "b"}, base: nil}, dry_run: true)
+      expect(go_task).to have_received(:add).with(running, "also this", an_object_having_attributes(workspace: detected), flags: {workflow: "investigate", file: nil, inputs: {"a" => "b"}, base: nil}, dry_run: true)
       expect(workflow_defaults).not_to have_received(:lookup)
       expect_nothing_ran
     end
@@ -761,6 +761,76 @@ RSpec.describe Workspace::Commands::Go do
         expect(error.code).not_to eq("go_here_unavailable")
         expect(error.message).to eq("go must run inside a git repository.")
       end
+    end
+  end
+
+  describe "--file" do
+    let(:file_definition) { Workspace::WorkflowDefinition.parse(yaml, id: "mine", source: "file", path: "/tmp/mine.yml") }
+
+    before { allow(catalog).to receive(:load_file).and_return(file_definition) }
+
+    it "outranks config, skips the id lookup and reports the file as the source" do
+      row = command.call(argument: "other", file: "/tmp/mine.yml")
+
+      expect(catalog).to have_received(:load_file).with("/tmp/mine.yml", project: "app")
+      expect(catalog).not_to have_received(:find)
+      expect(workflow_defaults).not_to have_received(:lookup)
+      expect(output.string).to include("go: mine (read from --file)")
+      expect(row["decision"]).to include("workflow" => "mine", "source" => "file", "reason" => "read from --file")
+    end
+
+    it "hands the file, not an id, to WorkflowStart" do
+      command.call(argument: "fix the bug", file: "/tmp/mine.yml")
+
+      expect(workflow_start).to have_received(:call).with(file: "/tmp/mine.yml", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: false)
+    end
+
+    it "hands the file to WorkflowStart for a ref" do
+      command.call(argument: "other", file: "/tmp/mine.yml")
+
+      expect(workflow_start).to have_received(:call).with(hash_including(file: "/tmp/mine.yml", ref: "other"))
+    end
+
+    it "runs in place with the loaded definition and no id lookup" do
+      command.call(argument: "fix the bug", here: true, file: "/tmp/mine.yml", caller_pane: "%3")
+
+      expect(workflow).to have_received(:run).with(definition: file_definition, workspace: detected, worktree: root, inputs: {"task" => "fix the bug"}, dry_run: false, caller_pane: "%3", project: "app")
+    end
+
+    it "refuses a file that fell back to the file id before printing anything" do
+      fallback = Workspace::WorkflowDefinition.parse(yaml, id: "file", source: "file", path: "/tmp/x.yml")
+      allow(catalog).to receive(:load_file).and_return(fallback)
+
+      expect { command.call(argument: "other", file: "/tmp/x.yml") }.to raise_error(Workspace::UsageError, /add an `id:` key/)
+      expect(output.string).to eq("")
+      expect_nothing_ran
+    end
+
+    it "is refused with --workflow" do
+      expect(refusal(argument: "other", file: "a.yml", workflow: "rpiv")).to be_a(Workspace::UsageError)
+      expect_nothing_ran
+    end
+
+    it "counts as a workflow for a lone word that is no branch" do
+      row = command.call(argument: "newword", file: "/tmp/mine.yml")
+
+      expect(row["decision"]).to include("source" => "file")
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "newword", file: "/tmp/mine.yml"))
+    end
+
+    it "carries file to the task path's flags" do
+      allow(go_task).to receive(:run_for).and_return({"id" => "wr_1"})
+      allow(go_task).to receive(:add).and_return({})
+
+      command.call(argument: "also this", here: true, file: "/tmp/mine.yml")
+
+      expect(go_task).to have_received(:add).with(anything, "also this", anything, flags: {workflow: nil, file: "/tmp/mine.yml", inputs: {}, base: nil}, dry_run: false)
+    end
+
+    it "names --file in the branch_exists recovery command" do
+      allow(workflow_start).to receive(:call).and_raise(Workspace::Error.new("exists", code: "branch_exists", details: {"branch" => "other", "path" => "/x"}))
+
+      expect(refusal(argument: "other !", file: "/tmp/mine.yml").message).to include("`workspace go other --file /tmp/mine.yml --input task=TEXT`")
     end
   end
 
