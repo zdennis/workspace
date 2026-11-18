@@ -53,6 +53,7 @@ RSpec.describe "the shipped workflow presets" do
 
         expect(by_id.call("implement")["require"]).to eq([{"commits" => 1}, {"plan_status" => "done"}])
         expect(by_id.call("verify")["require"]).to eq([{"command" => "lint", "optional" => true}])
+        expect(by_id.call("verify")["status"]).to eq({"command" => "test", "timeout" => 2400.0})
         expect(by_id.call("implement")["prompt"]).to include("then set the plan's\n`status: done`")
       end
     end
@@ -176,7 +177,7 @@ RSpec.describe "the shipped workflow presets" do
 
     it "leaves the files of rpiv and rpiv-auto-approve as they were" do
       sha = ->(id) { Digest::SHA256.file(File.join(config.builtin_workflows_dir, "#{id}.yml")).hexdigest }
-      expect(sha.call("rpiv")).to eq("8fa346f0d4cb1de8f24899d0b61452a5490ab1c9ad4342502337edf0bc05a354")
+      expect(sha.call("rpiv")).to eq("0e8a96e72473e9ff0c0e7c328cfeacb3420f302f42f67a01cce253ba1150d6be")
       expect(sha.call("rpiv-auto-approve")).to eq("46f241f38c5694297488f8e3b903eb4dfa39534dc42f1a68188602926ae8b7ed")
     end
   end

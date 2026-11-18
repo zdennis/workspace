@@ -92,6 +92,9 @@ steps:
     uses: [test-db]
     status:
       command: test
+      # The check runs the project's whole test command, which on a sizable
+      # suite can outrun the 20-minute default; the step itself allows 90m.
+      timeout: 40m
     require:
       - command: lint
         optional: true
