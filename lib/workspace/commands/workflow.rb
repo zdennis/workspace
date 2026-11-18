@@ -2352,6 +2352,8 @@ module Workspace
           when "delivery" then "step #{details["step"]}'s line was on its way to pane #{details["pane"]} when the process typing it stopped; the agent may not have it"
           else "step #{details["step"]} could not be started (#{details["error"]}): #{details["message"]}#{"; the pane showed #{refusal_facts(details)}" if details["seen"].is_a?(Hash) && refusal_facts(details)}"
           end
+        when "waiting_agent_input"
+          "step #{details["step"]}'s agent says it #{(details["state"] == "stuck") ? "is stuck" : "needs input"}#{": #{TerminalText.escape(details["detail"].to_s)}" unless details["detail"].to_s.empty?}"
         when "turn_ended_incomplete"
           stale = Array(details["stale"])
           # Task types and ids come from a stored run, so they are escaped like any text printed to a terminal.

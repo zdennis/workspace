@@ -22,7 +22,7 @@ module Workspace
     MAX_CODE = 64
 
     # Reason codes that make a hold.
-    HOLD_CODES = %w[budget_spent run_timed_out failed_check].freeze
+    HOLD_CODES = %w[budget_spent run_timed_out failed_check waiting_agent_input].freeze
 
     # @param loader [Workspace::WorkflowRunLoader]
     # @param stats [Workspace::WorkflowStats]

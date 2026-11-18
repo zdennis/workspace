@@ -302,6 +302,166 @@ RSpec.describe Workspace::WorkflowEvaluation do
     end
   end
 
+  describe "#turn_ended with a stated status" do
+    let(:line) { "WORKFLOW_STATUS: done" }
+    let(:reader) do
+      msg = -> { {"text" => "Finished.\n#{line}"} }
+      Class.new { define_method(:last_assistant_message) { |_path| msg.call } }.new
+    end
+
+    def attempt = store.runs["wr_1"]["steps"]["plan"]["attempts"].last
+
+    def end_turn(**args)
+      evaluation(transcript: reader).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl", **args)
+    end
+
+    context "when needs_input" do
+      let(:line) { "WORKFLOW_STATUS: needs_input — which database?" }
+
+      it "holds with waiting_agent_input even when the checks would pass" do
+        produce
+        stored
+
+        run = end_turn
+
+        expect(progress.calls).to be_empty
+        expect(run.state).to eq("waiting")
+        expect(run.reason).to eq("code" => "waiting_agent_input", "since" => "2026-11-10T12:00:00Z",
+          "details" => {"step" => "plan", "attempt" => 1, "state" => "needs_input", "detail" => "which database?"})
+        expect(run.step("plan").state).to eq("running")
+      end
+
+      it "does not hold when the agent reported its outcome out of band" do
+        produce
+        stored(run_hash.tap { |run| run["steps"]["plan"]["attempts"].last["reported"] = {"status" => "pass"} })
+
+        end_turn
+
+        expect(progress.calls).to eq([[:pass_step, "plan"]])
+      end
+    end
+
+    context "when stuck" do
+      let(:line) { "WORKFLOW_STATUS: stuck — cannot reach the registry" }
+
+      it "holds with the detail as the reason" do
+        stored
+
+        run = end_turn
+
+        expect(run.reason).to include("code" => "waiting_agent_input")
+        expect(run.reason["details"]).to include("state" => "stuck", "detail" => "cannot reach the registry")
+        expect(run.state).to eq("waiting")
+        expect(run.step("plan").state).to eq("running")
+        expect(progress.calls).to be_empty
+      end
+    end
+
+    context "when running" do
+      let(:line) { "WORKFLOW_STATUS: running — tests still going" }
+
+      it "waits on turn_ended_background instead of turn_ended_incomplete" do
+        stored
+
+        run = end_turn
+
+        expect(run.reason).to include("code" => "turn_ended_background", "seen_at" => "2026-11-10T12:00:00Z")
+        expect(run.reason["details"]["tasks"]).to eq([])
+      end
+
+      it "keeps the listed tasks when there are background tasks" do
+        stored
+
+        run = end_turn(background: [{"id" => "b1", "type" => "bash"}])
+
+        expect(run.reason["details"]["tasks"]).to eq([{"id" => "b1", "type" => "bash"}])
+      end
+
+      it "still passes a step whose checks pass" do
+        produce
+        stored
+
+        end_turn
+
+        expect(progress.calls).to eq([[:pass_step, "plan"]])
+      end
+    end
+
+    context "when done" do
+      it "fails to complete when the produced file is missing" do
+        stored
+
+        run = end_turn
+
+        expect(run.reason["code"]).to eq("turn_ended_incomplete")
+        expect(run.step("plan").state).to eq("running")
+        expect(progress.calls).to be_empty
+      end
+
+      it "passes when the checks pass" do
+        produce
+        stored
+
+        end_turn
+
+        expect(progress.calls).to eq([[:pass_step, "plan"]])
+      end
+
+      it "loses to an out-of-band reported fail" do
+        produce
+        stored(run_hash.tap { |run| run["steps"]["plan"]["attempts"].last["reported"] = {"status" => "fail", "summary" => "no"} })
+
+        end_turn
+
+        expect(progress.calls.first).to eq([:fail_step, "plan", {"cause" => "reported", "summary" => "no", "code" => "reported", "code_source" => "engine"}])
+      end
+    end
+
+    context "with a report stored from an earlier turn" do
+      let(:stale) { {"state" => "needs_input", "detail" => "which database?", "at" => "2026-11-10T11:30:00Z"} }
+
+      before do
+        produce
+        stored(run_hash.tap { |run| run["steps"]["plan"]["attempts"].last["status_report"] = stale })
+      end
+
+      it "does not hold a resume's judging, which brings no report" do
+        run = evaluation.evaluate(store.runs["wr_1"], ctx: ctx)
+
+        expect(run.reason).to be_nil
+        expect(progress.calls).to eq([[:pass_step, "plan"]])
+      end
+
+      it "does not hold a later turn that ends with no status line, and keeps the stored report" do
+        empty = Class.new { def last_assistant_message(_path) = {"text" => "all done"} }.new
+
+        run = evaluation(transcript: empty).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+
+        expect(run.reason).to be_nil
+        expect(progress.calls).to eq([[:pass_step, "plan"]])
+        expect(attempt["status_report"]).to eq(stale)
+      end
+
+      it "does not take a stored running report for a wake" do
+        FileUtils.rm_f(File.join(artifacts, "plan.md"))
+        store.runs["wr_1"]["steps"]["plan"]["attempts"].last["status_report"] = stale.merge("state" => "running")
+
+        run = evaluation.evaluate(store.runs["wr_1"], ctx: ctx)
+
+        expect(run.reason["code"]).to eq("turn_ended_incomplete")
+      end
+    end
+
+    it "leaves today's turn_ended_incomplete when there is no status line" do
+      stored
+      empty = Class.new { def last_assistant_message(_path) = {"text" => "nothing"} }.new
+
+      run = evaluation(transcript: empty).turn_ended("wr_1", actor: "agent", pane: "%3", transcript_path: "/t/s.jsonl")
+
+      expect(run.reason["code"]).to eq("turn_ended_incomplete")
+    end
+  end
+
   describe "a step being reviewed" do
     let(:tally) { RecordingReviewTally.new(outcome: :approved, reviews: [{"reviewer" => "skeptic"}]) }
     let(:round) { {"round" => 1, "delivery" => nil, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "pending" => ["skeptic"], "redeliveries" => 0} }

@@ -50,7 +50,7 @@ RSpec.describe Workspace::WorkflowInsights do
 
   it "pins its constants" do
     expect([described_class::DEFAULT_RUNS, described_class::MIN_RUNS, described_class::THEME_MIN_RUNS, described_class::MAX_PACKS, described_class::MAX_CODE]).to eq([20, 3, 3, 5, 64])
-    expect(described_class::HOLD_CODES).to eq(%w[budget_spent run_timed_out failed_check])
+    expect(described_class::HOLD_CODES).to eq(%w[budget_spent run_timed_out failed_check waiting_agent_input])
   end
 
   describe "run selection" do

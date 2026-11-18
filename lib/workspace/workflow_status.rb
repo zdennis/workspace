@@ -744,7 +744,7 @@ module Workspace
         when "delivery" then [focus, resume, from.call(reason.dig("details", "step")), cancel]
         else [resume, cancel]
         end
-      when "turn_ended_incomplete" then [focus, resume, cancel]
+      when "turn_ended_incomplete", "waiting_agent_input" then [focus, resume, cancel]
       # A resume skips the wait and starts the retry now.
       when "retry_backoff" then [resume, cancel]
       when "budget_spent", "run_timed_out" then [resume, cancel]

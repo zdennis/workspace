@@ -1127,6 +1127,12 @@ RSpec.describe Workspace::Commands::Workflow do
           "failed_check: step verify's check ran past its time limit; log: /a/v.log",
         reason("failed_check", {"step" => "verify", "cause" => "reported", "summary" => "two specs red"}) =>
           "failed_check: step verify was reported failed: two specs red",
+        reason("waiting_agent_input", {"step" => "plan", "state" => "needs_input", "detail" => "which database?"}) =>
+          "waiting_agent_input: step plan's agent says it needs input: which database?",
+        reason("waiting_agent_input", {"step" => "plan", "state" => "stuck", "detail" => "no\e[31m access"}) =>
+          "waiting_agent_input: step plan's agent says it is stuck: no\\e[31m access",
+        reason("waiting_agent_input", {"step" => "plan", "state" => "stuck", "detail" => ""}) =>
+          "waiting_agent_input: step plan's agent says it is stuck",
         reason("pane_gone", {"pane" => "%5", "workspace" => "app"}) => "pane_gone: pane %5 of app is not running"
       }
       texts.each do |each_reason, text|

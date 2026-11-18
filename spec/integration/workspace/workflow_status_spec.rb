@@ -267,6 +267,17 @@ RSpec.describe Workspace::WorkflowStatus do
     end
   end
 
+  describe "a stored waiting_agent_input" do
+    it "offers focus, resume and cancel" do
+      create(state: "waiting", reason: {"code" => "waiting_agent_input", "since" => "2026-10-04T12:50:00Z",
+                                        "details" => {"step" => "plan", "attempt" => 1, "state" => "needs_input", "detail" => "which database?"}})
+      snapshot["panes"].first["state"] = "idle"
+
+      expect(current["reason"]).to include("code" => "waiting_agent_input",
+        "actions" => [action("focus", "app", "--pane", "%5"), action("workflow resume", "wr_1"), action("workflow cancel", "wr_1")])
+    end
+  end
+
   describe "a stored turn_ended_incomplete" do
     let(:incomplete) do
       {"code" => "turn_ended_incomplete", "since" => "2026-10-04T12:50:00Z",

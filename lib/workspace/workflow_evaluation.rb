@@ -392,6 +392,7 @@ module Workspace
         fail_step(run, {"cause" => "reported", "summary" => reported["summary"]}.merge(code_for("reported", reported["code"])), ctx)
         return
       end
+      return if status_hold(run, step, state, attempt, turn_started, status_report)
       if guard && step["guard"]
         found = guard_check(run, step)
         if found
@@ -412,8 +413,9 @@ module Workspace
         run["state"] = "waiting"
         details = {"step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale}
         details["invalid"] = invalid if invalid.any?
-        run["reason"] = if background.any?
-          # Every notification starts a new turn and a hold is hidden, so its `since` stays.
+        run["reason"] = if background.any? || stated_running?(attempt, status_report)
+          # Every notification starts a new turn and a hold is hidden, so its `since` stays. A turn that says it is
+          # still running, with no task listed, waits the same way: the next turn or the sweep decides it.
           stop_reason(run["reason"], nil, "turn_ended_background", details.merge("tasks" => background)).merge("seen_at" => now_iso)
         else
           stop_reason(run["reason"], turn_started, "turn_ended_incomplete", details)
@@ -421,6 +423,28 @@ module Workspace
         return
       end
       require_and_status(run, step, state, attempt, ctx)
+    end
+
+    # Only the current turn's +stated+ report counts, never the one stored on the attempt from an earlier turn: a
+    # resume, the sweep and recovery judge with none and must see none.
+    #
+    # A stated `needs_input` or `stuck` holds the run with `waiting_agent_input`, whatever the checks would say. An
+    # out-of-band `reported` outcome wins over the line, so a step with one is never held by it. The step stays
+    # `running`; a resume decides it as a turn's end would.
+    #
+    # @return [Boolean] whether the run was held
+    def status_hold(run, step, state, attempt, turn_started, stated)
+      return false if attempt["reported"] || !stated.is_a?(Hash) || !%w[needs_input stuck].include?(stated["state"])
+      state["state"] = "running"
+      run["state"] = "waiting"
+      details = {"step" => step["id"], "attempt" => attempt["n"], "state" => stated["state"], "detail" => stated["detail"].to_s}
+      run["reason"] = stop_reason(run["reason"], turn_started, "waiting_agent_input", details)
+      true
+    end
+
+    # Whether the turn that just ended said `running` and no out-of-band report overrides it.
+    def stated_running?(attempt, stated)
+      !attempt["reported"] && stated.is_a?(Hash) && stated["state"] == "running"
     end
 
     # What comes after the step's files: its `require:` entries from +from+ in order, then its `status:`
