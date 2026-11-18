@@ -1699,7 +1699,7 @@ invalid option: --bogus
 --- exit 1
 --- stdout
 --- stderr
-Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, insights, learn, sweep, recover, resume, cancel, pause, unpause, approve or reject.
+Missing subcommand: list, show, graph, validate, add, update, remove, edit, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, insights, learn, sweep, recover, resume, cancel, pause, unpause, approve or reject.
 
 Usage: workspace workflow list [--json]
        workspace workflow uninstall [--yes] [--dry-run] [--json]

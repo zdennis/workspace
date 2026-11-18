@@ -9,7 +9,7 @@ module Workspace
     # {Invocation} it is given, so `--help --json` captures what it prints.
     class Workflow
       # The verbs of `workflow`, in the order `workflow --help` lists them.
-      SUBCOMMANDS = %w[list show graph validate add update remove install uninstall run start render check simulate status events files attempts trace audit stats compare insights learn sweep recover resume cancel pause unpause approve reject advance].freeze
+      SUBCOMMANDS = %w[list show graph validate add update remove edit install uninstall run start render check simulate status events files attempts trace audit stats compare insights learn sweep recover resume cancel pause unpause approve reject advance].freeze
 
       # The verbs of `step`, in the order `step --help` lists them.
       STEP_SUBCOMMANDS = %w[done status expect-fail].freeze
@@ -209,7 +209,7 @@ module Workspace
         return invocation.output.puts(parser.help) if options[:help]
 
         unless subcommand
-          raise UsageError, args.empty? ? "Missing subcommand: list, show, graph, validate, add, update, remove, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, insights, learn, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+          raise UsageError, args.empty? ? "Missing subcommand: list, show, graph, validate, add, update, remove, edit, install, uninstall, run, start, render, check, simulate, status, events, files, attempts, trace, audit, stats, compare, insights, learn, sweep, recover, resume, cancel, pause, unpause, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
         end
         raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
         learn_verb = args.shift if subcommand == "learn"
@@ -223,7 +223,7 @@ module Workspace
         render_step = args.shift if %w[render check].include?(subcommand)
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow #{"learn " if subcommand == "learn"}--help'." if args.any?
         subject ||= default_subject(subcommand, options)
-        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`) or --file PATH", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "trace" => "a RUN id (see `workspace workflow status`)", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "insights" => "a workflow ID (see `workspace workflow show`)", "learn" => "a RUN id (see `workspace workflow status`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
+        needs = {"graph" => "an ID (see `workspace workflow show`)", "validate" => "a PATH, or - for stdin", "add" => "an ID and a PATH (or - for stdin)", "update" => "an ID and a PATH (or - for stdin)", "remove" => "an ID (see `workspace workflow show`)", "edit" => "an ID (see `workspace workflow show`)", "run" => "an ID (see `workspace workflow show`) or --file PATH", "render" => "an ID and a STEP (see `workspace workflow show ID`)", "simulate" => "an ID (see `workspace workflow show`)", "check" => "an ID and a STEP (see `workspace workflow show ID`)", "events" => "a RUN id", "files" => "a RUN id", "attempts" => "a RUN id", "trace" => "a RUN id (see `workspace workflow status`)", "audit" => "a RUN id", "stats" => "a workflow ID (see `workspace workflow show`)", "compare" => "a workflow ID (see `workspace workflow show`)", "insights" => "a workflow ID (see `workspace workflow show`)", "learn" => "a RUN id (see `workspace workflow status`)", "resume" => "a RUN id", "cancel" => "a RUN id", "pause" => "a RUN id", "unpause" => "a RUN id", "approve" => "a RUN id",
                  "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
         needs = nil if subcommand == "run" && options[:file]
         raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && (subject.nil? || (%w[add update].include?(subcommand) && source_path.nil?) || (%w[render check].include?(subcommand) && render_step.nil?))
@@ -330,6 +330,7 @@ module Workspace
           raise UsageError, "workflow update needs --if-sha256 SHA (the sha256 from `workflow show ID --source`)." if options[:if_sha256].to_s.empty?
           workflow_action(invocation, "workflow update", options) { @workflow_command.update(id: subject, path: source_path, if_sha256: options[:if_sha256], dry_run: options[:dry_run], project: workflow_project(options)) }
         when "install" then workflow_action(invocation, "workflow install", options) { @workflow_command.install(source: subject && Integer(subject, 10)) }
+        when "edit" then workflow_edit(subject, options, invocation)
         when "remove"
           project = workflow_project(options)
           @workflow_command.check_removable(id: subject, project: project)
@@ -485,6 +486,18 @@ module Workspace
         return nil unless @workflow_project
         resolved = options[:name] ? @workflow_project.for_workspace(options[:name]) : @workflow_project.for_directory(@working_dir)
         resolved&.project
+      end
+
+      # `edit` opens the definition file in the editor unless --json is given (a script edits the file itself),
+      # and answers the file's row as an action document under --json.
+      def workflow_edit(id, options, invocation)
+        opener = options[:json] ? nil : lambda do |path|
+          next if @common.open_in_editor(invocation, path)
+          invocation.error_output.puts "Nothing was opened: set $VISUAL or $EDITOR (and run from a terminal) to edit this file from here."
+        end
+        @common.run_action(invocation, "workflow edit", json: options[:json] || false) do
+          {results: [@workflow_command.edit(id: id, project: workflow_project(options), opener: opener)]}
+        end
       end
 
       # `--extra-attempts` of resume and reject, checked: a whole number from 1 up.
