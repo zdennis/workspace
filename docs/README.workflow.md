@@ -13,11 +13,11 @@ workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]
 workspace workflow remove ID [--yes] [--dry-run] [--json]
 workspace workflow install [--source N] [--json]
 workspace workflow uninstall [--yes] [--dry-run] [--json]
-workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
+workspace workflow run ID | --file PATH [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
 workspace workflow render ID STEP [--name WORKSPACE] [--input KEY=VALUE]... [--json]
 workspace workflow check ID STEP [--artifacts DIR] [--name WORKSPACE] [--json]
 workspace workflow simulate ID --script FILE [--input KEY=VALUE]... [--json]
-workspace workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]
+workspace workflow start [ID | --file PATH] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT]
                          [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]
 workspace workflow status [RUN | --name WORKSPACE | --project [NAME] | --all] [--table] [--json]
 workspace workflow status --needs-me [--name WORKSPACE | --project [NAME]] [--json]
@@ -105,6 +105,7 @@ workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 | `--prompt TEXT` | `start`: the task as free text: the workflow's `task` input, and the branch's name when there is no `REF` |
 | `--branch BRANCH` | `start`: the branch for a `--prompt` (default: the prompt's words). Refused with a `REF`, whose branch comes from the ref |
 | `--slug` | `start`: add the ticket title's words to a JIRA or issue branch, as `start --slug` |
+| `--file PATH` | `run`, `start`: run the definition in this YAML file instead of an installed `ID` (give one or the other). The file must name itself, with an `id:` key or an id-shaped file name. See [Running a definition file](#running-a-definition-file) |
 | `--base REF` | `start`: the branch or ref a new branch starts from |
 | `--[no-]headless` | `start`: start the session in plain tmux, as `start --headless` |
 | `--agent-kind KIND` | `start`: the coding agent the main agent pane runs |
@@ -316,6 +317,21 @@ Tracking config is a proxy for where a branch's code came from, not proof: a bra
 If you trust the code, `workspace start '#N'` (or `workspace start BRANCH`) makes or adopts the workspace, and `workspace workflow run ID` in it starts the workflow. Its agent then starts in that code and loads its `CLAUDE.md` and `.claude/settings.json` hooks. For a bare `#N`, the checkout names the repository `gh pr view` answered from (`owner/repo#N`), so it can't check out another remote's pull request than the one checked; on another host than github.com it stays `#N`, which `gh` resolves from the same repository config.
 
 Once the workspace exists, a failure never removes it. The error keeps its code and gains `details.workspace`, `details.path` and `details.next`, an array holding one command: the `workflow run` command with the same inputs and note, which starts the workflow in that workspace by hand. This covers `agent_not_ready` (the agent was not ready in time) and a refusal from the run itself such as `pane_has_run`, and `start_failed` (the session did not start). A failure inside `start` itself, once the checkout exists, carries `details.path` and a `next` that is `cd PATH && workspace workflow run ...`, as the workspace name is not known.
+
+### Running a definition file
+
+`workflow run --file PATH` and `workflow start --file PATH` run a definition that is not installed, such as one you are still writing or were handed. Give `--file` in place of the `ID` (and not with `--ref`); naming both is a usage error. Everything else is as for an installed definition: the same checks, the same run, and `--dry-run` checks and starts nothing.
+
+- **The file names itself.** The id is its `id:` key, or else its file name when that is an id (`review-fix.yml` is `review-fix`). A file with neither is refused, so a run is never stored under a made-up id.
+- **A shadow warns.** `workflow start --file` warns when an installed definition has the same id: the file wins for this run only, and the installed one is not touched.
+- **`extends:` reads installed definitions.** A file's parents resolve through the project, user, source and preset layers, never from a path next to the file.
+- **You vouch for the file.** A definition is YAML that carries shell commands (a step's `status:` runs in your checkout), so `--file` is read only when you type it, as `workflow validate PATH` reads one. `workspace` never loads a path found in a ref, a ticket or a pull request.
+
+```sh
+workspace workflow validate ./review-fix.yml
+workspace workflow run --file ./review-fix.yml --input task="PROJ-101 invoice PDF export" --dry-run
+workspace workflow start --file ./review-fix.yml PROJ-101 --dry-run --json
+```
 
 ### Default workflows
 

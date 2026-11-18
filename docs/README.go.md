@@ -12,7 +12,7 @@ Start a workflow with one argument. `go` reads the argument, picks the workflow,
 ## Usage
 
 ```sh
-workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--text] [--base REF] [--dry-run] [--json]
+workspace go [REF | "TEXT"] [--workflow ID | --file PATH] [--input KEY=VALUE]... [--here] [--text] [--base REF] [--dry-run] [--json]
 ```
 
 ## Options
@@ -20,6 +20,7 @@ workspace go [REF | "TEXT"] [--workflow ID] [--input KEY=VALUE]... [--here] [--t
 | Option | Description |
 |--------|-------------|
 | `--workflow ID` | Use this workflow instead of the configured one |
+| `--file PATH` | Run the workflow definition in this YAML file instead of an installed one. The file must name itself (an `id:` key or an id-shaped file name). Not with `--workflow`. Only you can give it: `go` never reads a path out of a ref, ticket or pull request. See [Running a definition file](README.workflow.md#running-a-definition-file) |
 | `--input KEY=VALUE` | Set a workflow input; repeatable. Needed only for an input nothing else fills: see [Free text and `task`](#free-text-and-task) |
 | `--here` | Run free text in this worktree workspace instead of making a new one. If a run is already going here, add the text to its plan as a task instead: see [Adding to a run already going](#adding-to-a-run-already-going). Refused with `go_here_unavailable` where `go` can't run here, and as a usage error with a ref for another branch |
 | `--text` | Read the quoted sentence as plain text: no pull request, issue or ticket is taken out of it, and it is free text as it was before `go` read sentences. A usage error with no argument or one with no whitespace. See [A ticket, pull request or issue in a sentence](#a-ticket-pull-request-or-issue-in-a-sentence) |
@@ -92,7 +93,7 @@ Anywhere else, and for free text without `--here`, `go` makes or reuses a new ch
 
 `go` takes the first of these that applies:
 
-1. `--workflow ID`
+1. `--file PATH` or `--workflow ID` (not both)
 2. `workflows.by_ref.<kind>`, where `<kind>` is `jira`, `github_pr`, `github_issue`, `branch` or `prompt` (free text, or no argument)
 3. `workflows.default`
 4. built in: `pr-feedback` for a pull request, `rpiv` for everything else
@@ -153,7 +154,7 @@ Every explicit ref gets this check. Bare `go` and free text with `--here` run in
 
 The document is the row `workflow run` or `workflow start` prints, plus:
 
-- `decision`: `workflow`, `source` (`flag`, a config key such as `workflows.by_ref.jira`, or `built_in`), `kind` (a ref kind such as `jira`, `github_pr`, `github_issue` or `branch`, or `prompt` for free text; a sentence that held a ref has the ref's kind, not `prompt`), `extracted` (the canonical URL or uppercase key read out of the sentence; `null` when nothing was, so a script tells a ref typed alone from one found in text), `route` (`run` in place, `start` for a new or reused checkout, where nothing is typed into the calling pane, or `task` when `--here` added the text to the plan of a run already going, where nothing is typed into any pane) and `reason`
+- `decision`: `workflow`, `source` (`flag`, `file` for `--file` (its `reason` is `read from --file`), a config key such as `workflows.by_ref.jira`, or `built_in`), `kind` (a ref kind such as `jira`, `github_pr`, `github_issue` or `branch`, or `prompt` for free text; a sentence that held a ref has the ref's kind, not `prompt`), `extracted` (the canonical URL or uppercase key read out of the sentence; `null` when nothing was, so a script tells a ref typed alone from one found in text), `route` (`run` in place, `start` for a new or reused checkout, where nothing is typed into the calling pane, or `task` when `--here` added the text to the plan of a run already going, where nothing is typed into any pane) and `reason`
 - `warnings`: strings, including those from `workflow start`
 
 With `--dry-run` the outcome is `dry_run` and nothing was created.
