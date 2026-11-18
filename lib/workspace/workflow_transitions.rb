@@ -1084,7 +1084,7 @@ module Workspace
 
     # Where a failed step goes, read once its failed attempt is stored: back along its `on_fail` (`to` its goto,
     # `count` the edge's loop count after this one, `wait` the backoff seconds or nil), or, when the step has none,
-    # back to the step before it in the definition ({IMPLICIT_LOOP_STOP_CODES} and guard and unproven failures
+    # back to the step before it in the definition ({implicit_loop_stops?} and guard and unproven failures
     # excepted — a loop cannot fix them — and never past the first step, which stops for a person). `:stop` for a
     # person also when the loops or the run's attempts are used up, the goto step's own cap is spent (`limit: :step`,
     # `step:` the goto; only that step is checked, though a loop re-runs every step from it to the failing one), the
