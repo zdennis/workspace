@@ -489,11 +489,15 @@ module Workspace
       end
 
       # `edit` opens the definition file in the editor unless --json is given (a script edits the file itself),
-      # and answers the file's row as an action document under --json.
+      # and answers the file's row as an action document under --json. The path is printed either way: by the
+      # opener when the editor ran, and by `open_in_editor`'s fallback when nothing was opened.
       def workflow_edit(id, options, invocation)
         opener = options[:json] ? nil : lambda do |path|
-          next if @common.open_in_editor(invocation, path)
-          invocation.error_output.puts "Nothing was opened: set $VISUAL or $EDITOR (and run from a terminal) to edit this file from here."
+          if @common.open_in_editor(invocation, path)
+            invocation.output.puts path
+          else
+            invocation.error_output.puts "Nothing was opened: set $VISUAL or $EDITOR (and run from a terminal) to edit this file from here."
+          end
         end
         @common.run_action(invocation, "workflow edit", json: options[:json] || false) do
           {results: [@workflow_command.edit(id: id, project: workflow_project(options), opener: opener)]}

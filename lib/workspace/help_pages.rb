@@ -490,6 +490,27 @@ module Workspace
           ["workspace workflow update ship draft.yml --if-sha256 SHA --json", "report the new sha256 as one document, for a script"]
         ]
       },
+      "edit" => {
+        usage: ["workflow edit ID [--name WORKSPACE] [--json]"],
+        summary: "Open a workflow's definition file in your editor",
+        about: [
+          "Finds ID the way the other verbs do (the project's workflows, then your own, then each source, then",
+          "the presets) and opens that file in $VISUAL, else $EDITOR, then prints its path. A file that is",
+          "invalid YAML still opens, so you can fix it. No editor runs when neither variable is set, when you",
+          "are not in a terminal, or under --no-input; only the path is printed, so set $VISUAL or $EDITOR",
+          "(for example `export EDITOR=vim`) to edit from here.",
+          "",
+          "--json opens no editor and answers one action row (workflow, path, source) for a script. An id no",
+          "file has is unknown_workflow. A preset's or a source's file is not yours to change: copy the text",
+          "with `workflow show ID --source` and `workflow add` it under a new id."
+        ],
+        options: [name_opt("The workspace whose project's definitions are read first (default: the current workspace)"), JSON_OPT],
+        examples: [
+          ["workspace workflow edit ship", "open ship's file in $VISUAL or $EDITOR, or print its path with neither set"],
+          ["workspace workflow edit rpiv --json", "the file that `rpiv` resolves to, as one document; no editor opens"],
+          ["workspace workflow edit ship --name app", "read the app workspace's project's definitions first"]
+        ]
+      },
       "remove" => {
         usage: ["workflow remove ID [--yes] [--dry-run] [--json]"],
         summary: "Delete your ID.yml",

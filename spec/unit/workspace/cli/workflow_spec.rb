@@ -416,6 +416,17 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(err.string).to include("Nothing was opened: set $VISUAL or $EDITOR")
     end
 
+    it "prints the path once when the editor ran" do
+      common = Workspace::CLI::Common.new(editor_launcher: ->(_argv) { true }, interactive: -> { true })
+      allow(command).to receive(:edit) { |opener:, **| opener.call("/g/ship.yml") && row }
+      inv = invocation.with(env: {"VISUAL" => "vi"})
+
+      family(workflow_command: command, common: common).call("workflow", ["edit", "ship"], inv)
+
+      expect(out.string).to eq("/g/ship.yml\n")
+      expect(err.string).to eq("")
+    end
+
     it "needs an ID" do
       expect { run("edit") }.to raise_error(Workspace::UsageError, /\Aworkflow edit needs an ID/)
     end

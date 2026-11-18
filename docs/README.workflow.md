@@ -11,6 +11,7 @@ workspace workflow validate PATH|- [--id ID] [--json]
 workspace workflow add ID PATH|- [--dry-run] [--json]
 workspace workflow update ID PATH|- --if-sha256 SHA [--dry-run] [--json]
 workspace workflow remove ID [--yes] [--dry-run] [--json]
+workspace workflow edit ID [--name WORKSPACE] [--json]
 workspace workflow install [--source N] [--json]
 workspace workflow uninstall [--yes] [--dry-run] [--json]
 workspace workflow run ID | --file PATH [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]
@@ -55,6 +56,7 @@ workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 | `workflow add` | Save a definition, from a file or `-` for stdin, as `~/.config/workspace/workflows/ID.yml` after the checks `validate` runs. Refused with `workflow_exists` when that file is there; a preset of the same id is left alone and the copy shadows it. See [Adding a definition](#adding-a-definition) |
 | `workflow update` | Replace your `ID.yml` with new text, from a file or `-` for stdin, only if the file still has the `--if-sha256` you read. A file that does not pass the checks can be replaced. Refused with `stale_workflow` when it changed, `builtin_workflow` for a preset with no file of yours. See [Updating a definition](#updating-a-definition) |
 | `workflow remove` | Delete your `ID.yml` (a link itself, never its target). Asks first unless `--yes` or `--dry-run`; refused with `confirmation_required` under `--no-input`. A preset of the same id is in effect again. See [Removing a definition](#removing-a-definition) |
+| `workflow edit` | Open the definition file `ID` resolves to in `$VISUAL`, else `$EDITOR`, and print its path. `--json` opens nothing and answers `workflow`, `path` and `source`. See [Editing a definition](#editing-a-definition) |
 | `workflow run` | Start a run in a workspace (the current one, or `--name`). An unset `task` or `pr` is [filled from the branch](#filling-inputs-from-the-branch). `--dry-run` checks the inputs, the project's commands, the packs and the pane, and starts nothing. Run from the pane it would use, the run is made and [parked](#resuming-from-the-runs-own-pane) |
 | `workflow check` | Run one step's `status:` command once, outside a run, in this checkout. Takes no lock and writes no run state; see [Trying a step's check](#trying-a-steps-check) |
 | `workflow graph` | Draw a definition's steps, gates, reviews and loops as ASCII, Mermaid, Graphviz or JSON, and with `--run` where a run stands. Writes nothing; see [Drawing a workflow](#drawing-a-workflow) |
@@ -642,6 +644,12 @@ The current file is read as bytes and never parsed, so a file that is invalid YA
 - `unknown_workflow` when nothing has the id.
 
 `update` writes no event-log line.
+
+### Editing a definition
+
+`workflow edit ID` finds ID in the order `workflow show` does (the project's definitions, then `~/.config/workspace/workflows/`, then each `workflows.sources` directory, then the presets) and opens that file in `$VISUAL`, else `$EDITOR`, then prints its path. The editor command may carry arguments (`code --wait`). A file that is invalid YAML still opens, which is the way to fix it. No editor runs when neither variable is set, when you are not in a terminal, or under `--no-input`; the path is printed alone, so set `$VISUAL` or `$EDITOR` and run it from a terminal to edit from here.
+
+`--json` never opens an editor: it answers one action row with `workflow` (the id), `path` and `source` (the catalog's record of the file read), for a script that edits the file itself. An id no file has is `unknown_workflow`. `edit` changes nothing itself and writes no event-log line. It opens whichever file wins, so a preset's or a source's file opens too; a preset's file may live in a read-only install and is gone at the next upgrade, and `workflow update` refuses a preset (`builtin_workflow`) besides. A preset's or a source's file is not yours to change: copy the text with `workflow show ID --source` and `workflow add` it under a new id.
 
 ### Removing a definition
 
