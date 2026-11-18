@@ -80,6 +80,67 @@ RSpec.describe Workspace::Commands::Finish do
           )
         end
 
+        context "with force: true" do
+          before { allow(kill_command).to receive(:call) }
+
+          it "finishes despite changed and unpushed work, passing force to Kill" do
+            allow(git).to receive(:changed_files_count).with(worktree_path).and_return(3)
+            allow(git).to receive(:worktree_branch).with(worktree_path).and_return("feature/x")
+            allow(git).to receive(:upstream_branch).with(worktree_path).and_return("origin/feature/x")
+            allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(2)
+
+            command.call("myproject.worktree-PROJ-123", force: true, working_dir: tmpdir)
+
+            expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123",
+              confirm: false, force: true, quiet: false, working_dir: tmpdir, outcome: "discarded")
+          end
+
+          it "records pushed when every commit is on its upstream" do
+            allow(git).to receive(:changed_files_count).with(worktree_path).and_return(0)
+            allow(git).to receive(:worktree_branch).with(worktree_path).and_return("feature/x")
+            allow(git).to receive(:upstream_branch).with(worktree_path).and_return("origin/feature/x")
+            allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
+
+            command.call("myproject.worktree-PROJ-123", force: true, json: true, working_dir: tmpdir)
+
+            expect(JSON.parse(output.string)).to include("ok" => true, "outcome" => "pushed")
+          end
+
+          it "records merged when the branch is on the default branch" do
+            allow(git).to receive(:changed_files_count).with(worktree_path).and_return(1)
+            allow(git).to receive(:worktree_branch).with(worktree_path).and_return("feature/x")
+            allow(git).to receive(:merged_into_base?).with(worktree_path, "feature/x").and_return(true)
+
+            command.call("myproject.worktree-PROJ-123", force: true, json: true, working_dir: tmpdir)
+
+            expect(JSON.parse(output.string)).to include("outcome" => "merged")
+          end
+
+          it "records discarded when the branch has no upstream" do
+            allow(git).to receive(:changed_files_count).with(worktree_path).and_return(0)
+            allow(git).to receive(:worktree_branch).with(worktree_path).and_return("feature/x")
+            allow(git).to receive(:upstream_branch).with(worktree_path).and_return(nil)
+
+            command.call("myproject.worktree-PROJ-123", force: true, json: true, working_dir: tmpdir)
+
+            expect(JSON.parse(output.string)).to include("outcome" => "discarded")
+          end
+
+          it "does not let an existing PR turn unpushed work into pushed" do
+            pr = double("pull_request", find_or_create: {"outcome" => "existing", "url" => "https://github.com/org/repo/pull/1"})
+            forced = described_class.new(git: git, project_config: project_config, kill_command: kill_command,
+              project_detector: project_detector, pull_request: pr, output: output, error_output: error_output, input: input)
+            allow(git).to receive(:changed_files_count).with(worktree_path).and_return(1)
+            allow(git).to receive(:worktree_branch).with(worktree_path).and_return("feature/x")
+            allow(git).to receive(:upstream_branch).with(worktree_path).and_return("origin/feature/x")
+            allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(2)
+
+            forced.call("myproject.worktree-PROJ-123", pr: true, force: true, json: true, working_dir: tmpdir)
+
+            expect(JSON.parse(output.string)).to include("outcome" => "discarded", "pr_url" => "https://github.com/org/repo/pull/1")
+          end
+        end
+
         context "when clean" do
           before do
             allow(git).to receive(:changed_files_count).with(worktree_path).and_return(0)
@@ -140,14 +201,14 @@ RSpec.describe Workspace::Commands::Finish do
 
             it "passes quiet: true to Kill under --json" do
               allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
-              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: true, working_dir: tmpdir, outcome: "pushed")
+              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, force: false, quiet: true, working_dir: tmpdir, outcome: "pushed")
 
               command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
             end
 
             it "reuses Kill for cleanup when clean and pushed" do
               allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
-              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: tmpdir, outcome: "pushed")
+              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, force: false, quiet: false, working_dir: tmpdir, outcome: "pushed")
 
               result = command.call("myproject.worktree-PROJ-123", working_dir: tmpdir)
               expect(result).to eq("myproject.worktree-PROJ-123")
@@ -350,7 +411,7 @@ RSpec.describe Workspace::Commands::Finish do
 
         command.call(nil, working_dir: marker_dir)
 
-        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: marker_dir, outcome: "pushed")
+        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, force: false, quiet: false, working_dir: marker_dir, outcome: "pushed")
       end
 
       it "finishes the active workspace whose root holds the directory when there is no marker" do
@@ -371,7 +432,7 @@ RSpec.describe Workspace::Commands::Finish do
 
         finish.call(nil, working_dir: sub_dir)
 
-        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: sub_dir, outcome: "pushed")
+        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, force: false, quiet: false, working_dir: sub_dir, outcome: "pushed")
       end
 
       it "raises not_in_workspace when no workspace holds the directory and no project is given" do
