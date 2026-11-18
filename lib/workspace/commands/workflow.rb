@@ -2206,7 +2206,7 @@ module Workspace
         where = %w[completed cancelled failed].include?(run["state"]) ? "" : "  step #{current["step"]}#{" (attempt #{current["attempt"]})" if current["attempt"]}, #{current["state"]}"
         @output.puts "#{run["id"]}  #{run["workflow"]}  #{run["workspace"]}  #{run["state"]}#{where}"
         if run["definition_path"]
-          source = run["definition_source"] ? "#{run["definition_source"]}, " : ""
+          source = run["definition_source"] ? "#{TerminalText.escape(run["definition_source"])}, " : ""
           @output.puts "  definition: #{source}#{TerminalText.escape(run["definition_path"])}"
         end
         reason = current["reason"]

@@ -868,6 +868,16 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).not_to include("  definition: , ")
     end
 
+    it "escapes run-file values in the definition line" do
+      escaped = shown("definition_source" => "builtin\e[31m", "definition_path" => "/lib/rpiv\e[31m.yml")
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [escaped], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  definition: builtin\\e[31m, /lib/rpiv\\e[31m.yml\n")
+      expect(output.string).not_to include("\e")
+    end
+
     it "prints no definition line for a run that does not record where its definition came from" do
       allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [shown], "warnings" => [])
 
