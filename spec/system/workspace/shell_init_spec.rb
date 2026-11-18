@@ -325,7 +325,11 @@ RSpec.describe Workspace::ShellInit do
           fzf_plays(["rpiv\n", 0], ["feature-x\n", 0])
           started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
           wfp_run
-          expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 3
+          # The watchdog gives gh 5s (shell_init's `sleep 5`); any bound under it
+          # still tells a fast gh from a watchdog kill. The old 3s bound flaked at
+          # 3.39s when the whole suite ran 8-wide, where spawn overhead alone can
+          # pass 3s, so the bound sits closer to the limit it must stay beneath.
+          expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 4.5
         end
 
         it "gives up on a slow gh at the limit and still offers the branches" do

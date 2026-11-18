@@ -427,7 +427,7 @@ RSpec.describe Workspace::WorkflowCatalog do
       expect(steps[1]["gate"]).to eq("approve")
       # Room for four steps, one rejected plan and all three trips back from verify.
       expect(definition.to_h["max_attempts"]).to be >= 4 + 1 + 2 * steps[3]["on_fail"]["max"] - 1
-      expect(steps[3]).to include("uses" => ["test-db"], "status" => {"command" => "test", "timeout" => 1200},
+      expect(steps[3]).to include("uses" => ["test-db"], "status" => {"command" => "test", "timeout" => 2400},
         "on_fail" => {"goto" => "implement", "max" => 3, "context" => "continue"}, "include" => ["review"])
     end
 
