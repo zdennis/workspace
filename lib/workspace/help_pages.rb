@@ -502,7 +502,7 @@ module Workspace
           "",
           "--json opens no editor and answers one action row (workflow, path, source) for a script. An id no",
           "file has is unknown_workflow. A preset's or a source's file is not yours to change: copy the text",
-          "with `workflow show ID --source` and `workflow add` it under a new id."
+          "with `workflow show ID --source` and `workflow add` a copy under the same id, which shadows it."
         ],
         options: [name_opt("The workspace whose project's definitions are read first (default: the current workspace)"), JSON_OPT],
         examples: [
