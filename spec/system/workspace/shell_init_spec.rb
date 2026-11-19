@@ -338,7 +338,10 @@ RSpec.describe Workspace::ShellInit do
           started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
           wfp_run
           elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-          expect(elapsed).to be_between(4, 9)
+          # The watchdog gives gh 5s; the upper bound only has to tell that from
+          # a gh that never gives up (sleep 30), so it sits well above the spawn
+          # and fzf overhead an 8-wide whole-suite run adds (seen at 9.5s).
+          expect(elapsed).to be_between(4, 12)
           expect(fzf_input(2).lines).to include("feature-x\n")
           expect(argv).to eq(%w[workflow start -- rpiv feature-x])
         end
