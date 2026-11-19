@@ -587,8 +587,9 @@ Do not run the whole suite while working or before a commit. GitHub Actions runs
    - A new, renamed or removed `lib/` file, or a change to `.claude/CLAUDE.md` or `docs/architecture/`: run `spec/unit/claude_md_size_spec.rb`.
    - `docs/` alone: no specs, unless a spec reads the file (grep `spec/` for its name). For `docs/README.config.md` run `script/generate-config-docs --check`.
 5. Run the set in one command: `bundle exec rspec FILE...`, or `script/parallel-spec FILE...` past about 20 files. Lint the changed Ruby files: `bundle exec standardrb FILE...`.
-6. Run the whole suite locally (`script/parallel-spec` with no arguments) only when the change can reach everything: `spec/spec_helper.rb`, `spec/support/spawn_guard.rb`, `Gemfile`, `Gemfile.lock`, `.rspec`, `lib/workspace.rb` outside `build_cli` (requires, encoding), a rename or move across many files, or when the person asks.
-7. Report which specs ran and why each was picked. When CI fails on a spec the selection missed, fix the failure and add the rule that would have caught it to this section.
+6. Composition-root specs build real collaborators and so exercise their wiring, not just the changed class: when a changed `lib/` file's constant is a collaborator a builder wires (`build_cli`, `build_agentd_parts`, `build_workflow_engine` in `lib/workspace.rb`), also run the matching builder spec (`grep -rl 'build_agentd_parts\|build_workflow_engine\|build_cli' spec/unit spec/integration`).
+7. Run the whole suite locally (`script/parallel-spec` with no arguments) only when the change can reach everything: `spec/spec_helper.rb`, `spec/support/spawn_guard.rb`, `Gemfile`, `Gemfile.lock`, `.rspec`, `lib/workspace.rb` outside `build_cli` (requires, encoding), a rename or move across many files, or when the person asks.
+8. Report which specs ran and why each was picked. When CI fails on a spec the selection missed, fix the failure and add the rule that would have caught it to this section.
 
 ## Orchestration
 
