@@ -156,6 +156,20 @@ RSpec.describe Workspace::WorkflowInsights do
     end
   end
 
+  describe "a hold for the agent's input" do
+    it "counts needs_input and stuck holds apart by the state the agent reported" do
+      held = ->(state) { [{"code" => "waiting_agent_input", "details" => {"step" => "plan", "attempt" => 1, "state" => state, "detail" => "x"}}] }
+      put("run-1", attempts: [attempt(1, "failed", "reasons" => held.call("needs_input"))])
+      put("run-2", attempts: [attempt(1, "failed", "reasons" => held.call("needs_input"))])
+      put("run-3", attempts: [attempt(1, "failed", "reasons" => held.call("stuck"))])
+      put("run-4", attempts: [attempt(1, "failed", "reasons" => [{"code" => "waiting_agent_input"}])])
+
+      holds = read["holds"].to_h { |row| [row["code"], row["count"]] }
+
+      expect(holds).to eq("waiting_agent_input (needs_input)" => 2, "waiting_agent_input (stuck)" => 1, "waiting_agent_input" => 1)
+    end
+  end
+
   describe "hot steps" do
     it "lists the runs behind retries, resumes and tokens, and reads each run's events once" do
       usage = {"input_tokens" => 10, "output_tokens" => 5, "cache_creation_input_tokens" => 0}

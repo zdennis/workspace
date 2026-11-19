@@ -8,6 +8,25 @@ module Workspace
     # The line the instructions ask for as the last line of the agent's final message. `<detail>` is optional.
     FORMAT = "WORKFLOW_STATUS: <state> — <detail>"
 
+    # The words every surface (status, attempts, trace) prints for a stored report, so text matches across them.
+    #
+    # @param report [Hash, nil] a stored `status_report` (`state`, `detail`)
+    # @return [String, nil] `state` or `state: detail`; nil when there is no report with a state
+    def self.words(report)
+      return nil unless report.is_a?(Hash) && report["state"].is_a?(String) && !report["state"].empty?
+      detail = report["detail"].to_s
+      detail.empty? ? report["state"] : "#{report["state"]}: #{detail}"
+    end
+
+    # The keys of a stored report the read surfaces carry.
+    REPORT_KEYS = %w[state detail at].freeze
+
+    # @param report [Hash, nil] a stored `status_report`
+    # @return [Hash, nil] the report cut to {REPORT_KEYS}; nil when there is none
+    def self.shown(report)
+      (report.is_a?(Hash) && report["state"].is_a?(String)) ? report.slice(*REPORT_KEYS) : nil
+    end
+
     # How many characters from the end of a message the reader looks in.
     TAIL_CHARS = 200
 

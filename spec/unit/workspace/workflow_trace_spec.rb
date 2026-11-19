@@ -98,6 +98,20 @@ RSpec.describe Workspace::WorkflowTrace do
       expect(rows[4][:tokens]).to be_nil
     end
 
+    it "puts the reported status on the row that ends the attempt, and no key on the others" do
+      report = {"state" => "done", "detail" => "all green", "at" => "2026-10-01T10:02:00Z", "source" => "report"}
+      stated = run.merge("steps" => run["steps"].merge("ship" => run["steps"]["ship"].merge("attempts" => [run["steps"]["ship"]["attempts"][0].merge("status_report" => report)])))
+      doc = described_class.new.read(stated, events, now: now)
+
+      expect(doc[:transitions][7][:status_report]).to eq({"state" => "done", "detail" => "all green", "at" => "2026-10-01T10:02:00Z"})
+      expect(doc[:transitions].each_index.select { |i| doc[:transitions][i].key?(:status_report) }).to eq([7])
+      expect(described_class.text_lines(doc).grep(/ship#1/).last).to end_with("reported=done: all green")
+
+      plain = described_class.new.read(run, events, now: now)
+      expect(plain[:transitions][7]).not_to have_key(:status_report)
+      expect(described_class.text_lines(plain).grep(/reported=/)).to eq([])
+    end
+
     it "reads a WorkflowRun as well as a Hash" do
       expect(described_class.new.read(Workspace::WorkflowRun.new(run), events, now: now)[:transitions]).to eq(rows)
     end

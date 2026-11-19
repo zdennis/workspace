@@ -278,6 +278,37 @@ RSpec.describe Workspace::WorkflowStatus do
     end
   end
 
+  describe "current.status_report" do
+    let(:report) { {"state" => "needs_input", "detail" => "which database?", "at" => "2026-10-04T12:50:00Z", "source" => "report"} }
+
+    def with_report(**args)
+      create(**args).tap do |run|
+        edit_run(store, run["id"]) { |stored| stored["steps"]["plan"]["attempts"].last["status_report"] = report }
+      end
+    end
+
+    it "shows the report of a held run beside the reason with its state and detail" do
+      with_report(state: "waiting", reason: {"code" => "waiting_agent_input", "since" => "2026-10-04T12:50:00Z",
+                                             "details" => {"step" => "plan", "attempt" => 2, "state" => "needs_input", "detail" => "which database?"}})
+      snapshot["panes"].first["state"] = "idle"
+
+      expect(current).to include("status_report" => report.slice("state", "detail", "at"))
+      expect(current["reason"]["details"]).to include("state" => "needs_input", "detail" => "which database?")
+    end
+
+    it "shows the report of a run that is not held" do
+      with_report
+
+      expect(current).to include("status_report" => report.slice("state", "detail", "at"))
+    end
+
+    it "has no status_report key when the attempt reported nothing" do
+      create
+
+      expect(current).not_to have_key("status_report")
+    end
+  end
+
   describe "a stored turn_ended_incomplete" do
     let(:incomplete) do
       {"code" => "turn_ended_incomplete", "since" => "2026-10-04T12:50:00Z",

@@ -663,6 +663,8 @@ module Workspace
           widths = table.transpose.map { |column| column.map(&:length).max }
           table.each_with_index do |cells, index|
             @output.puts cells.each_with_index.map { |cell, at| cell.ljust(widths[at]) }.join("  ").rstrip
+            reported = (index > 0) && WorkflowReportedStatus.words(result["attempts"][index - 1]["status_report"])
+            @output.puts "  reported: #{TerminalText.escape(reported)}" if reported
             refusal = (index > 0) && result["attempts"][index - 1]["refusal"]
             @output.puts "  refused: #{refusal_text(refusal)}" if refusal
           end
@@ -2206,6 +2208,9 @@ module Workspace
         reason = current["reason"]
         @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason && !(reason["code"] == "retry_backoff" && wait_kind == "backoff")
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
+        # A hold for the agent's input already says what it reported; any other reason gets the report on its own line.
+        reported = WorkflowReportedStatus.words(current["status_report"])
+        @output.puts "  reported: #{TerminalText.escape(reported)}" if reported && !(reason && reason["code"] == "waiting_agent_input")
         @output.puts "  #{infra_retry_text(current["infra_retry"], paused: reason&.fetch("code", nil) == "paused")}" if current["infra_retry"]
         if (deadline = run["deadline"])
           @output.puts "  time: #{deadline["clock"]} #{Duration.humanize(deadline["used"].to_f)} of #{Duration.humanize(deadline["limit"].to_f)}"

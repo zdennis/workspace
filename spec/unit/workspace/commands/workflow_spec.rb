@@ -1088,6 +1088,24 @@ RSpec.describe Workspace::Commands::Workflow do
       end
     end
 
+    it "says the reported status on its own line when no hold already says it, and prints nothing without one" do
+      report = {"state" => "done", "detail" => "all <green>", "at" => "2026-11-01T09:00:00Z"}
+      allow(status).to receive(:runs).and_return("runs" => [shown("current" => shown["current"].merge("status_report" => report))], "warnings" => [])
+
+      command.status
+
+      expect(output.string.lines[2]).to eq("  reported: done: all <green>\n")
+
+      output.truncate(0)
+      output.rewind
+      held = reason("waiting_agent_input", {"step" => "plan", "state" => "needs_input", "detail" => "which database?"})
+      allow(status).to receive(:runs).and_return("runs" => [shown("current" => shown["current"].merge("reason" => held, "status_report" => report.merge("state" => "needs_input")))], "warnings" => [])
+
+      command.status
+
+      expect(output.string).not_to include("reported:")
+    end
+
     it "words every reason for a person" do
       texts = {
         reason("waiting_lock", {"resource" => "test-db", "position" => 1, "total" => 2, "holder" => {"run_id" => "wr_9", "step" => "verify", "workspace" => "app.b"}}) =>
@@ -3016,6 +3034,23 @@ RSpec.describe Workspace::Commands::Workflow do
       attempts_command.attempts(run: "wr_2611010900abcd", json: true)
 
       expect(JSON.parse(output.string)["attempts"].map { |row| row["refusal"] }).to eq([nil, refusal])
+    end
+
+    it "says the reported status under its attempt in the table, and in --json" do
+      create_run
+      report = {"state" => "stuck", "detail" => "no access", "at" => "2026-11-01T09:06:00Z", "source" => "report"}
+      edit_run(real_store, "wr_2611010900abcd") { |stored| stored["steps"]["implement"]["attempts"][1]["status_report"] = report }
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string.lines.map(&:rstrip).last).to eq("  reported: stuck: no access")
+      expect(output.string.lines.count { |line| line.include?("reported:") }).to eq(1)
+
+      output.truncate(0)
+      output.rewind
+      attempts_command.attempts(run: "wr_2611010900abcd", json: true)
+
+      expect(JSON.parse(output.string)["attempts"].map { |row| row["status_report"] }).to eq([nil, report.slice("state", "detail", "at")])
     end
 
     it "prints one table row per attempt" do

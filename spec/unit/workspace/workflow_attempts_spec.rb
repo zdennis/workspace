@@ -31,6 +31,17 @@ RSpec.describe Workspace::WorkflowAttempts do
     expect(rows.map { |row| row["refusal"] }).to eq([refusal, nil])
   end
 
+  it "carries the status an agent reported on an attempt, and no key for one without" do
+    report = {"state" => "needs_input", "detail" => "which database?", "at" => "2026-11-01T09:00:00Z", "source" => "report"}
+    run = {"id" => "wr_1", "definition" => {"steps" => [{"id" => "plan"}]},
+           "steps" => {"plan" => {"attempts" => [{"n" => 1, "status_report" => report}, {"n" => 2}]}}}
+
+    rows = described_class.new.read(run)["attempts"]
+
+    expect(rows[0]["status_report"]).to eq(report.slice("state", "detail", "at"))
+    expect(rows[1]).not_to have_key("status_report")
+  end
+
   it "names the attempt a review rejected on the attempt that retried it, and none on any other" do
     run = {"id" => "wr_1", "definition" => {"steps" => [{"id" => "plan"}]},
            "steps" => {"plan" => {"attempts" => [{"n" => 1, "outcome" => "failed", "code" => "review_rejected"}, {"n" => 2, "retry_of" => 1}, {"n" => 3, "retry_of" => "x"}]}}}

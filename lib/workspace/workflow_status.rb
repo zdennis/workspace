@@ -313,7 +313,7 @@ module Workspace
         "cancelled_by" => run.cancelled_by,
         "current" => {"step" => run.current, "attempt" => state.last_attempt&.n, "state" => state.state,
                       "reason" => shown_reason(run, reason, review_pane || pane),
-                      "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state))
+                      "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state)).merge(status_report_row(state))
             .merge(infra_retry_row(run, state, finished)).merge(finished ? {} : stuck_row(run, state, reason, shown, pane)).merge(finished ? {} : turn_failed_row(run, state, reason, shown, pane)).merge(finished ? {} : review_row(run, state)).merge(finished ? {} : refusal_row(run, state)),
         "steps" => run.definition["steps"].map { |step| step_row(step, run.steps.fetch(step["id"]), run) },
         "base_sha" => run.base_sha, "pane" => pane, "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
@@ -555,6 +555,12 @@ module Workspace
       held = run.reason
       {"code" => "paused", "since" => pause["since"], "by" => pause["by"], "text" => pause["text"]}.compact
         .merge(held ? {"details" => {"held" => held}} : {})
+    end
+
+    # The attempt's reported status (see {WorkflowReportedStatus}), only when it carries one.
+    def status_report_row(state)
+      report = WorkflowReportedStatus.shown(state.last_attempt&.status_report)
+      report ? {"status_report" => report} : {}
     end
 
     # The current attempt's `require:` proofs that ran outside the run's lock, with their results and logs.

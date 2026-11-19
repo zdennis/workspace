@@ -63,4 +63,23 @@ RSpec.describe Workspace::WorkflowReportedStatus do
   it "does not raise on invalid bytes" do
     expect(parse("\xFF\xFE WORKFLOW_STATUS: done".b.force_encoding("UTF-8"))).to eq(state: "done", detail: "")
   end
+
+  describe ".words and .shown" do
+    it "words a report as state, or state and detail" do
+      expect(described_class.words({"state" => "stuck", "detail" => "no access"})).to eq("stuck: no access")
+      expect(described_class.words({"state" => "done", "detail" => ""})).to eq("done")
+      expect(described_class.words(nil)).to be_nil
+      expect(described_class.words({"state" => ""})).to be_nil
+      expect(described_class.words({"state" => 5, "detail" => "x"})).to be_nil
+      expect(described_class.words("done")).to be_nil
+    end
+
+    it "cuts a report to state, detail and at, and gives nil for none" do
+      expect(described_class.shown({"state" => "done", "detail" => "x", "at" => "t", "source" => "report"})).to eq({"state" => "done", "detail" => "x", "at" => "t"})
+      expect(described_class.shown({})).to be_nil
+      expect(described_class.shown(nil)).to be_nil
+      expect(described_class.shown("done")).to be_nil
+      expect(described_class.shown({"state" => 3})).to be_nil
+    end
+  end
 end

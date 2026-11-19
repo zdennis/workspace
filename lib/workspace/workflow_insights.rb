@@ -139,7 +139,11 @@ module Workspace
 
     def hold(one, step, reason)
       code = reason["code"]
-      one[:holds][[step, code]] += 1 if step && HOLD_CODES.include?(code)
+      return unless step && HOLD_CODES.include?(code)
+      # A stated hold names the state the agent reported, so a needs_input hold and a stuck one count apart.
+      state = reason.dig("details", "state") if code == "waiting_agent_input"
+      state = nil unless WorkflowReportedStatus::STATES.include?(state)
+      one[:holds][[step, state ? "#{code} (#{state})" : code]] += 1
     end
 
     def review(one, step, round)
