@@ -98,6 +98,14 @@ RSpec.describe Workspace::Commands::Dev do
     false
   end
 
+  # Every wrapper's stderr, for a failure that says the wrapper died: the log
+  # files go away with the tmpdir in the after block.
+  def wrapper_logs
+    Dir[File.join(tmpdir, "wrapper-*.log")].sort.map do |path|
+      "== #{File.basename(path)} ==\n#{File.read(path)}"
+    end.join("\n")
+  end
+
   def wait_until(timeout: 10)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
     until (result = yield)
@@ -207,7 +215,9 @@ RSpec.describe Workspace::Commands::Dev do
       end
       result = dev(clock: clock).up(wait: true, max_wait: 0.5, working_dir: main)
 
-      expect(result).to eq(exit_code: 75)
+      # An exit of 1 here has meant the wrapper died before it queued; its log
+      # (tmpdir) is deleted by the after block, so surface it in the failure.
+      expect(result).to eq(exit_code: 75), -> { "got #{result.inspect}; wrapper stderr:\n#{wrapper_logs}" }
       wait_until { !alive?(spawned.last) }
       expect(Workspace::LockStore.new(dir: lock_dir, liveness: Workspace::LockHolder.new).status("devenv").dig("devenv", "queue")).to be_empty
     end
