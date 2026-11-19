@@ -647,9 +647,14 @@ module Workspace
     # `retry_backoff`, and the step stays `failed` until {#start_retry}.
     def wait_to_retry(run, step, on_fail, text, wait, attempt)
       @dispatch.release(run)
-      pane = bound_pane(run)
+      pane = bound_pane(run, step["id"])
       identity = @panes.identity(run["id"])
-      @panes.unbind(run["id"])
+      # A step of a group gives up only its own binding: its siblings' panes stay bound.
+      if WorkflowRun.step_scoped?(run, step["id"])
+        @panes.unbind(run["id"], step: step["id"])
+      else
+        @panes.unbind(run["id"])
+      end
       time = (@clock.call + wait).utc.iso8601
       slots = WorkflowRun.slots(run, step["id"])
       slots["backoff"] = {"until" => time, "to" => on_fail["goto"], "context" => on_fail["context"], "text" => text, "pane" => pane, "identity" => identity}.compact
@@ -706,8 +711,10 @@ module Workspace
 
     def event(run, type, data = {}) = @change.event(run, type, data)
 
-    def bound_pane(run)
-      @panes.pane_of(run["id"]) || run["pane"]
+    # The pane the run's author agent works in; for a step of a group, that step's own binding, then its recorded pane.
+    def bound_pane(run, step_id = nil)
+      return @panes.pane_of(run["id"]) || run["pane"] unless WorkflowRun.step_scoped?(run, step_id)
+      @panes.pane_of(run["id"], step: step_id) || WorkflowRun.slot(run, step_id, "pane")
     end
 
     def step_ids(run)

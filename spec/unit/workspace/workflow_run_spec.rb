@@ -427,6 +427,23 @@ RSpec.describe Workspace::WorkflowRun do
       expect(described_class::PER_STEP_KEYS.length).to eq(12)
     end
 
+    it "reads a step's pane from its own hash, else the run's, and is not a per-step key" do
+      given = from_hash("pane" => "%3", "steps" => {"s1" => {"pane" => "%7"}, "s2" => {}})
+
+      expect(given.pane_for("s1")).to eq("%7")
+      expect(given.pane_for("s2")).to eq("%3")
+      expect(given.pane_for("missing")).to eq("%3")
+      expect(given.pane_for(nil)).to eq("%3")
+      expect(described_class::PER_STEP_KEYS).not_to include("pane")
+    end
+
+    it "reads a pane as nil, without raising, when nothing holds it" do
+      expect(from_hash({}).pane_for("s1")).to be_nil
+      expect(from_hash("steps" => "bad").pane_for("s1")).to be_nil
+      expect(from_hash("steps" => {"s1" => "bad"}).pane_for("s1")).to be_nil
+      expect(from_hash(nil).pane_for(nil)).to be_nil
+    end
+
     it "reads two steps' values independently" do
       given = from_hash("steps" => {"s1" => {"pending_move" => {"to" => "a"}, "pause_hold" => 1}, "s2" => {"pending_move" => {"to" => "b"}}})
 

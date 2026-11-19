@@ -90,6 +90,11 @@ module Workspace
       define_method(:"#{key}_for") { |step_id| self.class.slot(to_h, step_id, key) }
     end
 
+    # @param step_id [String] a step id
+    # @return [String, nil] the pane the step's agent was dispatched in when its own hash records one (a step of a
+    #   group does), else the run's +pane+; nil when neither does. Not one of {PER_STEP_KEYS}: it is never swept with them.
+    def pane_for(step_id) = self.class.slot(to_h, step_id, "pane")
+
     # The one placement rule for the {PER_STEP_KEYS} slots: whether +step_id+ keeps them under its own step hash. A step
     # does when it belongs to a fan_out group, because its siblings run at the same time and a run-level slot would be
     # overwritten by theirs; every other step keeps them at the top level of the run, as a run without groups always has.

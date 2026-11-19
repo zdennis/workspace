@@ -108,6 +108,78 @@ RSpec.describe Workspace::WorkflowEvaluation do
     end
   end
 
+  describe "#turn_ended for a step of a group" do
+    let(:bound) { {} }
+    let(:panes) { RecordingWorkflowPanes.new(bound: bound) }
+
+    def grouped_run(**own)
+      hash = run_hash(definition_step: step("group" => "checks"))
+      hash["steps"]["plan"].merge!(own)
+      hash
+    end
+
+    it "judges a turn in the step's own recorded pane, not the run's" do
+      produce
+      stored(grouped_run("pane" => "%7"))
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+      expect(progress.calls).to be_empty
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%7")
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+
+    it "falls back to the run's pane when the step records none" do
+      produce
+      stored(grouped_run)
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+
+    context "with a binding for the step" do
+      let(:bound) { {"wr_1" => {"plan" => "%8"}} }
+
+      it "judges the step's binding over a stale recorded pane" do
+        produce
+        stored(grouped_run("pane" => "%7"))
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%7")
+        expect(progress.calls).to be_empty
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%8")
+        expect(progress.calls).to eq([[:pass_step, "plan"]])
+      end
+    end
+
+    context "with a binding for another step only" do
+      let(:bound) { {"wr_1" => {"build" => "%9"}} }
+
+      it "uses the recorded pane of the step" do
+        produce
+        stored(grouped_run("pane" => "%7"))
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%9")
+        expect(progress.calls).to be_empty
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%7")
+        expect(progress.calls).to eq([[:pass_step, "plan"]])
+      end
+    end
+
+    it "ignores a pane recorded under an ungrouped step" do
+      produce
+      stored(run_hash.tap { |hash| hash["steps"]["plan"]["pane"] = "%7" })
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%7")
+      expect(progress.calls).to be_empty
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+  end
+
   describe "#turn_ended" do
     it "decides nothing for a parked run, another pane, or a turn that began before the attempt" do
       stored(run_hash("parked" => {"id" => "p1"}))

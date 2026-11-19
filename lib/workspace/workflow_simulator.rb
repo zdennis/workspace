@@ -323,7 +323,7 @@ module Workspace
         run_id && {run_id: run_id, role: "author"}
       end
 
-      def pane_of(run_id)
+      def pane_of(run_id, step: nil)
         @bound[run_id]
       end
 

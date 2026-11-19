@@ -169,10 +169,11 @@ module Workspace
     end
 
     # @param run_id [String]
+    # @param step [String, nil] only the pane bound for that step; nil is the first author pane the run has
     # @return [String, nil] the pane bound to the run as its author, wherever `restore` moved the
     #   binding; never the run's review pane
-    def pane_of(run_id)
-      @bindings.pane_for("run", run_id)
+    def pane_of(run_id, step: nil)
+      step ? @bindings.pane_for("run", run_id, step: step) : @bindings.pane_for("run", run_id)
     end
 
     # @param run_id [String]
@@ -379,9 +380,14 @@ module Workspace
     # @param run_id [String]
     # @param role [String, nil] "reviewer" or "author" removes only that role's binding; nil removes both
     # @param pane [String, nil] removes only that pane's binding to the run; nil removes the run's every binding
+    # @param step [String, nil] removes only the bindings made for that step; nil removes them whatever their step
     # @return [void]
-    def unbind(run_id, role: nil, pane: nil)
-      @bindings.unbind_all("run", run_id, role: role, pane: pane)
+    def unbind(run_id, role: nil, pane: nil, step: nil)
+      if step
+        @bindings.unbind_all("run", run_id, role: role, pane: pane, step: step)
+      else
+        @bindings.unbind_all("run", run_id, role: role, pane: pane)
+      end
     rescue SystemCallError
       nil
     end

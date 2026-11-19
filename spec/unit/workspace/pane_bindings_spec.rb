@@ -183,6 +183,17 @@ RSpec.describe Workspace::PaneBindings do
     it "is nil when the file is missing" do
       expect(store.pane_for("run", "wr_1")).to be_nil
     end
+
+    it "finds the pane bound with the step when one is given, and the first match whatever its step when not" do
+      store.bind("%5", "kind" => "run", "id" => "wr_1", "step" => "lint")
+      store.bind("%6", "kind" => "run", "id" => "wr_1", "step" => "test")
+
+      expect(store.pane_for("run", "wr_1", step: "test")).to eq("%6")
+      expect(store.pane_for("run", "wr_1", step: "lint")).to eq("%5")
+      expect(store.pane_for("run", "wr_1", step: "build")).to be_nil
+      expect(store.pane_for("run", "wr_1")).to eq("%5")
+      expect(store.pane_for("run", "wr_1", step: nil)).to eq("%5")
+    end
   end
 
   describe "role and round" do
@@ -298,6 +309,17 @@ RSpec.describe Workspace::PaneBindings do
 
       expect(JSON.parse(File.read(path)).keys.sort).to eq(%w[%5 %7 %8])
       expect(store.unbind_all("run", "wr_1")).to eq([])
+    end
+
+    it "removes only the bindings made for the step with a step, leaving other steps' and other runs'" do
+      store.bind("%5", "kind" => "run", "id" => "wr_1", "step" => "lint")
+      store.bind("%6", "kind" => "run", "id" => "wr_1", "step" => "test")
+      store.bind("%7", "kind" => "run", "id" => "wr_2", "step" => "lint")
+
+      expect(store.unbind_all("run", "wr_1", step: "lint")).to eq(["%5"])
+      expect(store.unbind_all("run", "wr_1", step: "lint")).to eq([])
+
+      expect(JSON.parse(File.read(path)).keys.sort).to eq(%w[%6 %7])
     end
 
     it "removes only the named pane's binding with a pane, and only when it is to the subject in that role" do

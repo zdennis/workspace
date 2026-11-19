@@ -359,7 +359,8 @@ class RecordingWorkflowPanes
   # @return [Array<Array>] each +pane_gone?+ asked: the pane and the workspace it named
   attr_reader :gone_checks
 
-  # @param bound [Hash{String=>String}] the pane each run id is bound to
+  # @param bound [Hash{String=>String, Hash}] the pane each run id is bound to; a Hash of step id => pane for a run with
+  #   a pane bound per step
   # @param runs_on [Hash{String=>String}] the run id each pane is bound to as its author
   # @param reviewing [Hash{String=>String}] the run id each review pane is bound to
   # @param dead [Array<String>] run ids whose binding was made for another pane
@@ -391,7 +392,11 @@ class RecordingWorkflowPanes
     @gone_checks = []
   end
 
-  def pane_of(run_id) = @bound[run_id]
+  def pane_of(run_id, step: nil)
+    bound = @bound[run_id]
+    return bound unless bound.is_a?(Hash)
+    step ? bound[step] : bound.values.first
+  end
 
   def run_on(pane) = @runs_on[pane]
 
@@ -453,8 +458,8 @@ class RecordingWorkflowPanes
     @restarted.include?(pane) ? :server_restarted : :live
   end
 
-  def unbind(run_id, role: nil, pane: nil)
-    given = {role: role, pane: pane}.compact
+  def unbind(run_id, role: nil, pane: nil, step: nil)
+    given = {role: role, pane: pane, step: step}.compact
     @calls << (given.empty? ? [:unbind, run_id] : [:unbind, run_id, given])
     true
   end

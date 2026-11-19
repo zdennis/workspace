@@ -752,6 +752,21 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}])
     end
 
+    it "moves a step of a group to a named pane, unbinding and recording only that step's pane" do
+      grouped = [{"id" => "plan", "group" => "checks", "produces" => [], "gate" => true}, {"id" => "build", "group" => "checks", "produces" => [], "gate" => true}]
+      hash = run_hash(state: "failed", reason: failed_check)
+      hash["definition"]["steps"] = grouped
+      hash["steps"]["build"]["pane"] = "%6"
+      stored(hash)
+
+      resumed = decisions.resume("wr_1", actor: "person", pane: "%8")
+
+      expect(panes.calls).to eq([[:unbind, "wr_1", {step: "plan"}]])
+      expect(resumed.run.step("plan").to_h).to include("pane" => "%8")
+      expect(resumed.run.step("build").to_h).to include("pane" => "%6")
+      expect(resumed.run.pane).to eq("%3")
+    end
+
     it "takes over from a parked resume" do
       stored(run_hash(state: "failed", reason: failed_check, extra: {"parked" => {"id" => "p1", "pane" => "%3"}}))
 

@@ -340,7 +340,8 @@ module Workspace
       attempt = state["attempts"].last
       @panes.bind(workspace: run["workspace"], pane: pane, run_id: run["id"], step: step["id"], attempt: attempt["n"],
         instructions: attempt["prompt_file"], artifacts: run["artifacts_dir"])
-      run["pane"] = pane
+      # A step of a group records its pane under its own hash; every other step, at the run's top level as always.
+      WorkflowRun.slots(run, step["id"])["pane"] = pane
       state["state"] = "running"
       run["state"] = "running"
       slots(run)["reason"] = nil

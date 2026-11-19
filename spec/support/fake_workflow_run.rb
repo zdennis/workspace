@@ -40,7 +40,7 @@ class FakeWorkflowPanes
     run_id && {run_id: run_id, role: (@bound[pane][:role] == "reviewer") ? "reviewer" : "author"}
   end
 
-  def pane_of(run_id) = @bound.find { |_, entry| entry[:run_id] == run_id }&.first
+  def pane_of(run_id, step: nil) = @bound.find { |_, entry| entry[:run_id] == run_id && (step.nil? || entry[:step] == step) }&.first
 
   def alive?(run_id) = !pane_of(run_id).nil? && !@stale.include?(run_id)
 
@@ -94,8 +94,8 @@ class FakeWorkflowPanes
 
   # +role+ "reviewer" or "author" removes only that role's bindings (one bound with no role is the author's); nil removes
   # all; +pane+ only that pane's.
-  def unbind(run_id, role: nil, pane: nil)
-    @bound.delete_if { |bound, entry| entry[:run_id] == run_id && (role.nil? || (entry[:role] || "author") == role) && (pane.nil? || bound == pane) }
+  def unbind(run_id, role: nil, pane: nil, step: nil)
+    @bound.delete_if { |bound, entry| entry[:run_id] == run_id && (role.nil? || (entry[:role] || "author") == role) && (pane.nil? || bound == pane) && (step.nil? || entry[:step] == step) }
   end
 
   # Answers the next kick with each result given, in order, then with +kick_result+ again.

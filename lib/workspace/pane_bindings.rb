@@ -18,7 +18,8 @@ module Workspace
     # evidence directory (for display only) and `instructions` the prompt file.
     KINDS = %w[run review play reflection].freeze
 
-    # Optional single-line text fields of an entry.
+    # Optional single-line text fields of an entry. `step` is also a key: {#pane_for} and {#unbind_all} take a `step:`
+    # to find or remove the binding of one step of a run.
     TEXT_FIELDS = %w[step focus instructions artifacts].freeze
 
     # Key prefix of a binding whose pane id was taken by another pane (see {#move}).
@@ -115,9 +116,10 @@ module Workspace
     # @param id [String] the subject's id
     # @param role [String, nil] "reviewer" for the review pane; nil or "author" for the pane of the
     #   step's own agent (a binding with no role), so a review pane is never found by default
+    # @param step [String, nil] a step id: only a binding made for that step is found; nil finds the first match whatever its step
     # @return [String, nil] the pane id; nil when no pane is bound to it
-    def pane_for(kind, id, role: nil)
-      read.find { |key, entry| !key.start_with?(PARKED) && entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id && role_of(entry) == role_name(role) }&.first
+    def pane_for(kind, id, role: nil, step: nil)
+      read.find { |key, entry| !key.start_with?(PARKED) && entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id && role_of(entry) == role_name(role) && (step.nil? || entry["step"] == step) }&.first
     end
 
     # @param pane_id [String]
@@ -135,12 +137,13 @@ module Workspace
     # @param id [String] the subject's id
     # @param role [String, nil] "reviewer" or "author" removes only that role's bindings; nil removes both
     # @param pane [String, nil] removes only the binding of that pane id, when it is to the subject; nil removes every one
+    # @param step [String, nil] removes only the bindings made for that step; nil removes them whatever their step
     # @return [Array<String>] the keys removed (pane ids and slot keys)
-    def unbind_all(kind, id, role: nil, pane: nil)
+    def unbind_all(kind, id, role: nil, pane: nil, step: nil)
       removed = []
       update do |all|
         removed = all.select do |key, entry|
-          entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id && (role.nil? || role_of(entry) == role_name(role)) && (pane.nil? || key == pane)
+          entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id && (role.nil? || role_of(entry) == role_name(role)) && (pane.nil? || key == pane) && (step.nil? || entry["step"] == step)
         end.keys
         removed.each { |key| all.delete(key) }
       end

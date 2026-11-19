@@ -114,7 +114,7 @@ module Workspace
           next judged
         end
         next unless state["state"] == "running"
-        next if pane && bound_pane(stored) != pane
+        next if pane && bound_pane(stored, stored["current"]) != pane
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
         next if stopped_at && stopped_at < Time.iso8601(state["attempts"].last["started_at"])
         judged = evaluate(without_continue_marks(read), ctx: ctx, turn_started: turn_started, background: background, status_report: status_report)
@@ -712,8 +712,11 @@ module Workspace
 
     def event(run, type, data = {}) = @change.event(run, type, data)
 
-    def bound_pane(run)
-      @panes.pane_of(run["id"]) || run["pane"]
+    # The pane the run's author agent works in. For a step of a group, that step's own pane (its binding, then its
+    # recorded pane); otherwise the run's, whatever +step_id+.
+    def bound_pane(run, step_id = nil)
+      return @panes.pane_of(run["id"]) || run["pane"] unless WorkflowRun.step_scoped?(run, step_id)
+      @panes.pane_of(run["id"], step: step_id) || WorkflowRun.slot(run, step_id, "pane")
     end
 
     def step_def(run)

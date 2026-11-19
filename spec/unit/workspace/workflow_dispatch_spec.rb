@@ -62,6 +62,16 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(change.events).to eq([["wr_1", "step_dispatching", {"step" => "plan", "attempt" => 1, "pane" => "%3", "cause" => "first", "retry_of" => nil}]])
     end
 
+    it "records an ungrouped step's pane at the run's top level, not under the step" do
+      bound = RecordingWorkflowPanes.new(bound: {"wr_1" => "%4"})
+      serial = described_class.new(change: change, store: store, resources: resources, panes: bound, prompt: prompt, attempt_record: attempt_record, guard: guard, clock: -> { now })
+
+      run = serial.dispatch(run_hash, ctx: ctx, cause: "first")
+
+      expect(run.to_h).to include("pane" => "%4")
+      expect(run.step("plan").to_h).not_to have_key("pane")
+    end
+
     describe "a step in a fan_out group" do
       def grouped(**overrides)
         definition = {"id" => "flow", "steps" => [{"id" => "lint", "group" => "checks", "prompt" => "Lint.", "produces" => [], "uses" => ["devenv"]},
@@ -78,6 +88,18 @@ RSpec.describe Workspace::WorkflowDispatch do
         expect(run.step("test").to_h).to include("pending_context" => [], "reason" => nil)
         expect(run.step("lint").to_h).to include("pending_context" => ["for lint"], "reason" => {"code" => "waiting_you"})
         expect(run.to_h).to include("pending_context" => ["the run's"], "reason" => {"code" => "the run's"})
+      end
+
+      it "records the step's pane under its own hash and leaves the run's pane alone" do
+        bound = RecordingWorkflowPanes.new(bound: {"wr_1" => "%4"})
+        scoped = described_class.new(change: change, store: store, resources: resources, panes: bound, prompt: prompt, attempt_record: attempt_record, guard: guard, clock: -> { now })
+
+        run = scoped.dispatch(grouped, ctx: ctx, cause: "first")
+
+        expect(run.step("test").to_h).to include("pane" => "%4")
+        expect(run.step("lint").to_h).not_to have_key("pane")
+        expect(run.to_h).to include("pane" => "%3")
+        expect(run.pane_for("test")).to eq("%4")
       end
 
       it "keeps a lock wait's reason and cause under the step that waits" do

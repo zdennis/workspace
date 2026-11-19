@@ -1181,8 +1181,12 @@ module Workspace
 
     def rebind(run, pane)
       check_other_pane(pane, run["id"])
-      @panes.unbind(run["id"])
-      run["pane"] = pane
+      if WorkflowRun.step_scoped?(run, run["current"])
+        @panes.unbind(run["id"], step: run["current"])
+      else
+        @panes.unbind(run["id"])
+      end
+      WorkflowRun.slots(run, run["current"])["pane"] = pane
     end
 
     # Refuses +pane+ when another run has it; the run's own pane is never refused.
