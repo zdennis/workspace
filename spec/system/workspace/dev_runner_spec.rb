@@ -691,17 +691,28 @@ RSpec.describe Workspace::ProcessGroupTerminator do
   end
 
   it "reports :not_running for a group that no longer exists" do
-    pgid = spawn_group("exit")
-    # A fixed sleep lost the race with ruby's startup on a loaded machine; wait
-    # for the group to be gone (bounded) instead of guessing how long that takes.
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
-    terminator = described_class.new(poll_interval: 0.05)
-    while terminator.running?(pgid)
-      raise "process group never went away" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-      sleep 0.05
+    pid = Process.spawn(RbConfig.ruby, "-e", "exit", pgroup: true, in: File::NULL)
+    spawned << pid
+    # Reap the leader instead of polling for the group to die (a fixed sleep
+    # lost the race with ruby's startup on a loaded machine): with no members
+    # left, its group is gone the moment wait returns.
+    Process.wait(pid)
+    spawned.delete(pid) # the pid is free; the after block must not KILL its next owner
+
+    # Between the reap and the signal below, the id may be handed to another
+    # user's process, which must never be signalled. The guard re-checks that
+    # the id is free just before the signal; a reused id settles for the same
+    # :not_running this example is about.
+    guard = lambda do
+      Process.kill(0, pid)
+      false # the id is live again and our leader is reaped, so it is not ours
+    rescue Errno::ESRCH
+      true
+    rescue Errno::EPERM
+      false # live and not signallable by us, so not ours either
     end
 
-    expect(terminator.terminate(pgid, stop_timeout: 1)).to eq(:not_running)
+    expect(described_class.new.terminate(pid, stop_timeout: 1, guard: guard)).to eq(:not_running)
   end
 
   it "sends SIGTERM to the leader alone when given one, and SIGKILL to the group after stop_timeout" do

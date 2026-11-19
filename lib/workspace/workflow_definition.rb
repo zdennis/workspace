@@ -105,7 +105,8 @@ module Workspace
     # @return [String] the workflow's id (its file name without `.yml`)
     attr_reader :id
 
-    # @return [String] "builtin" or "global"
+    # @return [String] where the definition was read from: "project", "global", "source:N" or "builtin" when
+    #   the catalog resolved it, "file" or "stdin" when it was parsed outside one
     attr_reader :source
 
     # @return [String] the file the definition was read from

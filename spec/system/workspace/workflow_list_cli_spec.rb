@@ -44,7 +44,7 @@ RSpec.describe "workspace workflow list through build_cli" do
   let(:source_dir) { File.join(@home, "src") }
   let(:yaml) { "title: Ship\ndescription: One feature end to end.\nsteps:\n  a:\n    prompt: P\n" }
 
-  it "prints a table of id, source and description over the presets and a source" do
+  it "prints a table of id, source, description and path over the presets and a source" do
     write(source_dir, "ship", yaml)
     run_cli("config", "set", "workflows.sources", source_dir, "--scope", "global")
     expect(exits).to eq([])
@@ -54,9 +54,11 @@ RSpec.describe "workspace workflow list through build_cli" do
     expect(exits).to eq([])
     expect(out.string).to include("ID")
     expect(out.string).to include("SOURCE")
+    expect(out.string).to include("PATH")
     expect(out.string).to include("DESCRIPTION")
     expect(out.string).to include("ship")
     expect(out.string).to include("source:1")
+    expect(out.string).to include(File.join(source_dir, "ship.yml"))
     expect(out.string).to include("One feature end to end.")
     expect(out.string).to include("rpiv")
     expect(out.string).to include("builtin")

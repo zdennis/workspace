@@ -103,6 +103,20 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(current["proofs"]).to eq(proofs)
   end
 
+  it "says where the run's definition was read from, and gives no keys for a run that does not say" do
+    create(definition_source: "project", definition_path: "/src/app/.config/workflows/rpiv.yml")
+
+    result = status.run("wr_1")
+
+    expect(result["runs"].first).to include("definition_source" => "project", "definition_path" => "/src/app/.config/workflows/rpiv.yml")
+
+    create(state: "parked", workspace: "other", pane: nil, bound: false)
+
+    result = status.run("wr_2")
+    expect(result["runs"].first).not_to have_key("definition_path")
+    expect(result["runs"].first).not_to have_key("definition_source")
+  end
+
   it "shows a run an agent is working on, with no reason" do
     create
 
