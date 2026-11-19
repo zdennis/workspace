@@ -1135,4 +1135,159 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(parse("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n").warnings).to eq([])
     end
   end
+
+  describe "fan_out groups" do
+    def grouped(siblings, group_extra: "", after: "", before: "  plan:\n    prompt: P\n    produces: [plan.md]\n", top: "")
+      body = siblings.map { |id, extra| "      #{id}:\n        prompt: P\n        produces: [#{id}.md]\n#{extra}" }.join
+      "#{top}steps:\n#{before}  checks:\n    title: Checks\n#{group_extra}    fan_out:\n#{body}#{after}"
+    end
+
+    let(:report) { "  report:\n    prompt: P\n    produces: [report.md]\n" }
+
+    it "flattens the siblings at the group's place, each tagged with the group's id" do
+      definition = parse(grouped([["lint"], ["test"]], after: report))
+      expect(definition.steps.map { |step| [step["id"], step["group"]] }).to eq([["plan", nil], ["lint", "checks"], ["test", "checks"], ["report", nil]])
+      expect(definition.to_h["groups"]).to eq("checks" => {"title" => "Checks", "checkout" => "shared", "on_fail" => "stop", "steps" => %w[lint test]})
+    end
+
+    it "gives each sibling an ordinary step's defaults" do
+      sibling = parse(grouped([["lint"]])).steps[1]
+      plain = parse("steps:\n  lint:\n    prompt: P\n    produces: [lint.md]\n").steps.first
+      expect(sibling).to eq(plain.merge("group" => "checks"))
+    end
+
+    it "tags the siblings the way a run's placement rule reads them" do
+      hash = {"definition" => parse(grouped([["lint"], ["test"]])).to_h}
+      expect(Workspace::WorkflowRun.step_scoped?(hash, "lint")).to be(true)
+      expect(Workspace::WorkflowRun.step_scoped?(hash, "plan")).to be(false)
+    end
+
+    it "leaves groups out of to_h, and the steps as they were, for a definition with none" do
+      expect(parse(minimal).to_h).not_to have_key("groups")
+      expect(parse(minimal).steps.first).not_to have_key("group")
+    end
+
+    it "parses the fan_out fixture" do
+      text = File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "fan_out.yml"))
+      definition = parse(text, id: "fan_out", path: nil)
+      expect(definition.steps.map { |step| step["id"] }).to eq(%w[plan lint test docs report])
+      expect(described_class.group_steps(definition.to_h)).to eq("checks" => %w[lint test docs])
+      expect(definition.steps.map { |step| step["on_fail"] }.uniq).to eq([nil])
+    end
+
+    it "refuses a sibling id another step already has, in or out of the group" do
+      expect(problems(grouped([["plan"]]))).to include("step checks: fan_out step plan has the id of another step; step ids must be unique")
+      expect(problems(grouped([["checks"]]))).to include(a_string_matching(/fan_out step checks has the id of another step/))
+      expect(problems(grouped([["report"]], after: report))).to include(a_string_matching(/fan_out step report has the id of another step/))
+    end
+
+    it "refuses a sibling id that is not a step id" do
+      expect(problems(grouped([["Bad.id"]]))).to include(a_string_matching(/step id "Bad.id" must be/))
+    end
+
+    it "refuses a group id that is not a step id" do
+      expect(problems("steps:\n  Bad.group:\n    fan_out:\n      lint:\n        prompt: P\n        produces: [lint.md]\n"))
+        .to include(a_string_matching(/\Astep id "Bad.group" must be/))
+    end
+
+    describe "with two groups" do
+      def two_groups(second)
+        "steps:\n  first:\n    fan_out:\n      lint:\n        prompt: P\n        produces: [lint.md]\n" \
+          "  second:\n    fan_out:\n#{second}"
+      end
+
+      it "refuses a sibling id a sibling of the other group already has" do
+        expect(problems(two_groups("      lint:\n        prompt: P\n        produces: [lint.md]\n")))
+          .to include("step second: fan_out step lint has the id of another step; step ids must be unique")
+      end
+
+      it "refuses a sibling's goto to a sibling of the other group" do
+        second = "      test:\n        prompt: P\n        produces: [test.md]\n        on_fail: {goto: lint}\n"
+        expect(problems(two_groups(second)))
+          .to eq(["step test: on_fail goto must name an earlier step of its fan_out group second (there is none); a goto can't leave the group yet, got \"lint\""])
+      end
+    end
+
+    it "refuses a fan_out that is not a mapping of steps" do
+      expect(problems("steps:\n  checks:\n    fan_out: [lint, test]\n")).to include("step checks: fan_out must be a mapping of sibling step id to step, with at least one step")
+      expect(problems("steps:\n  checks:\n    fan_out: {}\n")).to include(a_string_matching(/fan_out must be a mapping/))
+    end
+
+    describe "goto scoping" do
+      it "lets a sibling go back to an earlier sibling" do
+        definition = parse(grouped([["lint"], ["test", "        on_fail: {goto: lint, max: 2}\n"]]))
+        expect(definition.steps[2]["on_fail"]).to include("goto" => "lint", "max" => 2)
+      end
+
+      it "refuses a sibling's goto to the group's preceding step" do
+        expect(problems(grouped([["lint"], ["test", "        on_fail: {goto: plan}\n"]])))
+          .to include("step test: on_fail goto must name an earlier step of its fan_out group checks (lint); a goto can't leave the group yet, got \"plan\"")
+      end
+
+      it "refuses a first sibling's goto, which has no earlier sibling" do
+        expect(problems(grouped([["lint", "        on_fail: {goto: plan}\n"]]))).to include(a_string_matching(/earlier step of its fan_out group checks \(there is none\)/))
+      end
+
+      it "refuses a sibling's goto to a later sibling" do
+        expect(problems(grouped([["lint", "        on_fail: {goto: test}\n"], ["test"]]))).to include(a_string_matching(/step lint: on_fail goto must name an earlier step of its fan_out group/))
+      end
+
+      it "refuses a goto from a step after the group into a sibling" do
+        after = "  report:\n    prompt: P\n    produces: [report.md]\n    on_fail: {goto: lint}\n"
+        expect(problems(grouped([["lint"], ["test"]], after: after)))
+          .to eq(["step report: on_fail goto lint goes into fan_out group checks, which a step outside the group can't do yet; name a step outside every group"])
+      end
+
+      it "still lets a step after the group go back to a step before it" do
+        after = "  report:\n    prompt: P\n    produces: [report.md]\n    on_fail: {goto: plan}\n"
+        expect(parse(grouped([["lint"]], after: after)).steps.last["on_fail"]).to include("goto" => "plan")
+      end
+
+      it "refuses a goto that names the group itself, which is no step" do
+        after = "  report:\n    prompt: P\n    produces: [report.md]\n    on_fail: {goto: checks}\n"
+        expect(problems(grouped([["lint"]], after: after))).to include(a_string_matching(/step report: on_fail goto must name an earlier step \(plan, lint\), got "checks"/))
+      end
+    end
+
+    it "refuses review: on a sibling, naming the review-window reason" do
+      found = problems(grouped([["lint", "        review: {from: [skeptic]}\n"]], top: "reviewers:\n  skeptic: {prompt: Look.}\n"))
+      expect(found).to include(a_string_matching(/\Astep lint \(in fan_out group checks\): a fan_out sibling can't take review: yet \(closing a review round's window closes every other review window of the run\)/))
+    end
+
+    it "refuses uses: on a sibling, naming the run-wide locks" do
+      expect(problems(grouped([["lint", "        uses: [devenv]\n"]])))
+        .to include(a_string_matching(/\Astep lint \(in fan_out group checks\): a fan_out sibling can't take uses: yet \(a run holds one step's locks at a time/))
+    end
+
+    it "refuses a fan_out nested in a sibling, naming the step, rather than running it as a plain step" do
+      found = problems(grouped([["lint", "        fan_out:\n          inner:\n            prompt: P\n"]]))
+      expect(found).to eq(["step lint (in fan_out group checks): a fan_out sibling can't hold a fan_out of its own (groups don't nest)"])
+    end
+
+    it "refuses a group with a body of its own" do
+      found = problems(grouped([["lint"]], group_extra: "    prompt: P\n    produces: [x.md]\n"))
+      expect(found).to include("step checks is a fan_out group, which has no body of its own: it takes only title, fan_out, checkout, on_fail, got prompt, produces")
+    end
+
+    it "parses a group's on_fail: stop and refuses its goto" do
+      expect(parse(grouped([["lint"]], group_extra: "    on_fail: stop\n")).to_h.dig("groups", "checks", "on_fail")).to eq("stop")
+      expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: plan}\n")))
+        .to include(a_string_matching(/\Astep checks: a fan_out group's on_fail must be stop \(a group can't goto yet\)/))
+    end
+
+    it "takes checkout: shared or shared-edit and refuses anything else" do
+      expect(parse(grouped([["lint"]], group_extra: "    checkout: shared-edit\n")).to_h.dig("groups", "checks", "checkout")).to eq("shared-edit")
+      expect(problems(grouped([["lint"]], group_extra: "    checkout: own\n"))).to include("step checks: checkout must be shared or shared-edit, got \"own\"")
+    end
+
+    it "still warns, without refusing, when a grouped goto's span counts siblings a retry does not run" do
+      # The owned false positive of PR 1: retry_warnings sums every step from goto to the failing step, so for
+      # test going back to lint it counts docs too. Here plan, lint, docs make test fail first on attempt 4 and
+      # the span counts 3, so 4 + 3 = 7 reads as not fitting max_attempts: 7, though a retry re-running lint and
+      # test (span 2) would fit.
+      yaml = grouped([["lint"], ["docs"], ["test", "        on_fail: {goto: lint, max: 2}\n"]], top: "max_attempts: 7\n")
+      found = parse(yaml).warnings.select { |each| each["code"] == "on_fail_exceeds_max_attempts" }
+      expect(found).to match([include("step" => "test", "message" => /3 steps again/)])
+    end
+  end
 end

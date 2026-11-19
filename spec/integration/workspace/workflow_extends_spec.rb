@@ -548,4 +548,24 @@ RSpec.describe "workflow extends" do
       expect(titles["four"]).not_to include("from")
     end
   end
+
+  describe "fan_out groups" do
+    let(:group) { "    fan_out:\n      lint:\n        prompt: L\n        produces: [lint.md]\n" }
+
+    it "refuses extending a parent that has a group, naming the parent and the group" do
+      write(builtin_dir, "grouped", "steps:\n  one:\n    prompt: P\n    produces: [one.md]\n  checks:\n#{group}")
+      write(global_dir, "child", "extends: grouped\n")
+
+      expect(catalog.find("grouped").to_h["groups"].keys).to eq(["checks"])
+      expect(problems_of("child")).to eq(["extends grouped: workflow grouped has the fan_out group checks, and a workflow with a fan_out group can't be extended yet"])
+    end
+
+    it "refuses a child that declares a group while it extends a parent without one, added or as a replacement" do
+      write(global_dir, "added", "extends: base\nsteps:\n  checks:\n#{group}")
+      write(global_dir, "swapped", "extends: base\nreplace:\n  two:\n#{group}")
+
+      expect(problems_of("added")).to eq(["step checks is a fan_out group, which workflow added can't declare while it has extends: yet"])
+      expect(problems_of("swapped")).to eq(["step two is a fan_out group, which workflow swapped can't declare while it has extends: yet"])
+    end
+  end
 end

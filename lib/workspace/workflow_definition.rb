@@ -39,6 +39,22 @@ module Workspace
     TOP_KEYS = %w[schema_version id title description version use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny reviewers steps].freeze
     STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts review after].freeze
 
+    # What a `fan_out` group step may hold. A group has no body of its own: its `fan_out:` is a mapping of sibling
+    # step id to an ordinary step body, and the siblings are flattened into the steps list at the group's place,
+    # each tagged `"group" => GROUP_ID` (the tag {WorkflowRun.step_scoped?} reads). `fan_out` is kept out of
+    # {STEP_KEYS} so a step's unknown-key message reads as before; {#steps_from} routes a step holding it here.
+    GROUP_KEYS = %w[title fan_out checkout on_fail].freeze
+
+    # How a group's siblings share the checkout; the first is the default.
+    GROUP_CHECKOUTS = %w[shared shared-edit].freeze
+
+    # Step keys a `fan_out` sibling may not hold, and why.
+    SIBLING_REFUSALS = {
+      "review" => "a fan_out sibling can't take review: yet (closing a review round's window closes every other review window of the run)",
+      "uses" => "a fan_out sibling can't take uses: yet (a run holds one step's locks at a time, so a sibling's acquire would release the locks another sibling still needs)",
+      "fan_out" => "a fan_out sibling can't hold a fan_out of its own (groups don't nest)"
+    }.freeze
+
     # What a step does past its `timeout`: raise the `timed_out` flag only, stop the agent, or fail the step.
     ON_TIMEOUT_ACTIONS = %w[warn interrupt fail].freeze
     DEFAULT_ON_TIMEOUT = "warn"
@@ -159,6 +175,7 @@ module Workspace
       @sha256 = Digest::SHA256.hexdigest(text)
       @problems = []
       @notes = []
+      @groups = {}
       extension = WorkflowExtends.new(id: id, source: source, lookup: parent_lookup, chain: chain || [[id, path || id]])
       @resolved_raw = extension.resolve(load_yaml(text))
       @parents = extension.parents
@@ -207,7 +224,9 @@ module Workspace
     #   "instructions", "max_attempts" and "steps", an ordered list where each step has "id",
     #   "title", "prompt", "include", "produces", "status" (nil, or "command" or "run" with
     #   "timeout" seconds), "gate", "guard" (nil, "unchanged" or "config"), "require" (a list of one-key proofs such as `{"commits" => 1}`), "uses", "on_fail" (nil, "stop", or "goto", "max", "context", and, only when set, "log_tail" and "backoff" seconds),
-    #   "context" and "timeout" (seconds or nil)
+    #   "context" and "timeout" (seconds or nil); a `fan_out` group's siblings sit in "steps" at the group's place,
+    #   each also with "group" (the group step's id), and only then is there "groups": group id to "title",
+    #   "checkout", "on_fail" (`stop`) and "steps" (its sibling ids, in order)
     def to_h
       @data
     end
@@ -402,6 +421,35 @@ module Workspace
       (value.is_a?(Hash) && value["from"].is_a?(Array) && value["from"].any?) ? value : nil
     end
 
+    # The `fan_out` groups of a definition hash, from its steps' "group" tags (so a stored run's definition reads too).
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Hash{String=>Array<String>}] group id to its sibling step ids, in step order; empty without groups
+    def self.group_steps(definition)
+      steps = definition.is_a?(Hash) ? Array(definition["steps"]) : []
+      steps.each_with_object({}) do |step, found|
+        next unless step.is_a?(Hash) && step["group"].is_a?(String) && !step["group"].empty?
+        (found[step["group"]] ||= []) << step["id"]
+      end
+    end
+
+    # The refusal of a tool that would play or draw a definition's `fan_out` groups as plain steps in a row.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @param doing [String] what can't be done, such as "simulated"
+    # @param later [String] the later work that will support it
+    # @return [void]
+    # @raise [Workspace::Error] code `invalid_workflow`, details "workflow" and "groups", when the definition has a group
+    def self.refuse_groups(definition, doing:, later:)
+      groups = group_steps(definition)
+      return if groups.empty?
+      id = definition["id"]
+      named = groups.map { |group, siblings| "#{group} (#{siblings.join(", ")})" }.join(", ")
+      raise Workspace::Error.new("Workflow #{id} can't be #{doing}: it has the fan_out group#{"s" if groups.size > 1} #{named}, " \
+        "whose steps run side by side, and this would treat them as steps in a row. That waits on #{later}.",
+        code: "invalid_workflow", details: {"workflow" => id, "groups" => groups})
+    end
+
     private
 
     # Step caps that can't hold: the step an `on_fail` goes back to runs once and then once per
@@ -553,6 +601,7 @@ module Workspace
       }.merge(version ? {"version" => version} : {})
         .merge(budget ? {"budget" => budget} : {})
         .merge(reviewers.any? ? {"reviewers" => reviewers} : {})
+        .merge(@groups.any? ? {"groups" => @groups} : {})
         .merge(timeout ? {"timeout" => timeout} : {})
         .merge(((timeout || raw.key?("timeout_action")) && TIMEOUT_ACTIONS.include?(timeout_action)) ? {"timeout_action" => timeout_action} : {})
     end
@@ -685,10 +734,72 @@ module Workspace
         return []
       end
       ids = raw.keys.map(&:to_s)
-      ids.each_with_index.map { |step_id, index| step_from(step_id, raw[raw.keys[index]], ids.first(index), inputs) }
+      taken = ids.dup
+      steps = []
+      ids.each_with_index do |step_id, index|
+        body = raw[raw.keys[index]]
+        if body.is_a?(Hash) && body.key?("fan_out")
+          steps.concat(group_from(step_id, body, taken, inputs))
+        else
+          steps << step_from(step_id, body, steps.map { |step| step["id"] }, inputs)
+        end
+      end
+      cross_group_gotos(steps)
+      steps
     end
 
-    def step_from(step_id, raw, earlier, inputs)
+    # The siblings of one `fan_out` group step, flattened and tagged with the group's id; records the group's own
+    # keys in @groups. A sibling's `earlier` is the siblings before it, so its goto stays inside the group.
+    def group_from(group_id, raw, taken, inputs)
+      where = "step #{group_id}"
+      problem "step id #{group_id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(group_id)
+      extra = raw.keys.map(&:to_s) - GROUP_KEYS
+      if extra.any?
+        problem "#{where} is a fan_out group, which has no body of its own: it takes only #{GROUP_KEYS.join(", ")}, got #{extra.join(", ")}"
+      end
+      on_fail = raw.fetch("on_fail", "stop")
+      problem "#{where}: a fan_out group's on_fail must be stop (a group can't goto yet), got #{on_fail.inspect[0, 60]}" unless on_fail == "stop"
+      checkout = raw.fetch("checkout", GROUP_CHECKOUTS.first)
+      unless GROUP_CHECKOUTS.include?(checkout)
+        problem "#{where}: checkout must be #{GROUP_CHECKOUTS.join(" or ")}, got #{checkout.inspect[0, 60]}"
+        checkout = GROUP_CHECKOUTS.first
+      end
+      title = text_or_nil(raw["title"], "#{where}: title") || group_id
+      bodies = raw["fan_out"]
+      unless bodies.is_a?(Hash) && bodies.any?
+        problem "#{where}: fan_out must be a mapping of sibling step id to step, with at least one step"
+        return []
+      end
+      earlier = []
+      siblings = bodies.map do |key, body|
+        sibling_id = key.to_s
+        problem "#{where}: fan_out step #{sibling_id} has the id of another step; step ids must be unique" if taken.include?(sibling_id)
+        taken << sibling_id
+        if body.is_a?(Hash)
+          SIBLING_REFUSALS.each { |name, why| problem "step #{sibling_id} (in fan_out group #{group_id}): #{why}" if body.key?(name) }
+          body = body.except(*SIBLING_REFUSALS.keys)
+        end
+        step = step_from(sibling_id, body, earlier.dup, inputs, group: group_id)
+        earlier << sibling_id
+        step.merge("group" => group_id)
+      end
+      @groups[group_id] = {"title" => title, "checkout" => checkout, "on_fail" => "stop", "steps" => siblings.map { |step| step["id"] }}
+      siblings
+    end
+
+    # A goto from a step outside every group into a group's sibling. Flattening puts the siblings in a later step's
+    # `earlier`, so {#on_fail_from} accepts it; a sibling's own goto is already kept inside its group there.
+    def cross_group_gotos(steps)
+      group_of = steps.to_h { |step| [step["id"], step["group"]] }
+      steps.each do |step|
+        on_fail = step["on_fail"]
+        next unless on_fail.is_a?(Hash) && step["group"].nil?
+        target = group_of[on_fail["goto"]] or next
+        problem "step #{step["id"]}: on_fail goto #{on_fail["goto"]} goes into fan_out group #{target}, which a step outside the group can't do yet; name a step outside every group"
+      end
+    end
+
+    def step_from(step_id, raw, earlier, inputs, group: nil)
       where = "step #{step_id}"
       problem "step id #{step_id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(step_id)
       unless raw.is_a?(Hash)
@@ -710,7 +821,7 @@ module Workspace
         "guard" => guard_from(raw["guard"], where),
         "require" => require_from(raw["require"], where, inputs),
         "uses" => uses_from(raw["uses"], where),
-        "on_fail" => on_fail_from(raw["on_fail"], earlier, where),
+        "on_fail" => on_fail_from(raw["on_fail"], earlier, where, group: group),
         "context" => context_from(raw.fetch("context", "fresh"), "#{where}: context"),
         "timeout" => duration_from(raw["timeout"], "#{where}: timeout"),
         "on_timeout" => on_timeout_from(raw.fetch("on_timeout", DEFAULT_ON_TIMEOUT), where),
@@ -934,13 +1045,15 @@ module Workspace
       []
     end
 
-    def on_fail_from(value, earlier, where)
+    def on_fail_from(value, earlier, where, group: nil)
       return nil if value.nil?
       return "stop" if value == "stop"
       return problem("#{where}: on_fail must be stop, or a mapping with goto and max") unless value.is_a?(Hash)
       unknown_keys(value, ON_FAIL_KEYS, "#{where}: on_fail")
       goto = value["goto"].to_s
-      unless earlier.include?(goto)
+      if group && !earlier.include?(goto)
+        problem "#{where}: on_fail goto must name an earlier step of its fan_out group #{group} (#{earlier.empty? ? "there is none" : earlier.join(", ")}); a goto can't leave the group yet, got #{value["goto"].inspect}"
+      elsif !earlier.include?(goto)
         problem "#{where}: on_fail goto must name an earlier step (#{earlier.empty? ? "there is none" : earlier.join(", ")}), got #{value["goto"].inspect}"
       end
       max = value.fetch("max", 1)

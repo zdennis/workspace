@@ -54,8 +54,10 @@ module Workspace
     #   "capped", "max_actions", "actions", "run" (state, current step, reason code, loops), "steps"
     #   (each step's attempts: n, outcome, code), "budget" (the token reading, or nil) and "transitions" (the
     #   run's history: n, at (seconds into the simulation), type and the event's own keys)
-    # @raise [Workspace::Error] the engine's refusals of a start (`input_required`, `invalid_input`, ...)
+    # @raise [Workspace::Error] the engine's refusals of a start (`input_required`, `invalid_input`, ...); code
+    #   `invalid_workflow` for a definition with a `fan_out` group, which a simulation would play as steps in a row
     def call(definition:, script:, inputs: {})
+      WorkflowDefinition.refuse_groups(definition.to_h, doing: "simulated", later: "the simulator playing a group's steps interleaved (a later change)")
       @tmpdir.call("workspace-simulate") do |dir|
         play(definition, script, script.inputs.merge(inputs), dir)
       end
