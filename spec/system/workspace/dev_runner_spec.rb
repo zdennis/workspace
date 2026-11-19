@@ -697,6 +697,7 @@ RSpec.describe Workspace::ProcessGroupTerminator do
     # lost the race with ruby's startup on a loaded machine): with no members
     # left, its group is gone the moment wait returns.
     Process.wait(pid)
+    spawned.delete(pid) # the pid is free; the after block must not KILL its next owner
 
     # Between the reap and the signal below, the id may be handed to another
     # user's process, which must never be signalled. The guard re-checks that
@@ -707,6 +708,8 @@ RSpec.describe Workspace::ProcessGroupTerminator do
       false # the id is live again and our leader is reaped, so it is not ours
     rescue Errno::ESRCH
       true
+    rescue Errno::EPERM
+      false # live and not signallable by us, so not ours either
     end
 
     expect(described_class.new.terminate(pid, stop_timeout: 1, guard: guard)).to eq(:not_running)
