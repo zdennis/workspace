@@ -119,7 +119,7 @@ workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 | `--table` | `status`: one row per run, finished ones too at every scope, with its workspace's status and what still exists (see [the status table](#the-status-table)) |
 | `--if-sha256 SHA` | `update`: the sha256 of the file's raw bytes, from `show ID --source --json` or `show --json` (the list); required |
 | `--dry-run` | `run`, `start`: report what would start and start nothing. `add`, `update`: run every check and write no definition (the workflows directory and `.ID.yml.lock` may still be created) |
-| `--status pass\|fail` | `step done`: `pass` (default) or `fail` |
+| `--status STATUS` | `step done`: `pass` (default), `fail`, or a stated status: `done`, `running`, `needs_input`, `stuck` (`--summary` is its detail; `--code` does not apply to these and is a `usage` error) |
 | `--summary TEXT` | `step done`: one line about what was done, or what is left |
 | `--match-file PATH` | `step expect-fail`: a file whose text (trimmed) the failing tests' stdout and stderr must hold |
 | `--timeout SECONDS` | `step expect-fail`: seconds the tests may run (default 240) |
