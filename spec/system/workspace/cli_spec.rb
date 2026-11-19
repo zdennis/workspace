@@ -1370,7 +1370,27 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["finish", "--name", "myproject.worktree-x"])
 
-      expect(finish_command).to have_received(:call).with("myproject.worktree-x", pr: false, json: false, working_dir: anything)
+      expect(finish_command).to have_received(:call).with("myproject.worktree-x", pr: false, json: false, force: false, working_dir: anything)
+    end
+
+    it "passes --force through to the finish collaborator" do
+      finish_command = instance_double(Workspace::Commands::Finish)
+      allow(finish_command).to receive(:call).and_return("myproject.worktree-x")
+      cli, = build_test_cli(finish_command: finish_command)
+
+      cli.run(["finish", "--name", "myproject.worktree-x", "-f"])
+
+      expect(finish_command).to have_received(:call).with("myproject.worktree-x", pr: false, json: false, force: true, working_dir: anything)
+    end
+
+    it "passes the long --force form through the same way" do
+      finish_command = instance_double(Workspace::Commands::Finish)
+      allow(finish_command).to receive(:call).and_return("myproject.worktree-x")
+      cli, = build_test_cli(finish_command: finish_command)
+
+      cli.run(["finish", "--name", "myproject.worktree-x", "--force"])
+
+      expect(finish_command).to have_received(:call).with("myproject.worktree-x", pr: false, json: false, force: true, working_dir: anything)
     end
 
     it "emits a JSON usage error and exits 1 for a bad flag with --json" do
@@ -1385,7 +1405,7 @@ RSpec.describe Workspace::CLI do
 
     it "delegates to the finish collaborator and runs the post_kill hook" do
       finish_command = instance_double(Workspace::Commands::Finish)
-      allow(finish_command).to receive(:call).with(nil, pr: false, json: false, working_dir: anything)
+      allow(finish_command).to receive(:call).with(nil, pr: false, json: false, force: false, working_dir: anything)
         .and_yield("myproject").and_return("myproject")
       hook_runner = CLITestHelpers::FakeHookRunner.new
 
@@ -1398,7 +1418,7 @@ RSpec.describe Workspace::CLI do
     it "does not run the post_kill hook under --json, keeping stdout to the JSON line" do
       finish_command = instance_double(Workspace::Commands::Finish)
       block_given = nil
-      allow(finish_command).to receive(:call).with(nil, pr: false, json: true, working_dir: anything) do |*_args, &block|
+      allow(finish_command).to receive(:call).with(nil, pr: false, json: true, force: false, working_dir: anything) do |*_args, &block|
         block_given = !block.nil?
         {exit_code: 0}
       end

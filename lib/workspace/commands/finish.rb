@@ -37,6 +37,9 @@ module Workspace
       # @param project [String, nil] project/config name, or nil for the workspace +working_dir+ is in (its
       #   worktree marker, else the active workspace whose root holds it)
       # @param pr [Boolean] open (or look up) a PR with `gh` before cleanup
+      # @param force [Boolean] skip the clean-and-pushed checks and remove the worktree even
+      #   with changed or unpushed work; the recorded outcome then says what happened to the
+      #   branch's work (+merged+, +pushed+ when every commit is on its upstream, else +discarded+)
       # @param json [Boolean] emit the documented JSON schema instead of plain text
       # @param working_dir [String] cwd to detect the project from, when project is nil
       # @yieldparam project [String] passed through to Commands::Kill#call: runs after
@@ -44,16 +47,16 @@ module Workspace
       # @return [Hash] {exit_code:} when json is true; the finished project name otherwise
       # @raise [Workspace::Error] if the worktree isn't clean/pushed, gh fails, or it
       #   isn't a worktree project (unless json is true, where this is reported instead)
-      def call(project = nil, pr: false, json: false, working_dir: Dir.pwd, &after_remove)
-        return call_json(project, pr: pr, working_dir: working_dir, &after_remove) if json
+      def call(project = nil, pr: false, json: false, force: false, working_dir: Dir.pwd, &after_remove)
+        return call_json(project, pr: pr, force: force, working_dir: working_dir, &after_remove) if json
 
-        finish!(project, pr: pr, working_dir: working_dir, &after_remove)
+        finish!(project, pr: pr, force: force, working_dir: working_dir, &after_remove)
       end
 
       private
 
-      def call_json(project, pr:, working_dir:, &after_remove)
-        finished = finish!(project, pr: pr, working_dir: working_dir, quiet: true, &after_remove)
+      def call_json(project, pr:, force:, working_dir:, &after_remove)
+        finished = finish!(project, pr: pr, force: force, working_dir: working_dir, quiet: true, &after_remove)
         document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "project" => finished, "outcome" => @outcome, "pr_url" => @pr_url}
         document["dev_stopped"] = true if @kill_command.dev_stopped
         if (held = @kill_command.notes_inside_worktree)
@@ -67,7 +70,7 @@ module Workspace
         {exit_code: 1}
       end
 
-      def finish!(project, pr:, working_dir:, quiet: false, &after_remove)
+      def finish!(project, pr:, working_dir:, force:, quiet: false, &after_remove)
         @pr_url = nil
         @outcome = nil
         project ||= @project_detector.detect(working_dir)
@@ -86,17 +89,22 @@ module Workspace
           raise Workspace::Error, "'#{project}' does not appear to be a worktree project."
         end
 
-        check_clean_and_pushed!(project, worktree_path)
+        check_clean_and_pushed!(project, worktree_path) unless force
 
         open_pr!(project, worktree_path, quiet: quiet) if pr
-        @outcome = merged_into_default?(worktree_path) ? "merged" : "pushed"
+        @outcome = if force
+          forced_outcome(worktree_path)
+        else
+          merged_into_default?(worktree_path) ? "merged" : "pushed"
+        end
 
         @output.puts "Finishing #{project}..." unless quiet
         # confirm: false skips Kill's prompt but keeps its unsaved-work check,
         # which Git#remove_worktree repeats right before removing: anything
         # committed or edited since the check above is refused, not deleted.
+        # force skips those checks too: the person asked for it.
         begin
-          @kill_command.call(project, confirm: false, quiet: quiet, working_dir: working_dir, outcome: @outcome, &after_remove)
+          @kill_command.call(project, confirm: false, force: force, quiet: quiet, working_dir: working_dir, outcome: @outcome, &after_remove)
         rescue Workspace::UnsavedWorkError => e
           raise Workspace::Error,
             "'#{project}' has unsaved work: #{e.summary}.\n" \
@@ -116,6 +124,23 @@ module Workspace
         @git.merged_into_base?(worktree_path, branch) == true
       end
 
+      # The outcome a forced finish records, from git facts alone: what happens to
+      # the branch's work, since the clean-and-pushed check never ran and a set PR
+      # url means only that a PR exists ({Commands::PullRequest#find_or_create} is
+      # called without a block, so `--pr` never pushes). "merged" when the branch
+      # is on the default branch, "pushed" when every commit is on its upstream,
+      # else "discarded".
+      def forced_outcome(worktree_path)
+        return "merged" if merged_into_default?(worktree_path)
+
+        upstream = @git.upstream_branch(worktree_path)
+        if upstream && @git.commits_ahead_of_upstream(worktree_path) == 0
+          "pushed"
+        else
+          "discarded"
+        end
+      end
+
       def check_clean_and_pushed!(project, worktree_path)
         changed = @git.changed_files_count(worktree_path)
         if changed.nil?
@@ -126,21 +151,22 @@ module Workspace
         if changed > 0
           raise Workspace::Error,
             "'#{project}' has #{changed} changed file(s) at #{worktree_path}.\n" \
-            "Commit or stash them before finishing."
+            "Commit or stash them before finishing, or rerun with --force to finish anyway."
         end
 
         branch = @git.worktree_branch(worktree_path)
         if branch.nil?
           raise Workspace::Error,
             "'#{project}' is on a detached HEAD at #{worktree_path}.\n" \
-            "Check out a branch first (git -C #{worktree_path} switch -c <branch>), push it, then rerun finish."
+            "Check out a branch first (git -C #{worktree_path} switch -c <branch>), push it, then rerun finish,\n" \
+            "or rerun with --force to finish anyway."
         end
 
         upstream = @git.upstream_branch(worktree_path)
         if upstream.nil?
           raise Workspace::Error,
             "'#{project}' branch '#{branch}' has no upstream.\n" \
-            "Push it first: git -C #{worktree_path} push -u origin #{branch}"
+            "Push it first: git -C #{worktree_path} push -u origin #{branch}, or rerun with --force to finish anyway."
         end
 
         ahead = @git.commits_ahead_of_upstream(worktree_path)
@@ -150,7 +176,7 @@ module Workspace
         if ahead > 0
           raise Workspace::Error,
             "'#{project}' branch '#{branch}' is #{ahead} commit(s) ahead of #{upstream}.\n" \
-            "Push before finishing: git -C #{worktree_path} push"
+            "Push before finishing: git -C #{worktree_path} push, or rerun with --force to finish anyway."
         end
       end
 

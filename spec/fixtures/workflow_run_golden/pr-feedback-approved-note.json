@@ -79,7 +79,7 @@
           }
         ],
         "uses": [],
-        "on_fail": null,
+        "on_fail": "stop",
         "context": "fresh",
         "timeout": 7200.0,
         "on_timeout": "warn",
@@ -90,7 +90,7 @@
   },
   "definition_source": "preset",
   "definition_path": "<ROOT>/lib/workflows/pr-feedback.yml",
-  "definition_sha256": "4528ff12dc2b261bdf3684f68b960782b1c24052fe3cdc148dc3278c4e5001fb",
+  "definition_sha256": "7deb5a59a8dadad680ad126978028368380ae33236f1e7b9378c26b4066a1e9b",
   "workspace": "app.worktree-x",
   "project": "app",
   "worktree": "<TMP>/app",
@@ -125,7 +125,7 @@
             "before": "1111111111111111111111111111111111111111",
             "after": "1111111111111111111111111111111111111111"
           },
-          "definition_sha256": "4528ff12dc2b261bdf3684f68b960782b1c24052fe3cdc148dc3278c4e5001fb",
+          "definition_sha256": "7deb5a59a8dadad680ad126978028368380ae33236f1e7b9378c26b4066a1e9b",
           "prompt_sha256": "<PROMPT_SHA>",
           "packs": [
             {
@@ -183,7 +183,7 @@
             "before": "1111111111111111111111111111111111111111",
             "after": null
           },
-          "definition_sha256": "4528ff12dc2b261bdf3684f68b960782b1c24052fe3cdc148dc3278c4e5001fb",
+          "definition_sha256": "7deb5a59a8dadad680ad126978028368380ae33236f1e7b9378c26b4066a1e9b",
           "prompt_sha256": "<PROMPT_SHA>",
           "packs": [
             {

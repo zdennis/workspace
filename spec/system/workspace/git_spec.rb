@@ -638,6 +638,17 @@ RSpec.describe Workspace::Git do
       it "returns nil when git cannot answer" do
         expect(git.changed_files_count(File.join(@repo_dir, "does-not-exist"))).to be_nil
       end
+
+      it "never counts ignored or untracked files, even ones .gitignore names that git tracks elsewhere" do
+        File.write(File.join(@repo_dir, ".gitignore"), ".bundle/\nuntracked.txt\n")
+        run!("git", "add", ".gitignore", chdir: @repo_dir)
+        run!("git", "commit", "-qm", "ignore", chdir: @repo_dir)
+        FileUtils.mkdir_p(File.join(@repo_dir, ".bundle"))
+        File.write(File.join(@repo_dir, ".bundle", "config"), "ignored\n")
+        File.write(File.join(@repo_dir, "untracked.txt"), "untracked\n")
+
+        expect(git.changed_files_count(@repo_dir)).to eq(0)
+      end
     end
 
     describe "#unpushed_commit_count" do
