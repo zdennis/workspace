@@ -303,7 +303,7 @@ module Workspace
       reviewing = state.state == "reviewing"
       # A round stopped for a person waits for that person: no daemon is started for it, and nothing reads its pane.
       return @reviews.held_row(run) if held == "round_held"
-      daemon_needed = running || reviewing || state.state == "checking" || run.parked || run.reason&.dig("code") == "waiting_lock"
+      daemon_needed = running || reviewing || state.state == "checking" || run.parked || run.reason_for(run.current)&.dig("code") == "waiting_lock"
       if running && !@panes.alive?(run.id)
         pane = run.pane
         return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", {"pane" => pane}, infra: true)
@@ -378,18 +378,18 @@ module Workspace
 
     # The retry's wait is over but the token budget is used: not a failure, and the sweep cannot raise the budget.
     def budget_row(run, **rest)
-      round = (run.budget_hold || run.timeout_hold)&.dig("review_round")
+      round = (run.budget_hold_for(run.current) || run.timeout_hold_for(run.current))&.dig("review_round")
       held = round ? "review round #{round} of step #{run.current}" : "step #{run.current}"
-      if run.reason&.dig("code") == "run_timed_out"
+      if run.reason_for(run.current)&.dig("code") == "run_timed_out"
         return WorkflowSweepRows.row(run, "nothing", reason: "run_timed_out", message: "#{held} was not started: the run's time limit is used. Resume it with --extra-time DURATION (see `workspace workflow status #{run.id}`) or cancel it", **rest)
       end
-      WorkflowSweepRows.row(run, "nothing", reason: "budget_spent", message: "#{held} was not started: the run's token budget is used. Resume it with --extra-tokens N#{" and --extra-time DURATION" if run.reason&.dig("details", "run_timed_out")} (see `workspace workflow status #{run.id}`) or cancel it", **rest)
+      WorkflowSweepRows.row(run, "nothing", reason: "budget_spent", message: "#{held} was not started: the run's token budget is used. Resume it with --extra-tokens N#{" and --extra-time DURATION" if run.reason_for(run.current)&.dig("details", "run_timed_out")} (see `workspace workflow status #{run.id}`) or cancel it", **rest)
     end
 
     # The pane the retry would type into is no longer the run's. Not a failure: the sweep cannot fix it, and a person can.
     def blocked_row(run)
       WorkflowSweepRows.row(run, "nothing", reason: "retry_blocked", cause: "retry_backoff", action: "retry",
-        message: "the retry of step #{run.backoff&.dig("to")} is held: its pane is no longer the run's. Resume the run with --pane for another agent pane, or cancel it")
+        message: "the retry of step #{run.backoff_for(run.current)&.dig("to")} is held: its pane is no longer the run's. Resume the run with --pane for another agent pane, or cancel it")
     end
 
     # The step waits on a line that was not delivered, and {WorkflowEngine.redelivery} says where a retry stands.
@@ -447,9 +447,9 @@ module Workspace
       timed_out = timeout.is_a?(Numeric) && elapsed > timeout
       on_timeout = WorkflowDefinition.on_timeout(step)
 
-      if run.reason
-        return time_out(run, attempt, pass, elapsed, timeout, nil) if timed_out && on_timeout == "fail" && run.reason&.dig("code") == "turn_ended_incomplete"
-        return WorkflowSweepRows.row(run, "nothing", reason: "held", message: "step #{run.current} is held (#{run.reason&.dig("code")}); a person decides it")
+      if run.reason_for(run.current)
+        return time_out(run, attempt, pass, elapsed, timeout, nil) if timed_out && on_timeout == "fail" && run.reason_for(run.current)&.dig("code") == "turn_ended_incomplete"
+        return WorkflowSweepRows.row(run, "nothing", reason: "held", message: "step #{run.current} is held (#{run.reason_for(run.current)&.dig("code")}); a person decides it")
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "delivering", message: "the step's line is still on its way to the pane") if WorkflowEngine.delivery(attempt.to_h, @clock.call) == :delivering
       pane = @panes.pane_of(run.id)

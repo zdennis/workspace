@@ -931,7 +931,7 @@ module Workspace
             pane_id = resume_pane(stored, pane)
           end
           hint = restart_hint(stored) if from.nil? && !accept_guard && !restart_step && restart_hint?(stored)
-          if !restart_step && pane_id.nil? && from.nil? && state.state == "running" && stored.reason.nil? &&
+          if !restart_step && pane_id.nil? && from.nil? && state.state == "running" && stored.reason_for(stored.current).nil? &&
               @panes.idle?(stored.workspace, @panes.pane_of(run) || stored.pane)
             turn_over = {"step" => stored.current, "attempt" => state.last_attempt&.n}
           end
@@ -2024,7 +2024,7 @@ module Workspace
 
       def resume_pane(stored, pane)
         return @panes.locate(stored.workspace, pane) if pane
-        gone = stored.reason&.dig("code") == "pane_gone" || (@panes.pane_of(stored.id) && !@panes.alive?(stored.id))
+        gone = stored.reason_for(stored.current)&.dig("code") == "pane_gone" || (@panes.pane_of(stored.id) && !@panes.alive?(stored.id))
         gone ? @panes.default_pane(stored.workspace) : nil
       end
 

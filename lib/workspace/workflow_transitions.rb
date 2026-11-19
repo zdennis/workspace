@@ -53,6 +53,14 @@ module Workspace
       "hidden_changed" => "tracked files were hidden from git (assume-unchanged or skip-worktree) since the run started"
     }.freeze
 
+    # One of a step's {WorkflowRun::PER_STEP_KEYS} slots, by {WorkflowRun.slot}: the current step's unless +step+ is given.
+    def self.slot(run, key, step = run["current"]) = WorkflowRun.slot(run, step, key)
+    private_class_method :slot
+
+    # {.slot} dug into as `run.dig(key, *path)` digs the run-level key, raising as it would on a value that can't be dug.
+    def self.slot_dig(run, key, *path, step: run["current"]) = WorkflowRun.slot_dig(run, step, key, *path)
+    private_class_method :slot_dig
+
     # @param run [Hash{String=>Object}] a stored run
     # @return [Integer] the attempts that count against the allowance: all but those the sweep typed again
     def self.attempts_made(run)
@@ -162,7 +170,7 @@ module Workspace
       id = run["current"]
       return false unless review_rounds_spent?(run, id)
       state = run.dig("steps", id, "state")
-      return true if state == "failed" && run.dig("reason", "code") == "review_rejected"
+      return true if state == "failed" && slot_dig(run, "reason", "code") == "review_rejected"
       state == "reviewing" && starts_round?(run, from: nil)
     end
 
@@ -190,9 +198,10 @@ module Workspace
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param from [String, nil]
+    # @param step [String, nil] the step whose waiting retry is read; the current step unless given
     # @return [String]
-    def self.target_step(run, from: nil)
-      from || run.dig("backoff", "to") || run["current"]
+    def self.target_step(run, from: nil, step: run["current"])
+      from || slot_dig(run, "backoff", "to", step: step) || run["current"]
     end
 
     # Whether a resume would start a new attempt: `--from`, a run held for its token budget or its timeout before an
@@ -204,14 +213,16 @@ module Workspace
     # @param run [Hash{String=>Object}] a stored run
     # @param from [String, nil] the step a resume would start again at
     # @param pane [String, nil] the pane the resume would name
+    # @param step [String, nil] the step whose holds, wait and state are read; the current step unless given
     # @return [Boolean]
-    def self.starts_attempt?(run, from:, pane:)
+    def self.starts_attempt?(run, from:, pane:, step: run["current"])
       return true if from
-      return false if round_hold?(run)
-      return true if run["budget_hold"].is_a?(Hash) || run["timeout_hold"].is_a?(Hash)
-      return true if run["backoff"].is_a?(Hash) && run["backoff"]["to"].is_a?(String)
-      return false if run.dig("reason", "code") == "waiting_lock"
-      case run["steps"].fetch(run["current"])["state"]
+      return false if round_hold?(run, step: step)
+      return true if slot(run, "budget_hold", step).is_a?(Hash) || slot(run, "timeout_hold", step).is_a?(Hash)
+      waiting = slot(run, "backoff", step)
+      return true if waiting.is_a?(Hash) && waiting["to"].is_a?(String)
+      return false if slot_dig(run, "reason", "code", step: step) == "waiting_lock"
+      case run["steps"].fetch(step)["state"]
       when "running" then !pane.nil?
       when "checking", "reviewing", "passed" then false
       else true
@@ -222,9 +233,10 @@ module Workspace
     # starts that round, never an author attempt.
     #
     # @param run [Hash{String=>Object}] a stored run
+    # @param step [String, nil] the step whose holds are read; the current step unless given
     # @return [Boolean]
-    def self.round_hold?(run)
-      [run["budget_hold"], run["timeout_hold"]].any? { |hold| hold.is_a?(Hash) && hold.key?("review_round") }
+    def self.round_hold?(run, step: run["current"])
+      [slot(run, "budget_hold", step), slot(run, "timeout_hold", step)].any? { |hold| hold.is_a?(Hash) && hold.key?("review_round") }
     end
 
     # Why a run waits for a person, or for nothing the clock will move: the one rule `workflow sweep` and
@@ -232,20 +244,21 @@ module Workspace
     # `waiting_lock` reason and the `retry_backoff` reason that scheduled backoff sets. First match wins.
     #
     # @param run [Hash{String=>Object}] a stored run
+    # @param step [String, nil] the step whose holds, reason and gate are read; the current step unless given
     # @return [String, nil] `paused`, `retry_blocked`, `budget_hold`, `timeout_hold`, `round_held` (a reviewing step
     #   stopped with a reason), `reason`, `gate_waiting`, `parked`, or nil
-    def self.held_reason(run)
+    def self.held_reason(run, step: run["current"])
       return "paused" if run["paused"]
       waiting = run["state"] == "waiting"
-      return "retry_blocked" if run.dig("backoff", "blocked") && waiting
-      return "budget_hold" if run["budget_hold"] && waiting
-      return "timeout_hold" if run["timeout_hold"] && waiting
-      step = run.dig("steps", run["current"]) || {}
-      reason = run["reason"]
+      return "retry_blocked" if slot_dig(run, "backoff", "blocked", step: step) && waiting
+      return "budget_hold" if slot(run, "budget_hold", step) && waiting
+      return "timeout_hold" if slot(run, "timeout_hold", step) && waiting
+      state = run.dig("steps", step) || {}
+      reason = slot(run, "reason", step)
       reason = nil if reason.is_a?(Hash) && %w[waiting_lock retry_backoff].include?(reason["code"])
-      return "round_held" if step["state"] == "reviewing" && reason
+      return "round_held" if state["state"] == "reviewing" && reason
       return "reason" if reason
-      return "gate_waiting" if step.dig("gate", "state") == "waiting"
+      return "gate_waiting" if state.dig("gate", "state") == "waiting"
       return "parked" if run["parked"]
       nil
     end
@@ -261,12 +274,12 @@ module Workspace
     # @return [Boolean]
     def self.starts_round?(run, from:)
       return false if from
-      return false if run.dig("reason", "code") == "waiting_lock"
+      return false if slot_dig(run, "reason", "code") == "waiting_lock"
       return true if round_hold?(run)
       state = run["steps"].fetch(run["current"])
       return false unless state["state"] == "reviewing"
       round = state["review"]
-      !(round.is_a?(Hash) && run["reason"].nil? && round["ended_at"].nil?)
+      !(round.is_a?(Hash) && slot(run, "reason").nil? && round["ended_at"].nil?)
     end
 
     # Where the line that starts an attempt stands. An attempt is stored as
@@ -325,7 +338,7 @@ module Workspace
     # @return [Hash, nil] nil when no delivery again applies; else :state (`:due`, `:waiting` for the backoff or
     #   `:exhausted`), :round, :retries (spent), :limit, :mark (`:failed` or `:unknown`) and :wait (seconds left, 0 unless waiting)
     def self.round_redelivery(run, now, alive: nil)
-      return nil if run["parked"] || run["reason"]
+      return nil if run["parked"] || slot(run, "reason")
       state = run.dig("steps", run["current"])
       return nil unless state.is_a?(Hash) && state["state"] == "reviewing"
       round = state["review"]
@@ -580,7 +593,7 @@ module Workspace
       state = run.dig("steps", step)
       attempts = state.is_a?(Hash) ? Array(state["attempts"]).grep(Hash) : []
       entries = attempts.flat_map { |attempt| Array(attempt["reasons"]) }
-      entries += Array(run["reasons"]).grep(Hash).select { |entry| entry["step"] == step }
+      entries += Array(slot(run, "reasons", step)).grep(Hash).select { |entry| entry["step"] == step }
       spans = entries.grep(Hash).select { |entry| entry["code"] == "paused" }
       paused = run["paused"]
       spans << {"since" => paused["since"]} if paused.is_a?(Hash) && step == run["current"]
@@ -708,7 +721,7 @@ module Workspace
     # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
     def self.unanswered_round?(run, now, stops: [])
-      return false if run["parked"] || run["reason"]
+      return false if run["parked"] || slot(run, "reason")
       state = run.dig("steps", run["current"])
       return false unless state.is_a?(Hash) && state["state"] == "reviewing"
       round = state["review"]
@@ -751,7 +764,7 @@ module Workspace
     def self.redelivery(run, now)
       limit = WorkflowDefinition.redeliver(run["definition"])
       return nil if limit.zero? || run["parked"] || run["state"] != "waiting"
-      reason = run["reason"]
+      reason = slot(run, "reason")
       details = reason.is_a?(Hash) ? reason["details"] : nil
       return nil unless reason.is_a?(Hash) && reason["code"] == "waiting_you" && details.is_a?(Hash) && details["kind"] == "dispatch"
       return nil unless REDELIVER_CODES.include?(details["error"]) && !REDELIVER_NEVER_REASONS.include?(details["reason"])
@@ -779,7 +792,7 @@ module Workspace
     # @return [Hash, nil] nil when the run waits out no backoff (an old run too); else :state (`:waiting` or
     #   `:due`), :wait (seconds left, 0 when due), :until (ISO time), :to (the step the retry goes back to)
     def self.backoff(run, now)
-      stored = run["backoff"]
+      stored = slot(run, "backoff")
       return nil unless stored.is_a?(Hash) && run["state"] == "waiting" && stored["to"].is_a?(String) && !stored["blocked"]
       # A time that can't be read is taken as over: a wait must not outlast what could be measured.
       wait = begin
@@ -845,7 +858,7 @@ module Workspace
     # @param now [Time]
     # @return [Symbol, nil] :due, :expired or nil
     def self.continue_state(run, now)
-      mark = run["continue_pending"]
+      mark = slot(run, "continue_pending")
       return nil unless continue_mark?(run, mark)
       since = Time.iso8601(mark["since"].to_s)
       (now - since > PARK_SECONDS) ? :expired : :due
@@ -887,13 +900,13 @@ module Workspace
       end
       return :backoff if backoff(run, now)&.fetch(:state) == :due
       return :infra_retry if infra_retry_wakes?(run, now)
-      return :lock if run.dig("reason", "code") == "waiting_lock"
-      return :background if background_expired?(run["reason"], now)
+      return :lock if slot_dig(run, "reason", "code") == "waiting_lock"
+      return :background if background_expired?(slot(run, "reason"), now)
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
       return :round if lost_round?(run, now, stops: stops)
       return :unanswered if unanswered_round?(run, now, stops: stops)
       return :review if %i[due exhausted].include?(round_redelivery(run, now, alive: alive)&.fetch(:state))
-      :check if run["reason"].nil? && lost_check?(run, now)
+      :check if slot(run, "reason").nil? && lost_check?(run, now)
     end
 
     # Whether the end of the current step's review round was being judged and nothing reported back: its revision
@@ -906,7 +919,7 @@ module Workspace
     # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
     def self.lost_round?(run, now, stops: [])
-      return false if run["parked"] || run["reason"]
+      return false if run["parked"] || slot(run, "reason")
       state = run.dig("steps", run["current"])
       return false unless state.is_a?(Hash) && state["state"] == "reviewing"
       mark = state["review"].is_a?(Hash) ? state["review"]["recompute"] : nil
@@ -926,7 +939,7 @@ module Workspace
     def self.lost_check?(run, now)
       state = run["steps"].fetch(run["current"])
       return false unless state["state"] == "checking"
-      return true if run["reason"] || parked(run, now) == :expired
+      return true if slot(run, "reason") || parked(run, now) == :expired
       attempt = state["attempts"].last
       # A `require:` proof outside the run's lock has its own start and limit; a run stored without `proofs` has neither.
       proof = Array(attempt&.dig("proofs")).find { |each| !each.key?("ended_at") }
@@ -987,7 +1000,7 @@ module Workspace
     # @return [Array]
     def self.fingerprint(run)
       state = run["steps"].fetch(run["current"])
-      [run["state"], run["current"], shown_reason(run["reason"]), state["state"], state["attempts"].size, state.dig("gate", "state"), run.key?("parked")]
+      [run["state"], run["current"], shown_reason(slot(run, "reason")), state["state"], state["attempts"].size, state.dig("gate", "state"), run.key?("parked")]
     end
 
     # Whether a sweep's view (step and attempt it saw) still describes the run, so the sweep may change it.
@@ -1005,7 +1018,7 @@ module Workspace
       return false unless last&.fetch("n", nil) == attempt
       return true unless running
       return false unless state["state"] == "running" && !run["parked"] && delivery(last, now) != :delivering
-      run["reason"].nil? || (running == :or_incomplete && run.dig("reason", "code") == "turn_ended_incomplete")
+      slot(run, "reason").nil? || (running == :or_incomplete && slot_dig(run, "reason", "code") == "turn_ended_incomplete")
     end
 
     # Why a resume does nothing for the step as it stands; nil when it acts.
@@ -1027,13 +1040,13 @@ module Workspace
         end
         # The turn's end counts only for the attempt it was seen on: the run may have moved on since.
         over = turn_over && turn_over["step"] == run["current"] && turn_over["attempt"] == state["attempts"].last&.fetch("n", nil)
-        "an agent is working on step #{run["current"]}" unless pane || run["reason"] || over
+        "an agent is working on step #{run["current"]}" unless pane || slot(run, "reason") || over
       when "checking"
         "the check of step #{run["current"]} is still running" unless lost_check?(run, now)
       when "reviewing"
         # A round stopped for a person, or one whose delivery failed or lapsed (past the window with its holder gone),
         # is the resume's to act on.
-        unless run["reason"] || %i[failed unknown].include?(round_delivery(state["review"], now, alive: alive))
+        unless slot(run, "reason") || %i[failed unknown].include?(round_delivery(state["review"], now, alive: alive))
           "the review round of step #{run["current"]} is still running"
         end
       end
@@ -1186,7 +1199,7 @@ module Workspace
     # @return [Boolean]
     def self.guard_unrecoverable?(run)
       run = run.to_h
-      reason = run["reason"]
+      reason = slot(run, "reason")
       return false unless reason.is_a?(Hash) && reason["code"] == "failed_check"
       details = reason["details"]
       details.is_a?(Hash) && details["cause"] == "guard" && details["guard"] == "no_commit" && run["base_sha"].to_s.empty?
@@ -1241,7 +1254,7 @@ module Workspace
     # stop, no park and not ended; else nil.
     def self.round_waits?(run, pending)
       run = WorkflowRun.from_h(run)
-      return nil if run.parked || run.reason || WorkflowRunStore::TERMINAL_STATES.include?(run.state) || run.current != pending["step"]
+      return nil if run.parked || run.reason_for(run.current) || WorkflowRunStore::TERMINAL_STATES.include?(run.state) || run.current != pending["step"]
       step = run.steps[pending["step"]]
       round = step&.review
       return nil unless step&.state == "reviewing" && step.last_attempt&.n == pending["attempt"] && round.is_a?(Hash) && round["round"] == pending["round"]
@@ -1260,7 +1273,7 @@ module Workspace
     # @return [String, nil] the guard's code, nil for any other state or stop
     def self.acceptable_guard(run)
       run = run.to_h
-      reason = run["reason"]
+      reason = slot(run, "reason")
       return nil unless run["state"] == "waiting" && reason.is_a?(Hash) && reason["code"] == "failed_check"
       details = reason["details"]
       return nil unless details.is_a?(Hash) && details["cause"] == "guard" && ACCEPTABLE_GUARDS.include?(details["guard"])
@@ -1289,8 +1302,8 @@ module Workspace
     # @return [String, nil] what to do before a resume can pass, nil for any other stop
     def self.guard_recovery(run)
       run = run.to_h
-      details = run.dig("reason", "details")
-      return nil unless run.dig("reason", "code") == "failed_check" && details.is_a?(Hash) && details["cause"] == "guard"
+      details = slot_dig(run, "reason", "details")
+      return nil unless slot_dig(run, "reason", "code") == "failed_check" && details.is_a?(Hash) && details["cause"] == "guard"
       return nil if guard_unrecoverable?(run)
       case details["guard"]
       when "head_moved" then "Move HEAD back to #{run["base_sha"].to_s[0, 12]} (save any work you want to keep, on a branch, first), then resume."

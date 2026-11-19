@@ -652,6 +652,20 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(resumed.run.backoff).to be_nil
     end
 
+    it "skips the wait a fan_out group's step keeps under its own step and starts that retry" do
+      backoff = {"until" => "2026-11-10T13:00:00Z", "to" => "plan", "text" => "it failed", "pane" => "%3"}
+      hash = run_hash(state: "failed", extra: {"state" => "waiting"})
+      hash["definition"]["steps"].each { |each| each["group"] = "checks" }
+      hash["steps"]["plan"].merge!("backoff" => backoff, "reason" => {"code" => "retry_backoff"})
+      stored(hash)
+
+      resumed = decisions.resume("wr_1", actor: "person")
+
+      expect(progress.calls).to eq([[:retry_pane_problem, "plan", {proven: false, pane: nil}], [:start_retry, "plan", backoff, {cause: "resume", proven: false, budgeted: true}]])
+      expect(resumed.run.step("plan").to_h).not_to have_key("backoff")
+      expect(resumed.run.backoff_for("build")).to be_nil
+    end
+
     it "holds a retry whose pane is no longer the run's, writing no event, and says why" do
       progress = RecordingProgress.new(pane_problem: {code: "pane_gone", message: "pane %3 is gone"})
       stored(run_hash(state: "failed", extra: {"backoff" => {"until" => "2026-11-10T13:00:00Z", "to" => "plan"}, "state" => "waiting"}))

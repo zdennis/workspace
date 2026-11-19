@@ -202,8 +202,8 @@ module Workspace
     def changed(run)
       @event_log&.record(type: "workflow_changed", project: run["workspace"],
         data: {"run_id" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"],
-               "state" => WorkflowTransitions.hold?(run["reason"]) ? "running" : run["state"],
-               "step" => run["current"], "reason" => run["parked"] ? nil : run.dig("reason", "code")})
+               "state" => WorkflowTransitions.hold?(WorkflowRun.slot(run, run["current"], "reason")) ? "running" : run["state"],
+               "step" => run["current"], "reason" => run["parked"] ? nil : WorkflowRun.slot_dig(run, run["current"], "reason", "code")})
     end
   end
 end

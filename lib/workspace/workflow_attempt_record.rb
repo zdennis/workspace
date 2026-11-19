@@ -49,9 +49,11 @@ module Workspace
     # @param run [WorkflowRun, Hash{String=>Object}]
     # @param attempt [WorkflowRun::Attempt, Hash{String=>Object}] left as it is
     # @param composed [Hash{String=>Object}] the composer's answer: "text" and "packs"
+    # @param step_id [String, nil] the step the attempt belongs to; the run's current step unless given
     # @return [WorkflowRun::Attempt] the attempt with what it started from
-    def start(run:, attempt:, composed:)
+    def start(run:, attempt:, composed:, step_id: nil)
       run = WorkflowRun.from_h(run)
+      step_id ||= run.current
       attempt = mutable(attempt)
       attempt["head"] = {"before" => @guard.head(run.worktree), "after" => nil}
       attempt["definition_sha256"] = run.definition_sha256
@@ -59,7 +61,7 @@ module Workspace
       attempt["packs"] = composed["packs"].map { |pack| {"ref" => pack["ref"], "sha256" => pack["sha256"]} }
       attempt.compact!
       # The prompt is copied as it is written, before it is delivered: the agent has not seen it yet.
-      attempt["evidence"] = @evidence.prompt(run: run, step_id: run.current, attempt: attempt) if @evidence && attempt["prompt_file"]
+      attempt["evidence"] = @evidence.prompt(run: run, step_id: step_id, attempt: attempt) if @evidence && attempt["prompt_file"]
       WorkflowRun::Attempt.from_h(attempt)
     end
 
@@ -91,7 +93,8 @@ module Workspace
     # * else on the attempt this same change just ended, only when its ending set the reason (a
     #   `failed_check` for that attempt, or a gate wait);
     # * else in the run's own `reasons` list, with the `step` it concerns (a wait for a lock before the
-    #   first attempt, or before a retry's attempt exists; a dispatch that could not start).
+    #   first attempt, or before a retry's attempt exists; a dispatch that could not start); for a step that keeps
+    #   its own slots ({WorkflowRun.step_scoped?}), in that step's own `reasons` list.
     #
     # A reason that stands when a later attempt opens stays on the attempt it began on. A parked resume
     # that times out is worked out when read and never stored, so its entry stays open until a change drops
@@ -99,11 +102,13 @@ module Workspace
     #
     # @param run [WorkflowRun, Hash{String=>Object}] left as it is
     # @param was_open [Array(String, Integer), nil] {#open_attempt} read before the change
+    # @param step_id [String, nil] the step whose reason is kept; the run's current step unless given
     # @return [WorkflowRun] the run with its reason history kept; the run given, unchanged, on any error
-    def reasons(run:, was_open: nil)
+    def reasons(run:, was_open: nil, step_id: nil)
       given = WorkflowRun.from_h(run)
       run = given.thawed
-      current = effective_reason(run)
+      step_id ||= run["current"]
+      current = effective_reason(run, step_id)
       at, entry = open_entry(run)
       return given if entry && current && entry["code"] == current["code"] && entry["since"] == current["since"]
       reopened = current && closed_entry(run, current)
@@ -121,18 +126,20 @@ module Workspace
         reopened["until"] = nil
         return WorkflowRun.from_h(run)
       end
-      owner, on_run = reason_owner(run, was_open, current)
-      owner << {"code" => current["code"], "since" => current["since"], "until" => nil}.merge(on_run ? {"step" => run["current"]} : {})
+      owner, on_run = reason_owner(run, was_open, current, step_id)
+      owner << {"code" => current["code"], "since" => current["since"], "until" => nil}.merge(on_run ? {"step" => step_id} : {})
       WorkflowRun.from_h(run)
     rescue
       WorkflowRun.from_h(given || run)
     end
 
     # @param run [Hash{String=>Object}]
+    # @param step_id [String, nil] the step asked about; the run's current step unless given
     # @return [Array(String, Integer), nil] the step and number of the attempt that is open now
-    def open_attempt(run)
-      attempt = run.dig("steps", run["current"], "attempts")&.last
-      (attempt.nil? || attempt["ended_at"]) ? nil : [run["current"], attempt["n"]]
+    def open_attempt(run, step_id = nil)
+      step_id ||= run["current"]
+      attempt = run.dig("steps", step_id, "attempts")&.last
+      (attempt.nil? || attempt["ended_at"]) ? nil : [step_id, attempt["n"]]
     rescue
       nil
     end
@@ -146,16 +153,18 @@ module Workspace
     #
     # @param run [WorkflowRun, Hash{String=>Object}] left as it is
     # @param outcome [String] the outcome the attempt ends with
+    # @param step_id [String, nil] the step whose attempt is closed; the run's current step unless given
     # @return [WorkflowRun] the run with that attempt closed; the run given, unchanged, when there was none
     #   to close or on any error
-    def abandon(run, outcome: "cancelled")
+    def abandon(run, outcome: "cancelled", step_id: nil)
       value = WorkflowRun.from_h(run)
-      attempt = value.current_step&.last_attempt
+      step_id ||= value.current
+      attempt = value.step(step_id)&.last_attempt
       return value if attempt.nil? || attempt.ended_at
-      step = value.definition["steps"].find { |each| each["id"] == value.current }
+      step = value.definition["steps"].find { |each| each["id"] == step_id }
       # One clock read stamps the end and bounds the usage window ({#agent_facts} reads `ended_at`).
       ended = attempt.thawed.merge("ended_at" => @clock.call.utc.iso8601, "outcome" => outcome)
-      value.with_attempt(value.current, finish(run: value, step: step, attempt: ended))
+      value.with_attempt(step_id, finish(run: value, step: step, attempt: ended))
     rescue
       WorkflowRun.from_h(run)
     end
@@ -173,10 +182,11 @@ module Workspace
     #
     # @param run [WorkflowRun, Hash{String=>Object}] left as it is; on the step being reviewed
     # @param round [Hash{String=>Object}] the step's `review` ("round", "pane", "started_at", "reviews", ...)
+    # @param step_id [String, nil] the step being reviewed; the run's current step unless given
     # @return [Hash{String=>Object}] "round", "pane", "started_at", "ended_at", "session", "agent" and "usage"; when the
     #   round read verdicts, also "reviews" and "evidence" (the copies; empty with no evidence collaborator); when its
     #   delivery recorded them, "packs" (one `{"reviewer", "ref", "sha256"}` per reviewer pack composed in)
-    def finish_round(run:, round:)
+    def finish_round(run:, round:, step_id: nil)
       ended_at = round["ended_at"] || @clock.call.utc.iso8601
       record = {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => ended_at,
                 "session" => nil, "agent" => nil, "usage" => nil}
@@ -191,7 +201,7 @@ module Workspace
       pane = round["pane"]
       facts = (pane.is_a?(String) && !pane.empty?) ? agent_facts(value.to_h, record, pane: pane) : {}
       record.merge!("session" => facts["session"], "agent" => facts["agent"], "usage" => facts["usage"])
-      record["evidence"] = verdict_copies(value, round, reviews) if reviews
+      record["evidence"] = verdict_copies(value, round, reviews, step_id || value.current) if reviews
       record
     rescue
       record || {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => nil,
@@ -205,27 +215,30 @@ module Workspace
       rows.map { |row| row.is_a?(Hash) ? row.merge("isolation" => ISOLATION) : row }
     end
 
-    def verdict_copies(run, round, reviews)
-      attempt = run.current_step&.last_attempt
+    def verdict_copies(run, round, reviews, step_id)
+      attempt = run.step(step_id)&.last_attempt
       return [] unless @evidence && attempt
-      @evidence.review(run: run, step_id: run.current, attempt: attempt.to_h, round: round["round"], reviews: reviews, rerun: round["reruns"])
+      @evidence.review(run: run, step_id: step_id, attempt: attempt.to_h, round: round["round"], reviews: reviews, rerun: round["reruns"])
     rescue
       []
     end
 
-    def effective_reason(run)
+    def effective_reason(run, step_id)
       paused = run["paused"]
       return {"code" => "paused", "since" => paused["since"], "by" => paused["by"], "text" => paused["text"]}.compact if paused.is_a?(Hash)
       parked = run["parked"]
       return {"code" => "parked", "since" => parked["requested_at"]} if parked.is_a?(Hash)
-      reason = run["reason"]
+      reason = WorkflowRun.slot(run, step_id, "reason")
       (reason.is_a?(Hash) && reason["code"].is_a?(String)) ? reason : nil
     end
 
-    # Each reason entry with its place: the list it sits in (nil for the run's own, else the step and the
-    # attempt's n) and its index there.
+    # Each reason entry with its place: the list it sits in (nil for the run's own, the step and nil for a step's
+    # own, else the step and the attempt's n) and its index there.
     def each_entry(run)
-      lists = [[nil, run["reasons"]]] + run["steps"].to_h.flat_map { |id, state| Array(state["attempts"]).map { |attempt| [[id, attempt["n"]], attempt["reasons"]] } }
+      lists = [[nil, run["reasons"]]] + run["steps"].to_h.flat_map do |id, state|
+        own = state.key?("reasons") ? [[[id, nil], state["reasons"]]] : []
+        own + Array(state["attempts"]).map { |attempt| [[id, attempt["n"]], attempt["reasons"]] }
+      end
       lists.each do |owner, list|
         next unless list
         list.each_with_index { |each, index| yield [owner, index], each }
@@ -244,12 +257,12 @@ module Workspace
     end
 
     # @return [Array(Array, Boolean)] the list a new entry goes in, and whether it is the run's own
-    def reason_owner(run, was_open, current)
-      attempt = run.dig("steps", run["current"], "attempts")&.last
-      if attempt && (attempt["ended_at"].nil? || (was_open == [run["current"], attempt["n"]] && set_by_ending?(current, attempt)))
+    def reason_owner(run, was_open, current, step_id)
+      attempt = run.dig("steps", step_id, "attempts")&.last
+      if attempt && (attempt["ended_at"].nil? || (was_open == [step_id, attempt["n"]] && set_by_ending?(current, attempt)))
         return [attempt["reasons"] ||= [], false]
       end
-      [run["reasons"] ||= [], true]
+      [WorkflowRun.slots(run, step_id)["reasons"] ||= [], true]
     end
 
     def mutable(attempt)

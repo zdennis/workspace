@@ -79,7 +79,7 @@ module Workspace
       stalled = swept["stalled"]
       {
         gate: (step if run.step(step)&.gate_waiting?),
-        failed: (step if run.state == "failed" || %w[failed_check budget_spent run_timed_out].include?(run.reason&.dig("code"))),
+        failed: (step if run.state == "failed" || %w[failed_check budget_spent run_timed_out].include?(run.reason_for(run.current)&.dig("code"))),
         stalled: stalled.is_a?(Hash) ? (stalled.keys.map(&:to_s) - held_causes(run)).map { |cause| ["#{swept["step"]}:#{swept["attempt"]}", cause] } : [],
         finished: run.state == "completed"
       }
@@ -154,7 +154,7 @@ module Workspace
 
     def env(event, run, before, after)
       id, workspace, step = clean(run.id), clean(run.workspace), clean(run.current)
-      reason = clean(run.reason&.dig("code"))
+      reason = clean(run.reason_for(run.current)&.dig("code"))
       env = {
         "WORKSPACE_ALERT" => "workflow",
         "WORKSPACE_ALERT_EVENT" => event,

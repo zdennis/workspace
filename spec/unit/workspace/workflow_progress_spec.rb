@@ -295,6 +295,67 @@ RSpec.describe Workspace::WorkflowProgress do
     end
   end
 
+  describe "steps in a fan_out group" do
+    let(:failure) { {"cause" => "check", "exit_code" => 1, "code" => "check_failed"} }
+    let(:on_fail) { {"goto" => "lint", "max" => 2, "backoff" => 30} }
+
+    def grouped_run
+      definition = [{"id" => "lint", "group" => "checks", "produces" => [], "on_fail" => on_fail},
+        {"id" => "test", "group" => "checks", "produces" => [], "on_fail" => on_fail.merge("goto" => "test")}]
+      run_hash(:definition_steps => definition, "current" => "lint", "steps" => {
+        "lint" => {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z"}]},
+        "test" => {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:10:00.000Z"}]}
+      })
+    end
+
+    it "keeps each failing step's backoff and reason under its own step, so a sibling's wait leaves the first one's alone" do
+      first = progress.fail_step(grouped_run, failure, ctx: ctx)
+      second = progress.fail_step(first.thawed.merge("current" => "test"), failure, ctx: ctx)
+
+      expect(first.to_h).not_to have_key("backoff")
+      expect(first.to_h["reason"]).to be_nil
+      expect(second.backoff_for("lint")).to include("until" => "2026-11-10T12:00:30Z", "to" => "lint", "pane" => "%3", "identity" => "identity-of-wr_1")
+      expect(second.reason_for("lint")).to include("code" => "retry_backoff", "details" => include("step" => "lint"))
+      expect(second.backoff_for("test")).to include("to" => "test")
+      expect(second.reason_for("test")).to include("code" => "retry_backoff", "details" => include("step" => "test"))
+    end
+
+    it "starts the step's own waiting retry and clears only that step's reason" do
+      run = grouped_run
+      run["steps"]["lint"].merge!("state" => "failed", "backoff" => {"until" => "2026-11-10T11:59:00Z", "to" => "lint", "text" => "lint failed", "pane" => "%3", "identity" => "id-3"},
+        "reason" => {"code" => "retry_backoff"})
+      run["steps"]["test"]["reason"] = {"code" => "retry_backoff"}
+
+      retried = progress.start_retry(run, ctx: ctx, cause: "backoff_ended")
+
+      expect(retried.step("lint").to_h).not_to have_key("backoff")
+      expect(retried.step("lint").to_h["reason"]).to be_nil
+      expect(retried.reason_for("test")).to eq("code" => "retry_backoff")
+      expect(retried.pending_context_for("lint")).to eq(["lint failed"])
+      expect(retried.pending_context).to eq([])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "backoff_ended", context: nil, budgeted: true, retry_of: {"pane" => "%3", "identity" => "id-3", "text" => "lint failed"}}])
+    end
+
+    it "leaves no step's own retry or hold slot behind when the run ends, keeping its reason history" do
+      run = grouped_run
+      %w[lint test].each do |id|
+        run["steps"][id].merge!("backoff" => {"to" => id}, "budget_hold" => {}, "timeout_hold" => {}, "pause_hold" => {}, "continue_pending" => {},
+          "review_retry" => {}, "retry_of_pending" => {}, "dispatch_cause_pending" => {}, "pending_move" => {}, "pending_context" => ["x"],
+          "reason" => {"code" => "waiting_you"}, "reasons" => [{"code" => "waiting_you", "since" => "t", "until" => "u"}])
+      end
+
+      ended = progress.finish(run, "cancelled")
+
+      slots = Workspace::WorkflowRun::PER_STEP_KEYS - %w[reasons]
+      %w[lint test].each do |id|
+        expect(ended.step(id).to_h.keys & slots).to eq([])
+        expect(ended.step(id).to_h["reasons"]).to eq([{"code" => "waiting_you", "since" => "t", "until" => "u"}])
+        slots.each { |key| expect(Workspace::WorkflowRun.slot(ended.to_h, id, key)).to eq(ended.to_h[key]) }
+      end
+      expect(ended.to_h).to include("state" => "cancelled", "reason" => nil)
+    end
+  end
+
   describe "#start_retry" do
     let(:waiting) { {"until" => "2026-11-10T11:59:00Z", "to" => "plan", "context" => "fresh", "text" => "it failed", "pane" => "%3", "identity" => "id-3"} }
 

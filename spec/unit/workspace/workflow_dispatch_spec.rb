@@ -62,6 +62,45 @@ RSpec.describe Workspace::WorkflowDispatch do
       expect(change.events).to eq([["wr_1", "step_dispatching", {"step" => "plan", "attempt" => 1, "pane" => "%3", "cause" => "first", "retry_of" => nil}]])
     end
 
+    describe "a step in a fan_out group" do
+      def grouped(**overrides)
+        definition = {"id" => "flow", "steps" => [{"id" => "lint", "group" => "checks", "prompt" => "Lint.", "produces" => [], "uses" => ["devenv"]},
+          {"id" => "test", "group" => "checks", "prompt" => "Test.", "produces" => [], "uses" => ["devenv"]}]}
+        run_hash("current" => "test", "definition" => definition, "pending_context" => ["the run's"], "reason" => {"code" => "the run's"},
+          "steps" => {"lint" => {"state" => "running", "attempts" => [], "reason" => {"code" => "waiting_you"}, "pending_context" => ["for lint"]},
+                      "test" => {"state" => "pending", "attempts" => [], "pending_context" => ["for test"], "reason" => {"code" => "waiting_you"}}}, **overrides)
+      end
+
+      it "starts the attempt with the step's own pending context and clears only that step's slots" do
+        run = dispatch.dispatch(grouped, ctx: ctx, cause: "first")
+
+        expect(run.step("test").last_attempt.context).to eq(["for test"])
+        expect(run.step("test").to_h).to include("pending_context" => [], "reason" => nil)
+        expect(run.step("lint").to_h).to include("pending_context" => ["for lint"], "reason" => {"code" => "waiting_you"})
+        expect(run.to_h).to include("pending_context" => ["the run's"], "reason" => {"code" => "the run's"})
+      end
+
+      it "keeps a lock wait's reason and cause under the step that waits" do
+        resources = RecordingRunResources.new(acquired: {waiting: {name: "devenv", position: 1, total: 1, holder: {"run_id" => "wr_9", "kind" => "run"}}})
+        blocked = described_class.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record, guard: guard, clock: -> { now })
+
+        run = blocked.dispatch(grouped, ctx: ctx, cause: "next_step")
+
+        expect(run.reason_for("test")).to include("code" => "waiting_lock", "details" => include("step" => "test"))
+        expect(run.dispatch_cause_pending_for("test")).to eq("step" => "test", "cause" => "next_step")
+        expect(run.to_h).not_to have_key("dispatch_cause_pending")
+        expect(run.reason_for("lint")).to eq("code" => "waiting_you")
+      end
+
+      it "keeps a paused step's held dispatch under that step" do
+        run = dispatch.dispatch(grouped("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"}), ctx: ctx, cause: "loop")
+
+        expect(run.pause_hold_for("test")).to include("kind" => "attempt", "cause" => "loop")
+        expect(run.to_h).not_to have_key("pause_hold")
+        expect(run.pause_hold_for("lint")).to be_nil
+      end
+    end
+
     it "drops a park as moved_on, carrying its note into the attempt's context" do
       run = dispatch.dispatch(run_hash("parked" => {"id" => "p1", "note" => "mind the flake"}), ctx: ctx, cause: "first")
 

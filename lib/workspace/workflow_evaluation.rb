@@ -186,9 +186,9 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def evaluate_accepted(run, ctx:)
       work = WorkflowRun.from_h(run).thawed
-      guard = work.dig("reason", "details", "guard")
+      guard = WorkflowRun.slot_dig(work, work["current"], "reason", "details", "guard")
       step_state(work)["attempts"].last["guard_accepted"] = guard
-      work["reason"] = nil
+      WorkflowRun.slots(work, work["current"])["reason"] = nil
       work["state"] = "running"
       judge(work, ctx, nil, [], guard: false)
       WorkflowRun.from_h(work)
@@ -267,7 +267,7 @@ module Workspace
 
     # Whether the current attempt's line is the one a pause holds untyped ({WorkflowDispatch#deliver}).
     def held_delivery?(run, state)
-      hold = run["pause_hold"]
+      hold = WorkflowRun.slot(run, run["current"], "pause_hold")
       hold.is_a?(Hash) && hold["kind"] == "delivery" && hold["step"] == run["current"] && hold["attempt"] == state["attempts"].last&.fetch("n", nil)
     end
 
@@ -275,9 +275,9 @@ module Workspace
     # it, or the interrupt did not stop the turn), and the turn is decided as any other.
     def without_continue_marks(read)
       stored = read.to_h
-      return read unless stored.key?("continue_pending") || stored.dig("paused", "interrupt")
+      return read unless WorkflowRun.slot_key?(stored, stored["current"], "continue_pending") || stored.dig("paused", "interrupt")
       work = WorkflowRun.from_h(read).thawed
-      work.delete("continue_pending")
+      WorkflowRun.slots(work, work["current"]).delete("continue_pending")
       work["paused"].delete("interrupt") if work["paused"].is_a?(Hash)
       WorkflowRun.from_h(work)
     end
@@ -373,7 +373,7 @@ module Workspace
     # A turn whose start the daemon does not know (it restarted during the round) counts once it stopped at or after
     # the delivery (`delivered_at`); before a delivery is recorded it does not.
     def review_turn?(run, round, pane, turn_started, stopped_at)
-      return false if run["reason"] || !round.is_a?(Hash) || round["recompute"] || pane.nil? || round["pane"] != pane
+      return false if WorkflowRun.slot(run, run["current"], "reason") || !round.is_a?(Hash) || round["recompute"] || pane.nil? || round["pane"] != pane
       started = Time.iso8601(round["started_at"].to_s)
       return cleared_turn?(round, turn_started, stopped_at) if round["clear_from"]
       !(turn_started && turn_started < started) && !(stopped_at && stopped_at < started)
@@ -433,12 +433,13 @@ module Workspace
         run["state"] = "waiting"
         details = {"step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale}
         details["invalid"] = invalid if invalid.any?
-        run["reason"] = if background.any? || stated_running?(attempt, status_report)
+        slots = WorkflowRun.slots(run, step["id"])
+        slots["reason"] = if background.any? || stated_running?(attempt, status_report)
           # Every notification starts a new turn and a hold is hidden, so its `since` stays. A turn that says it is
           # still running, with no task listed, waits the same way: the next turn or the sweep decides it.
-          stop_reason(run["reason"], nil, "turn_ended_background", details.merge("tasks" => background)).merge("seen_at" => now_iso)
+          stop_reason(slots["reason"], nil, "turn_ended_background", details.merge("tasks" => background)).merge("seen_at" => now_iso)
         else
-          stop_reason(run["reason"], turn_started, "turn_ended_incomplete", details)
+          stop_reason(slots["reason"], turn_started, "turn_ended_incomplete", details)
         end
         return
       end
@@ -458,7 +459,8 @@ module Workspace
       state["state"] = "running"
       run["state"] = "waiting"
       details = {"step" => step["id"], "attempt" => attempt["n"], "state" => stated["state"], "detail" => stated["detail"].to_s}
-      run["reason"] = stop_reason(run["reason"], turn_started, "waiting_agent_input", details)
+      slots = WorkflowRun.slots(run, step["id"])
+      slots["reason"] = stop_reason(slots["reason"], turn_started, "waiting_agent_input", details)
       record_ask(run, attempt, stated)
       true
     end
@@ -512,7 +514,7 @@ module Workspace
       attempt["check"]["command"] = command if command
       state["state"] = "checking"
       run["state"] = "running"
-      run["reason"] = nil
+      WorkflowRun.slots(run, step["id"])["reason"] = nil
       ctx.check({"step" => step["id"], "attempt" => attempt["n"], "command" => command, "timeout" => step["status"]["timeout"], "log" => log,
                  "cwd" => run["worktree"], "role" => step["status"]["command"]})
     end
@@ -524,7 +526,7 @@ module Workspace
       (attempt["proofs"] ||= []) << pending.except(WorkflowRequire::FACTS_KEY).merge("started_at" => now_iso)
       state["state"] = "checking"
       run["state"] = "running"
-      run["reason"] = nil
+      WorkflowRun.slots(run, step["id"])["reason"] = nil
       {"step" => step["id"], "attempt" => attempt["n"], "cwd" => run["worktree"], "proof" => pending}
     end
 

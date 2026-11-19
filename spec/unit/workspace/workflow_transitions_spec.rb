@@ -485,6 +485,51 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe "a step that keeps its own slots (a fan_out group member)" do
+    def grouped(lint: {}, test: {}, **fields)
+      run = run_with(:steps => {"lint" => step("failed").merge(lint), "test" => step("running").merge(test)}, "state" => "waiting", "reason" => nil, **fields)
+      run["definition"]["steps"].each { |each| each["group"] = "checks" }
+      run
+    end
+
+    let(:waiting) { {"until" => (now + 120).iso8601, "to" => "lint", "pane" => "%4"} }
+
+    it "finds the step's own waiting retry for the tick and the resume" do
+      run = grouped(lint: {"backoff" => waiting, "reason" => {"code" => "retry_backoff"}})
+
+      expect(described_class.target_step(run)).to eq("lint")
+      expect(described_class.starts_attempt?(run, from: nil, pane: nil)).to be(true)
+      expect(described_class.backoff(run, now)).to include(state: :waiting, wait: 120, to: "lint")
+      expect(described_class.wakeable?(run, now + 120)).to eq(:backoff)
+    end
+
+    it "answers for a sibling from the sibling's own slots" do
+      run = grouped(lint: {"backoff" => waiting})
+
+      expect(described_class.target_step(run, step: "test")).to eq("lint")
+      expect(described_class.starts_attempt?(run, from: nil, pane: nil, step: "test")).to be(false)
+      expect(described_class.starts_attempt?(run, from: nil, pane: "%5", step: "test")).to be(true)
+    end
+
+    it "names a hold from the step's own slots, for the step asked about" do
+      run = grouped(lint: {"backoff" => waiting.merge("blocked" => "pane_gone")}, test: {"budget_hold" => {"context" => "fresh"}})
+
+      expect(described_class.held_reason(run)).to eq("retry_blocked")
+      expect(described_class.held_reason(run, step: "test")).to eq("budget_hold")
+      expect(described_class.starts_attempt?(run, from: nil, pane: nil, step: "test")).to be(true)
+      expect(described_class.held_reason(grouped(test: {"timeout_hold" => {}}), step: "test")).to eq("timeout_hold")
+      expect(described_class.held_reason(grouped(test: {"reason" => {"code" => "waiting_you"}}), step: "test")).to eq("reason")
+      expect(described_class.held_reason(grouped(test: {"reason" => {"code" => "waiting_you"}}))).to be_nil
+    end
+
+    it "takes a round hold from the step's own slots" do
+      run = grouped(test: {"budget_hold" => {"review_round" => 2}})
+
+      expect(described_class.round_hold?(run, step: "test")).to be(true)
+      expect(described_class.round_hold?(run)).to be(false)
+    end
+  end
+
   describe ".backoff" do
     let(:run) { run_with(:steps => {"a" => step("failed")}, "state" => "waiting", "backoff" => {"until" => (now + 120).iso8601, "to" => "a"}) }
 

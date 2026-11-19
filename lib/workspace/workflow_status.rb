@@ -368,7 +368,7 @@ module Workspace
     # cancel. Absent otherwise, and in runs stored before the sweep existed.
     def stuck_row(run, state, reason, shown, pane)
       return {} if reason || live_park?(run) || run.parked || state.state != "running"
-      return {} if hidden_reason?(run.reason, shown) || WorkflowEngine.delivery(state.last_attempt&.to_h, @clock.call) == :delivering
+      return {} if hidden_reason?(run.reason_for(run.current), shown) || WorkflowEngine.delivery(state.last_attempt&.to_h, @clock.call) == :delivering
       marks = WorkflowEngine.sweep_marks(run.to_h)
       recovered = marks["recovered"].is_a?(Hash) ? marks["recovered"] : {}
       open = marks["stalled"].is_a?(Hash) ? marks["stalled"].reject { |cause, _| recovered.key?(cause) } : {}
@@ -415,7 +415,7 @@ module Workspace
     # `reason` and `seen` as the attempt recorded them. Absent otherwise, and for runs stored before it was recorded.
     def refusal_row(run, state)
       refusal = state.last_attempt&.refusal
-      (run.continue_pending && refusal.is_a?(Hash)) ? {"refusal" => refusal} : {}
+      (run.continue_pending_for(run.current) && refusal.is_a?(Hash)) ? {"refusal" => refusal} : {}
     end
 
     # The review round of a `reviewing` step, as `current.review` shows it (absent for any other step, and for a
@@ -470,7 +470,7 @@ module Workspace
     # or with a round whose delivery failed or lapsed after its line may have been typed into its review pane
     # ({WorkflowTransitions.typed_round?}): reviewers may be at work there, and a prompt in it waits for a person.
     def round_live?(run)
-      return false unless run.reason.nil?
+      return false unless run.reason_for(run.current).nil?
       step = run.step(run.current)
       return false unless step
       step.review_live? || typed_round_live?(step)
@@ -495,7 +495,7 @@ module Workspace
     # The stored state, except that a hidden turn_ended_incomplete leaves the run running.
     def shown_state(run, reason, shown)
       return "waiting" if reason && run.state == "running"
-      return "running" if reason.nil? && hidden_reason?(run.reason, shown)
+      return "running" if reason.nil? && hidden_reason?(run.reason_for(run.current), shown)
       run.state
     end
 
@@ -530,7 +530,7 @@ module Workspace
     # is seen and no lock is asked for again, while it keeps what it holds.
     def daemon_warning(run, working, warnings)
       # A run that waits for a person needs no daemon until that person acts.
-      return unless working || run.parked || %w[waiting_lock retry_backoff].include?(run.reason&.dig("code"))
+      return unless working || run.parked || %w[waiting_lock retry_backoff].include?(run.reason_for(run.current)&.dig("code"))
       return if @panes.daemon_running?(run.workspace)
       warnings << "Workflow run #{run.id} will not move: '#{run.workspace}' has no agent daemon running. It keeps the locks it holds " \
         "and its place in a queue. Launch the workspace and run `workspace workflow resume #{run.id}`, or end it with " \
@@ -544,9 +544,9 @@ module Workspace
       return paused_reason(run) if run.paused
       case WorkflowEngine.parked(run.to_h, @clock.call)
       when :waiting then return waiting_on_person(run, pane, shown, warnings)
-      when :expired then return gate_waiting?(run) ? run.reason : park_timeout(run, pane)
+      when :expired then return gate_waiting?(run) ? run.reason_for(run.current) : park_timeout(run, pane)
       end
-      stored = run.reason
+      stored = run.reason_for(run.current)
       # A live round has no stored reason (`round_live?`), so there is nothing to fall back to when the pane shows nothing.
       return review_prompt(run, review_pane, shown, warnings) if review_pane
       return stored unless working
@@ -560,7 +560,7 @@ module Workspace
     # A pause comes before every other reason, a gate's `waiting_you` too; what it holds back shows as `details.held`.
     def paused_reason(run)
       pause = run.paused
-      held = run.reason
+      held = run.reason_for(run.current)
       {"code" => "paused", "since" => pause["since"], "by" => pause["by"], "text" => pause["text"]}.compact
         .merge(held ? {"details" => {"held" => held}} : {})
     end
@@ -682,10 +682,10 @@ module Workspace
       flags << "parked" if live_park?(run)
       flags << "paused" if run.paused
       # The agent is idle on a step that still reads as being worked on: its turn ended unseen.
-      if state.state == "running" && reason.nil? && !delivering && !hidden_reason?(run.reason, shown) && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
+      if state.state == "running" && reason.nil? && !delivering && !hidden_reason?(run.reason_for(run.current), shown) && WorkflowPanes.turn_over?(shown, @clock.call) && !within_idle_grace?(started)
         flags << "idle"
       end
-      flags << "background_work" if run.reason&.dig("code") == "turn_ended_background"
+      flags << "background_work" if run.reason_for(run.current)&.dig("code") == "turn_ended_background"
       flags
     end
 
@@ -739,7 +739,7 @@ module Workspace
       restart = NextAction.build("workflow resume", id, "--restart-step", needs: extra.call(here)) if self.class.restartable?(run.to_h, now: @clock.call)
       return [NextAction.build("workflow unpause", id), cancel] if reason["code"] == "paused"
       # A held retry would block again on the same pane: the resume has to name another one.
-      return [NextAction.build("workflow resume", id, needs: [NextAction.need("pane", "--pane")] + extra.call(here)), cancel] if run.backoff&.dig("blocked") && run.state == "waiting"
+      return [NextAction.build("workflow resume", id, needs: [NextAction.need("pane", "--pane")] + extra.call(here)), cancel] if run.backoff_for(run.current)&.dig("blocked") && run.state == "waiting"
       case reason["code"]
       when "waiting_lock"
         holder = reason.dig("details", "holder") || {}

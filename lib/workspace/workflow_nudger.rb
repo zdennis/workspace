@@ -188,7 +188,7 @@ module Workspace
     # Why a run that nothing wakes is left alone, as far as its stored state says.
     def skip_reason(run)
       return "paused" if run["paused"]
-      run.dig("reason", "code") || "not_due"
+      WorkflowRun.slot_dig(run, run["current"], "reason", "code") || "not_due"
     end
 
     # Forgets this workspace's runs that are no longer going, so the memory does not grow with every run seen.

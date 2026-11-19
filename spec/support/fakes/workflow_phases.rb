@@ -483,7 +483,7 @@ class RecordingAttemptRecord
     @calls = []
   end
 
-  def start(run:, attempt:, composed:)
+  def start(run:, attempt:, composed:, step_id: nil)
     @calls << [:start, Workspace::WorkflowRun.from_h(run).id, attempt["n"]]
     Workspace::WorkflowRun::Attempt.from_h(attempt.merge("prompt_sha256" => "sha256-of-#{composed["text"]}"))
   end
@@ -493,10 +493,10 @@ class RecordingAttemptRecord
     Workspace::WorkflowRun::Attempt.from_h(attempt.merge("outputs" => []))
   end
 
-  def abandon(run, outcome: "cancelled")
+  def abandon(run, outcome: "cancelled", step_id: nil)
     hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:abandon, hash["id"]]
-    last = hash["steps"][hash["current"]]["attempts"].last
+    last = hash["steps"][step_id || hash["current"]]["attempts"].last
     if last && !last["ended_at"]
       last["outcome"] = outcome
       last["ended_at"] = "2026-11-10T12:00:00Z"
@@ -504,7 +504,7 @@ class RecordingAttemptRecord
     Workspace::WorkflowRun.from_h(hash)
   end
 
-  def finish_round(run:, round:)
+  def finish_round(run:, round:, step_id: nil)
     @calls << [:finish_round, Workspace::WorkflowRun.from_h(run).id, round["round"]]
     {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => round["ended_at"] || "2026-11-10T12:00:00Z",
      "session" => nil, "agent" => nil, "usage" => @round_usage}.tap do |record|

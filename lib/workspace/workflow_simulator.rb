@@ -142,11 +142,11 @@ module Workspace
       here = [run.current, state.last_attempt&.n]
       return :unpause if run.paused && unpause?(script, marks)
       return :pause if !run.paused && state.state == "running" && here.last && script.attempt(*here).key?("pause") && !marks.include?([:pause, *here])
-      backoff = run.backoff
+      backoff = run.backoff_for(run.current)
       return :backoff if backoff.is_a?(Hash) && backoff["to"].is_a?(String) && !backoff["blocked"]
       return :gate if state.gate_waiting?
-      return :review if state.state == "reviewing" && run.reason.nil? && !run.parked && state.review.is_a?(Hash) && state.review["pane"] == REVIEW_PANE
-      :turn if state.state == "running" && run.reason.nil? && !run.parked
+      return :review if state.state == "reviewing" && run.reason_for(run.current).nil? && !run.parked && state.review.is_a?(Hash) && state.review["pane"] == REVIEW_PANE
+      :turn if state.state == "running" && run.reason_for(run.current).nil? && !run.parked
     end
 
     # Whether the attempt that paused the run says to unpause, once its agent's turn has ended.
@@ -160,8 +160,8 @@ module Workspace
       step = run.current
       case move
       when :backoff
-        clock.advance_to(Time.iso8601(run.backoff["until"]))
-        store.record_event(id, "simulated_wait", "step" => step, "until" => run.backoff["until"])
+        clock.advance_to(Time.iso8601(run.backoff_for(run.current)["until"]))
+        store.record_event(id, "simulated_wait", "step" => step, "until" => run.backoff_for(run.current)["until"])
         engine.tick(id, actor: "daemon")
       when :gate
         number = run.step(step).last_attempt.n
@@ -245,9 +245,9 @@ module Workspace
       elsif WorkflowRunStore::TERMINAL_STATES.include?(run.state) then run.state
       else "stopped"
       end
-      stopped = (outcome == "stopped") ? {"step" => run.current, "attempt" => run.step(run.current).last_attempt&.n, "reason" => run.reason&.dig("code")} : nil
+      stopped = (outcome == "stopped") ? {"step" => run.current, "attempt" => run.step(run.current).last_attempt&.n, "reason" => run.reason_for(run.current)&.dig("code")} : nil
       {"workflow" => data["id"], "inputs" => run.inputs, "outcome" => outcome, "stopped" => stopped, "capped" => capped, "max_actions" => @max_actions, "actions" => actions,
-       "run" => {"state" => run.state, "current" => run.current, "reason" => run.reason&.dig("code"), "loops" => run.loops},
+       "run" => {"state" => run.state, "current" => run.current, "reason" => run.reason_for(run.current)&.dig("code"), "loops" => run.loops},
        "steps" => data["steps"].map { |step| {"id" => step["id"], "state" => run.step(step["id"]).state, "attempts" => run.step(step["id"]).attempts.map { |each| attempt_row(each) }} },
        "budget" => WorkflowBudget.reading(run),
        "transitions" => events.map { |event| {"n" => event["n"], "at" => (Time.iso8601(event["ts"]) - START).round}.merge(event.except("n", "ts")) }}

@@ -295,7 +295,7 @@ module Workspace
         mark_stall(stored, cause, data)
         mark_recovery(stored, cause, "evaluated")
         evaluate(stored, ctx)
-        next :evaluated unless fail_if_incomplete && stored.dig("reason", "code") == "turn_ended_incomplete"
+        next :evaluated unless fail_if_incomplete && WorkflowRun.slot_dig(stored, stored["current"], "reason", "code") == "turn_ended_incomplete"
         fail_timed_out(stored, fail_if_incomplete["elapsed"], fail_if_incomplete["timeout"], ctx)
         :timed_out
       end
@@ -347,7 +347,7 @@ module Workspace
       return :busy unless run
       return outcome unless outcome == :started
       # The line has been typed (or refused) by now: say what became of it.
-      return :waiting_lock if run.reason&.dig("code") == "waiting_lock"
+      return :waiting_lock if run.reason_for(run.current)&.dig("code") == "waiting_lock"
       return :not_delivered if run.step(step).last_attempt.outcome == "not_delivered"
       @store.record_event(run_id, "step_recovered", "step" => step, "attempt" => attempt, "action" => "redelivered", "actor" => actor, "cause" => "redelivery", "from_state" => nil, "to_state" => nil)
       :redelivered
@@ -593,7 +593,7 @@ module Workspace
 
     # The run is on that step, attempt and round, in that pane, with no stop for a person.
     def same_round?(run, step, attempt, round, pane)
-      return false if run["current"] != step || run["reason"] || run["parked"]
+      return false if run["current"] != step || WorkflowRun.slot(run, run["current"], "reason") || run["parked"]
       state = step_state(run)
       found = state["review"]
       state["state"] == "reviewing" && state["attempts"].last&.fetch("n", nil) == attempt && found.is_a?(Hash) &&
@@ -646,7 +646,7 @@ module Workspace
     def continue_ready(run_id)
       return nil unless @panes
       run = @store.run(run_id).to_h
-      mark = run["continue_pending"]
+      mark = WorkflowRun.slot(run, run["current"], "continue_pending")
       return nil if run["paused"] || WorkflowTransitions.continue_state(run, @clock.call) != :due
       pid = @panes.pane_pid(run["workspace"], mark["pane"])
       # tmux that lists nothing proves nothing: the mark waits, for the gone-pane path or its expiry to clear.
@@ -662,8 +662,8 @@ module Workspace
     # mark to type the line for, :dropped for a stale mark, or nil when nothing changed (the pane not yet idle).
     def take_continue(run, ready)
       verdict, mark = ready
-      return nil unless verdict && run["continue_pending"] == mark
-      run.delete("continue_pending")
+      return nil unless verdict && WorkflowRun.slot(run, run["current"], "continue_pending") == mark
+      WorkflowRun.slots(run, run["current"]).delete("continue_pending")
       how = (verdict == :stale) ? "pane_replaced" : "pane_idle"
       @change.event(run, "continue_pending_ended", {"step" => mark["step"], "attempt" => mark["attempt"], "pane" => mark["pane"], "how" => how})
       (verdict == :stale) ? :dropped : mark
@@ -672,7 +672,7 @@ module Workspace
     # A pending continue line whose pane never proved idle within {WorkflowTransitions::PARK_SECONDS}: the mark goes
     # and nothing is typed; a step that stays stuck is the sweep's stall to handle.
     def expire_continue(run)
-      mark = run.delete("continue_pending")
+      mark = WorkflowRun.slots(run, run["current"]).delete("continue_pending")
       @change.event(run, "continue_pending_ended", {"step" => mark["step"], "attempt" => mark["attempt"], "pane" => mark["pane"], "how" => "expired"})
     end
 
@@ -703,7 +703,7 @@ module Workspace
 
     # The round the sweep read is still the run's, delivered and undecided, in the pane it read.
     def round_target?(run, step, attempt, round, pane)
-      return false if run["parked"] || run["reason"] || run["current"] != step
+      return false if run["parked"] || WorkflowRun.slot(run, run["current"], "reason") || run["current"] != step
       state = step_state(run)
       found = state["review"]
       state["state"] == "reviewing" && state["attempts"].last&.fetch("n", nil) == attempt && found.is_a?(Hash) &&
@@ -986,9 +986,9 @@ module Workspace
     # No turn ended, so the step is neither passed nor checked: the hold only becomes the stop it was hiding,
     # with a `since` of its own.
     def expire_background(run)
-      held = run["reason"]["details"]
+      held = WorkflowRun.slot(run, run["current"], "reason")["details"]
       details = held.slice("step", "attempt", "missing", "stale", "invalid").merge("background_tasks" => held["tasks"])
-      run["reason"] = {"code" => "turn_ended_incomplete", "since" => now_iso, "details" => details}
+      WorkflowRun.slots(run, run["current"])["reason"] = {"code" => "turn_ended_incomplete", "since" => now_iso, "details" => details}
     end
   end
 end

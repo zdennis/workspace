@@ -81,6 +81,14 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(attempt["evidence"].map { |e| e["name"] }).to eq(%w[plan.1.prompt.md plan.1.out.0.plan.md])
     end
 
+    it "names the prompt copy for the step given, a sibling's own, not the run's current step" do
+      sibling = File.join(run["artifacts_dir"], "steps", "test.1.prompt.md")
+      File.write(sibling, "t")
+      attempt = record.start(run: run, attempt: {"n" => 1, "prompt_file" => sibling}, composed: {"text" => "t", "packs" => []}, step_id: "test").thawed
+
+      expect(attempt["evidence"].map { |e| [e["name"], e["sha256"]] }).to eq([["test.1.prompt.md", Digest::SHA256.hexdigest("t")]])
+    end
+
     describe "a review round's verdicts" do
       let(:verdict) { "reviewer: skeptic\nverdict: approve\nrevision: r1\n" }
       let(:rows) do
@@ -306,6 +314,52 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
 
       expect(record.abandon(run)).to eq(Workspace::WorkflowRun.from_h(run))
       expect(record.abandon({})).to eq(Workspace::WorkflowRun.from_h({}))
+    end
+  end
+
+  describe "a sibling step of a fan_out group" do
+    let(:now) { [Time.utc(2026, 10, 4, 12, 0, 0)] }
+    subject(:record) { described_class.new(guard: guard, clock: -> { now.first }) }
+    let(:run) do
+      {"worktree" => @dir, "artifacts_dir" => File.join(@dir, "art"), "current" => "lint", "reason" => nil,
+       "definition" => {"steps" => [{"id" => "lint", "group" => "checks", "produces" => []}, {"id" => "test", "group" => "checks", "produces" => []}]},
+       "steps" => {"lint" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => "2026-10-04T11:00:00Z"}]},
+                   "test" => {"state" => "running", "attempts" => [{"n" => 2, "started_at" => "2026-10-04T11:30:00Z"}]}}}
+    end
+
+    it "keeps the second step's reason on its own open attempt, leaving the first step's attempt alone" do
+      run["steps"]["test"]["reason"] = {"code" => "waiting_agent_input", "since" => "2026-10-04T12:00:00Z"}
+
+      kept = record.reasons(run: run, step_id: "test")
+
+      expect(kept.step("test").last_attempt.reasons).to eq([{"code" => "waiting_agent_input", "since" => "2026-10-04T12:00:00Z", "until" => nil}])
+      expect(kept.step("lint").last_attempt.reasons).to be_nil
+      expect(kept.to_h).not_to have_key("reasons")
+    end
+
+    it "keeps a reason with no open attempt in the step's own reasons list, naming the step" do
+      run["steps"]["test"]["attempts"].last["ended_at"] = "2026-10-04T11:50:00Z"
+      run["steps"]["test"]["reason"] = {"code" => "waiting_lock", "since" => "2026-10-04T12:00:00Z"}
+
+      kept = record.reasons(run: run, step_id: "test")
+
+      expect(kept.step("test").to_h["reasons"]).to eq([{"code" => "waiting_lock", "since" => "2026-10-04T12:00:00Z", "until" => nil, "step" => "test"}])
+      expect(kept.to_h).not_to have_key("reasons")
+      now[0] += 60
+      run.replace(kept.thawed)
+      run["steps"]["test"]["reason"] = nil
+      closed = record.reasons(run: run, step_id: "test")
+      expect(closed.step("test").to_h["reasons"].last).to include("until" => "2026-10-04T12:01:00Z")
+    end
+
+    it "tells and closes the sibling's open attempt, not the current step's" do
+      expect(record.open_attempt(run, "test")).to eq(["test", 2])
+      expect(record.open_attempt(run)).to eq(["lint", 1])
+
+      closed = record.abandon(run, outcome: "interrupted", step_id: "test")
+
+      expect(closed.step("test").last_attempt.to_h).to include("outcome" => "interrupted", "ended_at" => "2026-10-04T12:00:00Z")
+      expect(closed.step("lint").last_attempt.to_h).not_to have_key("ended_at")
     end
   end
 

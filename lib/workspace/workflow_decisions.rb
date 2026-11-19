@@ -86,8 +86,8 @@ module Workspace
         gate.merge!("state" => "approved", "at" => now_iso, "note" => note)
         gate["file"] = file if file
         event(stored, "gate_approved", with_note({"step" => stored["current"]}, note).merge(file ? {"sha256" => file["sha256"]} : {}))
-        stored["pending_context"] << "The #{stored["current"]} step was approved with this note: #{note}" if note
-        stored["pending_context"] << "The approved note is #{file["path"]}, sha256 #{file["sha256"]}." if file
+        WorkflowRun.add_context(stored, stored["current"], "The #{stored["current"]} step was approved with this note: #{note}") if note
+        WorkflowRun.add_context(stored, stored["current"], "The approved note is #{file["path"]}, sha256 #{file["sha256"]}.") if file
         @progress.advance(stored, ctx: ctx)
       end
     end
@@ -121,7 +121,7 @@ module Workspace
         spend_limits(stored, extra_tokens, extra_seconds)
         gate.merge!("state" => "rejected", "at" => now_iso, "note" => note, "attempt" => step_state(stored)["attempts"].last&.fetch("n", nil))
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
-        stored["pending_context"] << "The #{stored["current"]} step was rejected at its gate: #{note}"
+        WorkflowRun.add_context(stored, target, "The #{stored["current"]} step was rejected at its gate: #{note}")
         stored["current"] = target
         @dispatch.dispatch(stored, ctx: ctx, cause: "gate_rejected")
       end
@@ -270,7 +270,7 @@ module Workspace
         stored = resumed.run.thawed
         unchanged = resumed.unchanged
         follow = ctx
-        stored["pending_context"] << WorkflowRun.resume_note(parked["note"]) if unchanged && parked["note"]
+        WorkflowRun.add_context(stored, stored["current"], WorkflowRun.resume_note(parked["note"])) if unchanged && parked["note"]
         event(stored, "resume_parked_ended", {"step" => stored["current"], "how" => unchanged ? "unchanged" : "released"}
           .merge(unchanged ? {"detail" => unchanged} : {}))
         if ctx.delivery
@@ -301,13 +301,13 @@ module Workspace
           next WorkflowRun.from_h(stored)
         end
         target = park_target(stored)
-        case stored.dig("reason", "code")
+        case slot_dig(stored, "reason", "code")
         when "waiting_lock" then @dispatch.release(stored)
-        when "failed_check" then stored["pending_context"].unshift(last_failure(stored))
+        when "failed_check" then WorkflowRun.add_context(stored, stored["current"], last_failure(stored), first: true)
         end
         drop_park(stored, "failed")
         stored["state"] = "waiting"
-        stored["reason"] = {"code" => gone ? "pane_gone" : "waiting_you", "since" => now_iso,
+        slots(stored)["reason"] = {"code" => gone ? "pane_gone" : "waiting_you", "since" => now_iso,
                             "details" => {"kind" => "dispatch", "step" => stored["current"], "pane" => target, "workspace" => stored["workspace"], "error" => code, "message" => message}}
         WorkflowRun.from_h(stored)
       end
@@ -472,10 +472,10 @@ module Workspace
       run = @change.call(run_id, actor: actor, cause: "unpause") do |read, ctx|
         follow = ctx
         refuse_not_paused(read.to_h)
-        mark = read.to_h.dig("paused", "interrupt") || read.to_h["continue_pending"]
+        mark = read.to_h.dig("paused", "interrupt") || read.continue_pending_for(read.current)
         stored = read.drop_paused.thawed
-        stored.delete("continue_pending")
-        hold = stored.delete("pause_hold")
+        slots(stored).delete("continue_pending")
+        hold = slots(stored).delete("pause_hold")
         held = hold.is_a?(Hash) ? hold["kind"] : nil
         action = unpause_action(stored, hold.is_a?(Hash) ? hold : nil, mark).to_s
         event(stored, "run_unpaused", {"step" => stored["current"], "action" => action, "held" => held}.compact)
@@ -641,13 +641,13 @@ module Workspace
       when :pane_gone
         pane = bound_pane(run)
         run["state"] = "waiting"
-        run["reason"] = {"code" => "pane_gone", "since" => now_iso,
+        slots(run)["reason"] = {"code" => "pane_gone", "since" => now_iso,
                          "details" => {"kind" => "dispatch", "step" => run["current"], "pane" => pane, "workspace" => run["workspace"],
                                        "error" => "pane_gone", "message" => "pane #{pane} is gone"}}
       when :continue_pending
-        run["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
+        slots(run)["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
       when :evaluate
-        run["reason"] = nil
+        slots(run)["reason"] = nil
         evaluate(run, ctx)
       end
     end
@@ -678,7 +678,7 @@ module Workspace
 
     def refuse_not_guard_stopped(run)
       return if WorkflowTransitions.guard_acceptable?(run)
-      reason = run["reason"].is_a?(Hash) ? run["reason"] : {}
+      reason = slot(run, "reason").is_a?(Hash) ? slot(run, "reason") : {}
       raise Workspace::Error.new("Run #{run["id"]} is not stopped by a guard (step #{run["current"]}, reason #{reason["code"] || "none"}), so there is no guard stop to accept.",
         code: "guard_not_stopped", details: {"run_id" => run["id"], "step" => run["current"], "reason" => reason["code"], "guard" => reason.dig("details", "guard")})
     end
@@ -713,8 +713,8 @@ module Workspace
       event(stored, "guard_overridden", {"step" => step, "attempt" => step_state(stored)["attempts"].last&.fetch("n", nil), "guard" => guard,
                                          "old_base_sha" => old_sha, "new_base_sha" => stored["base_sha"], "note" => note,
                                          "pane" => caller_pane, "retry" => guard_retry})
-      stored["pending_context"] << WorkflowTransitions.guard_accepted_line(guard, step, stored["base_sha"])
-      stored["pending_context"] << WorkflowRun.resume_note(note)
+      WorkflowRun.add_context(stored, stored["current"], WorkflowTransitions.guard_accepted_line(guard, step, stored["base_sha"]))
+      WorkflowRun.add_context(stored, stored["current"], WorkflowRun.resume_note(note))
       if guard_retry
         event(stored, "run_resumed", "from" => step, "accept_guard" => guard)
         dispatch(stored, ctx, "resume", budgeted: true)
@@ -760,8 +760,8 @@ module Workspace
       stored["steps"].each_value { |each| each.delete("redelivery_pending") }
       rebind(stored, pane) if moving
       drop_park(stored, "taken_over")
-      stored["pending_context"].unshift(interrupted_brief(stored, closed))
-      stored["pending_context"] << WorkflowRun.resume_note(note) if note
+      WorkflowRun.add_context(stored, stored["current"], interrupted_brief(stored, closed), first: true)
+      WorkflowRun.add_context(stored, stored["current"], WorkflowRun.resume_note(note)) if note
       count_reboot_recovery(stored, reboot_recovery) if reboot_recovery
       event(stored, "run_resumed", {"step" => step, "state" => "running", "restart_step" => true}.merge(retry_n ? {"infra_retry" => retry_n} : {}))
       dispatch(stored, ctx, "resume", context: "fresh", budgeted: true, retry_of: {"attempt" => n})
@@ -952,26 +952,26 @@ module Workspace
       drop_park(stored, "taken_over")
       # Dropping a park replaces the run's nested Hashes.
       state = step_state(stored)
-      stored["pending_context"] << WorkflowRun.resume_note(note) if note
-      held = stored.delete("budget_hold")
-      time_held = stored.delete("timeout_hold")
+      WorkflowRun.add_context(stored, stored["current"], WorkflowRun.resume_note(note)) if note
+      held = slots(stored).delete("budget_hold")
+      time_held = slots(stored).delete("timeout_hold")
       held ||= time_held
       drop_retry_text(stored, held) if held && from
       if held&.key?("review_round") && !from
         # The held round starts now, never the author: the release goes through the round's one start.
         event(stored, "run_resumed", "step" => stored["current"], "budget" => "released", "review_round" => held["review_round"])
-        stored["reason"] = nil
+        slots(stored)["reason"] = nil
         stored.replace(@progress.restart_review(stored, ctx: ctx).thawed)
         return nil
       end
       if held && !from
         event(stored, "run_resumed", "step" => stored["current"], "budget" => "released")
-        stored["reason"] = nil
+        slots(stored)["reason"] = nil
         dispatch(stored, ctx, "resume", context: held["context"], budgeted: budget, retry_of: held.key?("retry_of") ? held.slice("text").merge("attempt" => held["retry_of"]) : nil)
         return nil
       end
       # A resume skips the wait of a retry; `--from` goes elsewhere and drops it.
-      waiting_retry = stored.delete("backoff")
+      waiting_retry = slots(stored).delete("backoff")
       # A stored wait that names no step to go back to is dropped; the failed step is resumed as it stands.
       waiting_retry = nil unless waiting_retry.is_a?(Hash) && waiting_retry["to"].is_a?(String)
       if waiting_retry && !from
@@ -980,10 +980,10 @@ module Workspace
         return held_retry_sentence(stored)
       end
       # The retry a rejection stopped by a limit kept: started by a plain resume, dropped by `--from`.
-      again = stored.delete("review_retry")
+      again = slots(stored).delete("review_retry")
       if from
         # So is a review retry that waited for a lock, with the text it put in the pending context.
-        waited = stored.delete("retry_of_pending")
+        waited = slots(stored).delete("retry_of_pending")
         drop_retry_text(stored, waited) if waited.is_a?(Hash)
         # The round under way ends first, its window closed, so no reviewer goes on judging work the run left; so
         # does the window a rejected round kept, when the run goes to another step.
@@ -995,13 +995,13 @@ module Workspace
         return nil
       end
       event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"])
-      stored["pending_context"].unshift(last_failure(stored)) if state["state"] == "failed" && stored.dig("reason", "code") == "failed_check"
+      WorkflowRun.add_context(stored, stored["current"], last_failure(stored), first: true) if state["state"] == "failed" && slot_dig(stored, "reason", "code") == "failed_check"
       case state["state"]
       when "running"
         if pane
           dispatch(stored, ctx, "resume", budgeted: budget)
         else
-          stored["reason"] = nil
+          slots(stored)["reason"] = nil
           evaluate(stored, ctx)
         end
       when "checking" then evaluate(stored, ctx)
@@ -1011,7 +1011,7 @@ module Workspace
       else
         # A step a review rejected starts the retry the rejection kept: its verdicts and write-ups, `retry_of` it.
         if again.is_a?(Hash) && again["step"] == stored["current"] && again["text"].is_a?(String)
-          stored["pending_context"] << again["text"]
+          WorkflowRun.add_context(stored, stored["current"], again["text"])
           dispatch(stored, ctx, "resume", context: again["context"], budgeted: budget, retry_of: again.slice("text", "attempt"))
         else
           dispatch(stored, ctx, "resume", budgeted: budget)
@@ -1022,8 +1022,8 @@ module Workspace
 
     # `--from` goes elsewhere: the text that told the held step why it was sent back is not for the step named.
     def drop_retry_text(run, hold)
-      index = hold["text"].is_a?(String) ? run["pending_context"].index(hold["text"]) : nil
-      run["pending_context"].delete_at(index) if index
+      index = hold["text"].is_a?(String) ? slot(run, "pending_context").index(hold["text"]) : nil
+      slot(run, "pending_context").delete_at(index) if index
     end
 
     # Refuses with `attempts_spent` when the allowance is used up and +extra+ is under made minus allowed plus one, then with
@@ -1064,7 +1064,7 @@ module Workspace
 
     # The hold a resume ends: the token budget's, else the timeout's (both hold the same record).
     def hold_of(run)
-      [run["budget_hold"], run["timeout_hold"]].find { |hold| hold.is_a?(Hash) }
+      [slot(run, "budget_hold"), slot(run, "timeout_hold")].find { |hold| hold.is_a?(Hash) }
     end
 
     # A run stopped by `no_commit` with no base_sha compares every guarded step to a nil base, so any attempt, from
@@ -1159,7 +1159,7 @@ module Workspace
       # A held review round types into its own review window, not the author's pane.
       return nil if WorkflowTransitions.round_hold?(stored)
       return held_attempt_pane(stored, pane) if hold_of(stored)
-      waiting = stored["backoff"]
+      waiting = slot(stored, "backoff")
       return nil if from || !(waiting.is_a?(Hash) && waiting["to"].is_a?(String))
       check_pane(pane, stored["id"]) if pane && @panes.run_on(pane) != stored["id"]
       problem = @progress.retry_pane_problem(stored, waiting, pane: pane, proven: !pane.nil?)
@@ -1170,11 +1170,11 @@ module Workspace
 
     # Why a resume that skipped the wait still started nothing; nil when the retry started.
     def held_retry_sentence(run)
-      return nil unless run.dig("backoff", "blocked")
-      run.dig("reason", "details", "message").to_s.sub(/\.\z/, "")
+      return nil unless slot_dig(run, "backoff", "blocked")
+      slot_dig(run, "reason", "details", "message").to_s.sub(/\.\z/, "")
     end
 
-    def last_failure(run) = "The last attempt of this step failed: #{WorkflowTransitions.failure_text(run["reason"]["details"])}."
+    def last_failure(run) = "The last attempt of this step failed: #{WorkflowTransitions.failure_text(slot(run, "reason")["details"])}."
 
     # Why {#resume} does nothing for the step as it stands; nil when it acts.
     def left_alone(run, state, pane, turn_over) = WorkflowTransitions.left_alone(run, state, pane, turn_over, @clock.call, -> { bound_pane(run) }, alive: @holder_alive)
@@ -1252,6 +1252,12 @@ module Workspace
     def bound_pane(run) = @panes.pane_of(run["id"]) || run["pane"]
     def step_ids(run) = run["definition"]["steps"].map { |step| step["id"] }
     def step_state(run) = run["steps"].fetch(run["current"])
+    # The Hash the current step's {WorkflowRun::PER_STEP_KEYS} slots are written into ({WorkflowRun.slots}).
+    def slots(run) = WorkflowRun.slots(run, run["current"])
+    # One of the current step's slots ({WorkflowRun.slot}).
+    def slot(run, key) = WorkflowRun.slot(run, run["current"], key)
+    # {#slot} dug into ({WorkflowRun.slot_dig}).
+    def slot_dig(run, key, *path) = WorkflowRun.slot_dig(run, run["current"], key, *path)
     def now_iso = @clock.call.utc.iso8601
   end
 end

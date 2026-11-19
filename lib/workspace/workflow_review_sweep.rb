@@ -73,7 +73,7 @@ module Workspace
       else
         "the review of step #{run.current}"
       end
-      WorkflowSweepRows.row(run, "nothing", reason: "held", message: "#{what} stopped (#{run.reason&.dig("code")}); a person decides it")
+      WorkflowSweepRows.row(run, "nothing", reason: "held", message: "#{what} stopped (#{run.reason_for(run.current)&.dig("code")}); a person decides it")
     end
 
     # The end of a review round was being judged and its process died before it reported back: not a stall. The
@@ -103,7 +103,7 @@ module Workspace
         return WorkflowSweepRows.row(run, "nothing", reason: "reviewing", message: "step #{run.current} is being reviewed")
       end
       what = "review round #{round["round"]} of step #{run.current}"
-      if run.reason
+      if run.reason_for(run.current)
         return WorkflowSweepRows.row(run, "nothing", reason: "waiting_lock",
           message: "#{what} waits for a lock its review.uses names; it starts once the lock is free")
       end

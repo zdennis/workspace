@@ -193,7 +193,7 @@ module Workspace
     # @param cause [String] why the retry starts, written on its `step_dispatching`: `backoff_ended`, or `resume` when a person skips the wait
     # @return [WorkflowRun] the run afterwards
     def start_retry(run, waiting = nil, ctx:, cause:, proven: false, budgeted: true)
-      over(run) { |work| retry_in(work, waiting || work.delete("backoff"), ctx, proven, budgeted, cause) }
+      over(run) { |work| retry_in(work, waiting || WorkflowRun.slots(work, work["current"]).delete("backoff"), ctx, proven, budgeted, cause) }
     end
 
     # Keeps a retry from starting without spending it: the wait is kept, marked `blocked` so a tick or the
@@ -253,7 +253,7 @@ module Workspace
     def override(run, ctx)
       state = step_state(run)
       state["attempts"].last["outcome"] = "overridden"
-      run["reason"] = nil
+      WorkflowRun.slots(run, run["current"])["reason"] = nil
       return passed(run, ctx) unless WorkflowDefinition.review(step_def(run))
       state["state"] = "reviewing"
       begin_round(run, ctx)
@@ -273,7 +273,7 @@ module Workspace
       details = {"kind" => "gate", "step" => run["current"], "artifacts" => step_def(run)["produces"].map { |file| File.join(run["artifacts_dir"], file) }}
       summary = state["attempts"].last.dig("review_outcome", "summary")
       details["summary"] = summary if summary.is_a?(String)
-      run["reason"] = reason("waiting_you", details)
+      WorkflowRun.slots(run, run["current"])["reason"] = reason("waiting_you", details)
       event(run, "gate_waiting", "step" => run["current"])
     end
 
@@ -305,7 +305,7 @@ module Workspace
       @rounds.hold(state["review"])
       state["review"]["snapshot"] = @guard.round_snapshot(run["worktree"], base: run) if @guard
       run["state"] = "running"
-      run["reason"] = nil
+      WorkflowRun.slots(run, run["current"])["reason"] = nil
       attempt = state["attempts"].last["n"]
       event(run, "review_started", "step" => run["current"], "attempt" => attempt, "round" => round)
       opened = @review_tally&.open_round(run: run, round: round)
@@ -345,7 +345,7 @@ module Workspace
     end
 
     # What kept a held round: the pause ({WorkflowDispatch#hold_paused}, which stores no reason), else the reason.
-    def held_code(run) = run["paused"] ? "paused" : run.dig("reason", "code")
+    def held_code(run) = run["paused"] ? "paused" : WorkflowRun.slot_dig(run, run["current"], "reason", "code")
 
     # A round a hold kept from starting (its `held` mark, set by {#hold_round}): it never ran, so it has no record,
     # usage, review_ended or window of its own. Not read from `delivery: null`, which a delivered round has too.
@@ -428,7 +428,7 @@ module Workspace
         again = @rejection.retry_for(run, attempt: attempt["n"], round: round["round"], decided: decided, reviews: reviews, max_rounds: limit["max_rounds"])
         if limit["limit"]
           # Kept for the resume that goes on (`--extra-attempts`): it starts the retry this rejection would have.
-          run["review_retry"] = again
+          WorkflowRun.slots(run, run["current"])["review_retry"] = again
           return stop_review(run, "review_rejected", details.merge("reviews" => reviews).merge(limit))
         end
         adopt(run, @rejection.start(run, again, rounds: limit, ctx: ctx))
@@ -474,7 +474,7 @@ module Workspace
         end
         state["review_rounds"] = round["round"]
         state["review"] = round.except("no_change", "held").merge("accept_revision" => true)
-        run["reason"] = nil
+        WorkflowRun.slots(run, run["current"])["reason"] = nil
         return deliver_again(run, ctx, 0, record: false)
       end
       # A rerun a pause held (its part that ran already recorded and spent) is delivered as the same round, never
@@ -489,7 +489,7 @@ module Workspace
         state.delete("review")
         return begin_round(run, ctx)
       end
-      stopped = run["reason"] && run.dig("reason", "code") != "waiting_lock"
+      stopped = WorkflowRun.slot(run, run["current"], "reason") && WorkflowRun.slot_dig(run, run["current"], "reason", "code") != "waiting_lock"
       unless round.is_a?(Hash) && !stopped && round["ended_at"].nil?
         end_round_in(run, "resumed", ctx, false)
         return begin_round(run, ctx)
@@ -532,7 +532,7 @@ module Workspace
       state["review"] = round
       @rounds.hold(round)
       run["state"] = "running"
-      run["reason"] = nil
+      WorkflowRun.slots(run, run["current"])["reason"] = nil
       details = {"step" => run["current"], "attempt" => state["attempts"].last["n"], "round" => round["round"]}
       event(run, "review_started", details.merge("again" => true))
       ctx.review(details.merge("revision" => round["revision"]).compact)
@@ -565,7 +565,7 @@ module Workspace
     def stop_review(run, code, details)
       @dispatch.release(run)
       run["state"] = "waiting"
-      run["reason"] = reason(code, details)
+      WorkflowRun.slots(run, run["current"])["reason"] = reason(code, details)
     end
 
     def go_on(run, ctx)
@@ -600,6 +600,8 @@ module Workspace
       run.delete("retry_of_pending")
       run.delete("dispatch_cause_pending")
       ctx.close_review({"workspace" => run["workspace"], "step" => nil, "round" => nil, "pane" => nil}) if ctx && reviewed
+      # A step's own slots go too, from every step, so an ended run reads as no step mid-retry or held.
+      WorkflowRun.drop_step_slots(run)
       run["state"] = state
       run["reason"] = nil
       run["ended_at"] = now_iso
@@ -626,7 +628,7 @@ module Workspace
         wait = next_move[:wait]
         event(run, "step_looped", {"from" => step["id"], "to" => next_move[:to], "count" => next_move[:count]}.merge(wait ? {"backoff" => wait} : {}))
         return wait_to_retry(run, step, on_fail, text, wait, attempt) if wait
-        run["pending_context"] << text
+        WorkflowRun.add_context(run, next_move[:to], text)
         run["current"] = next_move[:to]
         return dispatch(run, ctx, "loop", {context: on_fail.is_a?(Hash) ? on_fail["context"] : nil, retry_of: {"text" => text}})
       end
@@ -638,7 +640,7 @@ module Workspace
         details["limit"] = "step"
         details["limit_step"] = next_move[:step]
       end
-      run["reason"] = reason("failed_check", details.merge(failure))
+      WorkflowRun.slots(run, step["id"])["reason"] = reason("failed_check", details.merge(failure))
     end
 
     # No attempt, pane binding or lock is held while the retry waits: the run reads `waiting` with the reason
@@ -649,9 +651,10 @@ module Workspace
       identity = @panes.identity(run["id"])
       @panes.unbind(run["id"])
       time = (@clock.call + wait).utc.iso8601
-      run["backoff"] = {"until" => time, "to" => on_fail["goto"], "context" => on_fail["context"], "text" => text, "pane" => pane, "identity" => identity}.compact
+      slots = WorkflowRun.slots(run, step["id"])
+      slots["backoff"] = {"until" => time, "to" => on_fail["goto"], "context" => on_fail["context"], "text" => text, "pane" => pane, "identity" => identity}.compact
       run["state"] = "waiting"
-      run["reason"] = reason("retry_backoff", {"step" => step["id"], "attempt" => attempt["n"], "to" => on_fail["goto"], "until" => time,
+      slots["reason"] = reason("retry_backoff", {"step" => step["id"], "attempt" => attempt["n"], "to" => on_fail["goto"], "until" => time,
                                                "seconds" => wait, "loops" => run["loops"]})
     end
 
@@ -659,20 +662,22 @@ module Workspace
       problem = retry_pane_problem(run, waiting, proven: proven)
       return hold_in(run, waiting, problem, bound_pane(run)) if problem
       to = waiting["to"]
-      run["pending_context"] << waiting["text"] if waiting["text"].is_a?(String)
-      event(run, "step_retry_started", "from" => run["current"], "to" => to)
+      from = run["current"]
+      WorkflowRun.add_context(run, to, waiting["text"]) if waiting["text"].is_a?(String)
+      event(run, "step_retry_started", "from" => from, "to" => to)
       run["current"] = to
-      run["reason"] = nil
+      WorkflowRun.slots(run, from)["reason"] = nil
       dispatch(run, ctx, cause, {context: waiting["context"], budgeted: budgeted, retry_of: waiting.slice("pane", "identity", "text")})
     end
 
     def hold_in(run, waiting, problem, pane)
-      held = run["backoff"]
-      same = held.is_a?(Hash) && held["blocked"] == problem[:code] && run.dig("reason", "details", "pane") == pane &&
-        run.dig("reason", "details", "error") == problem[:code]
+      slots = WorkflowRun.slots(run, run["current"])
+      held = slots["backoff"]
+      same = held.is_a?(Hash) && held["blocked"] == problem[:code] && slots.dig("reason", "details", "pane") == pane &&
+        slots.dig("reason", "details", "error") == problem[:code]
       return if same
-      run["backoff"] = waiting.merge("blocked" => problem[:code])
-      run["reason"] = reason((problem[:code] == "pane_gone") ? "pane_gone" : "waiting_you",
+      slots["backoff"] = waiting.merge("blocked" => problem[:code])
+      slots["reason"] = reason((problem[:code] == "pane_gone") ? "pane_gone" : "waiting_you",
         {"kind" => "dispatch", "step" => run["current"], "pane" => pane, "workspace" => run["workspace"], "error" => problem[:code],
          "message" => "the retry of step #{waiting["to"]} was not started: #{problem[:message]}. Or cancel the run."})
       event(run, "step_retry_blocked", "from" => run["current"], "to" => waiting["to"], "code" => problem[:code])

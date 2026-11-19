@@ -219,7 +219,7 @@ module Workspace
       late = time_holds?(work)
       return nil unless spent || late
       hold(work, {"review_round" => round}, budget: spent, time: late)
-      work["reason"]["details"]["review_round"] = round
+      slot(work, "reason")["details"]["review_round"] = round
       WorkflowRun.from_h(work)
     end
 
@@ -258,13 +258,13 @@ module Workspace
         acquire(work, {"id" => work["current"], "uses" => review["uses"]}, nil)
       rescue Workspace::Error, SystemCallError => e
         work["state"] = "waiting"
-        work["reason"] = reason("waiting_you", {"kind" => "review", "step" => work["current"], "review_round" => round,
+        slots(work)["reason"] = reason("waiting_you", {"kind" => "review", "step" => work["current"], "review_round" => round,
           "error" => e.respond_to?(:code) ? e.code : "error", "message" => e.message.lines.first.to_s.scrub.strip})
         return WorkflowRun.from_h(work)
       end
       return nil unless waiting
       wait_for_lock(work, step_state(work), waiting, step_state: step_state)
-      work["reason"]["details"]["review_round"] = round
+      slot(work, "reason")["details"]["review_round"] = round
       WorkflowRun.from_h(work)
     end
 
@@ -317,22 +317,22 @@ module Workspace
       if waiting
         # A review's retry waiting for a lock is still that retry when the wait ends (a tick or a resume dispatches it
         # again): its attempt, its context and its text (which a `--from` takes out of the pending context).
-        pending_retry ? run["retry_of_pending"] = pending_retry : run.delete("retry_of_pending")
+        pending_retry ? slots(run)["retry_of_pending"] = pending_retry : slots(run).delete("retry_of_pending")
         # The cause this dispatch had is kept for the one that ends the wait (a tick says `lock_ended`).
-        run["dispatch_cause_pending"] = {"step" => run["current"], "cause" => kept_cause(run, cause)}
+        slots(run)["dispatch_cause_pending"] = {"step" => run["current"], "cause" => kept_cause(run, cause)}
         return wait_for_lock(run, state, waiting)
       end
-      run.delete("retry_of_pending")
+      slots(run).delete("retry_of_pending")
       cause = kept_cause(run, cause)
-      run.delete("dispatch_cause_pending")
+      slots(run).delete("dispatch_cause_pending")
 
       # To the millisecond: the end of a turn is matched to the attempt by when that turn began.
-      attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => run["pending_context"],
+      attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => slot(run, "pending_context"),
                  "delivery" => "delivering"}
       pending = state.delete("redelivery_pending")
       attempt["redelivery"] = pending if pending
       attempt["retry_of"] = retry_n if retry_n
-      run["pending_context"] = []
+      slots(run)["pending_context"] = []
       attempt["prompt_file"], composed = @prompt.write(run, step, attempt["n"], attempt["context"])
       started = @attempt_record.start(run: run, attempt: attempt, composed: composed)
       adopt(run, WorkflowRun.from_h(run).with_attempt(step["id"], started))
@@ -343,7 +343,7 @@ module Workspace
       run["pane"] = pane
       state["state"] = "running"
       run["state"] = "running"
-      run["reason"] = nil
+      slots(run)["reason"] = nil
       @change.event(run, "step_dispatching", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane, "cause" => cause, "retry_of" => attempt["retry_of"])
       ctx.deliver({"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
                    "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh",
@@ -356,7 +356,7 @@ module Workspace
     # The cause a dispatch that ends a lock wait is written with: the one the waiting dispatch had, for the same step.
     # A `lock_ended` dispatch with none kept (a run stored before it was kept) stays `lock_ended`.
     def kept_cause(run, cause)
-      kept = run["dispatch_cause_pending"]
+      kept = slot(run, "dispatch_cause_pending")
       return cause unless cause == "lock_ended" && kept.is_a?(Hash) && kept["step"] == run["current"] && kept["cause"].is_a?(String)
       kept["cause"]
     end
@@ -367,7 +367,7 @@ module Workspace
       if retry_of.is_a?(Hash) && retry_of["attempt"].is_a?(Integer)
         return {"step" => run["current"], "attempt" => retry_of["attempt"], "context" => context, "text" => retry_of["text"]}.compact
       end
-      kept = run["retry_of_pending"]
+      kept = slot(run, "retry_of_pending")
       (kept.is_a?(Hash) && kept["step"] == run["current"] && kept["attempt"].is_a?(Integer)) ? kept : nil
     end
 
@@ -404,7 +404,7 @@ module Workspace
     # pass already moved the step and the pane, and {#not_delivered} put the note back, so the new park only waits.
     def park_again(run, after, kick)
       # {#not_delivered} has already written the reason, so a pane tmux confirmed gone is read here.
-      return run if run.reason.is_a?(Hash) && run.reason["code"] == "pane_gone"
+      return run if run.reason_for(run.current).is_a?(Hash) && run.reason_for(run.current)["code"] == "pane_gone"
       return run unless after && PARK_AGAIN_CODES.include?(kick[:code].to_s) && after["retries"] < PARK_RETRIES
       return run unless WorkflowTransitions.parked({"parked" => after}, @clock.call) == :waiting
       parked = run.with_park({"from" => nil, "note" => nil, "pane" => nil, "turn_over" => nil}, id: SecureRandom.hex(8),
@@ -420,13 +420,13 @@ module Workspace
       attempt["refusal"] = refusal if attempt && refusal
       attempt["code"] = kick[:code].to_s if attempt && kick[:code]
       # The next attempt is told what this one would have been.
-      run["pending_context"] = attempt["context"] + run["pending_context"] if attempt
+      slots(run)["pending_context"] = attempt["context"] + slot(run, "pending_context") if attempt
       release(run)
       state["state"] = "waiting"
       run["state"] = "waiting"
       # A pane tmux still lists (`pane_listed`, set by {#deliver}) is not gone, whatever code the daemon answered.
       gone = PANE_GONE_CODES.include?(kick[:code].to_s) && !kick[:pane_listed]
-      run["reason"] = reason(gone ? "pane_gone" : "waiting_you",
+      slots(run)["reason"] = reason(gone ? "pane_gone" : "waiting_you",
         {"kind" => "dispatch", "step" => run["current"], "pane" => run["pane"], "workspace" => run["workspace"],
          "error" => kick[:code].to_s, "message" => refusal&.fetch("message", nil) || kick[:message]&.to_s&.scrub, "reason" => refusal&.fetch("reason", nil) || kick[:reason]&.to_s,
          "proof_missing" => kick[:proof_missing]&.to_s, "seen" => refusal&.fetch("seen", nil)}.compact)
@@ -436,7 +436,7 @@ module Workspace
     # was allowed when the step was reached). A run none of whose attempts could be counted has a total of 0, which is
     # under any budget, so it is never held.
     def budget_holds?(run)
-      return false if run.dig("reason", "code") == "waiting_lock"
+      return false if slot_dig(run, "reason", "code") == "waiting_lock"
       reading = WorkflowBudget.reading(run, live: false)
       !!(reading && reading["spent"])
     end
@@ -444,7 +444,7 @@ module Workspace
     # Whether the attempt about to start is held: the run's `timeout:` is used up (machine time, see
     # {WorkflowDeadline}). Exempt as {#budget_holds?} is: a lock wait that ends was allowed when the step was reached.
     def time_holds?(run)
-      return false if run.dig("reason", "code") == "waiting_lock"
+      return false if slot_dig(run, "reason", "code") == "waiting_lock"
       reading = WorkflowDeadline.reading(run, @clock.call, stops: downtime_stops)
       !!(reading && reading["spent"])
     end
@@ -471,11 +471,11 @@ module Workspace
 
     # There is only ever one held dispatch: a run that already holds one keeps it and is left as it is.
     def pause_hold(run, hold, release: true)
-      return true if run["pause_hold"]
+      return true if slot(run, "pause_hold")
       release(run) if release
-      run["pause_hold"] = hold
+      slots(run)["pause_hold"] = hold
       run["state"] = "waiting"
-      run["reason"] = nil
+      slots(run)["reason"] = nil
       true
     end
 
@@ -492,11 +492,11 @@ module Workspace
         attempt = stored.step(delivery["step"])&.last_attempt
         next unless stored.current == delivery["step"] && attempt&.n == delivery["attempt"] && attempt.to_h["delivery"] == "delivering"
         # The first hold is kept; this line's mark lapses, and the tick after the unpause sees to it.
-        next if stored.to_h["pause_hold"]
+        next if stored.pause_hold_for(delivery["step"])
         held = true
         work = stored.thawed
         work["steps"].fetch(delivery["step"])["attempts"].last.delete("delivery")
-        work["pause_hold"] = {"kind" => "delivery", "step" => delivery["step"], "attempt" => delivery["attempt"], "delivery" => delivery}
+        WorkflowRun.slots(work, delivery["step"])["pause_hold"] = {"kind" => "delivery", "step" => delivery["step"], "attempt" => delivery["attempt"], "delivery" => delivery}
         WorkflowRun.from_h(work)
       end
       return nil unless paused
@@ -512,15 +512,15 @@ module Workspace
       reading = WorkflowBudget.reading(run, live: false) if budget
       deadline = WorkflowDeadline.reading(run, @clock.call, stops: downtime_stops) if time
       release(run)
-      run["budget_hold"] = hold if budget
-      run["timeout_hold"] = hold.dup if time
+      slots(run)["budget_hold"] = hold if budget
+      slots(run)["timeout_hold"] = hold.dup if time
       run["state"] = "waiting"
       if budget
         details = WorkflowTransitions.budget_details(run, reading).merge("kind" => "budget")
         details["run_timed_out"] = WorkflowTransitions.deadline_details(run, deadline) if time
-        run["reason"] = reason("budget_spent", details)
+        slots(run)["reason"] = reason("budget_spent", details)
       else
-        run["reason"] = reason("run_timed_out", WorkflowTransitions.deadline_details(run, deadline))
+        slots(run)["reason"] = reason("run_timed_out", WorkflowTransitions.deadline_details(run, deadline))
       end
       @change.event(run, "budget_spent", reading.slice("used", "allowance", "counted", "uncounted", "estimated").merge("step" => run["current"])) if budget
       @change.event(run, "run_timed_out", deadline.slice("used", "limit", "timeout", "extra_seconds").merge("step" => run["current"])) if time
@@ -532,7 +532,7 @@ module Workspace
       result = @resources.acquire(run_id: run["id"], step: step["id"], uses: step["uses"], worktree: run["worktree"],
         workflow: run["workflow"], workspace: run["workspace"], pane: pane)
       raise Workspace::Error, "run #{run["id"]} has no run file, so it can hold no lock" if result[:status] == :not_alive
-      waited = (run.dig("reason", "code") == "waiting_lock") ? run["reason"] : nil
+      waited = (slot_dig(run, "reason", "code") == "waiting_lock") ? slot(run, "reason") : nil
       result[:released].each { |name| lock_event(run, "lock_released", name) }
       result[:acquired].each do |name|
         was_waiting = waited && waited.dig("details", "resource") == name
@@ -561,10 +561,10 @@ module Workspace
       details = {"resource" => waiting[:name], "step" => run["current"], "position" => waiting[:position], "total" => waiting[:total],
                  "holder" => {"run_id" => holder["run_id"], "step" => holder["step"], "workspace" => holder["workspace"],
                               "worktree" => holder["worktree"], "pid" => holder["pid"], "kind" => holder["kind"]}.compact}
-      since = (run.dig("reason", "code") == "waiting_lock" && run.dig("reason", "details", "resource") == waiting[:name]) ? run["reason"]["since"] : now_iso
+      since = (slot_dig(run, "reason", "code") == "waiting_lock" && slot_dig(run, "reason", "details", "resource") == waiting[:name]) ? slot(run, "reason")["since"] : now_iso
       state["state"] = step_state
       run["state"] = "waiting"
-      run["reason"] = {"code" => "waiting_lock", "since" => since, "details" => details}
+      slots(run)["reason"] = {"code" => "waiting_lock", "since" => since, "details" => details}
     end
 
     def lock_event(run, type, name, data = {})
@@ -594,6 +594,15 @@ module Workspace
       {"code" => code, "since" => now_iso, "details" => details}
     end
 
+    # The Hash the current step's {WorkflowRun::PER_STEP_KEYS} slots are written into ({WorkflowRun.slots}).
+    def slots(run) = WorkflowRun.slots(run, run["current"])
+
+    # One of the current step's slots ({WorkflowRun.slot}).
+    def slot(run, key) = WorkflowRun.slot(run, run["current"], key)
+
+    # {#slot} dug into ({WorkflowRun.slot_dig}).
+    def slot_dig(run, key, *path) = WorkflowRun.slot_dig(run, run["current"], key, *path)
+
     # Puts a continue mark back as `continue_pending`, so a later tick types the line; true when it did.
     # A refusal is written on the marked attempt every time, so a second refusal on the same mark replaces the first.
     def keep_continue(run_id, mark, actor, cause, refusal = nil)
@@ -603,8 +612,8 @@ module Workspace
         next read unless WorkflowTransitions.continue_mark?(stored, mark)
         attempt = stored.dig("steps", mark["step"], "attempts")&.find { |a| a["n"] == mark["attempt"] }
         attempt["refusal"] = refusal if attempt && refusal
-        unless stored.key?("continue_pending")
-          stored["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
+        unless WorkflowRun.slot_key?(stored, mark["step"], "continue_pending")
+          WorkflowRun.slots(stored, mark["step"])["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
           kept = true
         end
         WorkflowRun.from_h(stored)

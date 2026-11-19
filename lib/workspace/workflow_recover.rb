@@ -121,7 +121,7 @@ module Workspace
         return row(run, "skipped", "workspace_removed", "workspace '#{workspace}' no longer exists; cancel the run (`workspace workflow cancel #{run.id}`)")
       end
       if held
-        return pane_gone_row(run, held) if held != "paused" && run.to_h.dig("reason", "code") == "pane_gone"
+        return pane_gone_row(run, held) if held != "paused" && WorkflowRun.slot_dig(run.to_h, run.current, "reason", "code") == "pane_gone"
         return row(run, "skipped", held, "the run waits for a person (#{held}); see `workspace workflow status #{run.id}`")
       end
       live = alive[workspace]

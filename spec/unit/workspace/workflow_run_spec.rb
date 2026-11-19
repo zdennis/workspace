@@ -412,7 +412,19 @@ RSpec.describe Workspace::WorkflowRun do
     it "defines a reader for every per-step key" do
       given = from_hash("steps" => {"s1" => {}})
 
-      described_class::PER_STEP_KEYS.each { |key| expect(given.public_send(:"#{key}_for", "s1")).to be_nil }
+      expect(given.reason_for("s1")).to be_nil
+      expect(given.reasons_for("s1")).to be_nil
+      expect(given.backoff_for("s1")).to be_nil
+      expect(given.pending_context_for("s1")).to be_nil
+      expect(given.continue_pending_for("s1")).to be_nil
+      expect(given.pause_hold_for("s1")).to be_nil
+      expect(given.retry_of_pending_for("s1")).to be_nil
+      expect(given.dispatch_cause_pending_for("s1")).to be_nil
+      expect(given.review_retry_for("s1")).to be_nil
+      expect(given.pending_move_for("s1")).to be_nil
+      expect(given.budget_hold_for("s1")).to be_nil
+      expect(given.timeout_hold_for("s1")).to be_nil
+      expect(described_class::PER_STEP_KEYS.length).to eq(12)
     end
 
     it "reads two steps' values independently" do
@@ -422,6 +434,125 @@ RSpec.describe Workspace::WorkflowRun do
       expect(given.pending_move_for("s2")).to eq("to" => "b")
       expect(given.pause_hold_for("s1")).to eq(1)
       expect(given.pause_hold_for("s2")).to be_nil
+    end
+  end
+
+  describe "the slot placement rule" do
+    def grouped_run
+      {"id" => "r", "current" => "lint", "reason" => nil, "pending_context" => [],
+       "definition" => {"steps" => [{"id" => "plan"}, {"id" => "lint", "group" => "checks"}, {"id" => "test", "group" => "checks"}]},
+       "steps" => {"plan" => {"state" => "passed"}, "lint" => {"state" => "running"}, "test" => {"state" => "running"}}}
+    end
+
+    it "scopes a step whose definition entry names a group, and no other" do
+      run = grouped_run
+
+      expect(described_class.step_scoped?(run, "lint")).to be(true)
+      expect(described_class.step_scoped?(run, "test")).to be(true)
+      expect(described_class.step_scoped?(run, "plan")).to be(false)
+      expect(described_class.step_scoped?(run, "missing")).to be(false)
+      expect(described_class.step_scoped?(run, nil)).to be(false)
+      expect(described_class.step_scoped?({"definition" => {"steps" => [{"id" => "a", "group" => ""}]}}, "a")).to be(false)
+      expect(described_class.step_scoped?({"definition" => {"steps" => [{"id" => "a", "group" => 7}]}}, "a")).to be(false)
+      expect(described_class.step_scoped?({"definition" => "bad"}, "a")).to be(false)
+      expect(described_class.step_scoped?(nil, "a")).to be(false)
+    end
+
+    described_class::PER_STEP_KEYS.each do |key|
+      it "keeps a grouped step's #{key} under its own step, so a sibling's write leaves it alone" do
+        run = grouped_run
+
+        described_class.slots(run, "lint")[key] = {"from" => "lint"}
+        described_class.slots(run, "test")[key] = {"from" => "test"}
+
+        expect(run["steps"]["lint"][key]).to eq("from" => "lint")
+        expect(run["steps"]["test"][key]).to eq("from" => "test")
+        expect(run).not_to have_key(key) unless %w[reason pending_context].include?(key)
+        frozen = described_class.from_h(run).to_h
+        expect(described_class.slot(frozen, "lint", key)).to eq("from" => "lint")
+        expect(described_class.slot(frozen, "test", key)).to eq("from" => "test")
+      end
+
+      it "writes an ungrouped step's #{key} at the top level of the run, as a run without groups has it" do
+        run = grouped_run
+
+        described_class.slots(run, "plan")[key] = {"from" => "plan"}
+
+        expect(run[key]).to eq("from" => "plan")
+        expect(run["steps"]["plan"]).not_to have_key(key)
+      end
+    end
+
+    it "leaves the run-level reason and pending context of an ungrouped step alone when a grouped step writes its own" do
+      run = grouped_run.merge("reason" => {"code" => "run"}, "pending_context" => ["run line"])
+
+      described_class.slots(run, "lint")["reason"] = {"code" => "lint"}
+      described_class.add_context(run, "lint", "lint line")
+
+      expect(run["reason"]).to eq("code" => "run")
+      expect(run["pending_context"]).to eq(["run line"])
+      expect(run["steps"]["lint"]).to include("reason" => {"code" => "lint"}, "pending_context" => ["lint line"])
+    end
+
+    it "makes the step hash a grouped step lacks, and never one for an ungrouped step" do
+      run = grouped_run
+      run["steps"].delete("test")
+
+      described_class.slots(run, "test")["backoff"] = {"to" => "test"}
+      described_class.slots(run, "plan")["backoff"] = {"to" => "plan"}
+
+      expect(run["steps"]["test"]).to eq("backoff" => {"to" => "test"})
+      expect(run["steps"]["plan"]).to eq("state" => "passed")
+    end
+
+    it "reads with slot and slot_dig as the readers do, and tells whether the slot holds a key" do
+      run = grouped_run.merge("reason" => {"code" => "run", "details" => {"step" => "plan"}})
+      run["steps"]["lint"]["reason"] = {"code" => "lint", "details" => {"step" => "lint"}}
+      run["steps"]["test"]["continue_pending"] = nil
+
+      expect(described_class.slot(run, "lint", "reason")).to eq("code" => "lint", "details" => {"step" => "lint"})
+      expect(described_class.slot(run, "test", "reason")).to eq("code" => "run", "details" => {"step" => "plan"})
+      expect(described_class.slot_dig(run, "lint", "reason", "details", "step")).to eq("lint")
+      expect(described_class.slot_dig(run, "plan", "backoff", "to")).to be_nil
+      expect { described_class.slot_dig(run.merge("reason" => "text"), "plan", "reason", "code") }.to raise_error(TypeError)
+      expect(described_class.slot_key?(run, "test", "continue_pending")).to be(true)
+      expect(described_class.slot_key?(run, "lint", "continue_pending")).to be(false)
+      expect(described_class.slot_key?(run, "plan", "reason")).to be(true)
+    end
+
+    it "adds pending context lines after the others, or first" do
+      run = grouped_run
+
+      described_class.add_context(run, "lint", "second")
+      described_class.add_context(run, "lint", "first", first: true)
+      described_class.add_context(run, "plan", "for plan")
+
+      expect(run["steps"]["lint"]["pending_context"]).to eq(%w[first second])
+      expect(run["pending_context"]).to eq(["for plan"])
+    end
+
+    it "drops every step's own slots but its reason history, and leaves the run-level slots to the caller" do
+      run = grouped_run.merge("backoff" => {"to" => "plan"})
+      described_class::PER_STEP_KEYS.each do |key|
+        run["steps"]["lint"][key] = {"k" => key}
+        run["steps"]["test"][key] = {"k" => key}
+      end
+
+      described_class.drop_step_slots(run)
+
+      expect(run["steps"]["lint"]).to eq("state" => "running", "reasons" => {"k" => "reasons"})
+      expect(run["steps"]["test"]).to eq("state" => "running", "reasons" => {"k" => "reasons"})
+      expect(run["backoff"]).to eq("to" => "plan")
+      expect(described_class.drop_step_slots({"steps" => "bad"})).to eq("steps" => "bad")
+    end
+
+    it "carries a dropped park's note to a grouped current step's own pending context" do
+      run = described_class.from_h(grouped_run.merge("parked" => {"id" => "p1", "note" => "careful"}))
+
+      dropped = run.drop_park
+
+      expect(dropped.pending_context_for("lint")).to eq([described_class.resume_note("careful")])
+      expect(dropped.pending_context).to eq([])
     end
   end
 

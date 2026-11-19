@@ -58,13 +58,15 @@ module Workspace
     end
 
     # @param hash [Hash{String=>Object}] a stored run
-    # @return [Array<Hash{String=>Object}>] the run's own `reasons` then every attempt's `reasons` (Hash entries only),
-    #   each as `{"entry" => the stored Hash, "step" => step id, "attempt" => attempt `n`}`; a run-owned entry's step is
-    #   its own `step` key and its attempt is nil
+    # @return [Array<Hash{String=>Object}>] the run's own `reasons`, then each step's own `reasons` (a step that keeps
+    #   its own slots, {WorkflowRun.step_scoped?}) and every attempt's `reasons` (Hash entries only),
+    #   each as `{"entry" => the stored Hash, "step" => step id, "attempt" => attempt `n`}`; a run-owned or step-owned
+    #   entry's step is its own `step` key and its attempt is nil
     def self.reason_entries(hash)
       own = Array(hash["reasons"]).grep(Hash).map { |entry| {"entry" => entry, "step" => entry["step"], "attempt" => nil} }
       owned = hash["steps"].to_h.flat_map do |id, step|
-        Array(step.is_a?(Hash) ? step["attempts"] : nil).grep(Hash).flat_map do |attempt|
+        mine = Array(step.is_a?(Hash) ? step["reasons"] : nil).grep(Hash).map { |entry| {"entry" => entry, "step" => entry["step"] || id, "attempt" => nil} }
+        mine + Array(step.is_a?(Hash) ? step["attempts"] : nil).grep(Hash).flat_map do |attempt|
           Array(attempt["reasons"]).grep(Hash).map { |entry| {"entry" => entry, "step" => id, "attempt" => attempt["n"]} }
         end
       end
