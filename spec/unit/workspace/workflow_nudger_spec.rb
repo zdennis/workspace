@@ -160,6 +160,18 @@ RSpec.describe Workspace::WorkflowNudger do
       expect(spawned.last.first.drop(5)).to eq(["--turn-ended", "--pane", "%5", "--stopped-at", "2026-10-04T12:30:00.000Z"])
     end
 
+    it "adds --transcript-path last when given a path, and leaves it out for nil or an empty one" do
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
+
+      nudger.turn_ended("app", "%5", transcript_path: "/t/my s.jsonl")
+      nudger.turn_ended("app", "%5", transcript_path: nil)
+      nudger.turn_ended("app", "%5", transcript_path: "")
+
+      expect(spawned.first.first.last(2)).to eq(["--transcript-path", "/t/my s.jsonl"])
+      expect(spawned[1].first).not_to include("--transcript-path")
+      expect(spawned[2].first).not_to include("--transcript-path")
+    end
+
     it "still starts `workflow advance --turn-ended` for a pane bound to a paused run" do
       allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
       going([run("wr_1", "app").merge("paused" => {"since" => "2026-10-04T12:00:00Z", "by" => "person", "text" => nil})])

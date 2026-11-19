@@ -107,7 +107,7 @@ RSpec.describe Workspace::GoalState do
   end
 
   it "maps each waiting reason to its event" do
-    events = {"failed_check" => "check_passed", "turn_ended_incomplete" => "turn_ended", "paused" => "run_unpaused"}
+    events = {"failed_check" => "check_passed", "turn_ended_incomplete" => "turn_ended", "waiting_agent_input" => "answered", "paused" => "run_unpaused"}
 
     events.each do |code, event|
       expect(goal(run: run(reason: {"code" => code})).next_step["event"]).to eq(event)

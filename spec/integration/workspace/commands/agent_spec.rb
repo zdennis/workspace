@@ -1070,7 +1070,7 @@ RSpec.describe Workspace::Commands::Agent do
         expect(send_event("stop")).to eq("ok" => true)
 
         # This daemon did not see the turn begin, so it names no start: the end counts, as it always did.
-        expect(nudger.turns).to eq([["myapp", "%5", nil, nil]])
+        expect(nudger.turns).to eq([["myapp", "%5", nil, nil, nil]])
         expect(recorded_events).to eq(["stop"])
       end
     end
@@ -1079,7 +1079,7 @@ RSpec.describe Workspace::Commands::Agent do
       run_agent do
         send_event("stop", background_tasks: [{"id" => "b1a2c3d4e", "type" => "shell"}])
 
-        expect(nudger.turns).to eq([["myapp", "%5", nil, [{"id" => "b1a2c3d4e", "type" => "shell"}]]])
+        expect(nudger.turns).to eq([["myapp", "%5", nil, [{"id" => "b1a2c3d4e", "type" => "shell"}], nil]])
       end
     end
 
@@ -1091,7 +1091,7 @@ RSpec.describe Workspace::Commands::Agent do
         send_event("stop")
         send_event("stop")
 
-        expect(nudger.turns).to eq([["myapp", "%5", now, nil], ["myapp", "%5", now, nil]])
+        expect(nudger.turns).to eq([["myapp", "%5", now, nil, nil], ["myapp", "%5", now, nil, nil]])
       end
     end
 
@@ -1103,7 +1103,7 @@ RSpec.describe Workspace::Commands::Agent do
           send_event("stop")
         end
 
-        expect(nudger.turns).to eq([["myapp", "%5", nil, nil]] * 2)
+        expect(nudger.turns).to eq([["myapp", "%5", nil, nil, nil]] * 2)
       end
     end
 
@@ -1225,7 +1225,7 @@ RSpec.describe Workspace::Commands::Agent do
         run_agent do
           send_event("user_prompt")
           send_event("stop")
-          expect(nudger.turns).to eq([["myapp", "%5", now, nil]])
+          expect(nudger.turns).to eq([["myapp", "%5", now, nil, nil]])
 
           send_event("user_prompt")
           send_event("turn_failed", error: "server_error")

@@ -1088,6 +1088,24 @@ RSpec.describe Workspace::Commands::Workflow do
       end
     end
 
+    it "says the reported status on its own line when no hold already says it, and prints nothing without one" do
+      report = {"state" => "done", "detail" => "all <green>", "at" => "2026-11-01T09:00:00Z"}
+      allow(status).to receive(:runs).and_return("runs" => [shown("current" => shown["current"].merge("status_report" => report))], "warnings" => [])
+
+      command.status
+
+      expect(output.string.lines[2]).to eq("  reported: done: all <green>\n")
+
+      output.truncate(0)
+      output.rewind
+      held = reason("waiting_agent_input", {"step" => "plan", "state" => "needs_input", "detail" => "which database?"})
+      allow(status).to receive(:runs).and_return("runs" => [shown("current" => shown["current"].merge("reason" => held, "status_report" => report.merge("state" => "needs_input")))], "warnings" => [])
+
+      command.status
+
+      expect(output.string).not_to include("reported:")
+    end
+
     it "words every reason for a person" do
       texts = {
         reason("waiting_lock", {"resource" => "test-db", "position" => 1, "total" => 2, "holder" => {"run_id" => "wr_9", "step" => "verify", "workspace" => "app.b"}}) =>
@@ -1127,6 +1145,12 @@ RSpec.describe Workspace::Commands::Workflow do
           "failed_check: step verify's check ran past its time limit; log: /a/v.log",
         reason("failed_check", {"step" => "verify", "cause" => "reported", "summary" => "two specs red"}) =>
           "failed_check: step verify was reported failed: two specs red",
+        reason("waiting_agent_input", {"step" => "plan", "state" => "needs_input", "detail" => "which database?"}) =>
+          "waiting_agent_input: step plan's agent says it needs input: which database?",
+        reason("waiting_agent_input", {"step" => "plan", "state" => "stuck", "detail" => "no\e[31m access"}) =>
+          "waiting_agent_input: step plan's agent says it is stuck: no\\e[31m access",
+        reason("waiting_agent_input", {"step" => "plan", "state" => "stuck", "detail" => ""}) =>
+          "waiting_agent_input: step plan's agent says it is stuck",
         reason("pane_gone", {"pane" => "%5", "workspace" => "app"}) => "pane_gone: pane %5 of app is not running"
       }
       texts.each do |each_reason, text|
@@ -2190,8 +2214,14 @@ RSpec.describe Workspace::Commands::Workflow do
       it "still hands a turn end to the engine, which evaluates it" do
         command.advance(run: "wr_1", turn_ended: true, pane: "%5", stopped_at: now)
 
-        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: now, background: [])
+        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: now, background: [], transcript_path: nil)
         expect(engine).not_to have_received(:tick)
+      end
+
+      it "hands the transcript path on to the engine" do
+        command.advance(run: "wr_1", turn_ended: true, pane: "%5", stopped_at: now, transcript_path: "/t/s.jsonl")
+
+        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: now, background: [], transcript_path: "/t/s.jsonl")
       end
 
       it "hands a tick without a turn end to the engine's tick" do
@@ -2469,7 +2499,7 @@ RSpec.describe Workspace::Commands::Workflow do
         command.advance(run: "wr_1", turn_ended: true, pane: "%5", caller_pane: nil)
         command.advance(run: "wr_1", caller_pane: "%3")
 
-        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
+        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
         expect(engine).to have_received(:tick).with("wr_1", actor: "daemon")
       end
 
@@ -2486,7 +2516,7 @@ RSpec.describe Workspace::Commands::Workflow do
 
         command.advance(run: "wr_9", turn_ended: true, caller_pane: "%5")
 
-        expect(engine).to have_received(:turn_ended).with("wr_9", actor: "daemon", pane: nil, turn_started: nil, stopped_at: nil, background: [])
+        expect(engine).to have_received(:turn_ended).with("wr_9", actor: "daemon", pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
       end
     end
 
@@ -2509,8 +2539,8 @@ RSpec.describe Workspace::Commands::Workflow do
       command.advance(run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12))
       command.advance(run: "wr_1")
 
-      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
-      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12), stopped_at: nil, background: [])
+      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
+      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: Time.utc(2026, 10, 4, 12), stopped_at: nil, background: [], transcript_path: nil)
       expect(engine).to have_received(:tick).with("wr_1", actor: "daemon")
       expect(output.string).to eq("")
     end
@@ -2520,11 +2550,11 @@ RSpec.describe Workspace::Commands::Workflow do
       allow(engine).to receive(:turn_ended)
       tasks = [{"id" => "k12345678", "type" => "MCP task"}]
 
-      command.advance(run: "wr_1", turn_ended: true, pane: "%5", background: tasks)
+      command.advance(run: "wr_1", turn_ended: true, pane: "%5", background: tasks, transcript_path: nil)
       command.advance(run: "wr_1", turn_ended: true, pane: "%5", background: nil)
 
-      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: tasks)
-      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
+      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: tasks, transcript_path: nil)
+      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
     end
 
     context "with a run whose infra retry is due" do
@@ -2552,7 +2582,7 @@ RSpec.describe Workspace::Commands::Workflow do
       it "still tells the engine a turn ended, and never starts the retry for it" do
         command.advance(run: "wr_1", turn_ended: true, pane: "%5")
 
-        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [])
+        expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%5", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
         expect(infra_retry).not_to have_received(:call)
       end
 
@@ -2616,8 +2646,40 @@ RSpec.describe Workspace::Commands::Workflow do
       expect { command.step_done(pane: "%5", status: "fail", code: "a" * 40) }.not_to raise_error
     end
 
-    it "refuses a status other than pass or fail" do
-      expect { command.step_done(pane: "%5", status: "done") }.to raise_error(Workspace::UsageError, '--status must be pass or fail, got "done".')
+    it "refuses a status outside the vocabulary" do
+      expect { command.step_done(pane: "%5", status: "bogus") }.to raise_error(Workspace::UsageError, '--status must be one of pass, fail, done, running, needs_input, stuck, got "bogus".')
+    end
+
+    %w[done running needs_input stuck].each do |state|
+      it "refuses --code with #{state}" do
+        expect { command.step_done(pane: "%5", status: state, code: "not_reproduced") }
+          .to raise_error(Workspace::UsageError, "--code applies to pass/fail reports, not to --status #{state}.")
+      end
+    end
+
+    %w[pass fail].each do |state|
+      it "still accepts a valid --code with #{state}" do
+        allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+        allow(engine).to receive(:report).and_return("run_id" => "wr_1", "step" => "s", "attempt" => 1, "reported" => {"status" => state, "summary" => nil, "code" => "why_not"})
+        allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
+
+        expect(command.step_done(pane: "%5", status: state, code: "why_not")["reported"]).to include("code" => "why_not")
+      end
+    end
+
+    %w[done running needs_input stuck].each do |state|
+      it "records #{state} as a stated status with the summary as its detail" do
+        allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+        allow(engine).to receive(:report).with("wr_1", actor: "agent", status: state, summary: "why", code: nil)
+          .and_return("run_id" => "wr_1", "step" => "plan", "attempt" => 1,
+            "reported" => {"state" => state, "detail" => "why", "at" => "t", "source" => "report"})
+        allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
+
+        row = command.step_done(pane: "%5", status: state, summary: "why")
+
+        expect(row["reported"]).to eq("status" => state, "summary" => "why")
+        expect(output.string).to start_with("Recorded #{state} for step plan")
+      end
     end
 
     it "refuses outside a run's pane, and outside tmux" do
@@ -2972,6 +3034,23 @@ RSpec.describe Workspace::Commands::Workflow do
       attempts_command.attempts(run: "wr_2611010900abcd", json: true)
 
       expect(JSON.parse(output.string)["attempts"].map { |row| row["refusal"] }).to eq([nil, refusal])
+    end
+
+    it "says the reported status under its attempt in the table, and in --json" do
+      create_run
+      report = {"state" => "stuck", "detail" => "no access", "at" => "2026-11-01T09:06:00Z", "source" => "report"}
+      edit_run(real_store, "wr_2611010900abcd") { |stored| stored["steps"]["implement"]["attempts"][1]["status_report"] = report }
+
+      attempts_command.attempts(run: "wr_2611010900abcd")
+
+      expect(output.string.lines.map(&:rstrip).last).to eq("  reported: stuck: no access")
+      expect(output.string.lines.count { |line| line.include?("reported:") }).to eq(1)
+
+      output.truncate(0)
+      output.rewind
+      attempts_command.attempts(run: "wr_2611010900abcd", json: true)
+
+      expect(JSON.parse(output.string)["attempts"].map { |row| row["status_report"] }).to eq([nil, report.slice("state", "detail", "at")])
     end
 
     it "prints one table row per attempt" do

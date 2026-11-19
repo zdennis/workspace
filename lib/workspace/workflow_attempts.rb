@@ -56,7 +56,12 @@ module Workspace
        "warnings" => attempt.warnings, "rounds" => attempt.rounds, "refusal" => attempt.refusal,
        "redelivered" => (attempt.redelivered == true) ? true : nil,
        "review" => review_summary(attempt), "review_outcome" => attempt.review_outcome, "reviews" => attempt.reviews,
-       "retry_of" => attempt.retry_of.is_a?(Integer) ? attempt.retry_of : nil}
+       "retry_of" => attempt.retry_of.is_a?(Integer) ? attempt.retry_of : nil}.merge(status_report_row(attempt))
+    end
+
+    def status_report_row(attempt)
+      report = WorkflowReportedStatus.shown(attempt.status_report)
+      report ? {"status_report" => report} : {}
     end
 
     # The verdicts of a reviewed attempt in a line (`2/3 approve, skeptic reject`): the approvals of the verdict rows

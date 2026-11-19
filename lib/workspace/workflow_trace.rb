@@ -122,6 +122,8 @@ module Workspace
       parts << duration_text(row[:duration_ms] / 1000.0) if row[:duration_ms]
       tokens = token_text(row[:tokens])
       parts << "#{tokens} tok" if tokens
+      reported = WorkflowReportedStatus.words(row[:status_report])
+      parts << "reported=#{reported}" if reported
       parts.join("  ")
     end
 
@@ -428,6 +430,8 @@ module Workspace
           next unless index
           taken[index] = true
           rows[index] = rows[index].merge(tokens: tokens(attempt), evidence: rows[index][:evidence] || attempt.evidence)
+          report = WorkflowReportedStatus.shown(attempt.status_report)
+          rows[index] = rows[index].merge(status_report: report) if report
         end
       end
       rows

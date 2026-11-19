@@ -43,7 +43,24 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(composed_with).to include(packs: nil, cwd: @dir, binding: {"kind" => "run"}, skip: [], attempt: ["Fix it."])
       expect(composed_with[:workflow]).to eq("name" => "flow", "include" => ["commits"], "text" => "Run wr_1.")
       expect(composed_with[:step]["text"]).to eq("Plan the fix on topic in wr_1.\n\nThis step is finished when your turn ends and these files " \
-        "exist, written during this attempt: #{File.join(@dir, ".workflow", "wr_1", "plan.md")}.")
+        "exist, written during this attempt: #{File.join(@dir, ".workflow", "wr_1", "plan.md")}.\n\n" \
+        "#{described_class::STATUS_LINE_TEXT}")
+    end
+
+    it "ends a minimal step's text with the generated status line, naming the format and every state" do
+      prompt.compose(run, {"id" => "plan", "prompt" => "Plan.", "produces" => []}, [])
+
+      text = composed_with[:step]["text"]
+      expect(text).to eq("Plan.\n\n#{described_class::STATUS_LINE_TEXT}")
+      expect(text).to include(Workspace::WorkflowReportedStatus::FORMAT)
+      Workspace::WorkflowReportedStatus::STATES.each { |state| expect(text).to include(state) }
+    end
+
+    it "keeps the status line last when the attempt carries retry context" do
+      prompt.compose(run, step, ["## For this attempt", "Fix it."])
+
+      expect(composed_with[:attempt]).to eq(["## For this attempt", "Fix it."])
+      expect(composed_with[:step]["text"]).to end_with(described_class::STATUS_LINE_TEXT)
     end
 
     it "puts the run's note first, skips the dev pack for a devenv step and words a strict run's produces line" do
@@ -57,7 +74,8 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(context).to eq(["Fix it."])
       expect(composed_with[:skip]).to eq(["dev"])
       expect(composed_with[:step]["text"]).to include("exist as non-empty regular files (not links)")
-      expect(composed_with[:step]["text"]).to end_with("the runner checks the step with the project's own command; work until it would pass.")
+      expect(composed_with[:step]["text"]).to include("the runner checks the step with the project's own command; work until it would pass.\n\n#{described_class::STATUS_LINE_TEXT}")
+      expect(composed_with[:step]["text"]).to end_with(described_class::STATUS_LINE_TEXT)
     end
 
     it "takes the stored Hash as well as a WorkflowRun" do

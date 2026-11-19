@@ -35,6 +35,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_transitions.rb` — The engine's rules over plain values: attempts, delivery, backoff, the default one-step failure loop, sweep marks and review limits.
 - `lib/workspace/workflow_run_change.rb` — The one way the engine changes a run: lock, change, events, alerts and follow-ups.
 - `lib/workspace/workflow_prompt.rb` — Composes and writes a step's (and a review round's) instructions.
+- `lib/workspace/workflow_reported_status.rb` — The status line an agent ends its turn with, and a tolerant reader of it.
 - `lib/workspace/workflow_starter.rb` — What starts a run: preflight, render and the first step.
 - `lib/workspace/workflow_dispatch.rb` — What starts a step and types its line: locks, budget, attempt record, pane binding.
 - `lib/workspace/workflow_progress.rb` — What follows a step's outcome: pass, gate, next step, finish, retry and review rounds.
@@ -586,8 +587,9 @@ Do not run the whole suite while working or before a commit. GitHub Actions runs
    - A new, renamed or removed `lib/` file, or a change to `.claude/CLAUDE.md` or `docs/architecture/`: run `spec/unit/claude_md_size_spec.rb`.
    - `docs/` alone: no specs, unless a spec reads the file (grep `spec/` for its name). For `docs/README.config.md` run `script/generate-config-docs --check`.
 5. Run the set in one command: `bundle exec rspec FILE...`, or `script/parallel-spec FILE...` past about 20 files. Lint the changed Ruby files: `bundle exec standardrb FILE...`.
-6. Run the whole suite locally (`script/parallel-spec` with no arguments) only when the change can reach everything: `spec/spec_helper.rb`, `spec/support/spawn_guard.rb`, `Gemfile`, `Gemfile.lock`, `.rspec`, `lib/workspace.rb` outside `build_cli` (requires, encoding), a rename or move across many files, or when the person asks.
-7. Report which specs ran and why each was picked. When CI fails on a spec the selection missed, fix the failure and add the rule that would have caught it to this section.
+6. Composition-root specs build real collaborators and so exercise their wiring, not just the changed class: when a changed `lib/` file's constant is a collaborator a builder wires (`build_cli`, `build_agentd_parts`, `build_workflow_engine` in `lib/workspace.rb`), also run the matching builder spec (`grep -rl 'build_agentd_parts\|build_workflow_engine\|build_cli' spec/unit spec/integration`).
+7. Run the whole suite locally (`script/parallel-spec` with no arguments) only when the change can reach everything: `spec/spec_helper.rb`, `spec/support/spawn_guard.rb`, `Gemfile`, `Gemfile.lock`, `.rspec`, `lib/workspace.rb` outside `build_cli` (requires, encoding), a rename or move across many files, or when the person asks.
+8. Report which specs ran and why each was picked. When CI fails on a spec the selection missed, fix the failure and add the rule that would have caught it to this section.
 
 ## Orchestration
 

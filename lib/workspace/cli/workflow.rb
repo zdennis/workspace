@@ -107,7 +107,7 @@ module Workspace
           opts.separator "waits at that step's gate (on that attempt), so a stale button can't pass a later gate. These"
           opts.separator "checks guard against mistakes; they are not a security boundary (docs/README.workflow.md)."
           opts.separator ""
-          opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--stopped-at AT] [--background-task TYPE:ID]...]` is what the agent daemon runs to move a run"
+          opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT] [--stopped-at AT] [--background-task TYPE:ID]... [--transcript-path PATH]]` is what the agent daemon runs to move a run"
           opts.separator "on when a turn ends; it is not meant to be typed."
           opts.separator ""
           opts.separator "`run` and `start` really start a run (start also makes a worktree); --dry-run checks and starts nothing."
@@ -178,6 +178,7 @@ module Workspace
           opts.on("--turn-started AT", "advance: when that turn began (ISO 8601)") { |v| options[:turn_started] = v }
           opts.on("--stopped-at AT", "advance: when the daemon saw that turn end (ISO 8601)") { |v| options[:stopped_at] = v }
           opts.on("--background-task TYPE:ID", "advance: a background task still going when the turn ended (repeatable)") { |v| options[:background] << workflow_background_task(v) }
+          opts.on("--transcript-path PATH", "advance: the agent's transcript, for the status line its last message ends with") { |v| options[:transcript_path] = v }
           opts.on("--json", "Print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
           opts.on("-h", "--help", "Show this help") { options[:help] = true }
           opts.separator ""
@@ -393,7 +394,7 @@ module Workspace
           invocation.exit_handler.exit(code) if code && !code.zero?
         when "advance"
           @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started], "--turn-started"),
-            stopped_at: workflow_time(options[:stopped_at], "--stopped-at"), background: options[:background], caller_pane: ENV["TMUX_PANE"])
+            stopped_at: workflow_time(options[:stopped_at], "--stopped-at"), background: options[:background], transcript_path: options[:transcript_path], caller_pane: ENV["TMUX_PANE"])
         when "run"
           name = workflow_workspace(options)
           raise UsageError, "workflow run needs a workspace: pass --name, or run from inside a project." unless name
@@ -610,7 +611,7 @@ module Workspace
           HelpPages.overview_verbs(HelpPages::STEP).each { |line| opts.separator line }
           opts.separator "Run `workspace step VERB --help` for a verb's options."
           opts.separator ""
-          opts.on("--status STATUS", "done: pass (default) or fail") { |v| options.update(status: v, status_given: true) }
+          opts.on("--status STATUS", "done: pass (default), fail, or a stated status: done, running, needs_input, stuck") { |v| options.update(status: v, status_given: true) }
           opts.on("--summary TEXT", "done: one line about what was done, or what is left") { |v| options[:summary] = v }
           opts.on("--code WORD", "done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)") { |v| options[:code] = v }
           opts.on("--match-file PATH", "expect-fail: a file whose text (trimmed) the failing tests' output must hold") { |v| options[:match_file] = v }

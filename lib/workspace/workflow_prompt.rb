@@ -5,6 +5,13 @@ module Workspace
   # binding its pane gets, and the file itself. A delivered attempt and a preview ({WorkflowEngine#render}) ask
   # the same methods, so the two can't drift. Each method takes the run as a {WorkflowRun} or the stored Hash.
   class WorkflowPrompt
+    # The generated line that asks for the status line, built from {WorkflowReportedStatus} so the ask and the
+    # reader can't drift.
+    STATUS_LINE_TEXT = "End every response with a final line in exactly this form (the detail is optional): " \
+      "`#{WorkflowReportedStatus::FORMAT}`. " \
+      "Use done when the work is finished, running when your turn ends mid-work with background tasks or more to do, " \
+      "needs_input when a decision or question blocks you (put the question in the detail), and " \
+      "stuck when you are blocked (put the reason in the detail)."
     # @param composer [Workspace::InstructionComposer] builds a step's instructions from its packs
     # @param git [Workspace::Git] reads the checkout's branch for `{{branch}}`
     # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
@@ -299,7 +306,7 @@ module Workspace
         text += "\n\nThis step is finished when your turn ends and these files #{what}: #{files.join(", ")}."
       end
       text += "\n\nWhen your turn ends, the runner checks the step with the project's own command; work until it would pass." if step["status"]
-      text
+      text + "\n\n#{STATUS_LINE_TEXT}"
     end
   end
 end

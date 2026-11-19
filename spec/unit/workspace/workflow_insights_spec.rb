@@ -50,7 +50,7 @@ RSpec.describe Workspace::WorkflowInsights do
 
   it "pins its constants" do
     expect([described_class::DEFAULT_RUNS, described_class::MIN_RUNS, described_class::THEME_MIN_RUNS, described_class::MAX_PACKS, described_class::MAX_CODE]).to eq([20, 3, 3, 5, 64])
-    expect(described_class::HOLD_CODES).to eq(%w[budget_spent run_timed_out failed_check])
+    expect(described_class::HOLD_CODES).to eq(%w[budget_spent run_timed_out failed_check waiting_agent_input])
   end
 
   describe "run selection" do
@@ -153,6 +153,20 @@ RSpec.describe Workspace::WorkflowInsights do
       holds = read["holds"].to_h { |row| [row["code"], row.slice("step", "count", "run_ids")] }
       expect(holds).to eq("budget_spent" => {"step" => "plan", "count" => 2, "run_ids" => %w[run-2 run-1]},
         "run_timed_out" => {"step" => "plan", "count" => 1, "run_ids" => ["run-1"]})
+    end
+  end
+
+  describe "a hold for the agent's input" do
+    it "counts needs_input and stuck holds apart by the state the agent reported" do
+      held = ->(state) { [{"code" => "waiting_agent_input", "details" => {"step" => "plan", "attempt" => 1, "state" => state, "detail" => "x"}}] }
+      put("run-1", attempts: [attempt(1, "failed", "reasons" => held.call("needs_input"))])
+      put("run-2", attempts: [attempt(1, "failed", "reasons" => held.call("needs_input"))])
+      put("run-3", attempts: [attempt(1, "failed", "reasons" => held.call("stuck"))])
+      put("run-4", attempts: [attempt(1, "failed", "reasons" => [{"code" => "waiting_agent_input"}])])
+
+      holds = read["holds"].to_h { |row| [row["code"], row["count"]] }
+
+      expect(holds).to eq("waiting_agent_input (needs_input)" => 2, "waiting_agent_input (stuck)" => 1, "waiting_agent_input" => 1)
     end
   end
 

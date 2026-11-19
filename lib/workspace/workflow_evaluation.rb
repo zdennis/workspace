@@ -10,6 +10,9 @@ module Workspace
     # The words in `details.code` the engine sets itself; `step done --code` refuses them, so `code_source: agent` never carries one.
     ENGINE_CODES = (WorkflowGuard::CODES + [WorkflowGuard::CONFIG_CHANGED] + WorkflowRequire::PROOFS.map { |name| "require_#{name}" } + %w[require_remote_unreachable require_unknown check_failed check_timed_out check_error reported step_timed_out review_rejected review_incomplete review_stale review_tampered review_guard review_no_change]).freeze
 
+    # The default recorded with the ask a stated `needs_input` makes.
+    ASK_DEFAULT = "workflow held; no default taken"
+
     # The most of a failed check's log the `report_code` reading looks at.
     CHECK_CODE_TAIL_BYTES = 4096
 
@@ -51,9 +54,13 @@ module Workspace
     # @param review_revision [#call, nil] given `run:`, `step:` and `stop_when:`, the revision of what the round judges now
     #   ({WorkflowReviewRevision}), computed again with the lock given up when a round ends (default: none, and the
     #   round is tallied at once, under the lock that saw it end)
+    # @param transcript [#last_assistant_message, nil] reads the last assistant message of a transcript path ({TranscriptSummary}), for the
+    #   status line a turn ended with (default: none, so no status is read)
+    # @param ask_for [#call, nil] given a workspace name, its ask store ({AskStore}), where a stated `needs_input` with a detail
+    #   records one `workspace ask` entry (default: none, so none is recorded)
     # @param clock [#call] returns the current Time
-    def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil,
-      review_revision: nil, round_rerun: nil, clock: -> { Time.now })
+    def initialize(change:, store:, progress:, panes:, checker:, require_check:, guard:, commands_config:, inbox_for: nil, ask_for: nil, review_round: nil, review_tally: nil, review_closer: nil,
+      review_revision: nil, round_rerun: nil, transcript: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @progress = progress
@@ -63,11 +70,13 @@ module Workspace
       @guard = guard
       @commands_config = commands_config
       @inbox_for = inbox_for
+      @ask_for = ask_for
       @review_round = review_round
       @review_tally = review_tally || NoReviewTally.new
       @review_closer = review_closer
       @review_revision = review_revision
       @round_rerun = round_rerun
+      @transcript = transcript
       @clock = clock
     end
 
@@ -84,11 +93,15 @@ module Workspace
     # @param turn_started [Time, nil] when the turn that ended began; one that began before the step's attempt did decides nothing
     # @param stopped_at [Time, nil] when the turn's end was seen; one from before the attempt began decides nothing
     # @param background [Array<Hash>] the background tasks the agent still listed when its turn ended
+    # @param transcript_path [String, nil] the hook payload's transcript; the status line its last assistant message ends with is stored
+    #   on the attempt as `status_report` (a stated `needs_input` or `stuck` holds the run and `running` spares it
+    #   `turn_ended_incomplete`; the step's own checks stay authoritative)
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [])
+    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
       follow = nil
+      status_report = read_status_report(transcript_path)
       run = @change.call(run_id, actor: actor, cause: "turn_ended") do |read, ctx|
         stored = read.to_h
         next if stored["parked"]
@@ -104,7 +117,7 @@ module Workspace
         next if pane && bound_pane(stored) != pane
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
         next if stopped_at && stopped_at < Time.iso8601(state["attempts"].last["started_at"])
-        judged = evaluate(without_continue_marks(read), ctx: ctx, turn_started: turn_started, background: background)
+        judged = evaluate(without_continue_marks(read), ctx: ctx, turn_started: turn_started, background: background, status_report: status_report)
         follow = ctx
         judged
       end
@@ -114,7 +127,8 @@ module Workspace
     # Records what the agent says about its current attempt. Nothing moves until the turn ends.
     #
     # @param run_id [String]
-    # @param status [String] "pass" or "fail"
+    # @param status [String] "pass" or "fail", or one of {WorkflowReportedStatus::STATES}; the latter is stored as the
+    #   attempt's `status_report` (source "report", the summary its detail) and judged as a stated line is
     # @param summary [String, nil] one line about the attempt
     # @param code [String, nil] a word the agent chose for why (stored; a failed step's `details.code`)
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
@@ -130,6 +144,12 @@ module Workspace
             code: "step_not_running", details: {"run_id" => run_id, "step" => stored["current"], "state" => state["state"]})
         end
         attempt = state["attempts"].last
+        if WorkflowReportedStatus::STATES.include?(status)
+          attempt["status_report"] = {"state" => status, "detail" => summary.to_s[0, WorkflowReportedStatus::TAIL_CHARS], "at" => now_iso, "source" => "report"}
+          event(stored, "step_reported", "step" => stored["current"], "attempt" => attempt["n"], "status" => status)
+          result = Reported.new(run_id: run_id, step: stored["current"], attempt: attempt["n"], reported: attempt["status_report"])
+          next WorkflowRun.from_h(stored)
+        end
         attempt["reported"] = {"status" => status, "summary" => summary, "code" => code, "at" => now_iso}.reject { |key, value| key == "code" && value.nil? }
         event(stored, "step_reported", "step" => stored["current"], "attempt" => attempt["n"], "status" => status)
         result = Reported.new(run_id: run_id, step: stored["current"], attempt: attempt["n"], reported: attempt["reported"])
@@ -148,9 +168,9 @@ module Workspace
     # @param turn_started [Time, nil]
     # @param background [Array<Hash>] see {#turn_ended}
     # @return [WorkflowRun] the run afterwards
-    def evaluate(run, ctx:, turn_started: nil, background: [])
+    def evaluate(run, ctx:, turn_started: nil, background: [], status_report: nil)
       work = WorkflowRun.from_h(run).thawed
-      judge(work, ctx, turn_started, background)
+      judge(work, ctx, turn_started, background, status_report: status_report)
       WorkflowRun.from_h(work)
     end
 
@@ -373,10 +393,17 @@ module Workspace
       false
     end
 
-    def judge(run, ctx, turn_started, background, guard: true)
+    def judge(run, ctx, turn_started, background, guard: true, status_report: nil)
       step = step_def(run)
       state = step_state(run)
       attempt = state["attempts"].last
+      # An explicit `step done` report (source "report") decides the first judging after it was stored and beats that
+      # turn's parsed line. It is then consumed, so a resume, the sweep or a later turn judges current evidence only.
+      stored_report = attempt["status_report"]
+      explicit = stored_report if stored_report.is_a?(Hash) && stored_report["source"] == "report"
+      attempt.delete("status_report") if explicit
+      attempt["status_report"] = status_report if status_report && !explicit
+      status_report = explicit || status_report
       # A turn that ended on the attempt shows its line reached the agent.
       attempt.delete("delivery")
       attempt.delete("proofs")
@@ -385,6 +412,7 @@ module Workspace
         fail_step(run, {"cause" => "reported", "summary" => reported["summary"]}.merge(code_for("reported", reported["code"])), ctx)
         return
       end
+      return if status_hold(run, step, state, attempt, turn_started, status_report)
       if guard && step["guard"]
         found = guard_check(run, step)
         if found
@@ -405,8 +433,9 @@ module Workspace
         run["state"] = "waiting"
         details = {"step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale}
         details["invalid"] = invalid if invalid.any?
-        run["reason"] = if background.any?
-          # Every notification starts a new turn and a hold is hidden, so its `since` stays.
+        run["reason"] = if background.any? || stated_running?(attempt, status_report)
+          # Every notification starts a new turn and a hold is hidden, so its `since` stays. A turn that says it is
+          # still running, with no task listed, waits the same way: the next turn or the sweep decides it.
           stop_reason(run["reason"], nil, "turn_ended_background", details.merge("tasks" => background)).merge("seen_at" => now_iso)
         else
           stop_reason(run["reason"], turn_started, "turn_ended_incomplete", details)
@@ -414,6 +443,42 @@ module Workspace
         return
       end
       require_and_status(run, step, state, attempt, ctx)
+    end
+
+    # Only the current turn's +stated+ report counts, never the one stored on the attempt from an earlier turn: a
+    # resume, the sweep and recovery judge with none and must see none.
+    #
+    # A stated `needs_input` or `stuck` holds the run with `waiting_agent_input`, whatever the checks would say. An
+    # out-of-band `reported` outcome wins over the line, so a step with one is never held by it. The step stays
+    # `running`; a resume decides it as a turn's end would.
+    #
+    # @return [Boolean] whether the run was held
+    def status_hold(run, step, state, attempt, turn_started, stated)
+      return false if attempt["reported"] || !stated.is_a?(Hash) || !%w[needs_input stuck].include?(stated["state"])
+      state["state"] = "running"
+      run["state"] = "waiting"
+      details = {"step" => step["id"], "attempt" => attempt["n"], "state" => stated["state"], "detail" => stated["detail"].to_s}
+      run["reason"] = stop_reason(run["reason"], turn_started, "waiting_agent_input", details)
+      record_ask(run, attempt, stated)
+      true
+    end
+
+    # A stated `needs_input` with a detail records one `workspace ask` entry, so it shows in `sessions` and the derived
+    # inbox rows. `asked_input` on the attempt keeps a repeat judging of the same hold from recording another; it is
+    # set only once the entry is written. `stuck` states a reason, not a question, so it records none.
+    def record_ask(run, attempt, stated)
+      return unless @ask_for && stated["state"] == "needs_input" && !attempt["asked_input"]
+      question = stated["detail"].to_s.strip
+      return if question.empty?
+      @ask_for.call(run["workspace"]).add(question: question, default: ASK_DEFAULT, pane: run["pane"], worktree: run["worktree"])
+      attempt["asked_input"] = true
+    rescue Workspace::Error, SystemCallError
+      nil
+    end
+
+    # Whether the turn that just ended said `running` and no out-of-band report overrides it.
+    def stated_running?(attempt, stated)
+      !attempt["reported"] && stated.is_a?(Hash) && stated["state"] == "running"
     end
 
     # What comes after the step's files: its `require:` entries from +from+ in order, then its `status:`
@@ -655,6 +720,15 @@ module Workspace
 
     def step_state(run)
       run["steps"].fetch(run["current"])
+    end
+
+    # The status line the last assistant message of +path+ ends with, as the attempt stores it; nil when there is no reader,
+    # no path, no message or no line.
+    def read_status_report(path)
+      return nil unless @transcript && path
+      message = @transcript.last_assistant_message(path)
+      parsed = WorkflowReportedStatus.parse(message && message["text"])
+      parsed && {"state" => parsed[:state], "detail" => parsed[:detail], "at" => now_iso}
     end
 
     def now_iso

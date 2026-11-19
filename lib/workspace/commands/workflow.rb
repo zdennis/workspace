@@ -20,7 +20,7 @@ module Workspace
       RENDER_WORKSPACE = "<workspace>".freeze
 
       # What `step done --status` accepts.
-      REPORT_STATUSES = %w[pass fail].freeze
+      REPORT_STATUSES = (%w[pass fail] + WorkflowReportedStatus::STATES).freeze
 
       # The drawings `graph` makes, by `--format`; json prints the model itself.
       GRAPH_FORMATS = %w[mermaid dot ascii json].freeze
@@ -663,6 +663,8 @@ module Workspace
           widths = table.transpose.map { |column| column.map(&:length).max }
           table.each_with_index do |cells, index|
             @output.puts cells.each_with_index.map { |cell, at| cell.ljust(widths[at]) }.join("  ").rstrip
+            reported = (index > 0) && WorkflowReportedStatus.words(result["attempts"][index - 1]["status_report"])
+            @output.puts "  reported: #{TerminalText.escape(reported)}" if reported
             refusal = (index > 0) && result["attempts"][index - 1]["refusal"]
             @output.puts "  refused: #{refusal_text(refusal)}" if refusal
           end
@@ -1034,11 +1036,12 @@ module Workspace
       # @param turn_started [Time, nil] when the turn that ended began, when the daemon knows
       # @param stopped_at [Time, nil] when the daemon saw the turn end
       # @param background [Array<Hash>, nil] the tasks (`"id"`, `"type"`) the Stop listed as still going
+      # @param transcript_path [String, nil] the agent's transcript, for the status line its last message ends with
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @return [void]
       # @raise [Workspace::Error] code `bound_pane` for a step with a guard or a status check, from a pane
       #   bound to the run or a process under it
-      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, caller_pane: nil)
+      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, transcript_path: nil, caller_pane: nil)
         stored = begin
           @store.run(run)
         rescue Workspace::Error
@@ -1055,20 +1058,21 @@ module Workspace
           @infra_retry.call(stored)
           return nil
         end
-        turn_ended ? @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || []) : @engine.tick(run, actor: "daemon")
+        turn_ended ? @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || [], transcript_path: transcript_path) : @engine.tick(run, actor: "daemon")
         nil
       end
 
       # The agent's own report on its step (`step done`).
       #
       # @param pane [String, nil] the pane the agent runs in (`$TMUX_PANE`)
-      # @param status [String] "pass" or "fail"
+      # @param status [String] "pass" or "fail", or "done", "running", "needs_input" or "stuck" (stored as the step's stated status)
       # @param summary [String, nil]
       # @param code [String, nil] a word for why, matching {WorkflowDefinition::CODE_PATTERN} (`usage` otherwise)
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `not_bound` outside a run's pane, `review_pane_bound` in a review pane, `step_not_running`
       def step_done(pane:, status: "pass", summary: nil, code: nil)
-        raise UsageError, "--status must be pass or fail, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
+        raise UsageError, "--status must be one of #{REPORT_STATUSES.join(", ")}, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
+        raise UsageError, "--code applies to pass/fail reports, not to --status #{status}." if code && WorkflowReportedStatus::STATES.include?(status)
         raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || WorkflowDefinition::CODE_PATTERN.match?(code)
         if (refusal = WorkflowDefinition.engine_code_refusal(code))
           raise UsageError, "--code #{refusal}"
@@ -1077,8 +1081,10 @@ module Workspace
         reported = @engine.report(run_id, actor: "agent", status: status, summary: summary, code: code)
         @output.puts "Recorded #{status} for step #{reported["step"]} (attempt #{reported["attempt"]}) of run #{run_id}. " \
           "End your turn now; the step is decided when the turn ends."
+        row = reported["reported"]
+        row = {"status" => row["state"], "summary" => row["detail"]} if row.key?("state")
         {"workspace" => @store.run(run_id).workspace, "outcome" => "recorded", "reason" => nil, "message" => nil, "run_id" => run_id,
-         "step" => reported["step"], "attempt" => reported["attempt"], "reported" => reported["reported"].slice("status", "summary", "code")}
+         "step" => reported["step"], "attempt" => reported["attempt"], "reported" => row.slice("status", "summary", "code")}
       end
 
       # The fail-first check (`step expect-fail`), run by a `require: exec:` proof from no pane: the
@@ -2202,6 +2208,9 @@ module Workspace
         reason = current["reason"]
         @output.puts "  #{reason["code"]}: #{reason_text(reason)}" if reason && !(reason["code"] == "retry_backoff" && wait_kind == "backoff")
         current["flags"].each { |flag| @output.puts "  flag: #{flag}" }
+        # A hold for the agent's input already says what it reported; any other reason gets the report on its own line.
+        reported = WorkflowReportedStatus.words(current["status_report"])
+        @output.puts "  reported: #{TerminalText.escape(reported)}" if reported && !(reason && reason["code"] == "waiting_agent_input")
         @output.puts "  #{infra_retry_text(current["infra_retry"], paused: reason&.fetch("code", nil) == "paused")}" if current["infra_retry"]
         if (deadline = run["deadline"])
           @output.puts "  time: #{deadline["clock"]} #{Duration.humanize(deadline["used"].to_f)} of #{Duration.humanize(deadline["limit"].to_f)}"
@@ -2351,6 +2360,8 @@ module Workspace
           when "delivery" then "step #{details["step"]}'s line was on its way to pane #{details["pane"]} when the process typing it stopped; the agent may not have it"
           else "step #{details["step"]} could not be started (#{details["error"]}): #{details["message"]}#{"; the pane showed #{refusal_facts(details)}" if details["seen"].is_a?(Hash) && refusal_facts(details)}"
           end
+        when "waiting_agent_input"
+          "step #{details["step"]}'s agent says it #{(details["state"] == "stuck") ? "is stuck" : "needs input"}#{": #{TerminalText.escape(details["detail"].to_s)}" unless details["detail"].to_s.empty?}"
         when "turn_ended_incomplete"
           stale = Array(details["stale"])
           # Task types and ids come from a stored run, so they are escaped like any text printed to a terminal.

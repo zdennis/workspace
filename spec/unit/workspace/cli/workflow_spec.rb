@@ -505,6 +505,12 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(keywords).to include(status: "fail", summary: "Two specs fail.", code: "specs_fail")
     end
 
+    it "passes a stated status through to the command" do
+      run("done", "--status", "needs_input", "--summary", "Which database?", verb: "step")
+
+      expect(workflow_command.calls.first.last).to include(status: "needs_input", summary: "Which database?")
+    end
+
     it "prints its overview for --help" do
       run("--help", verb: "step")
 
@@ -914,12 +920,18 @@ RSpec.describe Workspace::CLI::Workflow do
       cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z", "--stopped-at", "2026-10-04T12:30:00.500Z"])
 
       expect(workflow_command.calls.map(&:last)).to eq([
-        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: nil, stopped_at: nil, background: [], caller_pane: ENV["TMUX_PANE"]},
-        {run: "wr_1", turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: [], caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]},
         {run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000),
-         stopped_at: Time.utc(2026, 10, 4, 12, 30, 0, 500_000), background: [], caller_pane: ENV["TMUX_PANE"]}
+         stopped_at: Time.utc(2026, 10, 4, 12, 30, 0, 500_000), background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]}
       ])
       expect(output.string).to eq("")
+    end
+
+    it "passes --transcript-path on to the command" do
+      cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--transcript-path", "/t/s.jsonl"])
+
+      expect(workflow_command.calls.last.last[:transcript_path]).to eq("/t/s.jsonl")
     end
 
     it "parses each --background-task on its first colon" do
@@ -1012,7 +1024,7 @@ RSpec.describe Workspace::CLI::Workflow do
       it "prints help" do
         cli.run(["step", "--help"])
 
-        expect(output.string).to include("Usage: workspace step done [--status pass|fail] [--summary TEXT] [--code WORD] [--json]").and include("end your turn")
+        expect(output.string).to include("Usage: workspace step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--json]").and include("end your turn")
       end
     end
   end

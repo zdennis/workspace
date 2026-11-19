@@ -897,6 +897,23 @@ class RecordingInbox
   end
 end
 
+# Fake of Workspace::AskStore for the evaluation phase: keeps each +add+ in +calls+.
+class RecordingAskStore
+  CONTROL_METHODS = %i[calls].freeze
+
+  attr_reader :calls
+
+  def initialize
+    @calls = []
+  end
+
+  def add(question:, default:, context: nil, pane: nil, worktree: nil, tmux_server: nil)
+    record = {"question" => question, "default" => default, "context" => context, "pane" => pane, "worktree" => worktree}
+    @calls << record
+    record
+  end
+end
+
 # Fake of Workspace::WorkflowEvaluation#evaluate, #review_ended, #finish_check and #finish_follow_ups for the decision and recovery
 # phases: +evaluate+ registers the check it was given on +ctx+ and answers the run as given (with the reason it was given, when one
 # was); +review_ended+ registers the round's end on +ctx+ and answers the run as given; +finish_check+ answers the stored run;
@@ -921,7 +938,7 @@ class RecordingEvaluation
     @calls = []
   end
 
-  def evaluate(run, ctx:, turn_started: nil, background: [])
+  def evaluate(run, ctx:, turn_started: nil, background: [], status_report: nil)
     run = Workspace::WorkflowRun.from_h(run)
     @calls << [:evaluate, run.current]
     ctx.check(@check) if @check

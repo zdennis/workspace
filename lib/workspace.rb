@@ -398,6 +398,7 @@ require_relative "workspace/workflow_inputs"
 require_relative "workspace/workflow_transitions"
 require_relative "workspace/workflow_review_revision"
 require_relative "workspace/workflow_run_change"
+require_relative "workspace/workflow_reported_status"
 require_relative "workspace/workflow_prompt"
 require_relative "workspace/workflow_dispatch"
 require_relative "workspace/workflow_round_holder"
@@ -580,6 +581,7 @@ module Workspace
   #   (default: none)
   # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning and each review round's item
   #   (`review:<run>:<step>`; default: no item)
+  # @param ask_for [#call, nil] given a workspace name, its {AskStore}, for the ask a stated `needs_input` records (default: none)
   # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
   # @param review_round [#call, nil] runs a review round a change registered, given the run id and the round, with the lock given up
   #   (default: none runs, so a reviewed step waits in `reviewing`); `build_cli` gives `review_runner:` instead, so this
@@ -607,13 +609,15 @@ module Workspace
   # @param downtime [Workspace::WorkflowDowntime, nil] the machine's recorded downtime, cut from the run, step and round
   #   clocks the engine reads (default: none, so they run on wall time)
   # @param exec_program [#problem] judges argument 1 of each `exec` proof when a run starts (default: {WorkflowExecProgram}, a lookup on this process's PATH)
+  # @param transcript [#last_assistant_message] reads a transcript's last assistant message, for the status line a turn ends with
+  #   (default: a new {TranscriptSummary})
   # @param clock [#call] returns the current Time
   # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
   # @return [Workspace::WorkflowEngine]
   def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
-    env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, review_round: nil, review_tally: nil, review_closer: nil, review_revision: nil,
+    env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, ask_for: nil, review_round: nil, review_tally: nil, review_closer: nil, review_revision: nil,
     review_runner: nil, round_rerun: nil, review_summary: nil, round_holder: nil, holder_alive: nil, interrupter: ->(*) { raise Workspace::Error, "cannot interrupt: no key presser was given" }, clock: -> { Time.now },
-    prompt_writer: File.method(:write), downtime: nil, exec_program: WorkflowExecProgram)
+    prompt_writer: File.method(:write), downtime: nil, exec_program: WorkflowExecProgram, transcript: TranscriptSummary.new)
     attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
     require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
       commands_config: commands_config, checker: checker)
@@ -638,7 +642,7 @@ module Workspace
       log_tail: log_tail, review_tally: review_tally, guard: guard, round_rerun: round_rerun, review_summary: review_summary,
       rejection: rejection, clock: clock)
     evaluation = WorkflowEvaluation.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
-      guard: guard, commands_config: commands_config, inbox_for: inbox_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, review_revision: review_revision, round_rerun: round_rerun, clock: clock)
+      guard: guard, commands_config: commands_config, inbox_for: inbox_for, ask_for: ask_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, review_revision: review_revision, round_rerun: round_rerun, transcript: transcript, clock: clock)
     starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
       lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, exec_program: exec_program, clock: clock)
     recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, holder_alive: holder_alive, panes: panes, downtime: downtime, clock: clock)
@@ -1117,6 +1121,7 @@ module Workspace
         commands_config: commands_config, checker: workflow_checker,
         inbox_for: workflow_inbox_for),
       inbox_for: workflow_inbox_for,
+      ask_for: ask_store_for,
       review_tally: workflow_review_tally,
       review_revision: workflow_review_revision,
       review_runner: ->(change:, store:, prompt:) do
