@@ -153,7 +153,7 @@ module Workspace
     def run(id)
       warnings = []
       @stops = downtime_stops
-      {"runs" => [present(@store.run(id), warnings)], "warnings" => warnings}
+      {"runs" => [present(@store.run(id), warnings)], "warnings" => warnings.uniq}
     ensure
       @stops = nil
     end
@@ -266,7 +266,7 @@ module Workspace
     def prefetch_snapshots(stored)
       names = stored.filter_map do |run|
         next if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
-        run.workspace if run.parked || %w[running checking].include?(run.step(run.current)&.state) || review_pane_of(run)
+        run.workspace if run.parked || %w[running checking].include?(run.step(run.current)&.state) || review_pane_of(run) || sibling_working?(run)
       end.uniq
       clock = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
       deadline = clock.call + @snapshot_timeout + @list_grace
@@ -288,38 +288,125 @@ module Workspace
       end
     end
 
+    # Whether a step of a fan_out group other than the cursor's is at work, so its pane is read too.
+    def sibling_working?(run)
+      WorkflowDefinition.group_steps(run.definition).values.flatten.any? { |id| %w[running checking].include?(run.step(id)&.state) }
+    end
+
     def present(run, warnings)
-      state = run.steps.fetch(run.current)
       finished = WorkflowRunStore::TERMINAL_STATES.include?(run.state)
-      pane = finished ? nil : (run.parked&.dig("pane") || @panes.pane_of(run.id) || run.pane)
+      view = step_view(run, finished, warnings)
+      live = finished ? {} : sibling_views(run, view, warnings)
+      groups = WorkflowDefinition.group_steps(run.definition)
+      group_states = groups.transform_values { |ids| group_state(run, ids) }
+      {
+        "id" => run.id, "workflow" => run.workflow, "title" => run.title, "workspace" => run.workspace,
+        "project" => run.project, "worktree" => run.worktree, "state" => group_shown_state(run, shown_state(run, view[:reason], view[:shown]), live),
+        "created_at" => run.created_at, "started_at" => run.started_at, "ended_at" => run.ended_at,
+        "cancelled_by" => run.cancelled_by,
+        "current" => view[:current],
+        "steps" => run.definition["steps"].map { |step| step_row(step, run.steps.fetch(step["id"]), run, group_states: group_states, live: live) },
+        "base_sha" => run.base_sha, "pane" => view[:pane], "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
+        "artifacts_dir" => run.artifacts_dir, "events_path" => @store.events_path(run.id),
+        "guard_warnings" => guard_warnings(run)
+      }.merge(budget_row(run)).merge(deadline_row(run)).merge(definition_row(run)).merge(groups_row(groups, group_states))
+    end
+
+    # The step the run's cursor is on, read as `workflow status` has always shown it: its pane, reason and `current`
+    # hash. A step of a fan_out group reads its own pane and slots ({WorkflowRun.step_scoped?}), so the same reading
+    # serves each sibling when the run is handed in with `current` on that sibling ({#sibling_views}).
+    #
+    # @return [Hash] :reason, :shown (the pane's daemon row), :pane, :current, :active (the step's agent is at work with
+    #   nothing held) and :state (the step's state)
+    def step_view(run, finished, warnings, daemon: true)
+      state = run.steps.fetch(run.current)
+      scoped = WorkflowRun.step_scoped?(run.to_h, run.current)
+      own_pane = scoped ? run.pane_for(run.current) : run.pane
+      pane = finished ? nil : (run.parked&.dig("pane") || bound_pane(run, scoped) || own_pane)
       working = !finished && %w[running checking].include?(state.state)
       # A reviewing step is not read from the author's pane, whose turn is over: while its round is live, the review
       # pane is read instead. A stopped or held round shows its stored reason.
       review_pane = finished ? nil : review_pane_of(run)
-      daemon_warning(run, working || (!finished && round_live?(run)), warnings) unless finished
+      daemon_warning(run, working || (!finished && round_live?(run)), warnings) unless finished || !daemon
       # What the pane shows matters only while an agent should be working in it, or a parked resume waits on
       # it; a run parked before its first step has no binding for `alive?` to find.
-      shown = if (working && @panes.alive?(run.id)) || (!finished && run.parked)
+      shown = if (working && pane_alive?(run, scoped)) || (!finished && run.parked)
         pane_state(run.workspace, pane, warnings)
       elsif review_pane
         pane_state(run.workspace, review_pane, warnings)
       end
       reason = finished ? nil : reason_for(run, working, pane, shown, warnings, review_pane: review_pane)
       reason = with_gate_file(run, reason, warnings) if reason
-      {
-        "id" => run.id, "workflow" => run.workflow, "title" => run.title, "workspace" => run.workspace,
-        "project" => run.project, "worktree" => run.worktree, "state" => shown_state(run, reason, shown),
-        "created_at" => run.created_at, "started_at" => run.started_at, "ended_at" => run.ended_at,
-        "cancelled_by" => run.cancelled_by,
-        "current" => {"step" => run.current, "attempt" => state.last_attempt&.n, "state" => state.state,
-                      "reason" => shown_reason(run, reason, review_pane || pane),
-                      "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state)).merge(status_report_row(state))
-            .merge(infra_retry_row(run, state, finished)).merge(finished ? {} : stuck_row(run, state, reason, shown, pane)).merge(finished ? {} : turn_failed_row(run, state, reason, shown, pane)).merge(finished ? {} : review_row(run, state)).merge(finished ? {} : refusal_row(run, state)),
-        "steps" => run.definition["steps"].map { |step| step_row(step, run.steps.fetch(step["id"]), run) },
-        "base_sha" => run.base_sha, "pane" => pane, "task" => run.task, "inputs" => run.inputs, "loops" => run.loops,
-        "artifacts_dir" => run.artifacts_dir, "events_path" => @store.events_path(run.id),
-        "guard_warnings" => guard_warnings(run)
-      }.merge(budget_row(run)).merge(deadline_row(run)).merge(definition_row(run))
+      current = {"step" => run.current, "attempt" => state.last_attempt&.n, "state" => state.state,
+                 "reason" => shown_reason(run, reason, review_pane || pane),
+                 "flags" => finished ? [] : flags(run, state, reason, shown)}.merge(parked_row(run, pane)).merge(proofs_row(state)).merge(status_report_row(state))
+        .merge(infra_retry_row(run, state, finished)).merge(finished ? {} : stuck_row(run, state, reason, shown, pane)).merge(finished ? {} : turn_failed_row(run, state, reason, shown, pane)).merge(finished ? {} : review_row(run, state)).merge(finished ? {} : refusal_row(run, state))
+      {reason: reason, shown: shown, pane: pane, current: current, active: working && reason.nil?, state: state.state}
+    end
+
+    # The pane bound to a step of a group is its own; any other step reads the run's first author pane, as always.
+    def bound_pane(run, scoped)
+      scoped ? @panes.pane_of(run.id, step: run.current) : @panes.pane_of(run.id)
+    end
+
+    def pane_alive?(run, scoped)
+      scoped ? @panes.alive?(run.id, step: run.current) : @panes.alive?(run.id)
+    end
+
+    # The live reading of each fan_out sibling that is under way (not `pending`, and not `passed` unless it waits at a gate or holds a reason), by step id: the same
+    # {#step_view} as the cursor's, taken with the run's `current` on that sibling. A paused or parked run shows none:
+    # its pause or park is the run's, not a sibling's.
+    def sibling_views(run, cursor_view, warnings)
+      return {} if run.paused || run.parked
+      WorkflowDefinition.group_steps(run.definition).values.flatten.each_with_object({}) do |id, found|
+        step = run.step(id)
+        next if step&.state == "pending" || (step&.state == "passed" && !step.gate_waiting? && run.reason_for(id).nil?)
+        found[id] = if id == run.current
+          cursor_view
+        else
+          step_view(WorkflowRun.from_h(run.to_h.merge("current" => id)), false, warnings, daemon: false)
+        end
+      end
+    end
+
+    # The shown state of a run with fan_out siblings under way: `running` while any sibling's agent works with nothing
+    # held, even when the stored state reads `waiting` for another sibling's hold; `waiting` when every sibling under
+    # way is held and the stored state still says `running`. Any other run keeps the state it was given.
+    def group_shown_state(run, base, live)
+      return base if live.empty? || WorkflowRunStore::TERMINAL_STATES.include?(run.state)
+      return "running" if live.values.any? { |view| view[:active] }
+      return "waiting" if base == "running" && live.values.all? { |view| view[:reason] }
+      base
+    end
+
+    # Where a fan_out group stands, derived from its siblings and the join's own rule for a group at rest
+    # ({WorkflowTransitions.group_at_rest?}):
+    #
+    # - `passed`: every sibling passed and none is held (a gate waiting is `waiting`).
+    # - `draining`: a sibling has failed and the join has not yet decided the group: another sibling is still at work
+    #   or held, or a deferred failure move or a relay run is owed.
+    # - `running`: a sibling is at work.
+    # - `pending`: no sibling has started.
+    # - `waiting`: nothing runs and a sibling is held (a gate, a hold, a backoff).
+    # - `failed`: every sibling is at rest and one failed; the join waits for a person.
+    def group_state(run, ids)
+      hash = run.to_h
+      states = ids.map { |id| hash.dig("steps", id, "state") }
+      at_rest = WorkflowTransitions.group_at_rest?(hash, ids, @clock.call)
+      return "passed" if states.all?("passed") && at_rest
+      failed = states.include?("failed")
+      moving = ids.any? { |id| WorkflowRun.slot(hash, id, "pending_move").is_a?(Hash) || WorkflowTransitions.relay_owed?(hash, id) }
+      return "draining" if failed && (!at_rest || moving)
+      return "running" if states.any? { |state| WorkflowTransitions::SIBLING_BUSY.include?(state) }
+      return "pending" if states.all?("pending")
+      return "waiting" unless at_rest
+      failed ? "failed" : "pending"
+    end
+
+    # The `groups` of a run whose definition has fan_out groups: each group's derived state and its sibling ids.
+    def groups_row(groups, group_states)
+      return {} if groups.empty?
+      {"groups" => groups.to_h { |id, steps| [id, {"state" => group_states[id], "steps" => steps}] }}
     end
 
     # The source and file a run's definition was read from at start, so status can say
@@ -502,12 +589,24 @@ module Workspace
     # An approved gate's note file, as recorded, and whether its bytes changed since; `gate_note` is the text the person
     # gave to approve or reject (null when none, and for a run stored before it was shown).
     # A step that was ever reviewed adds `review_rounds`, the rounds it has spent.
-    def step_row(step, state, run)
+    def step_row(step, state, run, group_states: {}, live: {})
       file = state.gate&.dig("file")
       {"id" => step["id"], "title" => step["title"], "state" => state.state, "attempts" => state.attempts.size,
        "gate" => state.gate&.dig("state"), "gate_note" => state.gate&.dig("note"), "gate_file" => file,
        "note_changed" => file ? WorkflowGateNote.sha256(file["path"]) != file["sha256"] : false}
         .merge(state.review_rounds ? {"review_rounds" => state.review_rounds} : {})
+        .merge(step["group"] ? group_member_row(step, run, group_states, live[step["id"]]) : {})
+    end
+
+    # What a member of a fan_out group adds to its entry in `steps`: `group`, `group_state` ({#group_state}) and
+    # `looping` (a deferred failure move or a relay run is owed it), and, while the sibling is under way, what
+    # `current` shows of a step (`attempt`, `reason`, `flags`, and the optional keys), so each sibling reads on its own.
+    def group_member_row(step, run, group_states, view)
+      hash = run.to_h
+      id = step["id"]
+      looping = WorkflowRun.slot(hash, id, "pending_move").is_a?(Hash) || WorkflowTransitions.relay_owed?(hash, id)
+      {"group" => step["group"], "group_state" => group_states[step["group"]], "looping" => looping}
+        .merge(view ? view[:current].except("step", "state") : {})
     end
 
     # A waiting gate's reason names the note to read, hashed now; null when the gate names

@@ -77,12 +77,14 @@ module Workspace
       step = run.current
       swept = WorkflowEngine.sweep_marks(run.to_h)
       stalled = swept["stalled"]
-      {
+      marked = {
         gate: (step if run.step(step)&.gate_waiting?),
         failed: (step if run.state == "failed" || %w[failed_check budget_spent run_timed_out].include?(run.reason_for(run.current)&.dig("code"))),
         stalled: stalled.is_a?(Hash) ? (stalled.keys.map(&:to_s) - held_causes(run)).map { |cause| ["#{swept["step"]}:#{swept["attempt"]}", cause] } : [],
         finished: run.state == "completed"
       }
+      groups = WorkflowDefinition.group_steps(run.definition).values.flatten
+      groups.empty? ? marked : marked.merge(siblings: groups.to_h { |id| [id, sibling_mark(run, id)] })
     rescue
       {gate: nil, failed: nil, stalled: [], finished: false}
     end
@@ -96,14 +98,15 @@ module Workspace
     def fire(before, run)
       run = WorkflowRun.from_h(run)
       after = marks(run)
-      events = new_events(before, after)
-      return if events.empty?
+      episodes = new_episodes(before, after)
+      return if episodes.empty?
       alerts = @alert_config.for_workspace(run.workspace.to_s)
       command = alerts[:notify]
       return unless command
-      wanted = events & Array(alerts[:workflow])
+      named = Array(alerts[:workflow])
+      wanted = episodes.select { |pair| named.include?(pair.first) }
       return if wanted.empty?
-      wanted.each { |event| deliver(command, env(event, run, before, after)) }
+      wanted.each { |event, step| deliver(command, env(event, run, before, after, step)) }
     rescue => e
       report "workspace workflow: could not send alerts for #{clean(run.id)}: #{clean(e.message)}"
     end
@@ -118,6 +121,26 @@ module Workspace
     end
 
     private
+
+    # What one fan_out sibling stands in, so two siblings that gate or fail at once each alert once.
+    def sibling_mark(run, id)
+      {gate: run.step(id)&.gate_waiting? || nil,
+       failed: %w[failed_check budget_spent run_timed_out].include?(run.reason_for(id)&.dig("code")) || nil}
+    end
+
+    # The events a change started, as `[event, step]` pairs; a step is nil for an event of the run (and for every
+    # event of a run with no fan_out group). A sibling's gate or failure is its own event, so it is left out when the
+    # run's own mark already names that sibling as its step.
+    def new_episodes(before, after)
+      episodes = new_events(before, after).map { |event| [event, nil] }
+      Array(after[:siblings]).each do |id, mark|
+        {"gate" => :gate, "failed" => :failed}.each do |event, key|
+          started = mark[key] && !(before[:siblings] || {}).dig(id, key)
+          episodes << [event, id] if started && after[key] != id
+        end
+      end
+      episodes
+    end
 
     # The stall cause an automatic restart holds: its mark is waiting, due or claimed (a pause holds it too), or it
     # ended with its stall closed, so a stall that recovered while its restart was pending never alerts. A restart that
@@ -152,9 +175,10 @@ module Workspace
       events
     end
 
-    def env(event, run, before, after)
-      id, workspace, step = clean(run.id), clean(run.workspace), clean(run.current)
-      reason = clean(run.reason_for(run.current)&.dig("code"))
+    def env(event, run, before, after, sibling = nil)
+      at = sibling || run.current
+      id, workspace, step = clean(run.id), clean(run.workspace), clean(at)
+      reason = clean(run.reason_for(at)&.dig("code"))
       env = {
         "WORKSPACE_ALERT" => "workflow",
         "WORKSPACE_ALERT_EVENT" => event,

@@ -32,15 +32,25 @@ module Workspace
     #   "actions" (all, as {WorkflowStatus} gives them). "next_action" is a suggestion for a person who has read the run:
     #   a program must not run it unattended (approving a gate or cancelling a run is the person's call)
     def rows(runs)
-      found = runs.filter_map { |run| row(run) }
+      found = runs.flat_map { |run| [row(run), *sibling_rows(run)] }.compact
       found.sort_by { |each| [each["since"] ? 0 : 1, each["since"].to_s, each["run"]] }
     end
 
     private
 
-    def row(run)
+    # One row for each fan_out sibling that waits for a person and is not the run's cursor (the cursor's is {#row}):
+    # {WorkflowStatus} gives a sibling under way its own `reason`, `stuck` and `attempt` in its `steps` entry.
+    def sibling_rows(run)
+      return [] if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
+      cursor = run.dig("current", "step")
+      Array(run["steps"]).filter_map do |entry|
+        next unless entry.is_a?(Hash) && entry["group"] && entry.key?("flags") && entry["id"] != cursor
+        row(run, entry.merge("step" => entry["id"]))
+      end
+    end
+
+    def row(run, current = run["current"] || {})
       return nil if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
-      current = run["current"] || {}
       reason = current["reason"]
       stuck = current["stuck"]
       source = reason || stuck

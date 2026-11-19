@@ -194,4 +194,36 @@ RSpec.describe Workspace::WorkflowNeedsMe do
       expect(needs_me.rows([reviewing("wr_1", reason: nil)])).to eq([])
     end
   end
+  describe "a run with fan_out siblings under way" do
+    def sibling(id, reason: nil, flags: [], attempt: 1, state: "failed")
+      {"id" => id, "state" => state, "group" => "checks", "group_state" => "failed", "looping" => false, "attempt" => attempt,
+       "reason" => reason, "flags" => flags}
+    end
+
+    def grouped(cursor_reason:, siblings:)
+      current = {"step" => "lint", "attempt" => 1, "state" => "failed", "reason" => cursor_reason, "flags" => []}
+      {"id" => "wr_1", "workflow" => "ci", "workspace" => "app", "state" => "waiting", "current" => current,
+       "steps" => [{"id" => "build", "state" => "passed"}] + siblings}
+    end
+
+    it "lists a waiting sibling that is not the cursor as its own row, beside the cursor's" do
+      failed = reason("failed_check", details: {"code" => "test"})
+      rows = needs_me.rows([grouped(cursor_reason: failed, siblings: [sibling("lint", reason: failed), sibling("spec", reason: failed, attempt: 2)])])
+
+      expect(rows.map { |row| [row["step"], row["attempt"], row["code"], row["detail"]] }).to eq([["lint", 1, "failed_check", "test"], ["spec", 2, "failed_check", "test"]])
+    end
+
+    it "lists the sibling when the cursor sits on a sibling that waits for nothing" do
+      rows = needs_me.rows([grouped(cursor_reason: nil, siblings: [sibling("lint", state: "running"), sibling("spec", reason: reason("failed_check"))])])
+
+      expect(rows.map { |row| row["step"] }).to eq(["spec"])
+    end
+
+    it "leaves out a sibling with no reason, a passed one and a finished run's" do
+      siblings = [sibling("lint", state: "running"), {"id" => "spec", "state" => "passed", "group" => "checks"}]
+      expect(needs_me.rows([grouped(cursor_reason: nil, siblings: siblings)])).to eq([])
+      done = grouped(cursor_reason: nil, siblings: [sibling("spec", reason: reason("failed_check"))]).merge("state" => "failed")
+      expect(needs_me.rows([done])).to eq([])
+    end
+  end
 end
