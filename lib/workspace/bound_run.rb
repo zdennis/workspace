@@ -35,6 +35,12 @@ module Workspace
       (entry && entry["role"] != "reviewer") ? entry["id"] : nil
     end
 
+    # @return [String, nil] the step the pane's binding was made for, when it records one; nil for an unbound pane
+    def step
+      step = live_entry&.fetch("step", nil)
+      (step.is_a?(String) && !step.empty?) ? step : nil
+    end
+
     private
 
     def live_entry

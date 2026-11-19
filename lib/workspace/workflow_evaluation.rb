@@ -96,13 +96,17 @@ module Workspace
     # @param transcript_path [String, nil] the hook payload's transcript; the status line its last assistant message ends with is stored
     #   on the attempt as `status_report` (a stated `needs_input` or `stuck` holds the run and `running` spares it
     #   `turn_ended_incomplete`; the step's own checks stay authoritative)
+    # @param step [String, nil] the step the pane was bound for. For a step of a fan_out group (any sibling, the
+    #   cursor's or not) the turn is decided for that step, against that step's own pane; for any other step, or none,
+    #   the cursor's step is decided as always. Left nil, a pane bound to a sibling names its step itself.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
+    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, step: nil)
       follow = nil
       status_report = read_status_report(transcript_path)
       run = @change.call(run_id, actor: actor, cause: "turn_ended") do |read, ctx|
+        read = on_sibling(read, step, pane)
         stored = read.to_h
         next if stored["parked"]
         state = step_state(stored)
@@ -114,7 +118,7 @@ module Workspace
           next judged
         end
         next unless state["state"] == "running"
-        next if pane && bound_pane(stored, stored["current"]) != pane
+        next if pane && bound_pane(stored, stored["current"]) != pane # the cursor was moved to the sibling by on_sibling
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
         next if stopped_at && stopped_at < Time.iso8601(state["attempts"].last["started_at"])
         judged = evaluate(without_continue_marks(read), ctx: ctx, turn_started: turn_started, background: background, status_report: status_report)
@@ -132,12 +136,14 @@ module Workspace
     # @param summary [String, nil] one line about the attempt
     # @param code [String, nil] a word the agent chose for why (stored; a failed step's `details.code`)
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @param step [String, nil] a fan_out sibling to report on, when the caller's pane is bound to one; nil, or a step
+    #   outside any group, reports on the cursor's step
     # @return [Reported]
     # @raise [Workspace::Error] code `step_not_running` when the run's step is not being worked on
-    def report(run_id, actor:, status:, summary: nil, code: nil)
+    def report(run_id, actor:, status:, summary: nil, code: nil, step: nil)
       result = nil
       @change.call(run_id, actor: actor, cause: "report") do |read|
-        stored = read.thawed
+        stored = on_sibling(read, step, nil).thawed
         state = step_state(stored)
         unless %w[running checking].include?(state["state"])
           raise Workspace::Error.new("Step #{stored["current"]} of run #{run_id} is #{state["state"]}, so there is nothing to report on.",
@@ -717,6 +723,17 @@ module Workspace
     def bound_pane(run, step_id = nil)
       return @panes.pane_of(run["id"]) || run["pane"] unless WorkflowRun.step_scoped?(run, step_id)
       @panes.pane_of(run["id"], step: step_id) || WorkflowRun.slot(run, step_id, "pane")
+    end
+
+    # +read+ with the cursor on the fan_out sibling a turn end or report belongs to, so the decision below reads and
+    # writes that sibling's step; +read+ itself when the step is the cursor's, in no group, or unknown. The step is the
+    # one named, else the one the pane's binding was made for.
+    def on_sibling(read, step, pane)
+      step ||= @panes.step_on(pane) if pane && @panes.respond_to?(:step_on)
+      stored = read.to_h
+      return read if step.nil? || step == stored["current"] || !WorkflowRun.step_scoped?(stored, step)
+      return read unless stored["steps"].is_a?(Hash) && stored["steps"][step].is_a?(Hash)
+      WorkflowRun.from_h(read.thawed.merge("current" => step))
     end
 
     def step_def(run)

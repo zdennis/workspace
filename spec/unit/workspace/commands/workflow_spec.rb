@@ -2567,6 +2567,18 @@ RSpec.describe Workspace::Commands::Workflow do
   end
 
   describe "#advance" do
+    it "hands the step a fan_out sibling's pane was bound for to the engine, and judges that step's checks" do
+      run = Workspace::WorkflowRun.from_h("id" => "wr_1", "current" => "test", "definition" => {"steps" => [{"id" => "lint", "group" => "checks", "status" => "true"}, {"id" => "test", "group" => "checks"}]})
+      allow(store).to receive(:run).with("wr_1").and_return(run)
+      allow(engine).to receive(:turn_ended)
+      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+
+      expect { command.advance(run: "wr_1", turn_ended: true, pane: "%5", step: "lint", caller_pane: "%5") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("bound_pane") }
+      command.advance(run: "wr_1", turn_ended: true, pane: "%6", step: "test")
+
+      expect(engine).to have_received(:turn_ended).with("wr_1", actor: "daemon", pane: "%6", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, step: "test")
+    end
+
     it "tells the engine a turn ended in a pane, or takes the timer's look" do
       allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("id" => "wr_1", "current" => "plan", "definition" => {"steps" => [{"id" => "plan"}]}))
       allow(engine).to receive(:turn_ended)
@@ -2636,6 +2648,16 @@ RSpec.describe Workspace::Commands::Workflow do
   end
 
   describe "#step_done" do
+    it "reports on the step a sibling's pane is bound for" do
+      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      allow(panes).to receive(:step_on).with("%5").and_return("lint")
+      allow(engine).to receive(:report).with("wr_1", actor: "agent", status: "pass", summary: nil, code: nil, step: "lint")
+        .and_return("run_id" => "wr_1", "step" => "lint", "attempt" => 1, "reported" => {"status" => "pass", "summary" => nil, "at" => "t"})
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
+
+      expect(command.step_done(pane: "%5")).to include("step" => "lint")
+    end
+
     it "records the report for the run this pane is bound to and tells the agent to end its turn" do
       allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
       allow(engine).to receive(:report).with("wr_1", actor: "agent", status: "fail", summary: "Two specs red.", code: nil)

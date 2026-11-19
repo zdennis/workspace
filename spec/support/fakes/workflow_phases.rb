@@ -407,6 +407,12 @@ class RecordingWorkflowPanes
     {run_id: @reviewing[pane], role: "reviewer"} if @reviewing[pane]
   end
 
+  # The step of a grouped run's +bound+ hash (step => pane) the pane is bound for; nil for a run bound to one pane.
+  def step_on(pane)
+    bound = @bound[@runs_on[pane]]
+    bound.is_a?(Hash) ? bound.key(pane) : nil
+  end
+
   # A run id in +dead+ makes every binding of the run dead; a [run id, step] pair, only that step's.
   def alive?(run_id, step: nil) = !@dead.include?(run_id) && !(step && @dead.include?([run_id, step]))
 

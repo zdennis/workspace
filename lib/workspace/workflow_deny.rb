@@ -76,8 +76,9 @@ module Workspace
       pattern = first_match(command, patterns)
       return nil unless pattern
 
-      record(run, command, pattern)
-      message(run, pattern)
+      step = bound_step(run)
+      record(run, command, pattern, step)
+      message(run, pattern, step)
     rescue => e
       @logger.debug { "session-event: deny check failed (#{e.class}: #{e.message})" }
       nil
@@ -257,20 +258,27 @@ module Workspace
       [name, word].uniq.map { |program| "#{program} #{text}".strip }
     end
 
-    def record(run, command, pattern)
+    # The step the calling pane was bound for when it is a step of the run's fan_out group (a sibling's pane names its
+    # own step, not the cursor's); the cursor's otherwise.
+    def bound_step(run)
+      named = @bound_run.step if @bound_run.respond_to?(:step)
+      WorkflowRun.step_scoped?(run.to_h, named) ? named : run.current
+    end
+
+    def record(run, command, pattern, step = run.current)
       shown = TerminalText.escape(command[0, MAX_RECORDED])
-      data = {"step" => run.current, "pattern" => pattern, "command" => shown}
+      data = {"step" => step, "pattern" => pattern, "command" => shown}
       @run_store.record_event(run.id, "command_denied", data)
       @event_log&.record(type: "command_denied", project: run.workspace,
         data: data.merge("run_id" => run.id, "workflow" => run.workflow, "workspace" => run.workspace))
     end
 
-    def step_clause(run)
-      run.current.is_a?(String) ? ", step #{TerminalText.escape(run.current)}" : ""
+    def step_clause(step)
+      step.is_a?(String) ? ", step #{TerminalText.escape(step)}" : ""
     end
 
-    def message(run, pattern)
-      "denied by workflow #{TerminalText.escape(run.workflow)}#{step_clause(run)}: " \
+    def message(run, pattern, step = run.current)
+      "denied by workflow #{TerminalText.escape(run.workflow)}#{step_clause(step)}: " \
         "#{TerminalText.escape(pattern).inspect}. Report this and stop."
     end
   end

@@ -171,6 +171,16 @@ module Workspace
       {run_id: entry["id"], role: (entry["role"] == "reviewer") ? "reviewer" : "author"}
     end
 
+    # @param pane [String] a pane id
+    # @return [String, nil] the step the pane's author binding was made for ({#bound_on}'s rules: a live binding of a
+    #   run); nil for an unbound pane, a review pane, or a binding that records no step
+    def step_on(pane)
+      bound = bound_on(pane)
+      return nil unless bound && bound[:role] == "author"
+      step = @bindings.binding_for(pane)["step"]
+      (step.is_a?(String) && !step.empty?) ? step : nil
+    end
+
     # @param run_id [String]
     # @param step [String, nil] only the pane bound for that step; nil is the first author pane the run has
     # @return [String, nil] the pane bound to the run as its author, wherever `restore` moved the

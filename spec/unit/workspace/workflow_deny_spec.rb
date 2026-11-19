@@ -163,6 +163,27 @@ RSpec.describe Workspace::WorkflowDeny do
       expect(check("git push")).to be_nil
     end
   end
+  context "with a pane bound to a sibling of a fan_out group" do
+    let(:run) do
+      {"id" => "wr_1", "workflow" => "investigate", "workspace" => "app", "current" => "test", "state" => state,
+       "definition" => {"deny" => patterns, "steps" => [{"id" => "lint", "group" => "checks"}, {"id" => "test", "group" => "checks"}]},
+       "steps" => {"lint" => {"attempts" => []}, "test" => {"attempts" => []}}}
+    end
+    let(:bound_run) { instance_double(Workspace::BoundRun, run_id: "wr_1", step: "lint") }
+
+    it "names the bound step in the denial and the event, not the cursor's" do
+      expect(check("git push")).to eq('denied by workflow investigate, step lint: "git push*". Report this and stop.')
+      line = JSON.parse(File.readlines(File.join(dir, "runs", "wr_1.events.jsonl")).last)
+      expect(line).to include("type" => "command_denied", "step" => "lint")
+    end
+
+    it "keeps the cursor's step when the binding's step is not in a group" do
+      allow(bound_run).to receive(:step).and_return("elsewhere")
+
+      expect(check("git push")).to match(/step test:/)
+    end
+  end
+
   context "with a pattern that names the program's path" do
     let(:patterns) { ["/usr/bin/git*"] }
 

@@ -66,11 +66,14 @@ module Workspace
       # A review pane's turn ends its round, so a pane bound in any role wakes its run.
       run_id = @panes.bound_on(pane_id)&.fetch(:run_id)
       return nil unless run_id
+      # An author pane's binding names its step; the run uses it to tell a fan_out sibling's turn end from the cursor's.
+      bound_step = @panes.step_on(pane_id) if @panes.respond_to?(:step_on)
+      step = bound_step ? ["--step", bound_step] : []
       started = turn_started ? ["--turn-started", turn_started.utc.iso8601(3)] : []
       tasks = Array(background).flat_map { |task| ["--background-task", "#{task["type"]}:#{task["id"]}"] }
       transcript = (transcript_path.is_a?(String) && !transcript_path.empty?) ? ["--transcript-path", transcript_path] : []
       record(hook_log, "workflow_advance_started", pane_id, "run_id" => run_id, "cause" => "turn_ended")
-      advance(workspace, run_id, hook_log, "--turn-ended", "--pane", pane_id, *started, "--stopped-at", @clock.call.utc.iso8601(3), *tasks, *transcript)
+      advance(workspace, run_id, hook_log, "--turn-ended", "--pane", pane_id, *step, *started, "--stopped-at", @clock.call.utc.iso8601(3), *tasks, *transcript)
       run_id
     rescue => e
       @logger.debug { "workflow: could not wake the run on #{pane_id} (#{e.class}: #{e.message})" }

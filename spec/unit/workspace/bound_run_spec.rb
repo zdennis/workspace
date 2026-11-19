@@ -26,6 +26,14 @@ RSpec.describe Workspace::BoundRun do
     expect(bound_run.run_id).to eq("wr_1")
   end
 
+  it "names the step the pane's binding was made for, nil when it records none" do
+    bind("%4", "step" => "lint")
+    expect(bound_run.step).to eq("lint")
+
+    bind("%4")
+    expect(bound_run.step).to be_nil
+  end
+
   it "is nil for a pane with no binding" do
     bind("%5")
 

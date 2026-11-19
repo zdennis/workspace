@@ -127,6 +127,15 @@ RSpec.describe Workspace::WorkflowNudger do
       expect(advances.size).to eq(1)
     end
 
+    it "hands the step an author pane is bound for to the advance, so a fan_out sibling's turn end reaches its own step" do
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
+      allow(panes).to receive(:step_on).with("%5").and_return("lint")
+
+      nudger.turn_ended("app", "%5")
+
+      expect(spawned.first.first).to eq([RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--step", "lint", "--stopped-at", "2026-10-04T12:30:00.000Z"])
+    end
+
     it "starts `workflow advance` for the run the pane is bound to, logging beside the daemon" do
       allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
 

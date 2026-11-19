@@ -97,15 +97,15 @@ module Workspace
     # The agent's turn ended in the run's pane: decides the current step. See {WorkflowEvaluation#turn_ended}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run afterwards
-    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
-      @evaluation.turn_ended(run_id, actor: actor, pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background, transcript_path: transcript_path).to_h
+    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, step: nil)
+      @evaluation.turn_ended(run_id, actor: actor, pane: pane, step: step, turn_started: turn_started, stopped_at: stopped_at, background: background, transcript_path: transcript_path).to_h
     end
 
     # Records what the agent says about its current attempt. See {WorkflowEvaluation#report}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] "run_id", "step", "attempt" and "reported"
-    def report(run_id, actor:, status:, summary: nil, code: nil)
-      reported = @evaluation.report(run_id, actor: actor, status: status, summary: summary, code: code)
+    def report(run_id, actor:, status:, summary: nil, code: nil, step: nil)
+      reported = @evaluation.report(run_id, actor: actor, status: status, summary: summary, code: code, step: step)
       {"run_id" => reported.run_id, "step" => reported.step, "attempt" => reported.attempt, "reported" => reported.reported}
     end
 

@@ -143,4 +143,55 @@ RSpec.describe Workspace::WorkflowEngine do
     expect(panes.kicks.map { |kick| kick[:pane] }).to eq(%w[%5 %5 %101])
     expect(panes.kicks[1][:text]).to eq("Read #{run["steps"]["lint"]["attempts"].first["prompt_file"]} and follow it.")
   end
+
+  describe "a sibling's turn end" do
+    before { start(first_group) }
+
+    def finish(step, pane, **rest)
+      path = File.join(worktree, ".workflow", "wr_1", "#{step}.md")
+      File.write(path, "done\n")
+      File.utime(now.first, now.first, path)
+      engine.turn_ended("wr_1", actor: "agent", pane: pane, **rest)
+    end
+
+    it "evaluates the step of the pane it ended in, whichever sibling the cursor is on" do
+      expect(run["current"]).to eq("test")
+
+      finish("lint", "%5", step: "lint")
+      expect(run["steps"]["lint"]["state"]).to eq("passed")
+      expect(run["steps"]["test"]["state"]).to eq("running")
+
+      finish("test", "%101", step: "test")
+      expect(run["steps"]["test"]["state"]).to eq("passed")
+      expect(run["steps"]["lint"]["state"]).to eq("passed")
+    end
+
+    # Pins the cursor's meaning for now, until the group's join (T9) replaces group progression: after a sibling
+    # passes, progress puts the cursor back on the sibling still running (the last one dispatched), not on the one
+    # just evaluated. The nudger, status and deny read it.
+    it "leaves the cursor on the sibling still running after the other passes" do
+      expect(run["current"]).to eq("test")
+
+      finish("lint", "%5", step: "lint")
+
+      expect(run["steps"]["lint"]["state"]).to eq("passed")
+      expect(run["steps"]["test"]["state"]).to eq("running")
+      expect(run["current"]).to eq("test")
+    end
+
+    it "finds the sibling from the pane's binding when no step is named" do
+      finish("lint", "%5")
+
+      expect(run["steps"]["lint"]["state"]).to eq("passed")
+      expect(run["steps"]["test"]["state"]).to eq("running")
+    end
+
+    it "ignores a pane that is not bound to the run, and a pane that is not the named step's" do
+      finish("lint", "%999")
+      finish("lint", "%101", step: "lint")
+
+      expect(run["steps"]["lint"]["state"]).to eq("running")
+      expect(run["steps"]["test"]["state"]).to eq("running")
+    end
+  end
 end
