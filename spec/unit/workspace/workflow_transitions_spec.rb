@@ -624,6 +624,44 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe "step-scoped steps" do
+    let(:hold) { {"allowance" => 10} }
+    let(:grouped) do
+      run = run_with(steps: {"a" => step("running", {"n" => 1}).merge("budget_hold" => hold), "b" => step("running", {"n" => 1})})
+      run.merge("current" => "a", "definition" => {"steps" => [{"id" => "a", "group" => "g1"}, {"id" => "b", "group" => "g1"}]})
+    end
+
+    it "reads each step's own holds, so a hold on one does not hold the other" do
+      expect(described_class.starts_attempt?(grouped, from: nil, pane: nil, step: "a")).to be(true)
+      expect(described_class.starts_attempt?(grouped, from: nil, pane: "%1", step: "b")).to be(true)
+      grouped["state"] = "waiting"
+      expect(described_class.held_reason(grouped, step: "a")).to eq("budget_hold")
+      expect(described_class.held_reason(grouped, step: "b")).to be_nil
+    end
+
+    it "answers sweep_target? for the step it is given, not the cursor's" do
+      expect(described_class.sweep_target?(grouped, "b", 1, false, now)).to be(true)
+      expect(described_class.sweep_target?(grouped, "b", 1, true, now)).to be(true)
+      expect(described_class.sweep_target?(grouped.merge("definition" => {"steps" => [{"id" => "a"}, {"id" => "b"}]}), "b", 1, false, now)).to be(false)
+    end
+
+    it "reads the given step's own reason, not the cursor's" do
+      own = grouped.merge("steps" => grouped["steps"].merge("b" => step("running", {"n" => 1}).merge("reason" => {"code" => "waiting_on_person"})))
+      expect(described_class.sweep_target?(own, "b", 1, true, now)).to be(false)
+      expect(described_class.sweep_target?(own, "b", 1, :or_incomplete, now)).to be(false)
+
+      incomplete = grouped.merge("reason" => {"code" => "waiting_on_person"},
+        "steps" => grouped["steps"].merge("b" => step("running", {"n" => 1}).merge("reason" => {"code" => "turn_ended_incomplete"})))
+      expect(described_class.sweep_target?(incomplete, "b", 1, true, now)).to be(false)
+      expect(described_class.sweep_target?(incomplete, "b", 1, :or_incomplete, now)).to be(true)
+    end
+
+    it "reports the given step in budget_details" do
+      expect(described_class.budget_details(grouped, {}, step: "b")["step"]).to eq("b")
+      expect(described_class.budget_details(grouped, {})["step"]).to eq("a")
+    end
+  end
+
   describe ".left_alone" do
     let(:run) { run_with(steps: {"a" => step("running", {"n" => 1})}) }
 

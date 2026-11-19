@@ -1012,13 +1012,14 @@ module Workspace
     # @param now [Time]
     # @return [Boolean]
     def self.sweep_target?(run, step, attempt, running, now)
-      return false unless run["current"] == step
-      state = run["steps"].fetch(run["current"])
+      # A step that belongs to a group runs beside its siblings, so it need not be the cursor's step.
+      return false unless run["current"] == step || WorkflowRun.step_scoped?(run, step)
+      state = run["steps"].fetch(step)
       last = state["attempts"].last
       return false unless last&.fetch("n", nil) == attempt
       return true unless running
       return false unless state["state"] == "running" && !run["parked"] && delivery(last, now) != :delivering
-      slot(run, "reason").nil? || (running == :or_incomplete && slot_dig(run, "reason", "code") == "turn_ended_incomplete")
+      slot(run, "reason", step).nil? || (running == :or_incomplete && slot_dig(run, "reason", "code", step: step) == "turn_ended_incomplete")
     end
 
     # Why a resume does nothing for the step as it stands; nil when it acts.
@@ -1154,9 +1155,10 @@ module Workspace
     #
     # @param run [Hash] a stored run
     # @param reading [Hash] its {WorkflowBudget.reading}
+    # @param step [String, nil] the step the refusal or hold is of; the current step unless given
     # @return [Hash]
-    def self.budget_details(run, reading)
-      {"run_id" => run["id"], "step" => run["current"]}.merge(reading.slice("used", "allowance", "counted", "uncounted", "estimated", "needed", "suggested"))
+    def self.budget_details(run, reading, step: run["current"])
+      {"run_id" => run["id"], "step" => step}.merge(reading.slice("used", "allowance", "counted", "uncounted", "estimated", "needed", "suggested"))
         .merge("tokens" => reading["tokens"], "extra_tokens" => reading["extra_tokens"])
     end
 

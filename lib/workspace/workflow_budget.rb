@@ -53,7 +53,9 @@ module Workspace
       run.steps.each do |id, step|
         stored = Array(step.to_h["attempts"])
         # A reviewing step's attempt has ended (`checks_passed`) with its usage, so it counts.
-        running = (live && id == run.current && %w[running checking].include?(step.state)) ? step.attempts.last : nil
+        # Every live attempt is left out: the cursor's step, and each step of a group (siblings run at the same time).
+        cursor = id == run.current || WorkflowRun.step_scoped?(run.to_h, id)
+        running = (live && cursor && %w[running checking].include?(step.state)) ? step.attempts.last : nil
         step.attempts.each_with_index do |attempt, index|
           next unless stored[index].is_a?(Hash) && counted_attempt?(attempt) && !attempt.equal?(running)
           own = tokens_of(attempt.usage)

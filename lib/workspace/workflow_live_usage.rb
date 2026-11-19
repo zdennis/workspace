@@ -60,13 +60,13 @@ module Workspace
       attempt = running_attempt(run)
       return forget(id) unless attempt
       started = TranscriptUsage.time(attempt.started_at) or return nil
-      server = @server_for.call(run.pane)
+      server = @server_for.call(run.pane_for(run.current))
       entry, ended_session = TranscriptUsage.session_entry(ledger: @ledger, names: @session_names.call(run.workspace),
-        pane: run.pane, started: started, ended: now, server: server)
+        pane: run.pane_for(run.current), started: started, ended: now, server: server)
       return nil unless entry && TranscriptUsage.agent_kind(entry) == "claude"
       path = entry["transcript_path"]
       return nil unless TranscriptUsage.transcript_path?(path)
-      key = {"run" => id, "step" => run.current, "attempt" => attempt.n, "pane" => run.pane,
+      key = {"run" => id, "step" => run.current, "attempt" => attempt.n, "pane" => run.pane_for(run.current),
              "tmux_server" => entry["tmux_server"]&.to_s, "session_id" => entry["session_id"], "session_at" => entry["at"],
              "transcript" => path}
       window = {from: started, to: now}

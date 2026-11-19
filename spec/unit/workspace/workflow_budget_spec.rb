@@ -18,6 +18,17 @@ RSpec.describe Workspace::WorkflowBudget do
     expect(described_class.reading({"definition" => {"budget" => {"tokens" => 5}}, "steps" => nil})).to be_nil
   end
 
+  it "leaves out every live attempt of a run whose steps belong to a group, and only the cursor's step otherwise" do
+    live = {"state" => "running", "attempts" => [ended({"input_tokens" => 500}, outcome: nil)]}
+    stored = {"definition" => {"budget" => {"tokens" => 1000, "action" => "stop"}, "steps" => [{"id" => "a", "group" => "g1"}, {"id" => "b", "group" => "g1"}]},
+              "current" => "a", "steps" => {"a" => live, "b" => live}}
+
+    expect(described_class.reading(stored)).to include("used" => 0)
+    expect(described_class.reading(stored, live: false)).to include("used" => 1000)
+    ungrouped = stored.merge("definition" => {"budget" => {"tokens" => 1000, "action" => "stop"}})
+    expect(described_class.reading(ungrouped)).to include("used" => 500)
+  end
+
   it "adds input, output and cache creation tokens, and leaves cache reads out" do
     usage = {"input_tokens" => 100, "output_tokens" => 50, "cache_creation_input_tokens" => 25, "cache_read_input_tokens" => 9_000_000}
 
