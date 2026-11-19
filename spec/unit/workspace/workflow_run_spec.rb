@@ -365,6 +365,66 @@ RSpec.describe Workspace::WorkflowRun do
     end
   end
 
+  describe "per-step slots" do
+    def from_hash(hash) = described_class.from_h(hash)
+
+    it "round-trips a run with per-step keys byte for byte, frozen all the way down" do
+      hash = {"id" => "r", "reason" => {"code" => "run"}, "steps" => {
+        "s1" => {"state" => "running", "reason" => {"code" => "a"}, "backoff" => {"until" => "t"}, "pending_move" => {"to" => "s2"}},
+        "s2" => {"state" => "pending", "pending_context" => ["x"], "budget_hold" => {"text" => "t"}}
+      }}
+
+      given = from_hash(hash)
+      expect(JSON.pretty_generate(given.to_h)).to eq(JSON.pretty_generate(hash))
+      expect(given.reason_for("s1")).to be_frozen
+      expect(given.pending_move_for("s1")).to be_frozen
+    end
+
+    it "reads the run-level value when the step lacks the key, and the step's own value when it has it" do
+      given = from_hash("reason" => {"code" => "run"}, "steps" => {"s1" => {"state" => "running"}, "s2" => {"reason" => {"code" => "own"}}})
+
+      expect(given.reason_for("s1")).to eq("code" => "run")
+      expect(given.reason_for("s2")).to eq("code" => "own")
+    end
+
+    it "reads the step's own nil, without falling back, when the step holds the key with a nil value" do
+      given = from_hash("reason" => {"code" => "run"}, "steps" => {"s1" => {"reason" => nil}})
+
+      expect(given.reason_for("s1")).to be_nil
+    end
+
+    it "falls back to the run-level backoff of an old run file" do
+      given = run("retry_backoff")
+
+      expect(given.backoff).not_to be_nil
+      expect(given.step("build").to_h).not_to have_key("backoff")
+      expect(given.backoff_for("build")).to eq(given.backoff)
+    end
+
+    it "reads nil, without raising, when nothing holds the key" do
+      expect(from_hash({}).reason_for("s1")).to be_nil
+      expect(from_hash("steps" => {"s1" => {}}).backoff_for("missing")).to be_nil
+      expect(from_hash("steps" => "bad").pending_move_for("s1")).to be_nil
+      expect(from_hash("steps" => {"s1" => "bad"}).timeout_hold_for("s1")).to be_nil
+      expect(from_hash(nil).budget_hold_for(nil)).to be_nil
+    end
+
+    it "defines a reader for every per-step key" do
+      given = from_hash("steps" => {"s1" => {}})
+
+      described_class::PER_STEP_KEYS.each { |key| expect(given.public_send(:"#{key}_for", "s1")).to be_nil }
+    end
+
+    it "reads two steps' values independently" do
+      given = from_hash("steps" => {"s1" => {"pending_move" => {"to" => "a"}, "pause_hold" => 1}, "s2" => {"pending_move" => {"to" => "b"}}})
+
+      expect(given.pending_move_for("s1")).to eq("to" => "a")
+      expect(given.pending_move_for("s2")).to eq("to" => "b")
+      expect(given.pause_hold_for("s1")).to eq(1)
+      expect(given.pause_hold_for("s2")).to be_nil
+    end
+  end
+
   describe Workspace::WorkflowRun::Step, "review predicates" do
     def step(state, review) = described_class.from_h({"state" => state, "review" => review}.compact)
 

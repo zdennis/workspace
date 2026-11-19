@@ -78,6 +78,21 @@ module Workspace
     # @return [Integer] how many restarts a reboot recovery has made on this run; 0 when none is stored
     def reboot_recoveries = to_h["reboot_recoveries"].is_a?(Integer) ? to_h["reboot_recoveries"] : 0
 
+    # Slots a step keeps for itself under +steps[id]+, each read by its +<key>_for(step_id)+ method.
+    PER_STEP_KEYS = %w[
+      reason reasons backoff pending_context continue_pending pause_hold retry_of_pending
+      dispatch_cause_pending review_retry pending_move budget_hold timeout_hold
+    ].freeze
+
+    PER_STEP_KEYS.each do |key|
+      # @param step_id [String] a step id
+      # @return [Object, nil] the step's own value when its hash holds the key, else the run-level value; nil when neither does
+      define_method(:"#{key}_for") do |step_id|
+        slots = to_h["steps"].is_a?(Hash) ? to_h["steps"][step_id] : nil
+        (slots.is_a?(Hash) && slots.key?(key)) ? slots[key] : to_h[key]
+      end
+    end
+
     # @param id [String] a step id
     # @return [Step, nil]
     def step(id)
