@@ -117,6 +117,13 @@ RSpec.describe Workspace::Commands::GoTask do
       expect(File.read(plan_path)).to eq(plan_text)
     end
 
+    it "refuses --file like --workflow" do
+      error = refusal(flags: {file: "a.yml", inputs: {}})
+
+      expect(error).to be_a(Workspace::UsageError)
+      expect(error.message).to include("--file would be ignored")
+    end
+
     it "refuses a dry run as the real call does" do
       stored["current"] = "verify"
 

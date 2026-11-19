@@ -307,6 +307,20 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(keywords).to include(id: "rpiv", workspace: "web", worktree: "/src/web", inputs: {"task" => "x"}, note: "hi", dry_run: true, project: "web", fill_from_branch: true)
     end
 
+    it "passes --file through without an ID" do
+      run("run", "--file", "x/flow.yml", "--name", "web", "--dry-run")
+
+      kind, keywords = workflow_command.calls.first
+      expect(kind).to eq(:run)
+      expect(keywords).to include(id: nil, file: "x/flow.yml", workspace: "web")
+    end
+
+    it "refuses --file beside an ID, a second --file or an empty PATH on run" do
+      expect { run("run", "rpiv", "--file", "f.yml", "--name", "web") }.to raise_error(Workspace::UsageError, /--file takes the place of the workflow ID/)
+      expect { run("run", "--file", "f.yml", "--file", "g.yml", "--name", "web") }.to raise_error(Workspace::UsageError, /given once/)
+      expect { run("run", "--file", " ", "--name", "web") }.to raise_error(Workspace::UsageError, /--file needs a PATH/)
+    end
+
     it "exits 1 when the run's row failed" do
       workflow_command.row = {"workspace" => "app", "outcome" => "failed"}
 
@@ -319,8 +333,34 @@ RSpec.describe Workspace::CLI::Workflow do
       run("start", "rpiv", "PROJ-1", "--slug")
 
       expect(start_command.calls).to eq([{id: "rpiv", ref: "PROJ-1", positional: nil, route: false, prompt: nil, branch: nil, slug: true, inputs: {},
-                                          note: nil, base: nil, headless: false, agent_kind: nil, prompt_timeout: nil, dry_run: false, force: false}])
+                                          note: nil, base: nil, headless: false, agent_kind: nil, prompt_timeout: nil, dry_run: false, force: false, file: nil}])
       expect(err.string).to eq("Warning: Branch \\e[31mx\\e[0m\n")
+    end
+
+    it "passes --file through, taking the lone positional as the REF" do
+      run("start", "--file", "x/flow.yml", "PROJ-1")
+
+      expect(start_command.calls.first).to include(file: "x/flow.yml", ref: "PROJ-1", id: nil, positional: nil, route: false)
+    end
+
+    it "passes --file through with --prompt and no REF" do
+      run("start", "--file", "x/flow.yml", "--prompt", "add a hello script")
+
+      expect(start_command.calls.first).to include(file: "x/flow.yml", prompt: "add a hello script", ref: nil, id: nil, route: false)
+    end
+
+    it "refuses --file beside an ID and a REF, --ref, a second --file or an empty PATH" do
+      expect { run("start", "--file", "f.yml", "rpiv", "PROJ-1") }.to raise_error(Workspace::UsageError, /--file takes the place of the workflow ID/)
+      expect { run("start", "--file", "f.yml", "--ref", "PROJ-1") }.to raise_error(Workspace::UsageError, /--file and --ref both pick/)
+      expect { run("start", "--file", "f.yml", "--file", "g.yml", "PROJ-1") }.to raise_error(Workspace::UsageError, /given once/)
+      expect { run("start", "--file", " ", "PROJ-1") }.to raise_error(Workspace::UsageError, /--file needs a PATH/)
+    end
+
+    it "refuses --file for another subcommand" do
+      %w[render check].each do |verb|
+        expect { run(verb, "rpiv", "plan", "--file", "f.yml") }.to raise_error(Workspace::UsageError, "--file is for `workflow start` and `workflow run`.")
+      end
+      expect { run("status", "--file", "f.yml") }.to raise_error(Workspace::UsageError, "--file is for `workflow start` and `workflow run`.")
     end
 
     it "refuses --name for workflow start" do
@@ -535,7 +575,7 @@ RSpec.describe Workspace::CLI::Workflow do
         cli.run(["workflow", "start", "rpiv", "PROJ-1", "--branch", "b", "--slug", "--base", "main", "--input", "task=x", "--note", "n", "--agent-kind", "codex", "--prompt-timeout", "2m", "--no-headless", "--dry-run"])
 
         expect(start_command.calls).to eq([{id: "rpiv", ref: "PROJ-1", positional: nil, prompt: nil, branch: "b", slug: true, inputs: {"task" => "x"}, note: "n", base: "main",
-                                            headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true, force: false, route: false}])
+                                            headless: false, agent_kind: "codex", prompt_timeout: 120, dry_run: true, force: false, route: false, file: nil}])
       end
 
       it "takes --prompt with no REF, and headless from the launch mode" do
@@ -698,7 +738,7 @@ RSpec.describe Workspace::CLI::Workflow do
     it "starts a run in the detected workspace, from its working directory" do
       cli.run(["workflow", "run", "rpiv", "--input", "task=PROJ-1 export=pdf", "--input", "spec=", "--note", "Keep it small."])
 
-      expect(workflow_command.calls).to eq([[:run, {id: "rpiv", workspace: "detected-ws", worktree: "/some/dir",
+      expect(workflow_command.calls).to eq([[:run, {id: "rpiv", file: nil, workspace: "detected-ws", worktree: "/some/dir",
                                                     inputs: {"task" => "PROJ-1 export=pdf", "spec" => ""}, pane: nil, note: "Keep it small.", dry_run: false, caller_pane: ENV["TMUX_PANE"], project: nil, fill_from_branch: false}]])
     end
 

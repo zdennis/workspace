@@ -204,7 +204,7 @@ module Workspace
       def validate(path:, id: nil, json: false, project: nil)
         stdin = path == "-"
         text = read_text(path, stdin)
-        id ||= claimed_id(text) || (stdin ? STDIN_ID : file_id(path))
+        id ||= IdPatterns.claimed_id(text) || (stdin ? STDIN_ID : IdPatterns.file_id(path))
         lookup, chain = draft_lookup(id, text, project)
         definition = WorkflowDefinition.parse(text, id: id, source: stdin ? "stdin" : "file",
           path: stdin ? nil : File.expand_path(path), base_dir: stdin ? Dir.pwd : nil, parent_lookup: lookup, chain: chain)
@@ -529,11 +529,16 @@ module Workspace
       #   created and parked, so nothing is typed into the caller
       # @param fill_from_branch [Boolean] fill +task+ and +pr+ from the branch checked out at +worktree+ when not
       #   given; only the CLI's `workflow run` passes true, and only for a checkout it resolved
+      # @param definition [Workspace::WorkflowDefinition, nil] a definition already resolved (for example loaded from a file);
+      #   when given, +id+ names it and the catalog is not asked
+      # @param file [String, nil] a definition file to run instead of an installed +id+; loaded through
+      #   {Workspace::WorkflowCatalog#load_file}, and the definition's own id then names the run
       # @return [Hash{String=>Object}] the action row, with `inputs_from` (which inputs the branch filled);
       #   `outcome` is "parked" for a run parked from its own pane
       # @raise [Workspace::Error] see {Workspace::WorkflowEngine#preflight}
-      def run(id:, workspace:, worktree:, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false)
-        definition = @catalog.find(id, project: project)
+      def run(workspace:, worktree:, id: nil, inputs: {}, pane: nil, note: nil, dry_run: false, caller_pane: nil, project: nil, fill_from_branch: false, definition: nil, file: nil)
+        definition ||= file ? @catalog.load_file!(file, project: project) : @catalog.find(id, project: project)
+        id ||= definition.to_h["id"]
         warn_sweep_missing(definition)
         filled, from = (fill_from_branch && @branch_inputs) ? @branch_inputs.call(definition, worktree, inputs) : [inputs, {}]
         if dry_run
@@ -1725,8 +1730,7 @@ module Workspace
       end
 
       # The id a text with no --id is checked as when it names none.
-      STDIN_ID = "stdin"
-      FILE_ID = "file"
+      STDIN_ID = IdPatterns::STDIN_ID
 
       # A run that has ended: its park is gone with it, and there is nothing to record.
       RUN_ENDED_CODES = %w[run_not_active unknown_run].freeze
@@ -1735,14 +1739,6 @@ module Workspace
         (stdin ? @input.read : File.binread(path)).to_s.dup.force_encoding(Encoding::UTF_8)
       rescue SystemCallError => e
         raise UsageError, "Can't read #{path}: #{e.message.sub(/ (@ .*)?- .*\z/, "")}"
-      end
-
-      # A string `id:` in the text, if it parses far enough to have one.
-      def claimed_id(text)
-        value = YAML.safe_load(text)&.then { |doc| doc["id"] if doc.is_a?(Hash) }
-        value if value.is_a?(String)
-      rescue Psych::Exception, ArgumentError
-        nil
       end
 
       # How a definition being read finds the workflow its `extends:` names.
@@ -1800,11 +1796,6 @@ module Workspace
         return {} if children.empty?
         @error_output.puts "warning: #{children.join(", ")} #{(children.size == 1) ? "extends" : "extend"} #{id}, directly or through another workflow, so this change affects #{(children.size == 1) ? "it" : "them"}."
         {"extended_by" => children}
-      end
-
-      def file_id(path)
-        name = File.basename(path, ".*")
-        IdPatterns::WORKFLOW_ID.match?(name) ? name : FILE_ID
       end
 
       # A definition file in a directory a lookup reaches later than another file of its id is never the one a

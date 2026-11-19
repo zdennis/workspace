@@ -95,25 +95,34 @@ module Workspace
       # @param here [Here, nil] run in this checkout instead of making one; the ref's checkout must be the same directory
       # @param force [Boolean] start although the workflow's `applies_to:` leaves out the ref's kind
       # @param derived_branch [String, nil] the branch name for a prompt start, picked by the caller (`go`); unlike +branch+ it is still a derived name, so an existing branch of that name is refused with `branch_exists`
+      # @param file [String, nil] a workflow definition file to run instead of an installed one (`--file`); read through
+      #   {Workspace::WorkflowCatalog#load_file}, so it names no id, ref router or positional workflow
       # @param route [Boolean] +id+ is not given: {Workspace::WorkflowRouter} picks it from the ref's kind (`--ref`); the row
       #   then has "routed" ("ref", "kind", "workflow", "source", "scope", "key")
       # @return [Hash{String=>Object}] the action row: outcome "dry_run" with "workflow", "step", "project",
       #   "branch", "path", "would_create", "inputs", "packs", "warnings" and, "ticket" (nil when none was read)
-      # @raise [Workspace::UsageError] no ref and no prompt, both a ref and a branch, an empty slug, or an invalid branch name
+      # @raise [Workspace::UsageError] no ref and no prompt, both a ref and a branch, an empty slug, an invalid branch name,
+      #   a +file+ that can't be read, or a +file+ given with an id, a positional or +route+
       # @raise [Workspace::Error] code `unknown_workflow`, `no_default_workflow`, `invalid_workflow_default` (`--ref`), `workflow_not_for_ref`, `ticket_not_found`, `ticket_source_unavailable` (always for a pull
       #   request), `fork_pull_request`, `branch_exists`, or {Workspace::WorkflowEngine#preflight}'s (`input_required`,
       #   `workflow_command_unset`, `invalid_input`, and `dirty_worktree` for a reused or adopted checkout); with +here+,
       #   `branch_exists` when the ref's checkout is not the one it runs in
       def call(id: nil, ref: nil, positional: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
-        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil, force: false, route: false, derived_branch: nil)
+        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil, force: false, route: false, derived_branch: nil, file: nil)
         prompt = prompt.to_s.strip
         prompt = nil if prompt.empty?
         project = catalog_project
-        id, ref = split(id, ref, positional, prompt, project)
+        raise Workspace::UsageError, "--file takes the place of the workflow ID: use `workflow start --file PATH REF`." if file && (id || positional || route)
+        id, ref = split(id, ref, positional, prompt, project) unless file
         warnings = []
         routed = nil
         # A named id's unknown_workflow outranks the usage errors; a default is read only after they pass.
-        if route
+        if file
+          definition = load_file!(file, project, warnings)
+          id = definition.id
+          check_usage!(ref, prompt, branch)
+          where = locate_project
+        elsif route
           check_usage!(ref, prompt, branch)
           where = locate_project
           id, routed = route_ref(ref, force: force, dry_run: dry_run)
@@ -199,7 +208,7 @@ module Workspace
       def run_here(plan, here, note:, dry_run:)
         refuse_other_checkout!(plan, here) unless same_checkout?(plan.path, here.path)
         write_ticket(plan, plan.spec_path, here.path) unless dry_run
-        row = @workflow.run(id: plan.definition.to_h["id"], workspace: here.workspace, worktree: here.path, inputs: plan.inputs, note: note, dry_run: dry_run, caller_pane: here.caller_pane, project: plan.catalog_project)
+        row = @workflow.run(id: plan.definition.to_h["id"], workspace: here.workspace, worktree: here.path, inputs: plan.inputs, note: note, dry_run: dry_run, caller_pane: here.caller_pane, project: plan.catalog_project, **run_definition(plan))
         row.merge("project" => plan.project.name, "branch" => plan.branch, "path" => here.path, "would_create" => false,
           "ticket" => plan.ticket&.slice("key", "title", "url"), "warnings" => plan.warnings)
       end
@@ -214,6 +223,23 @@ module Workspace
       def refuse_other_checkout!(plan, here)
         raise Workspace::Error.new("The checkout for the branch #{plan.branch} is at #{plan.path}, not the one this runs in (#{here.path}).",
           code: "branch_exists", details: {"branch" => plan.branch, "path" => plan.path, "worktree" => @git.worktree_exists?(plan.path)})
+      end
+
+      # The definition in a `--file`, read through {WorkflowCatalog#load_file!}, which refuses a file that names
+      # no id. An installed definition of the same id is said so in +warnings+, since `workflow run ID` and the
+      # run's recovery lines read that one, not this file.
+      def load_file!(file, project, warnings)
+        definition = @catalog.load_file!(file, project: project)
+        installed = @catalog.locate(definition.id, project: project)
+        if installed && File.expand_path(installed.last) != definition.path
+          warnings << "A #{installed.first} definition of #{definition.id} (#{installed.last}) is installed; this run uses #{definition.path} instead, and `workflow run #{definition.id}` would read the installed one."
+        end
+        definition
+      end
+
+      # What a run of a file's definition is handed, so `workflow run` does not look the id up again.
+      def run_definition(plan)
+        (plan.definition.source == "file") ? {definition: plan.definition} : {}
       end
 
       # A lone positional that is a known workflow is the id. Otherwise it is the ref, except that
@@ -560,7 +586,7 @@ module Workspace
           end
           write_ticket(plan, spec_file, path)
           pane_id = wait_for_agent(workspace, prompt_timeout)
-          row = @workflow.run(id: plan.definition.to_h["id"], workspace: workspace, worktree: path, inputs: inputs, note: note, pane: pane_id, project: plan.catalog_project)
+          row = @workflow.run(id: plan.definition.to_h["id"], workspace: workspace, worktree: path, inputs: inputs, note: note, pane: pane_id, project: plan.catalog_project, **run_definition(plan))
         rescue => e
           raise with_next(e, plan, inputs, note, workspace, path, warnings)
         end
@@ -600,7 +626,12 @@ module Workspace
         # A refusal that already names its own next command (checkout_has_run's cancel) keeps it and its message.
         return error if error.respond_to?(:details) && error.details.is_a?(Hash) && error.details["next"]
 
-        run = ["workspace workflow run", Shellwords.escape(plan.definition.to_h["id"])]
+        run = ["workspace workflow run"]
+        if plan.definition.source == "file"
+          run.push("--file", Shellwords.escape(plan.definition.path))
+        else
+          run.push(Shellwords.escape(plan.definition.to_h["id"]))
+        end
         run.push("--name", Shellwords.escape(workspace)) if workspace
         inputs.each { |name, value| run.push("--input", "#{name}=#{Shellwords.escape(value)}") unless value.to_s.empty? }
         run.push("--note", Shellwords.escape(note)) if note

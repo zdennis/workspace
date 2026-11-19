@@ -74,6 +74,8 @@ module Workspace
 
       # @param argument [String, nil] a ticket, pull request, issue or branch; a sentence (any whitespace inside it) that is free text, or holds one pull request, issue or ticket that is then the ref; nil for none
       # @param workflow [String, nil] the workflow, from `--workflow`
+      # @param file [String, nil] a workflow definition file to run (`--file`); it outranks config and the built-in choice,
+      #   and is refused with +workflow+ (the CLI refuses that pair at parse time too)
       # @param inputs [Hash{String=>String}] values from `--input`
       # @param headless [Boolean]
       # @param dry_run [Boolean] check everything and create nothing
@@ -85,7 +87,8 @@ module Workspace
       #   +kind+, +route+, +reason+, +extracted+: the token read out of the text, else nil) and "warnings"
       # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, `--here` with a ref for another branch, or free text with no letters or digits for a new branch, or `--text` with no argument or one holding no whitespace
       # @raise [Workspace::Error] outside a git repository; code `go_here_unavailable` (`--here` where this checkout can't run in place), `unknown_ref`, `unknown_base`, `branch_not_allowed`, `branch_exists`, `workflow_needs_claude`, or any of {WorkflowStart#call} and {Workflow#run}
-      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false, base: nil, text: false)
+      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false, base: nil, text: false, file: nil)
+        raise Workspace::UsageError, "--file takes the place of --workflow: use one." if file && workflow
         argument = argument&.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
         raise Workspace::UsageError, "go was given an empty argument. Name a ref, or quote free text." if argument == ""
         if text && (argument.nil? || !argument.match?(/[[:space:]]/))
@@ -104,7 +107,7 @@ module Workspace
             code: "go_here_unavailable", details: {"path" => root})
         end
 
-        reading = classify(argument, root, workflow, here || text)
+        reading = classify(argument, root, workflow || file, here || text)
         if reading.ref
           naming(reading.extracted) do
             refuse_protected!(reading.ref.branch, project)
@@ -118,14 +121,14 @@ module Workspace
         end
         in_place = checkout && (reading.ref ? same_branch : (reading.text.nil? || here))
         if reading.text && here && (run = @go_task.run_for(checkout))
-          return @go_task.add(run, reading.text, checkout, flags: {workflow: workflow, inputs: inputs, base: base}, dry_run: dry_run)
+          return @go_task.add(run, reading.text, checkout, flags: {workflow: workflow, file: file, inputs: inputs, base: base}, dry_run: dry_run)
         end
         check_base!(base, root, in_place)
         # In place the worktree is known, so its own setting counts; a new checkout has none yet.
         project_workspace = @workflow_start.locate_project[:project_workspace]
         # A project's keys count only where the user's config ties it to this checkout, as for `workflow start`.
         tied = @workflow_start.catalog_project
-        id, source, definition = choose(workflow, reading.kind, tied && (in_place ? checkout.workspace : tied), tied)
+        id, source, definition = choose(workflow, file, reading.kind, tied && (in_place ? checkout.workspace : tied), tied)
         # Only free text that starts a new workspace asks for a name, and only once every cheap
         # refusal has had its say: the slug of the text is checked first, so text that could never
         # name a branch never pays the namer's latency.
@@ -146,7 +149,8 @@ module Workspace
         @output.puts "go: #{id} (#{reason}), #{route_words(route, reading)}."
         warnings.each { |warning| @output.puts "Warning: #{warning}" }
 
-        shared = {id: id, inputs: inputs, dry_run: dry_run}
+        # A file is read once more by WorkflowStart, which also warns when an installed definition shadows it; run_here is handed the loaded one.
+        shared = file ? {file: file, inputs: inputs, dry_run: dry_run} : {id: id, inputs: inputs, dry_run: dry_run}
         shared[:base] = base if base
         shared[:prompt] = reading.text if reading.ref && reading.text
         row = if reading.ref
@@ -433,16 +437,26 @@ module Workspace
       end
 
       # @return [Array] the id, its source and the definition; `Catalog#find` refuses before anything prints
-      def choose(flag, kind, workspace, tied)
+      def choose(flag, file, kind, workspace, tied)
+        return choose_file(file, tied) if file
+
         found = @workflow_defaults.lookup(kind, workspace: workspace, project: tied) unless flag
         id = flag || found&.fetch(:id) || BUILT_IN.fetch(kind, BUILT_IN_OTHERWISE)
         source = flag ? "flag" : found&.fetch(:key) || "built_in"
         [id, source, @catalog.find(id, project: tied)]
       end
 
+      # `--file` skips the id lookup: the definition names its own id, read through
+      # {WorkflowCatalog#load_file!}, which refuses a file that names none.
+      def choose_file(file, tied)
+        definition = @catalog.load_file!(file, project: tied)
+        [definition.id, "file", definition]
+      end
+
       def reason_for(source, kind)
         case source
         when "flag" then "named with --workflow"
+        when "file" then "read from --file"
         when "built_in" then "built in for #{kind}"
         else "set by #{source}"
         end
@@ -472,10 +486,10 @@ module Workspace
         definition.to_h["inputs"].key?("task")
       end
 
-      def run_here(text, definition, here, project_workspace, id:, inputs:, dry_run:)
+      def run_here(text, definition, here, project_workspace, inputs:, dry_run:, id: nil, file: nil)
         @workflow_start.check_agent!(here.workspace, project: project_workspace)
         inputs = inputs.merge("task" => text) if text && declares_task?(definition) && !inputs.key?("task")
-        @workflow.run(id: id, workspace: here.workspace, worktree: here.path, inputs: inputs, dry_run: dry_run, caller_pane: here.caller_pane, project: @workflow_start.catalog_project)
+        @workflow.run(**(file ? {definition: definition} : {id: id}), workspace: here.workspace, worktree: here.path, inputs: inputs, dry_run: dry_run, caller_pane: here.caller_pane, project: @workflow_start.catalog_project)
       end
 
       def start_from_text(text, project, definition, derived_branch: nil, **options)
@@ -483,24 +497,25 @@ module Workspace
       rescue Workspace::Error => e
         raise unless e.code == "branch_exists"
 
-        raise Workspace::Error.new(existing_message(e.details, project, options[:id], definition), code: e.code, details: e.details, retry_with: e.retry)
+        raise Workspace::Error.new(existing_message(e.details, project, options[:id], definition, options[:file]), code: e.code, details: e.details, retry_with: e.retry)
       end
 
       # `go BRANCH` only helps when that command would work: not when the checkout for it holds
       # another branch, and not when no branch has that name, where it would be `unknown_ref`.
-      def existing_message(details, project, id, definition)
+      def existing_message(details, project, id, definition, file = nil)
         name, path = details.values_at("branch", "path")
         if (other = other_checkout(name, project))
           "The text makes the branch name #{name}, but the checkout at #{other[0]} holds #{other[1] || "no branch"}. Reword the text."
         elsif @git.branch_names(project.root).include?(name)
-          "The text makes the branch name #{name}, which already exists. To work on it, run `#{go_command(name, id, definition)}`; for a new branch, reword the text."
+          "The text makes the branch name #{name}, which already exists. To work on it, run `#{go_command(name, id, definition, file)}`; for a new branch, reword the text."
         else
           "The text makes the branch name #{name}, but #{path} is already there with no such branch. Reword the text, or move that path."
         end
       end
 
-      def go_command(name, id, definition)
-        parts = ["workspace go", name, "--workflow", id]
+      def go_command(name, id, definition, file = nil)
+        parts = ["workspace go", name]
+        parts.push(*(file ? ["--file", file] : ["--workflow", id]))
         parts.push("--input", "task=TEXT") if declares_task?(definition)
         parts.join(" ")
       end

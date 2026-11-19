@@ -49,6 +49,44 @@ module Workspace
       WorkflowDefinition.parse(File.read(path, encoding: Encoding::UTF_8), id: id.to_s, source: source, path: path, parent_lookup: parent_lookup(project))
     end
 
+    # Reads a definition from a file path (`--file`), the one way a path becomes a definition. The id is a string
+    # `id:` in the file, else the file name without its extension when that is a workflow id, else
+    # {IdPatterns::FILE_ID}; {#load_file!} is the variant a run uses, which refuses that last fallback. Its
+    # `extends:` resolves through {#parent}, as for an installed definition. Nothing is installed or looked up
+    # by id.
+    #
+    # @param path [String] the file; a relative path is expanded against the current directory
+    # @param project [String, nil] the project whose definitions an `extends:` finds first
+    # @return [Workspace::WorkflowDefinition] with source "file" and the absolute path
+    # @raise [Workspace::UsageError] when the file can't be read
+    # @raise [Workspace::Error] code `invalid_workflow` when it doesn't pass the checks
+    def load_file(path, project: nil)
+      full = File.expand_path(path.to_s)
+      text = begin
+        File.binread(full).force_encoding(Encoding::UTF_8)
+      rescue SystemCallError => e
+        raise UsageError, "Can't read #{path}: #{e.message.sub(/ (@ .*)?- .*\z/, "")}"
+      end
+      id = IdPatterns.claimed_id(text) || IdPatterns.file_id(full)
+      WorkflowDefinition.parse(text, id: id, source: "file", path: full, parent_lookup: parent_lookup(project))
+    end
+
+    # Like {#load_file}, but refuses a definition whose id fell all the way back to {IdPatterns::FILE_ID}: a run
+    # needs a name. `workflow start --file`, `workflow run --file` and `go --file` all read through this one
+    # door, so they refuse the same file with the same words.
+    #
+    # @param path [String] the file; a relative path is expanded against the current directory
+    # @param project [String, nil] the project whose definitions an `extends:` finds first
+    # @return [Workspace::WorkflowDefinition] with source "file" and the absolute path
+    # @raise [Workspace::UsageError] when the file can't be read, or names no id
+    # @raise [Workspace::Error] code `invalid_workflow` when it doesn't pass the checks
+    def load_file!(path, project: nil)
+      definition = load_file(path, project: project)
+      return definition unless definition.id == IdPatterns::FILE_ID
+
+      raise UsageError, "#{path} has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml)."
+    end
+
     # The file an id is read from: the project's, else a user's, else a preset.
     #
     # @param id [String]

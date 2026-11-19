@@ -71,7 +71,7 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports the workflow feature" do
       command.call(json: true)
 
-      expect(document["features"]).to include("workflow" => 57, "workflow_events_follow" => 2, "workflow_trace" => 1)
+      expect(document["features"]).to include("workflow" => 58, "workflow_events_follow" => 2, "workflow_trace" => 1)
     end
 
     it "reports the restore feature" do
@@ -167,7 +167,13 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports go 3 once go reads an identifier out of free text" do
       command.call(json: true)
 
-      expect(document["features"]).to include("go" => 3)
+      expect(document["features"]["go"]).to be >= 3
+    end
+
+    it "reports go 4 once go takes a definition file with --file" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("go" => 4)
     end
 
     it "reports template 1 once template list, show and path exist" do

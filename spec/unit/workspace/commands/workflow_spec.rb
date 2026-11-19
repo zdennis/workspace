@@ -516,6 +516,53 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).to eq("wr_1  flow  app  running  step plan (attempt 1), running\n")
     end
 
+    it "starts the run from a definition it is given without asking the catalog" do
+      other = instance_double(Workspace::WorkflowDefinition, to_h: {"id" => "flow"})
+      allow(catalog).to receive(:find).and_raise("catalog must not be asked")
+      allow(panes).to receive(:default_pane).with("app").and_return("%5")
+      allow(engine).to receive(:start).and_return("id" => "wr_1", "workspace" => "app")
+      allow(status).to receive(:run).with("wr_1").and_return("runs" => [shown], "warnings" => [])
+
+      command.run(id: "flow", workspace: "app", worktree: "/src/app", definition: other)
+
+      expect(catalog).not_to have_received(:find)
+      expect(engine).to have_received(:start).with(hash_including(definition: other))
+    end
+
+    it "loads a definition file through the catalog and runs it without a find" do
+      loaded = instance_double(Workspace::WorkflowDefinition, id: "from-file", to_h: {"id" => "from-file"})
+      allow(catalog).to receive(:load_file!).with("x/f.yml", project: "proj").and_return(loaded)
+      allow(catalog).to receive(:find).and_raise("catalog must not be asked")
+      allow(panes).to receive(:default_pane).with("app").and_return("%5")
+      allow(engine).to receive(:start).and_return("id" => "wr_1", "workspace" => "app")
+      allow(status).to receive(:run).with("wr_1").and_return("runs" => [shown], "warnings" => [])
+
+      command.run(file: "x/f.yml", workspace: "app", worktree: "/src/app", project: "proj")
+
+      expect(catalog).to have_received(:load_file!).with("x/f.yml", project: "proj")
+      expect(engine).to have_received(:start).with(hash_including(definition: loaded))
+    end
+
+    it "names a dry run of a file by the loaded definition's id" do
+      loaded = instance_double(Workspace::WorkflowDefinition, id: "from-file", to_h: {"id" => "from-file"})
+      allow(catalog).to receive(:load_file!).and_return(loaded)
+      allow(panes).to receive(:default_pane).and_return("%5")
+      allow(engine).to receive(:preflight).and_return("step" => "plan", "inputs" => {}, "packs" => [])
+
+      row = command.run(file: "x/f.yml", workspace: "app", worktree: "/src/app", dry_run: true)
+
+      expect(row["workflow"]).to eq("from-file")
+      expect(output.string).to start_with("Would start from-file in app")
+    end
+
+    it "refuses a file that names no id" do
+      allow(catalog).to receive(:load_file!)
+        .and_raise(Workspace::UsageError, "x/f.yml has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml).")
+
+      expect { command.run(file: "x/f.yml", workspace: "app", worktree: "/src/app") }
+        .to raise_error(Workspace::UsageError, "x/f.yml has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml).")
+    end
+
     it "resolves a pane the caller named" do
       allow(panes).to receive(:locate).with("app", "0.1").and_return("%7")
       allow(engine).to receive(:start).and_return("id" => "wr_1", "workspace" => "app")

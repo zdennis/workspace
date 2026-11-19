@@ -1689,6 +1689,94 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     expect(command.locate_project).to include(root: root, project_workspace: "app")
   end
 
+  describe "with file:" do
+    let(:local_branches) { ["proj-1"] }
+    let(:dir) { Dir.mktmpdir }
+    let(:checkout) { File.join(dir, ".worktrees", "proj-1") }
+    let(:here) { described_class::Here.new(workspace: "app.proj-1", path: checkout, caller_pane: "%3") }
+    let(:file_definition) { Workspace::WorkflowDefinition.parse(yaml, id: "flow", source: "file", path: "/tmp/x/flow.yml") }
+
+    before do
+      FileUtils.mkdir_p(checkout)
+      allow(git).to receive(:root).and_return(dir)
+      allow(git).to receive(:worktree_exists?) { |path| path == checkout }
+      allow(workflow).to receive(:run).and_return({"workspace" => "app.proj-1", "outcome" => "started", "run" => "r1"})
+      allow(catalog).to receive(:load_file!).with("x/flow.yml", project: nil).and_return(file_definition)
+      allow(catalog).to receive(:locate).and_return(nil)
+    end
+
+    after { FileUtils.remove_entry(dir) }
+
+    it "runs the loaded definition without a catalog lookup" do
+      expect(catalog).not_to receive(:find)
+
+      command.call(file: "x/flow.yml", ref: "PROJ-1", here: here)
+
+      expect(workflow).to have_received(:run).with(hash_including(id: "flow", definition: file_definition))
+    end
+
+    it "refuses an id, a positional or a route beside it" do
+      expect { command.call(file: "x/flow.yml", id: "flow", ref: "PROJ-1") }.to raise_error(Workspace::UsageError, /--file takes the place/)
+      expect { command.call(file: "x/flow.yml", positional: "PROJ-1") }.to raise_error(Workspace::UsageError, /--file takes the place/)
+      expect { command.call(file: "x/flow.yml", ref: "PROJ-1", route: true) }.to raise_error(Workspace::UsageError, /--file takes the place/)
+    end
+
+    it "refuses a file that names no id, telling the person to add an id: key" do
+      allow(catalog).to receive(:load_file!)
+        .with("x/flow.yml", project: nil)
+        .and_raise(Workspace::UsageError, "x/flow.yml has no workflow id: add an `id:` key to the YAML, or name the file after its id (ID.yml).")
+
+      expect { command.call(file: "x/flow.yml", ref: "PROJ-1", here: here) }.to raise_error(Workspace::UsageError, /add an `id:` key/)
+    end
+
+    it "passes a missing file's UsageError through" do
+      allow(catalog).to receive(:load_file!).and_raise(Workspace::UsageError, "Can't read nope.yml: No such file or directory")
+
+      expect { command.call(file: "nope.yml", ref: "PROJ-1") }.to raise_error(Workspace::UsageError, /Can't read nope.yml/)
+    end
+
+    it "warns when an installed definition has the same id" do
+      allow(catalog).to receive(:locate).with("flow", project: nil).and_return(["global", "/defs/flow.yml"])
+
+      row = command.call(file: "x/flow.yml", ref: "PROJ-1", here: here)
+
+      expect(row["warnings"]).to contain_exactly(a_string_matching(/A global definition of flow \(\/defs\/flow.yml\) is installed; this run uses \/tmp\/x\/flow.yml/))
+    end
+
+    it "does not warn when the installed file is the file itself" do
+      allow(catalog).to receive(:locate).with("flow", project: nil).and_return(["global", "/tmp/x/flow.yml"])
+
+      expect(command.call(file: "x/flow.yml", ref: "PROJ-1", here: here)["warnings"]).to eq([])
+    end
+
+    it "names the file, not an id, in the recovery command of a failed run" do
+      allow(workflow).to receive(:run).and_raise(Workspace::Error.new("boom", code: "x"))
+      allow(start).to receive(:payload).and_return({exit_code: 0, json: {"workspace" => "app.proj-1", "path" => checkout, "branch" => "PROJ-1", "created" => true}})
+      allow(tmux).to receive(:session_name_for).with("app.proj-1").and_return("app-wt")
+      allow(readiness).to receive(:wait).and_return(ready)
+
+      expect { command.call(file: "x/flow.yml", ref: "PROJ-1") }.to raise_error(Workspace::Error) do |e|
+        expect(e.details["next"].first).to start_with("workspace workflow run --file /tmp/x/flow.yml --name app.proj-1")
+      end
+    end
+
+    it "hands the loaded definition to the run a new workspace starts" do
+      allow(start).to receive(:payload).and_return({exit_code: 0, json: {"workspace" => "app.proj-1", "path" => checkout, "branch" => "PROJ-1", "created" => true}})
+      allow(tmux).to receive(:session_name_for).with("app.proj-1").and_return("app-wt")
+      allow(readiness).to receive(:wait).and_return(ready)
+
+      command.call(file: "x/flow.yml", ref: "PROJ-1")
+
+      expect(workflow).to have_received(:run).with(hash_including(definition: file_definition))
+    end
+
+    it "keeps unknown_workflow for a name given without --file" do
+      allow(catalog).to receive(:find).with("nope", project: nil).and_raise(Workspace::Error.new("No workflow.", code: "unknown_workflow"))
+
+      expect { command.call(id: "nope", ref: "PROJ-1") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+    end
+  end
+
   describe "#tracks_repository?" do
     it "is true for origin" do
       expect(command.tracks_repository?(root, "o/r")).to be true

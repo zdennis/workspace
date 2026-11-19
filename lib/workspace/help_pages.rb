@@ -529,7 +529,7 @@ module Workspace
         ]
       },
       "run" => {
-        usage: ["workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]"],
+        usage: ["workflow run [ID | --file PATH] [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]"],
         summary: "Start a run of a workflow in a workspace",
         about: [
           "A run is an ordered list of steps, each done by the agent in the workspace's Claude pane. --dry-run",
@@ -542,15 +542,21 @@ module Workspace
           "A `task` or `pr` input you leave out is filled from the checkout's branch: from its open pull request,",
           "else `task` is `Branch NAME`. Nothing is filled on the default branch, in the main checkout, on a",
           "detached HEAD or during a rebase, so a required input is refused with `input_required`. --dry-run",
-          "says what it would fill."
+          "says what it would fill.",
+          "",
+          "--file PATH takes the place of ID: the workflow is read from that YAML file, not from an installed",
+          "definition. The file names itself (a string `id:` key, else its file name); a file that names no id is",
+          "refused. Its `extends:` parents resolve from the installed definitions. You vouch for the file."
         ],
         options: [name_opt("The workspace to run in (default: detected from the current directory)"),
+          ["--file PATH", "Run the workflow definition in this YAML file instead of an installed ID (it names itself: an `id:` key, or its file name); you vouch for the file"],
           ["--input KEY=VALUE", "A value for one of the workflow's inputs (repeatable); wins over a value filled from the branch"],
           ["--note TEXT", "Added to every step's instructions"],
           PANE_OPT,
           ["--dry-run", "Report what would start and start nothing"], JSON_OPT],
         examples: [
           ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\"", "start rpiv in this workspace; its first step is typed into the Claude pane"],
+          ["workspace workflow run --file ./scratch/rpiv.yml --input task=\"PROJ-101 invoice PDF export\"", "run a definition file that is not installed anywhere"],
           ["workspace workflow run pr-feedback", "on a pull request's branch: fill task and pr from that pull request"],
           ["workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\" --dry-run", "check the inputs and the pane first and start nothing"],
           ["workspace workflow run rpiv --name my-app --input task=\"PROJ-101 invoice PDF export\"", "run in another workspace than the one you are standing in"],
@@ -648,7 +654,7 @@ module Workspace
         ]
       },
       "start" => {
-        usage: ["workflow start --ref REF [--force] [--dry-run] [--json]", "workflow start [ID] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]"],
+        usage: ["workflow start --ref REF [--force] [--dry-run] [--json]", "workflow start [ID | --file PATH] [REF | --prompt TEXT] [--branch BRANCH] [--slug] [--base REF] [--input KEY=VALUE]... [--note TEXT] [--agent-kind KIND] [--[no-]headless] [--prompt-timeout DURATION] [--force] [--dry-run] [--json]"],
         summary: "Make a workspace from a ticket, pull request or prompt and run a workflow in it",
         about: [
           "Run it inside the project's git checkout; the main agent must be Claude Code.",
@@ -673,9 +679,15 @@ module Workspace
           "definitions count first (a project file hides the same id elsewhere); the routing line and routed.definition_source",
           "say where the one chosen was found. Several fit: refused with",
           "no_default_workflow, listing them. A default that names no workflow, or one whose applies_to: leaves out the",
-          "kind, is refused with invalid_workflow_default (--force starts the second kind anyway). The rest is a normal start."
+          "kind, is refused with invalid_workflow_default (--force starts the second kind anyway). The rest is a normal start.",
+          "",
+          "--file PATH takes the place of ID: the workflow is read from that YAML file, not from an installed",
+          "definition. The file names itself (a string `id:` key, else its file name); a file that names no id is",
+          "refused. Its `extends:` parents resolve from the installed definitions, and an installed definition of the",
+          "same id draws a warning that this run uses the file instead. You vouch for the file."
         ],
         options: [["--ref REF", "Route REF to a workflow by its kind instead of naming an ID; not with an ID, a REF or --prompt"],
+          ["--file PATH", "Run the workflow definition in this YAML file instead of an installed ID (it names itself: an `id:` key, or its file name); you vouch for the file; not with --ref or an ID"],
           ["--prompt TEXT", "The task as free text (the workflow's task input, and the branch's name when there is no REF)"],
           ["--branch BRANCH", "The branch for a --prompt (default: the prompt's words); refused with a REF"],
           ["--slug", "Add the ticket title's words to a JIRA or issue branch, as `workspace start --slug`"],
@@ -692,7 +704,7 @@ module Workspace
           ["workspace workflow start --prompt \"add a hello script\"", "no ID and no ticket: the configured prompt workflow, started from a sentence"],
           ["workspace workflow start rpiv PROJ-101", "make a workspace for the ticket and run rpiv in it"],
           ["workspace workflow start --ref PROJ-101", "the same, and with no key set, the one workflow that fits a JIRA ref"],
-          ["workspace workflow start rpiv PROJ-101 --dry-run", "read the ticket and check everything, making nothing"],
+          ["workspace workflow start --file ./scratch/rpiv.yml PROJ-101", "make a workspace for the ticket and run a definition file that is not installed anywhere"],
           ["workspace workflow start rpiv --prompt \"add a hello script\"", "no ticket: start from a sentence, with the branch named from its words"],
           ["workspace workflow start rpiv --prompt \"add a hello script\" --branch hello-script", "choose the branch's name yourself"],
           ["workspace workflow start pr-feedback '#123'", "work through the review feedback on pull request 123 (needs gh)"],

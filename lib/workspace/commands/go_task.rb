@@ -29,7 +29,7 @@ module Workspace
       # @param run [Workspace::WorkflowRun::Summary] the run from {#run_for}
       # @param text [String] the task's title
       # @param checkout [Workspace::Commands::WorkflowStart::Here]
-      # @param flags [Hash{Symbol=>Object}] +workflow+, +inputs+ and +base+ as `go` was given them
+      # @param flags [Hash{Symbol=>Object}] +workflow+, +file+, +inputs+ and +base+ as `go` was given them
       # @param dry_run [Boolean] check everything and write nothing
       # @return [Hash{String=>Object}] the {PlanTask#add} row, plus +workspace+, +run_id+, +decision+ (route `task`) and +warnings+
       # @raise [Workspace::UsageError] a flag that would be ignored
@@ -55,6 +55,7 @@ module Workspace
       def refuse_flags!(flags)
         given = []
         given << "--workflow" if flags[:workflow]
+        given << "--file" if flags[:file]
         given << "--input" if flags[:inputs] && !flags[:inputs].empty?
         given << "--base" if flags[:base]
         return if given.empty?

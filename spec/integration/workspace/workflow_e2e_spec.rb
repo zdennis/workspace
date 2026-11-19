@@ -175,6 +175,25 @@ RSpec.describe "a workflow run from start to completed" do
     ])
   end
 
+  describe "a run of a definition file that is installed nowhere" do
+    it "records the file as its source and its absolute path" do
+      file = File.join(@dir, "adhoc.yml")
+      File.write(file, File.read(fixture).sub(/^id:.*$/, "id: adhoc"))
+      empty = File.join(@dir, "none")
+      config = instance_double(Workspace::Config, workflows_dir: empty, builtin_workflows_dir: empty, workspace_projects_dir: empty, project_workflows_dir: nil)
+      catalog = Workspace::WorkflowCatalog.new(config: config)
+      expect { catalog.find("adhoc") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workflow") }
+      @definition = catalog.load_file(file)
+
+      start
+
+      stored = store.run("wr_1").thawed
+      expect(stored["definition_source"]).to eq("file")
+      expect(stored["definition_path"]).to eq(file)
+      expect(stored["definition"]["id"]).to eq("adhoc")
+    end
+  end
+
   describe "a round the sweep pressed whose review turn never ends, with no sweep after" do
     def pressed
       to_review

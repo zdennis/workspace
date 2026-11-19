@@ -1743,7 +1743,7 @@ RSpec.describe Workspace::CLI do
           from_start, from_workflow = workflow_start.calls
           expect(from_start).to eq(id: "rpiv", ref: "PROJ-1", slug: true, inputs: {"task" => "do it"}, base: "main", headless: false, agent_kind: "claude", prompt_timeout: 120)
           expect(from_start).to eq(from_workflow.slice(*from_start.keys))
-          expect(from_workflow.except(*from_start.keys)).to eq(positional: nil, prompt: nil, branch: nil, note: nil, dry_run: false, force: false, route: false)
+          expect(from_workflow.except(*from_start.keys)).to eq(positional: nil, prompt: nil, branch: nil, note: nil, dry_run: false, force: false, route: false, file: nil)
           expect(start_command).not_to have_received(:call)
         end
 
@@ -6028,7 +6028,21 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["go", "try the thing", "--workflow", "investigate", "--input", "task=x", "--input", "spec=y", "--dry-run"])
 
-      expect(go_command.calls).to eq([{argument: "try the thing", workflow: "investigate", inputs: {"task" => "x", "spec" => "y"}, headless: false, dry_run: true, caller_pane: "%9", here: false, base: nil, text: false}])
+      expect(go_command.calls).to eq([{argument: "try the thing", workflow: "investigate", inputs: {"task" => "x", "spec" => "y"}, headless: false, dry_run: true, caller_pane: "%9", here: false, base: nil, text: false, file: nil}])
+    end
+
+    it "passes --file to go" do
+      cli.run(["go", "try the thing", "--file", "flows/mine.yml"])
+
+      expect(go_command.calls.last).to include(argument: "try the thing", workflow: nil, file: "flows/mine.yml")
+    end
+
+    it "refuses --file with --workflow at parse time, and an empty --file" do
+      expect { cli.run(["go", "try the thing", "--file", "a.yml", "--workflow", "rpiv"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--file and --workflow both pick the workflow")
+      expect { cli.run(["go", "try the thing", "--file", " "]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--file needs a PATH")
+      expect(go_command.calls).to be_empty
     end
 
     it "passes --here to go" do
