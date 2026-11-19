@@ -94,7 +94,8 @@ module Workspace
     # @param stopped_at [Time, nil] when the turn's end was seen; one from before the attempt began decides nothing
     # @param background [Array<Hash>] the background tasks the agent still listed when its turn ended
     # @param transcript_path [String, nil] the hook payload's transcript; the status line its last assistant message ends with is stored
-    #   on the attempt as `status_report` (stored only, nothing is judged by it)
+    #   on the attempt as `status_report` (a stated `needs_input` or `stuck` holds the run and `running` spares it
+    #   `turn_ended_incomplete`; the step's own checks stay authoritative)
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`

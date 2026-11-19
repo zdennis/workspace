@@ -30,14 +30,16 @@ module Workspace
     # How many characters from the end of a message the reader looks in.
     TAIL_CHARS = 200
 
-    LINE = /WORKFLOW_STATUS:[ \t]*([A-Za-z_]+)(.*)/mi
+    LINE = /^[ \t]*WORKFLOW_STATUS:[ \t]*([A-Za-z_]+)(.*)/mi
     SEPARATOR = /\A[ \t]*(?:—|--|\||-)?[ \t]*/
     private_constant :LINE, :SEPARATOR
 
     # Reads the status line from the tail of an agent's last message.
     #
-    # State is matched without regard to case. The detail runs to the end of its line and on through following lines,
-    # up to a blank line or a code fence; its lines are joined with one space.
+    # The line is one that starts its own line (leading whitespace allowed), so a sentence mentioning the tag, or a
+    # word that merely contains it, is not read as a report. State is matched without regard to case. The detail runs
+    # to the end of its line and on through following lines, up to a blank line or a code fence; its lines are joined
+    # with one space.
     #
     # @param message [String, nil] the agent's last message
     # @return [Hash{Symbol=>String}, nil] `{state:, detail:}` (detail "" when absent), or nil when no line with a

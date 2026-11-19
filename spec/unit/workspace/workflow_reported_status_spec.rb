@@ -51,6 +51,11 @@ RSpec.describe Workspace::WorkflowReportedStatus do
     expect(parse("WORKFLOW_STATUS: finished — yes")).to be_nil
   end
 
+  it "does not read the tag inside a sentence or a longer word" do
+    expect(parse("I will end with WORKFLOW_STATUS: stuck next.")).to be_nil
+    expect(parse("XWORKFLOW_STATUS: stuck — no")).to be_nil
+  end
+
   it "finds the line within the tail of a long message" do
     text = ("x" * 5000) + "\nWORKFLOW_STATUS: done — ok\nThanks!\n"
     expect(parse(text)).to eq(state: "done", detail: "ok Thanks!")
@@ -61,7 +66,7 @@ RSpec.describe Workspace::WorkflowReportedStatus do
   end
 
   it "does not raise on invalid bytes" do
-    expect(parse("\xFF\xFE WORKFLOW_STATUS: done".b.force_encoding("UTF-8"))).to eq(state: "done", detail: "")
+    expect(parse("\xFF\xFE\nWORKFLOW_STATUS: done".b.force_encoding("UTF-8"))).to eq(state: "done", detail: "")
   end
 
   describe ".words and .shown" do
