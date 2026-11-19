@@ -648,9 +648,11 @@ module Workspace
     def wait_to_retry(run, step, on_fail, text, wait, attempt)
       @dispatch.release(run)
       pane = bound_pane(run, step["id"])
-      identity = @panes.identity(run["id"])
+      scoped = WorkflowRun.step_scoped?(run, step["id"])
+      # A step of a group names its own pane's identity, read before its binding goes.
+      identity = scoped ? @panes.identity(run["id"], step: step["id"]) : @panes.identity(run["id"])
       # A step of a group gives up only its own binding: its siblings' panes stay bound.
-      if WorkflowRun.step_scoped?(run, step["id"])
+      if scoped
         @panes.unbind(run["id"], step: step["id"])
       else
         @panes.unbind(run["id"])

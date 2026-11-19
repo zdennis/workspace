@@ -92,7 +92,7 @@ class RecordingRunChange
     raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(Workspace::WorkflowRun)
     stored.replace(changed.thawed)
     ctx.events.each { |type, data| @events << [run_id, type, data] }
-    @deliveries << ctx.delivery if ctx.delivery
+    @deliveries.concat(ctx.deliveries)
     @reviews << ctx.review if ctx.review
     @review_ends << ctx.review_end if ctx.review_end
     @closes << ctx.close_review if ctx.close_review
@@ -373,7 +373,9 @@ class RecordingWorkflowPanes
   #   the line is typed
   # @param idle [Array<String>] the panes whose agent the daemon says has ended its turn
   # @param pids [Hash{String=>Integer}] the process tmux started in each pane; nil for one it does not list
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {}, idle: [], pids: {})
+  # @param spawned [Array<Hash>] what each +spawn_author+ answers, in order
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {}, idle: [], pids: {}, spawned: [])
+    @spawned = spawned.dup
     @pids = pids
     @idle = idle
     @restarted = restarted
@@ -405,7 +407,8 @@ class RecordingWorkflowPanes
     {run_id: @reviewing[pane], role: "reviewer"} if @reviewing[pane]
   end
 
-  def alive?(run_id) = !@dead.include?(run_id)
+  # A run id in +dead+ makes every binding of the run dead; a [run id, step] pair, only that step's.
+  def alive?(run_id, step: nil) = !@dead.include?(run_id) && !(step && @dead.include?([run_id, step]))
 
   def pane_gone?(pane, workspace: nil)
     @gone_checks << [pane, workspace]
@@ -426,7 +429,14 @@ class RecordingWorkflowPanes
   # The process tmux started in +pane+, from +pids+.
   def pane_pid(_workspace, pane) = @pids[pane]
 
-  def identity(run_id) = "identity-of-#{run_id}"
+  # The run's identity; for a step of a run bound per step, its own pane's.
+  def identity(run_id, step: nil) = (step && @bound[run_id].is_a?(Hash)) ? "identity-of-#{pane_of(run_id, step: step)}" : "identity-of-#{run_id}"
+
+  # A new pane from +spawned+, in order, recorded in +calls+; `{error: "spawn_failed"}` once they run out.
+  def spawn_author(workspace)
+    @calls << [:spawn_author, workspace]
+    @spawned.shift || {error: "spawn_failed", message: "no pane"}
+  end
 
   def same_pane?(pane, identity)
     @calls << [:same_pane?, pane, identity]

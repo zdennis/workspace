@@ -180,6 +180,54 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(panes.same_pane?("%5", nil)).to be false
     end
 
+    it "answers liveness and identity of one step's own pane, for a run with a pane per fan_out sibling" do
+      allow(locator).to receive(:locate).with("app", "%6").and_return(id: "%6", session: "app", window: 0, index: 2)
+      allow(tmux).to receive(:session_name_for_pane).with("%6").and_return("app")
+      allow(tmux).to receive(:pane_slot).with("%6").and_return("app:0.2")
+      bind(step: "lint")
+      bind(pane: "%6", step: "test")
+      allow(tmux).to receive(:session_name_for_pane).with("%6").and_return(nil)
+      allow(tmux).to receive(:pane_slot).with("%6").and_return(nil)
+
+      expect(panes.alive?("wr_1", step: "lint")).to be true
+      expect(panes.alive?("wr_1", step: "test")).to be false
+      expect(panes.identity("wr_1", step: "test")).to eq("session" => "app", "pane_slot" => "app:0.2")
+      expect(panes.identity("wr_1", step: "lint")).to eq("session" => "app", "pane_slot" => "app:0.1")
+      expect(panes.identity("wr_1", step: "docs")).to be_nil
+    end
+  end
+
+  describe "#spawn_author" do
+    let(:spawner) { instance_double(Workspace::PaneDispatch) }
+    let(:spawning) do
+      described_class.new(config: config, bindings: bindings, tmux: tmux, locator: locator, binder: binder,
+        snapshot_client: snapshot_client, agent_ensurer: agent_ensurer, spawner: spawner)
+    end
+
+    def spawned(ready:, waiting: nil)
+      Workspace::PaneDispatch::Spawned.new(pane: "%9", ready: Workspace::AgentReadiness::Result.new(ready: ready, reason: ready ? nil : "timeout"),
+        label: "Claude Code", closed: false, waiting: waiting)
+    end
+
+    it "splits a Claude Code pane and answers its id once the agent is ready" do
+      allow(spawner).to receive(:spawn).with("app", "claude").and_return(spawned(ready: true))
+
+      expect(spawning.spawn_author("app")).to eq(pane: "%9")
+    end
+
+    it "answers why there is no pane to type into: an agent not ready, one at a screen, a split that failed, or no spawner" do
+      allow(spawner).to receive(:spawn).and_return(spawned(ready: false), spawned(ready: false, waiting: "trust"))
+      expect(spawning.spawn_author("app")).to include(error: "agent_not_ready", pane: "%9")
+      expect(spawning.spawn_author("app")).to include(error: "agent_waiting_trust", pane: "%9")
+
+      allow(spawner).to receive(:spawn).and_raise(Workspace::Error.new("tmux said no"))
+      expect(spawning.spawn_author("app")).to eq(error: "spawn_failed", message: "tmux said no")
+      allow(spawner).to receive(:spawn).and_raise(Workspace::Error.new("never ready", details: {"pane_id" => "%9"}))
+      expect(spawning.spawn_author("app")).to include(error: "agent_not_ready", pane: "%9")
+
+      expect(panes.spawn_author("app")).to include(error: "spawn_failed")
+    end
+
     it "does not count a pane that is gone, or one bound to something other than a run" do
       bind
       allow(tmux).to receive(:session_name_for_pane).with("%5").and_return(nil)

@@ -1077,8 +1077,13 @@ module Workspace
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
       watch_factory: ->(workspace:, run:) { DaemonWatch.new(workspace: workspace, run: run, store: workflow_store, stream: EventStream.new(lifecycle_path: nil, hook_dir: config.hook_events_dir, workspace: workspace)) },
       process_tree: ProcessTree.new(logger: logger), output: output)
+    # Built before the engine: the review round waits for its window's agent through it, and a fan_out sibling's
+    # author pane is split through it.
+    pane_dispatch = PaneDispatch.new(snapshot_client: agent_snapshot_client, sender: send_command, binder: binding_command, library: library,
+      runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux, project_config: project_config, agent_commands: agent_commands)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
-      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new, error_output: error_output)
+      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new, error_output: error_output,
+      spawner: pane_dispatch)
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
     workflow_guard = WorkflowGuard.new(git_path: Which.path("git") || "git")
     workflow_checker = WorkflowCheck.new
@@ -1086,9 +1091,6 @@ module Workspace
       lineage: lineage, error_output: error_output)
     # Taken under a run's lock, so the inbox's flock is inside it. Nothing takes them the other way round.
     workflow_inbox_for = ->(workspace) { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) }
-    # Built before the engine: the review round waits for its window's agent through it.
-    pane_dispatch = PaneDispatch.new(snapshot_client: agent_snapshot_client, sender: send_command, binder: binding_command, library: library,
-      runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux, project_config: project_config, agent_commands: agent_commands)
     workflow_review_tally = WorkflowReviewTally.new(proof: ReviewVerdictProof.new(hook_dir: config.hook_events_dir))
     workflow_review_revision = WorkflowReviewRevision.new(guard: workflow_guard, checker: workflow_checker)
     # The process running the change delivers the round it starts, once the lock is given up.

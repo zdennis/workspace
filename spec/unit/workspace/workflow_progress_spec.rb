@@ -331,6 +331,15 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run.backoff_for("lint")).to include("pane" => "%5")
     end
 
+    it "records the identity of the failing step's own pane in its backoff, not the run's" do
+      bound = RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%5", "test" => "%6"}})
+      scoped = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: bound, log_tail: log_tail, clock: -> { now })
+
+      run = scoped.fail_step(grouped_run.merge("current" => "test"), failure, ctx: ctx)
+
+      expect(run.backoff_for("test")).to include("pane" => "%6", "identity" => "identity-of-%6")
+    end
+
     it "starts the step's own waiting retry and clears only that step's reason" do
       run = grouped_run
       run["steps"]["lint"].merge!("state" => "failed", "backoff" => {"until" => "2026-11-10T11:59:00Z", "to" => "lint", "text" => "lint failed", "pane" => "%3", "identity" => "id-3"},

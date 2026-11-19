@@ -73,9 +73,12 @@ module Workspace
     # @param transcript [Workspace::TranscriptSummary] says whether the main agent wrote anything after a time
     # @param sleeper [#call] waits a number of seconds
     # @param error_output [IO] where a warning about a path left out of a binding is written
+    # @param spawner [#spawn, nil] splits a new pane and waits for its agent, as {PaneDispatch#spawn} does, for the
+    #   author pane of each fan_out sibling after the first ({#spawn_author}); nil makes none
     def initialize(config:, bindings:, tmux:, locator:, binder:, snapshot_client:, agent_ensurer:, connector: ->(path) { UNIXSocket.open(path) },
       reply_timeout: REPLY_TIMEOUT, clock: -> { Time.now }, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new,
-      sleeper: ->(seconds) { sleep(seconds) }, error_output: $stderr)
+      sleeper: ->(seconds) { sleep(seconds) }, error_output: $stderr, spawner: nil)
+      @spawner = spawner
       @error_output = error_output
       @reply_timeout = reply_timeout
       @clock = clock
@@ -183,9 +186,10 @@ module Workspace
     end
 
     # @param run_id [String]
+    # @param step [String, nil] the pane bound for that step; nil is the first author pane the run has
     # @return [Boolean] whether the run's bound pane is still the pane it was bound in
-    def alive?(run_id)
-      pane = pane_of(run_id)
+    def alive?(run_id, step: nil)
+      pane = pane_of(run_id, step: step)
       return false unless pane
       entry = @bindings.binding_for(pane)
       !entry.nil? && !stale?(pane, entry)
@@ -323,9 +327,10 @@ module Workspace
     # {#same_pane?} compares later, once the binding is gone.
     #
     # @param run_id [String]
+    # @param step [String, nil] the pane bound for that step (a fan_out sibling's own); nil is the first author pane the run has
     # @return [Hash{String=>String}, nil] nil when the run has no binding or the binding recorded no session
-    def identity(run_id)
-      pane = pane_of(run_id)
+    def identity(run_id, step: nil)
+      pane = pane_of(run_id, step: step)
       entry = pane && @bindings.binding_for(pane)
       return nil unless entry && entry["session"].is_a?(String)
       entry.slice("session", "pane_slot")
@@ -341,6 +346,31 @@ module Workspace
         server_pid: -> { @tmux.server_pid_for_pane(pane) })
     rescue SystemCallError
       false
+    end
+
+    # The agent kind a fan_out sibling's own author pane starts: a step's line may be typed after `/clear`, which only
+    # Claude Code reads.
+    AUTHOR_KIND = "claude"
+
+    # Splits a new pane off the workspace's session for a fan_out sibling's author agent, and waits until that agent is
+    # ready for text. The pane is not bound; the dispatch that types the sibling's line binds it. As a pane made for an
+    # infra retry ({WorkflowInfraRetry}), a pane whose agent never got ready is closed again by the spawner, and one
+    # waiting at a sign-in, trust or approval screen is kept for the person.
+    #
+    # @param workspace [String]
+    # @return [Hash{Symbol=>String}] :pane, the new pane's id; or, when there is no pane to type into, :error
+    #   (`spawn_failed` when none was made, no spawner given included; `agent_not_ready`; `agent_waiting_<screen>`),
+    #   :message, and :pane when one was made
+    def spawn_author(workspace)
+      return {error: "spawn_failed", message: "no pane can be split for '#{workspace}' here"} unless @spawner
+      spawned = @spawner.spawn(workspace, AUTHOR_KIND)
+      return {pane: spawned.pane} if spawned.ready?
+      {error: spawned.waiting ? "agent_waiting_#{spawned.waiting}" : "agent_not_ready", pane: spawned.pane,
+       message: "the agent in new pane #{spawned.pane} of '#{workspace}' was not ready for its step's line"}
+    rescue Workspace::Error => e
+      {error: e.details.key?("pane_id") ? "agent_not_ready" : "spawn_failed", pane: e.details["pane_id"], message: e.message.lines.first.to_s.strip}.compact
+    rescue SystemCallError => e
+      {error: "spawn_failed", message: e.message.lines.first.to_s.strip}
     end
 
     # Binds the pane to a step of a run, replacing its earlier binding. The

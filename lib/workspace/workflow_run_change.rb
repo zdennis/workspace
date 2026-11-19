@@ -2,7 +2,7 @@ module Workspace
   # The one way a workflow run changes: under the run's lock, with the attempt record's reasons kept before and
   # after the change, the history lines its block wrote ({#event}) queued and written with `from_state`, `to_state`, `actor` and `cause`
   # once the run is stored and before the lock is given up, `workflow_changed` written when what a reader sees moved, alerts fired once the lock is given
-  # up with what the block registered to follow it ({Context#after_lock}), and then the line of a step the change started typed, through +deliver+. It never runs a check, a review round or a window close: a
+  # up with what the block registered to follow it ({Context#after_lock}), and then the line of each step the change started typed, through +deliver+, one after another. It never runs a check, a review round or a window close: a
   # block that registers one reads it back from its {Context} and the caller runs it through
   # {WorkflowEvaluation#finish_follow_ups}.
   class WorkflowRunChange
@@ -30,13 +30,30 @@ module Workspace
         @cause = cause
       end
 
-      # @return [Hash{String=>Object}, nil] the step line registered with {#deliver}
-      attr_reader :delivery
+      # @return [Hash{String=>Object}, nil] the last step line registered with {#deliver}
+      def delivery = deliveries.last
 
+      # @return [Array<Hash{String=>Object}>] every step line registered with {#deliver}, in order: one, or one per
+      #   sibling of a fan_out group the change dispatched
+      def deliveries = @deliveries || []
+
+      # Registers the one line to type, in place of any registered before, as a change that starts one step has.
+      #
       # @param delivery [Hash{String=>Object}] the line a dispatched attempt has to have typed
       # @return [Hash{String=>Object}]
       def deliver(delivery)
-        @delivery = delivery
+        @deliveries = [delivery]
+        delivery
+      end
+
+      # Registers a line to type after those registered before, in place of one for the same step only: each sibling
+      # of a fan_out group the change starts has its own line, typed in turn.
+      #
+      # @param delivery [Hash{String=>Object}] the line a dispatched attempt has to have typed
+      # @return [Hash{String=>Object}]
+      def add_delivery(delivery)
+        @deliveries = deliveries.reject { |each| each["step"] == delivery["step"] } << delivery
+        delivery
       end
 
       # With an argument, registers the check or proof to run once the lock is given up; without, the one registered.
@@ -113,7 +130,7 @@ module Workspace
       @event_log = event_log
     end
 
-    # Runs one change to a run under its lock and announces it, then types the line of a step the change started.
+    # Runs one change to a run under its lock and announces it, then types the line of each step the change started.
     #
     # @param run_id [String]
     # @param actor [String] who makes the change, one of {ACTORS}; written on every history line the change queues
@@ -123,7 +140,7 @@ module Workspace
     # @yieldparam run [WorkflowRun] the stored run, with its reason history kept
     # @yieldparam ctx [Context] this change's follow-ups
     # @yieldreturn [WorkflowRun, nil] the run to store; nil means no change: the run as given is stored
-    # @return [WorkflowRun, Object, nil] the run afterwards, or what +deliver+ returned when a line was
+    # @return [WorkflowRun, Object, nil] the run afterwards, or what +deliver+ returned for the last line
     #   registered; nil when +nonblocking+ and the run is busy
     # @raise [ArgumentError] when +actor+ is not one of {ACTORS}, or +cause+ is not a non-empty String
     # @raise [Workspace::Error] code `unknown_run`, `run_not_active`, and what the block raises
@@ -149,7 +166,8 @@ module Workspace
       changed(run.to_h) unless before == WorkflowTransitions.fingerprint(run.to_h)
       @alerts&.fire(alert_before, run)
       ctx.after_locks.each { |each| after_lock(each, run) }
-      ctx.delivery ? @deliver.call(run_id, ctx.delivery) : run
+      return run if ctx.deliveries.empty?
+      ctx.deliveries.map { |delivery| @deliver.call(run_id, delivery) }.last
     end
 
     # Appends one line to the run's history. Inside the block of a {#call} for the same run on this thread, the line

@@ -121,6 +121,120 @@ RSpec.describe Workspace::WorkflowDispatch do
         expect(run.to_h).not_to have_key("pause_hold")
         expect(run.pause_hold_for("lint")).to be_nil
       end
+
+      def over(panes) = described_class.new(change: change, store: store, resources: resources, panes: panes, prompt: prompt, attempt_record: attempt_record, guard: guard, clock: -> { now })
+
+      it "stops only the sibling whose own binding is dead, leaving the run running while another sibling works" do
+        dead = RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%5", "test" => "%6"}}, dead: [%w[wr_1 test]])
+
+        run = over(dead).dispatch(grouped("state" => "running"), ctx: ctx, cause: "loop")
+
+        expect(run.reason_for("test")).to include("code" => "pane_gone", "details" => include("step" => "test"))
+        expect(run.step("test").state).to eq("waiting")
+        expect(run.step("lint").state).to eq("running")
+        expect(run.reason_for("lint")).to eq("code" => "waiting_you")
+        expect(run.state).to eq("running")
+        expect(run.to_h["reason"]).to eq("code" => "the run's")
+      end
+
+      it "starts a sibling whose own binding is alive though another sibling's is dead" do
+        dead = RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%5", "test" => "%6"}}, dead: [%w[wr_1 lint]])
+        context = ctx
+
+        run = over(dead).dispatch(grouped, ctx: context, cause: "loop")
+
+        expect(run.step("test").state).to eq("running")
+        expect(context.delivery).to include("step" => "test", "pane" => "%6")
+      end
+
+      it "holds a sibling's attempt while another sibling of the group holds the shared budget, though the purse reads unspent" do
+        held = grouped("definition" => grouped["definition"].merge("budget" => {"tokens" => 1000}))
+        held["steps"]["lint"]["budget_hold"] = {"pane" => "%5"}
+
+        run = dispatch.dispatch(held, ctx: ctx, cause: "loop")
+
+        expect(run.budget_hold_for("test")).to include("pane" => "%3")
+        expect(run.reason_for("test")).to include("code" => "budget_spent")
+        expect(run.step("test").attempts).to be_empty
+        expect(dispatch.dispatch(grouped("definition" => held["definition"]), ctx: ctx, cause: "loop").step("test").attempts.size).to eq(1)
+      end
+
+      it "holds a sibling's attempt while another sibling of the group holds the run's timeout" do
+        held = grouped("definition" => grouped["definition"].merge("timeout" => 3600))
+        held["steps"]["lint"]["timeout_hold"] = {"pane" => "%5"}
+
+        run = dispatch.dispatch(held, ctx: ctx, cause: "loop")
+
+        expect(run.timeout_hold_for("test")).to include("pane" => "%3")
+        expect(run.step("test").attempts).to be_empty
+      end
+
+      describe "entering a group none of whose siblings has started" do
+        def unstarted(**overrides)
+          grouped("current" => "lint", "steps" => {"lint" => {"state" => "pending", "attempts" => []}, "test" => {"state" => "pending", "attempts" => []}}, **overrides)
+        end
+
+        it "starts every sibling: the first in the run's pane, each after it in a new pane, each bound for its step with a line of its own" do
+          spawning = RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, spawned: [{pane: "%9"}])
+          context = ctx
+
+          run = over(spawning).dispatch(unstarted, ctx: context, cause: "next_step")
+
+          expect(spawning.calls).to include([:spawn_author, "app"])
+          binds = spawning.calls.select { |call| call.first == :bind }.map { |call| call.last.slice(:pane, :step, :attempt, :role) }
+          expect(binds).to eq([{pane: "%3", step: "lint", attempt: 1}, {pane: "%9", step: "test", attempt: 1}])
+          expect(context.deliveries.map { |line| line.slice("step", "pane", "attempt") }).to eq([{"step" => "lint", "pane" => "%3", "attempt" => 1}, {"step" => "test", "pane" => "%9", "attempt" => 1}])
+          expect(run.steps.values.map(&:state)).to eq(%w[running running])
+          expect([run.pane_for("lint"), run.pane_for("test")]).to eq(%w[%3 %9])
+          expect(run.current).to eq("test")
+          expect(run.state).to eq("running")
+        end
+
+        it "starts the others when a sibling's new pane can't be made, leaving that one waiting with why" do
+          spawning = RecordingWorkflowPanes.new(spawned: [{error: "agent_not_ready", message: "not ready", pane: "%9"}])
+
+          run = over(spawning).dispatch(unstarted, ctx: ctx, cause: "first")
+
+          expect(run.step("lint").state).to eq("running")
+          expect(run.step("test").state).to eq("waiting")
+          expect(run.reason_for("test")).to include("code" => "waiting_you", "details" => include("error" => "agent_not_ready", "pane" => "%9", "step" => "test"))
+          expect(run.state).to eq("running")
+        end
+
+        it "holds only the first sibling of a paused run, making no pane, so the replay enters the group" do
+          spawning = RecordingWorkflowPanes.new(spawned: [{pane: "%9"}])
+
+          run = over(spawning).dispatch(unstarted("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"}), ctx: ctx, cause: "first")
+
+          expect(run.pause_hold_for("lint")).to include("kind" => "attempt")
+          expect(run.pause_hold_for("test")).to be_nil
+          expect(spawning.calls.map(&:first)).not_to include(:spawn_author, :bind)
+        end
+
+        it "does not enter a group a sibling of which has an attempt already" do
+          spawning = RecordingWorkflowPanes.new(spawned: [{pane: "%9"}])
+          started = unstarted
+          started["steps"]["test"] = {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed"}]}
+
+          run = over(spawning).dispatch(started, ctx: ctx, cause: "loop")
+
+          expect(spawning.calls.map(&:first)).not_to include(:spawn_author)
+          expect(run.step("lint").state).to eq("running")
+          expect(run.step("test").state).to eq("failed")
+        end
+      end
+    end
+
+    it "parks the whole run on a dead binding of an ungrouped step, as always" do
+      dead = described_class.new(change: change, store: store, resources: resources, panes: RecordingWorkflowPanes.new(bound: {"wr_1" => "%4"}, dead: ["wr_1"]),
+        prompt: prompt, attempt_record: attempt_record, guard: guard, clock: -> { now })
+
+      run = dead.dispatch(run_hash("state" => "running"), ctx: ctx, cause: "next_step")
+
+      expect(run.state).to eq("waiting")
+      expect(run.reason).to include("code" => "pane_gone", "details" => include("step" => "plan", "pane" => "%3"))
+      expect(run.step("plan").state).to eq("waiting")
+      expect(run.step("plan").attempts).to be_empty
     end
 
     it "drops a park as moved_on, carrying its note into the attempt's context" do
