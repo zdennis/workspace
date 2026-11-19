@@ -22,6 +22,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/run_liveness.rb` — Whether a workflow run is still alive, from its run file.
 - `lib/workspace/run_resources.rb` — Holds a workflow step's `uses:` locks for the run.
 - `lib/workspace/workflow_review_spec.rb` — Parses the `reviewers:` and step `review:` parts of a workflow definition.
+- `lib/workspace/workflow_fan_out_spec.rb` — Checks a `fan_out` group's siblings for checkout contention: guards and `produces` overlap.
 - `lib/workspace/workflow_definition.rb` — One workflow definition (YAML): checks every key, collects problems and fills defaults, `on_fail: stop` included.
 - `lib/workspace/workflow_extends.rb` — Resolves a definition's `extends:` against its parent definitions.
 - `lib/workspace/workflow_lint.rb` — `workflow validate`'s checks that need the person's setup, as warnings.

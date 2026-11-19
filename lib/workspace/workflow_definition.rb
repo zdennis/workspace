@@ -255,7 +255,7 @@ module Workspace
       else
         []
       end
-      missing + idle + retry_warnings + step_attempt_warnings + WorkflowReviewSpec.round_warnings(steps, @data["max_attempts"]) + @notes + unused_action
+      missing + idle + retry_warnings + step_attempt_warnings + WorkflowReviewSpec.round_warnings(steps, @data["max_attempts"]) + WorkflowFanOutSpec.warnings(@data["groups"]) + @notes + unused_action
     end
 
     # Every project command a definition checks with: each step's `status: command:` and each `require: command:` not marked optional.
@@ -584,6 +584,7 @@ module Workspace
       reviewers = review_spec.reviewers(raw["reviewers"], inputs)
       steps = steps_from(raw["steps"], inputs)
       review_spec.check(steps, reviewers)
+      WorkflowFanOutSpec.new(report: method(:problem)).check(steps, @groups)
       {
         "id" => id,
         "title" => text_or_nil(raw["title"], "title") || id,
