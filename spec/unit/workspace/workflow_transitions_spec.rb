@@ -798,6 +798,92 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe "a fan_out group's failures and join" do
+    let(:failure) { {"cause" => "check", "code" => "check_failed"} }
+    let(:now) { Time.utc(2026, 10, 4, 12, 0, 0) }
+
+    # plan, then the group checks (lint, test, docs), then report.
+    def grouped(states = {}, current: "docs")
+      definition = [{"id" => "plan"}, {"id" => "lint", "group" => "checks"}, {"id" => "test", "group" => "checks"},
+        {"id" => "docs", "group" => "checks"}, {"id" => "report"}]
+      steps = %w[plan lint test docs report].to_h { |id| [id, {"state" => states.fetch(id, "passed"), "attempts" => [{"n" => 1}]}] }
+      {"id" => "wr_1", "state" => "running", "current" => current, "loops" => {}, "reason" => nil,
+       "definition" => {"max_attempts" => 20, "steps" => definition}, "steps" => steps}
+    end
+
+    it "takes the failed step's own on_fail when it is named, not the cursor's" do
+      run = grouped({"test" => "failed"}, current: "docs")
+      run["definition"]["steps"][2]["on_fail"] = {"goto" => "lint", "max" => 2}
+      run["definition"]["steps"][3]["on_fail"] = "stop"
+
+      expect(described_class.after_failure(run, failure, step: "test")).to eq(kind: :loop, edge: "test->lint", to: "lint", count: 1, wait: nil)
+      expect(described_class.after_failure(run, failure)).to eq(kind: :stop)
+    end
+
+    it "scopes the implicit move to the sibling before, stopping the group's first" do
+      expect(described_class.after_failure(grouped, failure, step: "test")).to include(kind: :loop, to: "lint")
+      expect(described_class.after_failure(grouped, failure, step: "lint")).to eq(kind: :stop)
+    end
+
+    it "skips a group's siblings for the step after it, and stops when no step before the group is in none" do
+      expect(described_class.after_failure(grouped, failure, step: "report")).to include(kind: :loop, to: "plan", edge: "report->plan")
+      run = grouped
+      run["definition"]["steps"].shift
+      expect(described_class.after_failure(run, failure, step: "report")).to eq(kind: :stop)
+    end
+
+    it "reads a group at rest only when no sibling works, owes, is held or waits out its move" do
+      ids = %w[lint test docs]
+      expect(described_class.group_at_rest?(grouped({"lint" => "failed"}), ids, now)).to be(true)
+      expect(described_class.group_at_rest?(grouped({"test" => "running"}), ids, now)).to be(false)
+
+      gated = grouped
+      gated["steps"]["lint"]["gate"] = {"state" => "waiting"}
+      expect(described_class.group_at_rest?(gated, ids, now)).to be(false)
+
+      held = grouped
+      held["steps"]["test"]["budget_hold"] = {}
+      expect(described_class.group_at_rest?(held, ids, now)).to be(false)
+
+      waiting = grouped({"docs" => "failed"})
+      waiting["steps"]["docs"].merge!("pending_move" => {"to" => "lint", "until" => "2026-10-04T12:01:00Z"}, "reason" => {"code" => "retry_backoff"})
+      expect(described_class.group_at_rest?(waiting, ids, now)).to be(false)
+      expect(described_class.group_at_rest?(waiting, ids, now + 61)).to be(true)
+      expect(described_class.join_due(waiting, now)).to be_nil
+      expect(described_class.join_due(waiting, now + 61)).to eq("checks")
+      expect(described_class.wakeable?(waiting.merge("state" => "waiting"), now + 61)).to eq(:join)
+    end
+
+    it "classes every per-step slot as owed or not, so a new slot is owed until it is named otherwise" do
+      expect(described_class::SIBLING_SLOTS_OWED + described_class::SIBLING_SLOTS_NOT_OWED).to match_array(Workspace::WorkflowRun::PER_STEP_KEYS)
+      expect(described_class::SIBLING_SLOTS_OWED & described_class::SIBLING_SLOTS_NOT_OWED).to eq([])
+      expect(described_class::SIBLING_SLOTS_OWED).to include("review_retry", "budget_hold", "timeout_hold", "backoff")
+    end
+
+    described_class::SIBLING_SLOTS_OWED.each do |key|
+      it "reads a sibling holding #{key} as not at rest, while another sibling keeps the run running" do
+        run = grouped({"lint" => "running", "test" => "failed"})
+        run["steps"]["test"][key] = {"held" => true}
+
+        expect(run["state"]).to eq("running")
+        expect(described_class.sibling_at_rest?(run, "test", now)).to be(false)
+        expect(described_class.group_at_rest?(run, %w[lint test docs], now)).to be(false)
+      end
+    end
+
+    it "owes a failed sibling its run once its granted move was applied, while it has attempts left" do
+      run = grouped({"docs" => "failed"})
+      expect(described_class.relay_owed?(run, "docs")).to be(false)
+      run["steps"]["docs"]["attempts"].last["move"] = {"to" => "lint", "count" => 1}
+      expect(described_class.relay_owed?(run, "docs")).to be(true)
+      run["steps"]["docs"]["pending_move"] = {"to" => "lint"}
+      expect(described_class.relay_owed?(run, "docs")).to be(false)
+      run["steps"]["docs"].delete("pending_move")
+      run["steps"]["docs"]["attempts"].last["move"]["failed"] = "target_failed"
+      expect(described_class.relay_owed?(run, "docs")).to be(false)
+    end
+  end
+
   describe ".after_failure with a step cap" do
     let(:failure) { {"cause" => "check", "code" => "check_failed"} }
 

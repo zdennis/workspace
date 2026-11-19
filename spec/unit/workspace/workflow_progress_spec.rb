@@ -180,6 +180,14 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(dispatch.calls).to eq([[:drop_park, "wr_1", "ended", {}], [:release, "wr_1"]])
       expect(panes.calls).to eq([[:unbind, "wr_1"]])
     end
+
+    it "drops every run-level slot of what comes next, keeping the reason key, its history and the pending context" do
+      slots = (Workspace::WorkflowRun::PER_STEP_KEYS - %w[reason reasons pending_context]).to_h { |key| [key, {"left" => key}] }
+      run = progress.finish(run_hash(**slots, "reasons" => [{"code" => "x"}], "pending_context" => ["kept"]), "cancelled")
+
+      expect(run.to_h.keys & slots.keys).to eq([])
+      expect(run.to_h).to include("reason" => nil, "reasons" => [{"code" => "x"}], "pending_context" => ["kept"])
+    end
   end
 
   describe "#fail_step" do
@@ -308,52 +316,105 @@ RSpec.describe Workspace::WorkflowProgress do
       })
     end
 
-    it "keeps each failing step's backoff and reason under its own step, so a sibling's wait leaves the first one's alone" do
+    # A sibling's failure move is the group join's: it is kept as the sibling's own `pending_move` (its backoff folded
+    # in as `until`), never as a `backoff` a tick would start ({#wait_to_retry} is for steps in no group).
+    it "keeps each failing step's deferred move and reason under its own step, so a sibling's wait leaves the first one's alone" do
       first = progress.fail_step(grouped_run, failure, ctx: ctx)
       second = progress.fail_step(first.thawed.merge("current" => "test"), failure, ctx: ctx)
 
       expect(first.to_h).not_to have_key("backoff")
       expect(first.to_h["reason"]).to be_nil
-      expect(second.backoff_for("lint")).to include("until" => "2026-11-10T12:00:30Z", "to" => "lint", "pane" => "%3", "identity" => "identity-of-wr_1")
-      expect(second.reason_for("lint")).to include("code" => "retry_backoff", "details" => include("step" => "lint"))
-      expect(second.backoff_for("test")).to include("to" => "test")
+      %w[lint test].each { |id| expect(second.step(id).to_h).not_to have_key("backoff") }
+      expect(second.pending_move_for("lint")).to include("until" => "2026-11-10T12:00:30Z", "to" => "lint", "count" => 1)
+      expect(second.reason_for("lint")).to include("code" => "retry_backoff", "details" => include("step" => "lint", "seconds" => 30))
+      expect(second.pending_move_for("test")).to include("to" => "test")
       expect(second.reason_for("test")).to include("code" => "retry_backoff", "details" => include("step" => "test"))
+      expect(second.state).to eq("waiting")
+      expect(dispatch.calls.map(&:first)).not_to include(:dispatch)
     end
 
-    it "unbinds only the failing step's binding and records that step's own pane in its backoff" do
+    it "keeps the failing sibling's pane and every other sibling's bound while its move waits" do
       bound = RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%5", "test" => "%6"}})
       scoped = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: bound, log_tail: log_tail, clock: -> { now })
 
       run = scoped.fail_step(grouped_run.merge("pane" => "%6"), failure, ctx: ctx)
 
-      expect(bound.calls).to include([:unbind, "wr_1", {step: "lint"}])
-      expect(bound.calls).not_to include([:unbind, "wr_1"])
-      expect(run.backoff_for("lint")).to include("pane" => "%5")
+      expect(bound.calls.map(&:first)).not_to include(:unbind)
+      expect(run.pending_move_for("lint")).to include("to" => "lint")
+      expect(run.state).to eq("running")
     end
 
-    it "records the identity of the failing step's own pane in its backoff, not the run's" do
-      bound = RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%5", "test" => "%6"}})
-      scoped = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: bound, log_tail: log_tail, clock: -> { now })
-
-      run = scoped.fail_step(grouped_run.merge("current" => "test"), failure, ctx: ctx)
-
-      expect(run.backoff_for("test")).to include("pane" => "%6", "identity" => "identity-of-%6")
-    end
-
-    it "starts the step's own waiting retry and clears only that step's reason" do
+    it "never starts a sibling's retry itself, leaving its move to the group's join" do
       run = grouped_run
-      run["steps"]["lint"].merge!("state" => "failed", "backoff" => {"until" => "2026-11-10T11:59:00Z", "to" => "lint", "text" => "lint failed", "pane" => "%3", "identity" => "id-3"},
+      run["steps"]["lint"].merge!("state" => "failed", "pending_move" => {"until" => "2026-11-10T12:30:00Z", "to" => "lint", "text" => "lint failed"},
         "reason" => {"code" => "retry_backoff"})
-      run["steps"]["test"]["reason"] = {"code" => "retry_backoff"}
 
       retried = progress.start_retry(run, ctx: ctx, cause: "backoff_ended")
 
-      expect(retried.step("lint").to_h).not_to have_key("backoff")
-      expect(retried.step("lint").to_h["reason"]).to be_nil
-      expect(retried.reason_for("test")).to eq("code" => "retry_backoff")
-      expect(retried.pending_context_for("lint")).to eq(["lint failed"])
-      expect(retried.pending_context).to eq([])
-      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "backoff_ended", context: nil, budgeted: true, retry_of: {"pane" => "%3", "identity" => "id-3", "text" => "lint failed"}}])
+      expect(dispatch.calls.map(&:first)).not_to include(:dispatch)
+      expect(retried.pending_move_for("lint")).to include("to" => "lint")
+      expect(retried.reason_for("lint")).to eq("code" => "retry_backoff")
+      expect(change.events.map { |event| event[1] }).not_to include("step_retry_started")
+    end
+
+    describe "a sibling under a budget hold" do
+      def held_run(other)
+        run = grouped_run
+        run["steps"]["lint"]["state"] = other
+        run["steps"]["test"].merge!("state" => "failed", "budget_hold" => {"pane" => "%6"},
+          "pending_move" => {"to" => "lint", "text" => "t"})
+        run["steps"]["test"]["attempts"][0]["move"] = {"to" => "lint", "count" => 1}
+        run
+      end
+
+      %w[running passed].each do |other|
+        it "holds the join, with its other sibling #{other} and the run read running" do
+          joined = progress.join(held_run(other), ctx: ctx, group: "checks")
+
+          expect(dispatch.calls.map(&:first)).not_to include(:dispatch, :release)
+          expect(joined.pending_move_for("test")).to include("to" => "lint")
+          expect(joined.reason_for("test")).to be_nil
+          expect(joined.step("lint").state).to eq(other)
+        end
+      end
+    end
+
+    it "keeps a paused run's state while a sibling works" do
+      run = grouped_run.merge("state" => "waiting", "paused" => {"since" => "2026-11-10T11:50:00Z", "by" => "person"})
+      run["steps"]["lint"]["state"] = "running"
+
+      expect(progress.join(run, ctx: ctx, group: "checks").state).to eq("waiting")
+      expect(progress.join(run.except("paused"), ctx: ctx, group: "checks").state).to eq("running")
+    end
+
+    it "keeps the cursor on a sibling of the group whatever holds it" do
+      run = grouped_run.merge("current" => nil)
+      %w[lint test].each { |id| run["steps"][id]["state"] = "pending" }
+
+      expect(progress.join(run, ctx: ctx, group: "checks").current).to eq("lint")
+    end
+
+    it "drops a sibling's kept failure details when the run ends" do
+      run = grouped_run
+      run["steps"]["lint"]["failed_reason"] = {"step" => "lint"}
+
+      expect(progress.finish(run, "cancelled").step("lint").to_h).not_to have_key("failed_reason")
+    end
+
+    it "applies a move whose wait is over once the group is at rest, through the join" do
+      run = grouped_run
+      run["steps"]["lint"].merge!("state" => "failed", "pending_move" => {"until" => "2026-11-10T11:59:00Z", "to" => "test", "text" => "lint failed"},
+        "reason" => {"code" => "retry_backoff"})
+      run["steps"]["lint"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:30:00Z", "outcome" => "failed", "move" => {"to" => "test", "count" => 1})
+      run["steps"]["test"]["state"] = "passed"
+
+      joined = progress.join(run, ctx: ctx)
+
+      expect(joined.step("lint").to_h).not_to have_key("pending_move")
+      expect(joined.reason_for("lint")).to be_nil
+      expect(joined.pending_context_for("test")).to eq(["lint failed"])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "loop", context: nil, budgeted: true, retry_of: {"text" => "lint failed"}}])
+      expect(change.events.last).to eq(["wr_1", "step_retry_started", {"from" => "lint", "to" => "test"}])
     end
 
     it "leaves no step's own retry or hold slot behind when the run ends, keeping its reason history" do

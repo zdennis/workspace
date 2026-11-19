@@ -500,6 +500,22 @@ RSpec.describe Workspace::WorkflowRun do
       end
     end
 
+    it "reads nothing from the run's top level for a grouped step that lacks a slot, but the pending context the step before hands it" do
+      run = grouped_run.merge("reason" => {"code" => "left"}, "backoff" => {"to" => "plan"}, "pending_move" => {"to" => "plan"},
+        "pending_context" => ["from plan"], "pane" => "%5")
+      frozen = described_class.from_h(run)
+
+      (described_class::PER_STEP_KEYS - %w[pending_context]).each do |key|
+        expect(described_class.slot(run, "lint", key)).to be_nil, "#{key} fell back to the run level"
+      end
+      expect(frozen.reason_for("lint")).to be_nil
+      expect(frozen.pending_move_for("lint")).to be_nil
+      expect(described_class.slot(run, "lint", "pending_context")).to eq(["from plan"])
+      expect(frozen.pane_for("lint")).to eq("%5")
+      expect(described_class.slot(run, "plan", "reason")).to eq("code" => "left")
+      expect(frozen.backoff_for("plan")).to eq("to" => "plan")
+    end
+
     it "leaves the run-level reason and pending context of an ungrouped step alone when a grouped step writes its own" do
       run = grouped_run.merge("reason" => {"code" => "run"}, "pending_context" => ["run line"])
 
@@ -528,7 +544,9 @@ RSpec.describe Workspace::WorkflowRun do
       run["steps"]["test"]["continue_pending"] = nil
 
       expect(described_class.slot(run, "lint", "reason")).to eq("code" => "lint", "details" => {"step" => "lint"})
-      expect(described_class.slot(run, "test", "reason")).to eq("code" => "run", "details" => {"step" => "plan"})
+      # A grouped step lacking the slot reads nothing, never the run-level value an ungrouped step left.
+      expect(described_class.slot(run, "test", "reason")).to be_nil
+      expect(described_class.slot(run, "plan", "reason")).to eq("code" => "run", "details" => {"step" => "plan"})
       expect(described_class.slot_dig(run, "lint", "reason", "details", "step")).to eq("lint")
       expect(described_class.slot_dig(run, "plan", "backoff", "to")).to be_nil
       expect { described_class.slot_dig(run.merge("reason" => "text"), "plan", "reason", "code") }.to raise_error(TypeError)

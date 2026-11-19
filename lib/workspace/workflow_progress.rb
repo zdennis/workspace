@@ -193,7 +193,40 @@ module Workspace
     # @param cause [String] why the retry starts, written on its `step_dispatching`: `backoff_ended`, or `resume` when a person skips the wait
     # @return [WorkflowRun] the run afterwards
     def start_retry(run, waiting = nil, ctx:, cause:, proven: false, budgeted: true)
-      over(run) { |work| retry_in(work, waiting || WorkflowRun.slots(work, work["current"]).delete("backoff"), ctx, proven, budgeted, cause) }
+      over(run) do |work|
+        # A fan_out sibling's slots are left as they are: {#retry_in} hands a sibling to its group's join.
+        waiting ||= WorkflowRun.slots(work, work["current"]).delete("backoff") unless grouped?(work, work["current"])
+        retry_in(work, waiting, ctx, proven, budgeted, cause)
+      end
+    end
+
+    # The join of a fan_out group: the one check that runs after each sibling's attempt ends (passed, failed, or at
+    # its gate), and here when a timer or a person wakes it. It takes the first of these that fits:
+    #
+    # 1. The group is not at rest ({WorkflowTransitions.group_at_rest?}: a sibling at work, owing an attempt, held, or
+    #    waiting out a deferred move's backoff): nothing moves. The run reads `running` while a sibling works, with the
+    #    cursor on the sibling at work dispatched last; else `waiting`, with the cursor on the first sibling held.
+    # 2. A sibling carries a deferred failure move (`pending_move`): the first one, in step order, is applied, and only
+    #    that one. Its target sibling runs again (cause `loop`), told what failed. A target that is failed with no run
+    #    owed, or out of attempts, or that could not be started, is not run: the moving sibling's move is marked failed,
+    #    with the target left as it was, and the join goes on down this list.
+    # 3. Failed siblings are owed their run after a move was applied ({WorkflowTransitions.relay_owed?}): each runs
+    #    again (cause `next_step`), all in one change, while the run and that sibling have attempts left.
+    # 4. Every sibling passed: the step after the group starts (the group's last sibling's position plus one, never
+    #    read from the cursor), or the run completes after the last.
+    # 5. Otherwise the group failed (its `on_fail: stop`): every failed sibling stores its `failed_check` reason, the
+    #    cursor goes to the first, and the run waits for a person. This is the only place a group's failure sets the
+    #    run's state.
+    #
+    # @param run [WorkflowRun, Hash{String=>Object}] the stored run; left as it is
+    # @param ctx [Workspace::WorkflowRunChange::Context] gets the lines of the steps the join starts
+    # @param group [String, nil] the group's id; nil joins each group a sibling of which carries a deferred move
+    # @return [WorkflowRun] the run afterwards
+    def join(run, ctx:, group: nil)
+      over(run) do |work|
+        groups = group ? [group] : WorkflowDefinition.group_steps(work["definition"]).select { |_, ids| ids.any? { |id| WorkflowRun.slot(work, id, "pending_move") } }.keys
+        groups.each { |each| join_in(work, ctx, each) }
+      end
     end
 
     # Keeps a retry from starting without spending it: the wait is kept, marked `blocked` so a tick or the
@@ -275,6 +308,8 @@ module Workspace
       details["summary"] = summary if summary.is_a?(String)
       WorkflowRun.slots(run, run["current"])["reason"] = reason("waiting_you", details)
       event(run, "gate_waiting", "step" => run["current"])
+      # A sibling at its gate holds its group's join; the join says whether the run still runs (another sibling at work).
+      join_in(run, ctx, group_id(run, run["current"])) if grouped?(run, run["current"])
     end
 
     # The author's turn passed every check; the attempt ends now, so its usage counts and its step timeout stops.
@@ -569,6 +604,12 @@ module Workspace
     end
 
     def go_on(run, ctx)
+      # A fan_out sibling never moves the run on by itself: its group's join decides what comes next. A passed sibling
+      # going on (its gate approved, say) holds nothing any more, so the reason its gate stored goes.
+      if grouped?(run, run["current"])
+        WorkflowRun.slots(run, run["current"])["reason"] = nil if step_state(run)["state"] == "passed"
+        return join_in(run, ctx, group_id(run, run["current"]))
+      end
       ids = step_ids(run)
       following = ids[ids.index(run["current"]) + 1]
       return complete(run, ctx) unless following
@@ -581,24 +622,22 @@ module Workspace
       event(run, "run_completed")
     end
 
+    # The run-level {WorkflowRun::PER_STEP_KEYS} slots an ended run drops: every one but its reason (set to nil
+    # below), its reason history, and the pending context (kept, as an ended run always has).
+    ENDED_RUN_SLOTS = (WorkflowRun::PER_STEP_KEYS - %w[reason reasons pending_context]).freeze
+
     def end_run(run, state, ctx)
       adopt(run, @dispatch.drop_park(run, "ended")) if run.key?("parked")
-      run.delete("backoff")
-      run.delete("budget_hold")
-      run.delete("timeout_hold")
       # A run that ends ends its pause: no finished run reads `paused`, and what the pause held is not started.
       run.delete("paused")
-      run.delete("pause_hold")
-      run.delete("continue_pending")
+      ENDED_RUN_SLOTS.each { |key| run.delete(key) }
       @dispatch.release(run)
       @panes.unbind(run["id"])
       # Every window a round of the run left, of any step: the closer finds them by their mark, a step of nil naming
       # them all, so this takes the place of a close of one step's window the same change registered.
       reviewed = run["steps"].values.any? { |each| each.is_a?(Hash) && each["review_rounds"].to_i.positive? }
-      run["steps"].each_value { |each| each.delete("review_window") if each.is_a?(Hash) }
-      run.delete("review_retry")
-      run.delete("retry_of_pending")
-      run.delete("dispatch_cause_pending")
+      # A fan_out sibling's kept failure details (`failed_reason`, read only by its group's join) go with the run too.
+      run["steps"].each_value { |each| %w[review_window failed_reason].each { |key| each.delete(key) } if each.is_a?(Hash) }
       ctx.close_review({"workspace" => run["workspace"], "step" => nil, "round" => nil, "pane" => nil}) if ctx && reviewed
       # A step's own slots go too, from every step, so an ended run reads as no step mid-retry or held.
       WorkflowRun.drop_step_slots(run)
@@ -621,7 +660,8 @@ module Workspace
       event(run, "step_failed", {"step" => step["id"], "attempt" => attempt["n"]}.merge(failure.slice("cause", "exit_code")))
       on_fail = step["on_fail"]
       attempts = WorkflowTransitions.attempts_made(run)
-      next_move = WorkflowTransitions.after_failure(run, failure)
+      next_move = WorkflowTransitions.after_failure(run, failure, step: step["id"])
+      return defer_failure(run, step, failure, next_move, ctx) if grouped?(run, step["id"])
       if next_move[:kind] == :loop
         run["loops"][next_move[:edge]] = next_move[:count]
         text = loop_context(run, step, on_fail, failure, next_move[:count])
@@ -644,19 +684,13 @@ module Workspace
     end
 
     # No attempt, pane binding or lock is held while the retry waits: the run reads `waiting` with the reason
-    # `retry_backoff`, and the step stays `failed` until {#start_retry}.
+    # `retry_backoff`, and the step stays `failed` until {#start_retry}. Never for a fan_out sibling, whose wait is
+    # part of its deferred move ({#defer_failure}).
     def wait_to_retry(run, step, on_fail, text, wait, attempt)
       @dispatch.release(run)
       pane = bound_pane(run, step["id"])
-      scoped = WorkflowRun.step_scoped?(run, step["id"])
-      # A step of a group names its own pane's identity, read before its binding goes.
-      identity = scoped ? @panes.identity(run["id"], step: step["id"]) : @panes.identity(run["id"])
-      # A step of a group gives up only its own binding: its siblings' panes stay bound.
-      if scoped
-        @panes.unbind(run["id"], step: step["id"])
-      else
-        @panes.unbind(run["id"])
-      end
+      identity = @panes.identity(run["id"])
+      @panes.unbind(run["id"])
       time = (@clock.call + wait).utc.iso8601
       slots = WorkflowRun.slots(run, step["id"])
       slots["backoff"] = {"until" => time, "to" => on_fail["goto"], "context" => on_fail["context"], "text" => text, "pane" => pane, "identity" => identity}.compact
@@ -666,6 +700,9 @@ module Workspace
     end
 
     def retry_in(run, waiting, ctx, proven, budgeted, cause)
+      # A fan_out sibling's failure move is its group join's to apply ({#join}): no retry moves a sibling, so no
+      # second mover types into a target the join owns.
+      return join_in(run, ctx, group_id(run, run["current"])) if grouped?(run, run["current"])
       problem = retry_pane_problem(run, waiting, proven: proven)
       return hold_in(run, waiting, problem, bound_pane(run)) if problem
       to = waiting["to"]
@@ -689,6 +726,164 @@ module Workspace
          "message" => "the retry of step #{waiting["to"]} was not started: #{problem[:message]}. Or cancel the run."})
       event(run, "step_retry_blocked", "from" => run["current"], "to" => waiting["to"], "code" => problem[:code])
     end
+
+    # A fan_out sibling's failure, decided as any step's ({WorkflowTransitions.after_failure}, for the sibling itself)
+    # but not acted on here: a granted move spends its loop now and is kept as the sibling's `pending_move` ("to",
+    # "context", "text", "count", and "until" for a backoff, whose wait shows as the sibling's `retry_backoff`
+    # reason), and the attempt records it as its `move`; the sibling's failure details are kept as its
+    # `failed_reason` for the group's failure path. Nothing else moves: no pane is typed into, no other sibling
+    # changes, and the run's state is the join's to say.
+    def defer_failure(run, step, failure, next_move, ctx)
+      id = step["id"]
+      state = step_state(run)
+      attempt = state["attempts"].last
+      on_fail = step["on_fail"]
+      details = {"step" => id, "attempt" => attempt["n"], "loops" => run["loops"].dup,
+                 "attempts" => WorkflowTransitions.attempts_made(run), "max_attempts" => WorkflowTransitions.attempt_allowance(run)}
+      if next_move[:limit] == :step
+        details["limit"] = "step"
+        details["limit_step"] = next_move[:step]
+      end
+      if next_move[:kind] == :loop
+        count = next_move[:count]
+        run["loops"][next_move[:edge]] = count
+        text = loop_context(run, step, on_fail, failure, count)
+        wait = next_move[:wait]
+        event(run, "step_looped", {"from" => id, "to" => next_move[:to], "count" => count}.merge(wait ? {"backoff" => wait} : {}))
+        move = {"to" => next_move[:to], "context" => on_fail.is_a?(Hash) ? on_fail["context"] : nil, "text" => text, "count" => count}
+        slots = WorkflowRun.slots(run, id)
+        if wait
+          time = (@clock.call + wait).utc.iso8601
+          move["until"] = time
+          slots["reason"] = reason("retry_backoff", {"step" => id, "attempt" => attempt["n"], "to" => next_move[:to], "until" => time,
+                                                     "seconds" => wait, "loops" => run["loops"].dup})
+        end
+        slots["pending_move"] = move.compact
+        attempt["move"] = {"to" => next_move[:to], "count" => count}
+      end
+      state["failed_reason"] = details.merge(failure)
+      join_in(run, ctx, group_id(run, id))
+    end
+
+    def join_in(run, ctx, group)
+      ids = WorkflowDefinition.group_steps(run["definition"])[group] || []
+      return if ids.empty?
+      now = @clock.call
+      return hold_join(run, ids, now) unless WorkflowTransitions.group_at_rest?(run, ids, now)
+      mover = ids.find { |id| WorkflowRun.slot(run, id, "pending_move").is_a?(Hash) }
+      return apply_move(run, ctx, group, mover) if mover
+      owed = ids.select { |id| WorkflowTransitions.relay_owed?(run, id) }
+      return relay(run, ctx, owed) if owed.any?
+      return after_group(run, ctx, ids) if ids.all? { |id| run.dig("steps", id, "state") == "passed" }
+      fail_group(run, ids, group)
+    end
+
+    # Branch 1: nothing moves. While a sibling works the run runs, its cursor on the sibling at work dispatched last;
+    # else it waits, its cursor on the first sibling that holds the group (a gate, a hold, a move's backoff).
+    def hold_join(run, ids, now)
+      busy = ids.select { |id| WorkflowTransitions::SIBLING_BUSY.include?(run.dig("steps", id, "state")) }
+      if busy.any?
+        # A paused or parked run keeps the state its pause or park gave it.
+        run["state"] = "running" unless run["paused"] || run["parked"]
+        run["current"] = busy.each_with_index.max_by { |id, index| [Array(run.dig("steps", id, "attempts")).last&.fetch("started_at", nil).to_s, index] }.first
+      else
+        run["state"] = "waiting"
+        run["current"] = ids.find { |id| !WorkflowTransitions.sibling_at_rest?(run, id, now) } || ids.first
+      end
+    end
+
+    # Branch 2: the first deferred move, and only it. The move's slot (its wait with it) goes whether or not it applies.
+    def apply_move(run, ctx, group, mover)
+      slots = WorkflowRun.slots(run, mover)
+      move = slots.delete("pending_move")
+      slots["reason"] = nil if slots.dig("reason", "code") == "retry_backoff"
+      to = move["to"]
+      problem = move_problem(run, to)
+      return move_failed(run, ctx, group, mover, to, problem) if problem
+      target = run["steps"][to]
+      was = target["state"]
+      made = target["attempts"].size
+      WorkflowRun.add_context(run, to, move["text"]) if move["text"].is_a?(String)
+      event(run, "step_retry_started", "from" => mover, "to" => to)
+      run["current"] = to
+      dispatch(run, ctx, "loop", {context: move["context"], retry_of: {"text" => move["text"]}.compact})
+      target = run["steps"][to]
+      last = target["attempts"].last
+      if target["attempts"].size > made && last["outcome"] == "not_delivered"
+        # The target could not be started (its pane is gone): it is left as it was, and the move fails instead.
+        target["state"] = was
+        WorkflowRun.slots(run, to)["reason"] = nil
+        return move_failed(run, ctx, group, mover, to, last["code"] || "not_delivered")
+      end
+      target.delete("failed_reason")
+    end
+
+    # Why a deferred move can't run its target: the target failed with no run owed to it (its own retries are spent,
+    # and running it would pass the caps every other path keeps), or the run or the target has no attempt left.
+    def move_problem(run, to)
+      return "target_failed" if run.dig("steps", to, "state") == "failed" && !WorkflowTransitions.relay_owed?(run, to)
+      return "attempts_spent" if WorkflowTransitions.attempts_spent?(run) || WorkflowTransitions.step_attempts_spent?(run, to)
+      nil
+    end
+
+    # A move that could not be applied: the moving sibling's attempt records why (its `move` marked `failed`, so no
+    # run is owed it) and the join goes on, to the group's failure path when nothing else is left.
+    def move_failed(run, ctx, group, mover, to, code)
+      state = run["steps"][mover]
+      attempt = state["attempts"].last
+      attempt["move"] = (attempt["move"] || {"to" => to}).merge("failed" => code)
+      state["failed_reason"] = (state["failed_reason"] || {"step" => mover, "attempt" => attempt["n"]}).merge("move" => {"to" => to, "error" => code})
+      event(run, "step_retry_blocked", "from" => mover, "to" => to, "code" => code)
+      join_in(run, ctx, group)
+    end
+
+    # Branch 3: each failed sibling owed its run starts again, in one change, while the run and it have attempts left.
+    def relay(run, ctx, owed)
+      owed.each do |id|
+        next unless WorkflowTransitions.relay_owed?(run, id)
+        run["steps"][id].delete("failed_reason")
+        run["current"] = id
+        dispatch(run, ctx, "next_step", {})
+      end
+    end
+
+    # Branch 4: the step after the group, by the group's place in the definition; the cursor names only the sibling
+    # dispatched last.
+    def after_group(run, ctx, ids)
+      steps = step_ids(run)
+      following = steps[steps.index(ids.last) + 1]
+      return complete(run, ctx) unless following
+      run["current"] = following
+      dispatch(run, ctx, "next_step", {})
+    end
+
+    # Branch 5: the group failed. Each failed sibling stores its `failed_check` reason (its own failure's details,
+    # with the group and every failed sibling named), and the run waits for a person on the first.
+    def fail_group(run, ids, group)
+      failed = ids.reject { |id| run.dig("steps", id, "state") == "passed" }
+      @dispatch.release(run)
+      run["state"] = "waiting"
+      failed.each do |id|
+        state = run["steps"][id]
+        details = state.delete("failed_reason") || {"step" => id, "attempt" => Array(state["attempts"]).last&.fetch("n", nil)}
+        details = details.merge("group" => group, "failed" => failed, "loops" => run["loops"].dup,
+          "attempts" => WorkflowTransitions.attempts_made(run), "max_attempts" => WorkflowTransitions.attempt_allowance(run))
+        move = Array(state["attempts"]).last&.fetch("move", nil)
+        # A run that was owed and never made, for the sibling's own cap.
+        if move.is_a?(Hash) && !move.key?("failed") && WorkflowTransitions.step_attempts_spent?(run, id)
+          details["limit"] = "step"
+          details["limit_step"] = id
+        end
+        WorkflowRun.slots(run, id)["reason"] = reason("failed_check", details)
+      end
+      run["current"] = failed.first
+    end
+
+    # Whether +step_id+ is a fan_out sibling ({WorkflowRun.step_scoped?}).
+    def grouped?(run, step_id) = WorkflowRun.step_scoped?(run, step_id)
+
+    # The id of the fan_out group +step_id+ is a sibling of.
+    def group_id(run, step_id) = run["definition"]["steps"].find { |step| step["id"] == step_id }["group"]
 
     def loop_context(run, step, on_fail, failure, count)
       cap = on_fail.is_a?(Hash) ? " of #{on_fail["max"]}" : ""

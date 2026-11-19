@@ -130,13 +130,25 @@ module Workspace
     # @param hash [Hash{String=>Object}] a run Hash
     # @param step_id [String, nil] a step id
     # @param key [String] one of {PER_STEP_KEYS}
-    # @return [Object, nil] the step's own value when its hash holds the key, else the run-level value; nil when neither does
+    # A step of a fan_out group ({.step_scoped?}) reads only its own hash: the run-level fallback is there for old run
+    # files, which never tag a group, so a group member's absent key is absent, never a run-level value an earlier step
+    # left. Two keys still fall back for it: +pending_context+, the run-level list the step before a group hands every
+    # sibling's first attempt, and +pane+ (not one of {PER_STEP_KEYS}), the run's author pane a first sibling starts in.
+    #
+    # @return [Object, nil] the step's own value when its hash holds the key, else the run-level value (none for a
+    #   group member, see above); nil when neither does
     def self.slot(hash, step_id, key)
       return nil unless hash.is_a?(Hash)
       steps = hash["steps"].is_a?(Hash) ? hash["steps"] : nil
       own = (steps && step_id.is_a?(String)) ? steps[step_id] : nil
-      (own.is_a?(Hash) && own.key?(key)) ? own[key] : hash[key]
+      return own[key] if own.is_a?(Hash) && own.key?(key)
+      return nil if STRICT_KEYS.include?(key) && step_scoped?(hash, step_id)
+      hash[key]
     end
+
+    # The {PER_STEP_KEYS} a group member never reads from the run's top level ({.slot}).
+    STRICT_KEYS = (PER_STEP_KEYS - %w[pending_context]).freeze
+    private_constant :STRICT_KEYS
 
     # {.slot} dug into as +hash.dig(key, *path)+ digs the run-level key, raising as that would on a value that can't be dug.
     #

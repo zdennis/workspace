@@ -57,6 +57,8 @@ module Workspace
     end
 
     # The periodic look at a run nothing else will wake: one whose `on_fail` backoff is over starts its retry, one
+    # whose fan_out sibling's deferred failure move has waited out its backoff runs the group's join
+    # ({WorkflowProgress#join}), one
     # waiting for a lock asks for it again (a review round's through {WorkflowProgress#restart_review}), a hold for background tasks that passed
     # {WorkflowTransitions::BACKGROUND_HOLD} becomes a `turn_ended_incomplete` stop, a check that never
     # reported back (its process died) is run again, and so is the end of a review round whose revision was being
@@ -99,6 +101,11 @@ module Workspace
         when :backoff
           acted = true
           start_retry(stored, ctx, "backoff_ended")
+        when :join
+          acted = true
+          # A fan_out sibling's deferred move whose wait is over: the group's join applies it, never the tick.
+          group = WorkflowTransitions.join_due(stored, @clock.call)
+          stored.replace(@progress.join(stored, ctx: ctx, group: group).thawed)
         when :infra_retry
           # `workflow advance` restarts the agent outside the lock (tmux and daemon calls); tick does nothing.
           nil

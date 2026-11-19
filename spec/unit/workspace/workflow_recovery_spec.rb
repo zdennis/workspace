@@ -59,6 +59,33 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(change.calls).to eq([[:call, "wr_1", {nonblocking: true, actor: "sweep", cause: "tick"}]])
     end
 
+    describe "a fan_out sibling's deferred move" do
+      def grouped(until_at)
+        run_hash(state: "waiting", step_state: "failed").tap do |hash|
+          hash["definition"]["steps"] = [{"id" => "build", "group" => "checks", "produces" => []}, {"id" => "lint", "group" => "checks", "produces" => []}]
+          hash["steps"]["build"].merge!("pending_move" => {"to" => "lint", "until" => until_at}, "reason" => {"code" => "retry_backoff"})
+          hash["steps"]["lint"] = {"state" => "passed", "attempts" => [{"n" => 1}]}
+        end
+      end
+
+      it "runs the group's join once the move's wait is over, starting nothing itself" do
+        stored(grouped("2026-11-10T11:59:00Z"))
+
+        expect(recovery.tick("wr_1", actor: "daemon")).to be_a(Workspace::WorkflowRun)
+
+        expect(progress.calls).to eq([[:join, "checks"]])
+        expect(dispatch.calls).to be_empty
+      end
+
+      it "leaves the move alone while its wait lasts" do
+        stored(grouped("2026-11-10T12:01:00Z"))
+
+        expect(recovery.tick("wr_1", actor: "daemon")).to be_nil
+
+        expect(progress.calls).to be_empty
+      end
+    end
+
     it "leaves a paused run's file unchanged, though its backoff is over" do
       paused = run_hash(state: "waiting", step_state: "failed", reason: {"code" => "retry_backoff"},
         extra: {"backoff" => backoff_wait, "paused" => {"since" => "2026-11-10T11:30:00Z", "by" => "person", "text" => nil}})

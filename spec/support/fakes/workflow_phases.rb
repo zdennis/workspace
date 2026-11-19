@@ -601,6 +601,12 @@ class RecordingProgress
     marked(run, {approved: "passed", rejected: "failed"}.fetch(tally[:outcome], "reviewing"))
   end
 
+  # Records the group joined (nil for every group with a deferred move) and changes nothing.
+  def join(run, ctx:, group: nil)
+    @calls << [:join, group]
+    Workspace::WorkflowRun.from_h(run)
+  end
+
   def advance(run, ctx:)
     @calls << [:advance, Workspace::WorkflowRun.from_h(run).current]
     Workspace::WorkflowRun.from_h(run)
