@@ -206,12 +206,12 @@ module Workspace
             return 0
           elif [ "${words[2]}" = workflow ]; then
             if [ "$CURRENT" -eq 3 ]; then
-              wf_list=(list show graph validate add update remove install uninstall run start render check simulate status events files attempts trace audit stats compare insights learn sweep recover resume cancel pause unpause approve reject)
+              wf_list=(list show graph validate add update remove edit install uninstall run start render check simulate status events files attempts trace audit stats compare insights learn sweep recover resume cancel pause unpause approve reject)
               compadd -a wf_list
               return 0
             elif [ "$CURRENT" -eq 4 ]; then
               case "${words[3]}" in
-                start | show | graph | run | update | remove)
+                start | show | graph | run | update | remove | edit)
                   wf_ids=(${(f)"$(_workspace_wf_ids)"})
                   compadd -a wf_ids
                   return 0
@@ -248,10 +248,10 @@ module Workspace
             wf_list="init doctor launch start stop add add-project kill rename finish relaunch restore focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects go template capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step run-and-report report-run-status layout config tmux statusline current list-projects list status repair cleanup prune set-command event-log events whereis lookup dir alfred shell-init version help"
           elif [ "${COMP_WORDS[1]}" = workflow ]; then
             if [ "$COMP_CWORD" -eq 2 ]; then
-              wf_list="list show graph validate add update remove install uninstall run start render check simulate status events files attempts trace audit stats compare insights learn sweep recover resume cancel pause unpause approve reject"
+              wf_list="list show graph validate add update remove edit install uninstall run start render check simulate status events files attempts trace audit stats compare insights learn sweep recover resume cancel pause unpause approve reject"
             elif [ "$COMP_CWORD" -eq 3 ]; then
               case "${COMP_WORDS[2]}" in
-                start | show | graph | run | update | remove) wf_list="$(_workspace_wf_ids)" ;;
+                start | show | graph | run | update | remove | edit) wf_list="$(_workspace_wf_ids)" ;;
               esac
             fi
           elif [ "${COMP_WORDS[1]}" = step ] && [ "$COMP_CWORD" -eq 2 ]; then

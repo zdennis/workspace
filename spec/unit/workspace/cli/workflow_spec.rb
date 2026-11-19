@@ -387,9 +387,54 @@ RSpec.describe Workspace::CLI::Workflow do
     end
   end
 
+  describe "workflow edit" do
+    let(:command) { double("workflow command") }
+    let(:row) { {"workflow" => "ship", "path" => "/g/ship.yml"} }
+
+    before { allow(command).to receive(:edit).and_return(row) }
+
+    it "hands the id and project to the command with an opener" do
+      run("edit", "ship", workflow_command: command)
+
+      expect(command).to have_received(:edit).with(id: "ship", project: "app", opener: an_instance_of(Proc))
+    end
+
+    it "opens no editor under --json and answers one action document" do
+      expect(run("edit", "ship", "--json", workflow_command: command)).to be_nil
+
+      expect(command).to have_received(:edit).with(id: "ship", project: "app", opener: nil)
+      expect(out.string.lines.size).to eq(1)
+      expect(JSON.parse(out.string)).to include("ok" => true, "action" => "workflow edit", "results" => [row])
+    end
+
+    it "says nothing was opened when no editor can run, and prints the path" do
+      allow(command).to receive(:edit) { |opener:, **| opener.call("/g/ship.yml") && row }
+
+      run("edit", "ship", workflow_command: command)
+
+      expect(out.string).to include("/g/ship.yml")
+      expect(err.string).to include("Nothing was opened: set $VISUAL or $EDITOR")
+    end
+
+    it "prints the path once when the editor ran" do
+      common = Workspace::CLI::Common.new(editor_launcher: ->(_argv) { true }, interactive: -> { true })
+      allow(command).to receive(:edit) { |opener:, **| opener.call("/g/ship.yml") && row }
+      inv = invocation.with(env: {"VISUAL" => "vi"})
+
+      family(workflow_command: command, common: common).call("workflow", ["edit", "ship"], inv)
+
+      expect(out.string).to eq("/g/ship.yml\n")
+      expect(err.string).to eq("")
+    end
+
+    it "needs an ID" do
+      expect { run("edit") }.to raise_error(Workspace::UsageError, /\Aworkflow edit needs an ID/)
+    end
+  end
+
   describe "usage errors" do
     it "names the verbs when none is given" do
-      expect { run }.to raise_error(Workspace::UsageError, /\AMissing subcommand: list, show, graph, validate/)
+      expect { run }.to raise_error(Workspace::UsageError, /\AMissing subcommand: list, show, graph, validate.*remove, edit, install/)
     end
 
     it "refuses an unknown verb" do
