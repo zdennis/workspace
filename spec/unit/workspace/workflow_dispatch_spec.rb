@@ -254,8 +254,26 @@ RSpec.describe Workspace::WorkflowDispatch do
 
           over(spawning).dispatch(ended, ctx: context, cause: "next_step", entering: true)
 
-          expect(spawning.calls).to include([:spawn_author, "app"])
+          expect(spawning.calls).to include([:spawn_author, "app"], [:unbind, "wr_1", {step: "test"}])
           expect(context.deliveries.map { |line| line["pane"] }).to eq(%w[%3 %9])
+        end
+
+        it "types the first sibling into the run's pane when its own binding is gone" do
+          moved = RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%3", "test" => "%6"}}, dead: [%w[wr_1 lint]], spawned: [{pane: "%9"}])
+          context = ctx
+
+          over(moved).dispatch(ended("pane" => "%8"), ctx: context, cause: "next_step", entering: true)
+
+          expect(context.deliveries.map { |line| line.slice("step", "pane") }).to eq([{"step" => "lint", "pane" => "%8"}, {"step" => "test", "pane" => "%6"}])
+        end
+
+        it "never unbinds on a first fan-out" do
+          spawning = RecordingWorkflowPanes.new(bound: {"wr_1" => "%3"}, spawned: [{pane: "%9"}])
+
+          over(spawning).dispatch(grouped("current" => "lint", "steps" => {"lint" => {"state" => "pending", "attempts" => []}, "test" => {"state" => "pending", "attempts" => []}}), ctx: ctx, cause: "next_step")
+
+          expect(spawning.calls.map(&:first)).to include(:spawn_author)
+          expect(spawning.calls.map(&:first)).not_to include(:unbind)
         end
 
         it "runs only the named sibling when the dispatch does not come from outside the group" do

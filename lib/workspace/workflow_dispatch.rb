@@ -393,7 +393,7 @@ module Workspace
       made = first_pane(run, grouped, held)
       unless made == :failed
         start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of,
-          pane: made.is_a?(Hash) ? made[:pane] : nil, group_entry: true)
+          pane: made.is_a?(Hash) ? made[:pane] : moved_pane(run, ids, retry_of), group_entry: true)
       end
       return if held
       # The run pane works on the group whole when any sibling runs as its sub-agent: one binding, written once at
@@ -419,6 +419,9 @@ module Workspace
           slot(run, "reason")["details"]["pane"] = made[:pane] if made[:pane]
           next
         end
+        # A sibling of a group entered again drops its old binding, so the run's lookup for the step (and the turn end
+        # of the new pane) finds the new pane rather than the one it replaces.
+        @panes.unbind(run["id"], step: id) if run.dig("steps", id, "pane")
         start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil, pane: made[:pane], group_entry: true)
       end
       compose_group_line(run, ids, ctx, cause: cause)
@@ -444,6 +447,16 @@ module Workspace
       not_delivered(run, step_state(run), nil, {code: made[:error], message: made[:message]})
       slot(run, "reason")["details"]["pane"] = made[:pane] if made[:pane]
       :failed
+    end
+
+    # The pane the first sibling of a group entered again ({#reenter_group}) types into when no pane is spawned for it:
+    # nil (the default: its own binding) while that binding is alive, else the run's pane, so a sibling whose run was
+    # moved to another pane between rounds (`resume --pane`), or whose own pane is gone, is not typed into the pane
+    # its step slot still names. A first fan-out, a retry and a subagent sibling answer nil.
+    def moved_pane(run, ids, retry_of)
+      id = ids.first
+      return nil if retry_of || Array(run.dig("steps", id, "attempts")).empty? || subagent_step?(run)
+      @panes.alive?(run["id"], step: id) ? nil : run["pane"]
     end
 
     # The one delivery line a `subagents` group's started siblings share, registered once after every sibling's
