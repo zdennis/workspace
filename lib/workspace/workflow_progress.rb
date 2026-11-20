@@ -614,7 +614,7 @@ module Workspace
       following = ids[ids.index(run["current"]) + 1]
       return complete(run, ctx) unless following
       run["current"] = following
-      dispatch(run, ctx, "next_step", {})
+      dispatch(run, ctx, "next_step", {entering: true})
     end
 
     def complete(run, ctx)
@@ -863,7 +863,7 @@ module Workspace
       following = steps[steps.index(ids.last) + 1]
       return complete(run, ctx) unless following
       run["current"] = following
-      dispatch(run, ctx, "next_step", {})
+      dispatch(run, ctx, "next_step", {entering: true})
     end
 
     # Branch 5: the group failed. Each failed sibling stores its `failed_check` reason (its own failure's details,

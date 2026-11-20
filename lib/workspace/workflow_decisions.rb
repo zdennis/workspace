@@ -128,10 +128,12 @@ module Workspace
         spend_attempts(stored, extra_attempts, target: target)
         spend_limits(stored, extra_tokens, extra_seconds)
         gate.merge!("state" => "rejected", "at" => now_iso, "note" => note, "attempt" => step_state(stored)["attempts"].last&.fetch("n", nil))
+        gated = stored["current"]
         event(stored, "gate_rejected", with_note({"step" => stored["current"], "to" => target}, note))
         WorkflowRun.add_context(stored, target, "The #{stored["current"]} step was rejected at its gate: #{note}")
         stored["current"] = target
-        @dispatch.dispatch(stored, ctx: ctx, cause: "gate_rejected")
+        # A gate outside a group sent back into one runs the whole group again; a sibling's own gate, only itself.
+        @dispatch.dispatch(stored, ctx: ctx, cause: "gate_rejected", entering: !WorkflowRun.step_scoped?(stored, gated))
       end
     end
 
@@ -1060,7 +1062,8 @@ module Workspace
         stored.replace(@progress.end_round(stored, how: "from", ctx: ctx).thawed) if state["state"] == "reviewing" || kept
         event(stored, "run_resumed", "from" => from)
         stored["current"] = from
-        dispatch(stored, ctx, "resume", budgeted: budget)
+        # `--from` a fan_out sibling runs its whole group again once every sibling has ended.
+        dispatch(stored, ctx, "resume", budgeted: budget, entering: true)
         return nil
       end
       event(stored, "run_resumed", "step" => stored["current"], "state" => state["state"])

@@ -2,7 +2,8 @@ require "spec_helper"
 
 RSpec.describe Workspace::WorkflowGraph do
   let(:catalog) { Workspace::WorkflowCatalog.new(config: Workspace::Config.new) }
-  let(:presets) { %w[rpiv rpiv-auto-approve rpiv-auto-approve-v2 pr-feedback investigate explore bugfix] }
+  # rpiv-auto-approve and explore-parallel have a fan_out group, which the graph refuses until it draws one.
+  let(:presets) { %w[rpiv rpiv-auto-approve-v2 pr-feedback investigate explore bugfix] }
 
   def graph_of(id)
     described_class.build(catalog.find(id).to_h).to_h
@@ -77,7 +78,9 @@ RSpec.describe Workspace::WorkflowGraph do
   end
 
   it "labels a fail edge with its except list" do
-    edge = edges_of(graph_of("rpiv-auto-approve"), "fail").find { |found| found["from"] == "plan_review" }
+    on_fail = {"goto" => "plan", "max" => 9, "except" => %w[stale_plan_revision guard check_error]}
+    graph = described_class.build({"steps" => [step("plan"), step("plan_review", on_fail: on_fail)]}).to_h
+    edge = edges_of(graph, "fail").find { |found| found["from"] == "plan_review" }
     expect(edge["label"]).to eq("max 9, except stale_plan_revision, guard, check_error")
   end
 

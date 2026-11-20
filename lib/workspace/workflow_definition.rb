@@ -454,6 +454,18 @@ module Workspace
       step.is_a?(Hash) && step["group"].is_a?(String) && !step["group"].empty? && step["execution_mode"] == "subagents"
     end
 
+    # The siblings of +step_id+'s `fan_out` group, in step order, read from the steps' "group" tags.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @param step_id [String, nil] a step id
+    # @return [Array<String>, nil] nil for a step in no group, or one the definition does not have
+    def self.siblings_of(definition, step_id)
+      steps = definition.is_a?(Hash) ? Array(definition["steps"]) : []
+      step = steps.find { |each| each.is_a?(Hash) && each["id"] == step_id }
+      group = step && step["group"]
+      (group.is_a?(String) && !group.empty?) ? group_steps(definition)[group] : nil
+    end
+
     # The refusal of a tool that would play or draw a definition's `fan_out` groups as plain steps in a row.
     #
     # @param definition [Hash] {#to_h}, or a stored run's definition

@@ -1,19 +1,47 @@
 schema_version: 0.1
 id: rpiv-auto-approve
 title: Research, Plan, Implement, Verify (auto-approve)
-description: One feature end to end with no person, three isolated reviewer conversations the engine dispatches on the plan, and a test-backed verify loop.
-extends: rpiv
+description: One feature end to end with no person, three isolated reviewer conversations
+  the engine runs in parallel on the plan, and a test-backed verify loop.
 
 use_when: A feature or change to build end to end when no person will review the plan.
 
-# A rejection round costs five attempts (plan, three reviewers, the tally; attempts_made
-# counts every step of the run), so nine retries plus the approving round are 50. Research
-# adds 1 and implement and verify with three trips back from verify add 8. Attempts a
-# redelivery re-runs do not count against max_attempts, so 68 is a safe ceiling rather
-# than an exact worst case.
-max_attempts: 68
+inputs:
+  task:
+    description: What to build. A ticket key with a sentence, or a path to a spec in the worktree. `workflow run` fills it from the open pull request, else `Branch NAME`, when left out.
+    required: true
+  spec:
+    description: Optional spec or ticket file to read first.
 
-replace:
+instructions: |
+  You are working on {{inputs.task}} in workspace {{workspace}}, branch {{branch}}.
+  Spec (may be empty): {{inputs.spec}}
+  Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
+  inputs; read them before you start.
+
+# A rejection round costs five attempts (plan, the three reviewers, the tally; attempts_made
+# counts every step of the run, so the reviewers count three though they run at once). The
+# approving round is 5, and plan_review's nine loops back to plan are 45 more. Research adds 1;
+# implement and verify add 2, and verify's three trips back to implement 6. 1 + 5 + 45 + 2 + 6 = 59.
+# The reviewers have no on_fail, so only the tally goes back to plan: a reviewer that ends
+# without its verdict file waits at its own step, and one that fails its guard or times out
+# stops the group at the join for a person. One that reports a failure of its own goes back to
+# the reviewer before it and then runs again (two attempts; the first reviewer stops instead),
+# which the count above leaves out. Attempts a redelivery re-runs do not count.
+max_attempts: 59
+
+steps:
+  research:
+    title: Research
+    prompt: |
+      Research {{inputs.task}}. Read the code it touches, the tests that cover it, and
+      related docs. Don't change code or commit.
+      Write {{artifacts}}/research.md with: what exists (file:line), what has to change,
+      constraints, open questions, risks.
+    produces: [research.md]
+    guard: unchanged
+    timeout: 45m
+
   plan:
     title: Plan
     include: [notes, implementation-plan]
@@ -42,92 +70,78 @@ replace:
         workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit(plan && plan["exists"] && plan["counts"]["total"].to_i > 0 ? 0 : 1)'
     timeout: 45m
 
-steps:
-  review_supportive:
-    after: plan
-    title: Supportive review
-    # A conversation of its own, dispatched by the engine: none of the planner's or another
-    # reviewer's reasoning is in it, and the run's attempt record ties it to its session.
-    context: fresh
-    prompt: |
-      You are the supportive reviewer of the workspace plan (`workspace plan path`). No person
-      will look at it, so this review is the only approval it gets.
-      Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
-      {{artifacts}}/research.md. Do not edit the plan, do not change code, and write no file
-      but your own verdict file.
-      Your brief: look for what makes the plan sound, and approve unless something would
-      really stop it working.
-      Write {{artifacts}}/approval-supportive.md with exactly these three lines first, in this
-      order and with no other formatting, then your reasons:
-      reviewer: supportive
-      verdict: approve or reject
-      plan_revision: REV
-    produces: [approval-supportive.md]
-    guard: unchanged
-    # A reviewer that failed (no verdict file, mostly) sends the run back to the plan, which
-    # rewrites it and starts the round again; the implicit default would send it to another
-    # reviewer, which would review the same unchanged plan.
-    on_fail:
-      goto: plan
-      max: 3
-      context: fresh
-    timeout: 30m
+  reviewers:
+    title: Plan reviewers
+    # The three reviewers start together, each in its own pane, on the one checkout. Each only
+    # reads it (guard: unchanged) and writes its own verdict file, and every one must pass
+    # before the tally runs. They run with `process_separation`, not the default `subagents`:
+    # each reviewer is a fresh conversation of its own with its own pane and its own 30m clock.
+    execution_mode: process_separation
+    fan_out:
+      review_supportive:
+        title: Supportive review
+        # A conversation of its own, dispatched by the engine: none of the planner's or another
+        # reviewer's reasoning is in it, and the run's attempt record ties it to its session.
+        context: fresh
+        prompt: |
+          You are the supportive reviewer of the workspace plan (`workspace plan path`). No person
+          will look at it, so this review is the only approval it gets.
+          Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
+          {{artifacts}}/research.md. Do not edit the plan, do not change code, and write no file
+          but your own verdict file.
+          Your brief: look for what makes the plan sound, and approve unless something would
+          really stop it working.
+          Write {{artifacts}}/approval-supportive.md with exactly these three lines first, in this
+          order and with no other formatting, then your reasons:
+          reviewer: supportive
+          verdict: approve or reject
+          plan_revision: REV
+        produces: [approval-supportive.md]
+        guard: unchanged
+        timeout: 30m
 
-  review_skeptical:
-    after: review_supportive
-    title: Skeptical review
-    context: fresh
-    prompt: |
-      You are the skeptical reviewer of the workspace plan (`workspace plan path`). No person
-      will look at it, so this review is the only approval it gets.
-      Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
-      {{artifacts}}/research.md. Do not edit the plan, do not change code, and write no file
-      but your own verdict file.
-      Your brief: assume the plan is wrong and try to prove it: missing cases, wrong order,
-      steps that can't be undone, requirements of the task it doesn't meet. Approve only
-      if you can't find a blocking problem.
-      Write {{artifacts}}/approval-skeptical.md with exactly these three lines first, in this
-      order and with no other formatting, then your reasons:
-      reviewer: skeptical
-      verdict: approve or reject
-      plan_revision: REV
-    produces: [approval-skeptical.md]
-    guard: unchanged
-    # Back to the plan, as review_supportive: the implicit default would re-run the reviewer before.
-    on_fail:
-      goto: plan
-      max: 3
-      context: fresh
-    timeout: 30m
+      review_skeptical:
+        title: Skeptical review
+        context: fresh
+        prompt: |
+          You are the skeptical reviewer of the workspace plan (`workspace plan path`). No person
+          will look at it, so this review is the only approval it gets.
+          Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
+          {{artifacts}}/research.md. Do not edit the plan, do not change code, and write no file
+          but your own verdict file.
+          Your brief: assume the plan is wrong and try to prove it: missing cases, wrong order,
+          steps that can't be undone, requirements of the task it doesn't meet. Approve only
+          if you can't find a blocking problem.
+          Write {{artifacts}}/approval-skeptical.md with exactly these three lines first, in this
+          order and with no other formatting, then your reasons:
+          reviewer: skeptical
+          verdict: approve or reject
+          plan_revision: REV
+        produces: [approval-skeptical.md]
+        guard: unchanged
+        timeout: 30m
 
-  review_implementer:
-    after: review_skeptical
-    title: Implementer review
-    context: fresh
-    prompt: |
-      You are the implementer reviewer of the workspace plan (`workspace plan path`). No person
-      will look at it, so this review is the only approval it gets. You will have to build this.
-      Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
-      {{artifacts}}/research.md. Do not edit the plan, do not change code, and write no file
-      but your own verdict file.
-      Your brief: check each task is small, ordered, testable and says enough to start, and
-      approve unless something would really stop you.
-      Write {{artifacts}}/approval-implementer.md with exactly these three lines first, in this
-      order and with no other formatting, then your reasons:
-      reviewer: implementer
-      verdict: approve or reject
-      plan_revision: REV
-    produces: [approval-implementer.md]
-    guard: unchanged
-    # Back to the plan, as review_supportive: the implicit default would re-run the reviewer before.
-    on_fail:
-      goto: plan
-      max: 3
-      context: fresh
-    timeout: 30m
+      review_implementer:
+        title: Implementer review
+        context: fresh
+        prompt: |
+          You are the implementer reviewer of the workspace plan (`workspace plan path`). No person
+          will look at it, so this review is the only approval it gets. You will have to build this.
+          Run `workspace plan status --json` and take `plans[0].revision` as REV. Read the plan and
+          {{artifacts}}/research.md. Do not edit the plan, do not change code, and write no file
+          but your own verdict file.
+          Your brief: check each task is small, ordered, testable and says enough to start, and
+          approve unless something would really stop you.
+          Write {{artifacts}}/approval-implementer.md with exactly these three lines first, in this
+          order and with no other formatting, then your reasons:
+          reviewer: implementer
+          verdict: approve or reject
+          plan_revision: REV
+        produces: [approval-implementer.md]
+        guard: unchanged
+        timeout: 30m
 
   plan_review:
-    after: review_implementer
     title: Plan review
     # The tally reads the three verdict files and writes the summary the plan step reads for
     # the last round's objections, and posts the round's outcome to the person's inbox. It is
@@ -186,3 +200,48 @@ steps:
       context: fresh
       except: [stale_plan_revision, guard, check_error]
     timeout: 30m
+
+  implement:
+    title: Implement
+    include: [notes, implementation-plan]
+    prompt: |
+      Implement the workspace plan (`workspace plan path`) one task at a time, marking
+      each task as the instructions say. Run the relevant tests before each commit. If the
+      plan turns out wrong, update the plan file and say why in {{artifacts}}/implement.md.
+      Write {{artifacts}}/implement.md listing the commits you made, then set the plan's
+      `status: done`; the run is waiting on that file and on that status. Make at least one commit.
+      On a rerun (after a failed verify, or a resume), make a new commit for the fix and never
+      amend or rebase, which the run's commit check can't follow. If no code change is needed,
+      run `git commit --allow-empty -m '<why>'`.
+    produces: [implement.md]
+    require:
+      - commits: 1
+      - plan_status: done
+    timeout: 3h
+
+  verify:
+    title: Verify
+    include: [review]
+    prompt: |
+      Verify the work against the workspace plan (`workspace plan path`). Run the tests for the
+      files the change touched, their obvious neighbors, and the tests the change obviously
+      impacts — not the whole suite (it runs on CI). Run the linter (the project's lint
+      command, when it has one, must pass: the run checks it), then review the branch's diff against its base.
+      Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
+      If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
+      and end your turn.
+    produces: [verify.md]
+    uses: [test-db]
+    status:
+      command: test
+      # The check runs the project's whole test command, which on a sizable
+      # suite can outrun the 20-minute default; the step itself allows 90m.
+      timeout: 40m
+    require:
+      - command: lint
+        optional: true
+    timeout: 90m
+    on_fail:
+      goto: implement
+      max: 3
+      context: continue

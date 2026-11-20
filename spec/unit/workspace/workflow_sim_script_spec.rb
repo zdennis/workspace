@@ -249,4 +249,75 @@ RSpec.describe Workspace::WorkflowSimScript do
       expect(problems("steps:\n  build: [{require: {commits: [pass]}}]\n")).to match([a_string_matching(/require commits must be one of pass, fail/)])
     end
   end
+
+  describe "a fan_out group's siblings" do
+    let(:definition) do
+      Workspace::WorkflowDefinition.parse(<<~YAML, id: "grouped", source: "file", path: nil).to_h
+        schema_version: 1
+        id: grouped
+        title: Grouped
+        steps:
+          plan:
+            prompt: plan
+            produces: [plan.md]
+          checks:
+            checkout: shared
+            fan_out:
+              lint: {prompt: lint, produces: [lint.md]}
+              test: {prompt: test, produces: [test.md], gate: approve}
+              docs: {prompt: docs, produces: [docs.md]}
+          more:
+            checkout: shared
+            fan_out:
+              audit: {prompt: audit, produces: [audit.md]}
+              bench: {prompt: bench, produces: [bench.md]}
+      YAML
+    end
+
+    it "reads a sibling's attempts named under its group, in the group's order" do
+      script = parse("steps:\n  checks:\n    lint: [{report: fail}, {}]\n    docs: [{tokens: 3}]\n")
+
+      expect(script.attempt("lint", 1)).to eq("report" => "fail")
+      expect(script.attempt("lint", 2)).to eq({})
+      expect(script.attempt("docs", 1)).to eq("tokens" => 3)
+      expect(script.attempt("test", 1)).to eq({})
+    end
+
+    it "reads a sibling named at the top level under its own id, as any step" do
+      expect(parse("steps:\n  test: [{gate: reject}]\n").attempt("test", 1)).to eq("gate" => "reject")
+    end
+
+    it "checks a sibling's attempts against the sibling's own step, naming the group in the place" do
+      expect(problems("steps:\n  checks:\n    lint: [{gate: approve}]\n")).to eq(["steps.checks.lint attempt 1: gate is set, and the step has no gate:"])
+    end
+
+    it "refuses a sibling the group does not have, and one of another group" do
+      expect(problems("steps:\n  checks:\n    nope: []\n    audit: []\n")).to eq([
+        "steps.checks.nope: the fan_out group has no such sibling (siblings: lint, test, docs)",
+        "steps.checks.audit: audit is a sibling of the fan_out group more, not of checks (siblings: lint, test, docs)"
+      ])
+    end
+
+    it "refuses siblings listed out of the group's order" do
+      expect(problems("steps:\n  checks:\n    docs: []\n    lint: []\n")).to eq(["steps.checks: siblings must be listed in the group's order (lint, test, docs), not docs, lint"])
+    end
+
+    it "refuses a sibling given both under its group and under its own id, either way round" do
+      expect(problems("steps:\n  checks:\n    lint: []\n  lint: []\n")).to eq(["steps.lint: the attempts are given twice, here and under steps.checks"])
+      expect(problems("steps:\n  lint: []\n  checks:\n    lint: []\n")).to eq(["steps.checks.lint: the attempts are given twice, here and under steps.lint"])
+    end
+
+    it "refuses a pause on a sibling, nested or named by its own id" do
+      expect(problems("steps:\n  checks:\n    lint: [{pause: true, unpause: true}]\n")).to eq(["steps.checks.lint attempt 1: pause and unpause can't be set on a fan_out sibling"])
+      expect(problems("steps:\n  docs: [{pause: true}]\n")).to eq(["steps.docs attempt 1: pause can't be set on a fan_out sibling"])
+    end
+
+    it "refuses a group given a list instead of a mapping of its siblings" do
+      expect(problems("steps:\n  checks: [{}]\n")).to eq(["steps.checks is a fan_out group: give a mapping of its siblings (lint, test, docs) to lists of attempts"])
+    end
+
+    it "names the groups when a step is unknown" do
+      expect(problems("steps:\n  ghost: []\n")).to eq(["steps.ghost: the workflow has no such step (steps: plan, lint, test, docs, audit, bench; fan_out groups: checks, more)"])
+    end
+  end
 end

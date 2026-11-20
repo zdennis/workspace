@@ -1175,6 +1175,14 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(definition.steps.map { |step| step["on_fail"] }.uniq).to eq([nil])
     end
 
+    it "answers a step's siblings, and nil for a step in no group or one it does not have" do
+      definition = parse(File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "fan_out.yml")), id: "fan_out", path: nil).to_h
+      expect(described_class.siblings_of(definition, "test")).to eq(%w[lint test docs])
+      expect(described_class.siblings_of(definition, "plan")).to be_nil
+      expect(described_class.siblings_of(definition, "ghost")).to be_nil
+      expect(described_class.siblings_of(definition, nil)).to be_nil
+    end
+
     it "refuses a sibling id another step already has, in or out of the group" do
       expect(problems(grouped([["plan"]]))).to include("step checks: fan_out step plan has the id of another step; step ids must be unique")
       expect(problems(grouped([["checks"]]))).to include(a_string_matching(/fan_out step checks has the id of another step/))

@@ -1,7 +1,7 @@
 schema_version: 0.1
 id: explore-parallel
 title: Explore in parallel and report
-description: Read-only research that reads the code and the tests at the same time in two panes, then one report that joins them. Changes no code. The example of a `fan_out` group.
+description: Read-only research that reads the code and the tests at the same time in two panes, then one report that joins them. Changes no code. An example of a `fan_out` group.
 
 use_when: A question to answer by reading, where the code side and the test side can be read independently.
 

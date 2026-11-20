@@ -470,4 +470,81 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(last_kick[:text]).not_to include("Step test")
     end
   end
+
+  describe "a move back into a group that ran before" do
+    def through_group
+      write("plan")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5", step: "plan")
+      pass("lint")
+      pass("test")
+    end
+
+    def expect_group_running_again
+      expect(state("lint")).to eq("running")
+      expect(state("test")).to eq("running")
+      expect(attempts("lint").size).to eq(2)
+      expect(attempts("test").size).to eq(2)
+      expect(kicks_into("%101").size).to eq(2)
+      expect(panes.spawns.size).to eq(1)
+    end
+
+    it "runs every sibling again when a goto from the step after the group sends the run back before it, and joins them again" do
+      start(flow({"lint" => nil, "test" => nil}, before: true, report: "on_fail: {goto: plan, max: 2}\n"))
+      through_group
+      fail("report")
+      expect(dispatched.last).to eq(["plan", "loop"])
+
+      through_group
+      expect(dispatched.last(3)).to eq([%w[lint next_step], %w[test next_step], %w[report next_step]])
+      expect(attempts("lint").size).to eq(2)
+      expect(attempts("test").size).to eq(2)
+      expect(Workspace::WorkflowTransitions.attempts_made(run)).to eq(8)
+    end
+
+    it "waits at the join for every sibling run again before the step after the group starts" do
+      start(flow({"lint" => nil, "test" => nil}, before: true, report: "on_fail: {goto: plan, max: 2}\n"))
+      through_group
+      fail("report")
+      write("plan")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5", step: "plan")
+      expect_group_running_again
+
+      pass("lint")
+      expect(attempts("report").size).to eq(1)
+      expect(run).to include("state" => "running", "current" => "test")
+
+      pass("test")
+      expect(state("report")).to eq("running")
+      expect(attempts("report").size).to eq(2)
+      pass("report")
+      expect(run["state"]).to eq("completed")
+    end
+
+    it "runs the whole group again on resume --from one sibling after the run stopped past the group" do
+      start(flow({"lint" => nil, "test" => nil}, before: true, report: "on_fail: stop\n"))
+      through_group
+      fail("report")
+      expect(run["state"]).to eq("waiting")
+
+      engine.resume("wr_1", actor: "person", from: "test")
+
+      expect_group_running_again
+      expect(dispatched.last(2)).to eq([%w[lint resume], %w[test resume]])
+      pass("lint")
+      pass("test")
+      expect(state("report")).to eq("running")
+    end
+
+    it "runs the whole group again when a gate after it is rejected back to a sibling" do
+      start(flow({"lint" => nil, "test" => nil}, before: true, report: "gate: approve\n"))
+      through_group
+      pass("report")
+      expect(run["state"]).to eq("waiting")
+
+      engine.reject("wr_1", actor: "person", note: "look again", to: "lint")
+
+      expect_group_running_again
+      expect(dispatched.last(2)).to eq([%w[lint gate_rejected], %w[test gate_rejected]])
+    end
+  end
 end

@@ -15,6 +15,13 @@ module Workspace
   # An attempt may `pause: true` (or `pause: "reason"`) the run while its step is running, before the agent's turn
   # ends, and `unpause: true` once the turn has ended; without `unpause` a paused run is where the simulation stops.
   #
+  # A `fan_out` group's siblings are named under the group's id, in the group's step order, or each under its own id:
+  #
+  #   steps:
+  #     checks:                       # a fan_out group
+  #       lint: [{report: fail}]
+  #       test: [{}]
+  #
   # An attempt the script has no entry for does the plain thing: writes every `produces` file, reports
   # nothing, passes its check and proofs, approves its gate and uses no tokens.
   class WorkflowSimScript
@@ -79,16 +86,23 @@ module Workspace
       (document.keys - TOP_KEYS).each { |key| problems << "unknown key #{key.to_s[0, 60].inspect} (keys: #{TOP_KEYS.join(", ")})" }
       inputs = check_inputs(document["inputs"], definition, problems)
       listed = document["steps"]
+      groups = WorkflowDefinition.group_steps(definition)
       attempts = {}
       case listed
       when nil then nil
       when Hash
         listed.each do |id, entries|
-          step = steps[id]
-          unless step
-            problems << "steps.#{id.to_s[0, 60]}: the workflow has no such step (steps: #{steps.keys.join(", ")})"
+          if groups.key?(id)
+            check_group(id, groups, steps, entries, attempts, problems)
             next
           end
+          step = steps[id]
+          unless step
+            named = groups.empty? ? "" : "; fan_out groups: #{groups.keys.join(", ")}"
+            problems << "steps.#{id.to_s[0, 60]}: the workflow has no such step (steps: #{steps.keys.join(", ")}#{named})"
+            next
+          end
+          problems << "steps.#{id}: the attempts are given twice, here and under steps.#{step["group"]}" if attempts.key?(id)
           attempts[id] = check_attempts(id, step, entries, problems)
         end
       else problems << "steps must be a mapping of step ids to lists of attempts"
@@ -96,6 +110,36 @@ module Workspace
       {"inputs" => inputs, "steps" => attempts}
     end
     private_class_method :check
+
+    # A `fan_out` group's entry: a mapping of its siblings to their attempt lists, in the group's step order (the order
+    # the engine starts them in and the fake agent ends their turns in). A sibling may also be given at the top level
+    # under its own id, as any step is; the two forms for one sibling are refused.
+    def self.check_group(group, groups, steps, entries, attempts, problems)
+      siblings = groups[group]
+      return if entries.nil?
+      unless entries.is_a?(Hash)
+        problems << "steps.#{group} is a fan_out group: give a mapping of its siblings (#{siblings.join(", ")}) to lists of attempts"
+        return
+      end
+      known = entries.keys.select { |id| siblings.include?(id) }
+      entries.each_key do |id|
+        next if siblings.include?(id)
+        other = steps[id] && steps[id]["group"]
+        problems << if other
+          "steps.#{group}.#{id}: #{id} is a sibling of the fan_out group #{other}, not of #{group} (siblings: #{siblings.join(", ")})"
+        else
+          "steps.#{group}.#{id.to_s[0, 60]}: the fan_out group has no such sibling (siblings: #{siblings.join(", ")})"
+        end
+      end
+      unless known == siblings.select { |id| known.include?(id) }
+        problems << "steps.#{group}: siblings must be listed in the group's order (#{siblings.join(", ")}), not #{known.join(", ")}"
+      end
+      known.each do |id|
+        problems << "steps.#{group}.#{id}: the attempts are given twice, here and under steps.#{id}" if attempts.key?(id)
+        attempts[id] = check_attempts("#{group}.#{id}", steps[id], entries[id], problems)
+      end
+    end
+    private_class_method :check_group
 
     def self.check_inputs(value, definition, problems)
       return {} if value.nil?
@@ -154,6 +198,9 @@ module Workspace
           problems << "#{where}: code #{refusal}"
         end
       end
+      # A pause holds the whole run, and the simulator pauses only at the cursor's step, which in a group is one sibling
+      # of several at work: a sibling's own pause would not be played, so it is refused.
+      problems << "#{where}: #{(entry.keys & %w[pause unpause]).join(" and ")} can't be set on a fan_out sibling" if step["group"] && (entry.key?("pause") || entry.key?("unpause"))
       check_pause(where, entry, problems)
       check_writes(where, step, entry, problems)
       check_reviews(where, step, entry, problems)
