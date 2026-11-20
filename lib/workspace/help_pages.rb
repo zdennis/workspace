@@ -2186,8 +2186,7 @@ module Workspace
         summary: "Turn the workspace's queue on",
         about: [
           "A queue is off until it is enabled; `work-queue add` alone does not run anything. Enable it, then",
-          "`work-queue advance` runs one pass by hand. The setting is kept in the queue file; with none set,",
-          "config `work_queue.enabled` applies."
+          "`work-queue advance` runs one pass by hand. The setting is kept in the queue file."
         ],
         options: [NAME_OPT, JSON_OPT],
         examples: [

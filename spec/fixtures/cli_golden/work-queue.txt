@@ -305,8 +305,7 @@ Usage: workspace work-queue enable [--name WORKSPACE] [--json]
 Turn the workspace's queue on.
 
 A queue is off until it is enabled; `work-queue add` alone does not run anything. Enable it, then
-`work-queue advance` runs one pass by hand. The setting is kept in the queue file; with none set,
-config `work_queue.enabled` applies.
+`work-queue advance` runs one pass by hand. The setting is kept in the queue file.
 
 Options:
     --name NAME                  Workspace (default: detected from the current directory)
@@ -322,7 +321,7 @@ Examples:
 ### workspace work-queue enable --help --json
 --- exit 0
 --- stdout
-{"usage":["workspace work-queue enable [--name WORKSPACE] [--json]"],"description":"Turn the workspace's queue on.\n\nA queue is off until it is enabled; `work-queue add` alone does not run anything. Enable it, then\n`work-queue advance` runs one pass by hand. The setting is kept in the queue file; with none set,\nconfig `work_queue.enabled` applies.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace work-queue enable","scenario":"turn the queue on, then run `workspace work-queue advance`"},{"command":"workspace work-queue enable --name api.worktree-x","scenario":"turn on another workspace's queue"},{"command":"workspace work-queue enable --json","scenario":"one JSON document: `enabled` or `unchanged`"}]}
+{"usage":["workspace work-queue enable [--name WORKSPACE] [--json]"],"description":"Turn the workspace's queue on.\n\nA queue is off until it is enabled; `work-queue add` alone does not run anything. Enable it, then\n`work-queue advance` runs one pass by hand. The setting is kept in the queue file.","options":[{"flags":"--name NAME","description":"Workspace (default: detected from the current directory)"},{"flags":"--json","description":"Print one JSON document"},{"flags":"-h, --help","description":"Show this help"}],"examples":[{"command":"workspace work-queue enable","scenario":"turn the queue on, then run `workspace work-queue advance`"},{"command":"workspace work-queue enable --name api.worktree-x","scenario":"turn on another workspace's queue"},{"command":"workspace work-queue enable --json","scenario":"one JSON document: `enabled` or `unchanged`"}]}
 --- stderr
 --- end
 ### workspace work-queue disable --help
