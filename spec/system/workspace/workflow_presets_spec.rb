@@ -70,19 +70,17 @@ RSpec.describe "the shipped workflow presets" do
 
     it "pins on_fail and the run allowance the loop default was tuned against" do
       expect(catalog.find("rpiv").to_h["max_attempts"]).to eq(14)
-      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to eq(68)
+      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to eq(59)
       expect(catalog.find("rpiv-auto-approve-v2").to_h["max_attempts"]).to eq(21)
 
       rpiv = catalog.find("rpiv").to_h["steps"].find { |step| step["id"] == "verify" }
       expect(rpiv["on_fail"]).to include("goto" => "implement", "max" => 3)
 
       auto = catalog.find("rpiv-auto-approve").to_h["steps"].to_h { |step| [step["id"], step["on_fail"]] }
-      expect(auto).to include(
-        "review_supportive" => {"goto" => "plan", "max" => 3, "context" => "fresh"},
-        "review_skeptical" => {"goto" => "plan", "max" => 3, "context" => "fresh"},
-        "review_implementer" => {"goto" => "plan", "max" => 3, "context" => "fresh"},
-        "plan_review" => {"goto" => "plan", "max" => 9, "context" => "fresh", "except" => ["stale_plan_revision", "guard", "check_error"]}
-      )
+      # The three reviewers sit in one fan_out group and carry no on_fail of their own:
+      # only the tally loops back to plan.
+      expect(auto.slice("review_supportive", "review_skeptical", "review_implementer").values).to all(be_nil)
+      expect(auto["plan_review"]).to eq({"goto" => "plan", "max" => 9, "context" => "fresh", "except" => ["stale_plan_revision", "guard", "check_error"]})
 
       # A step whose failure is a deliberate stop for a person never loops.
       stops = ->(id, *names) { catalog.find(id).to_h["steps"].to_h { |step| [step["id"], step["on_fail"]] }.values_at(*names) }
@@ -179,7 +177,7 @@ RSpec.describe "the shipped workflow presets" do
     it "leaves the files of rpiv and rpiv-auto-approve as they were" do
       sha = ->(id) { Digest::SHA256.file(File.join(config.builtin_workflows_dir, "#{id}.yml")).hexdigest }
       expect(sha.call("rpiv")).to eq("0e8a96e72473e9ff0c0e7c328cfeacb3420f302f42f67a01cce253ba1150d6be")
-      expect(sha.call("rpiv-auto-approve")).to eq("660af5f4766ccbe2006ba80eb3921ad66c43bd91b57847e9ea54beaa14ffac83")
+      expect(sha.call("rpiv-auto-approve")).to eq("c33d70813bbc9b702a4a7986c9843a4ca8853d89aa7382be81d340a059b5ca83")
     end
   end
 

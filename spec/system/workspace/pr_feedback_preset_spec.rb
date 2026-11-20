@@ -66,15 +66,17 @@ RSpec.describe "the shipped workflow presets" do
 
     def passes?(...) = check(...).last.success?
 
-    it "runs rpiv's steps with three isolated reviewer steps and a tally, and no gate" do
+    it "runs rpiv's steps with three isolated reviewers in one fan_out group and a tally, and no gate" do
       expect(steps.map { |step| step["id"] })
         .to eq(%w[research plan review_supportive review_skeptical review_implementer plan_review implement verify])
       expect(steps.map { |step| step["gate"] }.compact).to be_empty
-      expect(review["on_fail"]).to include("goto" => "plan", "max" => 9, "context" => "fresh", "except" => %w[stale_plan_revision guard check_error])
+      # plan_review is the single path back to plan; a reviewer that ends without its verdict file
+      # fails the group join and the run stops for a person (deliberate, recorded behavior change).
+      expect(review["on_fail"]).to eq("goto" => "plan", "max" => 9, "context" => "fresh", "except" => %w[stale_plan_revision guard check_error])
       expect(review["status"]).to include("report_code" => true)
       expect(review["context"]).to eq("fresh")
       reviewers = steps.select { |step| step["id"].start_with?("review_") }
-      expect(reviewers).to all(include("context" => "fresh", "guard" => "unchanged"))
+      expect(reviewers).to all(include("context" => "fresh", "guard" => "unchanged", "group" => "reviewers", "on_fail" => nil))
       expect(reviewers.map { |step| step["produces"] }).to eq([%w[approval-supportive.md], %w[approval-skeptical.md], %w[approval-implementer.md]])
     end
 
@@ -132,8 +134,8 @@ RSpec.describe "the shipped workflow presets" do
       expect(passes?(rejected + "\n## Reasons\nskeptical: approve\n", verdicts: verdicts(skeptical: "reject"))).to be(false)
     end
 
-    it "leaves attempts for every rejection round the loop allows" do
-      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to be >= 68
+    it "allows 59 attempts, enough for every rejection round the loop allows" do
+      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to eq(59)
     end
   end
 
