@@ -91,16 +91,10 @@ module Workspace
     # window, and a sibling whose window overlaps one already claimed takes none, marked with whose claim it
     # shares ({SUBAGENT_SHARED}). Any other step reads its own facts as always.
     def agent_facts_or_shared(run, step, attempt)
-      return agent_facts(run, attempt) unless subagent_sibling?(step)
+      return agent_facts(run, attempt) unless WorkflowDefinition.subagent_sibling?(step)
       shared = group_claimed_usage(run, step, attempt)
       return agent_facts(run, attempt) unless shared
       {"usage" => nil, "usage_shared" => shared}
-    end
-
-    # Whether +step+ is a fan_out sibling that runs as a sub-agent of the run pane. A definition stored before
-    # the key existed has no mode on its siblings and keeps today's per-attempt reading.
-    def subagent_sibling?(step)
-      step.is_a?(Hash) && step["group"].is_a?(String) && step["execution_mode"] == "subagents"
     end
 
     # The usage claim of this group a sibling attempt's window overlaps, when one stands: the sibling step and

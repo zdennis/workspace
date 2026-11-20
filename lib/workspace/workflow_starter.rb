@@ -229,7 +229,7 @@ module Workspace
     # agent launches. The definition parses anywhere (the run pane's agent kind is only known at start), so
     # this is a start-time refusal, and `process_separation` groups pass for every kind.
     def check_execution_mode(data, project)
-      siblings = Array(data["steps"]).select { |step| step.is_a?(Hash) && step["group"].is_a?(String) && step["execution_mode"] == "subagents" }
+      siblings = Array(data["steps"]).select { |step| WorkflowDefinition.subagent_sibling?(step) }
       return if siblings.empty? || @main_agent.nil?
       kind = @main_agent.kind(project)
       return if kind == "claude"

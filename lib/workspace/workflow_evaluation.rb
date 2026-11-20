@@ -585,8 +585,13 @@ module Workspace
         next unless stored["current"] == check["step"] && state["state"] == "checking" && attempt["n"] == check["attempt"]
         if check["proof"]
           apply_proof(stored, attempt, check, result, ctx)
-          following = ctx.check
           review = ctx.review
+          if ctx.check.nil?
+            # The proof chain finished the sibling's judging (it passed, failed, or queued nothing): the rest of
+            # the group turn this judging was part of is judged on top of it.
+            following = judge_group_turn_pending(stored, ctx)
+            review = ctx.review
+          end
           next WorkflowRun.from_h(stored)
         end
         attempt["check"].merge!("ended_at" => now_iso, "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
@@ -752,20 +757,24 @@ module Workspace
       return read if stored["parked"]
       ids = WorkflowDefinition.group_steps(stored["definition"])[group.to_s] || []
       # One check, against the group's binding: the run pane's own — never a sibling's, which the cursor's
-      # step-scoped read would name.
+      # step-scoped read would name. The pane the turn ended in is the run's recorded pane or, when a restore
+      # moved the binding, the pane the live binding now names.
       run_pane = stored["pane"] || @panes.pane_of(stored["id"])
-      return read if pane && run_pane != pane
+      bound = @panes.pane_of(stored["id"])
+      return read if pane && pane != run_pane && pane != bound
       work = WorkflowRun.from_h(read).thawed
       work.delete("group_turn")
       judge_siblings(work, ids, turn_started, stopped_at, background, status_report, ctx)
       WorkflowRun.from_h(work)
     end
 
-    # Judges each sibling of +ids+ that is still running with an open attempt, in order, until one's judging needs
-    # a check outside the lock: the rest — with the turn's own window and background, which their judging still
-    # reads — are named in the run's `group_turn` mark for {#apply_check} to pick up.
+    # Judges each subagent sibling of +ids+ that is still running with an open attempt, in order, until one's
+    # judging needs a check outside the lock: the rest — with the turn's own window and background, which their
+    # judging still reads — are named in the run's `group_turn` mark for {#apply_check} to pick up. A
+    # `process_separation` sibling of a mixed group is never judged here: it works in its own pane, and its own
+    # turn's end judges it.
     def judge_siblings(work, ids, turn_started, stopped_at, background, status_report, ctx)
-      rest = Array(ids)
+      rest = Array(ids).select { |id| WorkflowRun.pane_free?(work, id) }
       while (id = rest.shift)
         state = work["steps"][id]
         next unless state.is_a?(Hash) && state["state"] == "running"

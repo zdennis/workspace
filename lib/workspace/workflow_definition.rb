@@ -442,17 +442,16 @@ module Workspace
       end
     end
 
-    # The execution mode a group's definition set, or {DEFAULT_EXECUTION_MODE} when it says nothing — which is also
-    # every group stored before the key existed. This is the reader of the group hash's own key (what
-    # {WorkflowFanOutSpec} and a reader of the group's mode use); the per-sibling decision a pane-free sibling
-    # needs is {WorkflowRun.pane_free?}, which reads the resolved mode each built sibling carries, and a run stored
-    # before the key existed has siblings without one, which read as today's per-pane behavior.
+    # Whether a definition's step entry is a fan_out sibling whose resolved `execution_mode` is `subagents`: it
+    # runs as a sub-agent of the run's own pane, with no pane binding or pane slot of its own. The one test of
+    # it: {WorkflowRun.pane_free?} reads a stored run's entries through this, and dispatch, the starter and the
+    # attempt record read built entries through it. A run stored before the key existed has siblings without a
+    # resolved mode, which read as today's per-pane behavior.
     #
-    # @param group [Hash] one of {#to_h}'s "groups" values
-    # @return [String] a member of {EXECUTION_MODES}
-    def self.execution_mode(group)
-      mode = group.is_a?(Hash) ? group["execution_mode"] : nil
-      EXECUTION_MODES.include?(mode) ? mode : DEFAULT_EXECUTION_MODE
+    # @param step [Hash] one step entry of a definition's "steps" (built or stored)
+    # @return [Boolean]
+    def self.subagent_sibling?(step)
+      step.is_a?(Hash) && step["group"].is_a?(String) && !step["group"].empty? && step["execution_mode"] == "subagents"
     end
 
     # The refusal of a tool that would play or draw a definition's `fan_out` groups as plain steps in a row.

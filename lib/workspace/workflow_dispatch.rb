@@ -330,11 +330,12 @@ module Workspace
     end
 
     # Starts every sibling of a group at once, each in its own author pane: the first in the run's pane, each after it
-    # in a new pane split off the workspace's session ({WorkflowPanes#spawn_author}). Each sibling gets its own attempt,
-    # binding and line; a sibling whose pane can't be made or used waits on its own, and the others start anyway. The
-    # cursor is left on the last sibling started. A paused run, or one whose budget or timeout is used up, holds the
-    # first sibling only, as it would one step: the dispatch that ends the hold finds the group still unstarted and
-    # fans it out then.
+    # in a new pane split off the workspace's session ({WorkflowPanes#spawn_author}) — unless the group has a subagent
+    # sibling, when the run pane is the group's and a `process_separation` first sibling takes a spawned pane too (see
+    # {#first_pane}). Each sibling gets its own attempt, binding and line; a sibling whose pane can't be made or used
+    # waits on its own, and the others start anyway. The cursor is left on the last sibling started. A paused run, or
+    # one whose budget or timeout is used up, holds the first sibling only, as it would one step: the dispatch that
+    # ends the hold finds the group still unstarted and fans it out then.
     #
     # A sibling whose resolved execution mode is `subagents` runs in the run's own pane instead: no author pane is
     # spawned, no binding or pane slot is written for it, and its line is not its own — every subagent sibling of the
@@ -342,12 +343,19 @@ module Workspace
     def fan_out(run, ids, ctx:, cause:, context:, budgeted:, retry_of:)
       run["current"] = ids.first
       held = run["paused"] || (budgeted && (budget_holds?(run) || time_holds?(run)))
-      start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of, group_entry: true)
-      return if held
+      grouped = ids.any? { |id| WorkflowDefinition.subagent_sibling?(step_def_for(run, id)) }
+      # The first sibling's spawned pane, when it takes one ({#first_pane}); +:failed+ when the spawn could not
+      # be made, which leaves the first sibling on its refusal and starts the others anyway.
+      made = first_pane(run, grouped, held)
+      unless made == :failed
+        start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of,
+          pane: made.is_a?(Hash) ? made[:pane] : nil, group_entry: true)
+      end
+      return if held || made == :failed
       # The run pane works on the group whole when any sibling runs as its sub-agent: one binding, written once at
       # group entry, so hook events and reports can resolve it. No sibling's attempt binds over it (the subagent
       # branch of {#start_attempt} skips the bind); the pane's next normal step binds it back to that step.
-      if ids.any? { |id| step_def_for(run, id)["execution_mode"] == "subagents" }
+      if grouped
         @panes.bind_group(workspace: run["workspace"], pane: run_pane(run), run_id: run["id"],
           group: step_def_for(run, ids.first)["group"], artifacts: run["artifacts_dir"])
       end
@@ -373,7 +381,22 @@ module Workspace
     # Whether the current step is a fan_out sibling that runs as a sub-agent of the run's own pane.
     def subagent_step?(run)
       step = step_def(run)
-      step && step["group"].is_a?(String) && step["execution_mode"] == "subagents"
+      step && WorkflowDefinition.subagent_sibling?(step)
+    end
+
+    # What the group's first sibling's attempt starts with: nil for a group of `process_separation` siblings
+    # alone (today's path — the first runs in the run pane), nil for a subagent first sibling (it needs no pane),
+    # and a freshly spawned author pane for a `process_separation` first sibling of a group that also has a
+    # subagent one — the run pane is that group's, so it cannot take the first sibling too. A held first attempt
+    # holds before any pane is made, so it spawns nothing. A spawn that could not be made records the sibling's
+    # reason and answers +:failed+.
+    def first_pane(run, grouped, held)
+      return nil if held || !grouped || subagent_step?(run)
+      made = @panes.spawn_author(run["workspace"])
+      return made unless made[:error]
+      not_delivered(run, step_state(run), nil, {code: made[:error], message: made[:message]})
+      slot(run, "reason")["details"]["pane"] = made[:pane] if made[:pane]
+      :failed
     end
 
     # The one delivery line a `subagents` group's started siblings share, registered once after every sibling's
@@ -383,7 +406,7 @@ module Workspace
     def compose_group_line(run, ids, ctx, cause:)
       started = ids.filter_map do |id|
         step = step_def_for(run, id)
-        next unless step["execution_mode"] == "subagents"
+        next unless WorkflowDefinition.subagent_sibling?(step)
         attempt = run.dig("steps", id, "attempts", -1)
         next unless attempt.is_a?(Hash) && attempt["prompt_file"] && attempt["outcome"] != "not_delivered"
         [id, attempt["prompt_file"], attempt["n"]]
@@ -391,7 +414,9 @@ module Workspace
       ctx.add_delivery(subagent_line(run, started, cause: cause)) unless started.empty?
     end
 
-    # The run's own pane — never a fan_out sibling's author pane, which the cursor's step may name.
+    # The run's own pane — never a fan_out sibling's author pane, which the cursor's step may name. The run's
+    # recorded pane is read before the live binding: a sibling bound a moment ago must not take the group's
+    # own delivery, and the recorded pane is the one the run was launched in.
     def run_pane(run)
       run["pane"] || @panes.pane_of(run["id"])
     end
@@ -410,7 +435,7 @@ module Workspace
       adopt(run, drop_park(run, "moved_on")) if run.key?("parked")
       step = step_def(run)
       state = step_state(run)
-      subagent = !step["group"].to_s.empty? && step["execution_mode"] == "subagents"
+      subagent = WorkflowDefinition.subagent_sibling?(step)
       if budgeted
         spent = budget_holds?(run)
         late = time_holds?(run)
@@ -520,8 +545,7 @@ module Workspace
     # number under "attempts"): a kick's answer settles them all — a failed one puts each named sibling on its own wait.
     def settle(run, delivery, kick)
       work = run.thawed
-      ids = (delivery["steps"].is_a?(Array) && delivery["steps"].any?) ? delivery["steps"] : [delivery["step"]]
-      numbers = delivery["attempts"].is_a?(Hash) ? delivery["attempts"] : {delivery["step"] => delivery["attempt"]}
+      ids, numbers = delivery_steps(delivery)
       after = nil
       settled = ids.filter_map do |id|
         state = work["steps"].fetch(id)
@@ -541,14 +565,22 @@ module Workspace
     # Whether the run is still on +step_id+: the cursor names it, or it is a fan_out sibling (the cursor names only one).
     def on_step?(run, step_id) = run["current"] == step_id || WorkflowRun.step_scoped?(run, step_id)
 
+    # The steps a delivery line names, and each one's attempt number: a composed line's "steps" with each one's
+    # number under "attempts", or the one step and attempt a plain line carries. The one reading of it, for
+    # {#settle} and {#record_remote}.
+    def delivery_steps(delivery)
+      ids = (delivery["steps"].is_a?(Array) && delivery["steps"].any?) ? delivery["steps"] : [delivery["step"]]
+      numbers = delivery["attempts"].is_a?(Hash) ? delivery["attempts"] : {delivery["step"] => delivery["attempt"]}
+      [ids, numbers]
+    end
+
     # The reading `remote_unchanged` compares with. It is taken here, the one place every attempt passes with the
     # lock given up and the agent not yet told: `dispatch` runs inside a transition, from many callers. It may take
     # {WorkflowGuard::REMOTE_READ_LIMIT} seconds, which {WorkflowTransitions::DELIVERY_WINDOW} has room for. A process
     # that dies here leaves an attempt with no reading, which that proof fails as unproven.
     def record_remote(run_id, delivery)
       reading = @guard.remote_head(delivery["worktree"])
-      ids = (delivery["steps"].is_a?(Array) && delivery["steps"].any?) ? delivery["steps"] : [delivery["step"]]
-      numbers = delivery["attempts"].is_a?(Hash) ? delivery["attempts"] : {delivery["step"] => delivery["attempt"]}
+      ids, numbers = delivery_steps(delivery)
       @change.call(run_id, actor: "engine", cause: "delivery") do |run|
         ids.each do |id|
           attempt = run.step(id).last_attempt

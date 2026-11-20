@@ -1239,14 +1239,14 @@ RSpec.describe Workspace::WorkflowDefinition do
           .and include(a_string_matching(/step test \(in fan_out group checks\): a sibling that runs as a sub-agent of the run's pane can't take timeout:/))
       end
 
-      it "falls back to the default for a stored mode nothing validates, and reads an absent key as the default" do
-        expect(described_class.execution_mode(parse(grouped([["lint"]])).to_h["groups"]["checks"]))
-          .to eq("subagents")
-        expect(described_class.execution_mode({"title" => "Checks", "checkout" => "shared", "on_fail" => "stop", "steps" => %w[lint]}))
-          .to eq("subagents")
-        expect(described_class.execution_mode(nil)).to eq("subagents")
-        expect(described_class.execution_mode({"execution_mode" => "process_separation"})).to eq("process_separation")
-        expect(described_class.execution_mode({"execution_mode" => "threads"})).to eq("subagents")
+      it "reads a sibling with no resolved mode as today's per-pane sibling, and a resolved one by its mode" do
+        # A run stored before the key existed has siblings without a resolved mode: they keep today's per-pane
+        # behavior.
+        expect(described_class.subagent_sibling?("id" => "lint", "group" => "checks")).to be(false)
+        expect(described_class.subagent_sibling?("id" => "lint", "group" => "checks", "execution_mode" => "subagents")).to be(true)
+        expect(described_class.subagent_sibling?("id" => "lint", "group" => "checks", "execution_mode" => "process_separation")).to be(false)
+        expect(described_class.subagent_sibling?("id" => "lint", "execution_mode" => "subagents")).to be(false)
+        expect(described_class.subagent_sibling?(nil)).to be(false)
       end
 
       it "refuses a sibling's timeout: under a subagents group, and accepts it under process_separation" do

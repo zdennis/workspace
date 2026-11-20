@@ -123,7 +123,7 @@ module Workspace
     def self.pane_free?(hash, step_id)
       return false unless step_scoped?(hash, step_id)
       entry = hash["definition"]["steps"].find { |each| each.is_a?(Hash) && each["id"] == step_id }
-      entry["execution_mode"] == "subagents"
+      WorkflowDefinition.subagent_sibling?(entry)
     end
 
     # The Hash a writer of +step_id+'s {PER_STEP_KEYS} slots writes into, by {.step_scoped?}: the step's own hash under

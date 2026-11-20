@@ -109,13 +109,15 @@ RSpec.describe Workspace::WorkflowStarter do
         expect(error.message).to include("Set execution_mode: process_separation")
       end
 
-      it "lets a process_separation group and a keyless group pass for any agent kind" do
+      it "lets a process_separation group pass for any agent kind, and refuses a keyless group for a non-Claude agent since the default is subagents" do
         keyed = fan_yaml.sub("execution_mode: subagents", "execution_mode: process_separation")
         process = Workspace::WorkflowDefinition.parse(keyed, id: "fan", source: "global", path: "/defs/fan.yml")
         keyless = Workspace::WorkflowDefinition.parse(fan_yaml.sub("    execution_mode: subagents\n", ""), id: "fan", source: "global", path: "/defs/fan.yml")
 
         expect(refusal { starter_with_agent("codex").preflight(definition: process, workspace: "app", worktree: worktree, inputs: {}) }).to be_nil
-        expect(refusal { starter_with_agent("none").preflight(definition: keyless, workspace: "app", worktree: worktree, inputs: {}) }).to be_nil
+        error = refusal { starter_with_agent("none").preflight(definition: keyless, workspace: "app", worktree: worktree, inputs: {}) }
+        expect(error.code).to eq("subagents_needs_claude")
+        expect(error.message).to include("Set execution_mode: process_separation")
         expect(refusal { starter_with_agent("claude").preflight(definition: fan_definition, workspace: "app", worktree: worktree, inputs: {}) }).to be_nil
       end
 
