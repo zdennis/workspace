@@ -215,6 +215,21 @@ RSpec.describe Workspace::WorkflowEngine do
       sub_checks.sub("      prompt: Test the change.\n", "      prompt: Test the change.\n      execution_mode: process_separation\n")
     end
     let(:first_mixed_group) { definition("steps:\n#{(mixed_yaml + report).gsub(/^/, "  ")}") }
+    let(:ps_first_yaml) do
+      <<~YAML
+        checks:
+          execution_mode: subagents
+          fan_out:
+            test:
+              prompt: Test the change.
+              execution_mode: process_separation
+              produces: [test.md]
+            lint:
+              prompt: Lint the change.
+              produces: [lint.md]
+      YAML
+    end
+    let(:ps_first_group) { definition("steps:\n#{(ps_first_yaml + report).gsub(/^/, "  ")}") }
 
     it "starts both siblings in the run pane with no panes spawned, no bindings and one composed line" do
       start(first_sub_group)
@@ -267,19 +282,7 @@ RSpec.describe Workspace::WorkflowEngine do
     end
 
     it "gives a process_separation first sibling its own pane when the group also has a subagent sibling" do
-      ps_first = <<~YAML
-        checks:
-          execution_mode: subagents
-          fan_out:
-            test:
-              prompt: Test the change.
-              execution_mode: process_separation
-              produces: [test.md]
-            lint:
-              prompt: Lint the change.
-              produces: [lint.md]
-      YAML
-      start(definition("steps:\n#{(ps_first + report).gsub(/^/, "  ")}"))
+      start(ps_first_group)
 
       # The run pane is the group's, so the first sibling cannot take it: it is spawned its own author pane,
       # exactly as a later process_separation sibling is.
@@ -294,6 +297,20 @@ RSpec.describe Workspace::WorkflowEngine do
       ])
       expect(run["steps"]["test"]["pane"]).to eq("%101")
       expect(run["steps"]["lint"]).not_to have_key("pane")
+    end
+
+    it "starts the other siblings anyway when the process_separation first sibling's pane cannot be made" do
+      panes.spawn_results << {error: "pane_split_failed", message: "no pane to split"}
+      start(ps_first_group)
+
+      expect(run["steps"]["test"]["state"]).to eq("waiting")
+      expect(run["steps"]["test"]["reason"]).to include("code" => "waiting_you", "details" => include("step" => "test", "error" => "pane_split_failed"))
+      expect(panes.bound["%5"]).to include(kind: "run", run_id: "wr_1", group: "checks")
+      lint_file = run["steps"]["lint"]["attempts"].first["prompt_file"]
+      expect(panes.kicks.map { |kick| [kick[:pane], kick[:text]] }).to match([
+        ["%5", a_string_including("Step lint: Read #{lint_file} and follow it.")]
+      ])
+      expect(run["steps"]["lint"]["state"]).to eq("running")
     end
 
     it "puts every named sibling on its own wait when the composed line cannot be typed" do

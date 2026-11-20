@@ -351,7 +351,7 @@ module Workspace
         start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of,
           pane: made.is_a?(Hash) ? made[:pane] : nil, group_entry: true)
       end
-      return if held || made == :failed
+      return if held
       # The run pane works on the group whole when any sibling runs as its sub-agent: one binding, written once at
       # group entry, so hook events and reports can resolve it. No sibling's attempt binds over it (the subagent
       # branch of {#start_attempt} skips the bind); the pane's next normal step binds it back to that step.
@@ -388,10 +388,11 @@ module Workspace
     # alone (today's path — the first runs in the run pane), nil for a subagent first sibling (it needs no pane),
     # and a freshly spawned author pane for a `process_separation` first sibling of a group that also has a
     # subagent one — the run pane is that group's, so it cannot take the first sibling too. A held first attempt
-    # holds before any pane is made, so it spawns nothing. A spawn that could not be made records the sibling's
-    # reason and answers +:failed+.
+    # holds before any pane is made, so it spawns nothing, and a gone checkout fails the attempt as any step's
+    # does, so no pane is made for it either. A spawn that could not be made records the sibling's reason and
+    # answers +:failed+.
     def first_pane(run, grouped, held)
-      return nil if held || !grouped || subagent_step?(run)
+      return nil if held || !grouped || subagent_step?(run) || !File.directory?(run["worktree"])
       made = @panes.spawn_author(run["workspace"])
       return made unless made[:error]
       not_delivered(run, step_state(run), nil, {code: made[:error], message: made[:message]})

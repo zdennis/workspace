@@ -586,6 +586,7 @@ module Workspace
         if check["proof"]
           apply_proof(stored, attempt, check, result, ctx)
           review = ctx.review
+          following = ctx.check
           if ctx.check.nil?
             # The proof chain finished the sibling's judging (it passed, failed, or queued nothing): the rest of
             # the group turn this judging was part of is judged on top of it.

@@ -1605,6 +1605,24 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(store.runs["wr_1"]["group_turn"]).to be_nil
     end
 
+    it "goes on through the next proof the chain queues after one passes" do
+      second = {"index" => 1, "proof" => "command", "token" => "t2", Workspace::WorkflowRequire::FACTS_KEY => {"head" => "abc"}}
+      stored(checking_run.tap { |run| run["definition"]["steps"][0]["require"] = [{"command" => "lint"}, {"command" => "audit"}] })
+      require_check = RecordingRequire.new(checks: [{"outside" => second}], outside: {"record" => {"exit_code" => 0}, "unmet" => nil})
+
+      run = evaluation(require_check: require_check).finish_check("wr_1", check, "daemon", "turn_ended")
+
+      # The first proof's apply queued the second outside the lock, and the chain ran it to the pass.
+      expect(require_check.calls).to eq([
+        [:run_outside, {"index" => 0, "proof" => "command", "token" => "t1"}, {cwd: dir}],
+        [:check, "plan", 1, {from: 1}],
+        [:run_outside, second, {cwd: dir}],
+        [:check, "plan", 1, {from: 2}]
+      ])
+      expect(run.step("plan").last_attempt.proofs.map { |each| each["token"] }).to eq(%w[t1 t2])
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+
     it "drops a result the run moved on from" do
       stored(checking_run.merge("current" => "plan").tap { |run| run["steps"]["plan"]["state"] = "failed" })
 
