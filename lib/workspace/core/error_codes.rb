@@ -65,6 +65,8 @@ module Workspace
       "rollback_failed" => "template apply warning: --rollback-all-on-error could not put a workspace's files back (its lock or a copy could not be read or written). workspace.",
       "rollback_unreadable" => "template apply warning: --rollback-all-on-error could not read the batch's manifest, so nothing was put back.",
       "prune_failed" => "template apply warning: old tmuxinator backup batches could not be pruned; the new batch is kept.",
+      # `workflow validate` warnings (`warnings[].code`); never an error envelope's code.
+      "fan_out_edits_unverified" => "workflow validate warning: a fan_out group sets checkout: shared-edit, so its siblings may edit the checkout and the engine can't verify that they edit disjoint paths. step (the group id), message.",
       # `template apply --relaunch` and `template restore --relaunch`: a row's `relaunch_code`, or `warnings[].code`; never an error envelope's code.
       "relaunch_stop_failed" => "template apply or restore --relaunch: the workspace's tmux session was still up after the stop, so it was not launched again (a row's relaunch_code, relaunch failed).",
       "relaunch_launch_failed" => "template apply or restore --relaunch: the workspace stopped but could not be launched again, with no more specific reason (a row's relaunch_code, relaunch failed).",

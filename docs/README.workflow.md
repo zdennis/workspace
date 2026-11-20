@@ -1494,6 +1494,16 @@ A group takes only `title`, `fan_out`, `checkout` and `on_fail: stop`. A sibling
 
 **`status`, `needs-me` and alerts** show one row per sibling; a draining group shows its siblings.
 
+**In `--json`.** Needs `workflow` 59. In `workflow status --json`, each entry of `steps` that belongs to a group adds:
+
+- `group`: the group's id.
+- `group_state`: where the group stands, the same for every sibling. `pending` (no sibling has started), `running` (a sibling is at work), `waiting` (nothing runs and a sibling is held: a gate, a hold, a backoff), `draining` (a sibling failed and the group is not yet decided: another sibling is still at work or held, or a deferred failure move or a relay run is owed), `failed` (every sibling is at rest and one failed; the join waits for a person) or `passed` (every sibling passed and none is held).
+- `looping`: `true` while a deferred failure move or a relay run is owed this sibling, else `false`.
+
+A sibling that is under way also carries what `current` shows of a step: `attempt`, `reason`, `flags` and the optional keys, so each sibling reads on its own. A run whose definition has groups adds a run-level `groups` map, `{GROUP_ID: {"state": GROUP_STATE, "steps": [SIBLING_IDS]}}`; a run with no groups has no `groups` key. Steps outside a group carry none of these keys. `workflow status --needs-me --json` rows for a step of a group add `group` and `group_state` too (absent for any other step), and a run can have several rows, so key them on `run` and `step` together.
+
+**In `workflow sweep --json`.** A run draining a group yields one row per sibling under way, so several rows of a pass can share one `run_id`; `step` tells them apart. Do not key rows on `run_id` alone.
+
 **What does not read a grouped definition.**
 
 - `workflow simulate` and `workflow graph` refuse it (`invalid_workflow`, naming the groups): they would play or draw the siblings as a row of plain steps.

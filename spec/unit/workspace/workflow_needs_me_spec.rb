@@ -219,6 +219,20 @@ RSpec.describe Workspace::WorkflowNeedsMe do
       expect(rows.map { |row| row["step"] }).to eq(["spec"])
     end
 
+    it "carries the group and its state on a sibling's row, the cursor's included" do
+      failed = reason("failed_check")
+      rows = needs_me.rows([grouped(cursor_reason: failed, siblings: [sibling("lint", reason: failed), sibling("spec", reason: failed)])])
+
+      expect(rows.map { |row| [row["step"], row["group"], row["group_state"]] }).to eq([%w[lint checks failed], %w[spec checks failed]])
+    end
+
+    it "leaves group and group_state off the row of an ordinary step" do
+      row = needs_me.rows([run("wr_1", reason: reason("failed_check"))]).first
+
+      expect(row).not_to have_key("group")
+      expect(row).not_to have_key("group_state")
+    end
+
     it "leaves out a sibling with no reason, a passed one and a finished run's" do
       siblings = [sibling("lint", state: "running"), {"id" => "spec", "state" => "passed", "group" => "checks"}]
       expect(needs_me.rows([grouped(cursor_reason: nil, siblings: siblings)])).to eq([])

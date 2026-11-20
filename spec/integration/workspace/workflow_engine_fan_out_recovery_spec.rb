@@ -113,6 +113,18 @@ RSpec.describe Workspace::WorkflowEngine, "with a fan_out group under way" do
       expect(events("step_stalled").map { |line| line["step"] }).to contain_exactly("lint", "test")
     end
 
+    it "yields one row per sibling under the same run_id, told apart by step" do
+      start
+      working("lint", "test")
+      now[0] += 600
+      panes.stale.push(pane("lint"), pane("test"))
+
+      rows = sweep.call
+
+      expect(rows.map { |row| row["run_id"] }).to eq(["wr_1", "wr_1"])
+      expect(rows.map { |row| row["step"] }).to contain_exactly("lint", "test")
+    end
+
     it "leaves the cursor on a sibling whose line it typed again, as a sibling's turn end does" do
       panes.queue_kicks({ok: false, code: "pane_busy", message: "busy"}, {ok: true})
       start
