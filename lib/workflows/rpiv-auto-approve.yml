@@ -74,7 +74,9 @@ steps:
     title: Plan reviewers
     # The three reviewers start together, each in its own pane, on the one checkout. Each only
     # reads it (guard: unchanged) and writes its own verdict file, and every one must pass
-    # before the tally runs.
+    # before the tally runs. They run with `process_separation`, not the default `subagents`:
+    # each reviewer is a fresh conversation of its own with its own pane and its own 30m clock.
+    execution_mode: process_separation
     fan_out:
       review_supportive:
         title: Supportive review
