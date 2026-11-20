@@ -120,4 +120,133 @@ RSpec.describe Workspace::WorkflowTransitions, "with a fan_out group" do
       expect(described_class.held_reason(described_class.at_step(run, "test"))).to eq("gate_waiting")
     end
   end
+
+  describe ".after_failure under a group's on_fail goto" do
+    let(:failure) { {"cause" => "check", "code" => "check_failed"} }
+
+    # plan, then the group reviews (r1, r2, r3) whose on_fail goes to plan, then tally.
+    def group_goto(on_fail = {"goto" => "plan", "max" => 2}, loops: {}, max_attempts: 20, plan_cap: nil)
+      plan = {"id" => "plan"}
+      plan["max_attempts"] = plan_cap if plan_cap
+      steps = [plan, {"id" => "r1", "group" => "reviews"}, {"id" => "r2", "group" => "reviews"},
+        {"id" => "r3", "group" => "reviews"}, {"id" => "tally"}]
+      {"id" => "wr_1", "state" => "running", "current" => "r3", "loops" => loops, "reason" => nil,
+       "definition" => {"max_attempts" => max_attempts, "steps" => steps, "groups" => {"reviews" => {"on_fail" => on_fail}}},
+       "steps" => {"plan" => {"state" => "passed", "attempts" => [{"n" => 1}]},
+                   "r1" => {"state" => "running", "attempts" => [{"n" => 1}]},
+                   "r2" => {"state" => "running", "attempts" => [{"n" => 1}]},
+                   "r3" => {"state" => "running", "attempts" => [{"n" => 1}]},
+                   "tally" => {"state" => "pending", "attempts" => []}}}
+    end
+
+    def own_on_fail(run, step, on_fail)
+      run["definition"]["steps"].find { |each| each["id"] == step }["on_fail"] = on_fail
+      run
+    end
+
+    def owe_move(run, step)
+      run["steps"][step]["state"] = "failed"
+      run["steps"][step]["pending_move"] = {"to" => "plan", "group" => "reviews", "was" => nil}
+      run["loops"]["reviews->plan"] = 1
+      run
+    end
+
+    it "routes the first sibling and a later one to the group's goto on edge GROUP->STEP" do
+      expected = {kind: :loop, group: "reviews", edge: "reviews->plan", to: "plan", count: 1, wait: nil}
+
+      expect(described_class.after_failure(group_goto, failure, step: "r1")).to eq(expected)
+      expect(described_class.after_failure(group_goto, failure, step: "r3")).to eq(expected)
+    end
+
+    it "counts on from the edge's loops and carries the group's backoff as the wait" do
+      run = group_goto({"goto" => "plan", "max" => 3, "backoff" => 30}, loops: {"reviews->plan" => 1})
+
+      expect(described_class.after_failure(run, failure, step: "r2")).to eq(kind: :loop, group: "reviews", edge: "reviews->plan", to: "plan", count: 2, wait: 30)
+    end
+
+    it "lets a sibling's own stop and its own in-group goto win over the group's" do
+      stopped = own_on_fail(group_goto, "r2", "stop")
+      looping = own_on_fail(group_goto, "r3", {"goto" => "r1", "max" => 2, "backoff" => 5})
+
+      expect(described_class.after_failure(stopped, failure, step: "r2")).to eq(kind: :stop)
+      expect(described_class.after_failure(looping, failure, step: "r3")).to eq(kind: :loop, edge: "r3->r1", to: "r1", count: 1, wait: 5)
+    end
+
+    it "stops when the edge's loops reach max" do
+      expect(described_class.after_failure(group_goto(loops: {"reviews->plan" => 2}), failure, step: "r1")).to eq(kind: :stop)
+    end
+
+    it "stops on a failure whose code or cause is excepted" do
+      by_code = group_goto({"goto" => "plan", "max" => 2, "except" => ["check_failed"]})
+      by_cause = group_goto({"goto" => "plan", "max" => 2, "except" => ["check"]})
+
+      expect(described_class.after_failure(by_code, failure, step: "r1")).to eq(kind: :stop)
+      expect(described_class.after_failure(by_cause, failure, step: "r1")).to eq(kind: :stop)
+    end
+
+    it "stops when the run's attempts are spent" do
+      expect(described_class.after_failure(group_goto(max_attempts: 4), failure, step: "r1")).to eq(kind: :stop)
+    end
+
+    it "stops with the goto step named when its own cap is spent" do
+      expect(described_class.after_failure(group_goto(plan_cap: 1), failure, step: "r1")).to eq(kind: :stop, limit: :step, step: "plan")
+    end
+
+    it "joins a second failure to the move already owed, never stopping it at max" do
+      run = owe_move(group_goto({"goto" => "plan", "max" => 1}), "r1")
+
+      expect(described_class.group_move_owed?(run, "reviews")).to be(true)
+      expect(described_class.after_failure(run, failure, step: "r2")).to eq(kind: :loop, group: "reviews", joined: true)
+    end
+
+    it "joins a second failure to the move owed even when the run's attempts or the goto step's cap are spent" do
+      spent_run = owe_move(group_goto(max_attempts: 4), "r1")
+      spent_plan = owe_move(group_goto(plan_cap: 1), "r1")
+
+      expect(described_class.after_failure(spent_run, failure, step: "r2")).to eq(kind: :loop, group: "reviews", joined: true)
+      expect(described_class.after_failure(spent_plan, failure, step: "r2")).to eq(kind: :loop, group: "reviews", joined: true)
+    end
+
+    it "still stops a second failure that is excepted while a move is owed" do
+      run = owe_move(group_goto({"goto" => "plan", "max" => 2, "except" => ["check_failed"]}), "r1")
+
+      expect(described_class.after_failure(run, failure, step: "r2")).to eq(kind: :stop)
+    end
+
+    it "keeps today's implicit move under a group on_fail: stop" do
+      run = group_goto("stop")
+
+      expect(described_class.after_failure(run, failure, step: "r2")).to eq(kind: :loop, edge: "r2->r1", to: "r1", count: 1, wait: nil)
+      expect(described_class.after_failure(run, failure, step: "r1")).to eq(kind: :stop)
+    end
+
+    it "loops a guard failure under a group goto" do
+      guard = {"cause" => "guard", "code" => "head_moved"}
+
+      expect(described_class.after_failure(group_goto, guard, step: "r1")).to eq(kind: :loop, group: "reviews", edge: "reviews->plan", to: "plan", count: 1, wait: nil)
+      expect(described_class.after_failure(group_goto("stop"), guard, step: "r2")).to eq(kind: :stop)
+    end
+  end
+
+  describe ".group_move_owed?" do
+    it "is false with no pending move, or one a sibling holds of its own" do
+      run = {"definition" => {"steps" => [{"id" => "r1", "group" => "reviews"}, {"id" => "r2", "group" => "reviews"}]},
+             "steps" => {"r1" => {"state" => "failed", "attempts" => [{"n" => 1}], "pending_move" => {"to" => "r2"}},
+                         "r2" => {"state" => "running", "attempts" => [{"n" => 1}]}}}
+
+      expect(described_class.group_move_owed?(run, "reviews")).to be(false)
+      expect(described_class.group_move_owed?(run, "ghost")).to be(false)
+    end
+
+    it "is true for a pending move tagged with this group, and false for one tagged with another" do
+      run = {"definition" => {"steps" => [{"id" => "r1", "group" => "reviews"}, {"id" => "r2", "group" => "reviews"}]},
+             "steps" => {"r1" => {"state" => "running", "attempts" => [{"n" => 1}]},
+                         "r2" => {"state" => "failed", "attempts" => [{"n" => 1}], "pending_move" => {"to" => "plan", "group" => "reviews"}}}}
+      other = Marshal.load(Marshal.dump(run))
+      other["steps"]["r2"]["pending_move"]["group"] = "checks"
+
+      expect(described_class.group_move_owed?(run, "reviews")).to be(true)
+      expect(described_class.group_move_owed?(other, "reviews")).to be(false)
+    end
+  end
 end
