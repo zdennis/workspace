@@ -1,3 +1,3 @@
 module Workspace
-  VERSION = "0.159.0"
+  VERSION = "0.160.0"
 end
