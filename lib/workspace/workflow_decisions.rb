@@ -142,7 +142,8 @@ module Workspace
     # moves the run to another pane when its own is gone. A step an agent is working on, and a check that is
     # still running, are left alone. A resume that acts takes over from a parked one; one that does nothing leaves it.
     #
-    # @param from [String, nil] start again at this step instead
+    # @param from [String, nil] start again at this step instead; a fan_out sibling runs its whole group again once
+    #   every sibling has ended, and is refused `step_still_working` while a sibling of its group is at work
     # @param note [String, nil] added to the next attempt's instructions
     # @param pane [String, nil] the pane to use from now on (when the old one is gone)
     # @param turn_over [Hash{String=>Object}, nil] "step" and "attempt": the pane's agent was seen to have ended
@@ -337,7 +338,8 @@ module Workspace
     # @return [void]
     # @raise [Workspace::Error] code `gate_waiting` for a run at a gate when no step is named (approve or reject it);
     #   code `guard_cannot_pass` for a run stopped on a guard no resume can pass ({WorkflowTransitions.guard_unrecoverable?})
-    #   unless +accept_guard+; code `guard_not_stopped` with +accept_guard+ for a run no guard stopped
+    #   unless +accept_guard+; code `guard_not_stopped` with +accept_guard+ for a run no guard stopped; code
+    #   `step_still_working` for a +from+ fan_out sibling while a sibling of its group is running, checking or reviewing
     # @raise [Workspace::UsageError] for a step the workflow doesn't have, and for +accept_guard+ without a +note+,
     #   +guard_retry+ without +accept_guard+, or +accept_guard+ with +from+
     # @raise [Workspace::Error] code `run_paused` for a paused run (unpause it first)
@@ -348,7 +350,7 @@ module Workspace
       return refuse_not_guard_stopped(run) if accept_guard
       refuse_unrecoverable_guard(run)
       if from
-        return if step_ids(run).include?(from)
+        return refuse_group_working(run, from) if step_ids(run).include?(from)
         raise UsageError, "No step #{from.to_s[0, 60].inspect} in workflow #{run["workflow"]} (#{step_ids(run).join(", ")})."
       end
       return unless step_state(run).dig("gate", "state") == "waiting"
@@ -568,6 +570,16 @@ module Workspace
       return unless paused
       raise Workspace::Error.new("Run #{run["id"]} is paused (since #{paused["since"]}, by #{paused["by"]}), so it can't be resumed. Run `workspace workflow unpause #{run["id"]}` first.",
         code: "run_paused", details: {"run_id" => run["id"], "step" => run["current"], "since" => paused["since"], "by" => paused["by"]})
+    end
+
+    # A `--from` a fan_out sibling is refused while a sibling of its group is at work: the group can't be entered again
+    # under it, so the named sibling would start alone beside a round still going on.
+    def refuse_group_working(run, from)
+      working = (WorkflowDefinition.siblings_of(run["definition"], from) || []).find { |id| WorkflowTransitions::SIBLING_BUSY.include?(run.dig("steps", id, "state")) }
+      return unless working
+      raise Workspace::Error.new("Step #{working} of #{from}'s fan_out group is still #{run.dig("steps", working, "state")}, and --from #{from} runs the whole group again. " \
+        "Wait for it to end, or stop its agent, then run the command again. Nothing was changed.",
+        code: "step_still_working", details: {"run_id" => run["id"], "step" => working, "reason" => "working"})
     end
 
     # Which branch of {#unpause} applies to the run as it stands, its pause taken off; +hold+ is its `pause_hold`.

@@ -856,6 +856,39 @@ RSpec.describe Workspace::WorkflowDecisions do
     end
   end
 
+  describe "#resume from a fan_out sibling" do
+    def grouped_run(current:, r1:, r2:)
+      hash = run_hash(current: current, max_attempts: 20, extra: {"state" => "waiting"})
+      hash["definition"]["steps"] = [{"id" => "plan", "produces" => []}, {"id" => "r1", "group" => "g", "produces" => []},
+        {"id" => "r2", "group" => "g", "produces" => []}, {"id" => "report", "produces" => []}]
+      hash["steps"] = {"plan" => {"state" => "passed", "attempts" => [{"n" => 1}]}, "r1" => r1, "r2" => r2, "report" => {"state" => "pending", "attempts" => []}}
+      hash
+    end
+
+    def done(state, **extra) = {"state" => state, "attempts" => [{"n" => 1, "outcome" => state}], "pane" => "%7"}.merge(extra)
+
+    %w[running checking reviewing].each do |working|
+      it "refuses resume --from a sibling while another sibling is #{working}, changing nothing" do
+        hash = grouped_run(current: "r1", r1: done("failed", "reason" => failed_check), r2: done(working))
+        stored(hash)
+        before = deep_copy(hash)
+
+        error = error_for { decisions.resume("wr_1", actor: "person", from: "r1") }
+
+        expect(error.code).to eq("step_still_working")
+        expect(error.details).to eq("run_id" => "wr_1", "step" => "r2", "reason" => "working")
+        expect(store.runs["wr_1"]).to eq(before)
+        expect(dispatch.calls).to be_empty
+      end
+    end
+
+    it "lets resume --from a step in no group go on while a sibling works" do
+      stored(grouped_run(current: "r1", r1: done("failed", "reason" => failed_check), r2: done("running")))
+
+      expect { decisions.resume("wr_1", actor: "person", from: "plan") }.not_to raise_error
+    end
+  end
+
   describe "#resume with accept_guard" do
     def guard_stop(guard) = {"code" => "failed_check", "since" => "2026-11-10T11:55:00Z", "details" => {"cause" => "guard", "guard" => guard, "code" => guard}}
 

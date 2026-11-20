@@ -337,18 +337,23 @@ module Workspace
     # one sibling the cursor names beside siblings that judged earlier work. Each sibling's attempts stay as its
     # history (each new one spends from the run's allowance as any attempt does), as do its pending context and its
     # reason history; its last stop (`reason`), its deferred move, its kept failure details and a gate still waiting go, as a fresh
-    # sibling has none. A group with a sibling at work or waiting (a lock, a hold, a pane gone) is left as it is.
+    # sibling has none. A group with a sibling at work or waiting (a lock, a hold, a pane gone) is left as it is. A
+    # re-entry writes one `group_rearmed` event (`group`, `steps`, and `dropped_gates`: the siblings whose waiting gate
+    # it dropped, so a trace can close their gate spans).
     def reenter_group(run)
       ids = group_of(run, run["current"])
       return unless ids
       return unless ids.all? { |id| SIBLING_ENDED.include?(run.dig("steps", id, "state")) }
+      dropped = ids.select { |id| run.dig("steps", id, "gate", "state") == "waiting" }
       ids.each do |id|
         state = run["steps"][id]
         state["state"] = "pending"
         state.delete("failed_reason")
-        state.delete("gate") if state.dig("gate", "state") == "waiting"
+        state.delete("gate") if dropped.include?(id)
         %w[reason pending_move].each { |key| WorkflowRun.slots(run, id).delete(key) }
       end
+      group = run["definition"]["steps"].find { |step| step["id"] == ids.first }["group"]
+      @change.event(run, "group_rearmed", "group" => group, "steps" => ids, "dropped_gates" => dropped)
     end
 
     # The pane a sibling of a group entered again ({#reenter_group}) types into: its own from its last run, while that

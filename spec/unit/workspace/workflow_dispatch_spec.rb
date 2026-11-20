@@ -289,6 +289,7 @@ RSpec.describe Workspace::WorkflowDispatch do
           expect(run.step("test").to_h).not_to include("pending_move", "gate", "reason", "failed_reason")
           expect(run.step("lint").gate).to include("state" => "approved")
           expect(spawning.calls.map(&:first)).not_to include(:spawn_author, :bind)
+          expect(change.events.find { |event| event[1] == "group_rearmed" }).to eq(["wr_1", "group_rearmed", {"group" => "checks", "steps" => %w[lint test], "dropped_gates" => %w[test]}])
 
           replayed = over(spawning).dispatch(run.to_h.except("paused"), ctx: ctx, cause: "resume")
 
@@ -305,6 +306,7 @@ RSpec.describe Workspace::WorkflowDispatch do
           expect(run.step("lint").state).to eq("running")
           expect(run.step("test").state).to eq("waiting")
           expect(run.step("test").attempts.size).to eq(1)
+          expect(change.events.map { |event| event[1] }).not_to include("group_rearmed")
         end
       end
     end
