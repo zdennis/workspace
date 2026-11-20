@@ -233,6 +233,16 @@ RSpec.describe Workspace::WorkflowNeedsMe do
       expect(row).not_to have_key("group_state")
     end
 
+    it "leaves out a failed sibling that waits on its group's owed move, and lists one whose group move was blocked" do
+      owed = sibling("lint").merge("looping" => true, "group_state" => "draining")
+      expect(needs_me.rows([grouped(cursor_reason: nil, siblings: [owed, sibling("spec", state: "running")])])).to eq([])
+
+      failed = reason("failed_check", details: {"code" => "test"})
+      blocked = sibling("lint", reason: failed)
+      rows = needs_me.rows([grouped(cursor_reason: failed, siblings: [blocked, sibling("spec", reason: failed)])])
+      expect(rows.map { |row| [row["step"], row["code"], row["group_state"]] }).to eq([%w[lint failed_check failed], %w[spec failed_check failed]])
+    end
+
     it "leaves out a sibling with no reason, a passed one and a finished run's" do
       siblings = [sibling("lint", state: "running"), {"id" => "spec", "state" => "passed", "group" => "checks"}]
       expect(needs_me.rows([grouped(cursor_reason: nil, siblings: siblings)])).to eq([])

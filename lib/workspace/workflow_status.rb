@@ -384,7 +384,8 @@ module Workspace
     end
 
     # Where a fan_out group stands, derived from its siblings and the join's own rule for a group at rest
-    # ({WorkflowTransitions.group_at_rest?}):
+    # ({WorkflowTransitions.group_at_rest?}), except that a sibling stopped for a person ({#stopped_for_person?}) counts
+    # as at rest:
     #
     # - `passed`: every sibling passed and none is held (a gate waiting is `waiting`).
     # - `draining`: a sibling has failed and the join has not yet decided the group: another sibling is still at work
@@ -396,7 +397,8 @@ module Workspace
     def group_state(run, ids)
       hash = run.to_h
       states = ids.map { |id| hash.dig("steps", id, "state") }
-      at_rest = WorkflowTransitions.group_at_rest?(hash, ids, @clock.call)
+      now = @clock.call
+      at_rest = ids.all? { |id| WorkflowTransitions.sibling_at_rest?(hash, id, now) || stopped_for_person?(hash, id) }
       return "passed" if states.all?("passed") && at_rest
       failed = states.include?("failed")
       moving = ids.any? { |id| WorkflowRun.slot(hash, id, "pending_move").is_a?(Hash) || WorkflowTransitions.relay_owed?(hash, id) }
@@ -405,6 +407,14 @@ module Workspace
       return "pending" if states.all?("pending")
       return "waiting" unless at_rest
       failed ? "failed" : "pending"
+    end
+
+    # Whether a failed sibling stopped its drain and now waits for a person with its `failed_check` reason, with no move
+    # held and no relay owed: the join has decided it, so the reason that holds the sibling from {WorkflowTransitions.sibling_at_rest?} is the decision, not
+    # work under way.
+    def stopped_for_person?(hash, id)
+      hash.dig("steps", id, "state") == "failed" && WorkflowRun.slot_dig(hash, id, "reason", "code") == "failed_check" &&
+        !WorkflowRun.slot(hash, id, "pending_move").is_a?(Hash) && !WorkflowTransitions.relay_owed?(hash, id)
     end
 
     # The `groups` of a run whose definition has fan_out groups: each group's derived state and its sibling ids.
@@ -603,14 +613,25 @@ module Workspace
     end
 
     # What a member of a fan_out group adds to its entry in `steps`: `group`, `group_state` ({#group_state}) and
-    # `looping` (a deferred failure move or a relay run is owed it), and, while the sibling is under way, what
+    # `looping` (a deferred failure move, its group's owed move or a relay run is owed it), and, while the sibling is under way, what
     # `current` shows of a step (`attempt`, `reason`, `flags`, and the optional keys), so each sibling reads on its own.
     def group_member_row(step, run, group_states, view)
       hash = run.to_h
       id = step["id"]
-      looping = WorkflowRun.slot(hash, id, "pending_move").is_a?(Hash) || WorkflowTransitions.relay_owed?(hash, id)
+      looping = WorkflowRun.slot(hash, id, "pending_move").is_a?(Hash) || WorkflowTransitions.relay_owed?(hash, id) ||
+        group_move_pending?(hash, step)
       {"group" => step["group"], "group_state" => group_states[step["group"]], "looping" => looping}
         .merge(view ? view[:current].except("step", "state") : {})
+    end
+
+    # Whether a failed sibling's last attempt holds a granted move of its group (`group_move`, its own or joined) that
+    # the group still owes ({WorkflowTransitions.group_move_owed?}). Once the move is applied or blocked, no sibling holds
+    # a `pending_move` of the group, so none reads as looping.
+    def group_move_pending?(hash, step)
+      id = step["id"]
+      return false unless hash.dig("steps", id, "state") == "failed"
+      WorkflowTransitions.move_granted?(Array(hash.dig("steps", id, "attempts")).last, "group_move") &&
+        WorkflowTransitions.group_move_owed?(hash, step["group"])
     end
 
     # A waiting gate's reason names the note to read, hashed now; null when the gate names

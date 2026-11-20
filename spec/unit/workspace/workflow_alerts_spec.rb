@@ -55,6 +55,17 @@ RSpec.describe Workspace::WorkflowAlerts do
     expect(sent.first["WORKSPACE_ALERT_TEXT"]).to eq("app: workflow run wr_1 failed at spec")
   end
 
+  it "sends no failed alert for siblings whose group move waits out its backoff, and one each once it is blocked" do
+    waiting = sibling_run(current: "spec")
+    %w[lint spec].each { |id| waiting["steps"][id]["reason"] = {"code" => "retry_backoff"} }
+    waiting["steps"]["lint"]["pending_move"] = {"group" => "checks", "to" => "plan", "until" => "2026-11-10T12:01:00Z"}
+    alerts.fire(alerts.marks(sibling_run), waiting)
+    expect(sent).to eq([])
+
+    alerts.fire(alerts.marks(waiting), sibling_run(current: "spec", failed: %w[lint spec]))
+    expect(sent.map { |env| [env["WORKSPACE_ALERT_EVENT"], env["WORKSPACE_ALERT_STEP"]] }).to contain_exactly(%w[failed lint], %w[failed spec])
+  end
+
   it "sends one alert, not two, for the sibling the run's own mark already names" do
     alerts.fire(alerts.marks(sibling_run), sibling_run(failed: %w[lint]))
 
