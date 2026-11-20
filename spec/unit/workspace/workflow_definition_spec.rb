@@ -1212,7 +1212,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       it "refuses a sibling's goto to a sibling of the other group" do
         second = "      test:\n        prompt: P\n        produces: [test.md]\n        on_fail: {goto: lint}\n"
         expect(problems(two_groups(second)))
-          .to eq(["step test: on_fail goto must name an earlier step of its fan_out group second (there is none); a goto can't leave the group yet, got \"lint\""])
+          .to eq(["step test: on_fail goto must name an earlier step of its fan_out group second (there is none); a sibling's goto can't leave the group (to go back further, put on_fail: goto on group second), got \"lint\""])
       end
     end
 
@@ -1305,7 +1305,7 @@ RSpec.describe Workspace::WorkflowDefinition do
 
       it "refuses a sibling's goto to the group's preceding step" do
         expect(problems(grouped([["lint"], ["test", "        on_fail: {goto: plan}\n"]])))
-          .to include("step test: on_fail goto must name an earlier step of its fan_out group checks (lint); a goto can't leave the group yet, got \"plan\"")
+          .to include("step test: on_fail goto must name an earlier step of its fan_out group checks (lint); a sibling's goto can't leave the group (to go back further, put on_fail: goto on group checks), got \"plan\"")
       end
 
       it "refuses a first sibling's goto, which has no earlier sibling" do

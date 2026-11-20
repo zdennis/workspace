@@ -1158,7 +1158,7 @@ module Workspace
       if group_of && !earlier.include?(goto)
         problem "#{where}: a fan_out group's on_fail goto must name a step before the group that is in no group (#{earlier.empty? ? "there is none" : earlier.join(", ")}), got #{value["goto"].inspect}"
       elsif group && !earlier.include?(goto)
-        problem "#{where}: on_fail goto must name an earlier step of its fan_out group #{group} (#{earlier.empty? ? "there is none" : earlier.join(", ")}); a goto can't leave the group yet, got #{value["goto"].inspect}"
+        problem "#{where}: on_fail goto must name an earlier step of its fan_out group #{group} (#{earlier.empty? ? "there is none" : earlier.join(", ")}); a sibling's goto can't leave the group (to go back further, put on_fail: goto on group #{group}), got #{value["goto"].inspect}"
       elsif !earlier.include?(goto)
         problem "#{where}: on_fail goto must name an earlier step (#{earlier.empty? ? "there is none" : earlier.join(", ")}), got #{value["goto"].inspect}"
       end
