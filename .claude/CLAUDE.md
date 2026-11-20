@@ -211,6 +211,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/cli/common.rb` — `CLI::Common`, the shared output, exit, help, JSON-error and editor helpers.
 - `lib/workspace/cli/names.rb` — `CLI::Names`, the workspace-name and working-directory helpers the CLI and families share.
 - `lib/workspace/cli/launcher.rb` — `CLI::Launcher`, what every launching verb shares: settle names, compose packs, launch, make settings, run hooks.
+- `lib/workspace/launch_hook_check.rb` — The read-only Note line `launch` prints when a checkout's on-PATH agents hold no current session hooks; installs nothing.
 - `lib/workspace/cli/relauncher.rb` — `CLI::Relauncher`, the work of `relaunch`: stop, wait, launch again, and detach when the caller is inside the target.
 - `lib/workspace/detached_spawn.rb` — `DetachedSpawn`, runs a command in its own session with output to a log, for a detached `relaunch`.
 - `lib/workspace/cli/workflow.rb` — `CLI::Workflow`, the `workflow` and `step` verb family parser.

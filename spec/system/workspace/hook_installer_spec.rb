@@ -457,6 +457,28 @@ RSpec.describe Workspace::HookInstaller do
     end
   end
 
+  describe "#installed_in?" do
+    it "is false before install and true after, reading the path it is given" do
+      expect(installer.installed_in?(settings_path, provider, command)).to be false
+      installer.install(provider, tmpdir, command, quiet: true, local: true)
+      expect(installer.installed_in?(settings_path, provider, command)).to be false
+      expect(installer.installed_in?(File.join(tmpdir, ".claude", "settings.local.json"), provider, command)).to be true
+    end
+
+    it "is false when the file holds a different hook command" do
+      write_settings("hooks" => {"Stop" => [{"matcher" => nil, "hooks" => [{"type" => "command", "command" => "workspace session-event --old"}]}]})
+
+      expect(installer.installed_in?(settings_path, provider, command)).to be false
+    end
+
+    it "raises the same unreadable-settings error installed? raises" do
+      FileUtils.mkdir_p(File.dirname(settings_path))
+      File.write(settings_path, "{not json")
+
+      expect { installer.installed_in?(settings_path, provider, command) }.to raise_error(Workspace::Error, /#{Regexp.escape(settings_path)} is not valid JSON/)
+    end
+  end
+
   describe "#statusline_installed?" do
     let(:statusline_command) { "workspace statusline" }
 

@@ -73,13 +73,23 @@ module Workspace
       nil
     end
 
+    # @param path [String] the settings file to read, however the caller resolved
+    #   it ({#settings_path_for} or {#local_settings_path_for})
+    # @param provider [Workspace::AgentProvider]
+    # @param command [String] the hook command to install
+    # @return [Boolean] whether every wanted hook is already present in that file
+    # @raise [Workspace::Error] when the file exists but cannot be read
+    def installed_in?(path, provider, command)
+      existing = read_settings(path)
+      merge(existing, provider.hook_settings(command), ours: provider.hook_commands(command)) == existing
+    end
+
     # @param provider [Workspace::AgentProvider]
     # @param project_root [String]
     # @param command [String] the hook command to install
-    # @return [Boolean] whether every wanted hook is already present
+    # @return [Boolean] whether every wanted hook is already present in the tracked or user settings file
     def installed?(provider, project_root, command)
-      existing = read_settings(settings_path_for(provider, project_root))
-      merge(existing, provider.hook_settings(command), ours: provider.hook_commands(command)) == existing
+      installed_in?(settings_path_for(provider, project_root), provider, command)
     end
 
     # Prints the settings fragment workspace wants to add.
