@@ -477,6 +477,7 @@ The plan (`rename --dry-run --json`, from `RenamePlan::Plan#to_h`) has these fie
 | `pane_waiting` | `agent-run send --when-idle`, `--clear-first` or `--interrupt`: the pane's agent waits on a person (a permission prompt or question, or `AskUserQuestion`/`ExitPlanMode` is running), so nothing was queued; answer it first. `details.reason`: `waiting` or `question_open`. |
 | `queue_full` | `agent-run send --when-idle` or `--clear-first`: the pane already has 8 prompts queued, so nothing was queued. `work-queue add`: the workspace's queue already holds the most items. `details.limit`. |
 | `item_active` | `work-queue rm` or `move`: the item is active or held; use `work-queue cancel`. `details.id`, `details.state`. |
+| `run_going` | `work-queue advance`: a `go` item took the task route because a run is going, so nothing was started and the item is `launch_failed`. `details.workspace`. |
 | `item_starting` | `work-queue rm`, `move`, `skip` or `cancel`: the item is being started; retry once its start has landed. `details.id`. |
 | `unknown_id` | `agent-run queue cancel --id ID`: no prompt with that id is queued (it was typed, dropped or never made), or the delivery has started pasting it, so its text may already be in the pane (`details.state: "delivering"`; check the pane). `details.id`; `details.workspace` when `--name` was given; `details.unreadable` lists workspaces whose queue file could not be read while searching (the id may be in one of them). |
 | `context_unavailable` | The agent can't report context usage, so /clear can't be confirmed. |

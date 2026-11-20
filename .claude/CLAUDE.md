@@ -232,6 +232,7 @@ New per-file detail goes there, never here.
 
 - `lib/workspace/work_queue_history.rb` — Age-pruned `work-queue-history.jsonl` of finished queue items: append, filtered reads, id-prefix lookup and clear.
 - `lib/workspace/work_queue_store.rb` — Flock-guarded `work-queue.json` of pending queue items: revision, toggle, pause, claims and one `transaction` for the advance pass.
+- `lib/workspace/work_queue_starters.rb` — The `workflow` and `go` starters of a queue item, run in the queue workspace's checkout.
 
 ### Locks, plan, spine, inbox (`docs/architecture/locks-plan-spine-inbox.md`)
 
