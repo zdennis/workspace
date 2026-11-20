@@ -51,6 +51,9 @@ class FakeWorkflowPanes
   # The step the pane was bound for, for an author binding that records one.
   def step_on(pane) = (bound_on(pane)&.fetch(:role) == "author") ? @bound[pane][:step] : nil
 
+  # The fan_out group the pane was bound to whole, for an author binding that records one.
+  def group_on(pane) = (bound_on(pane)&.fetch(:role) == "author") ? @bound[pane][:group] : nil
+
   def pane_of(run_id, step: nil) = @bound.find { |_, entry| entry[:run_id] == run_id && (step.nil? || entry[:step] == step) }&.first
 
   # A run id in +stale+ makes every binding of the run stale; a pane id in it, only that pane's.

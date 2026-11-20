@@ -181,6 +181,15 @@ module Workspace
       (step.is_a?(String) && !step.empty?) ? step : nil
     end
 
+    # The fan_out group the pane's run binding names, when it is bound to a group whole (its subagent siblings run
+    # as the pane agent's own sub-agents); nil for a pane bound to one step.
+    def group_on(pane)
+      bound = bound_on(pane)
+      return nil unless bound && bound[:role] == "author"
+      group = @bindings.binding_for(pane)["group"]
+      (group.is_a?(String) && !group.empty?) ? group : nil
+    end
+
     # @param run_id [String]
     # @param step [String, nil] only the pane bound for that step; nil is the first author pane the run has
     # @return [String, nil] the pane bound to the run as its author, wherever `restore` moved the

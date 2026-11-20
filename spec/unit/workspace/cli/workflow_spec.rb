@@ -1032,8 +1032,8 @@ RSpec.describe Workspace::CLI::Workflow do
         cli.run(["step", "done", "--status", "fail", "--summary", "Two specs still fail.", "--json"])
 
         expect(workflow_command.calls).to eq([
-          [:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "pass", summary: nil, code: nil}],
-          [:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "fail", summary: "Two specs still fail.", code: nil}]
+          [:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "pass", summary: nil, code: nil, step: nil}],
+          [:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "fail", summary: "Two specs still fail.", code: nil, step: nil}]
         ])
         expect(JSON.parse(output.string)).to include("action" => "step done", "status" => "ok", "results" => [workflow_command.row])
       end
@@ -1041,7 +1041,15 @@ RSpec.describe Workspace::CLI::Workflow do
       it "passes --code to the command" do
         cli.run(["step", "done", "--status", "fail", "--code", "not_reproduced"])
 
-        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "fail", summary: nil, code: "not_reproduced"}]])
+        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "fail", summary: nil, code: "not_reproduced", step: nil}]])
+      end
+
+      it "passes --step to the command, and refuses it on the verbs that cannot take one" do
+        cli.run(["step", "done", "--step", "lint"])
+
+        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "pass", summary: nil, code: nil, step: "lint"}]])
+        expect { cli.run(["step", "status", "--step", "lint"]) }.to raise_error(Workspace::UsageError, "--step is only for `step done`.")
+        expect { cli.run(["step", "expect-fail", "--step", "lint", "--", "spec/a_spec.rb"]) }.to raise_error(Workspace::UsageError, "--step is not for `step expect-fail`.")
       end
 
       it "refuses a summary that is not valid text, and records nothing" do
