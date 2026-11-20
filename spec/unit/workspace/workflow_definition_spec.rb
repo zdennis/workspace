@@ -654,7 +654,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       "input Task: required must be true or false",
       "step id \"Build\" must be lowercase letters, digits, '-' and '_'",
       "step Build needs exactly one of prompt and prompt_file",
-      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout, max_attempts, review, after)",
+      "step test has unknown key retries (known: title, prompt, prompt_file, include, produces, status, gate, guard, require, uses, on_fail, context, timeout, on_timeout, max_attempts, review, after, execution_mode)",
       "step test: prompt uses {{inputs.nope}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: prompt uses {{secret}}, which nothing supplies (known: {{workspace}}, {{branch}}, {{artifacts}}, {{run}}, {{inputs.Task}})",
       "step test: produces \"../escape.md\" must be a path under the run's artifacts directory",
@@ -1150,10 +1150,10 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(definition.to_h["groups"]).to eq("checks" => {"title" => "Checks", "checkout" => "shared", "on_fail" => "stop", "steps" => %w[lint test]})
     end
 
-    it "gives each sibling an ordinary step's defaults" do
+    it "gives each sibling an ordinary step's defaults, plus its resolved execution mode" do
       sibling = parse(grouped([["lint"]])).steps[1]
       plain = parse("steps:\n  lint:\n    prompt: P\n    produces: [lint.md]\n").steps.first
-      expect(sibling).to eq(plain.merge("group" => "checks"))
+      expect(sibling).to eq(plain.merge("group" => "checks", "execution_mode" => "subagents"))
     end
 
     it "tags the siblings the way a run's placement rule reads them" do
@@ -1213,6 +1213,82 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(problems("steps:\n  checks:\n    fan_out: {}\n")).to include(a_string_matching(/fan_out must be a mapping/))
     end
 
+    describe "execution_mode" do
+      it "stores the group's mode when set, and leaves the key out when not" do
+        expect(parse(grouped([["lint"]], group_extra: "    execution_mode: subagents\n")).to_h["groups"]["checks"])
+          .to include("execution_mode" => "subagents")
+        expect(parse(grouped([["lint"]], group_extra: "    execution_mode: process_separation\n")).to_h["groups"]["checks"])
+          .to include("execution_mode" => "process_separation")
+        expect(parse(grouped([["lint"]])).to_h["groups"]["checks"]).not_to have_key("execution_mode")
+      end
+
+      it "refuses a mode that is not one of the two" do
+        expect(problems(grouped([["lint"]], group_extra: "    execution_mode: threads\n")))
+          .to include('step checks: execution_mode must be subagents or process_separation, got "threads"')
+        expect(problems(grouped([["lint"]], group_extra: "    execution_mode: 1\n")))
+          .to include(a_string_matching(/execution_mode must be subagents or process_separation, got 1/))
+      end
+
+      it "refuses a sibling's timeout: naming the sibling that has it, and skips the check for a bad mode" do
+        siblings = [["lint"], ["test", "        timeout: 5m\n"]]
+        expect(problems(grouped(siblings, group_extra: "    execution_mode: subagents\n")))
+          .to include(a_string_matching(/\Astep test \(in fan_out group checks\): a sibling that runs as a sub-agent of the run's pane can't take timeout:/))
+        # A mode nothing validates still resolves to the default, which refuses the sibling's timeout: too.
+        expect(problems(grouped(siblings, group_extra: "    execution_mode: threads\n")))
+          .to include(a_string_matching(/execution_mode must be subagents or process_separation, got "threads"/))
+          .and include(a_string_matching(/step test \(in fan_out group checks\): a sibling that runs as a sub-agent of the run's pane can't take timeout:/))
+      end
+
+      it "reads a sibling with no resolved mode as today's per-pane sibling, and a resolved one by its mode" do
+        # A run stored before the key existed has siblings without a resolved mode: they keep today's per-pane
+        # behavior.
+        expect(described_class.subagent_sibling?("id" => "lint", "group" => "checks")).to be(false)
+        expect(described_class.subagent_sibling?("id" => "lint", "group" => "checks", "execution_mode" => "subagents")).to be(true)
+        expect(described_class.subagent_sibling?("id" => "lint", "group" => "checks", "execution_mode" => "process_separation")).to be(false)
+        expect(described_class.subagent_sibling?("id" => "lint", "execution_mode" => "subagents")).to be(false)
+        expect(described_class.subagent_sibling?(nil)).to be(false)
+      end
+
+      it "refuses a sibling's timeout: under a subagents group, and accepts it under process_separation" do
+        sibling = [["lint", "        timeout: 5m\n"]]
+        expect(problems(grouped(sibling, group_extra: "    execution_mode: subagents\n")))
+          .to include(a_string_matching(/\Astep lint \(in fan_out group checks\): a sibling that runs as a sub-agent of the run's pane can't take timeout:/))
+        expect(problems(grouped(sibling, group_extra: "    execution_mode: process_separation\n"))).to be_empty
+      end
+
+      describe "per-sibling override" do
+        it "records the sibling's own mode when it sets one, and the group's resolved mode when it does not" do
+          overridden = parse(grouped([["lint", "        execution_mode: process_separation\n"]], group_extra: "    execution_mode: subagents\n")).steps[1]
+          expect(overridden["execution_mode"]).to eq("process_separation")
+          inheriting = parse(grouped([["lint"]], group_extra: "    execution_mode: subagents\n")).steps[1]
+          expect(inheriting["execution_mode"]).to eq("subagents")
+        end
+
+        it "refuses a sibling mode that is not one of the two" do
+          found = problems(grouped([["lint", "        execution_mode: threads\n"]], group_extra: "    execution_mode: subagents\n"))
+          expect(found).to include('step lint: execution_mode must be subagents or process_separation, got "threads"')
+        end
+
+        it "refuses context: on a subagent sibling, and accepts it on a process_separation sibling" do
+          expect(problems(grouped([["lint", "        context: continue\n"]], group_extra: "    execution_mode: subagents\n")))
+            .to include(a_string_matching(/\Astep lint: a sibling that runs as a sub-agent of the run's pane can't set context:/))
+          expect(problems(grouped([["lint", "        context: continue\n"]], group_extra: "    execution_mode: process_separation\n"))).to be_empty
+          expect(problems(grouped([["lint", "        context: continue\n        execution_mode: process_separation\n"]], group_extra: "    execution_mode: subagents\n")))
+            .to be_empty
+        end
+
+        it "lets a process_separation sibling inside a subagents group keep its timeout:" do
+          sibling = [["lint", "        timeout: 5m\n        execution_mode: process_separation\n"]]
+          expect(problems(grouped(sibling, group_extra: "    execution_mode: subagents\n"))).to be_empty
+        end
+
+        it "refuses execution_mode: on a step outside every group" do
+          expect(problems("steps:\n  lint:\n    prompt: P\n    produces: [lint.md]\n    execution_mode: subagents\n"))
+            .to include(a_string_matching(/\Astep lint: execution_mode only applies to a fan_out sibling/))
+        end
+      end
+    end
+
     describe "goto scoping" do
       it "lets a sibling go back to an earlier sibling" do
         definition = parse(grouped([["lint"], ["test", "        on_fail: {goto: lint, max: 2}\n"]]))
@@ -1266,7 +1342,7 @@ RSpec.describe Workspace::WorkflowDefinition do
 
     it "refuses a group with a body of its own" do
       found = problems(grouped([["lint"]], group_extra: "    prompt: P\n    produces: [x.md]\n"))
-      expect(found).to include("step checks is a fan_out group, which has no body of its own: it takes only title, fan_out, checkout, on_fail, got prompt, produces")
+      expect(found).to include("step checks is a fan_out group, which has no body of its own: it takes only title, fan_out, checkout, on_fail, execution_mode, got prompt, produces")
     end
 
     it "parses a group's on_fail: stop and refuses its goto" do

@@ -37,6 +37,11 @@ module Workspace
     # under way the step is the first sibling whose retry is due ({WorkflowTransitions.step_views}, the cursor's first),
     # and only that sibling's pane is replaced: the others are left as they are.
     #
+    # A sibling that runs as a sub-agent of the run's own pane (`execution_mode: subagents`) has no pane to replace: the claim's
+    # restart refusal ({WorkflowDecisions#restart_refusal}, code `subagent_step_no_pane`) gives its retry up before any pane is
+    # split, so the person sees why. Re-delivering the composed group line was the larger change, and would type a fresh
+    # conversation over the sibling's running siblings.
+    #
     # @param run [Workspace::WorkflowRun] the stored run, one {WorkflowTransitions.wakeable?} reads as `:infra_retry`
     # @return [Array, Symbol] [:restarted, n, pane]; [:gave_up, reason]; what {WorkflowEngine#release_infra_retry}
     #   answers for a working agent (:released: the claim given back, due again one wait later); :not_claimed (the restart found the retry no longer claimed by this

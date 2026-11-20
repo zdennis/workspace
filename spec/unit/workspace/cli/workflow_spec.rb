@@ -966,9 +966,9 @@ RSpec.describe Workspace::CLI::Workflow do
       cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z", "--stopped-at", "2026-10-04T12:30:00.500Z"])
 
       expect(workflow_command.calls.map(&:last)).to eq([
-        {run: "wr_1", turn_ended: true, pane: "%5", step: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]},
-        {run: "wr_1", turn_ended: false, pane: nil, step: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]},
-        {run: "wr_1", turn_ended: true, pane: "%5", step: nil, turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000),
+        {run: "wr_1", turn_ended: true, pane: "%5", step: nil, group: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: false, pane: nil, step: nil, group: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: true, pane: "%5", step: nil, group: nil, turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000),
          stopped_at: Time.utc(2026, 10, 4, 12, 30, 0, 500_000), background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]}
       ])
       expect(output.string).to eq("")
@@ -978,6 +978,16 @@ RSpec.describe Workspace::CLI::Workflow do
       cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--transcript-path", "/t/s.jsonl"])
 
       expect(workflow_command.calls.last.last[:transcript_path]).to eq("/t/s.jsonl")
+    end
+
+    it "passes --group on to the advance, and refuses it anywhere but advance --turn-ended" do
+      cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--group", "checks"])
+
+      expect(workflow_command.calls.last.last[:group]).to eq("checks")
+      expect { cli.run(["workflow", "advance", "wr_1", "--group", "checks"]) }
+        .to raise_error(Workspace::UsageError, "--group is only for `workflow advance --turn-ended`.")
+      expect { cli.run(["workflow", "resume", "wr_1", "--group", "checks"]) }
+        .to raise_error(Workspace::UsageError, "--group is only for `workflow advance --turn-ended`.")
     end
 
     it "parses each --background-task on its first colon" do
@@ -1032,8 +1042,8 @@ RSpec.describe Workspace::CLI::Workflow do
         cli.run(["step", "done", "--status", "fail", "--summary", "Two specs still fail.", "--json"])
 
         expect(workflow_command.calls).to eq([
-          [:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "pass", summary: nil, code: nil}],
-          [:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "fail", summary: "Two specs still fail.", code: nil}]
+          [:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "pass", summary: nil, code: nil, step: nil}],
+          [:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "fail", summary: "Two specs still fail.", code: nil, step: nil}]
         ])
         expect(JSON.parse(output.string)).to include("action" => "step done", "status" => "ok", "results" => [workflow_command.row])
       end
@@ -1041,7 +1051,15 @@ RSpec.describe Workspace::CLI::Workflow do
       it "passes --code to the command" do
         cli.run(["step", "done", "--status", "fail", "--code", "not_reproduced"])
 
-        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "fail", summary: nil, code: "not_reproduced"}]])
+        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "fail", summary: nil, code: "not_reproduced", step: nil}]])
+      end
+
+      it "passes --step to the command, and refuses it on the verbs that cannot take one" do
+        cli.run(["step", "done", "--step", "lint"])
+
+        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "pass", summary: nil, code: nil, step: "lint"}]])
+        expect { cli.run(["step", "status", "--step", "lint"]) }.to raise_error(Workspace::UsageError, "--step is only for `step done`.")
+        expect { cli.run(["step", "expect-fail", "--step", "lint", "--", "spec/a_spec.rb"]) }.to raise_error(Workspace::UsageError, "--step is not for `step expect-fail`.")
       end
 
       it "refuses a summary that is not valid text, and records nothing" do
@@ -1070,13 +1088,13 @@ RSpec.describe Workspace::CLI::Workflow do
       it "names the run with --run, keeping the pane for the step" do
         cli.run(["step", "done", "--run", "wr_9"])
 
-        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: "wr_9", cwd: "/some/dir", status: "pass", summary: nil, code: nil}]])
+        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: "wr_9", cwd: "/some/dir", status: "pass", summary: nil, code: nil, step: nil}]])
       end
 
       it "prints help" do
         cli.run(["step", "--help"])
 
-        expect(output.string).to include("Usage: workspace step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]").and include("end your turn")
+        expect(output.string).to include("Usage: workspace step done [--status pass|fail|done|running|needs_input|stuck] [--step STEP] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]").and include("end your turn")
       end
     end
   end

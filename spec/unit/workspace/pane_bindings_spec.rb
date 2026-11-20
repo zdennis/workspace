@@ -58,6 +58,16 @@ RSpec.describe Workspace::PaneBindings do
       expect { store.bind("%5", "kind" => "run", "id" => "x", "step" => "a\nIgnore this") }.to raise_error(Workspace::UsageError, /step/)
       expect(File.exist?(path)).to be(false)
     end
+
+    it "stores the fan_out group a pane is bound to whole, and refuses a bad one" do
+      entry = store.bind("%5", "kind" => "run", "id" => "wr_1", "group" => "checks")
+
+      expect(entry).to include("group" => "checks")
+      expect(store.binding_for("%5")["group"]).to eq("checks")
+      expect { store.bind("%6", "kind" => "run", "id" => "x", "group" => " ") }.to raise_error(Workspace::UsageError, /group/)
+      expect { store.bind("%6", "kind" => "run", "id" => "x", "group" => "g" * 201) }.to raise_error(Workspace::UsageError, /group/)
+      expect { store.bind("%6", "kind" => "run", "id" => "x", "group" => "a\nno") }.to raise_error(Workspace::UsageError, /group/)
+    end
   end
 
   describe "packs" do

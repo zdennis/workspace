@@ -1463,22 +1463,31 @@ A file that is not there is listed with `exists` false and `bytes` null. A symli
 
 ### Running steps in parallel with `fan_out`
 
-A step whose body is a `fan_out:` mapping is a **group**: its siblings (sibling id => an ordinary step body) start together, each in its own author pane, and the run moves on when all of them have passed (the join). Sibling ids are step ids, so they are unique across the whole definition.
+A step whose body is a `fan_out:` mapping is a **group**: its siblings (sibling id => an ordinary step body) start together, and the run moves on when all of them have passed (the join). Sibling ids are step ids, so they are unique across the whole definition. How a sibling runs is the group's **execution mode**: by default each sibling runs as a **sub-agent of the run's own pane** — one agent, one pane, no author panes spawned — and `execution_mode: process_separation` keeps the older behavior of one pane per sibling.
 
 ```yaml
 steps:
   read:
     title: Read in parallel
     checkout: shared        # shared (default) or shared-edit
+    execution_mode: subagents   # subagents (default) or process_separation
     on_fail: stop           # the only value a group takes
     fan_out:
       code:  { prompt: "...", produces: [code.md],  guard: unchanged }
       tests: { prompt: "...", produces: [tests.md], guard: unchanged }
 ```
 
-A group takes only `title`, `fan_out`, `checkout` and `on_fail: stop`. A sibling takes the ordinary step keys (`prompt`, `produces`, `status`, `require`, `guard`, `gate`, `timeout`, `max_attempts`, `on_fail`, `include`, ...). The shipped [`explore-parallel`](#the-explore-parallel-preset) preset is the worked example.
+A group takes only `title`, `fan_out`, `checkout`, `execution_mode` and `on_fail: stop`. A sibling takes the ordinary step keys (`prompt`, `produces`, `status`, `require`, `guard`, `gate`, `timeout`, `max_attempts`, `on_fail`, `include`, ...) plus `execution_mode` of its own, which overrides the group's. A sibling with no mode of its own runs with its group's. The shipped [`explore-parallel`](#the-explore-parallel-preset) preset is the worked example.
 
-**The checkout.** Siblings share the run's one checkout. Under `checkout: shared` each sibling must leave it alone (`guard: unchanged`, which is also what no `guard:` gets), and no two may name the same `produces` file; validate refuses a `guard: config` sibling and a shared `produces`. `checkout: shared-edit` drops those checks and adds the warning `fan_out_edits_unverified`: the engine can't tell whether the siblings edit disjoint paths, so give each its own paths in its prompt and let the checks of the step after the group be the safety net.
+**The execution mode.** `subagents` (the default) runs every sibling as a sub-agent of the run pane's own Claude Code session. The group gets **one composed delivery line**, typed into the run pane after a `/clear` (always fresh, whatever a sibling says): it names each sibling's prompt file, and the pane's agent runs each as its own sub-agent and reports each step as it finishes with `step done --step SIBLING`. The pane's turn end is the fallback that judges every sibling still without an outcome. The siblings share the run pane's binding (it names the group, not one step), its `max_attempts` purse and its usage record: the group's first attempt to end claims the session's usage, and a concurrent sibling shares it rather than reading the same transcript again. A sibling that runs as a sub-agent:
+
+- takes no `timeout:` of its own (the pane agent schedules its siblings, so a sibling wall clock cannot be enforced); the run's own `timeout:` bounds the group;
+- takes no `context:` (it has no pane of its own; the group's one delivery is always fresh);
+- is not restartable or movable (`resume --restart-step`, `--pane` and an automatic infra retry refuse it, `subagent_step_no_pane`), and `resume`'s failure loop re-attempts it by re-delivering a composed line naming only it.
+
+`subagents` needs Claude Code, which only the run pane's agent launches: `workflow start` (and `workflow run`) refuse a workflow with a subagent sibling when the project's main agent is not `claude` (code `subagents_needs_claude`). This is a new restriction — until the mode existed, every grouped workflow ran in an author pane per sibling and worked for any agent. Set `execution_mode: process_separation` (per group or per sibling) to keep one pane per sibling; those siblings keep their own `context:`, `timeout:` and pane machinery exactly as before, for every agent kind. A group may mix: a `process_separation` sibling of a `subagents` group spawns its own pane amid the subagent siblings, and the join waits on every sibling's state regardless of how it ran.
+
+**The checkout.** Siblings share the run's one checkout. Under `checkout: shared` each sibling must leave it alone (`guard: unchanged`, which is also what no `guard:` gets), and no two may name the same `produces` file; validate refuses a `guard: config` sibling and a shared `produces`. `checkout: shared-edit` drops those checks and adds the warning `fan_out_edits_unverified`: the engine can't tell whether the siblings edit disjoint paths, so give each its own paths in its prompt and let the checks of the step after the group be the safety net. The checkout checks are mode-agnostic: a subagent sibling editing a shared checkout is exactly as unverified as today.
 
 **What PR 1 refuses on a sibling.** These are decisions, each refused by `validate` with its reason:
 
@@ -1495,13 +1504,13 @@ A group takes only `title`, `fan_out`, `checkout` and `on_fail: stop`. A sibling
 
 **`status`, `needs-me` and alerts** show one row per sibling; a draining group shows its siblings.
 
-**In `--json`.** Needs `workflow` 59. In `workflow status --json`, each entry of `steps` that belongs to a group adds:
+**In `--json`.** Needs `workflow` 60. In `workflow status --json`, each entry of `steps` that belongs to a group adds:
 
 - `group`: the group's id.
 - `group_state`: where the group stands, the same for every sibling. `pending` (no sibling has started), `running` (a sibling is at work), `waiting` (nothing runs and a sibling is held: a gate, a hold, a backoff), `draining` (a sibling failed and the group is not yet decided: another sibling is still at work or held, or a deferred failure move or a relay run is owed), `failed` (every sibling is at rest and one failed; the join waits for a person) or `passed` (every sibling passed and none is held).
 - `looping`: `true` while a deferred failure move or a relay run is owed this sibling, else `false`.
 
-A sibling that is under way also carries what `current` shows of a step: `attempt`, `reason`, `flags` and the optional keys, so each sibling reads on its own. A run whose definition has groups adds a run-level `groups` map, `{GROUP_ID: {"state": GROUP_STATE, "steps": [SIBLING_IDS]}}`; a run with no groups has no `groups` key. Steps outside a group carry none of these keys. `workflow status --needs-me --json` rows for a step of a group add `group` and `group_state` too (absent for any other step), and a run can have several rows, so key them on `run` and `step` together.
+A sibling that is under way also carries what `current` shows of a step: `attempt`, `reason`, `flags` and the optional keys, so each sibling reads on its own. A subagent sibling's `reason` pane is the run's own pane (shared with the group's other subagent siblings). A run whose definition has groups adds a run-level `groups` map, `{GROUP_ID: {"state": GROUP_STATE, "steps": [SIBLING_IDS]}}`; a run with no groups has no `groups` key. Steps outside a group carry none of these keys. `workflow status --needs-me --json` rows for a step of a group add `group` and `group_state` too (absent for any other step), and a run can have several rows, so key them on `run` and `step` together.
 
 **In `workflow sweep --json`.** A run draining a group yields one row per sibling under way, so several rows of a pass can share one `run_id`; `step` tells them apart. Do not key rows on `run_id` alone.
 
@@ -1658,7 +1667,7 @@ workspace workflow start explore --prompt "What would make uploads resumable?"
 
 ### The `explore-parallel` preset
 
-`explore-parallel` is [`explore`](#the-explore-preset)'s read-only research with one `fan_out` group: `read` runs the siblings `code` and `tests` side by side in two panes (each `guard: unchanged`, each writing its own file), then `report` joins `code.md` and `tests.md` behind an `approve` gate. Its only input is `task`. It is the example for [`fan_out`](#running-steps-in-parallel-with-fan_out); `workflow simulate` and `workflow graph` refuse it.
+`explore-parallel` is [`explore`](#the-explore-preset)'s read-only research with one `fan_out` group: `read` runs the siblings `code` and `tests` as sub-agents of the run pane's own session (the default execution mode; each `guard: unchanged`, each writing its own file), then `report` joins `code.md` and `tests.md` behind an `approve` gate. Its only input is `task`. It is the example for [`fan_out`](#running-steps-in-parallel-with-fan_out); `workflow simulate` and `workflow graph` refuse it.
 
 ```
 workspace workflow validate lib/workflows/explore-parallel.yml

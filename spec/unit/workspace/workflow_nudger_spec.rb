@@ -136,6 +136,16 @@ RSpec.describe Workspace::WorkflowNudger do
       expect(spawned.first.first).to eq([RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--step", "lint", "--stopped-at", "2026-10-04T12:30:00.000Z"])
     end
 
+    it "hands the fan_out group a pane is bound to whole to the advance, when the binding names no step" do
+      allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
+      allow(panes).to receive(:step_on).with("%5").and_return(nil)
+      allow(panes).to receive(:group_on).with("%5").and_return("checks")
+
+      nudger.turn_ended("app", "%5")
+
+      expect(spawned.first.first).to eq([RbConfig.ruby, "/ws/bin/workspace", "workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--group", "checks", "--stopped-at", "2026-10-04T12:30:00.000Z"])
+    end
+
     it "starts `workflow advance` for the run the pane is bound to, logging beside the daemon" do
       allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})
 

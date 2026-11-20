@@ -100,12 +100,18 @@ module Workspace
     #   cursor's or not) the turn is decided for that step, against that step's own pane; for any other step, or none,
     #   the cursor's step is decided as always. Left nil, a pane bound to a sibling names its step itself.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @param group [String, nil] the fan_out group a turn ended for (the run pane's group binding): every sibling
+    #   still without an outcome is judged, in order, and the group's join runs as each decision lands
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, step: nil)
+    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, step: nil, group: nil)
       follow = nil
       status_report = read_status_report(transcript_path)
       run = @change.call(run_id, actor: actor, cause: "turn_ended") do |read, ctx|
+        if group && step.nil?
+          follow = ctx
+          next group_turn_ended(read, group, pane, turn_started, stopped_at, background, status_report, ctx)
+        end
         read = on_sibling(read, step, pane)
         stored = read.to_h
         next if stored["parked"]
@@ -579,8 +585,14 @@ module Workspace
         next unless stored["current"] == check["step"] && state["state"] == "checking" && attempt["n"] == check["attempt"]
         if check["proof"]
           apply_proof(stored, attempt, check, result, ctx)
-          following = ctx.check
           review = ctx.review
+          following = ctx.check
+          if ctx.check.nil?
+            # The proof chain finished the sibling's judging (it passed, failed, or queued nothing): the rest of
+            # the group turn this judging was part of is judged on top of it.
+            following = judge_group_turn_pending(stored, ctx)
+            review = ctx.review
+          end
           next WorkflowRun.from_h(stored)
         end
         attempt["check"].merge!("ended_at" => now_iso, "exit_code" => result[:exit_code], "timed_out" => result[:timed_out],
@@ -588,8 +600,13 @@ module Workspace
         event(stored, "check_finished", "step" => check["step"], "attempt" => check["attempt"], "exit_code" => result[:exit_code])
         if result[:exit_code] == 0
           passed = pass_step(stored, ctx)
+          # The rest of the group turn this check was part of: the next sibling's judging, whose own outside
+          # check (when it needs one) chains through this loop. Judged on top of the pass, and returned whole —
+          # only what the block returns is stored.
+          work = WorkflowRun.from_h(passed).thawed
+          following = judge_group_turn_pending(work, ctx) || following
           review = ctx.review
-          next passed
+          next WorkflowRun.from_h(work)
         end
         code = if result[:timed_out]
           "check_timed_out"
@@ -601,7 +618,12 @@ module Workspace
         if code == "check_failed"
           failure = failure.merge(reported_check_code(step_def(stored)["status"], check["log"]) || {})
         end
-        @progress.fail_step(stored, failure, ctx: ctx)
+        judged = @progress.fail_step(stored, failure, ctx: ctx)
+        # A failed sibling's group move is deferred to its join; the turn's other siblings are still judged, so
+        # their outcomes stand for the person the run waits for.
+        work = WorkflowRun.from_h(judged).thawed
+        following = judge_group_turn_pending(work, ctx) || following
+        next WorkflowRun.from_h(work)
       end
       [run, following, review]
     end
@@ -723,6 +745,69 @@ module Workspace
     def bound_pane(run, step_id = nil)
       return @panes.pane_of(run["id"]) || run["pane"] unless WorkflowRun.step_scoped?(run, step_id)
       @panes.pane_of(run["id"], step: step_id) || WorkflowRun.slot(run, step_id, "pane")
+    end
+
+    # The turn-end of a pane bound to a fan_out group whole (the run pane working on its subagent siblings): every
+    # sibling still without an outcome is judged in order — the report its agent gave with `step done --step` first
+    # (judge consumes it), else its files and checks — and the group's join runs as each decision lands. A sibling
+    # whose attempt never started, or whose turn window does not overlap this one, is left as it is. The first
+    # sibling whose judging needs a check outside the lock hands the rest to the run's `group_turn` mark: when the
+    # check applies ({#apply_check}), the next sibling is judged and the mark carries what is still open.
+    def group_turn_ended(read, group, pane, turn_started, stopped_at, background, status_report, ctx)
+      stored = read.to_h
+      return read if stored["parked"]
+      ids = WorkflowDefinition.group_steps(stored["definition"])[group.to_s] || []
+      # One check, against the group's binding: the run pane's own — never a sibling's, which the cursor's
+      # step-scoped read would name. The pane the turn ended in is the run's recorded pane or, when a restore
+      # moved the binding, the pane the live binding now names.
+      run_pane = stored["pane"] || @panes.pane_of(stored["id"])
+      bound = @panes.pane_of(stored["id"])
+      return read if pane && pane != run_pane && pane != bound
+      work = WorkflowRun.from_h(read).thawed
+      work.delete("group_turn")
+      judge_siblings(work, ids, turn_started, stopped_at, background, status_report, ctx)
+      WorkflowRun.from_h(work)
+    end
+
+    # Judges each subagent sibling of +ids+ that is still running with an open attempt, in order, until one's
+    # judging needs a check outside the lock: the rest — with the turn's own window and background, which their
+    # judging still reads — are named in the run's `group_turn` mark for {#apply_check} to pick up. A
+    # `process_separation` sibling of a mixed group is never judged here: it works in its own pane, and its own
+    # turn's end judges it.
+    def judge_siblings(work, ids, turn_started, stopped_at, background, status_report, ctx)
+      rest = Array(ids).select { |id| WorkflowRun.pane_free?(work, id) }
+      while (id = rest.shift)
+        state = work["steps"][id]
+        next unless state.is_a?(Hash) && state["state"] == "running"
+        attempt = state["attempts"].last
+        next unless attempt.is_a?(Hash)
+        next if turn_started && turn_started < Time.iso8601(attempt["started_at"])
+        next if stopped_at && stopped_at < Time.iso8601(attempt["started_at"])
+        work["current"] = id
+        judge(work, ctx, turn_started, background, status_report: status_report)
+        if ctx.check
+          group = work["definition"]["steps"].find { |each| each["id"] == id }&.fetch("group", nil)
+          unless rest.empty?
+            work["group_turn"] = {"group" => group || id, "siblings" => rest, "turn_started" => turn_started&.utc&.iso8601(3),
+              "stopped_at" => stopped_at&.utc&.iso8601(3), "background" => background}
+          end
+          return
+        end
+      end
+      work.delete("group_turn")
+    end
+
+    # The rest of a group turn's judging, after one sibling's outside check applied: the run's `group_turn` mark
+    # names the siblings still open, with the original turn's window and background. Returns the next sibling's
+    # check for {finish_check}'s chain to run, when its judging needs one; nil once every sibling is judged (their
+    # decisions already ran the group's join).
+    def judge_group_turn_pending(work, ctx)
+      mark = work["group_turn"]
+      return nil unless mark.is_a?(Hash) && mark["siblings"].is_a?(Array)
+      times = [mark["turn_started"], mark["stopped_at"]].map { |each| each.is_a?(String) ? Time.iso8601(each) : nil }
+      judge_siblings(work, mark["siblings"], times[0], times[1], Array(mark["background"]), nil, ctx)
+      work.delete("group_turn") unless ctx.check
+      ctx.check
     end
 
     # +read+ with the cursor on the fan_out sibling a turn end or report belongs to, so the decision below reads and

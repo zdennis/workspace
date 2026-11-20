@@ -23,8 +23,9 @@ max_attempts: 6
 steps:
   read:
     title: Read in parallel
-    # Both siblings start together, each in its own pane, on the one checkout. They only read it,
-    # so each keeps the default `guard: unchanged`, and each writes its own file.
+    # Both siblings start together, as sub-agents of the run's own pane (the default execution mode), on the one
+    # checkout. They only read it, so each keeps the default `guard: unchanged`, and each writes its own file.
+    # A subagent sibling takes no `timeout:` of its own — the run's own `timeout:` bounds the group.
     fan_out:
       code:
         title: Read the code
@@ -32,7 +33,6 @@ steps:
           Answer the brief from the code only. Write the findings, with path:line evidence, to {{artifacts}}/code.md.
         produces: [code.md]
         guard: unchanged
-        timeout: 60m
       tests:
         title: Read the tests
         prompt: |
@@ -40,7 +40,6 @@ steps:
           to {{artifacts}}/tests.md.
         produces: [tests.md]
         guard: unchanged
-        timeout: 60m
 
   report:
     title: Report

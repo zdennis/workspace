@@ -2051,4 +2051,45 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(row["steps"].flat_map(&:keys)).not_to include("group", "group_state", "looping")
     end
   end
+
+  describe "a fan_out sibling that runs as a sub-agent of the run's pane" do
+    def subagents_run
+      run = store.create({
+        "workflow" => "ci", "title" => "CI", "workspace" => "app", "project" => "app", "worktree" => "/src/app", "task" => "t1",
+        "inputs" => {}, "state" => "running", "created_at" => "2026-10-04T12:00:00Z", "started_at" => "2026-10-04T12:00:00Z", "ended_at" => nil,
+        "current" => "lint", "pane" => "%5", "loops" => {}, "artifacts_dir" => "/src/app/.workflow/wr",
+        "definition" => {"steps" => [{"id" => "lint", "title" => "Lint", "group" => "checks", "execution_mode" => "subagents"},
+          {"id" => "spec", "title" => "Spec", "group" => "checks", "execution_mode" => "subagents"}], "groups" => {"checks" => {"steps" => %w[lint spec]}}},
+        "steps" => {"lint" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => "2026-10-04T12:30:00Z"}]},
+                    "spec" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => "2026-10-04T12:30:00Z"}]}}
+      })
+      panes.bind_group(workspace: "app", pane: "%5", run_id: run["id"], group: "checks")
+      run
+    end
+
+    it "reads the run's pane for the cursor's sibling and shows it working, not a gone pane" do
+      subagents_run
+
+      row = status.run("wr_1")["runs"].first
+
+      expect(row["pane"]).to eq("%5")
+      expect(row["current"]).to include("step" => "lint", "state" => "running", "reason" => nil)
+    end
+
+    it "reads a gone run pane as the sibling's pane_gone reason" do
+      subagents_run
+      panes.stale << "%5"
+
+      expect(status.run("wr_1")["runs"].first["current"]["reason"]).to include("code" => "pane_gone")
+    end
+
+    it "offers no --restart-step, which a sibling without a pane of its own would be refused" do
+      run = subagents_run.to_h
+      run["steps"]["lint"]["attempts"] = [{"n" => 1, "started_at" => "2026-10-04T12:30:00Z", "stalls" => [{"cause" => "pane_gone", "since" => "2026-10-04T12:40:00Z"}]}]
+
+      expect(described_class.restartable?(run)).to be(false)
+      run["definition"]["steps"].each { |each| each["execution_mode"] = "process_separation" }
+      expect(described_class.restartable?(run)).to be(true)
+    end
+  end
 end

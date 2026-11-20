@@ -175,6 +175,7 @@ module Workspace
             options[:prompt_timeout] = @common.parse_duration_option("--prompt-timeout", v, positive: true)
           end
           opts.on("--turn-ended", "advance: a turn ended in the run's pane") { options[:turn_ended] = true }
+          opts.on("--group GROUP", "advance --turn-ended: the fan_out group the run pane is bound to whole; the turn end judges every sibling still without an outcome") { |v| options[:group] = v }
           opts.on("--turn-started AT", "advance: when that turn began (ISO 8601)") { |v| options[:turn_started] = v }
           opts.on("--stopped-at AT", "advance: when the daemon saw that turn end (ISO 8601)") { |v| options[:stopped_at] = v }
           opts.on("--background-task TYPE:ID", "advance: a background task still going when the turn ended (repeatable)") { |v| options[:background] << workflow_background_task(v) }
@@ -394,7 +395,7 @@ module Workspace
           code = outcome[:exit_code] if outcome.is_a?(Hash)
           invocation.exit_handler.exit(code) if code && !code.zero?
         when "advance"
-          @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], step: options[:step], turn_started: workflow_time(options[:turn_started], "--turn-started"),
+          @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], step: options[:step], group: options[:group], turn_started: workflow_time(options[:turn_started], "--turn-started"),
             stopped_at: workflow_time(options[:stopped_at], "--stopped-at"), background: options[:background], transcript_path: options[:transcript_path], caller_pane: ENV["TMUX_PANE"])
         when "run"
           name = workflow_workspace(options)
@@ -570,6 +571,7 @@ module Workspace
       def workflow_gate_options(subcommand, options)
         gated = %w[approve reject].include?(subcommand)
         raise UsageError, "--step and --attempt are for `workflow approve` and `workflow reject`." if !gated && (options[:attempt] || (options[:step] && !(subcommand == "advance" && options[:turn_ended])))
+        raise UsageError, "--group is only for `workflow advance --turn-ended`." if options[:group] && !(subcommand == "advance" && options[:turn_ended])
         raise UsageError, "--note-sha256 is for `workflow approve`." if options[:note_sha256] && subcommand != "approve"
         raise UsageError, "--attempt needs --step: the attempt is of the gated step." if options[:attempt] && !options[:step]
         if options[:note_sha256] && !options[:note_sha256].match?(/\A[0-9a-f]{64}\z/)
@@ -629,6 +631,7 @@ module Workspace
           opts.separator "Run `workspace step VERB --help` for a verb's options."
           opts.separator ""
           opts.on("--status STATUS", "done: pass (default), fail, or a stated status: done, running, needs_input, stuck") { |v| options.update(status: v, status_given: true) }
+          opts.on("--step STEP", "done: the fan_out sibling to report on, when this pane is bound to its group") { |v| options[:step] = v }
           opts.on("--summary TEXT", "done: one line about what was done, or what is left") { |v| options[:summary] = v }
           opts.on("--code WORD", "done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)") { |v| options[:code] = v }
           opts.on("--run RUN_ID", "done, status: the run to work on when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous") { |v| options[:run_id] = v }
@@ -671,7 +674,7 @@ module Workspace
         elsif subcommand == "status"
           @workflow_command.step_status(pane: ENV["TMUX_PANE"], run_id: options[:run_id], cwd: @working_dir, json: options[:json])
         else
-          workflow_action(invocation, "step done", options) { @workflow_command.step_done(pane: ENV["TMUX_PANE"], run_id: options[:run_id], cwd: @working_dir, status: options[:status], summary: options[:summary], code: options[:code]) }
+          workflow_action(invocation, "step done", options) { @workflow_command.step_done(pane: ENV["TMUX_PANE"], run_id: options[:run_id], cwd: @working_dir, status: options[:status], summary: options[:summary], code: options[:code], step: options[:step]) }
         end
       rescue OptionParser::ParseError, UsageError => e
         raise unless @common.json_requested?(options[:json], given)
@@ -681,10 +684,11 @@ module Workspace
       # Refuses a step flag the verb has no use for.
       def step_flags!(subcommand, options)
         if subcommand == "expect-fail"
-          used = {"--status" => options[:status_given], "--summary" => options.key?(:summary), "--code" => options.key?(:code), "--run" => options.key?(:run_id), "--json" => options[:json]}
+          used = {"--status" => options[:status_given], "--summary" => options.key?(:summary), "--code" => options.key?(:code), "--run" => options.key?(:run_id), "--step" => options.key?(:step), "--json" => options[:json]}
           flag = used.find { |_, set| set }&.first
           raise UsageError, "#{flag} is not for `step expect-fail`." if flag
         else
+          raise UsageError, "--step is only for `step done`." if options.key?(:step) && subcommand != "done"
           flag = {"--match-file" => :match_file, "--timeout" => :timeout}.find { |_, key| options.key?(key) }&.first
           raise UsageError, "#{flag} is only for `step expect-fail`." if flag
         end

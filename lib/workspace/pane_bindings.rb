@@ -19,8 +19,10 @@ module Workspace
     KINDS = %w[run review play reflection].freeze
 
     # Optional single-line text fields of an entry. `step` is also a key: {#pane_for} and {#unbind_all} take a `step:`
-    # to find or remove the binding of one step of a run.
-    TEXT_FIELDS = %w[step focus instructions artifacts].freeze
+    # to find or remove the binding of one step of a run. `group` names the fan_out group a run pane works on when
+    # the pane is bound to the group whole — its siblings run as the pane agent's own sub-agents, and no one sibling
+    # owns the pane.
+    TEXT_FIELDS = %w[step focus instructions artifacts group].freeze
 
     # Key prefix of a binding whose pane id was taken by another pane (see {#move}).
     PARKED = "slot:"

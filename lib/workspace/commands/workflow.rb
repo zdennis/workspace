@@ -1057,7 +1057,7 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] code `bound_pane` for a step with a guard or a status check, from a pane
       #   bound to the run or a process under it
-      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, transcript_path: nil, caller_pane: nil, step: nil)
+      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, transcript_path: nil, caller_pane: nil, step: nil, group: nil)
         stored = begin
           @store.run(run)
         rescue Workspace::Error
@@ -1074,7 +1074,11 @@ module Workspace
           @infra_retry.call(stored)
           return nil
         end
-        turn_ended ? @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || [], transcript_path: transcript_path, **step_kwarg(step)) : @engine.tick(run, actor: "daemon")
+        if turn_ended
+          @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || [], transcript_path: transcript_path, **step_kwarg(step), **(group ? {group: group} : {}))
+        else
+          @engine.tick(run, actor: "daemon")
+        end
         nil
       end
 
@@ -1088,9 +1092,11 @@ module Workspace
       # @param status [String] "pass" or "fail", or "done", "running", "needs_input" or "stuck" (stored as the step's stated status)
       # @param summary [String, nil]
       # @param code [String, nil] a word for why, matching {WorkflowDefinition::CODE_PATTERN} (`usage` otherwise)
+      # @param step [String, nil] the fan_out sibling to report on, when this pane is bound to its group; nil
+      #   reports the pane's own bound step
       # @return [Hash{String=>Object}] the action row
       # @raise [Workspace::Error] code `not_bound` outside a run's pane with no resolvable run, `review_pane_bound` in a review pane, `step_not_running`
-      def step_done(pane:, run_id: nil, cwd: nil, status: "pass", summary: nil, code: nil)
+      def step_done(pane:, run_id: nil, cwd: nil, status: "pass", summary: nil, code: nil, step: nil)
         raise UsageError, "--status must be one of #{REPORT_STATUSES.join(", ")}, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
         raise UsageError, "--code applies to pass/fail reports, not to --status #{status}." if code && WorkflowReportedStatus::STATES.include?(status)
         raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || WorkflowDefinition::CODE_PATTERN.match?(code)
@@ -1098,7 +1104,7 @@ module Workspace
           raise UsageError, "--code #{refusal}"
         end
         run_id = report_run!(run_id, pane, cwd)
-        reported = @engine.report(run_id, actor: "agent", status: status, summary: summary, code: code, **step_kwarg(caller_step(pane)))
+        reported = @engine.report(run_id, actor: "agent", status: status, summary: summary, code: code, **step_kwarg(report_step(run_id, pane, step)))
         @output.puts "Recorded #{status} for step #{reported["step"]} (attempt #{reported["attempt"]}) of run #{run_id}. " \
           "End your turn now; the step is decided when the turn ends."
         row = reported["reported"]
@@ -2154,6 +2160,20 @@ module Workspace
       # The step a pane's binding was made for, when it records one; the caller of a verb that acts on a step reads it
       # so a fan_out sibling's pane acts on its own step. Nil for an unbound pane or no pane.
       def step_kwarg(step) = step ? {step: step} : {}
+
+      # The step a `step done` report is about: the sibling --step names, when this pane is bound to a fan_out
+      # group whole; else the pane's own bound step (today's reading), or --step when the pane is bound to no
+      # step. A group-bound pane must name a sibling of its own group — missing or out of group is the same
+      # refusal, because the pane has no step of its own to fall back to.
+      def report_step(run_id, pane, step)
+        bound_group = @panes.respond_to?(:group_on) ? @panes.group_on(pane) : nil
+        return caller_step(pane) || step if bound_group.nil?
+        siblings = WorkflowDefinition.group_steps(@store.run(run_id).definition)[bound_group] || []
+        return step if siblings.include?(step)
+        named = siblings.any? ? " (one of #{siblings.join(", ")})" : ""
+        raise UsageError, "This pane is bound to the fan_out group #{bound_group} of run #{run_id}, not to one step. " \
+          "Report a sibling of the group with --step SIBLING#{named}, and end your turn once every sibling is reported."
+      end
 
       def caller_step(pane)
         return nil if pane.nil? || pane.to_s.empty? || !@panes.respond_to?(:step_on)

@@ -369,6 +369,7 @@ module Workspace
     def restart_refusal(run, bound: "unknown")
       run = WorkflowRun.from_h(run).to_h
       refuse_resume(run)
+      return subagent_refusal(run) if WorkflowRun.pane_free?(run, run["current"])
       refusal = WorkflowTransitions.restart_refusal(run, step_state(run), @clock.call, bound)
       return refusal if refusal
       refuse_budget(run, extra_attempts: nil, extra_tokens: nil)
@@ -543,7 +544,8 @@ module Workspace
     end
 
     # Where `pause --interrupt` presses: {#interrupt_target} of the cursor's step, then of each other fan_out sibling under way.
-    def interrupt_targets(run) = WorkflowTransitions.step_views(run).filter_map { |view| interrupt_target(view) }
+    # Subagent siblings share the run's pane, so a pane is pressed once, for the first sibling that names it.
+    def interrupt_targets(run) = WorkflowTransitions.step_views(run).filter_map { |view| interrupt_target(view) }.uniq { |press| press["pane"] }
 
     def refuse_already_paused(run)
       paused = run["paused"]
@@ -793,6 +795,7 @@ module Workspace
       stored = read.thawed
       retry_n = infra_retry && claimed_retry(stored, infra_retry)
       refuse_resume(stored)
+      raise subagent_refusal(stored) if WorkflowRun.pane_free?(stored, stored["current"])
       state = step_state(stored)
       refusal = WorkflowTransitions.restart_refusal(stored, state, @clock.call, bound || "unknown")
       raise refusal if refusal
@@ -824,6 +827,14 @@ module Workspace
       event(stored, "run_resumed", {"step" => step, "state" => "running", "restart_step" => true}.merge(retry_n ? {"infra_retry" => retry_n} : {}))
       dispatch(stored, ctx, "resume", context: "fresh", budgeted: true, retry_of: {"attempt" => n})
       WorkflowRun.from_h(stored)
+    end
+
+    # Why a sibling that runs as a sub-agent of the run's own pane is not restarted or moved to another pane: it has no
+    # pane of its own, and a fresh conversation in the run's pane would end its siblings' sub-agents with it.
+    def subagent_refusal(run)
+      step = run["current"]
+      Workspace::Error.new("Step #{step} of run #{run["id"]} runs as a sub-agent of the run's own pane (execution_mode: subagents), so there is no pane of its own to restart or move, and a fresh conversation in the run's pane would end its siblings' sub-agents too. Nothing was changed.",
+        code: "subagent_step_no_pane", details: {"run_id" => run["id"], "step" => step})
     end
 
     # A reboot recovery restarts only the attempt it saw, and never one whose infra retry another process has claimed.
@@ -1238,6 +1249,7 @@ module Workspace
     def left_alone(run, state, pane, turn_over) = WorkflowTransitions.left_alone(run, state, pane, turn_over, @clock.call, -> { bound_pane(run) }, alive: @holder_alive)
 
     def rebind(run, pane)
+      raise subagent_refusal(run) if WorkflowRun.pane_free?(run, run["current"])
       check_other_pane(pane, run["id"])
       if WorkflowRun.step_scoped?(run, run["current"])
         @panes.unbind(run["id"], step: run["current"])
@@ -1317,7 +1329,8 @@ module Workspace
     def event(run, type, data = {}) = @change.event(run, type, data)
     def bound_pane(run) = bound_pane_of(run) || WorkflowRun.slot(run, run["current"], "pane")
     # The pane bound for the cursor's step: a fan_out sibling's own binding, else the run's first author pane.
-    def bound_pane_of(run) = WorkflowRun.step_scoped?(run, run["current"]) ? @panes.pane_of(run["id"], step: run["current"]) : @panes.pane_of(run["id"])
+    # A sibling that runs as a sub-agent of the run's own pane has no binding of its own: it reads the run's.
+    def bound_pane_of(run) = (WorkflowRun.step_scoped?(run, run["current"]) && !WorkflowRun.pane_free?(run, run["current"])) ? @panes.pane_of(run["id"], step: run["current"]) : @panes.pane_of(run["id"])
     def step_ids(run) = run["definition"]["steps"].map { |step| step["id"] }
     def step_state(run) = run["steps"].fetch(run["current"])
     # The Hash the current step's {WorkflowRun::PER_STEP_KEYS} slots are written into ({WorkflowRun.slots}).

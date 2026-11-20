@@ -51,6 +51,9 @@ class FakeWorkflowPanes
   # The step the pane was bound for, for an author binding that records one.
   def step_on(pane) = (bound_on(pane)&.fetch(:role) == "author") ? @bound[pane][:step] : nil
 
+  # The fan_out group the pane was bound to whole, for an author binding that records one.
+  def group_on(pane) = (bound_on(pane)&.fetch(:role) == "author") ? @bound[pane][:group] : nil
+
   def pane_of(run_id, step: nil) = @bound.find { |_, entry| entry[:run_id] == run_id && (step.nil? || entry[:step] == step) }&.first
 
   # A run id in +stale+ makes every binding of the run stale; a pane id in it, only that pane's.
@@ -110,6 +113,11 @@ class FakeWorkflowPanes
   def bind(workspace:, pane:, **fields)
     raise @bind_error if @bind_error
     @bound[pane] = fields.merge(workspace: workspace)
+  end
+
+  def bind_group(workspace:, pane:, run_id:, group:, artifacts: nil)
+    raise @bind_error if @bind_error
+    @bound[pane] = {kind: "run", run_id: run_id, group: group, artifacts: artifacts, workspace: workspace}.compact
   end
 
   # +role+ "reviewer" or "author" removes only that role's bindings (one bound with no role is the author's); nil removes

@@ -563,6 +563,57 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       expect(second["usage"]).to eq("input_tokens" => 20, "output_tokens" => 7)
     end
 
+    describe "a subagents group's siblings" do
+      let(:group_run) do
+        {"worktree" => @dir, "artifacts_dir" => File.join(@dir, "art"), "pane" => "%5", "workspace" => "w",
+         "definition" => {"steps" => [
+           {"id" => "lint", "group" => "checks", "execution_mode" => "subagents", "produces" => ["lint.md"]},
+           {"id" => "test", "group" => "checks", "execution_mode" => "subagents", "produces" => ["test.md"]}
+         ]},
+         "steps" => {"lint" => {"state" => "running", "attempts" => []}, "test" => {"state" => "running", "attempts" => []}}}
+      end
+      let(:lint) { {"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00Z"} }
+      let(:test) { {"n" => 1, "started_at" => "2026-10-04T12:00:30.000Z", "ended_at" => "2026-10-04T12:06:00Z"} }
+      let(:lint_step) { group_run["definition"]["steps"][0] }
+      let(:test_step) { group_run["definition"]["steps"][1] }
+
+      def finish_lint
+        lint.replace(record.finish(run: group_run, step: lint_step, attempt: lint).thawed)
+        group_run["steps"]["lint"]["attempts"] << lint
+        lint
+      end
+
+      it "claims the session's usage once for the group: the first sibling to end claims, the overlapping one shares" do
+        finish_lint
+        test.replace(record.finish(run: group_run, step: test_step, attempt: test).thawed)
+
+        expect(lint["usage"]).to eq("input_tokens" => 30, "output_tokens" => 12)
+        expect(test["usage"]).to be_nil
+        expect(test).not_to have_key("session")
+        expect(test["usage_shared"]).to eq("group" => "checks", "step" => "lint", "attempt" => 1)
+      end
+
+      it "claims again for a window that overlaps no claim, as a second group turn's does" do
+        finish_lint
+        test.replace(record.finish(run: group_run, step: test_step, attempt: test).thawed)
+
+        second = {"n" => 2, "started_at" => "2026-10-04T12:07:00.000Z", "ended_at" => "2026-10-04T12:09:30Z"}
+        second.replace(record.finish(run: group_run, step: test_step, attempt: second).thawed)
+
+        expect(second["usage"]).to eq("input_tokens" => 5000, "output_tokens" => 500)
+        expect(second).not_to have_key("usage_shared")
+      end
+
+      it "reads a process_separation sibling's usage as its own, whatever a group sibling claimed" do
+        finish_lint
+        plain = {"id" => "test", "produces" => ["test.md"]}
+        test.replace(record.finish(run: group_run, step: plain, attempt: test).thawed)
+
+        expect(test["usage"]).to eq("input_tokens" => 30, "output_tokens" => 12)
+        expect(test).not_to have_key("usage_shared")
+      end
+    end
+
     context "with sub-agent transcript files" do
       let(:subdir) { File.join(@dir, "s1", "subagents") }
 

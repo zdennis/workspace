@@ -476,6 +476,20 @@ RSpec.describe Workspace::WorkflowRun do
       expect(described_class.step_scoped?(nil, "a")).to be(false)
     end
 
+    it "calls a sibling pane-free only when it is a group member whose mode is subagents" do
+      run = grouped_run
+      run["definition"]["steps"][1]["execution_mode"] = "subagents"
+      run["definition"]["steps"][2]["execution_mode"] = "process_separation"
+      run["definition"]["steps"][0]["execution_mode"] = "subagents"
+
+      expect(described_class.pane_free?(run, "lint")).to be(true)
+      expect(described_class.pane_free?(run, "test")).to be(false)
+      expect(described_class.pane_free?(run, "plan")).to be(false)
+      expect(described_class.pane_free?(run, "missing")).to be(false)
+      expect(described_class.pane_free?(nil, "lint")).to be(false)
+      expect(described_class.from_h(run.merge("pane" => "%5")).pane_for("lint")).to eq("%5")
+    end
+
     described_class::PER_STEP_KEYS.each do |key|
       it "keeps a grouped step's #{key} under its own step, so a sibling's write leaves it alone" do
         run = grouped_run

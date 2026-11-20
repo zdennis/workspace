@@ -173,7 +173,8 @@ module Workspace
     end
 
     # Whether `workflow resume --restart-step` applies: the step is running, its last attempt is still open and it
-    # has an open `pane_gone` or `agent_gone` stall. A `pane_gone` reason over a closed attempt does not qualify.
+    # has an open `pane_gone` or `agent_gone` stall. A `pane_gone` reason over a closed attempt does not qualify, and a
+    # fan_out sibling that runs as a sub-agent of the run's own pane has no pane of its own to restart.
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param now [Time, nil] when given, a line still being typed ({WorkflowTransitions.delivery}) rules it out
@@ -181,6 +182,7 @@ module Workspace
     def self.restartable?(run, now: nil)
       state = run.dig("steps", run["current"])
       return false unless state.is_a?(Hash) && state["state"] == "running"
+      return false if WorkflowRun.pane_free?(run, run["current"])
       last = Array(state["attempts"]).last
       return false unless last.is_a?(Hash) && !last["ended_at"]
       return false if now && WorkflowTransitions.delivery(last, now) == :delivering
@@ -200,6 +202,7 @@ module Workspace
       "no_session" => "the workspace's tmux session is gone",
       "spawn_failed" => "a new pane could not be started",
       "restart_refused" => "the restart was refused",
+      "subagent_step_no_pane" => "the step runs as a sub-agent of the run's pane, which has no pane of its own to restart",
       "restart_error" => "the restart failed; see the run's events",
       "claim_lost" => "a restart began but never finished",
       "still_working" => "the agent was busy again",
@@ -345,12 +348,13 @@ module Workspace
     end
 
     # The pane bound to a step of a group is its own; any other step reads the run's first author pane, as always.
+    # A sibling that runs as a sub-agent of the run's own pane has no binding of its own: it reads the run's.
     def bound_pane(run, scoped)
-      scoped ? @panes.pane_of(run.id, step: run.current) : @panes.pane_of(run.id)
+      (scoped && !WorkflowRun.pane_free?(run.to_h, run.current)) ? @panes.pane_of(run.id, step: run.current) : @panes.pane_of(run.id)
     end
 
     def pane_alive?(run, scoped)
-      scoped ? @panes.alive?(run.id, step: run.current) : @panes.alive?(run.id)
+      (scoped && !WorkflowRun.pane_free?(run.to_h, run.current)) ? @panes.alive?(run.id, step: run.current) : @panes.alive?(run.id)
     end
 
     # The live reading of each fan_out sibling that is under way (not `pending`, and not `passed` unless it waits at a gate or holds a reason), by step id: the same

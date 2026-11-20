@@ -123,6 +123,21 @@ RSpec.describe Workspace::WorkflowRecovery do
         expect(dispatch.calls.size).to eq(1)
       end
 
+      it "types a pane-free sibling's pending line into the run's pane, its mark kept under its own step" do
+        hash = run_hash(attempt: {"prompt_file" => "/b.1.md"})
+        hash["definition"]["steps"] = [{"id" => "build", "group" => "checks", "execution_mode" => "subagents", "produces" => []},
+          {"id" => "lint", "group" => "checks", "execution_mode" => "subagents", "produces" => []}]
+        hash["steps"]["build"]["continue_pending"] = mark
+        hash["steps"]["lint"] = {"state" => "passed", "attempts" => [{"n" => 1}]}
+        stored(hash)
+
+        ticking(RecordingWorkflowPanes.new(turn_over: ["%3"], pids: {"%3" => 41})).tick("wr_1", actor: "daemon")
+
+        expect(dispatch.calls.map { |each| each.first(3) }).to eq([[:type_continue, "wr_1", "%3"]])
+        expect(store.runs["wr_1"]["steps"]["build"]).not_to have_key("continue_pending")
+        expect(store.runs["wr_1"]["steps"]["build"]).not_to have_key("pane")
+      end
+
       it "types nothing and keeps the mark while the pane is not yet proven idle" do
         pending_run
 

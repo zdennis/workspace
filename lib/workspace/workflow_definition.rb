@@ -37,16 +37,23 @@ module Workspace
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
     TOP_KEYS = %w[schema_version id title description version use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny reviewers steps].freeze
-    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts review after].freeze
+    STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts review after execution_mode].freeze
 
     # What a `fan_out` group step may hold. A group has no body of its own: its `fan_out:` is a mapping of sibling
     # step id to an ordinary step body, and the siblings are flattened into the steps list at the group's place,
     # each tagged `"group" => GROUP_ID` (the tag {WorkflowRun.step_scoped?} reads). `fan_out` is kept out of
     # {STEP_KEYS} so a step's unknown-key message reads as before; {#steps_from} routes a step holding it here.
-    GROUP_KEYS = %w[title fan_out checkout on_fail].freeze
+    GROUP_KEYS = %w[title fan_out checkout on_fail execution_mode].freeze
 
     # How a group's siblings share the checkout; the first is the default.
     GROUP_CHECKOUTS = %w[shared shared-edit].freeze
+
+    # How a group's siblings run: each as a sub-agent of the run's own pane, or each in its own author pane.
+    EXECUTION_MODES = %w[subagents process_separation].freeze
+
+    # The execution mode a group runs with when its definition does not say: each sibling as a sub-agent of the
+    # run's own pane.
+    DEFAULT_EXECUTION_MODE = "subagents"
 
     # Step keys a `fan_out` sibling may not hold, and why.
     SIBLING_REFUSALS = {
@@ -225,8 +232,10 @@ module Workspace
     #   "title", "prompt", "include", "produces", "status" (nil, or "command" or "run" with
     #   "timeout" seconds), "gate", "guard" (nil, "unchanged" or "config"), "require" (a list of one-key proofs such as `{"commits" => 1}`), "uses", "on_fail" (nil, "stop", or "goto", "max", "context", and, only when set, "log_tail" and "backoff" seconds),
     #   "context" and "timeout" (seconds or nil); a `fan_out` group's siblings sit in "steps" at the group's place,
-    #   each also with "group" (the group step's id), and only then is there "groups": group id to "title",
-    #   "checkout", "on_fail" (`stop`) and "steps" (its sibling ids, in order)
+    #   each also with "group" (the group step's id) and "execution_mode" (the mode it runs with, its own or the
+    #   group's), and only then is there "groups": group id to "title",
+    #   "checkout", "on_fail" (`stop`), "steps" (its sibling ids, in order) and, only when the definition set it,
+    #   "execution_mode"
     def to_h
       @data
     end
@@ -431,6 +440,18 @@ module Workspace
         next unless step.is_a?(Hash) && step["group"].is_a?(String) && !step["group"].empty?
         (found[step["group"]] ||= []) << step["id"]
       end
+    end
+
+    # Whether a definition's step entry is a fan_out sibling whose resolved `execution_mode` is `subagents`: it
+    # runs as a sub-agent of the run's own pane, with no pane binding or pane slot of its own. The one test of
+    # it: {WorkflowRun.pane_free?} reads a stored run's entries through this, and dispatch, the starter and the
+    # attempt record read built entries through it. A run stored before the key existed has siblings without a
+    # resolved mode, which read as today's per-pane behavior.
+    #
+    # @param step [Hash] one step entry of a definition's "steps" (built or stored)
+    # @return [Boolean]
+    def self.subagent_sibling?(step)
+      step.is_a?(Hash) && step["group"].is_a?(String) && !step["group"].empty? && step["execution_mode"] == "subagents"
     end
 
     # The refusal of a tool that would play or draw a definition's `fan_out` groups as plain steps in a row.
@@ -765,6 +786,11 @@ module Workspace
         problem "#{where}: checkout must be #{GROUP_CHECKOUTS.join(" or ")}, got #{checkout.inspect[0, 60]}"
         checkout = GROUP_CHECKOUTS.first
       end
+      mode = raw["execution_mode"]
+      unless mode.nil? || EXECUTION_MODES.include?(mode)
+        problem "#{where}: execution_mode must be #{EXECUTION_MODES.join(" or ")}, got #{mode.inspect[0, 60]}"
+        mode = nil
+      end
       title = text_or_nil(raw["title"], "#{where}: title") || group_id
       bodies = raw["fan_out"]
       unless bodies.is_a?(Hash) && bodies.any?
@@ -780,11 +806,16 @@ module Workspace
           SIBLING_REFUSALS.each { |name, why| problem "step #{sibling_id} (in fan_out group #{group_id}): #{why}" if body.key?(name) }
           body = body.except(*SIBLING_REFUSALS.keys)
         end
-        step = step_from(sibling_id, body, earlier.dup, inputs, group: group_id)
+        step = step_from(sibling_id, body, earlier.dup, inputs, group: group_id, group_mode: mode)
+        if step["execution_mode"] == "subagents" && body.is_a?(Hash) && body.key?("timeout")
+          problem "step #{sibling_id} (in fan_out group #{group_id}): a sibling that runs as a sub-agent of the run's pane can't take timeout: " \
+            "(the pane agent schedules its siblings, so a sibling's wall clock can't be enforced); the run's own timeout: still applies"
+        end
         earlier << sibling_id
         step.merge("group" => group_id)
       end
       @groups[group_id] = {"title" => title, "checkout" => checkout, "on_fail" => "stop", "steps" => siblings.map { |step| step["id"] }}
+      @groups[group_id]["execution_mode"] = mode if mode
       siblings
     end
 
@@ -800,7 +831,9 @@ module Workspace
       end
     end
 
-    def step_from(step_id, raw, earlier, inputs, group: nil)
+    # +group_mode+ is the mode the sibling's fan_out group runs with (nil for a plain step): a sibling without its own
+    # `execution_mode:` inherits it, and a plain step may not set the key at all — it always runs in its own pane.
+    def step_from(step_id, raw, earlier, inputs, group: nil, group_mode: nil)
       where = "step #{step_id}"
       problem "step id #{step_id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(step_id)
       unless raw.is_a?(Hash)
@@ -809,6 +842,18 @@ module Workspace
       end
       unknown_keys(raw, STEP_KEYS, where)
       problem "#{where}: after: only places a step added by a workflow that has extends:" if raw.key?("after")
+      mode = raw["execution_mode"]
+      unless mode.nil? || EXECUTION_MODES.include?(mode)
+        problem "#{where}: execution_mode must be #{EXECUTION_MODES.join(" or ")}, got #{mode.inspect[0, 60]}"
+        mode = nil
+      end
+      mode = (mode || group_mode || DEFAULT_EXECUTION_MODE).dup.freeze
+      if group.nil?
+        problem "#{where}: execution_mode only applies to a fan_out sibling; a step outside every group runs in its own pane" if raw.key?("execution_mode")
+      elsif mode == "subagents" && raw.key?("context")
+        problem "#{where}: a sibling that runs as a sub-agent of the run's pane can't set context: (it has no pane of its own; " \
+          "the group's one delivery into the run pane is always fresh)"
+      end
       prompt = prompt_from(raw, where)
       placeholders(prompt, inputs, "#{where}: prompt")
       {
@@ -828,6 +873,7 @@ module Workspace
         "on_timeout" => on_timeout_from(raw.fetch("on_timeout", DEFAULT_ON_TIMEOUT), where),
         "max_attempts" => step_attempts_from(raw["max_attempts"], where)
       }.merge(review_spec.review(raw["review"], where, inputs).then { |review| review ? {"review" => review} : {} })
+        .merge(group ? {"execution_mode" => mode} : {})
     end
 
     def step_attempts_from(value, where)

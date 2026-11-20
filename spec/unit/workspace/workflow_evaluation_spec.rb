@@ -162,6 +162,95 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(store.runs["wr_1"]["steps"]["test"]["attempts"].last).not_to have_key("reported")
     end
 
+    describe "a pane bound to the group whole" do
+      # Two pane-free subagent siblings of one group: no pane slots, the run pane bound to the group.
+      def group_hash(lints: "running", tests: "running", lint_report: nil)
+        hash = run_hash
+        hash["pane"] = "%3"
+        hash["current"] = "test"
+        hash["definition"]["steps"] = [step("id" => "lint", "group" => "checks", "execution_mode" => "subagents", "produces" => ["lint.md"]),
+          step("id" => "test", "group" => "checks", "execution_mode" => "subagents", "produces" => ["test.md"])]
+        attempt = [{"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z"}]
+        hash["steps"] = {
+          "lint" => {"state" => lints, "attempts" => (if lints == "pending"
+                                                        []
+                                                      else
+                                                        attempt.map { |each| lint_report ? each.merge(lint_report) : each }
+                                                      end)},
+          "test" => {"state" => tests, "attempts" => ((tests == "pending") ? [] : deep_copy(attempt))}
+        }
+        hash
+      end
+
+      it "judges every sibling still without an outcome, in order, and runs the group's join as each lands" do
+        produce("lint.md")
+        produce("test.md")
+        stored(group_hash)
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%3", group: "checks")
+
+        expect(progress.calls).to eq([[:pass_step, "lint"], [:pass_step, "test"]])
+      end
+
+      it "judges a sibling that reported fail from its report, and the unreported one from its files" do
+        produce("test.md")
+        stored(group_hash(lint_report: {"reported" => {"status" => "fail", "summary" => "red", "at" => "2026-11-10T11:30:00.000Z"}}))
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%3", group: "checks")
+
+        expect(progress.calls).to match([[:fail_step, "lint", hash_including("cause" => "reported")], [:pass_step, "test"]])
+      end
+
+      it "ignores a pane that is not the run pane the group is bound to" do
+        produce("lint.md")
+        produce("test.md")
+        stored(group_hash)
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%9", group: "checks")
+
+        expect(progress.calls).to be_empty
+      end
+
+      it "leaves a sibling whose attempt never started, and one whose turn began before this one, as they are" do
+        produce("test.md")
+        stored(group_hash(lints: "pending"))
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%3", group: "checks", turn_started: Time.utc(2026, 11, 10, 11, 30))
+
+        expect(progress.calls).to eq([[:pass_step, "test"]])
+      end
+
+      it "runs a sibling's outside check through the chain, then judges the sibling still open" do
+        produce("lint.md")
+        produce("test.md")
+        hash = group_hash
+        hash["definition"]["steps"][0]["status"] = {"command" => "test"}
+        stored(hash)
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%3", group: "checks")
+
+        # lint's check ran outside the lock and passed it; the chain then judged test, and the mark is spent.
+        expect(checker.calls).not_to be_empty
+        expect(progress.calls).to eq([[:pass_step, "lint"], [:pass_step, "test"]])
+        expect(store.runs["wr_1"]["steps"]["lint"]["attempts"].last["check"]).to include("exit_code" => 0)
+        expect(store.runs["wr_1"]["group_turn"]).to be_nil
+      end
+
+      it "leaves a process_separation sibling of a mixed group to its own pane's turn end" do
+        produce("test.md")
+        hash = group_hash
+        hash["definition"]["steps"][1] = step("id" => "test", "group" => "checks", "execution_mode" => "process_separation", "produces" => ["test.md"])
+        hash["steps"]["test"]["pane"] = "%4"
+        stored(hash)
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%3", group: "checks")
+
+        # lint (the subagent sibling) is judged; test works in its own pane and its own turn's end decides it.
+        expect(progress.calls).to eq([[:pass_step, "lint"]])
+        expect(store.runs["wr_1"]["steps"]["test"]["attempts"].last).not_to have_key("ended_at")
+      end
+    end
+
     it "keeps the cursor's step for a step named outside any group" do
       produce
       stored(run_hash)
@@ -1490,6 +1579,48 @@ RSpec.describe Workspace::WorkflowEvaluation do
 
       expect(progress.calls).to eq([[:fail_step, "plan", {"cause" => "require", "require" => "command", "detail" => "lint failed", "exit_code" => 1,
                                                           "code" => "require_command", "code_source" => "engine"}]])
+    end
+
+    it "judges the rest of a group turn when a sibling's proof chain finishes its judging" do
+      produce("lint.md")
+      produce("test.md")
+      hash = run_hash(definition_step: step("id" => "lint", "group" => "checks", "execution_mode" => "subagents",
+        "require" => [{"command" => "lint"}]), state: "checking")
+      hash["definition"]["steps"] << step("id" => "test", "group" => "checks", "execution_mode" => "subagents", "produces" => ["test.md"])
+      hash["current"] = "lint"
+      attempt = {"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z"}
+      hash["steps"] = {
+        "lint" => {"state" => "checking", "attempts" => [attempt.merge("proofs" => [pending.merge("started_at" => "2026-11-10T11:30:00Z")])]},
+        "test" => {"state" => "running", "attempts" => [deep_copy(attempt)]}
+      }
+      hash["group_turn"] = {"group" => "checks", "siblings" => ["test"], "turn_started" => nil, "stopped_at" => nil, "background" => nil}
+      stored(hash)
+      check = {"step" => "lint", "attempt" => 1, "cwd" => dir, "proof" => pending}
+      require_check = RecordingRequire.new(outside: {"record" => {"exit_code" => 0}, "unmet" => nil})
+
+      evaluation(require_check: require_check).finish_check("wr_1", check, "daemon", "turn_ended")
+
+      # lint's proof passed it and its judging finished; the chain then judged test, and the mark is spent.
+      expect(progress.calls).to eq([[:pass_step, "lint"], [:pass_step, "test"]])
+      expect(store.runs["wr_1"]["group_turn"]).to be_nil
+    end
+
+    it "goes on through the next proof the chain queues after one passes" do
+      second = {"index" => 1, "proof" => "command", "token" => "t2", Workspace::WorkflowRequire::FACTS_KEY => {"head" => "abc"}}
+      stored(checking_run.tap { |run| run["definition"]["steps"][0]["require"] = [{"command" => "lint"}, {"command" => "audit"}] })
+      require_check = RecordingRequire.new(checks: [{"outside" => second}], outside: {"record" => {"exit_code" => 0}, "unmet" => nil})
+
+      run = evaluation(require_check: require_check).finish_check("wr_1", check, "daemon", "turn_ended")
+
+      # The first proof's apply queued the second outside the lock, and the chain ran it to the pass.
+      expect(require_check.calls).to eq([
+        [:run_outside, {"index" => 0, "proof" => "command", "token" => "t1"}, {cwd: dir}],
+        [:check, "plan", 1, {from: 1}],
+        [:run_outside, second, {cwd: dir}],
+        [:check, "plan", 1, {from: 2}]
+      ])
+      expect(run.step("plan").last_attempt.proofs.map { |each| each["token"] }).to eq(%w[t1 t2])
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
     end
 
     it "drops a result the run moved on from" do

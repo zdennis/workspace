@@ -615,11 +615,13 @@ module Workspace
   #   (default: a new {TranscriptSummary})
   # @param clock [#call] returns the current Time
   # @param prompt_writer [#call] writes a step's instructions file, given the path, the text and an +encoding:+, as +File.write+ does
+  # @param main_agent [Workspace::MainAgent, nil] reads a project's main agent kind, for the start preflight's
+  #   `subagents` refusal (default: nil, which skips that check)
   # @return [Workspace::WorkflowEngine]
   def self.build_workflow_engine(store:, resources:, composer:, panes:, checker:, commands_config:, lineage:, git:, guard:, excludes:, gate_note:,
     env_stopper: nil, workspace_known: nil, event_log: nil, task_store: nil, attempt_record: nil, require_check: nil, log_tail: nil, alerts: nil, inbox_for: nil, ask_for: nil, review_round: nil, review_tally: nil, review_closer: nil, review_revision: nil,
     review_runner: nil, round_rerun: nil, review_summary: nil, round_holder: nil, holder_alive: nil, interrupter: ->(*) { raise Workspace::Error, "cannot interrupt: no key presser was given" }, clock: -> { Time.now },
-    prompt_writer: File.method(:write), downtime: nil, exec_program: WorkflowExecProgram, transcript: TranscriptSummary.new)
+    prompt_writer: File.method(:write), downtime: nil, exec_program: WorkflowExecProgram, transcript: TranscriptSummary.new, main_agent: nil)
     attempt_record ||= WorkflowAttemptRecord.new(guard: guard, clock: clock)
     require_check ||= WorkflowRequire.new(guard: guard, notes_dir_of: ->(workspace) { gate_note.notes_dir_of(workspace) },
       commands_config: commands_config, checker: checker)
@@ -646,7 +648,7 @@ module Workspace
     evaluation = WorkflowEvaluation.new(change: change, store: store, progress: progress, panes: panes, checker: checker, require_check: require_check,
       guard: guard, commands_config: commands_config, inbox_for: inbox_for, ask_for: ask_for, review_round: review_round, review_tally: review_tally, review_closer: review_closer, review_revision: review_revision, round_rerun: round_rerun, transcript: transcript, clock: clock)
     starter = WorkflowStarter.new(change: change, store: store, prompt: prompt, dispatch: dispatch,
-      lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, exec_program: exec_program, clock: clock)
+      lineage: lineage, commands_config: commands_config, guard: guard, gate_note: gate_note, task_store: task_store, workspace_known: workspace_known, exec_program: exec_program, main_agent: main_agent, clock: clock)
     recovery = WorkflowRecovery.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, holder_alive: holder_alive, panes: panes, downtime: downtime, clock: clock)
     decisions = WorkflowDecisions.new(change: change, store: store, progress: progress, dispatch: dispatch, evaluation: evaluation,
       attempt_record: attempt_record, gate_note: gate_note, panes: panes, guard: guard, holder_alive: holder_alive, interrupter: interrupter, recovery: recovery, downtime: downtime, clock: clock)
@@ -1142,7 +1144,8 @@ module Workspace
       task_store: task_store,
       interrupter: workflow_interrupter,
       downtime: workflow_downtime,
-      alerts: WorkflowAlerts.new(alert_config: alert_config, log_path: File.join(config.state_dir, "workflow-alerts.log"), error_output: error_output)
+      alerts: WorkflowAlerts.new(alert_config: alert_config, log_path: File.join(config.state_dir, "workflow-alerts.log"), error_output: error_output),
+      main_agent: main_agent
     )
     workflow_recovery_entry = ->(workspace, pane) do
       AgentRecoveryStore.new(path: config.agent_recovery_path(workspace)).get(pane)

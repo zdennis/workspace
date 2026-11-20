@@ -1843,7 +1843,7 @@ module Workspace
 
     STEP = {
       "done" => {
-        usage: ["step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]"],
+        usage: ["step done [--status pass|fail|done|running|needs_input|stuck] [--step STEP] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]"],
         summary: "Record what you say about a workflow step, then end your turn",
         about: [
           "For the agent working on a workflow step, run from the pane the run is bound to. --status fail fails",
@@ -1852,6 +1852,7 @@ module Workspace
           "workflow --help`)."
         ],
         options: [["--status STATUS", "pass (default), fail, or a stated status: done, running, needs_input, stuck (--summary is its detail)"],
+          ["--step STEP", "The fan_out sibling to report on, when this pane is bound to its group"],
           ["--summary TEXT", "One line about what was done, or what is left"],
           ["--code WORD", "A word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)"],
           ["--run RUN_ID", "The run to report on, when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous"],

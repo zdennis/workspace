@@ -20,6 +20,8 @@ RSpec.describe Workspace::Commands::Workflow do
 
   # An author's pane is bound_on's answer wherever a spec stubs run_on.
   before { allow(panes).to receive(:bound_on) { |pane| (run = panes.run_on(pane)) && {run_id: run, role: "author"} } }
+  # No pane is bound to a fan_out group whole, unless a spec says so.
+  before { allow(panes).to receive(:group_on).and_return(nil) }
   # tmux lists no pane by default, so no caller is found under one.
   before { allow(panes).to receive(:pane_pid).and_return(nil) }
   let(:output) { StringIO.new }
@@ -2670,6 +2672,52 @@ RSpec.describe Workspace::Commands::Workflow do
       allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
 
       expect(command.step_done(pane: "%5")).to include("step" => "lint")
+    end
+
+    describe "a pane bound to a fan_out group whole" do
+      let(:grouped) do
+        Workspace::WorkflowDefinition.parse(<<~YAML, id: "flow", source: "global", path: "/defs/flow.yml")
+          steps:
+            checks:
+              fan_out:
+                lint:
+                  prompt: L
+                  produces: [lint.md]
+                test:
+                  prompt: T
+                  produces: [test.md]
+        YAML
+      end
+
+      before do
+        allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+        allow(panes).to receive(:group_on).with("%5").and_return("checks")
+        allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app", "definition" => grouped.to_h))
+      end
+
+      it "reports the sibling --step names" do
+        allow(engine).to receive(:report).with("wr_1", actor: "agent", status: "pass", summary: nil, code: nil, step: "lint")
+          .and_return("run_id" => "wr_1", "step" => "lint", "attempt" => 1, "reported" => {"status" => "pass", "summary" => nil, "at" => "t"})
+
+        expect(command.step_done(pane: "%5", step: "lint")).to include("step" => "lint")
+      end
+
+      it "refuses a report with no --step, and one outside the group, with the same message" do
+        expect { command.step_done(pane: "%5") }
+          .to raise_error(Workspace::UsageError, /bound to the fan_out group checks of run wr_1, not to one step\. Report a sibling of the group with --step SIBLING \(one of lint, test\)/)
+        expect { command.step_done(pane: "%5", step: "other") }
+          .to raise_error(Workspace::UsageError, /bound to the fan_out group checks of run wr_1, not to one step\./)
+      end
+    end
+
+    it "keeps the pane's own bound step for a pane bound to one step, whatever --step says" do
+      allow(panes).to receive(:run_on).with("%5").and_return("wr_1")
+      allow(panes).to receive(:step_on).with("%5").and_return("lint")
+      allow(store).to receive(:run).with("wr_1").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
+      allow(engine).to receive(:report).with("wr_1", actor: "agent", status: "pass", summary: nil, code: nil, step: "lint")
+        .and_return("run_id" => "wr_1", "step" => "lint", "attempt" => 1, "reported" => {"status" => "pass", "summary" => nil, "at" => "t"})
+
+      expect(command.step_done(pane: "%5", step: "test")).to include("step" => "lint")
     end
 
     it "records the report for the run this pane is bound to and tells the agent to end its turn" do
