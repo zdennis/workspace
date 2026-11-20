@@ -17,7 +17,7 @@ RSpec.describe Workspace::CLI::Launcher do
 
       def initialize = (@calls = [])
 
-      def check(name, root, io:) = (@calls << {name: name, root: root, io: io})
+      def check(root, io:) = (@calls << {root: root, io: io})
     end
   end
   let(:hook_check) { nil }
@@ -81,8 +81,16 @@ RSpec.describe Workspace::CLI::Launcher do
 
         launcher.launch(invocation, ["app", "~/src/new"])
 
-        expect(hook_check.calls.map { |call| [call[:name], call[:root]] }).to eq([["app", "/src/app"], ["new", "/src/new"]])
+        expect(hook_check.calls.map { |call| call[:root] }).to eq(["/src/app", "/src/new"])
         expect(hook_check.calls.map { |call| call[:io] }).to all(eq(err))
+      end
+
+      it "falls back to the project's root from the config when the launch resolved no root for it" do
+        allow(project_config).to receive(:project_root_for).with("loose").and_return("/src/loose")
+
+        launcher.launch(invocation, ["loose"])
+
+        expect(hook_check.calls.map { |call| call[:root] }).to eq(["/src/loose"])
       end
 
       it "skips a workspace whose checkout root cannot be resolved" do

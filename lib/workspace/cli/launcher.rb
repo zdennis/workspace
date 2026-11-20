@@ -83,7 +83,7 @@ module Workspace
           @project_settings.ensure_exists(p)
           @hook_runner.run(p, "post_launch")
           root = roots[p] || @project_config.project_root_for(p)
-          @hook_check&.check(p, root, io: invocation.error_output) if root
+          @hook_check&.check(root, io: invocation.error_output) if root
         end
         {exit_code: result && result[:exit_code], projects: projects, result: result, plays: by_project, packs: composed, skipped_packs: skipped_packs, prompts: prompts}
       end

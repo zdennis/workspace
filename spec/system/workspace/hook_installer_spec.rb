@@ -122,6 +122,12 @@ RSpec.describe Workspace::HookInstaller do
       expect(installer.stale_tracked_hooks?(provider, tmpdir, command)).to be false
     end
 
+    it "builds the stale note a caller prints, naming the tracked file and the refresh command" do
+      expect(installer.stale_message(provider, tmpdir, command)).to eq(
+        "#{provider.label} hooks in #{settings_path} are older; #{Workspace::HookInstaller::STALE_NOTICE}"
+      )
+    end
+
     it "chains a differing tracked statusLine command into statusline.command and routes through workspace in local" do
       write_settings("statusLine" => {"type" => "command", "command" => "mine.sh"})
 

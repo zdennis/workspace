@@ -51,7 +51,7 @@ RSpec.describe Workspace::LaunchHookCheck do
   it "stays silent when the current hooks sit in the tracked settings file alone" do
     install_hooks(claude, tmpdir, local: false)
 
-    checker.check("app", tmpdir, io: io)
+    checker.check(tmpdir, io: io)
 
     expect(notes).to be_empty
   end
@@ -59,7 +59,7 @@ RSpec.describe Workspace::LaunchHookCheck do
   it "stays silent when the current hooks sit in the local settings file alone, where start installs them" do
     install_hooks(claude, tmpdir, local: true)
 
-    checker.check("app", tmpdir, io: io)
+    checker.check(tmpdir, io: io)
 
     expect(notes).to be_empty
   end
@@ -69,31 +69,32 @@ RSpec.describe Workspace::LaunchHookCheck do
     stale = {"hooks" => {"PreToolUse" => [{"matcher" => "Task", "hooks" => [{"type" => "command", "command" => claude.hook_command(command)}]}]}}
     write_json(claude_settings_path, stale)
 
-    checker.check("app", tmpdir, io: io)
+    checker.check(tmpdir, io: io)
 
-    expect(notes).to eq(["Note: Claude Code hooks in #{claude_settings_path} are older; #{Workspace::HookInstaller::STALE_NOTICE}\n"])
+    expect(notes).to eq(["Note: #{installer.stale_message(claude, tmpdir, command)}\n"])
   end
 
   it "notes a tracked file holding an older workspace hook alone as missing or stale" do
     stale = {"hooks" => {"PreToolUse" => [{"matcher" => "Task", "hooks" => [{"type" => "command", "command" => claude.hook_command(command)}]}]}}
     write_json(claude_settings_path, stale)
 
-    checker.check("app", tmpdir, io: io)
+    checker.check(tmpdir, io: io)
 
     expect(notes.join).to include("Claude Code hooks missing or stale")
   end
 
   it "notes an agent whose hooks are missing entirely" do
-    checker.check("app", tmpdir, io: io)
+    checker.check(tmpdir, io: io)
 
     expect(notes).to eq(["Note: Claude Code hooks missing or stale for this checkout's agents; " \
-      "run `workspace doctor --fix` (or workspace start again) to install them.\n"])
+      "#{Workspace::LaunchHookCheck::FIX_HINT}.\n"])
+    expect(notes.join).to include("run `workspace init --install-hooks` in this checkout to install them.")
   end
 
   it "skips an agent whose executable is not on PATH" do
     on_path.clear
 
-    checker.check("app", tmpdir, io: io)
+    checker.check(tmpdir, io: io)
 
     expect(notes).to be_empty
   end
@@ -108,25 +109,37 @@ RSpec.describe Workspace::LaunchHookCheck do
       # A corrupt local file beside the user hook file would raise if the check read it.
       File.write(File.join(codex_home, ".codex", "settings.local.json"), "{not json")
 
-      checker.check("app", tmpdir, io: io)
+      checker.check(tmpdir, io: io)
 
       expect(notes).to be_empty
     end
 
-    it "stays silent when codex.hooks.install is off, as start does" do
-      hooks_config = instance_double(Workspace::HooksConfig)
-      allow(hooks_config).to receive(:install_user_hooks?).and_return(true)
-      allow(hooks_config).to receive(:install_user_hooks?).with(codex).and_return(false)
-      codex_only = described_class.new(hook_installer: installer, hooks_config: hooks_config, which: ->(exe) { on_path.include?(exe) })
-      on_path.replace(%w[codex])
+    it "never reads a local settings file for a user-scoped agent: a current local file beside a missing user hook file still notes Codex" do
+      current_hooks = {"hooks" => {"PreToolUse" => [{"matcher" => "Task", "hooks" => [{"type" => "command", "command" => codex.hook_command(command)}]}]}}
+      write_json(File.join(codex_home, ".codex", "settings.local.json"), current_hooks)
 
-      codex_only.check("app", tmpdir, io: io)
+      checker.check(tmpdir, io: io)
 
-      expect(notes).to be_empty
+      expect(notes.join).to include("Codex hooks missing or stale")
+    end
+
+    context "with codex alone on PATH" do
+      let(:on_path) { %w[codex] }
+
+      it "stays silent when codex.hooks.install is off, as start does" do
+        hooks_config = instance_double(Workspace::HooksConfig)
+        allow(hooks_config).to receive(:install_user_hooks?).and_return(true)
+        allow(hooks_config).to receive(:install_user_hooks?).with(codex).and_return(false)
+        codex_only = described_class.new(hook_installer: installer, hooks_config: hooks_config, which: ->(exe) { on_path.include?(exe) })
+
+        codex_only.check(tmpdir, io: io)
+
+        expect(notes).to be_empty
+      end
     end
 
     it "still checks Codex when no hooks config was wired" do
-      checker.check("app", tmpdir, io: io)
+      checker.check(tmpdir, io: io)
 
       expect(notes.join).to include("Codex hooks missing or stale")
       expect(notes.join).to include("Claude Code hooks missing or stale")
@@ -137,7 +150,14 @@ RSpec.describe Workspace::LaunchHookCheck do
     FileUtils.mkdir_p(File.dirname(claude_settings_path))
     File.write(claude_settings_path, "{not json")
 
-    expect { checker.check("app", tmpdir, io: io) }.not_to raise_error
+    expect { checker.check(tmpdir, io: io) }.not_to raise_error
+    expect(notes.join).to include("Claude Code hooks not installed")
+  end
+
+  it "notes a settings path that cannot be read at all (a directory there) instead of failing" do
+    FileUtils.mkdir_p(claude_settings_path)
+
+    expect { checker.check(tmpdir, io: io) }.not_to raise_error
     expect(notes.join).to include("Claude Code hooks not installed")
   end
 end

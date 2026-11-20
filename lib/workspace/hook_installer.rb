@@ -147,6 +147,14 @@ module Workspace
       tracked["hooks"].to_h.values.flatten.any? { |group| group.is_a?(Hash) && commands_in(group).any? { |c| ours.include?(c) } }
     end
 
+    # The Note text a stale tracked hook entry gets, shared by `start` and the
+    # launch check so the two cannot drift.
+    #
+    # @return [String]
+    def stale_message(provider, project_root, command)
+      "#{provider.label} hooks in #{settings_path_for(provider, project_root)} are older; #{STALE_NOTICE}"
+    end
+
     def install_unlocked(provider, project_root, command, dry_run:, quiet:, local: false)
       path = local ? local_settings_path_for(provider, project_root) : settings_path_for(provider, project_root)
       fragment = provider.hook_settings(command)

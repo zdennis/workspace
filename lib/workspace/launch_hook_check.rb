@@ -10,6 +10,12 @@ module Workspace
   # PATH and whose hooks are missing or stale, and tells the person the one
   # command that fixes it. It never installs or mutates a settings file.
   class LaunchHookCheck
+    # The remedy the notes name. `init --install-hooks` from the checkout is
+    # the one command that installs both a project-scoped agent's settings
+    # hooks (Claude Code) and a user-scoped agent's user-level hook file
+    # (Codex); `doctor --fix` only fixes the user-level ones.
+    FIX_HINT = "run `workspace init --install-hooks` in this checkout to install them"
+
     # @param hook_installer [Workspace::HookInstaller] does the reads
     # @param hooks_config [Workspace::HooksConfig, nil] the global
     #   `codex.hooks.install` off-switch; nil skips nothing
@@ -24,11 +30,10 @@ module Workspace
     # stale in the checkout at +root+, or none when every agent's hooks are
     # current. An unreadable settings file becomes a note, never a failure.
     #
-    # @param name [String] the workspace's name, for callers that report on it
     # @param root [String] the checkout to read the settings files in
     # @param io [IO] where the notes go (the run's error output)
     # @return [void]
-    def check(name, root, io:)
+    def check(root, io:)
       AgentProvider.all.select(&:supports_hooks?).each do |provider|
         next unless @which.call(provider.executable)
         next if @hooks_config && !@hooks_config.install_user_hooks?(provider)
@@ -41,22 +46,15 @@ module Workspace
     private
 
     def note_for(provider, root)
-      return stale_note(provider, root) if installed_and_stale?(provider, root)
-      return nil if installed?(provider, root)
+      installed = installed?(provider, root)
+      return stale_note(provider, root) if installed && @hook_installer.stale_tracked_hooks?(provider, root, HookInstaller::HOOK_COMMAND)
+      return nil if installed
 
-      "#{provider.label} hooks missing or stale for this checkout's agents; " \
-        "run `workspace doctor --fix` (or workspace start again) to install them."
+      "#{provider.label} hooks missing or stale for this checkout's agents; #{FIX_HINT}."
     rescue Workspace::Error, SystemCallError
       # An unreadable settings file (bad JSON, wrong shape, no permission) is
       # a note, never a failed launch: the session is already up by now.
-      "#{provider.label} hooks not installed: could not read the agent settings file; " \
-        "run `workspace doctor --fix` (or workspace start again) to install them."
-    end
-
-    def installed_and_stale?(provider, root)
-      return false unless installed?(provider, root)
-
-      @hook_installer.stale_tracked_hooks?(provider, root, HookInstaller::HOOK_COMMAND)
+      "#{provider.label} hooks not installed: could not read the agent settings file; #{FIX_HINT}."
     end
 
     # Current hooks may sit in the untracked local settings file, where
@@ -72,7 +70,7 @@ module Workspace
     end
 
     def stale_note(provider, root)
-      "#{provider.label} hooks in #{@hook_installer.settings_path_for(provider, root)} are older; #{HookInstaller::STALE_NOTICE}"
+      @hook_installer.stale_message(provider, root, HookInstaller::HOOK_COMMAND)
     end
   end
 end
