@@ -441,6 +441,7 @@ require_relative "workspace/workflow_workspace_facts"
 require_relative "workspace/workflow_nudger"
 require_relative "workspace/bookkeeping_exclude"
 require_relative "workspace/hook_installer"
+require_relative "workspace/launch_hook_check"
 require_relative "workspace/hook_runner"
 require_relative "workspace/core/workspace_name"
 require_relative "workspace/workspace_store_rename"
@@ -1430,8 +1431,10 @@ module Workspace
     common = CLI::Common.new(input: input, editor_launcher: editor_launcher)
     working_dir = Dir.pwd
     names = CLI::Names.new(project_config: project_config, project_detector: project_detector, lineage: lineage, working_dir: working_dir, workspace_name: workspace_name)
+    launch_hook_check = LaunchHookCheck.new(hook_installer: hook_installer, hooks_config: hooks_config)
     launcher = CLI::Launcher.new(project_config: project_config, launch_command: launch_command, launch_mode: launch_mode, state: state, project_settings: project_settings,
-      hook_runner: hook_runner, common: common, working_dir: working_dir, library: library, instruction_composer: instruction_composer, name_migration: name_migration)
+      hook_runner: hook_runner, common: common, working_dir: working_dir, library: library, instruction_composer: instruction_composer, name_migration: name_migration,
+      hook_check: launch_hook_check)
     relauncher = CLI::Relauncher.new(stop_command: stop_command, hook_runner: hook_runner, launcher: launcher, state: state, sleeper: sleeper || ->(seconds) { sleep(seconds) }, tmux: tmux,
       detacher: detacher || DetachedSpawn.new, program: [RbConfig.ruby, File.join(SkillSource.stable_dir(config.workspace_dir), "bin", "workspace")], log_dir: config.relaunch_log_dir,
       processes: lock_holder)

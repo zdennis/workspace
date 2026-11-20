@@ -122,6 +122,12 @@ RSpec.describe Workspace::HookInstaller do
       expect(installer.stale_tracked_hooks?(provider, tmpdir, command)).to be false
     end
 
+    it "builds the stale note a caller prints, naming the tracked file and the refresh command" do
+      expect(installer.stale_message(provider, tmpdir, command)).to eq(
+        "#{provider.label} hooks in #{settings_path} are older; #{Workspace::HookInstaller::STALE_NOTICE}"
+      )
+    end
+
     it "chains a differing tracked statusLine command into statusline.command and routes through workspace in local" do
       write_settings("statusLine" => {"type" => "command", "command" => "mine.sh"})
 
@@ -454,6 +460,28 @@ RSpec.describe Workspace::HookInstaller do
       expect(installer.installed?(provider, tmpdir, command)).to be false
       installer.install(provider, tmpdir, command)
       expect(installer.installed?(provider, tmpdir, command)).to be true
+    end
+  end
+
+  describe "#installed_in?" do
+    it "is false before install and true after, reading the path it is given" do
+      expect(installer.installed_in?(settings_path, provider, command)).to be false
+      installer.install(provider, tmpdir, command, quiet: true, local: true)
+      expect(installer.installed_in?(settings_path, provider, command)).to be false
+      expect(installer.installed_in?(File.join(tmpdir, ".claude", "settings.local.json"), provider, command)).to be true
+    end
+
+    it "is false when the file holds a different hook command" do
+      write_settings("hooks" => {"Stop" => [{"matcher" => nil, "hooks" => [{"type" => "command", "command" => "workspace session-event --old"}]}]})
+
+      expect(installer.installed_in?(settings_path, provider, command)).to be false
+    end
+
+    it "raises the same unreadable-settings error installed? raises" do
+      FileUtils.mkdir_p(File.dirname(settings_path))
+      File.write(settings_path, "{not json")
+
+      expect { installer.installed_in?(settings_path, provider, command) }.to raise_error(Workspace::Error, /#{Regexp.escape(settings_path)} is not valid JSON/)
     end
   end
 

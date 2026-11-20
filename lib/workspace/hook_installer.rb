@@ -73,13 +73,23 @@ module Workspace
       nil
     end
 
+    # @param path [String] the settings file to read, however the caller resolved
+    #   it ({#settings_path_for} or {#local_settings_path_for})
+    # @param provider [Workspace::AgentProvider]
+    # @param command [String] the hook command to install
+    # @return [Boolean] whether every wanted hook is already present in that file
+    # @raise [Workspace::Error] when the file exists but cannot be read
+    def installed_in?(path, provider, command)
+      existing = read_settings(path)
+      merge(existing, provider.hook_settings(command), ours: provider.hook_commands(command)) == existing
+    end
+
     # @param provider [Workspace::AgentProvider]
     # @param project_root [String]
     # @param command [String] the hook command to install
-    # @return [Boolean] whether every wanted hook is already present
+    # @return [Boolean] whether every wanted hook is already present in the tracked or user settings file
     def installed?(provider, project_root, command)
-      existing = read_settings(settings_path_for(provider, project_root))
-      merge(existing, provider.hook_settings(command), ours: provider.hook_commands(command)) == existing
+      installed_in?(settings_path_for(provider, project_root), provider, command)
     end
 
     # Prints the settings fragment workspace wants to add.
@@ -135,6 +145,14 @@ module Workspace
 
       ours = provider.hook_commands(command)
       tracked["hooks"].to_h.values.flatten.any? { |group| group.is_a?(Hash) && commands_in(group).any? { |c| ours.include?(c) } }
+    end
+
+    # The Note text a stale tracked hook entry gets, shared by `start` and the
+    # launch check so the two cannot drift.
+    #
+    # @return [String]
+    def stale_message(provider, project_root, command)
+      "#{provider.label} hooks in #{settings_path_for(provider, project_root)} are older; #{STALE_NOTICE}"
     end
 
     def install_unlocked(provider, project_root, command, dry_run:, quiet:, local: false)

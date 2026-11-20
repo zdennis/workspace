@@ -17,7 +17,8 @@ module Workspace
       # @param library [Workspace::Library, nil] resolves `--play` per project; nil refuses `--play`
       # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs; nil sends none and refuses `--pack`/`--handoff`
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace to lowercase first; nil renames nothing
-      def initialize(project_config:, launch_command:, launch_mode:, state:, project_settings:, hook_runner:, common:, working_dir:, library: nil, instruction_composer: nil, name_migration: nil)
+      # @param hook_check [Workspace::LaunchHookCheck, nil] warns when a launched checkout's agent session hooks are missing or stale; nil warns nothing
+      def initialize(project_config:, launch_command:, launch_mode:, state:, project_settings:, hook_runner:, common:, working_dir:, library: nil, instruction_composer: nil, name_migration: nil, hook_check: nil)
         @project_config = project_config
         @launch_command = launch_command
         @launch_mode = launch_mode
@@ -29,6 +30,7 @@ module Workspace
         @library = library
         @instruction_composer = instruction_composer
         @name_migration = name_migration
+        @hook_check = hook_check
       end
 
       # Launches the given project args (already parsed, no leading flags) and returns
@@ -76,9 +78,12 @@ module Workspace
         call_options[:arrange] = true if arrange
         result = @launch_command.call(projects, **call_options)
 
+        roots = resolved.to_h
         projects.each do |p|
           @project_settings.ensure_exists(p)
           @hook_runner.run(p, "post_launch")
+          root = roots[p] || @project_config.project_root_for(p)
+          @hook_check&.check(root, io: invocation.error_output) if root
         end
         {exit_code: result && result[:exit_code], projects: projects, result: result, plays: by_project, packs: composed, skipped_packs: skipped_packs, prompts: prompts}
       end
