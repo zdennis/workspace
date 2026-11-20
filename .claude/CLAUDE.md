@@ -231,6 +231,7 @@ New per-file detail goes there, never here.
 ### Work queue (`docs/architecture/work-queue.md`)
 
 - `lib/workspace/work_queue_history.rb` — Age-pruned `work-queue-history.jsonl` of finished queue items: append, filtered reads, id-prefix lookup and clear.
+- `lib/workspace/work_queue_store.rb` — Flock-guarded `work-queue.json` of pending queue items: revision, toggle, pause, claims and one `transaction` for the advance pass.
 
 ### Locks, plan, spine, inbox (`docs/architecture/locks-plan-spine-inbox.md`)
 

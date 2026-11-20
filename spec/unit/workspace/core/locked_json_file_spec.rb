@@ -19,6 +19,21 @@ RSpec.describe Workspace::LockedJsonFile do
 
   def leftovers = Dir.children(dir) - ["data.json", "data.json.lock"]
 
+  describe "#exclusive after:" do
+    it "calls after: with the result once the file is written" do
+      seen = []
+      after = ->(result) { seen << [result, File.exist?(path) ? JSON.parse(File.read(path)) : nil] }
+      file.exclusive(after: after) { |data| (data << "a") && :done }
+      expect(seen).to eq([[:done, ["a"]]])
+    end
+
+    it "does not call after: when the block raises" do
+      called = false
+      expect { file.exclusive(after: ->(_) { called = true }) { raise "boom" } }.to raise_error("boom")
+      expect(called).to be(false)
+    end
+  end
+
   describe "#exclusive" do
     it "passes parse's empty value for no file, writes the change pretty and returns the block's result" do
       result = file.exclusive { |data| (data << "a") && :done }
