@@ -1088,13 +1088,13 @@ RSpec.describe Workspace::CLI::Workflow do
       it "names the run with --run, keeping the pane for the step" do
         cli.run(["step", "done", "--run", "wr_9"])
 
-        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: "wr_9", cwd: "/some/dir", status: "pass", summary: nil, code: nil}]])
+        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: "wr_9", cwd: "/some/dir", status: "pass", summary: nil, code: nil, step: nil}]])
       end
 
       it "prints help" do
         cli.run(["step", "--help"])
 
-        expect(output.string).to include("Usage: workspace step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]").and include("end your turn")
+        expect(output.string).to include("Usage: workspace step done [--status pass|fail|done|running|needs_input|stuck] [--step STEP] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]").and include("end your turn")
       end
     end
   end
