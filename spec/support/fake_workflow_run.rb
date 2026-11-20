@@ -112,6 +112,11 @@ class FakeWorkflowPanes
     @bound[pane] = fields.merge(workspace: workspace)
   end
 
+  def bind_group(workspace:, pane:, run_id:, group:, artifacts: nil)
+    raise @bind_error if @bind_error
+    @bound[pane] = {kind: "run", run_id: run_id, group: group, artifacts: artifacts, workspace: workspace}.compact
+  end
+
   # +role+ "reviewer" or "author" removes only that role's bindings (one bound with no role is the author's); nil removes
   # all; +pane+ only that pane's.
   def unbind(run_id, role: nil, pane: nil, step: nil)

@@ -219,7 +219,6 @@ RSpec.describe Workspace::WorkflowEngine do
       start(first_sub_group)
 
       expect(panes.spawns).to be_empty
-      expect(panes.bound).to be_empty
       expect(panes.kicks.size).to eq(1)
       kick = panes.kicks.first
       expect(kick[:pane]).to eq("%5")
@@ -241,13 +240,20 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(run).to include("state" => "running", "pane" => "%5")
     end
 
+    it "binds the run pane to the group once, naming no sibling" do
+      start(first_sub_group)
+
+      expect(panes.bound).to match("%5" => hash_including(kind: "run", run_id: "wr_1", group: "checks"))
+      expect(panes.bound["%5"]).not_to have_key(:step)
+    end
+
     it "keeps the process_separation sibling's own pane, binding and line in a mixed group" do
       start(first_mixed_group)
 
       expect(panes.spawns).to eq(["app.worktree-x"])
-      expect(panes.bound.transform_values { |entry| entry.slice(:run_id, :step, :attempt) }).to eq(
-        "%101" => {run_id: "wr_1", step: "test", attempt: 1}
-      )
+      expect(panes.bound["%101"]).to include(run_id: "wr_1", step: "test", attempt: 1)
+      expect(panes.bound["%5"]).to include(kind: "run", run_id: "wr_1", group: "checks")
+      expect(panes.bound["%5"]).not_to have_key(:step)
       lint_file = run["steps"]["lint"]["attempts"].first["prompt_file"]
       expect(panes.kicks.map { |kick| [kick[:pane], kick[:text]] }).to match([
         ["%101", "Read #{run["steps"]["test"]["attempts"].first["prompt_file"]} and follow it."],

@@ -344,6 +344,13 @@ module Workspace
       held = run["paused"] || (budgeted && (budget_holds?(run) || time_holds?(run)))
       start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of, group_entry: true)
       return if held
+      # The run pane works on the group whole when any sibling runs as its sub-agent: one binding, written once at
+      # group entry, so hook events and reports can resolve it. No sibling's attempt binds over it (the subagent
+      # branch of {#start_attempt} skips the bind); the pane's next normal step binds it back to that step.
+      if ids.any? { |id| step_def_for(run, id)["execution_mode"] == "subagents" }
+        @panes.bind_group(workspace: run["workspace"], pane: run_pane(run), run_id: run["id"],
+          group: step_def_for(run, ids.first)["group"], artifacts: run["artifacts_dir"])
+      end
       ids.drop(1).each do |id|
         run["current"] = id
         # A checkout that is gone fails the sibling before any pane is made for it.

@@ -415,6 +415,23 @@ module Workspace
       @binder.bind(workspace: workspace, pane: pane, **fields)
     end
 
+    # Binds the pane to a fan_out group of a run, replacing its earlier binding: the pane works on the group whole
+    # (its subagent siblings run as the pane agent's own sub-agents), so no one sibling's step id is on it. The
+    # pane's next normal step binds it back to that step.
+    #
+    # @param workspace [String]
+    # @param pane [String] a pane id
+    # @param run_id [String]
+    # @param group [String] the group's id
+    # @param artifacts [String, nil] the run's artifacts directory
+    # @return [Hash{String=>Object}] the stored binding
+    # @raise [Workspace::Error] when the pane is not one of the workspace's
+    def bind_group(workspace:, pane:, run_id:, group:, artifacts: nil)
+      fields = {kind: "run", id: run_id, group: group}
+      fields[:artifacts] = artifacts if artifacts && artifacts.length <= PaneBindings::MAX_FIELD_LENGTH
+      @binder.bind(workspace: workspace, pane: pane, **fields)
+    end
+
     # Removes the run's binding, one `restore` has not carried to a pane yet included.
     #
     # @param run_id [String]
