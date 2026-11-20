@@ -80,9 +80,48 @@ module Workspace
       attempt["head"] = (attempt["head"] || {"before" => nil}).merge("after" => @guard.head(run.worktree))
       copies = @evidence ? @evidence.copy(run: run, step: step, attempt: attempt) : []
       attempt["outputs"] = outputs(step, run.to_h, copies)
-      attempt.merge!(agent_facts(run.to_h, attempt))
+      attempt.merge!(agent_facts_or_shared(run.to_h, step, attempt))
       attempt["evidence"] = Array(attempt["evidence"]).select { |each| KEPT_EVIDENCE.include?(each["kind"]) } + copies if @evidence
       WorkflowRun::Attempt.from_h(attempt)
+    end
+
+    # The agent, session and usage facts of an attempt's end. A `subagents` group's siblings share the run
+    # pane's one session, and concurrent siblings' time windows overlap, so each claiming its own read would
+    # double-count the same transcript: the group's first attempt to end claims the session's usage for its
+    # window, and a sibling whose window overlaps one already claimed takes none, marked with whose claim it
+    # shares ({SUBAGENT_SHARED}). Any other step reads its own facts as always.
+    def agent_facts_or_shared(run, step, attempt)
+      return agent_facts(run, attempt) unless subagent_sibling?(step)
+      shared = group_claimed_usage(run, step, attempt)
+      return agent_facts(run, attempt) unless shared
+      {"usage" => nil, "usage_shared" => shared}
+    end
+
+    # Whether +step+ is a fan_out sibling that runs as a sub-agent of the run pane. A definition stored before
+    # the key existed has no mode on its siblings and keeps today's per-attempt reading.
+    def subagent_sibling?(step)
+      step.is_a?(Hash) && step["group"].is_a?(String) && step["execution_mode"] == "subagents"
+    end
+
+    # The usage claim of this group a sibling attempt's window overlaps, when one stands: the sibling step and
+    # attempt that claimed the shared session, as {SUBAGENT_SHARED} records them. An attempt that could not be
+    # told its session claims nothing.
+    def group_claimed_usage(run, step, attempt)
+      ids = WorkflowDefinition.group_steps(run["definition"])[step["group"]] || []
+      started = Time.iso8601(attempt["started_at"].to_s)
+      ended = attempt["ended_at"] ? Time.iso8601(attempt["ended_at"].to_s) : @clock.call
+      ids.each do |id|
+        next if id == step["id"]
+        Array(run.dig("steps", id, "attempts")).each do |other|
+          next unless other.is_a?(Hash) && other.dig("session", "id")
+          other_started = Time.iso8601(other["started_at"].to_s)
+          other_ended = other["ended_at"] ? Time.iso8601(other["ended_at"].to_s) : @clock.call
+          return {"group" => step["group"], "step" => id, "attempt" => other["n"]} if started <= other_ended && other_started <= ended
+        end
+      end
+      nil
+    rescue ArgumentError
+      nil
     end
 
     # Keeps the history of a run's reason: every change of the effective reason (the stored one, or
