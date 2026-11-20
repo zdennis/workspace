@@ -88,6 +88,8 @@ If tmuxinator can't start a project's session, `launch` prints `Error: could not
 
 ## Notes
 
+When a hook-capable agent (for example Claude Code) whose executable is on PATH holds no current session hooks for the checkout being launched — or holds a stale one — `launch` prints one `Note:` line naming it and the remedy, and launches anyway. It installs nothing: run `workspace init --install-hooks` in that checkout to install them.
+
 `--reattach` uses `tmux -CC attach` which may trigger an iTerm dialog. To suppress it, set iTerm > Settings > General > tmux > "When attaching, restore windows" to "Always".
 
 ## Examples
