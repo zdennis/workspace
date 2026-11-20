@@ -44,7 +44,7 @@ workspace workflow unpause [RUN] [--json]
 workspace workflow approve [RUN] [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
 workspace workflow reject [RUN] --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]
 
-workspace step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]
+workspace step done [--status pass|fail|done|running|needs_input|stuck] [--step STEP] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]
 workspace step status [--run RUN_ID] [--json]
 workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 ```
@@ -122,6 +122,7 @@ workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 | `--if-sha256 SHA` | `update`: the sha256 of the file's raw bytes, from `show ID --source --json` or `show --json` (the list); required |
 | `--dry-run` | `run`, `start`: report what would start and start nothing. `add`, `update`: run every check and write no definition (the workflows directory and `.ID.yml.lock` may still be created) |
 | `--status STATUS` | `step done`: `pass` (default), `fail`, or a stated status: `done`, `running`, `needs_input`, `stuck` (`--summary` is its detail; `--code` does not apply to these and is a `usage` error) |
+| `--step STEP` | `step done`: the fan_out sibling to report on, when the pane is bound to the group whole (`subagents` execution mode); a sibling of that group is required there — missing or outside it is the same `usage` error |
 | `--summary TEXT` | `step done`: one line about what was done, or what is left |
 | `--match-file PATH` | `step expect-fail`: a file whose text (trimmed) the failing tests' stdout and stderr must hold |
 | `--timeout SECONDS` | `step expect-fail`: seconds the tests may run (default 240) |
