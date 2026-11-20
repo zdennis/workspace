@@ -762,7 +762,8 @@ module Workspace
     end
 
     # Judges each sibling of +ids+ that is still running with an open attempt, in order, until one's judging needs
-    # a check outside the lock: the rest are named in the run's `group_turn` mark for {#apply_check} to pick up.
+    # a check outside the lock: the rest — with the turn's own window and background, which their judging still
+    # reads — are named in the run's `group_turn` mark for {#apply_check} to pick up.
     def judge_siblings(work, ids, turn_started, stopped_at, background, status_report, ctx)
       rest = Array(ids)
       while (id = rest.shift)
@@ -776,7 +777,10 @@ module Workspace
         judge(work, ctx, turn_started, background, status_report: status_report)
         if ctx.check
           group = work["definition"]["steps"].find { |each| each["id"] == id }&.fetch("group", nil)
-          work["group_turn"] = {"group" => group || id, "siblings" => rest} unless rest.empty?
+          unless rest.empty?
+            work["group_turn"] = {"group" => group || id, "siblings" => rest, "turn_started" => turn_started&.utc&.iso8601(3),
+              "stopped_at" => stopped_at&.utc&.iso8601(3), "background" => background}
+          end
           return
         end
       end
@@ -784,12 +788,14 @@ module Workspace
     end
 
     # The rest of a group turn's judging, after one sibling's outside check applied: the run's `group_turn` mark
-    # names the siblings still open. Returns the next sibling's check for {finish_check}'s chain to run, when its
-    # judging needs one; nil once every sibling is judged (their decisions already ran the group's join).
+    # names the siblings still open, with the original turn's window and background. Returns the next sibling's
+    # check for {finish_check}'s chain to run, when its judging needs one; nil once every sibling is judged (their
+    # decisions already ran the group's join).
     def judge_group_turn_pending(work, ctx)
       mark = work["group_turn"]
       return nil unless mark.is_a?(Hash) && mark["siblings"].is_a?(Array)
-      judge_siblings(work, mark["siblings"], nil, nil, mark["background"].is_a?(Array) ? mark["background"] : [], nil, ctx)
+      times = [mark["turn_started"], mark["stopped_at"]].map { |each| each.is_a?(String) ? Time.iso8601(each) : nil }
+      judge_siblings(work, mark["siblings"], times[0], times[1], Array(mark["background"]), nil, ctx)
       work.delete("group_turn") unless ctx.check
       ctx.check
     end

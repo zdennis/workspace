@@ -442,9 +442,11 @@ module Workspace
       end
     end
 
-    # The execution mode a group hash runs with: the mode its definition set, or {DEFAULT_EXECUTION_MODE} when it
-    # says nothing — which is also every group stored before the key existed, so a run resumed across an upgrade
-    # reads consistently. The one reader of the group hash for behavior; dispatch and the engine go through this.
+    # The execution mode a group's definition set, or {DEFAULT_EXECUTION_MODE} when it says nothing — which is also
+    # every group stored before the key existed. This is the reader of the group hash's own key (what
+    # {WorkflowFanOutSpec} and a reader of the group's mode use); the per-sibling decision a pane-free sibling
+    # needs is {WorkflowRun.pane_free?}, which reads the resolved mode each built sibling carries, and a run stored
+    # before the key existed has siblings without one, which read as today's per-pane behavior.
     #
     # @param group [Hash] one of {#to_h}'s "groups" values
     # @return [String] a member of {EXECUTION_MODES}

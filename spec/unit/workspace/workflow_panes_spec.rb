@@ -195,6 +195,31 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(panes.identity("wr_1", step: "lint")).to eq("session" => "app", "pane_slot" => "app:0.1")
       expect(panes.identity("wr_1", step: "docs")).to be_nil
     end
+
+    it "binds the run pane to a fan_out group whole, and reads the group back off it" do
+      entry = panes.bind_group(workspace: "app", pane: "%5", run_id: "wr_1", group: "checks", artifacts: "/src/app/.workflow/wr_1")
+
+      expect(entry).to include("kind" => "run", "id" => "wr_1", "group" => "checks", "workspace" => "app")
+      expect(entry).not_to have_key("step")
+      expect(panes.group_on("%5")).to eq("checks")
+      expect(panes.step_on("%5")).to be_nil
+      expect(panes.run_on("%5")).to eq("wr_1")
+    end
+
+    it "reads no group off a pane bound to one step, and drops a group binding's too-long artifacts path" do
+      bind
+      expect(panes.group_on("%5")).to be_nil
+      expect(panes.step_on("%5")).to eq("plan")
+
+      allow(locator).to receive(:locate).with("app", "%6").and_return(id: "%6", session: "app", window: 0, index: 2)
+      allow(tmux).to receive(:session_name_for_pane).with("%6").and_return("app")
+      allow(tmux).to receive(:pane_slot).with("%6").and_return("app:0.2")
+      entry = panes.bind_group(workspace: "app", pane: "%6", run_id: "wr_2", group: "checks", artifacts: "/#{"deep/" * 50}wr_2")
+
+      expect(entry).to include("group" => "checks")
+      expect(entry).not_to have_key("artifacts")
+      expect(panes.group_on("%6")).to eq("checks")
+    end
   end
 
   describe "#spawn_author" do

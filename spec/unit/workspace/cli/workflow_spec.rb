@@ -980,6 +980,16 @@ RSpec.describe Workspace::CLI::Workflow do
       expect(workflow_command.calls.last.last[:transcript_path]).to eq("/t/s.jsonl")
     end
 
+    it "passes --group on to the advance, and refuses it anywhere but advance --turn-ended" do
+      cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--group", "checks"])
+
+      expect(workflow_command.calls.last.last[:group]).to eq("checks")
+      expect { cli.run(["workflow", "advance", "wr_1", "--group", "checks"]) }
+        .to raise_error(Workspace::UsageError, "--group is only for `workflow advance --turn-ended`.")
+      expect { cli.run(["workflow", "resume", "wr_1", "--group", "checks"]) }
+        .to raise_error(Workspace::UsageError, "--group is only for `workflow advance --turn-ended`.")
+    end
+
     it "parses each --background-task on its first colon" do
       cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--background-task", "MCP task:k12345678", "--background-task", "shell:b-1"])
 
