@@ -160,6 +160,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
       expect(run.current).to eq("build")
       expect(dispatch.calls.map(&:first)).to eq([:dispatch])
+      expect(dispatch.entered).to eq(["build"])
     end
 
     it "completes the run after its last step" do
@@ -314,6 +315,19 @@ RSpec.describe Workspace::WorkflowProgress do
         "lint" => {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z"}]},
         "test" => {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:10:00.000Z"}]}
       })
+    end
+
+    it "starts the step after the group once every sibling passed, as a move into it from outside" do
+      definition = [{"id" => "lint", "group" => "checks", "produces" => []}, {"id" => "test", "group" => "checks", "produces" => []}, {"id" => "report", "produces" => []}]
+      run = run_hash(:definition_steps => definition, "current" => "test", "steps" => {
+        "lint" => {"state" => "passed", "attempts" => [{"n" => 1}]}, "test" => {"state" => "passed", "attempts" => [{"n" => 1}]},
+        "report" => {"state" => "pending", "attempts" => []}
+      })
+
+      joined = progress.join(run, ctx: ctx, group: "checks")
+
+      expect(joined.current).to eq("report")
+      expect(dispatch.entered).to eq(["report"])
     end
 
     # A sibling's failure move is the group join's: it is kept as the sibling's own `pending_move` (its backoff folded

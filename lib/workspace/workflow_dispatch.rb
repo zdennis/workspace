@@ -99,13 +99,19 @@ module Workspace
     # @param budgeted [Boolean] false starts the attempt even when the token budget is used up
     # @param retry_of [Hash{String=>Object}, nil] the retry's "pane", "identity" and "text", kept by a budget hold, and
     #   "attempt": the attempt of the step a review rejected, recorded as the new attempt's `retry_of`
-    # A step of a fan_out group none of whose siblings has started yet (each still `pending`, with no attempt) is not
-    # started alone: the whole group is ({#fan_out}). This is the one place a group is entered, so the first step of a
-    # run, a resume of a run that never started, and the step before the group passing all enter it the same way.
+    # @param entering [Boolean] true when the cursor comes to this step from outside its fan_out group (the step
+    #   before the group passing, a gate's reject `--to` it, `resume --from` it): a group whose siblings have all
+    #   ended (each `passed` or `failed`) is put back to its fresh state first ({#reenter_group}), so the whole group
+    #   runs again
+    # A step of a fan_out group none of whose siblings has started yet (each still `pending`) is not started alone: the
+    # whole group is ({#fan_out}). This is the one place a group is entered, so the first step of a run, a resume of a
+    # run that never started, the step before the group passing, and a move back into a group that ran before all
+    # enter it the same way.
     #
     # @return [WorkflowRun] the run afterwards
-    def dispatch(run, ctx:, cause:, context: nil, budgeted: true, retry_of: nil)
+    def dispatch(run, ctx:, cause:, context: nil, budgeted: true, retry_of: nil, entering: false)
       work = WorkflowRun.from_h(run).thawed
+      reenter_group(work) if entering
       siblings = unstarted_group(work)
       if siblings
         fan_out(work, siblings, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of)
@@ -311,15 +317,49 @@ module Workspace
     SIBLING_WORKING = %w[running checking reviewing].freeze
 
     # The ids of the current step's fan_out group, in step order, when the current step is a sibling and no sibling has
-    # started (each `pending`, with no attempt); nil for any other step, and for a group already under way.
+    # started (each `pending`: never run, or put back by {#reenter_group}); nil for any other step, and for a group
+    # already under way.
     def unstarted_group(run)
       ids = group_of(run, run["current"])
       return nil unless ids
       started = ids.any? do |id|
         state = run["steps"].is_a?(Hash) ? run["steps"][id] : nil
-        !state.is_a?(Hash) || state["state"] != "pending" || Array(state["attempts"]).any?
+        !state.is_a?(Hash) || state["state"] != "pending"
       end
       started ? nil : ids
+    end
+
+    # Step states of a sibling that has ended: a group whose siblings all read one of these is entered afresh.
+    SIBLING_ENDED = %w[passed failed].freeze
+
+    # Puts the current step's fan_out group back to `pending` when the cursor comes into it from outside and every
+    # sibling has ended ({SIBLING_ENDED}), so {#unstarted_group} fans the whole group out again rather than running the
+    # one sibling the cursor names beside siblings that judged earlier work. Each sibling's attempts stay as its
+    # history (each new one spends from the run's allowance as any attempt does), as do its pending context and its
+    # reason history; its last stop (`reason`), its deferred move, its kept failure details and a gate still waiting go, as a fresh
+    # sibling has none. A group with a sibling at work or waiting (a lock, a hold, a pane gone) is left as it is.
+    def reenter_group(run)
+      ids = group_of(run, run["current"])
+      return unless ids
+      return unless ids.all? { |id| SIBLING_ENDED.include?(run.dig("steps", id, "state")) }
+      ids.each do |id|
+        state = run["steps"][id]
+        state["state"] = "pending"
+        state.delete("failed_reason")
+        state.delete("gate") if state.dig("gate", "state") == "waiting"
+        %w[reason pending_move].each { |key| WorkflowRun.slots(run, id).delete(key) }
+      end
+    end
+
+    # The pane a sibling of a group entered again ({#reenter_group}) types into: its own from its last run, while that
+    # binding still holds and no sibling started before it in this fan-out took the pane; nil for a sibling that never
+    # ran, which gets a new pane.
+    def kept_pane(run, ids, id)
+      return nil if Array(run.dig("steps", id, "attempts")).empty?
+      pane = @panes.pane_of(run["id"], step: id)
+      return nil unless pane && @panes.alive?(run["id"], step: id)
+      taken = ids.take_while { |each| each != id }.map { |each| WorkflowRun.slot(run, each, "pane") }
+      taken.include?(pane) ? nil : pane
     end
 
     # The ids of +step_id+'s fan_out group, in step order; nil for a step in no group.
@@ -330,7 +370,8 @@ module Workspace
     # Starts every sibling of a group at once, each in its own author pane: the first in the run's pane, each after it
     # in a new pane split off the workspace's session ({WorkflowPanes#spawn_author}) — unless the group has a subagent
     # sibling, when the run pane is the group's and a `process_separation` first sibling takes a spawned pane too (see
-    # {#first_pane}). Each sibling gets its own attempt, binding and line; a sibling whose pane can't be made or used
+    # {#first_pane}) — or, for a group entered again, in the pane still bound to the sibling from its last run.
+    # Each sibling gets its own attempt, binding and line; a sibling whose pane can't be made or used
     # waits on its own, and the others start anyway. The cursor is left on the last sibling started. A paused run, or
     # one whose budget or timeout is used up, holds the first sibling only, as it would one step: the dispatch that
     # ends the hold finds the group still unstarted and fans it out then.
@@ -361,6 +402,8 @@ module Workspace
         run["current"] = id
         # A checkout that is gone fails the sibling before any pane is made for it.
         next start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil, group_entry: true) unless File.directory?(run["worktree"])
+        kept = kept_pane(run, ids, id)
+        next start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil, pane: kept, group_entry: true) if kept
         # The run's lock is held across each sibling's pane spawn, up to that sibling's readiness deadline, so a caller
         # that blocks on the lock (the nudger's advance, approve, cancel, resume) can wait that long. Spawning outside
         # the lock (a two-phase fan-out, as infra retry does) is deferred follow-up work.
@@ -813,12 +856,13 @@ module Workspace
     # Whether the binding of the pane the current step would be typed into was made for another pane. A fan_out
     # sibling's own binding is asked about alone, so one dead sibling pane stops only that sibling; a sibling with no
     # binding of its own yet is asked about through the run's when it is typed into the run's pane, and a pane just
-    # made for it has none to ask about.
+    # made for it has none to ask about (a dead binding of its own from an earlier run of the group included).
     def stale_binding?(run, pane)
       id = run["id"]
       step = run["current"]
       return !!(@panes.pane_of(id) && !@panes.alive?(id)) unless WorkflowRun.step_scoped?(run, step)
-      return !@panes.alive?(id, step: step) if @panes.pane_of(id, step: step)
+      own = @panes.pane_of(id, step: step)
+      return own == pane && !@panes.alive?(id, step: step) if own
       pane == @panes.pane_of(id) && !@panes.alive?(id)
     end
 

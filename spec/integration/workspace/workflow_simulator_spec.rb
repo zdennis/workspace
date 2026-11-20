@@ -321,6 +321,27 @@ RSpec.describe Workspace::WorkflowSimulator do
       expect(person).to match([include("action" => "reject", "step" => "test", "attempt" => 1), include("action" => "approve", "step" => "test", "attempt" => 2)])
       expect(rejected["steps"].find { |each| each["id"] == "test" }["attempts"].size).to eq(2)
     end
+
+    it "runs rpiv-auto-approve's three reviewers again after its tally rejects and plan revises, and passes the tally on round 2" do
+      preset = PresetSimulation.definition("rpiv-auto-approve")
+      script = Workspace::WorkflowSimScript.parse("steps:\n  plan_review:\n    - {check: fail, log: \"skeptic rejected\\n\"}\n    - {}\n", definition: preset.to_h, source: "s.yml")
+
+      result = simulator.call(definition: preset, script: script, inputs: PresetSimulation.inputs(preset))
+
+      expect(result).to include("outcome" => "completed", "stopped" => nil)
+      expect(result["run"]["loops"]).to eq("plan_review->plan" => 1)
+      reviewers = %w[review_supportive review_skeptical review_implementer]
+      steps = result["steps"].to_h { |each| [each["id"], each["attempts"].map { |attempt| attempt["outcome"] }] }
+      expect(steps.values_at("plan", *reviewers, "plan_review")).to eq([%w[passed passed]] * 4 + [%w[failed passed]])
+      looped = rows(result, "step_dispatching").drop_while { |row| row["cause"] != "loop" }
+      expect(looped.map { |row| row.values_at("step", "attempt", "cause") }).to eq([
+        ["plan", 2, "loop"], ["review_supportive", 2, "next_step"], ["review_skeptical", 2, "next_step"],
+        ["review_implementer", 2, "next_step"], ["plan_review", 2, "next_step"], ["implement", 1, "next_step"], ["verify", 1, "next_step"]
+      ])
+      # Round 2 types into the reviewers' own panes from round 1, making none.
+      by_step = rows(result, "step_dispatching").select { |row| reviewers.include?(row["step"]) }.group_by { |row| row["step"] }
+      expect(by_step.values.map { |each| each.map { |row| row["pane"] }.uniq.size }).to eq([1, 1, 1])
+    end
   end
 end
 

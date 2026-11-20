@@ -134,7 +134,19 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(run.pending_context).to eq(["The build step was rejected at its gate: the plan misses a case"])
       expect(change.events).to eq([["wr_1", "gate_rejected", {"step" => "build", "to" => "plan", "note" => "the plan misses a case"}]])
       expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "gate_rejected", context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.entered).to eq(["plan"])
       expect(change.deliveries).to eq([{"step" => "plan"}])
+    end
+
+    it "sends a fan_out sibling's rejected gate back to that sibling alone, not entering its group again" do
+      hash = run_hash(current: "build", state: "passed", gate: waiting_gate)
+      hash["definition"]["steps"].each { |each| each["group"] = "checks" }
+      stored(hash)
+
+      decisions.reject("wr_1", actor: "person", note: "again", to: "build")
+
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "gate_rejected", context: nil, budgeted: true, retry_of: nil}])
+      expect(dispatch.entered).to be_empty
     end
 
     it "refuses a --to past the gated step" do
@@ -638,6 +650,7 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(resumed.run.current).to eq("build")
       expect(change.events).to eq([["wr_1", "run_resumed", {"from" => "build"}]])
       expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}]])
+      expect(dispatch.entered).to eq(["build"])
     end
 
     it "skips a retry's wait and starts the retry" do

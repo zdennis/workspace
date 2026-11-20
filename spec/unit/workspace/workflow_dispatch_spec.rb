@@ -223,6 +223,90 @@ RSpec.describe Workspace::WorkflowDispatch do
           expect(run.step("test").state).to eq("failed")
         end
       end
+
+      describe "entering a group again, every sibling having ended" do
+        def ended(**overrides)
+          grouped("current" => "lint", "steps" => {
+            "lint" => {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed"}], "pane" => "%3"},
+            "test" => {"state" => "failed", "attempts" => [{"n" => 1, "outcome" => "failed"}], "pane" => "%6",
+                       "failed_reason" => {"step" => "test"}, "reason" => {"code" => "failed_check"}, "pending_context" => ["kept"]}
+          }, **overrides)
+        end
+
+        it "starts every sibling again, each in the pane still bound to it, keeping its attempts and pending context" do
+          kept = RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%3", "test" => "%6"}}, spawned: [{pane: "%9"}])
+          context = ctx
+
+          run = over(kept).dispatch(ended, ctx: context, cause: "next_step", entering: true)
+
+          expect(kept.calls.map(&:first)).not_to include(:spawn_author)
+          expect(context.deliveries.map { |line| line.slice("step", "pane", "attempt") }).to eq([{"step" => "lint", "pane" => "%3", "attempt" => 2}, {"step" => "test", "pane" => "%6", "attempt" => 2}])
+          expect(run.steps.values.map(&:state)).to eq(%w[running running])
+          expect(run.step("test").attempts.map(&:n)).to eq([1, 2])
+          expect(run.step("test").last_attempt.context).to eq(["kept"])
+          expect(run.step("test").to_h).not_to include("failed_reason")
+          expect(run.reason_for("test")).to be_nil
+        end
+
+        it "makes a new pane for a sibling whose own binding is gone" do
+          spawning = RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%3", "test" => "%6"}}, dead: [%w[wr_1 test]], spawned: [{pane: "%9"}])
+          context = ctx
+
+          over(spawning).dispatch(ended, ctx: context, cause: "next_step", entering: true)
+
+          expect(spawning.calls).to include([:spawn_author, "app"])
+          expect(context.deliveries.map { |line| line["pane"] }).to eq(%w[%3 %9])
+        end
+
+        it "runs only the named sibling when the dispatch does not come from outside the group" do
+          run = dispatch.dispatch(ended, ctx: ctx, cause: "loop")
+
+          expect(run.step("lint").state).to eq("running")
+          expect(run.step("test").state).to eq("failed")
+        end
+
+        it "makes a new pane for a later sibling whose own binding names a pane an earlier sibling just took" do
+          shared = RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%3", "test" => "%3"}}, spawned: [{pane: "%9"}])
+          context = ctx
+
+          over(shared).dispatch(ended, ctx: context, cause: "next_step", entering: true)
+
+          expect(shared.calls).to include([:spawn_author, "app"])
+          expect(context.deliveries.map { |line| line["pane"] }).to eq(%w[%3 %9])
+        end
+
+        it "puts every sibling back to pending on a paused run, dropping a deferred move and a waiting gate, holding only the first, so the replay enters the group" do
+          spawning = RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%3", "test" => "%6"}}, spawned: [{pane: "%9"}])
+          held = ended("paused" => {"since" => "2026-11-10T11:55:00Z", "by" => "person"})
+          held["steps"]["test"]["pending_move"] = {"to" => "lint"}
+          held["steps"]["test"]["gate"] = {"state" => "waiting", "since" => "2026-11-10T11:00:00Z"}
+          held["steps"]["lint"]["gate"] = {"state" => "approved", "at" => "2026-11-10T11:00:00Z"}
+
+          run = over(spawning).dispatch(held, ctx: ctx, cause: "next_step", entering: true)
+
+          expect(run.pause_hold_for("lint")).to include("kind" => "attempt")
+          expect(run.step("test").state).to eq("pending")
+          expect(run.step("test").to_h).not_to include("pending_move", "gate", "reason", "failed_reason")
+          expect(run.step("lint").gate).to include("state" => "approved")
+          expect(spawning.calls.map(&:first)).not_to include(:spawn_author, :bind)
+
+          replayed = over(spawning).dispatch(run.to_h.except("paused"), ctx: ctx, cause: "resume")
+
+          expect(replayed.steps.values.map(&:state)).to eq(%w[running running])
+          expect(replayed.step("test").attempts.map(&:n)).to eq([1, 2])
+        end
+
+        it "leaves a group alone while a sibling still waits, running only the named sibling" do
+          waiting = ended
+          waiting["steps"]["test"]["state"] = "waiting"
+
+          run = dispatch.dispatch(waiting, ctx: ctx, cause: "resume", entering: true)
+
+          expect(run.step("lint").state).to eq("running")
+          expect(run.step("test").state).to eq("waiting")
+          expect(run.step("test").attempts.size).to eq(1)
+        end
+      end
     end
 
     it "parks the whole run on a dead binding of an ungrouped step, as always" do

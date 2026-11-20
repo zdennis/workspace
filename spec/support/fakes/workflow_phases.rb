@@ -238,10 +238,11 @@ end
 # +check_pane+ refuses the panes it was told are busy; +release+ records
 # the run's id; +drop_park+ returns the run without its park; +hold_round+ and +hold_round_lock+ hold a round as told;
 # +hold_paused+ (and +hold_round+ before it) holds a paused run as the real one does: `pause_hold`, `waiting`, no reason; a first hold is kept.
+# +entered+ lists the steps of each +dispatch+ called with `entering: true`, in order.
 class RecordingDispatch
-  CONTROL_METHODS = %i[calls].freeze
+  CONTROL_METHODS = %i[calls entered].freeze
 
-  attr_reader :calls
+  attr_reader :calls, :entered
 
   # @param busy [Array<String>] the panes +check_pane+ refuses with `pane_has_run`
   # @param appends [Boolean] whether +dispatch+ starts a new attempt, as a delivered line does
@@ -255,6 +256,7 @@ class RecordingDispatch
     @holds = holds
     @lock_waits = lock_waits
     @calls = []
+    @entered = []
   end
 
   def hold_round_lock(run, round:, step_state:)
@@ -275,8 +277,9 @@ class RecordingDispatch
       "reason" => {"code" => @holds, "since" => "2026-11-10T12:00:00Z", "details" => {"step" => run.current, "review_round" => round}}))
   end
 
-  def dispatch(run, ctx:, cause:, context: nil, budgeted: true, retry_of: nil)
+  def dispatch(run, ctx:, cause:, context: nil, budgeted: true, retry_of: nil, entering: false)
     run = Workspace::WorkflowRun.from_h(run)
+    @entered << run.current if entering
     @calls << [:dispatch, run.id, {cause: cause, context: context, budgeted: budgeted, retry_of: retry_of}]
     ctx.deliver("step" => run.current)
     return run unless @appends
