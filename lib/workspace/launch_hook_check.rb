@@ -46,7 +46,9 @@ module Workspace
 
       "#{provider.label} hooks missing or stale for this checkout's agents; " \
         "run `workspace doctor --fix` (or workspace start again) to install them."
-    rescue Workspace::Error
+    rescue Workspace::Error, SystemCallError
+      # An unreadable settings file (bad JSON, wrong shape, no permission) is
+      # a note, never a failed launch: the session is already up by now.
       "#{provider.label} hooks not installed: could not read the agent settings file; " \
         "run `workspace doctor --fix` (or workspace start again) to install them."
     end

@@ -11,12 +11,22 @@ RSpec.describe Workspace::CLI::Launcher do
   let(:library) { RecordingLaunchLibrary.new }
   let(:composer) { nil }
   let(:name_migration) { nil }
+  let(:hook_check_class) do
+    Class.new do
+      attr_reader :calls
+
+      def initialize = (@calls = [])
+
+      def check(name, root, io:) = (@calls << {name: name, root: root, io: io})
+    end
+  end
+  let(:hook_check) { nil }
 
   def launcher
     described_class.new(project_config: project_config, launch_command: launch_command,
       launch_mode: Workspace::LaunchMode.new(project_settings: settings, which: ->(_) { "/usr/bin/osascript" }, platform: "arm64-darwin", env: {}),
       state: state, project_settings: settings, hook_runner: hook_runner, common: Workspace::CLI::Common.new,
-      working_dir: "/src/here", library: library, instruction_composer: composer, name_migration: name_migration)
+      working_dir: "/src/here", library: library, instruction_composer: composer, name_migration: name_migration, hook_check: hook_check)
   end
 
   def invocation
@@ -61,6 +71,30 @@ RSpec.describe Workspace::CLI::Launcher do
 
       expect(project_config.created).to eq([["new", "/src/new"]])
       expect(launch_command.calls.first.first).to eq(["new"])
+    end
+
+    context "with a hook check wired" do
+      let(:hook_check) { hook_check_class.new }
+
+      it "checks each launched checkout's agent hooks on the run's error output, by the root it resolved" do
+        project_config.resolutions["~/src/new"] = ["new", "/src/new"]
+
+        launcher.launch(invocation, ["app", "~/src/new"])
+
+        expect(hook_check.calls.map { |call| [call[:name], call[:root]] }).to eq([["app", "/src/app"], ["new", "/src/new"]])
+        expect(hook_check.calls.map { |call| call[:io] }).to all(eq(err))
+      end
+
+      it "skips a workspace whose checkout root cannot be resolved" do
+        launcher.launch(invocation, ["loose"])
+
+        expect(hook_check.calls).to be_empty
+      end
+    end
+
+    it "launches with no hook check wired and prints nothing for it" do
+      expect { launcher.launch(invocation, ["app"]) }.not_to raise_error
+      expect(err.string).not_to include("hooks")
     end
 
     it "passes the prompt, timeout, headless and arrange choices through" do
