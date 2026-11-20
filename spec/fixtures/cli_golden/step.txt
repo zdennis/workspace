@@ -17,6 +17,7 @@ given tests fail before the fix.
 Run `workspace step VERB --help` for a verb's options.
 
         --status STATUS              done: pass (default), fail, or a stated status: done, running, needs_input, stuck
+        --step STEP                  done: the fan_out sibling to report on, when this pane is bound to its group
         --summary TEXT               done: one line about what was done, or what is left
         --code WORD                  done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)
         --run RUN_ID                 done, status: the run to work on when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous
@@ -168,6 +169,7 @@ given tests fail before the fix.
 Run `workspace step VERB --help` for a verb's options.
 
         --status STATUS              done: pass (default), fail, or a stated status: done, running, needs_input, stuck
+        --step STEP                  done: the fan_out sibling to report on, when this pane is bound to its group
         --summary TEXT               done: one line about what was done, or what is left
         --code WORD                  done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)
         --run RUN_ID                 done, status: the run to work on when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous

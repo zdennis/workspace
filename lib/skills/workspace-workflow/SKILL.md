@@ -71,7 +71,7 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 | `pr-feedback` | none | triage (gate), fix | Review feedback on a PR; never posts or pushes |
 | `investigate` | none | reproduce, diagnose (gate), fix | A failing check or bug; stops `no_input` with no input and no PR |
 | `explore` | `task` | survey (gate), report | Read-only research or gap analysis |
-| `explore-parallel` | `task` | read (two siblings in parallel), report (gate) | Read-only research fanned out: the two readers run side by side, then one report |
+| `explore-parallel` | `task` | read (two siblings in parallel), report (gate) | Read-only research fanned out: the two readers run as sub-agents of the run pane (the default mode), then one report |
 | `bugfix` | `task` | reproduce (gate), fix, verify | Experimental. One bug fixed test first: a failing test is proven before the gate. Needs `commands.test` that takes test files, `commands.test_files`, and a `workspace` with `step_expect_fail` in `capabilities --json` on the agent daemon's PATH |
 
 ## Reading status
