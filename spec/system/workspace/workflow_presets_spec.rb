@@ -70,16 +70,18 @@ RSpec.describe "the shipped workflow presets" do
 
     it "pins on_fail and the run allowance the loop default was tuned against" do
       expect(catalog.find("rpiv").to_h["max_attempts"]).to eq(14)
-      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to eq(59)
+      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to eq(67)
       expect(catalog.find("rpiv-auto-approve-v2").to_h["max_attempts"]).to eq(21)
 
       rpiv = catalog.find("rpiv").to_h["steps"].find { |step| step["id"] == "verify" }
       expect(rpiv["on_fail"]).to include("goto" => "implement", "max" => 3)
 
       auto = catalog.find("rpiv-auto-approve").to_h["steps"].to_h { |step| [step["id"], step["on_fail"]] }
-      # The three reviewers sit in one fan_out group and carry no on_fail of their own:
-      # only the tally loops back to plan.
+      # The three reviewers sit in one fan_out group and carry no on_fail of their own: a
+      # reviewer that fails takes the group's goto back to plan, and the tally loops back on a
+      # rejected round.
       expect(auto.slice("review_supportive", "review_skeptical", "review_implementer").values).to all(be_nil)
+      expect(catalog.find("rpiv-auto-approve").to_h["groups"]["reviewers"]["on_fail"]).to eq({"goto" => "plan", "max" => 2, "context" => "fresh", "except" => ["guard", "check_error"]})
       expect(auto["plan_review"]).to eq({"goto" => "plan", "max" => 9, "context" => "fresh", "except" => ["stale_plan_revision", "guard", "check_error"]})
 
       # A step whose failure is a deliberate stop for a person never loops.
@@ -177,7 +179,7 @@ RSpec.describe "the shipped workflow presets" do
     it "leaves the files of rpiv and rpiv-auto-approve as they were" do
       sha = ->(id) { Digest::SHA256.file(File.join(config.builtin_workflows_dir, "#{id}.yml")).hexdigest }
       expect(sha.call("rpiv")).to eq("0e8a96e72473e9ff0c0e7c328cfeacb3420f302f42f67a01cce253ba1150d6be")
-      expect(sha.call("rpiv-auto-approve")).to eq("1c9f7a927815417652750f44cb36e873161681747d19e9abb58fa7139edc63ba")
+      expect(sha.call("rpiv-auto-approve")).to eq("691f2236cd84fe9b30bb74c0cad650430d4f8bf6db38503a9291469afcf0a4cb")
     end
   end
 

@@ -21,14 +21,13 @@ instructions: |
 
 # A rejection round costs five attempts (plan, the three reviewers, the tally; attempts_made
 # counts every step of the run, so the reviewers count three though they run at once). The
-# approving round is 5, and plan_review's nine loops back to plan are 45 more. Research adds 1;
-# implement and verify add 2, and verify's three trips back to implement 6. 1 + 5 + 45 + 2 + 6 = 59.
-# The reviewers have no on_fail, so only the tally goes back to plan: a reviewer that ends
-# without its verdict file waits at its own step, and one that fails its guard or times out
-# stops the group at the join for a person. One that reports a failure of its own goes back to
-# the reviewer before it and then runs again (two attempts; the first reviewer stops instead),
-# which the count above leaves out. Attempts a redelivery re-runs do not count.
-max_attempts: 59
+# approving round is 5, and plan_review's nine loops back to plan are 45 more. The reviewers
+# group's two loops back to plan (a reviewer that times out or reports a failure) cost four
+# each (plan and the three reviewers): 8. Research adds 1; implement and verify add 2, and
+# verify's three trips back to implement 6. 1 + 5 + 45 + 8 + 2 + 6 = 67. A reviewer that
+# fails its guard stops the group at the join for a person. Attempts a redelivery re-runs do
+# not count.
+max_attempts: 67
 
 steps:
   research:
@@ -51,6 +50,9 @@ steps:
       argue with it: rethink what it takes, and find an approach that meets the concerns of all
       the reviewers, changing the design if the current one can't. Keep what is sound, and say
       in plan.md how each objection was answered.
+      If these instructions say a reviewer failed (it timed out or reported a failure) rather
+      than that the plan was turned down, the plan was not rejected: plan-approval.md, if any, is
+      from an earlier round. Check the plan still holds and keep it unless something is wrong.
       Using {{artifacts}}/research.md, write the plan as the workspace plan: the
       IMPLEMENTATION_PLAN.md that `workspace plan path` names (run `workspace plan init --title "<title>"` first if it does not exist), in the syntax the
       implementation-plan instructions give, so `workspace plan status` shows it.
@@ -76,7 +78,16 @@ steps:
     # reads it (guard: unchanged) and writes its own verdict file, and every one must pass
     # before the tally runs. They run with `process_separation`, not the default `subagents`:
     # each reviewer is a fresh conversation of its own with its own pane and its own 30m clock.
+    # A reviewer that ends its turn without its verdict file waits at its own step. One that
+    # times out or reports a failure sends the run back to plan once the group has drained: one
+    # loop however many reviewers failed, at most two. One that changes the checkout (guard) or
+    # whose guard can't run (check_error) stops the run for a person.
     execution_mode: process_separation
+    on_fail:
+      goto: plan
+      max: 2
+      context: fresh
+      except: [guard, check_error]
     fan_out:
       review_supportive:
         title: Supportive review
