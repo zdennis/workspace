@@ -443,7 +443,8 @@ module Workspace
       return :busy unless run
       after = @evaluation.finish_follow_ups(run_id, follow, run)
       return outcome unless outcome == :unanswered
-      (after || run).reason ? :stopped : :evaluated
+      after ||= run
+      after.reason_for(after.current) ? :stopped : :evaluated
     end
 
     # Starts an `on_fail` retry whose backoff is over, as the sweep's act. Does nothing unless the run is still on
@@ -463,8 +464,8 @@ module Workspace
         read = WorkflowRun.from_h(on_step(read.thawed, step))
         next unless WorkflowTransitions.backoff(read.to_h, @clock.call)&.fetch(:state) == :due
         retried = @progress.start_retry(read, ctx: ctx, cause: "backoff_ended")
-        outcome = if retried.backoff&.dig("blocked") then :blocked
-        elsif retried.budget_hold || retried.timeout_hold then :held
+        outcome = if retried.backoff_for(retried.current)&.dig("blocked") then :blocked
+        elsif retried.budget_hold_for(retried.current) || retried.timeout_hold_for(retried.current) then :held
         else :retried
         end
         retried

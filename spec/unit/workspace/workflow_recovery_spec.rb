@@ -456,6 +456,29 @@ RSpec.describe Workspace::WorkflowRecovery do
           end
         end
 
+        describe "when a fan_out sibling is left stopped under its own step" do
+          let(:evaluation) do
+            Class.new(RecordingEvaluation) do
+              def review_ended(run, ctx:)
+                hash = Workspace::WorkflowRun.from_h(run).thawed
+                @calls << [:review_ended, hash["current"]]
+                hash["steps"][hash["current"]]["reason"] = {"code" => "review_incomplete"}
+                Workspace::WorkflowRun.from_h(hash)
+              end
+            end.new(store.runs)
+          end
+
+          it "answers :stopped for interrupt_unanswered from the sibling's own reason slot" do
+            hash = reviewing("delivery" => nil, "pane" => "%9", "window" => "@4", "server_pid" => "100")
+            hash["definition"]["steps"][0]["group"] = "checks"
+            stored(hash)
+
+            outcome = recovery.review_stalled("wr_1", actor: "sweep", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupt_unanswered", data: {"waited" => 1800})
+
+            expect(outcome).to eq(:stopped)
+          end
+        end
+
         it "waits for an agent daemon that can't be reached until the review's timeout, then judges the round" do
           down = RecordingWorkflowPanes.new(no_daemon: true)
           stored(reviewing("delivery" => "failed", "failure" => typed_failure, "kick_at" => "2026-11-10T11:50:00.000Z", "started_at" => "2026-11-10T11:49:50.000Z", "pane" => "%9"))

@@ -30,7 +30,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_router.rb` — Picks a workflow for `workflow start --ref` from the ref kind and config.
 - `lib/workspace/workflow_catalog.rb` — Finds workflow definitions by id across project, user and preset locations.
 - `lib/workspace/workflow_project.rb` — Answers which project's workflow definitions a command reads first.
-- `lib/workspace/workflow_run.rb` — `WorkflowRun`, a frozen value over a stored run hash, with steps and attempts.
+- `lib/workspace/workflow_run.rb` — `WorkflowRun`, a frozen value over a stored run hash, with steps and attempts; each step's slots kept under its own hash and read by `<key>_for`.
 - `lib/workspace/workflow_run_store.rb` — Run files under `~/.local/state/workspace/.workflows/`; the one way a run changes.
 - `lib/workspace/workflow_engine.rb` — Every transition of a run; delegates to the phase classes it is built from.
 - `lib/workspace/workflow_transitions.rb` — The engine's rules over plain values: attempts, delivery, backoff, the default one-step failure loop, sweep marks and review limits.

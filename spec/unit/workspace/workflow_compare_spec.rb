@@ -144,6 +144,17 @@ RSpec.describe Workspace::WorkflowCompare do
       expect(group(read, sha("d1"))).to include("runs" => 3, "settled" => 3, "stuck" => 2, "first_try" => 1, "running" => 0)
     end
 
+    it "reads a fan_out sibling's stuck reason from its own step slot" do
+      put("wr_1", attempts: [attempt(1, "failed")], state: "waiting")
+      file = File.join(runs_dir, "wr_1.json")
+      run = JSON.parse(File.read(file))
+      run["definition"]["steps"][0]["group"] = "checks"
+      run["steps"]["plan"]["reason"] = {"code" => "failed_check"}
+      File.write(file, JSON.generate(run))
+
+      expect(group(read, sha("d1"))).to include("settled" => 1, "stuck" => 1)
+    end
+
     it "counts a run held by its timeout as stuck after a miss" do
       put("wr_1", attempts: [attempt(1, "failed")], state: "waiting", reason: "run_timed_out")
 
