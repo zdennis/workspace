@@ -2,7 +2,7 @@ module Workspace
   # Draws a {WorkflowGraph} model as Mermaid `stateDiagram-v2` text. A model id is never written as a state id:
   # each non-terminal node is numbered `n0`, `n1`, ... in model order and declared with its quoted label, and the
   # `.start` and `.end` terminals are `[*]`. A node a run marked ({WorkflowGraphStates}) gets the `classDef` of its
-  # state. Labels drop `<` and `>`, which Mermaid reads as markup. Pure: reads the model hash only.
+  # state. The fork and join of a `fan_out` group are `<<fork>>` and `<<join>>` states. Labels drop `<` and `>`, which Mermaid reads as markup. Pure: reads the model hash only.
   module WorkflowGraphMermaid
     # The `classDef` of each node state {WorkflowGraphStates} marks.
     STATE_STYLES = {
@@ -20,7 +20,12 @@ module Workspace
       model["nodes"].each { |node| ids[node["id"]] = "n#{ids.size}" unless terminal?(node) }
       lines = ["stateDiagram-v2"]
       model["nodes"].each do |node|
-        lines << "    state \"#{text(WorkflowGraphText.node_title(node))}\" as #{ids[node["id"]]}" unless terminal?(node)
+        next if terminal?(node)
+        lines << if %w[fork join].include?(node["kind"])
+          "    state #{ids[node["id"]]} <<#{node["kind"]}>>"
+        else
+          "    state \"#{text(WorkflowGraphText.node_title(node))}\" as #{ids[node["id"]]}"
+        end
       end
       model["edges"].each do |edge|
         label = WorkflowGraphText.edge_label(edge)

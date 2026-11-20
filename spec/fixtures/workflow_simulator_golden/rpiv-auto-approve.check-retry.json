@@ -257,7 +257,7 @@
       "type": "step_dispatching",
       "step": "review_skeptical",
       "attempt": 1,
-      "pane": "%sim-2",
+      "pane": "%sim",
       "cause": "next_step",
       "retry_of": null,
       "from_state": "running",
@@ -270,7 +270,7 @@
       "type": "step_dispatching",
       "step": "review_implementer",
       "attempt": 1,
-      "pane": "%sim-3",
+      "pane": "%sim",
       "cause": "next_step",
       "retry_of": null,
       "from_state": "running",
@@ -282,42 +282,21 @@
       "at": 2,
       "type": "step_dispatched",
       "step": "review_supportive",
-      "attempt": 1,
+      "attempt": null,
       "pane": "%sim",
       "delivered": true,
       "actor": "engine",
       "cause": "next_step",
       "from_state": null,
-      "to_state": null
+      "to_state": null,
+      "steps": [
+        "review_supportive",
+        "review_skeptical",
+        "review_implementer"
+      ]
     },
     {
       "n": 15,
-      "at": 2,
-      "type": "step_dispatched",
-      "step": "review_skeptical",
-      "attempt": 1,
-      "pane": "%sim-2",
-      "delivered": true,
-      "actor": "engine",
-      "cause": "next_step",
-      "from_state": null,
-      "to_state": null
-    },
-    {
-      "n": 16,
-      "at": 2,
-      "type": "step_dispatched",
-      "step": "review_implementer",
-      "attempt": 1,
-      "pane": "%sim-3",
-      "delivered": true,
-      "actor": "engine",
-      "cause": "next_step",
-      "from_state": null,
-      "to_state": null
-    },
-    {
-      "n": 17,
       "at": 2,
       "type": "simulated_agent",
       "action": "turn",
@@ -328,7 +307,7 @@
       ]
     },
     {
-      "n": 18,
+      "n": 16,
       "at": 3,
       "type": "step_passed",
       "step": "review_supportive",
@@ -339,7 +318,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 19,
+      "n": 17,
       "at": 3,
       "type": "simulated_agent",
       "action": "turn",
@@ -350,7 +329,7 @@
       ]
     },
     {
-      "n": 20,
+      "n": 18,
       "at": 4,
       "type": "step_passed",
       "step": "review_skeptical",
@@ -361,7 +340,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 21,
+      "n": 19,
       "at": 4,
       "type": "simulated_agent",
       "action": "turn",
@@ -372,7 +351,7 @@
       ]
     },
     {
-      "n": 22,
+      "n": 20,
       "at": 5,
       "type": "step_passed",
       "step": "review_implementer",
@@ -383,7 +362,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 23,
+      "n": 21,
       "at": 5,
       "type": "step_dispatching",
       "step": "plan_review",
@@ -396,7 +375,7 @@
       "actor": "daemon"
     },
     {
-      "n": 24,
+      "n": 22,
       "at": 5,
       "type": "step_dispatched",
       "step": "plan_review",
@@ -409,7 +388,7 @@
       "to_state": null
     },
     {
-      "n": 25,
+      "n": 23,
       "at": 5,
       "type": "simulated_agent",
       "action": "turn",
@@ -420,7 +399,7 @@
       ]
     },
     {
-      "n": 26,
+      "n": 24,
       "at": 6,
       "type": "check_finished",
       "step": "plan_review",
@@ -432,7 +411,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 27,
+      "n": 25,
       "at": 6,
       "type": "step_passed",
       "step": "plan_review",
@@ -443,7 +422,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 28,
+      "n": 26,
       "at": 6,
       "type": "step_dispatching",
       "step": "implement",
@@ -456,7 +435,7 @@
       "actor": "daemon"
     },
     {
-      "n": 29,
+      "n": 27,
       "at": 6,
       "type": "step_dispatched",
       "step": "implement",
@@ -469,7 +448,7 @@
       "to_state": null
     },
     {
-      "n": 30,
+      "n": 28,
       "at": 6,
       "type": "simulated_agent",
       "action": "turn",
@@ -480,7 +459,7 @@
       ]
     },
     {
-      "n": 31,
+      "n": 29,
       "at": 7,
       "type": "step_passed",
       "step": "implement",
@@ -491,7 +470,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 32,
+      "n": 30,
       "at": 7,
       "type": "step_dispatching",
       "step": "verify",
@@ -504,7 +483,7 @@
       "actor": "daemon"
     },
     {
-      "n": 33,
+      "n": 31,
       "at": 7,
       "type": "step_dispatched",
       "step": "verify",
@@ -517,7 +496,7 @@
       "to_state": null
     },
     {
-      "n": 34,
+      "n": 32,
       "at": 7,
       "type": "simulated_agent",
       "action": "turn",
@@ -528,7 +507,7 @@
       ]
     },
     {
-      "n": 35,
+      "n": 33,
       "at": 8,
       "type": "check_finished",
       "step": "verify",
@@ -540,7 +519,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 36,
+      "n": 34,
       "at": 8,
       "type": "step_failed",
       "step": "verify",
@@ -552,7 +531,7 @@
       "actor": "daemon"
     },
     {
-      "n": 37,
+      "n": 35,
       "at": 8,
       "type": "step_looped",
       "from": "verify",
@@ -564,7 +543,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 38,
+      "n": 36,
       "at": 8,
       "type": "step_dispatching",
       "step": "implement",
@@ -577,7 +556,7 @@
       "actor": "daemon"
     },
     {
-      "n": 39,
+      "n": 37,
       "at": 8,
       "type": "step_dispatched",
       "step": "implement",
@@ -590,7 +569,7 @@
       "to_state": null
     },
     {
-      "n": 40,
+      "n": 38,
       "at": 8,
       "type": "simulated_agent",
       "action": "turn",
@@ -601,7 +580,7 @@
       ]
     },
     {
-      "n": 41,
+      "n": 39,
       "at": 9,
       "type": "step_passed",
       "step": "implement",
@@ -612,7 +591,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 42,
+      "n": 40,
       "at": 9,
       "type": "step_dispatching",
       "step": "verify",
@@ -625,7 +604,7 @@
       "actor": "daemon"
     },
     {
-      "n": 43,
+      "n": 41,
       "at": 9,
       "type": "step_dispatched",
       "step": "verify",
@@ -638,7 +617,7 @@
       "to_state": null
     },
     {
-      "n": 44,
+      "n": 42,
       "at": 9,
       "type": "simulated_agent",
       "action": "turn",
@@ -649,7 +628,7 @@
       ]
     },
     {
-      "n": 45,
+      "n": 43,
       "at": 10,
       "type": "check_finished",
       "step": "verify",
@@ -661,7 +640,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 46,
+      "n": 44,
       "at": 10,
       "type": "step_failed",
       "step": "verify",
@@ -673,7 +652,7 @@
       "actor": "daemon"
     },
     {
-      "n": 47,
+      "n": 45,
       "at": 10,
       "type": "step_looped",
       "from": "verify",
@@ -685,7 +664,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 48,
+      "n": 46,
       "at": 10,
       "type": "step_dispatching",
       "step": "implement",
@@ -698,7 +677,7 @@
       "actor": "daemon"
     },
     {
-      "n": 49,
+      "n": 47,
       "at": 10,
       "type": "step_dispatched",
       "step": "implement",
@@ -711,7 +690,7 @@
       "to_state": null
     },
     {
-      "n": 50,
+      "n": 48,
       "at": 10,
       "type": "simulated_agent",
       "action": "turn",
@@ -722,7 +701,7 @@
       ]
     },
     {
-      "n": 51,
+      "n": 49,
       "at": 11,
       "type": "step_passed",
       "step": "implement",
@@ -733,7 +712,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 52,
+      "n": 50,
       "at": 11,
       "type": "step_dispatching",
       "step": "verify",
@@ -746,7 +725,7 @@
       "actor": "daemon"
     },
     {
-      "n": 53,
+      "n": 51,
       "at": 11,
       "type": "step_dispatched",
       "step": "verify",
@@ -759,7 +738,7 @@
       "to_state": null
     },
     {
-      "n": 54,
+      "n": 52,
       "at": 11,
       "type": "simulated_agent",
       "action": "turn",
@@ -770,7 +749,7 @@
       ]
     },
     {
-      "n": 55,
+      "n": 53,
       "at": 12,
       "type": "check_finished",
       "step": "verify",
@@ -782,7 +761,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 56,
+      "n": 54,
       "at": 12,
       "type": "step_passed",
       "step": "verify",
@@ -793,7 +772,7 @@
       "cause": "turn_ended"
     },
     {
-      "n": 57,
+      "n": 55,
       "at": 12,
       "type": "run_completed",
       "from_state": "running",

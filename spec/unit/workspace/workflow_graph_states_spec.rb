@@ -154,4 +154,28 @@ RSpec.describe Workspace::WorkflowGraphStates do
       expect(review_of("review" => {"round" => 1, "held" => "budget"})).to eq("waiting")
     end
   end
+
+  describe "a run of a definition with a fan_out group" do
+    let(:hash) do
+      fixture("looped_twice").merge(
+        "definition" => WorkflowGraphGolden::GROUPED.merge("id" => "demo"),
+        "current" => "test", "state" => "running", "loops" => {"checks->plan" => 2},
+        "steps" => {"plan" => {"state" => "passed", "attempts" => []}, "lint" => {"state" => "passed", "attempts" => []},
+                    "test" => {"state" => "running", "attempts" => []}}
+      )
+    end
+    let(:model) { mark(hash) }
+
+    it "marks each sibling's state and leaves the fork and join unmarked" do
+      expect(nodes(model).slice("lint", "test", "checks.group", "checks.join")).to eq(
+        "lint" => {"state" => "passed", "passes" => 0, "attempts" => 0}, "test" => {"state" => "current", "passes" => 0, "attempts" => 0},
+        "checks.group" => {}, "checks.join" => {}
+      )
+    end
+
+    it "counts the group's loops from its join edge and a sibling's own goto from its own key" do
+      expect(fail_edge(model, "checks.join")).to include("loop_key" => "checks->plan", "loops" => 2)
+      expect(fail_edge(model, "lint")["loops"]).to eq(0)
+    end
+  end
 end

@@ -74,15 +74,16 @@ steps:
 
   reviewers:
     title: Plan reviewers
-    # The three reviewers start together, each in its own pane, on the one checkout. Each only
-    # reads it (guard: unchanged) and writes its own verdict file, and every one must pass
-    # before the tally runs. They run with `process_separation`, not the default `subagents`:
-    # each reviewer is a fresh conversation of its own with its own pane and its own 30m clock.
+    # The three reviewers start together, as sub-agents of the run pane, on the one checkout.
+    # Each only reads it (guard: unchanged) and writes its own verdict file, and every one must
+    # pass before the tally runs. No clock bounds them here: the preset sets no run timeout:.
+    # To give each reviewer its own pane, fresh conversation and 30m clock, set
+    # `process_separation` and uncomment each reviewer's `context:` and `timeout:`.
     # A reviewer that ends its turn without its verdict file waits at its own step. One that
-    # times out or reports a failure sends the run back to plan once the group has drained: one
+    # reports a failure sends the run back to plan once the group has drained: one
     # loop however many reviewers failed, at most two. One that changes the checkout (guard) or
     # whose guard can't run (check_error) stops the run for a person.
-    execution_mode: process_separation
+    execution_mode: subagents   # or process_separation: one pane per reviewer
     on_fail:
       goto: plan
       max: 2
@@ -91,9 +92,9 @@ steps:
     fan_out:
       review_supportive:
         title: Supportive review
-        # A conversation of its own, dispatched by the engine: none of the planner's or another
-        # reviewer's reasoning is in it, and the run's attempt record ties it to its session.
-        context: fresh
+        # Under subagents, a sub-agent of the run pane with a conversation of its own: none of the
+        # planner's or another reviewer's reasoning is in it, and the run's attempt record ties it to its session.
+        # context: fresh  # refused under subagents (only applies to process_separation)
         prompt: |
           You are the supportive reviewer of the workspace plan (`workspace plan path`). No person
           will look at it, so this review is the only approval it gets.
@@ -109,11 +110,11 @@ steps:
           plan_revision: REV
         produces: [approval-supportive.md]
         guard: unchanged
-        timeout: 30m
+        # timeout: 30m  # refused under subagents (only applies to process_separation)
 
       review_skeptical:
         title: Skeptical review
-        context: fresh
+        # context: fresh  # refused under subagents (only applies to process_separation)
         prompt: |
           You are the skeptical reviewer of the workspace plan (`workspace plan path`). No person
           will look at it, so this review is the only approval it gets.
@@ -130,11 +131,11 @@ steps:
           plan_revision: REV
         produces: [approval-skeptical.md]
         guard: unchanged
-        timeout: 30m
+        # timeout: 30m  # refused under subagents (only applies to process_separation)
 
       review_implementer:
         title: Implementer review
-        context: fresh
+        # context: fresh  # refused under subagents (only applies to process_separation)
         prompt: |
           You are the implementer reviewer of the workspace plan (`workspace plan path`). No person
           will look at it, so this review is the only approval it gets. You will have to build this.
@@ -150,7 +151,7 @@ steps:
           plan_revision: REV
         produces: [approval-implementer.md]
         guard: unchanged
-        timeout: 30m
+        # timeout: 30m  # refused under subagents (only applies to process_separation)
 
   plan_review:
     title: Plan review

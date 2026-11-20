@@ -1,7 +1,8 @@
 module Workspace
   # Marks a {WorkflowGraph} model with where one run stands: a `state` on each step, gate and review node
   # (`passed`, `current`, `waiting`, `failed` or `pending`), `passes` and `attempts` on each step node, and
-  # `loops` (the run's count for that edge) on each `fail` edge. A step takes its stored state, not its history,
+  # `loops` on each `fail` edge, the run's count under the edge's `loop_key` (`STEP->GOTO`, or `GROUP->GOTO` for a
+  # group's edge from its join). A step takes its stored state, not its history,
   # so a step a loop sent back and that passed again reads `passed`. The `.start` and `.end` terminals take no
   # state. Pure: reads the model hash and the run only.
   module WorkflowGraphStates
@@ -85,7 +86,7 @@ module Workspace
     end
 
     def self.loops(run, edge)
-      count = run.loops.is_a?(Hash) ? run.loops["#{edge["from"]}->#{edge["to"]}"] : nil
+      count = run.loops.is_a?(Hash) ? run.loops[edge["loop_key"]] : nil
       count.is_a?(Integer) ? count : 0
     end
     private_class_method :node_with, :step_state, :gate_state, :review_state, :rerunning?, :ended?, :owner, :loops

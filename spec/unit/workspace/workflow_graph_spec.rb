@@ -2,7 +2,6 @@ require "spec_helper"
 
 RSpec.describe Workspace::WorkflowGraph do
   let(:catalog) { Workspace::WorkflowCatalog.new(config: Workspace::Config.new) }
-  # rpiv-auto-approve and explore-parallel have a fan_out group, which the graph refuses until it draws one.
   let(:presets) { %w[rpiv rpiv-auto-approve-v2 pr-feedback investigate explore bugfix] }
 
   def graph_of(id)
@@ -40,7 +39,7 @@ RSpec.describe Workspace::WorkflowGraph do
     end
 
     it "has the verify fail edge and the gate reject edge" do
-      expect(edges_of(graph, "fail")).to eq([{"from" => "verify", "to" => "implement", "kind" => "fail", "label" => "max 3"}])
+      expect(edges_of(graph, "fail")).to eq([{"from" => "verify", "to" => "implement", "kind" => "fail", "label" => "max 3", "loop_key" => "verify->implement"}])
       expect(edges_of(graph, "reject").map { |edge| edge.values_at("from", "to") }).to eq([%w[plan.gate plan]])
     end
 
@@ -162,14 +161,80 @@ RSpec.describe Workspace::WorkflowGraph do
     expect(built.to_h["legend"]).to be_frozen
   end
 
-  it "refuses a definition with a fan_out group, which it would draw as steps in a row" do
-    definition = {"id" => "demo", "steps" => [step("plan"), step("lint", group: "checks"), step("test", group: "checks"), step("report")]}
+  describe "a fan_out group" do
+    let(:graph) { described_class.build(WorkflowGraphGolden::GROUPED).to_h }
 
-    expect { described_class.build(definition) }.to raise_error(Workspace::Error) { |error|
-      expect(error.code).to eq("invalid_workflow")
-      expect(error.message).to include("can't be graphed", "fan_out group checks (lint, test)", "side by side")
-      expect(error.details["groups"]).to eq("checks" => %w[lint test])
-    }
+    it "puts a fork and a join around the siblings and tags them with the group" do
+      expect(graph["nodes"].map { |node| node["id"] }).to eq(%w[.start plan checks.group lint test checks.join report report.gate .end])
+      expect(graph["nodes"].select { |node| node["group"] }.map { |node| node["id"] }).to eq(%w[lint test])
+      expect(graph["nodes"].find { |node| node["id"] == "checks.group" }["annotations"]).to eq("checkout" => "shared")
+    end
+
+    it "runs the siblings side by side: fork to each, each to the join, join to the next step" do
+      pairs = edge_pairs(graph).select { |_, _, kind| kind == "next" }.map { |from, to, _| [from, to] }
+      expect(pairs).to eq([%w[.start plan], %w[plan checks.group], %w[checks.group lint], %w[checks.group test], %w[lint checks.join],
+        %w[test checks.join], %w[checks.join report], %w[report report.gate], %w[report.gate .end]])
+    end
+
+    it "draws the group's goto as a fail edge from the join and a sibling's goto as an ordinary one" do
+      expect(edges_of(graph, "fail")).to eq([
+        {"from" => "lint", "to" => "test", "kind" => "fail", "label" => "max 1", "loop_key" => "lint->test"},
+        {"from" => "checks.join", "to" => "plan", "kind" => "fail", "label" => "max 2", "loop_key" => "checks->plan"}
+      ].sort_by { |edge| (edge["from"] == "lint") ? 0 : 1 })
+    end
+
+    it "names the group id on the fork and the join, and on no other node" do
+      expect(graph["nodes"].select { |node| node["group_id"] }.map { |node| [node["id"], node["group_id"]] }).to eq([%w[checks.group checks], %w[checks.join checks]])
+    end
+
+    it "draws two adjacent groups as a fork and join each, the second fork fed by the first join" do
+      definition = {"steps" => [step("a", group: "g"), step("b", group: "h")]}
+      graph = described_class.build(definition).to_h
+      expect(graph["nodes"].map { |node| node["id"] }).to eq(%w[.start g.group a g.join h.group b h.join .end])
+      expect(edge_pairs(graph)).to include(["g.join", "h.group", "next"], ["h.group", "b", "next"], ["b", "h.join", "next"])
+    end
+
+    it "drops a group goto that names no step" do
+      definition = {"steps" => [step("a"), step("b", group: "g")], "groups" => {"g" => {"on_fail" => {"goto" => "nowhere", "max" => 1}}}}
+      expect(edges_of(described_class.build(definition).to_h, "fail")).to eq([])
+    end
+
+    it "draws a group with no on_fail and no groups map" do
+      definition = {"steps" => [step("a", group: "g"), step("b", group: "g")]}
+      expect(described_class.build(definition).to_h["nodes"].map { |node| node["id"] }).to eq(%w[.start g.group a b g.join .end])
+    end
+
+    it "draws a group at the start or end of a definition" do
+      graph = described_class.build({"steps" => [step("a", group: "g")]}).to_h
+      expect(edge_pairs(graph).first(2)).to eq([[".start", "g.group", "next"], ["g.group", "a", "next"]])
+      expect(edge_pairs(graph)).to include(["g.join", ".end", "next"])
+    end
+  end
+
+  %w[rpiv-auto-approve explore-parallel].each do |id|
+    it "draws the #{id} preset, which has a fan_out group" do
+      nodes = graph_of(id)["nodes"]
+      expect(nodes.count { |node| node["kind"] == "fork" }).to be >= 1
+      expect(nodes.count { |node| node["kind"] == "fork" }).to eq(nodes.count { |node| node["kind"] == "join" })
+    end
+  end
+
+  it "draws explore-parallel's read group: a fork, its siblings tagged, and a join into report" do
+    graph = graph_of("explore-parallel")
+    nodes = graph["nodes"].to_h { |node| [node["id"], node] }
+    expect(nodes["read.group"]["kind"]).to eq("fork")
+    expect(nodes["code"]["group"]).to eq("read")
+    expect(nodes["tests"]["group"]).to eq("read")
+    expect(edge_pairs(graph)).to include(["read.group", "code", "next"], ["read.group", "tests", "next"], ["read.join", "report", "next"])
+  end
+
+  it "keeps a gated sibling's chain and reject loop inside its group" do
+    definition = {"steps" => [step("plan"), step("a", group: "g"), step("b", group: "g", gate: "approve"), step("after")],
+                  "groups" => {"g" => {"steps" => %w[a b]}}}
+    graph = described_class.build(definition).to_h
+    expect(graph["nodes"].map { |node| node["id"] }).to eq(%w[.start plan g.group a b b.gate g.join after .end])
+    expect(graph["nodes"].find { |node| node["id"] == "b.gate" }["group"]).to eq("g")
+    expect(edge_pairs(graph)).to include(["g.group", "b", "next"], ["b", "b.gate", "next"], ["b.gate", "g.join", "next"], ["b.gate", "b", "reject"])
   end
 
   it "draws a definition whose group tags are empty or not text as it always did" do

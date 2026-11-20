@@ -478,23 +478,6 @@ module Workspace
       (group.is_a?(String) && !group.empty?) ? group_steps(definition)[group] : nil
     end
 
-    # The refusal of a tool that would play or draw a definition's `fan_out` groups as plain steps in a row.
-    #
-    # @param definition [Hash] {#to_h}, or a stored run's definition
-    # @param doing [String] what can't be done, such as "simulated"
-    # @param later [String] the later work that will support it
-    # @return [void]
-    # @raise [Workspace::Error] code `invalid_workflow`, details "workflow" and "groups", when the definition has a group
-    def self.refuse_groups(definition, doing:, later:)
-      groups = group_steps(definition)
-      return if groups.empty?
-      id = definition["id"]
-      named = groups.map { |group, siblings| "#{group} (#{siblings.join(", ")})" }.join(", ")
-      raise Workspace::Error.new("Workflow #{id} can't be #{doing}: it has the fan_out group#{"s" if groups.size > 1} #{named}, " \
-        "whose steps run side by side, and this would treat them as steps in a row. That waits on #{later}.",
-        code: "invalid_workflow", details: {"workflow" => id, "groups" => groups})
-    end
-
     private
 
     # Step caps that can't hold: the step an `on_fail` goes back to runs once and then once per

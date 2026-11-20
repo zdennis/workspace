@@ -58,4 +58,31 @@ RSpec.describe Workspace::WorkflowGraphMermaid do
       expect(text).to include("    note right of n0\n        max_attempts 4\n    end note\n")
     end
   end
+
+  it "draws a fan_out group as a fork and a join with its goto as a loop edge" do
+    text = described_class.render(Workspace::WorkflowGraph.build(WorkflowGraphGolden::GROUPED).to_h)
+    expect(text).to include("state n1 <<fork>>", "state n4 <<join>>", "n1 --> n2", "n1 --> n3", "n2 --> n4", "n3 --> n4", "n4 --> n0 : fail: max 2", "n2 --> n3 : fail: max 1")
+  end
+
+  it "runs a gated sibling through its gate to the join and keeps its reject loop inside the group" do
+    definition = {"steps" => [{"id" => "a", "group" => "g"}, {"id" => "b", "group" => "g", "gate" => "approve"}], "groups" => {"g" => {"steps" => %w[a b]}}}
+    text = described_class.render(Workspace::WorkflowGraph.build(definition).to_h)
+    expect(text).to include("state n0 <<fork>>", "state \"b gate\" as n3", "state n4 <<join>>", "n0 --> n2", "n2 --> n3", "n3 --> n4", "n3 --> n2 : reject")
+    expect(text).not_to include("n2 --> n4")
+  end
+
+  it "draws a group's fork and join with no state and shows the loops on a marked run's join edge" do
+    plain = described_class.render(Workspace::WorkflowGraph.build(WorkflowGraphGolden::GROUPED).to_h)
+    expect(plain).to include("<<fork>>", "<<join>>")
+    marked = described_class.render(WorkflowGraphGolden.grouped_run_model)
+    expect(marked).to include("<<fork>>", "<<join>>", "n4 --> n0 : fail: max 2 (looped 2)")
+  end
+
+  %w[rpiv-auto-approve explore-parallel rpiv].each do |id|
+    it "draws #{id}" do
+      text = described_class.render(WorkflowGraphGolden.model(id))
+      expect(text).to start_with("stateDiagram-v2\n")
+      expect(text).to include("<<fork>>", "<<join>>") unless id == "rpiv"
+    end
+  end
 end

@@ -1,7 +1,7 @@
 schema_version: 0.1
 id: explore-parallel
 title: Explore in parallel and report
-description: Read-only research that reads the code and the tests at the same time in two panes, then one report that joins them. Changes no code. An example of a `fan_out` group.
+description: Read-only research that reads the code and the tests at the same time as two sub-agents of the run pane, then one report that joins them. Changes no code. An example of a `fan_out` group.
 
 use_when: A question to answer by reading, where the code side and the test side can be read independently.
 
@@ -23,9 +23,10 @@ max_attempts: 6
 steps:
   read:
     title: Read in parallel
-    # Both siblings start together, as sub-agents of the run's own pane (the default execution mode), on the one
+    # Both siblings start together, as sub-agents of the run's own pane, on the one
     # checkout. They only read it, so each keeps the default `guard: unchanged`, and each writes its own file.
     # A subagent sibling takes no `timeout:` of its own — the run's own `timeout:` bounds the group.
+    execution_mode: subagents
     fan_out:
       code:
         title: Read the code
