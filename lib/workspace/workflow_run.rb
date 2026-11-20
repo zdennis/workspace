@@ -113,6 +113,19 @@ module Workspace
       entry.is_a?(Hash) && entry["group"].is_a?(String) && !entry["group"].empty?
     end
 
+    # Whether +step_id+ is a fan_out sibling that runs as a sub-agent of the run's own pane (its resolved
+    # `execution_mode` is `subagents`): it has no pane binding and no pane slot of its own, so every pane-keyed
+    # reader reads the run's pane for it, as {#pane_for} does.
+    #
+    # @param hash [Hash{String=>Object}] a run Hash
+    # @param step_id [String, nil] a step id
+    # @return [Boolean]
+    def self.pane_free?(hash, step_id)
+      return false unless step_scoped?(hash, step_id)
+      entry = hash["definition"]["steps"].find { |each| each.is_a?(Hash) && each["id"] == step_id }
+      entry["execution_mode"] == "subagents"
+    end
+
     # The Hash a writer of +step_id+'s {PER_STEP_KEYS} slots writes into, by {.step_scoped?}: the step's own hash under
     # +steps+ (made when missing), or the run Hash itself.
     #

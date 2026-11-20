@@ -302,8 +302,16 @@ module Workspace
     # Whether the step the run is read on belongs to a fan_out group, so its pane is its own ({WorkflowRun#pane_for}).
     def scoped?(run) = WorkflowRun.step_scoped?(run.to_h, run.current)
 
-    # The pane binding's step argument for the step the run is read on: none outside a group.
-    def step_kw(run) = scoped?(run) ? {step: run.current} : {}
+    # Whether the step the run is read on is a fan_out sibling that runs as a sub-agent of the run's own pane: it has no
+    # pane of its own, so its row reads the run's.
+    def pane_free?(run) = WorkflowRun.pane_free?(run.to_h, run.current)
+
+    # The pane binding's step argument for the step the run is read on: none outside a group, and none for a sibling
+    # that shares the run's pane.
+    def step_kw(run) = (scoped?(run) && !pane_free?(run)) ? {step: run.current} : {}
+
+    # How a pane reads in a row's message: a pane-free sibling's is the run's, shared with the group's other subagent steps.
+    def pane_text(run, pane) = pane_free?(run) ? "pane #{pane} (the run's own, shared by the group's subagent steps)" : "pane #{pane}"
 
     # The pane the step the run is read on was bound in, as the run's bindings have it.
     def bound_pane(run) = @panes.pane_of(run.id, **step_kw(run))
@@ -351,7 +359,7 @@ module Workspace
       daemon_needed = running || reviewing || state.state == "checking" || run.parked || run.reason_for(run.current)&.dig("code") == "waiting_lock"
       if running && !@panes.alive?(run.id, **step_kw(run))
         pane = own_pane(run)
-        return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", {"pane" => pane}, infra: true)
+        return note(run, pass, "pane_gone", "#{pane_text(run, pane)} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", {"pane" => pane}, infra: true)
       end
       seen = {}
       if running
@@ -448,7 +456,7 @@ module Workspace
     # The step waits on a line that was not delivered, and {WorkflowEngine.redelivery} says where a retry stands.
     def sweep_undelivered(run, info, pass)
       pane = own_pane(run)
-      what = "step #{run.current}'s line was not delivered to pane #{pane} (#{info[:code]})"
+      what = "step #{run.current}'s line was not delivered to #{pane_text(run, pane)} (#{info[:code]})"
       case info[:state]
       when :exhausted
         return note(run, pass, "redelivery_exhausted", "#{what}, and it was retried #{info[:retries]} time#{"s" unless info[:retries] == 1}; resume the run (`workspace workflow resume #{run.id}`) once the pane is ready", {"code" => info[:code], "retries" => info[:retries]})
@@ -456,7 +464,7 @@ module Workspace
         return WorkflowSweepRows.row(run, "nothing", reason: "backoff", cause: "undelivered", message: "#{what}; retry #{info[:retries] + 1} of #{info[:limit]} in #{info[:wait]} seconds")
       end
       unless @panes.alive?(run.id, **step_kw(run))
-        return note(run, pass, "pane_gone", "pane #{pane} is gone, so #{what} cannot be retried. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", {"pane" => pane})
+        return note(run, pass, "pane_gone", "#{pane_text(run, pane)} is gone, so #{what} cannot be retried. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", {"pane" => pane})
       end
       return respawn(run, pass) if daemon_down?(run.workspace, pass)
       shown = pane && @panes.pane_row(run.workspace, pane)

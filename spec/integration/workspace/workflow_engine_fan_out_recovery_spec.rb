@@ -366,4 +366,78 @@ RSpec.describe Workspace::WorkflowEngine, "with a fan_out group under way" do
       expect(state("test")).to eq("running")
     end
   end
+
+  # A group whose siblings run as sub-agents of the run's own pane: no sibling has a pane slot or a binding of its own,
+  # so every pane-keyed reader reads the run's pane (the pane the group binding is on).
+  describe "a subagents group under way" do
+    let(:sub_flow) do
+      Workspace::WorkflowDefinition.parse(
+        "max_attempts: 20\nsteps:\n  checks:\n    checkout: shared\n    execution_mode: subagents\n    fan_out:\n" \
+        "      lint:\n        prompt: Do lint.\n        produces: [lint.md]\n" \
+        "      test:\n        prompt: Do test.\n        produces: [test.md]\n" \
+        "  report:\n    prompt: Report.\n    produces: [report.md]\n", id: "flow", source: "global", path: "/defs/flow.yml"
+      )
+    end
+
+    before do
+      start(sub_flow)
+      panes.rows["%5"] = {"pane_id" => "%5", "kind" => "claude", "state" => "working", "idle_seconds" => 0, "state_since" => now.first.utc.iso8601}
+    end
+
+    it "reads the run pane for each sibling, with no pane slot or binding of its own" do
+      %w[lint test].each { |id| expect(run["steps"][id]).not_to have_key("pane") }
+      expect(panes.bound.keys).to eq(["%5"])
+      expect(Workspace::WorkflowRun.pane_free?(run, "lint")).to be(true)
+      expect(Workspace::WorkflowRun.from_h(run).pane_for("test")).to eq("%5")
+    end
+
+    it "gives each sibling a healthy row against the run pane, not a gone pane" do
+      now[0] += 600
+
+      rows = sweep.call
+
+      expect(rows.map { |row| [row["step"], row["reason"]] }).to contain_exactly(%w[lint healthy], %w[test healthy])
+    end
+
+    it "says a gone run pane is shared when it records the stall, naming the pane" do
+      now[0] += 600
+      panes.stale << "%5"
+
+      rows = sweep.call
+
+      expect(rows).to all(include("outcome" => "recorded", "cause" => "pane_gone"))
+      expect(rows.map { |row| row["message"] }).to all(include("pane %5 (the run's own, shared by the group's subagent steps) is gone"))
+    end
+
+    it "gives an infra retry of a sibling up before any pane is split" do
+      now[0] += 600
+      panes.stale << "%5"
+      sweep.call
+      now[0] += 61
+      dispatch = instance_double(Workspace::PaneDispatch, session_live?: true)
+      retry_ = Workspace::WorkflowInfraRetry.new(engine: engine, store: store, dispatch: dispatch, lock_holder: RunFileLiveness.new(runs_dir),
+        agent_commands: instance_double(Workspace::AgentCommands, kind: "claude"), pid: 4242, clock: -> { now.first })
+
+      expect(retry_.call(store.run("wr_1"))).to eq([:gave_up, "subagent_step_no_pane"])
+      expect(dispatch).not_to have_received(:spawn) if dispatch.respond_to?(:spawn)
+      %w[lint test].each { |id| expect(attempts(id).size).to eq(1) }
+    end
+
+    it "refuses to restart a sibling, or move it to another pane, changing nothing" do
+      before = File.binread(File.join(runs_dir, "wr_1.json"))
+
+      expect { engine.resume("wr_1", actor: "person", restart_step: true, bound: "gone", step: "lint", pane: "%9") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("subagent_step_no_pane") }
+      expect { engine.resume("wr_1", actor: "person", restart_step: true, bound: "gone", step: "test") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("subagent_step_no_pane") }
+      expect(engine.restart_refusal(store.run("wr_1").to_h, bound: "gone")&.code).to eq("subagent_step_no_pane")
+      expect(File.binread(File.join(runs_dir, "wr_1.json"))).to eq(before)
+    end
+
+    it "presses the run pane once for pause --interrupt, though both siblings read it" do
+      panes.pids["%5"] = 11
+
+      engine.pause("wr_1", actor: "person", interrupt: true)
+
+      expect(presses.map { |each| each[1] }).to eq(["%5"])
+    end
+  end
 end

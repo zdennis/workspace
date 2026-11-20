@@ -1949,4 +1949,46 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(change.events).to eq([unpaused_event("none")])
     end
   end
+
+  describe "a fan_out sibling that runs as a sub-agent of the run's own pane" do
+    def sibling_run
+      run_hash(current: "lint").merge(
+        "definition" => {"id" => "flow", "max_attempts" => 5, "steps" => [{"id" => "lint", "group" => "checks", "execution_mode" => "subagents"},
+          {"id" => "spec", "group" => "checks", "execution_mode" => "subagents"}]},
+        "steps" => {"lint" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00Z", "stalls" => [{"cause" => "pane_gone", "since" => "2026-11-10T11:30:00Z"}]}]},
+                    "spec" => {"state" => "running", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00Z"}]}}
+      )
+    end
+
+    it "refuses a restart before anything is closed, with a message that says there is no pane to restart" do
+      stored(sibling_run)
+
+      error = error_for { decisions.resume("wr_1", actor: "person", restart_step: true, bound: "gone") }
+
+      expect(error.code).to eq("subagent_step_no_pane")
+      expect(error.message).to include("no pane of its own to restart or move")
+      expect(attempt_record.calls).to be_empty
+      expect(dispatch.calls).to be_empty
+    end
+
+    it "answers the same refusal when asked without changing anything" do
+      expect(decisions.restart_refusal(sibling_run, bound: "gone")&.code).to eq("subagent_step_no_pane")
+    end
+
+    it "refuses a move to another pane, so no pane slot is written for it" do
+      stored(sibling_run.merge("state" => "waiting"))
+
+      error = error_for { decisions.resume("wr_1", actor: "person", pane: "%8") }
+
+      expect(error.code).to eq("subagent_step_no_pane")
+      expect(store.runs["wr_1"]["steps"]["lint"]).not_to have_key("pane")
+    end
+
+    it "still restarts a sibling that has its own pane" do
+      hash = sibling_run
+      hash["definition"]["steps"].each { |each| each["execution_mode"] = "process_separation" }
+
+      expect(decisions.restart_refusal(hash, bound: "gone")).to be_nil
+    end
+  end
 end

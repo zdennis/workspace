@@ -1577,4 +1577,21 @@ RSpec.describe Workspace::WorkflowProgress do
       end
     end
   end
+
+  describe "a fan_out sibling that runs as a sub-agent of the run's own pane" do
+    let(:sibling_steps) do
+      [{"id" => "plan", "group" => "checks", "execution_mode" => "subagents"}, {"id" => "build", "group" => "checks", "execution_mode" => "subagents"}]
+    end
+
+    it "judges a waiting retry against the run's pane, which no sibling slot or binding overrides" do
+      panes = RecordingWorkflowPanes.new(runs_on: {"%3" => "wr_9"})
+      going << "wr_9"
+      progress = described_class.new(change: change, store: store, dispatch: dispatch, attempt_record: attempt_record, panes: panes, log_tail: log_tail, clock: -> { now })
+
+      problem = progress.retry_pane_problem(run_hash(definition_steps: sibling_steps), {"pane" => "%3"})
+
+      expect(problem).to include(code: "pane_has_run")
+      expect(problem[:message]).to start_with("pane %3 is now running workflow run wr_9")
+    end
+  end
 end

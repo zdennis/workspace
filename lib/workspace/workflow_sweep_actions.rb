@@ -94,10 +94,10 @@ module Workspace
     end
 
     # The pane a `prompt` row waits on: the review pane while a round is under way, else the run's own; a fan_out
-    # sibling's row waits on the sibling's own pane.
+    # sibling's row waits on the sibling's own pane (a subagent sibling's, the run's).
     def prompt_pane(id, step = nil)
       stored = @store.run(id)
-      return @panes.pane_of(id, step: step) if WorkflowRun.step_scoped?(stored.to_h, step)
+      return @panes.pane_of(id, step: step) if WorkflowRun.step_scoped?(stored.to_h, step) && !WorkflowRun.pane_free?(stored.to_h, step)
       (stored.step(stored.current)&.state == "reviewing") ? @panes.review_pane_of(id) : @panes.pane_of(id)
     end
 

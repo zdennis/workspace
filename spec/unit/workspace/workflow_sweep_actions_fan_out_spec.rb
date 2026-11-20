@@ -46,4 +46,22 @@ RSpec.describe Workspace::WorkflowSweepActions, "for a fan_out sibling" do
 
     expect(found).to eq([{"action" => "focus", "args" => ["app", "--pane", "%8"], "needs" => [], "why" => "prompt"}])
   end
+
+  describe "for a sibling that runs as a sub-agent of the run's own pane" do
+    let(:stored) do
+      Workspace::WorkflowRun.from_h("id" => "wr_1", "workspace" => "app", "state" => "running", "current" => "lint", "pane" => "%5",
+        "definition" => {"steps" => [{"id" => "lint", "group" => "checks", "execution_mode" => "subagents"},
+          {"id" => "test", "group" => "checks", "execution_mode" => "subagents"}]},
+        "steps" => {"lint" => {"state" => "running", "attempts" => [{"n" => 1}]}, "test" => {"state" => "running", "attempts" => [attempt], "sweep" => marks}})
+    end
+
+    it "focuses the run's pane for a prompt row, as the sibling has none of its own" do
+      allow(panes).to receive(:pane_of).with("wr_1").and_return("%5")
+
+      found = actions.call([row("nothing", "reason" => "prompt")], run: nil, name: nil)
+
+      expect(found).to eq([{"action" => "focus", "args" => ["app", "--pane", "%5"], "needs" => [], "why" => "prompt"}])
+      expect(panes).not_to have_received(:pane_of).with("wr_1", step: "test")
+    end
+  end
 end
