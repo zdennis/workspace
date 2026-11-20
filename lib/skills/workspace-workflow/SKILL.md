@@ -1,6 +1,6 @@
 ---
 name: workspace-workflow
-description: "Start and follow `workspace` workflow runs: `go` from a ticket, PR or text, name a preset (rpiv, rpiv-auto-approve, rpiv-auto-approve-v2, investigate, pr-feedback, explore, explore-parallel, bugfix), `workflow start`, `workflow run`, read `workflow status`. Use for 'run rpiv on this' or 'start an investigate workflow on PROJ-101'. Not a worktree with no workflow, or ending one: use workspace-lifecycle."
+description: "Start and follow `workspace` workflow runs: `go` from a ticket, PR or text, name a preset (rpiv, rpiv-auto-approve, rpiv-auto-approve-v2, investigate, pr-feedback, explore, explore-parallel, bugfix), `workflow start`, `workflow run`, read `workflow status`. Use for 'run rpiv on this' or 'investigate PROJ-101'. Not a worktree with no workflow, or ending one: use workspace-lifecycle."
 ---
 
 Written against workspace 0.97.0; check with the working --help form.
