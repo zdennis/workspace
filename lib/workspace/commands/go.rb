@@ -83,11 +83,15 @@ module Workspace
       # @param here [Boolean] run free text in this checkout (`--here`) instead of a new workspace
       # @param base [String, nil] the ref a new branch starts from (`--base`); refused when go runs in place
       # @param text [Boolean] read the argument as plain text (`--text`): no identifier is taken out of it
+      # @param checkout [WorkflowStart::Here, nil] the checkout to run in, given outright: it replaces the process's directory
+      #   (no `@git.root`, no detection from the working directory) and implies +here+. The caller vouches for it:
+      #   {#in_place_checkout}'s checks (linked worktree, configured root, unprotected branch) are not run again
+      # @param note [String, nil] added to every step's instructions of the run `go` starts
       # @return [Hash{String=>Object}] the row of `workflow run` or `workflow start` (of `plan task add` on the task path, route `task`), plus "decision" (+workflow+, +source+,
       #   +kind+, +route+, +reason+, +extracted+: the token read out of the text, else nil) and "warnings"
       # @raise [Workspace::UsageError] an empty argument, no argument where `go` can't run in place, `--here` with a ref for another branch, or free text with no letters or digits for a new branch, or `--text` with no argument or one holding no whitespace
       # @raise [Workspace::Error] outside a git repository; code `go_here_unavailable` (`--here` where this checkout can't run in place), `unknown_ref`, `unknown_base`, `branch_not_allowed`, `branch_exists`, `workflow_needs_claude`, or any of {WorkflowStart#call} and {Workflow#run}
-      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false, base: nil, text: false, file: nil)
+      def call(argument: nil, workflow: nil, inputs: {}, headless: false, dry_run: false, caller_pane: nil, here: false, base: nil, text: false, file: nil, checkout: nil, note: nil)
         raise Workspace::UsageError, "--file takes the place of --workflow: use one." if file && workflow
         argument = argument&.gsub(/\A[[:space:]]+|[[:space:]]+\z/, "")
         raise Workspace::UsageError, "go was given an empty argument. Name a ref, or quote free text." if argument == ""
@@ -95,9 +99,15 @@ module Workspace
           raise Workspace::UsageError, argument ? "--text needs a quoted sentence with a space in it (got #{argument.inspect}). Quote the sentence, or drop --text." : "--text needs a quoted sentence; none was given."
         end
 
-        root = @git.root
-        project = root && @start_ref.project(root)
-        checkout = checkout_here(root, project, caller_pane)
+        if checkout
+          root = checkout.path
+          here = true
+          project = @start_ref.project(root)
+        else
+          root = @git.root
+          project = root && @start_ref.project(root)
+          checkout = checkout_here(root, project, caller_pane)
+        end
         if argument.nil? && checkout.nil? && !here
           raise Workspace::UsageError, "go needs a ref or free text here: it runs in place only in a linked worktree workspace off the default branch."
         end
@@ -125,9 +135,9 @@ module Workspace
         end
         check_base!(base, root, in_place)
         # In place the worktree is known, so its own setting counts; a new checkout has none yet.
-        project_workspace = @workflow_start.locate_project[:project_workspace]
+        project_workspace = @workflow_start.locate_project(root)[:project_workspace]
         # A project's keys count only where the user's config ties it to this checkout, as for `workflow start`.
-        tied = @workflow_start.catalog_project
+        tied = @workflow_start.catalog_project(root)
         id, source, definition = choose(workflow, file, reading.kind, tied && (in_place ? checkout.workspace : tied), tied)
         # Only free text that starts a new workspace asks for a name, and only once every cheap
         # refusal has had its say: the slug of the text is checked first, so text that could never
@@ -151,17 +161,42 @@ module Workspace
 
         # A file is read once more by WorkflowStart, which also warns when an installed definition shadows it; run_here is handed the loaded one.
         shared = file ? {file: file, inputs: inputs, dry_run: dry_run} : {id: id, inputs: inputs, dry_run: dry_run}
+        shared[:note] = note
         shared[:base] = base if base
         shared[:prompt] = reading.text if reading.ref && reading.text
         row = if reading.ref
-          naming(reading.extracted) { @workflow_start.call(ref: reading.ref.input, headless: headless, here: in_place ? checkout : nil, **shared) }
+          naming(reading.extracted) { @workflow_start.call(ref: reading.ref.input, headless: headless, here: in_place ? checkout : nil, root: root, **shared) }
         elsif in_place
-          run_here(reading.text, definition, checkout, project_workspace, **shared)
+          run_here(reading.text, definition, checkout, project_workspace, root, **shared)
         else
-          start_from_text(reading.text, project, definition, headless: headless, derived_branch: derived_branch, **shared)
+          start_from_text(reading.text, project, definition, headless: headless, derived_branch: derived_branch, root: root, **shared)
         end
         decision = {"workflow" => id, "source" => source, "kind" => reading.kind, "route" => route, "reason" => reason, "extracted" => reading.extracted}
         row.merge("decision" => decision, "warnings" => Array(row["warnings"]) + warnings + pick_warnings)
+      end
+
+      # The one test for running in place and the one source of the checkout. The workspace
+      # must be this very checkout, a linked worktree on a branch other than the
+      # default: a main checkout, a linked worktree with no marker of its own (which detects as
+      # the main workspace), a detached HEAD and a rebase in progress all answer nil.
+      #
+      # @param root [String] the checkout's root
+      # @param workspace [String, nil] the workspace detected for it
+      # @param caller_pane [String, nil] the pane the command runs in
+      # @return [WorkflowStart::Here, nil]
+      def in_place_checkout(root, workspace:, caller_pane: nil)
+        project = root && @start_ref.project(root)
+        return nil unless project&.from_worktree && workspace
+
+        configured = @project_config.project_root_for(workspace)
+        return nil unless configured && File.realpath(File.expand_path(configured)) == File.realpath(root)
+
+        branch = @git.worktree_branch(root)
+        return nil if branch.nil? || @protected_branch.call(branch, project)
+
+        WorkflowStart::Here.new(workspace: workspace, path: root, caller_pane: caller_pane)
+      rescue SystemCallError
+        nil
       end
 
       private
@@ -180,25 +215,12 @@ module Workspace
           code: "unknown_base", details: {"base" => base})
       end
 
-      # The one test for running in place and the one source of the checkout. The detected
-      # workspace must be this very checkout, a linked worktree on a branch other than the
-      # default: a main checkout, a linked worktree with no marker of its own (which detects as
-      # the main workspace), a detached HEAD and a rebase in progress all answer nil.
+      # The checkout of the working directory, when go can run there in place.
       def checkout_here(root, project, caller_pane)
         return nil unless project&.from_worktree
 
         workspace = @project_detector.detect(@working_dir)
-        return nil unless workspace
-
-        configured = @project_config.project_root_for(workspace)
-        return nil unless configured && File.realpath(File.expand_path(configured)) == File.realpath(root)
-
-        branch = @git.worktree_branch(root)
-        return nil if branch.nil? || @protected_branch.call(branch, project)
-
-        WorkflowStart::Here.new(workspace: workspace, path: root, caller_pane: caller_pane)
-      rescue SystemCallError
-        nil
+        in_place_checkout(root, workspace: workspace, caller_pane: caller_pane)
       end
 
       # A refusal of a ref read out of a sentence names the way out. The refusal is a copy of the
@@ -308,15 +330,15 @@ module Workspace
       # `start` would make a local branch of that name.
       def check_name!(ref, root, workflow)
         match = case_clash(ref.branch, root)
-        refuse_case_variant(ref, match, workflow) if match
+        refuse_case_variant(ref, match, workflow, root) if match
         return unless ref.kind == "branch"
 
         names = @git.branch_names(root)
         return if names.include?(ref.branch)
 
         remote = case_variant(names, ref.branch.delete_prefix("origin/")) if ref.branch.start_with?("origin/")
-        refuse_remote_name(ref, remote) if remote
-        refuse_unknown_word(ref) unless workflow
+        refuse_remote_name(ref, remote, root) if remote
+        refuse_unknown_word(ref, root) unless workflow
       end
 
       # The real branch this name differs from only in case, local names first; nil for an exact name or no match.
@@ -335,27 +357,27 @@ module Workspace
         names.find { |name| name.casecmp?(branch) }
       end
 
-      def refuse_case_variant(ref, match, workflow)
+      def refuse_case_variant(ref, match, workflow, root)
         message = if ref.kind == "branch"
           advice = workflow ? "Free text needs a space." : "A word naming a workflow needs --workflow, and free text needs a space."
           "#{ref.input.inspect} differs only in case from the branch #{match}. Use that name. #{advice}"
         else
           "#{ref.input} names the branch #{ref.branch}, which differs only in case from the branch #{match}."
         end
-        raise_unknown_ref(message, ref, "did_you_mean" => match)
+        raise_unknown_ref(message, ref, root, "did_you_mean" => match)
       end
 
-      def refuse_remote_name(ref, match)
-        raise_unknown_ref("#{ref.input} is origin's name for the branch #{match}. Use #{match}.", ref, "did_you_mean" => match)
+      def refuse_remote_name(ref, match, root)
+        raise_unknown_ref("#{ref.input} is origin's name for the branch #{match}. Use #{match}.", ref, root, "did_you_mean" => match)
       end
 
-      def refuse_unknown_word(ref)
+      def refuse_unknown_word(ref, root)
         raise_unknown_ref("#{ref.input.inspect} is not a branch of this repository. A word naming a workflow needs --workflow, " \
-          "free text needs a space, and a branch on origin may need `git fetch`.", ref)
+          "free text needs a space, and a branch on origin may need `git fetch`.", ref, root)
       end
 
-      def raise_unknown_ref(message, ref, extra = {})
-        raise Workspace::Error.new(message, code: "unknown_ref", details: {"ref" => ref.input, "known" => @catalog.known_ids(project: @workflow_start.catalog_project)}.merge(extra))
+      def raise_unknown_ref(message, ref, root, extra = {})
+        raise Workspace::Error.new(message, code: "unknown_ref", details: {"ref" => ref.input, "known" => @catalog.known_ids(project: @workflow_start.catalog_project(root))}.merge(extra))
       end
 
       # `start` would adopt the main checkout, or put the run on the default branch in a worktree.
@@ -486,10 +508,10 @@ module Workspace
         definition.to_h["inputs"].key?("task")
       end
 
-      def run_here(text, definition, here, project_workspace, inputs:, dry_run:, id: nil, file: nil)
+      def run_here(text, definition, here, project_workspace, root, inputs:, dry_run:, id: nil, file: nil, note: nil)
         @workflow_start.check_agent!(here.workspace, project: project_workspace)
         inputs = inputs.merge("task" => text) if text && declares_task?(definition) && !inputs.key?("task")
-        @workflow.run(**(file ? {definition: definition} : {id: id}), workspace: here.workspace, worktree: here.path, inputs: inputs, dry_run: dry_run, caller_pane: here.caller_pane, project: @workflow_start.catalog_project)
+        @workflow.run(**(file ? {definition: definition} : {id: id}), workspace: here.workspace, worktree: here.path, inputs: inputs, dry_run: dry_run, caller_pane: here.caller_pane, note: note, project: @workflow_start.catalog_project(root))
       end
 
       def start_from_text(text, project, definition, derived_branch: nil, **options)
