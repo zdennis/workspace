@@ -222,6 +222,65 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(attempts("test").size).to eq(1)
     end
 
+    it "types the second fan-out into the siblings' own live panes, spawns none, and lets the second round pass" do
+      start(flow({"lint" => nil, "test" => nil, "docs" => nil}, before: true))
+      pass("plan")
+      %w[lint test docs].each { |id| pass(id) }
+      panes_before = %w[lint test docs].to_h { |id| [id, pane(id)] }
+      fail("report")
+
+      pass("plan")
+
+      expect(panes.spawns.size).to eq(2)
+      expect(%w[lint test docs].to_h { |id| [id, pane(id)] }).to eq(panes_before)
+      expect(kicks_into(panes_before["test"]).size).to eq(2)
+      expect(kicks_into(panes_before["docs"]).size).to eq(2)
+      %w[lint test docs].each { |id| pass(id) }
+
+      expect(run).to include("state" => "running", "current" => "report")
+      expect(state("report")).to eq("running")
+      expect(attempts("test").size).to eq(2)
+    end
+
+    it "spawns a new pane for a sibling whose pane is gone, drops its stale binding, and sees its turn end" do
+      start(flow({"lint" => nil, "test" => nil, "docs" => nil}, before: true))
+      pass("plan")
+      %w[lint test docs].each { |id| pass(id) }
+      old = pane("test")
+      kept = pane("docs")
+      fail("report")
+      panes.stale << old
+
+      pass("plan")
+
+      expect(panes.spawns.size).to eq(3)
+      expect(pane("test")).not_to eq(old)
+      expect(pane("docs")).to eq(kept)
+      expect(panes.bound).not_to have_key(old)
+      expect(panes.bound[pane("test")]).to include(run_id: "wr_1", step: "test")
+      panes.stale.clear
+      %w[lint test docs].each { |id| pass(id) }
+
+      expect(run).to include("state" => "running", "current" => "report")
+    end
+
+    it "types the first sibling into the run's new pane when a resume --pane moved the run between rounds" do
+      start(flow({"lint" => nil, "test" => nil}, before: true))
+      pass("plan")
+      %w[lint test].each { |id| pass(id) }
+      old = pane("lint")
+      fail("report")
+      expect(run["current"]).to eq("plan")
+
+      engine.resume("wr_1", actor: "person", pane: "%9")
+      write("plan")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%9", step: "plan")
+
+      expect(old).not_to eq("%9")
+      expect(kicks_into("%9").map { |kick| kick[:text] }.join).to match(%r{steps/lint\.})
+      expect(pane("lint")).to eq("%9")
+    end
+
     it "stops for a group at the workflow's start rather than loop into a sibling" do
       start(flow("lint" => nil, "test" => nil))
       pass("lint")

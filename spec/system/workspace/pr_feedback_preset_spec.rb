@@ -134,8 +134,8 @@ RSpec.describe "the shipped workflow presets" do
       expect(passes?(rejected + "\n## Reasons\nskeptical: approve\n", verdicts: verdicts(skeptical: "reject"))).to be(false)
     end
 
-    it "allows 59 attempts, enough for every rejection round the loop allows" do
-      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to eq(59)
+    it "allows 67 attempts, enough for every rejection round and reviewer loop the definition allows" do
+      expect(catalog.find("rpiv-auto-approve").to_h["max_attempts"]).to eq(67)
     end
   end
 

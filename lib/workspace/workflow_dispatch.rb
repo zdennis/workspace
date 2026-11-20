@@ -336,19 +336,53 @@ module Workspace
     # sibling has ended ({SIBLING_ENDED}), so {#unstarted_group} fans the whole group out again rather than running the
     # one sibling the cursor names beside siblings that judged earlier work. Each sibling's attempts stay as its
     # history (each new one spends from the run's allowance as any attempt does), as do its pending context and its
-    # reason history; its last stop (`reason`), its deferred move, its kept failure details and a gate still waiting go, as a fresh
-    # sibling has none. A group with a sibling at work or waiting (a lock, a hold, a pane gone) is left as it is.
+    # reason history; its last stop (`reason`), its kept failure details and a gate still waiting go, as a fresh
+    # sibling has none, and a deferred move it still holds is superseded ({#supersede_held_move}). A group with a sibling at work or waiting (a lock, a hold, a pane gone) is left as it is. A
+    # re-entry writes one `group_rearmed` event (`group`, `steps`, and `dropped_gates`: the siblings whose waiting gate
+    # it dropped, so a trace can close their gate spans).
     def reenter_group(run)
       ids = group_of(run, run["current"])
       return unless ids
       return unless ids.all? { |id| SIBLING_ENDED.include?(run.dig("steps", id, "state")) }
+      dropped = ids.select { |id| run.dig("steps", id, "gate", "state") == "waiting" }
       ids.each do |id|
         state = run["steps"][id]
         state["state"] = "pending"
         state.delete("failed_reason")
-        state.delete("gate") if state.dig("gate", "state") == "waiting"
-        %w[reason pending_move].each { |key| WorkflowRun.slots(run, id).delete(key) }
+        state.delete("gate") if dropped.include?(id)
+        supersede_held_move(run, id)
+        WorkflowRun.slots(run, id).delete("reason")
       end
+      group = run["definition"]["steps"].find { |step| step["id"] == ids.first }["group"]
+      @change.event(run, "group_rearmed", "group" => group, "steps" => ids, "dropped_gates" => dropped)
+    end
+
+    # Drops the deferred failure move (`pending_move`) sibling +id+ still holds when it is about to run again outside the
+    # join (a `resume`, a `resume --from`, a re-entry of its group): the failure the move answered is being retried, so
+    # the move must not run after it. The loop it spent goes back to its count before ("was"; removed for none), its wait
+    # and `retry_backoff` reason go, and its attempt's `move` (or `group_move`) is marked `failed: "superseded"`. For a
+    # group move, each other sibling's `group_move` that joined it is marked the same, so a sibling still failed leaves
+    # the group to fail for a person at the join rather than loop. One `step_retry_blocked` (`superseded`) is written.
+    # A sibling holding no move changes nothing.
+    def supersede_held_move(run, id)
+      slots = WorkflowRun.slots(run, id)
+      move = slots["pending_move"]
+      return unless move.is_a?(Hash)
+      slots.delete("pending_move")
+      slots["reason"] = nil if slots.dig("reason", "code") == "retry_backoff"
+      if move["edge"].is_a?(String) && move.key?("was")
+        move["was"].nil? ? run["loops"].delete(move["edge"]) : run["loops"][move["edge"]] = move["was"]
+      end
+      group = move["group"]
+      ids = group ? (WorkflowDefinition.group_steps(run["definition"])[group] || [id]) : [id]
+      key = group ? "group_move" : "move"
+      ids.each do |each|
+        attempt = Array(run.dig("steps", each, "attempts")).last
+        next unless WorkflowTransitions.move_granted?(attempt, key)
+        next if group && attempt[key]["group"] != group
+        attempt[key] = attempt[key].merge("failed" => "superseded")
+      end
+      @change.event(run, "step_retry_blocked", {"from" => id, "to" => move["to"], "code" => "superseded", "group" => group}.compact)
     end
 
     # The pane a sibling of a group entered again ({#reenter_group}) types into: its own from its last run, while that
@@ -388,7 +422,7 @@ module Workspace
       made = first_pane(run, grouped, held)
       unless made == :failed
         start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of,
-          pane: made.is_a?(Hash) ? made[:pane] : nil, group_entry: true)
+          pane: made.is_a?(Hash) ? made[:pane] : moved_pane(run, ids, retry_of), group_entry: true)
       end
       return if held
       # The run pane works on the group whole when any sibling runs as its sub-agent: one binding, written once at
@@ -414,6 +448,9 @@ module Workspace
           slot(run, "reason")["details"]["pane"] = made[:pane] if made[:pane]
           next
         end
+        # A sibling of a group entered again drops its old binding, so the run's lookup for the step (and the turn end
+        # of the new pane) finds the new pane rather than the one it replaces.
+        @panes.unbind(run["id"], step: id) if run.dig("steps", id, "pane")
         start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil, pane: made[:pane], group_entry: true)
       end
       compose_group_line(run, ids, ctx, cause: cause)
@@ -439,6 +476,16 @@ module Workspace
       not_delivered(run, step_state(run), nil, {code: made[:error], message: made[:message]})
       slot(run, "reason")["details"]["pane"] = made[:pane] if made[:pane]
       :failed
+    end
+
+    # The pane the first sibling of a group entered again ({#reenter_group}) types into when no pane is spawned for it:
+    # nil (the default: its own binding) while that binding is alive, else the run's pane, so a sibling whose run was
+    # moved to another pane between rounds (`resume --pane`), or whose own pane is gone, is not typed into the pane
+    # its step slot still names. A first fan-out, a retry and a subagent sibling answer nil.
+    def moved_pane(run, ids, retry_of)
+      id = ids.first
+      return nil if retry_of || Array(run.dig("steps", id, "attempts")).empty? || subagent_step?(run)
+      @panes.alive?(run["id"], step: id) ? nil : run["pane"]
     end
 
     # The one delivery line a `subagents` group's started siblings share, registered once after every sibling's
@@ -509,6 +556,7 @@ module Workspace
       slots(run).delete("retry_of_pending")
       cause = kept_cause(run, cause)
       slots(run).delete("dispatch_cause_pending")
+      supersede_held_move(run, step["id"])
 
       # To the millisecond: the end of a turn is matched to the attempt by when that turn began.
       attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => slot(run, "pending_context"),

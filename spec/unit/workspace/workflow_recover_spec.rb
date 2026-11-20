@@ -560,6 +560,19 @@ RSpec.describe Workspace::WorkflowRecover do
       expect(engine.resumes).to be_empty
     end
 
+    it "wakes a run whose fan_out group owes its goto, as it wakes a sibling's deferred move" do
+      add_run("wr_1", "app", 100, step: "failed", open: false, extra: {"state" => "waiting", "current" => "build",
+                                                                       "definition" => {"steps" => [{"id" => "build", "group" => "checks"}, {"id" => "lint", "group" => "checks"}]}})
+      run = stored("wr_1")
+      run["steps"]["build"].merge!("reason" => {"code" => "retry_backoff"}, "pending_move" => {"group" => "checks", "to" => "plan", "until" => iso(300)})
+      run["steps"]["lint"] = {"state" => "failed", "attempts" => [{"n" => 1, "group_move" => {"group" => "checks", "joined" => true}}]}
+      File.write(path("wr_1"), JSON.generate(run))
+
+      expect(rows.map { |each| each["outcome"] }.uniq).to eq(["restored"])
+      expect(engine.ticks.uniq).to eq(["wr_1"])
+      expect(engine.resumes).to be_empty
+    end
+
     it "gives skipped/moved_on and no tick when the run changed while the workspace was restored" do
       add_run("wr_1", "app", 100, step: "checking")
       restore.after = lambda do

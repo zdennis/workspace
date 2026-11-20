@@ -77,6 +77,17 @@ RSpec.describe Workspace::WorkflowRecovery do
         expect(dispatch.calls).to be_empty
       end
 
+      it "runs the join for a group's move held by one sibling while another is joined to it" do
+        hash = grouped("2026-11-10T11:59:00Z")
+        hash["steps"]["build"]["pending_move"]["group"] = "checks"
+        hash["steps"]["lint"] = {"state" => "failed", "attempts" => [{"n" => 1, "group_move" => {"group" => "checks", "joined" => true}}]}
+        stored(hash)
+
+        expect(recovery.tick("wr_1", actor: "daemon")).to be_a(Workspace::WorkflowRun)
+
+        expect(progress.calls).to eq([[:join, "checks"]])
+      end
+
       it "leaves the move alone while its wait lasts" do
         stored(grouped("2026-11-10T12:01:00Z"))
 

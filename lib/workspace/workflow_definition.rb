@@ -234,7 +234,7 @@ module Workspace
     #   "context" and "timeout" (seconds or nil); a `fan_out` group's siblings sit in "steps" at the group's place,
     #   each also with "group" (the group step's id) and "execution_mode" (the mode it runs with, its own or the
     #   group's), and only then is there "groups": group id to "title",
-    #   "checkout", "on_fail" (`stop`), "steps" (its sibling ids, in order) and, only when the definition set it,
+    #   "checkout", "on_fail" (`stop`, or the goto mapping a step's `on_fail` has), "steps" (its sibling ids, in order) and, only when the definition set it,
     #   "execution_mode"
     def to_h
       @data
@@ -403,6 +403,18 @@ module Workspace
       (value.is_a?(Integer) && value.between?(1, MAX_LOG_TAIL)) ? value : nil
     end
 
+    # The `on_fail` of a `fan_out` group.
+    #
+    # @param definition [Hash, nil] {#to_h}, or a stored run's definition
+    # @param gid [String] the group's id
+    # @return [String, Hash] `"stop"` when the key or the group is missing (a run stored before a group could goto)
+    def self.group_on_fail(definition, gid)
+      groups = definition.is_a?(Hash) ? definition["groups"] : nil
+      group = groups.is_a?(Hash) ? groups[gid] : nil
+      on_fail = group.is_a?(Hash) ? group["on_fail"] : nil
+      on_fail.nil? ? "stop" : on_fail
+    end
+
     # @return [Integer, nil] a step's own attempt cap, nil when it has none (an absent key counts as none)
     def self.step_max_attempts(step)
       value = step.is_a?(Hash) ? step["max_attempts"] : nil
@@ -490,14 +502,14 @@ module Workspace
     # above the run's `max_attempts` never applies, since the run cap is spent first.
     def step_attempt_warnings
       by_id = steps.to_h { |step| [step["id"], step] }
-      loops = steps.filter_map do |step|
-        on_fail = step["on_fail"]
-        next unless on_fail.is_a?(Hash)
+      loops = failing_positions.filter_map do |position|
+        on_fail = position[:on_fail]
         cap = self.class.step_max_attempts(by_id[on_fail["goto"]]) or next
         next if on_fail["max"] + 1 <= cap
-        {"code" => "on_fail_exceeds_step_attempts", "step" => step["id"],
-         "message" => "step #{step["id"]} sets on_fail max: #{on_fail["max"]}, which runs step #{on_fail["goto"]} up to #{on_fail["max"] + 1} times, but step #{on_fail["goto"]} sets max_attempts: #{cap}. Raise its max_attempts to #{on_fail["max"] + 1} or more, or lower max."}
+        {"code" => "on_fail_exceeds_step_attempts", "step" => position[:id],
+         "message" => "#{position[:label]} sets on_fail max: #{on_fail["max"]}, which runs step #{on_fail["goto"]} up to #{on_fail["max"] + 1} times, but step #{on_fail["goto"]} sets max_attempts: #{cap}. Raise its max_attempts to #{on_fail["max"] + 1} or more, or lower max."}
       end
+      loops += sibling_attempt_warnings
       run_cap = @data["max_attempts"]
       over = steps.filter_map do |step|
         cap = self.class.step_max_attempts(step)
@@ -506,6 +518,39 @@ module Workspace
          "message" => "step #{step["id"]} sets max_attempts: #{cap}, above the workflow's max_attempts: #{run_cap}, so the run stops first. Lower the step's cap or raise the workflow's."}
       end
       loops + over
+    end
+
+    # Every `on_fail` that loops back: a step's own, and a `fan_out` group's goto, which counts as one
+    # failing position at the group's last sibling.
+    def failing_positions
+      found = steps.each_with_index.filter_map do |step, index|
+        on_fail = step["on_fail"]
+        {id: step["id"], label: "step #{step["id"]}", noun: "step", index: index, on_fail: on_fail} if on_fail.is_a?(Hash)
+      end
+      (@data["groups"] || {}).each do |gid, group|
+        on_fail = group["on_fail"]
+        next unless on_fail.is_a?(Hash)
+        last = steps.rindex { |step| step["group"] == gid } or next
+        found << {id: gid, label: "group #{gid}", noun: "group", index: last, on_fail: on_fail}
+      end
+      found
+    end
+
+    # A sibling with no `on_fail` of its own takes its group's goto, so a later round dispatches it
+    # again: its cap must reach the group's `max + 1`, or once it is spent the group's next failure stops the run for a
+    # person (`limit: step`) before `max` loops.
+    def sibling_attempt_warnings
+      (@data["groups"] || {}).flat_map do |gid, group|
+        on_fail = group["on_fail"]
+        next [] unless on_fail.is_a?(Hash)
+        steps.filter_map do |step|
+          next unless step["group"] == gid && step["on_fail"].nil?
+          cap = self.class.step_max_attempts(step) or next
+          next if cap >= on_fail["max"] + 1
+          {"code" => "on_fail_exceeds_step_attempts", "step" => step["id"],
+           "message" => "step #{step["id"]} takes group #{gid}'s on_fail max: #{on_fail["max"]}, which runs it up to #{on_fail["max"] + 1} times, but it sets max_attempts: #{cap}, so once it has run #{cap} times the group's next failure stops the run for a person instead of going back to #{on_fail["goto"]}. Raise its max_attempts to #{on_fail["max"] + 1} or more, or lower max."}
+        end
+      end
     end
 
     # An `on_fail` whose retries can never all start. The run spends one attempt per step it
@@ -518,9 +563,10 @@ module Workspace
     # "if every review round is used". The failing step itself fails before its review.
     def retry_warnings
       ids = steps.map { |step| step["id"] }
-      steps.each_with_index.filter_map do |step, index|
-        on_fail = step["on_fail"]
-        next unless on_fail.is_a?(Hash)
+      failing_positions.filter_map do |position|
+        on_fail = position[:on_fail]
+        index = position[:index]
+        noun = position[:noun]
         goto = ids.index(on_fail["goto"])
         first = steps[0...index].sum { |each| WorkflowReviewSpec.attempt_weight(each) } + 1
         span = steps[goto...index].sum { |each| WorkflowReviewSpec.attempt_weight(each) } + 1
@@ -531,11 +577,11 @@ module Workspace
         next if needed < allowed
         fits = (first < allowed) ? (allowed - first - 1) / span + 1 : 0
         message = if reviewed
-          "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start if every review round is used (the step then fails first on attempt #{first}, and each retry runs #{span} attempt#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max or the review max_rounds."
+          "#{position[:label]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start if every review round is used (the #{noun} then fails first on attempt #{first}, and each retry runs #{span} attempt#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max or the review max_rounds."
         else
-          "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start (the step fails first on attempt #{first} at the earliest, and each retry runs #{span} step#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max."
+          "#{position[:label]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start (the #{noun} fails first on attempt #{first} at the earliest, and each retry runs #{span} step#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max."
         end
-        {"code" => "on_fail_exceeds_max_attempts", "step" => step["id"], "message" => message}
+        {"code" => "on_fail_exceeds_max_attempts", "step" => position[:id], "message" => message}
       end
     end
 
@@ -773,7 +819,7 @@ module Workspace
       ids.each_with_index do |step_id, index|
         body = raw[raw.keys[index]]
         if body.is_a?(Hash) && body.key?("fan_out")
-          steps.concat(group_from(step_id, body, taken, inputs))
+          steps.concat(group_from(step_id, body, taken, inputs, steps.reject { |step| step["group"] }.map { |step| step["id"] }))
         else
           steps << step_from(step_id, body, steps.map { |step| step["id"] }, inputs)
         end
@@ -784,15 +830,14 @@ module Workspace
 
     # The siblings of one `fan_out` group step, flattened and tagged with the group's id; records the group's own
     # keys in @groups. A sibling's `earlier` is the siblings before it, so its goto stays inside the group.
-    def group_from(group_id, raw, taken, inputs)
+    def group_from(group_id, raw, taken, inputs, earlier_ungrouped)
       where = "step #{group_id}"
       problem "step id #{group_id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(group_id)
       extra = raw.keys.map(&:to_s) - GROUP_KEYS
       if extra.any?
         problem "#{where} is a fan_out group, which has no body of its own: it takes only #{GROUP_KEYS.join(", ")}, got #{extra.join(", ")}"
       end
-      on_fail = raw.fetch("on_fail", "stop")
-      problem "#{where}: a fan_out group's on_fail must be stop (a group can't goto yet), got #{on_fail.inspect[0, 60]}" unless on_fail == "stop"
+      on_fail = on_fail_from(raw.fetch("on_fail", "stop"), earlier_ungrouped, where, group_of: group_id) || "stop"
       checkout = raw.fetch("checkout", GROUP_CHECKOUTS.first)
       unless GROUP_CHECKOUTS.include?(checkout)
         problem "#{where}: checkout must be #{GROUP_CHECKOUTS.join(" or ")}, got #{checkout.inspect[0, 60]}"
@@ -826,7 +871,7 @@ module Workspace
         earlier << sibling_id
         step.merge("group" => group_id)
       end
-      @groups[group_id] = {"title" => title, "checkout" => checkout, "on_fail" => "stop", "steps" => siblings.map { |step| step["id"] }}
+      @groups[group_id] = {"title" => title, "checkout" => checkout, "on_fail" => on_fail, "steps" => siblings.map { |step| step["id"] }}
       @groups[group_id]["execution_mode"] = mode if mode
       siblings
     end
@@ -1104,14 +1149,16 @@ module Workspace
       []
     end
 
-    def on_fail_from(value, earlier, where, group: nil)
+    def on_fail_from(value, earlier, where, group: nil, group_of: nil)
       return nil if value.nil?
       return "stop" if value == "stop"
       return problem("#{where}: on_fail must be stop, or a mapping with goto and max") unless value.is_a?(Hash)
       unknown_keys(value, ON_FAIL_KEYS, "#{where}: on_fail")
       goto = value["goto"].to_s
-      if group && !earlier.include?(goto)
-        problem "#{where}: on_fail goto must name an earlier step of its fan_out group #{group} (#{earlier.empty? ? "there is none" : earlier.join(", ")}); a goto can't leave the group yet, got #{value["goto"].inspect}"
+      if group_of && !earlier.include?(goto)
+        problem "#{where}: a fan_out group's on_fail goto must name a step before the group that is in no group (#{earlier.empty? ? "there is none" : earlier.join(", ")}), got #{value["goto"].inspect}"
+      elsif group && !earlier.include?(goto)
+        problem "#{where}: on_fail goto must name an earlier step of its fan_out group #{group} (#{earlier.empty? ? "there is none" : earlier.join(", ")}); a sibling's goto can't leave the group (to go back further, put on_fail: goto on group #{group}), got #{value["goto"].inspect}"
       elsif !earlier.include?(goto)
         problem "#{where}: on_fail goto must name an earlier step (#{earlier.empty? ? "there is none" : earlier.join(", ")}), got #{value["goto"].inspect}"
       end

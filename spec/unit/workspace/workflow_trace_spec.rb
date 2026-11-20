@@ -268,6 +268,17 @@ RSpec.describe Workspace::WorkflowTrace do
       expect(gates.map { |gate| gate[:span_id] }.uniq.size).to eq(3)
     end
 
+    it "closes a sibling's open gate span on the group_rearmed that dropped its gate, leaving another step's open" do
+      more = events + [
+        {"n" => 4, "ts" => t("10:06:10"), "type" => "gate_waiting", "step" => "build"},
+        {"n" => 5, "ts" => t("10:06:10"), "type" => "gate_waiting", "step" => "other"},
+        {"n" => 6, "ts" => t("10:06:40"), "type" => "group_rearmed", "group" => "g", "steps" => %w[build], "dropped_gates" => %w[build], "actor" => "person"}
+      ]
+      gates = reader.read(run, more, now: now)[:spans].select { |span| span[:kind] == "gate" }
+      expect(gates.map { |gate| [gate[:step], gate[:ended_at]] }).to eq([["build", t("10:06:00")], ["build", t("10:06:40")], ["other", nil]])
+      expect(reader.read(run, more, now: now)[:transitions].last).to include(type: "group_rearmed", kind: "marker")
+    end
+
     it "makes stall and downtime spans" do
       expect(kind("stall")).to match([include(code: "stalled", step: "build", started_at: t("10:08:30"))])
       expect(kind("downtime")).to match([include(code: "downtime", started_at: t("10:07:00"), ended_at: t("10:08:00"))])

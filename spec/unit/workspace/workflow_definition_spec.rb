@@ -1212,7 +1212,7 @@ RSpec.describe Workspace::WorkflowDefinition do
       it "refuses a sibling's goto to a sibling of the other group" do
         second = "      test:\n        prompt: P\n        produces: [test.md]\n        on_fail: {goto: lint}\n"
         expect(problems(two_groups(second)))
-          .to eq(["step test: on_fail goto must name an earlier step of its fan_out group second (there is none); a goto can't leave the group yet, got \"lint\""])
+          .to eq(["step test: on_fail goto must name an earlier step of its fan_out group second (there is none); a sibling's goto can't leave the group (to go back further, put on_fail: goto on group second), got \"lint\""])
       end
     end
 
@@ -1305,7 +1305,7 @@ RSpec.describe Workspace::WorkflowDefinition do
 
       it "refuses a sibling's goto to the group's preceding step" do
         expect(problems(grouped([["lint"], ["test", "        on_fail: {goto: plan}\n"]])))
-          .to include("step test: on_fail goto must name an earlier step of its fan_out group checks (lint); a goto can't leave the group yet, got \"plan\"")
+          .to include("step test: on_fail goto must name an earlier step of its fan_out group checks (lint); a sibling's goto can't leave the group (to go back further, put on_fail: goto on group checks), got \"plan\"")
       end
 
       it "refuses a first sibling's goto, which has no earlier sibling" do
@@ -1353,10 +1353,100 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(found).to include("step checks is a fan_out group, which has no body of its own: it takes only title, fan_out, checkout, on_fail, execution_mode, got prompt, produces")
     end
 
-    it "parses a group's on_fail: stop and refuses its goto" do
-      expect(parse(grouped([["lint"]], group_extra: "    on_fail: stop\n")).to_h.dig("groups", "checks", "on_fail")).to eq("stop")
-      expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: plan}\n")))
-        .to include(a_string_matching(/\Astep checks: a fan_out group's on_fail must be stop \(a group can't goto yet\)/))
+    describe "a group's on_fail" do
+      let(:refusal) { /\Astep checks: a fan_out group's on_fail goto must name a step before the group that is in no group/ }
+
+      it "defaults to stop and parses an explicit stop" do
+        expect(parse(grouped([["lint"]])).to_h.dig("groups", "checks", "on_fail")).to eq("stop")
+        expect(parse(grouped([["lint"]], group_extra: "    on_fail: stop\n")).to_h.dig("groups", "checks", "on_fail")).to eq("stop")
+      end
+
+      it "accepts a goto to a step before the group and keeps the mapping in to_h" do
+        definition = parse(grouped([["lint"]], group_extra: "    on_fail: {goto: plan, max: 2}\n"))
+        expect(definition.to_h.dig("groups", "checks", "on_fail")).to eq("context" => nil, "goto" => "plan", "max" => 2)
+      end
+
+      it "keeps max, context, except, backoff and log_tail" do
+        extra = "    on_fail: {goto: plan, max: 3, context: fresh, except: [timeout], backoff: 30s, log_tail: 20}\n"
+        on_fail = parse(grouped([["lint"]], group_extra: extra)).to_h.dig("groups", "checks", "on_fail")
+        expect(on_fail).to eq("goto" => "plan", "max" => 3, "context" => "fresh", "except" => ["timeout"], "backoff" => 30, "log_tail" => 20)
+      end
+
+      it "refuses a bad max" do
+        expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: plan, max: 0}\n")))
+          .to include("step checks: on_fail max must be a whole number of 1 or more, got 0")
+      end
+
+      it "refuses a bad context" do
+        expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: plan, context: nope}\n")))
+          .to include(a_string_matching(/\Astep checks: on_fail context must be one of/))
+      end
+
+      it "refuses a bad except" do
+        expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: plan, except: nope}\n")))
+          .to include(a_string_matching(/\Astep checks: on_fail except/))
+      end
+
+      it "refuses a bad backoff" do
+        expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: plan, backoff: soon}\n")))
+          .to include(a_string_matching(/\Astep checks: on_fail backoff:/))
+      end
+
+      it "refuses a bad log_tail" do
+        expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: plan, log_tail: 0}\n")))
+          .to include(a_string_matching(/\Astep checks: on_fail log_tail must be a whole number from 1 to/))
+      end
+
+      it "refuses a goto to one of its own siblings" do
+        expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: lint}\n")))
+          .to include(a_string_matching(/#{refusal.source}.*\(plan\), got "lint"/))
+      end
+
+      it "refuses a goto to a step in another group" do
+        yaml = "steps:\n  plan:\n    prompt: P\n    produces: [plan.md]\n  first:\n    fan_out:\n      a:\n        prompt: P\n        produces: [a.md]\n" \
+          "  checks:\n    on_fail: {goto: a}\n    fan_out:\n      lint:\n        prompt: P\n        produces: [lint.md]\n"
+        expect(problems(yaml)).to include(a_string_matching(/#{refusal.source}.*\(plan\), got "a"/))
+      end
+
+      it "refuses a goto to a later step" do
+        after = "  report:\n    prompt: P\n    produces: [report.md]\n"
+        expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: report}\n", after: after)))
+          .to include(a_string_matching(/#{refusal.source}.*\(plan\), got "report"/))
+      end
+
+      it "refuses a goto to the group's own id" do
+        expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: checks}\n")))
+          .to include(a_string_matching(/#{refusal.source}.*\(plan\), got "checks"/))
+      end
+
+      it "refuses an unknown goto" do
+        expect(problems(grouped([["lint"]], group_extra: "    on_fail: {goto: nowhere}\n")))
+          .to include(a_string_matching(/#{refusal.source}.*\(plan\), got "nowhere"/))
+      end
+
+      it "says there is none for a group with no ungrouped step before it" do
+        yaml = "steps:\n  checks:\n    on_fail: {goto: x}\n    fan_out:\n      lint:\n        prompt: P\n        produces: [lint.md]\n"
+        expect(problems(yaml)).to include(a_string_matching(/#{refusal.source}.*\(there is none\), got "x"/))
+      end
+
+      it "leaves a sibling's goto out of its group refused" do
+        expect(problems(grouped([["lint"], ["test", "        on_fail: {goto: plan}\n"]])))
+          .to include(a_string_matching(/step test: on_fail goto must name an earlier step of its fan_out group checks/))
+      end
+    end
+
+    describe ".group_on_fail" do
+      it "reads the stored mapping" do
+        definition = parse(grouped([["lint"]], group_extra: "    on_fail: {goto: plan, max: 2}\n")).to_h
+        expect(described_class.group_on_fail(definition, "checks")).to eq("context" => nil, "goto" => "plan", "max" => 2)
+      end
+
+      it "answers stop for a definition without groups, an unknown group or a group without the key" do
+        expect(described_class.group_on_fail({}, "checks")).to eq("stop")
+        expect(described_class.group_on_fail(nil, "checks")).to eq("stop")
+        expect(described_class.group_on_fail({"groups" => {}}, "checks")).to eq("stop")
+        expect(described_class.group_on_fail({"groups" => {"checks" => {"steps" => []}}}, "checks")).to eq("stop")
+      end
     end
 
     it "takes checkout: shared or shared-edit and refuses anything else" do
@@ -1372,6 +1462,44 @@ RSpec.describe Workspace::WorkflowDefinition do
       yaml = grouped([["lint"], ["docs"], ["test", "        on_fail: {goto: lint, max: 2}\n"]], top: "max_attempts: 7\n")
       found = parse(yaml).warnings.select { |each| each["code"] == "on_fail_exceeds_max_attempts" }
       expect(found).to match([include("step" => "test", "message" => /3 steps again/)])
+    end
+
+    describe "a group goto's attempt warnings" do
+      let(:goto) { "    on_fail: {goto: plan, max: 2}\n" }
+      let(:tally) { "  tally:\n    prompt: P\n    produces: [tally.md]\n" }
+
+      def found(yaml, code) = parse(yaml).warnings.select { |each| each["code"] == code }
+
+      def worked(attempts, siblings: [["r1"], ["r2"], ["r3"]])
+        grouped(siblings, group_extra: goto, after: tally, top: "max_attempts: #{attempts}\n")
+      end
+
+      it "counts the group as one failing position after every sibling, and suggests the attempts it needs" do
+        # plan=1, r1-r3=2-4; retry 1: plan=5, r=6-8; retry 2: plan=9
+        expect(found(worked(8), "on_fail_exceeds_max_attempts"))
+          .to match([include("step" => "checks", "message" => /group checks sets on_fail max: 2.*fails first on attempt 4.*4 steps again.*Raise max_attempts to 9 or more/)])
+      end
+
+      it "is quiet once max_attempts reaches the suggested number" do
+        expect(found(worked(9), "on_fail_exceeds_max_attempts")).to eq([])
+      end
+
+      it "warns when the goto step's max_attempts is below max + 1" do
+        yaml = worked(9).sub("  plan:\n    prompt: P\n", "  plan:\n    max_attempts: 2\n    prompt: P\n")
+        expect(found(yaml, "on_fail_exceeds_step_attempts"))
+          .to match([include("step" => "checks", "message" => /group checks sets on_fail max: 2.*step plan up to 3 times.*max_attempts: 2/)])
+      end
+
+      it "warns for a sibling that takes the group goto with max_attempts below max + 1" do
+        yaml = worked(9, siblings: [["r1", "        max_attempts: 1\n"], ["r2"], ["r3"]])
+        expect(found(yaml, "on_fail_exceeds_step_attempts"))
+          .to match([include("step" => "r1", "message" => /step r1 takes group checks's on_fail max: 2.*max_attempts: 1/)])
+      end
+
+      it "is quiet for a sibling with its own on_fail" do
+        yaml = worked(9, siblings: [["r1", "        max_attempts: 1\n        on_fail: stop\n"], ["r2"], ["r3"]])
+        expect(found(yaml, "on_fail_exceeds_step_attempts")).to eq([])
+      end
     end
   end
 end

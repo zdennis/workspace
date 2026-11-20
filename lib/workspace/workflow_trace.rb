@@ -295,7 +295,8 @@ module Workspace
       attempt.head.is_a?(Hash) ? string(attempt.head[key]) : nil
     end
 
-    # Each `gate_waiting` opens a span the step's next `gate_approved` or `gate_rejected` closes; open while still waiting.
+    # Each `gate_waiting` opens a span the step's next `gate_approved` or `gate_rejected` closes, or a `group_rearmed` that
+    # names the step in its `dropped_gates`; open while still waiting.
     def gate_spans(events)
       open = {}
       closed = []
@@ -313,6 +314,11 @@ module Workspace
           gate = open.delete(step)
           next unless gate
           closed << gate.merge(ended_at: string(event["ts"]), actor: string(event["actor"]), note: string(event["note"]))
+        when "group_rearmed"
+          Array(event["dropped_gates"]).each do |id|
+            gate = open.delete(string(id))
+            closed << gate.merge(ended_at: string(event["ts"]), actor: string(event["actor"])) if gate
+          end
         end
       end
       closed + open.values

@@ -1186,20 +1186,91 @@ module Workspace
     # @param run [Hash{String=>Object}] a stored run at the failed step
     # @param failure [Hash{String=>Object}] its "cause" and "code"
     # @param step [String] the failed step: the cursor's unless given. A fan_out sibling's failure names its own step,
-    #   since the cursor names only the sibling dispatched last.
-    # @return [Hash{Symbol=>Object}] `{kind: :loop, edge:, to:, count:, wait:}` or `{kind: :stop}`
+    #   since the cursor names only the sibling dispatched last. A sibling with no `on_fail` of its own, in a group whose
+    #   `on_fail` is a goto, is decided by its group ({.group_failure_move}).
+    # @return [Hash{Symbol=>Object}] `{kind: :loop, edge:, to:, count:, wait:}`, a group move ({.group_failure_move})
+    #   or `{kind: :stop}`
     def self.after_failure(run, failure, step: run["current"])
       step_id = step
       step = run["definition"]["steps"].find { |each| each["id"] == step_id }
       on_fail = step["on_fail"]
+      if on_fail.nil? && grouped?(step) && WorkflowDefinition.group_on_fail(run["definition"], step["group"]).is_a?(Hash)
+        return group_failure_move(run, step["group"], failure)
+      end
       return implicit_failure_move(run, step, failure) if on_fail.nil?
-      return {kind: :stop} if on_fail == "stop"
+      return {kind: :stop} if on_fail == "stop" || goto_excepted?(on_fail, failure)
       edge = "#{step["id"]}->#{on_fail["goto"]}"
-      count = run["loops"].fetch(edge, 0)
-      excepted = Array(on_fail["except"]).any? { |name| name == failure["code"] || name == failure["cause"] }
-      return {kind: :stop} if excepted || count >= on_fail["max"] || attempts_made(run) >= attempt_allowance(run)
-      return {kind: :stop, limit: :step, step: on_fail["goto"]} if step_attempts_spent?(run, on_fail["goto"])
-      {kind: :loop, edge: edge, to: on_fail["goto"], count: count + 1, wait: WorkflowDefinition.backoff(on_fail)}
+      goto_stop(run, on_fail, edge) || goto_loop(run, on_fail, edge)
+    end
+
+    # @param on_fail [Hash{String=>Object}] a step's or a group's `on_fail` goto
+    # @param failure [Hash{String=>Object}] a failure's "cause" and "code"
+    # @return [Boolean] whether the failure's code or cause is one of the goto's `except:`
+    def self.goto_excepted?(on_fail, failure)
+      Array(on_fail["except"]).any? { |name| name == failure["code"] || name == failure["cause"] }
+    end
+    private_class_method :goto_excepted?
+
+    # The stop a goto's limits call for: the edge's loops at `max` or the run's attempts spent (`{kind: :stop}`), or the
+    # goto step's own cap spent (`limit: :step`, `step:` the goto), then the own cap of the first of +rerun+ that is spent
+    # (`step:` that step); nil when the goto may loop.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param on_fail [Hash{String=>Object}] a step's or a group's `on_fail` goto
+    # @param edge [String] the loop's edge
+    # @param rerun [Array<String>] the steps besides the goto that the loop runs again and whose own caps it checks
+    # @return [Hash{Symbol=>Object}, nil]
+    def self.goto_stop(run, on_fail, edge, rerun: [])
+      return {kind: :stop} if run["loops"].fetch(edge, 0) >= on_fail["max"] || attempts_made(run) >= attempt_allowance(run)
+      spent = [on_fail["goto"], *rerun].find { |id| step_attempts_spent?(run, id) }
+      {kind: :stop, limit: :step, step: spent} if spent
+    end
+    private_class_method :goto_stop
+
+    # @param run [Hash{String=>Object}] a stored run
+    # @param on_fail [Hash{String=>Object}] a step's or a group's `on_fail` goto
+    # @param edge [String] the loop's edge
+    # @return [Hash{Symbol=>Object}] `{kind: :loop, edge:, to:, count:, wait:}`, `count` the edge's loops after this one
+    def self.goto_loop(run, on_fail, edge)
+      {kind: :loop, edge: edge, to: on_fail["goto"], count: run["loops"].fetch(edge, 0) + 1, wait: WorkflowDefinition.backoff(on_fail)}
+    end
+    private_class_method :goto_loop
+
+    # Where a sibling's failure goes under its group's `on_fail` goto, read as a step's explicit goto is
+    # ({.after_failure}) on the edge `GROUP->STEP`: `:stop` when the failure's code or cause is one of its `except:`,
+    # the edge's loops are used up, the run's attempts are spent, or the goto step's own cap is, or the own cap of a
+    # sibling of the group (each runs again when the run comes back to the group; `limit: :step`, `step:` the first). It
+    # never asks {.implicit_loop_stops?}, so a guard, unproven, `check_error` or `step_timed_out` failure loops, as under
+    # a step's explicit `on_fail`. When the group already owes its move in this drain ({.group_move_owed?}), a failure
+    # that is not excepted joins that move (`joined: true`) and is not checked against `max`, since the first failure
+    # already counted the loop.
+    #
+    # @param run [Hash{String=>Object}] a stored run at the failed sibling
+    # @param group [String] the sibling's fan_out group, whose `on_fail` is a goto
+    # @param failure [Hash{String=>Object}] its "cause" and "code"
+    # @return [Hash{Symbol=>Object}] `{kind: :loop, group:, edge:, to:, count:, wait:}`, `{kind: :loop, group:, joined: true}`
+    #   or `{kind: :stop}` (with `limit: :step, step:` when the goto step's or a sibling's cap is spent)
+    def self.group_failure_move(run, group, failure)
+      on_fail = WorkflowDefinition.group_on_fail(run["definition"], group)
+      return {kind: :stop} if goto_excepted?(on_fail, failure)
+      return {kind: :loop, group: group, joined: true} if group_move_owed?(run, group)
+      edge = "#{group}->#{on_fail["goto"]}"
+      goto_stop(run, on_fail, edge, rerun: Array(WorkflowDefinition.group_steps(run["definition"])[group])) || goto_loop(run, on_fail, edge).merge(group: group)
+    end
+    private_class_method :group_failure_move
+
+    # Whether a fan_out group already owes its `on_fail` goto in this drain: one of its siblings holds a `pending_move`
+    # tagged with the group (`"group" => GROUP`).
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param group [String] a fan_out group's id
+    # @return [Boolean]
+    def self.group_move_owed?(run, group)
+      Array(WorkflowDefinition.group_steps(run["definition"])[group]).any? do |id|
+        next false unless run.dig("steps", id).is_a?(Hash)
+        move = slot(run, "pending_move", id)
+        move.is_a?(Hash) && move["group"] == group
+      end
     end
 
     # Whether a failure is one no loop can fix, read from the fail sites: a guard stop is the
@@ -1281,22 +1352,47 @@ module Workspace
     # @param run [Hash{String=>Object}] a stored run
     # @param step [String] a sibling's id
     # @param now [Time]
+    # @param moves_due [Boolean] read every deferred move's wait as over (a stop in the drain drops the moves anyway)
     # @return [Boolean]
-    def self.sibling_at_rest?(run, step, now)
+    def self.sibling_at_rest?(run, step, now, moves_due: false)
       state = run.dig("steps", step)
       return false unless state.is_a?(Hash)
       return false if SIBLING_BUSY.include?(state["state"]) || state["state"] == "pending"
       return false if held_reason(run, step: step)
       return false if SIBLING_SLOTS_OWED.any? { |key| !slot(run, key, step).nil? }
       return false if slot_dig(run, "reason", "code", step: step) == "waiting_lock"
-      !move_waits?(slot(run, "pending_move", step), now)
+      moves_due || !move_waits?(slot(run, "pending_move", step), now)
     end
 
     # @param run [Hash{String=>Object}] a stored run
     # @param steps [Array<String>] a fan_out group's sibling ids
     # @param now [Time]
+    # @param moves_due [Boolean] see {.sibling_at_rest?}
     # @return [Boolean] whether every sibling is at rest ({.sibling_at_rest?})
-    def self.group_at_rest?(run, steps, now) = steps.all? { |id| sibling_at_rest?(run, id, now) }
+    def self.group_at_rest?(run, steps, now, moves_due: false) = steps.all? { |id| sibling_at_rest?(run, id, now, moves_due: moves_due) }
+
+    # Whether an attempt's failure move under +key+ (`move`, a sibling's own; `group_move`, its group's) was granted and
+    # has not failed since.
+    #
+    # @param attempt [Hash{String=>Object}, nil]
+    # @param key [String] "move" or "group_move"
+    # @return [Boolean]
+    def self.move_granted?(attempt, key = "move")
+      move = attempt.is_a?(Hash) ? attempt[key] : nil
+      move.is_a?(Hash) && !move.key?("failed")
+    end
+
+    # Whether a fan_out sibling stopped in its drain: it failed and its last attempt holds neither a granted move of its
+    # own nor one of its group's ({.move_granted?}), so only a person moves it on.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a sibling's id
+    # @return [Boolean]
+    def self.sibling_stopped?(run, step)
+      return false unless run.dig("steps", step, "state") == "failed"
+      attempt = Array(run.dig("steps", step, "attempts")).last
+      %w[move group_move].none? { |key| move_granted?(attempt, key) }
+    end
 
     # Whether a deferred failure move (a sibling's `pending_move`) still waits out its backoff: its `until` is later
     # than +now+. A move with no `until` never waits; one whose `until` can't be read is taken as over.
@@ -1323,8 +1419,7 @@ module Workspace
     def self.relay_owed?(run, step)
       state = run.dig("steps", step)
       return false unless state.is_a?(Hash) && state["state"] == "failed"
-      move = Array(state["attempts"]).last&.fetch("move", nil)
-      return false unless move.is_a?(Hash) && !move.key?("failed")
+      return false unless move_granted?(Array(state["attempts"]).last)
       return false unless slot(run, "pending_move", step).nil?
       !attempts_spent?(run) && !step_attempts_spent?(run, step)
     end

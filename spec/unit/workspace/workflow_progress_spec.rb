@@ -451,6 +451,138 @@ RSpec.describe Workspace::WorkflowProgress do
     end
   end
 
+  describe "a fan_out group's on_fail goto" do
+    let(:failure) { {"cause" => "check", "exit_code" => 1, "code" => "check_failed"} }
+
+    def checking(minute) = {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:0#{minute}:00.000Z"}]}
+
+    # plan, then lint, test and docs in group checks, whose on_fail goes to plan; +own+ gives a sibling its own on_fail.
+    def group_run(own = {}, passed: [])
+      definition = [{"id" => "plan", "produces" => []}] +
+        %w[lint test docs].map { |id| {"id" => id, "group" => "checks", "produces" => [], "on_fail" => own[id]}.compact }
+      steps = {"plan" => {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed"}]}}
+      %w[lint test docs].each_with_index { |id, index| steps[id] = checking(index + 1) }
+      passed.each { |id| steps[id] = {"state" => "passed", "attempts" => [{"n" => 1, "outcome" => "passed"}]} }
+      run = run_hash(:definition_steps => definition, "current" => "lint", "steps" => steps)
+      run["definition"]["max_attempts"] = 20
+      run["definition"]["groups"] = {"checks" => {"on_fail" => {"goto" => "plan", "max" => 2}, "steps" => %w[lint test docs]}}
+      run
+    end
+
+    def fail_on(run, id) = progress.fail_step(Workspace::WorkflowRun.from_h(run).thawed.merge("current" => id), failure, ctx: ctx)
+
+    def typed(type) = change.events.select { |event| event[1] == type }.map(&:last)
+
+    it "bumps the edge once and holds one move for two failures in one drain, the second joining it" do
+      first = fail_on(group_run, "test")
+      second = fail_on(first, "docs")
+
+      expect(second.to_h["loops"]).to eq("checks->plan" => 1)
+      expect(second.pending_move_for("test")).to eq("group" => "checks", "to" => "plan", "count" => 1, "edge" => "checks->plan", "was" => nil)
+      expect(second.step("test").last_attempt.to_h).to include("group_move" => {"group" => "checks", "to" => "plan", "count" => 1})
+      expect(typed("step_looped")).to eq([{"from" => "test", "to" => "plan", "count" => 1, "group" => "checks"}])
+      expect(second.step("docs").to_h).not_to have_key("pending_move")
+      expect(second.step("docs").last_attempt.to_h["group_move"]).to eq("group" => "checks", "joined" => true)
+      expect(second.step("docs").to_h["failed_reason"]).to include("step" => "docs", "code" => "check_failed")
+      %w[test docs].each { |id| expect(second.step(id).last_attempt.to_h).not_to have_key("move") }
+      expect(dispatch.calls.map(&:first)).not_to include(:dispatch)
+    end
+
+    it "applies the group move ahead of a sibling-local move, which it drops so no relay is owed" do
+      run = fail_on(group_run({"test" => {"goto" => "lint", "max" => 2}}, passed: %w[lint]), "test")
+      expect(run.pending_move_for("test")).to include("to" => "lint")
+
+      joined = fail_on(run, "docs").to_h
+
+      expect(joined["current"]).to eq("plan")
+      expect(Workspace::WorkflowRun.slot(joined, "test", "pending_move")).to be_nil
+      expect(joined["steps"]["test"]["attempts"].last["move"]).to eq("to" => "lint", "count" => 1, "failed" => "group_move")
+      expect(Workspace::WorkflowTransitions.relay_owed?(joined, "test")).to be(false)
+      expect(joined["loops"]).to eq("test->lint" => 1, "checks->plan" => 1)
+      text = Workspace::WorkflowRun.slot(joined, "plan", "pending_context")
+      expect(text).to match([a_string_matching(/The checks group failed .*\(time 1 of 2\)\. Its failed steps: test \(.*\); docs \(.*\)\./)])
+      expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "loop", context: nil, budgeted: true, retry_of: {"text" => text.first}}])
+      expect(typed("step_retry_started")).to eq([{"from" => "docs", "to" => "plan", "group" => "checks", "failed" => %w[test docs]}])
+    end
+
+    describe "beside a sibling that stopped" do
+      def blocked
+        run = group_run({"lint" => "stop", "docs" => {"goto" => "test", "max" => 2}})
+        run["loops"] = {"checks->plan" => 1}
+        run = fail_on(run, "lint")
+        run = fail_on(run, "docs")
+        fail_on(run, "test")
+      end
+
+      it "restores the count, leaves nothing for a timer to wake, and fails the group for a person" do
+        run = blocked.to_h
+
+        # The group edge goes back to the count before the drain, and docs's held move never ran, so its edge goes too.
+        expect(run["loops"]).to eq("checks->plan" => 1)
+        %w[lint test docs].each { |id| expect(Workspace::WorkflowRun.slot(run, id, "pending_move")).to be_nil }
+        expect(Workspace::WorkflowTransitions.join_due(run, now)).to be_nil
+        expect(run["steps"]["test"]["attempts"].last["group_move"]).to eq("group" => "checks", "to" => "plan", "count" => 2, "failed" => "sibling_stopped")
+        expect(run["steps"]["docs"]["attempts"].last["move"]).to include("failed" => "sibling_stopped")
+        expect(Workspace::WorkflowTransitions.sibling_stopped?(run, "lint")).to be(true)
+        expect(Workspace::WorkflowTransitions.sibling_stopped?(run, "test")).to be(true)
+        expect(typed("step_retry_blocked")).to eq([{"from" => "test", "to" => "plan", "code" => "sibling_stopped", "group" => "checks"}])
+        expect(run["state"]).to eq("waiting")
+        %w[lint test docs].each { |id| expect(Workspace::WorkflowRun.slot(run, id, "reason")).to include("code" => "failed_check") }
+        expect(dispatch.calls.map(&:first)).not_to include(:dispatch)
+      end
+
+      it "writes no second step_retry_blocked when a tick joins the group again" do
+        run = blocked
+        progress.join(run, ctx: ctx)
+        progress.join(run, ctx: ctx, group: "checks")
+
+        expect(typed("step_retry_blocked").size).to eq(1)
+        expect(dispatch.calls.map(&:first)).not_to include(:dispatch)
+      end
+    end
+
+    it "undoes a group move whose goto step has no attempt left, marking the joined failure's move failed too" do
+      run = fail_on(group_run(passed: %w[docs]), "test").thawed
+      run["definition"]["steps"][0]["max_attempts"] = 1
+
+      failed = fail_on(run, "lint").to_h
+
+      expect(failed["loops"]).to eq({})
+      expect(failed["steps"]["test"]["attempts"].last["group_move"]).to include("failed" => "attempts_spent")
+      expect(failed["steps"]["lint"]["attempts"].last["group_move"]).to eq("group" => "checks", "joined" => true, "failed" => "attempts_spent")
+      expect(typed("step_retry_blocked")).to eq([{"from" => "test", "to" => "plan", "code" => "attempts_spent", "group" => "checks"}])
+      expect(failed).to include("state" => "waiting")
+      %w[lint test].each { |id| expect(Workspace::WorkflowRun.slot(failed, id, "reason")).to include("code" => "failed_check") }
+      expect(dispatch.calls.map(&:first)).not_to include(:dispatch)
+    end
+
+    describe "whose goto step can't be started" do
+      let(:dispatch) do
+        Class.new(RecordingDispatch) do
+          def dispatch(run, **options)
+            hash = super.thawed
+            attempts = hash["steps"][hash["current"]]["attempts"]
+            attempts << {"n" => attempts.size + 1, "outcome" => "not_delivered", "code" => "pane_gone"}
+            hash["steps"][hash["current"]]["state"] = "waiting"
+            Workspace::WorkflowRun.from_h(hash)
+          end
+        end.new
+      end
+
+      it "fails the group move and stops the group for a person" do
+        run = fail_on(group_run(passed: %w[lint docs]), "test").to_h
+
+        expect(run["steps"]["plan"]["state"]).to eq("passed")
+        expect(run["loops"]).to eq({})
+        expect(run["steps"]["test"]["attempts"].last["group_move"]).to include("failed" => "pane_gone")
+        expect(typed("step_retry_blocked")).to eq([{"from" => "test", "to" => "plan", "code" => "pane_gone", "group" => "checks"}])
+        expect(run).to include("state" => "waiting", "current" => "test")
+        expect(Workspace::WorkflowRun.slot(run, "test", "reason")).to include("code" => "failed_check",
+          "details" => include("move" => {"to" => "plan", "error" => "pane_gone", "group" => "checks"}))
+      end
+    end
+  end
+
   describe "#start_retry" do
     let(:waiting) { {"until" => "2026-11-10T11:59:00Z", "to" => "plan", "context" => "fresh", "text" => "it failed", "pane" => "%3", "identity" => "id-3"} }
 
