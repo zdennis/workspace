@@ -159,7 +159,7 @@ module Workspace
       # Cancels the current item: cancels its run, records it `cancelled` and pauses the queue.
       #
       # @param id [String, nil] the item; nil means the starting, active or held one
-      # @param and_continue [Boolean] skip the pause and run a pass, which starts the next item
+      # @param and_continue [Boolean] clear any pause instead of pausing and run a pass, which starts the next item
       # @return [Array<Hash>] the `cancelled` row, then the pass's rows with `and_continue`
       # @raise [Workspace::Error] `item_not_active` for a queued item or none current, `item_starting`,
       #   `unknown_queue_item` or `ambiguous_queue_item`
@@ -169,10 +169,10 @@ module Workspace
         store = @store_factory.call(workspace)
         item = store.transaction { |queue| JSON.parse(JSON.generate(cancellable(queue, id, workspace))) }
         run_id = item.dig("result", "run_id")
-        @decisions.cancel(run_id, actor: "person") if run_id
+        @decisions.cancel(run_id, actor: "person") if run_id && run_going?(run_id)
         store.transaction do |queue|
           queue.finish(item["id"], outcome: "cancelled", reason: "cancelled") if queue.items.any? { |i| i["id"] == item["id"] }
-          queue.pause("cancelled") unless and_continue
+          and_continue ? queue.resume : queue.pause("cancelled")
         end
         @output.puts "Cancelled #{item["id"]} in '#{workspace}'#{and_continue ? "." : "; the queue is paused."}"
         rows = [row("cancelled", item, nil).merge("run_id" => run_id)]
@@ -262,7 +262,7 @@ module Workspace
         end
         entries.each { |e| @output.puts "#{e["id"]} #{e["outcome"]} #{e["kind"]} #{e["finished_at"]} #{what(e)}" }
         @output.puts "No finished items." if entries.empty?
-        actions = entries.empty? ? [] : [NextAction.build("work-queue history show", "ID", "--name", workspaces.first, needs: [NextAction.need("id", nil)])]
+        actions = entries.map { |e| e["workspace"] }.uniq.map { |w| NextAction.build("work-queue history show", "ID", "--name", w, needs: [NextAction.need("id", nil)]) }
         {"entries" => entries, "next_actions" => actions, "warnings" => []}
       end
 

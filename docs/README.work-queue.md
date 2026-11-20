@@ -81,7 +81,7 @@ An item is `queued`, `starting`, `active` or `held`. At most one item is not `qu
 
 When an item fails or is cancelled, the queue pauses with that reason, unless the item was added with `--on-fail continue`. The pause is kept in the queue file, not in the run: it stays until `work-queue resume`, even after the run has ended and its item is in history. `resume` clears only the pause. A held item stays held; use `skip` for that.
 
-`work-queue cancel` cancels the workflow run of the item given, or with no ITEM the one that is `starting`, `active` or `held`, records it as `cancelled` and pauses the queue. With `--and-continue` it does not pause, and one pass starts the next item (this needs a branch, as `advance` does). A queued item, or no current item, is `item_not_active`: remove a queued item with `work-queue rm`. A `starting` item is `item_starting`; retry once its start has landed.
+`work-queue cancel` cancels the workflow run of the item given, or with no ITEM the one that is `starting`, `active` or `held`, records it as `cancelled` and pauses the queue. A run that has already ended is left alone and only the item is recorded. With `--and-continue` it does not pause and clears any pause already set, and one pass starts the next item (this needs a branch, as `advance` does). A queued item, or no current item, is `item_not_active`: remove a queued item with `work-queue rm`. A `starting` item is `item_starting`; retry once its start has landed.
 
 `rm` takes several items at once and removes all of them or none; a name that matches no item, or two, removes nothing. `rm` and `move` refuse a `starting` item with `item_starting` and an active or held one with `item_active`.
 

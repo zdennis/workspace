@@ -242,6 +242,24 @@ RSpec.describe Workspace::Commands::WorkQueue do
       expect(advance).to have_received(:call).with(workspace: "api-w", checkout: Workspace::Commands::WorkflowStart::Here.new(workspace: "api-w", path: "/repo/api-w", caller_pane: nil))
     end
 
+    it "clears an existing pause with and_continue, so the pass can start the next item" do
+      make_current("held", reason: "failed_check")
+      store.pause("failed_check")
+      command.cancel(and_continue: true)
+      expect(store.snapshot["paused"]).to be_nil
+    end
+
+    context "when the item's run has already ended" do
+      let(:run_state) { "completed" }
+
+      it "records the item cancelled without cancelling the run" do
+        id = make_current("active")
+        command.cancel
+        expect(decisions).not_to have_received(:cancel)
+        expect(history.entries.first).to include("id" => id, "outcome" => "cancelled")
+      end
+    end
+
     it "leaves the item and the queue unchanged when cancelling the run raises" do
       id = make_current("active")
       allow(decisions).to receive(:cancel).and_raise(Workspace::Error.new("boom", code: "unknown_run"))
@@ -490,6 +508,12 @@ RSpec.describe Workspace::Commands::WorkQueue do
       entries = command.history_list(project: true)["entries"]
       expect(entries.map { |e| e["id"] }).not_to include("h0")
       expect(File.read(path)).to eq(before)
+    end
+
+    it "gives a project's history one show action per workspace that has entries" do
+      histories["other"].append("id" => "o1", "outcome" => "succeeded", "kind" => "workflow", "spec" => {"workflow" => "rpiv"}, "finished_at" => now.iso8601(3))
+      names = command.history_list(project: true)["next_actions"].map { |a| a["args"].last }
+      expect(names).to eq(%w[api-w other])
     end
   end
 end
