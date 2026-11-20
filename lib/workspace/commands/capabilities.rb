@@ -51,7 +51,7 @@ module Workspace
         "library_installed" => 1,
         "instructions" => 1,
         "restore" => 1,
-        "workflow" => 60,
+        "workflow" => 61,
         "workflow_trace" => 1,
         "workflow_events_follow" => 2,
         "window_state" => 1,

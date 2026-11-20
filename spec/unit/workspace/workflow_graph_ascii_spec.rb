@@ -47,4 +47,30 @@ RSpec.describe Workspace::WorkflowGraphAscii do
       (End)
     TXT
   end
+
+  it "draws a fan_out group as indented siblings between a fan-out line and a join line" do
+    text = described_class.render(Workspace::WorkflowGraph.build(WorkflowGraphGolden::GROUPED).to_h)
+    expect(text).to include("(Fan out: Checks, side by side)", "(Join: Checks)  fail: max 2", "    | lint |", "    | test |")
+    expect(text.index("| lint |")).to be < text.index("| test |")
+    expect(text.lines.map(&:chomp).join("\n")).not_to match(/\| lint \|\n\s*\|\n\s*v\n\s*\+-+\+\n\s*\| test/)
+  end
+
+  it "keeps a gated sibling's gate box and its connector inside the group's indent" do
+    definition = {"steps" => [step_for("a"), step_for("b", "gate" => "approve")], "groups" => {"g" => {"steps" => %w[a b]}}}
+    text = described_class.render(Workspace::WorkflowGraph.build(definition).to_h)
+    expect(text).to match(/\| b \|\n\|\s+\+-+\+\n\|\s{8}\|\n\|\s{8}v\n\|\s+\+=+\+\n\+--\s+\| b gate \|/)
+    expect(text).to include("(Join: g)")
+  end
+
+  def step_for(id, extra = {})
+    {"id" => id, "group" => "g"}.merge(extra)
+  end
+
+  {"rpiv-auto-approve" => "(Fan out:", "explore-parallel" => "(Fan out:", "rpiv" => "(Start)"}.each do |id, marker|
+    it "draws #{id}" do
+      text = described_class.render(WorkflowGraphGolden.model(id))
+      expect(text).to include("(Start)", "(End)", marker)
+      expect(text).to include("(Join:") unless id == "rpiv"
+    end
+  end
 end

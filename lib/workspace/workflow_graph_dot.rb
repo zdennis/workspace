@@ -1,7 +1,8 @@
 module Workspace
   # Draws a {WorkflowGraph} model as Graphviz DOT. Every node id, in node and edge statements alike, is written
   # double-quoted through the same escaper as the labels. A node a run marked ({WorkflowGraphStates}) is
-  # filled with its state's colour. Pure: reads the model hash only.
+  # filled with its state's colour. The siblings of a `fan_out` group sit in a dashed `cluster_<group>` subgraph
+  # between a fork and a join point. Pure: reads the model hash only.
   module WorkflowGraphDot
     # The fill colour of each node state {WorkflowGraphStates} marks.
     STATE_FILLS = {"passed" => "#d4edda", "current" => "#cce5ff", "waiting" => "#fff3cd", "failed" => "#f8d7da", "pending" => "#f6f8fa"}.freeze
@@ -12,7 +13,17 @@ module Workspace
       lines = ["digraph workflow {", "  rankdir=LR;"]
       legend = WorkflowGraphText.legend_line(model["legend"])
       lines << "  labelloc=b;" << "  label=#{quote(legend)};" if legend
-      model["nodes"].each { |node| lines << "  #{quote(node["id"])} [#{attributes(node)}#{fill(node)}];" }
+      clustered = model["nodes"].select { |node| node["group"] }.group_by { |node| node["group"] }
+      model["nodes"].each do |node|
+        next if node["group"]
+        if node["kind"] == "fork" && clustered[node["id"].delete_suffix(".group")]
+          gid = node["id"].delete_suffix(".group")
+          lines << "  subgraph #{quote("cluster_#{gid}")} {" << "    style=dashed;" << "    label=#{quote(node["title"])};"
+          clustered[gid].each { |member| lines << "    #{quote(member["id"])} [#{attributes(member)}#{fill(member)}];" }
+          lines << "  }"
+        end
+        lines << "  #{quote(node["id"])} [#{attributes(node)}#{fill(node)}];"
+      end
       model["edges"].each do |edge|
         attrs = []
         label = WorkflowGraphText.edge_label(edge)
@@ -27,6 +38,7 @@ module Workspace
       case node["kind"]
       when "start" then "shape=point"
       when "end" then "shape=doublecircle, label=\"\""
+      when "fork", "join" then "shape=point"
       when "gate" then "shape=diamond, label=#{quote(WorkflowGraphText.node_title(node))}"
       when "review" then "shape=box, peripheries=2, label=#{quote(WorkflowGraphText.node_title(node))}"
       else "shape=box, label=#{quote(WorkflowGraphText.node_title(node))}"

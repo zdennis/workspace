@@ -40,4 +40,31 @@ RSpec.describe Workspace::WorkflowGraphDot do
     escaped = described_class.render({"nodes" => [{"id" => "a\\b\"c", "kind" => "step", "title" => "t", "annotations" => {}}], "edges" => [], "legend" => {}})
     expect(escaped).to include('"a\\\\b\\"c" [shape=box, label="t"];')
   end
+
+  it "draws a fan_out group as a dashed cluster between a fork and a join point" do
+    text = described_class.render(Workspace::WorkflowGraph.build(WorkflowGraphGolden::GROUPED).to_h)
+    expect(text).to include('subgraph "cluster_checks" {', 'label="Fan out: Checks";', '"checks.join" -> "plan" [style=dashed, label="fail: max 2"]')
+    expect(text).to match(/"cluster_checks" \{.*"lint".*"test".*\}\n  "checks.group" \[shape=point\]/m)
+  end
+
+  it "puts a gated sibling's gate in its group's cluster" do
+    definition = {"steps" => [{"id" => "a", "group" => "g"}, {"id" => "b", "group" => "g", "gate" => "approve"}], "groups" => {"g" => {"steps" => %w[a b]}}}
+    text = described_class.render(Workspace::WorkflowGraph.build(definition).to_h)
+    expect(text).to match(/"cluster_g" \{.*"b\.gate" \[shape=diamond.*\n  \}\n/m)
+  end
+
+  it "draws a group's fork and join with no state and shows the loops on a marked run's join edge" do
+    plain = described_class.render(Workspace::WorkflowGraph.build(WorkflowGraphGolden::GROUPED).to_h)
+    expect(plain).to include('"checks.group" [shape=point];', '"checks.join" [shape=point];')
+    marked = described_class.render(WorkflowGraphGolden.grouped_run_model)
+    expect(marked).to include('"checks.group" [shape=point];', '"checks.join" -> "plan" [style=dashed, label="fail: max 2 (looped 2)"]')
+  end
+
+  %w[rpiv-auto-approve explore-parallel rpiv].each do |id|
+    it "draws #{id}" do
+      text = described_class.render(WorkflowGraphGolden.model(id))
+      expect(text).to start_with("digraph workflow {\n")
+      expect(text).to include("subgraph \"cluster_") unless id == "rpiv"
+    end
+  end
 end

@@ -525,7 +525,7 @@ On a terminal the text is written with control, bidi and zero-width characters e
 
 ### Drawing a workflow
 
-`workflow graph ID` draws a definition: a node for each step, a gate node after a step with `gate: approve`, a review node after a step with `review:`, and an edge for each way a run moves between them. The edges are `next`, `fail` (labelled with its `max`, and `backoff` and `except` when set), `reject` (a gate sends its step back; the label says `--to` can name an earlier step, since that is chosen when the person rejects) and `review_rejected` (a review sends its step back, labelled with `max_rounds`). The default loop — a step with no `on_fail` going back to the step before it on failure — is drawn as no edge: only an explicit `on_fail` makes a `fail` edge. It reads the definition only, writes nothing and needs no run or tmux session. `--name` picks the workspace whose project's definitions are read first. A step that came from an `extends:` parent carries that parent's id as its `origin` annotation in the model. A `--run` graph draws the run's stored definition, which records no parents, so its steps carry no `origin`.
+`workflow graph ID` draws a definition: a node for each step, a gate node after a step with `gate: approve`, a review node after a step with `review:`, and an edge for each way a run moves between them. The edges are `next`, `fail` (labelled with its `max`, and `backoff` and `except` when set), `reject` (a gate sends its step back; the label says `--to` can name an earlier step, since that is chosen when the person rejects) and `review_rejected` (a review sends its step back, labelled with `max_rounds`). The default loop — a step with no `on_fail` going back to the step before it on failure — is drawn as no edge: only an explicit `on_fail` makes a `fail` edge. It reads the definition only, writes nothing and needs no run or tmux session. `--name` picks the workspace whose project's definitions are read first. A `fan_out` group is drawn as a fork node, its siblings side by side and a join node: ASCII shows a `(Fan out: TITLE, side by side)` line, the siblings indented with no arrows between them and a `(Join: TITLE)` line; Mermaid uses `<<fork>>` and `<<join>>` states; DOT puts the siblings in a dashed `cluster_GROUP` subgraph between two points. The group's `on_fail: {goto: ...}` is a `fail` edge from the join to the goto step, labelled like a step's; a sibling's own goto to a fellow sibling is an ordinary `fail` edge. With `--run`, each sibling is marked like a step and the group's edge shows the loops the run took (`GROUP->STEP`). A step that came from an `extends:` parent carries that parent's id as its `origin` annotation in the model. A `--run` graph draws the run's stored definition, which records no parents, so its steps carry no `origin`.
 
 ```
       (Start)
@@ -1555,7 +1555,7 @@ A sibling that is under way also carries what `current` shows of a step: `attemp
 
 **What does not read a grouped definition.**
 
-- `workflow graph` refuses it (`invalid_workflow`, naming the groups): it would draw the siblings as a row of plain steps. `workflow simulate` plays it (see [Simulating a workflow](#simulating-a-workflow)).
+- `workflow graph` draws it: the siblings run side by side between a fork and a join (see [Drawing a workflow](#drawing-a-workflow)). `workflow simulate` plays it (see [Simulating a workflow](#simulating-a-workflow)).
 - `workflow stats`, `workflow trace` and `workflow insights` read grouped runs **best-effort**. They are read-only analytics over finished runs, so they are not refused. Per-step attempt and token rows still land per sibling (the attempt record is keyed by step). Their group-level roll-ups assume definition order, so they may mislead until later work makes them group-aware.
 - `validate`'s `on_fail_exceeds_max_attempts` warning can fire early for a step's own goto on a grouped definition: its span math sums the siblings between the failing step and its `goto`, which a group retry does not re-run. It warns; it never refuses.
 
@@ -1706,7 +1706,7 @@ workspace workflow start explore --prompt "What would make uploads resumable?"
 
 ### The `explore-parallel` preset
 
-`explore-parallel` is [`explore`](#the-explore-preset)'s read-only research with one `fan_out` group: `read` runs the siblings `code` and `tests` as sub-agents of the run pane's own session (the default execution mode; each `guard: unchanged`, each writing its own file), then `report` joins `code.md` and `tests.md` behind an `approve` gate. Its only input is `task`. It is an example for [`fan_out`](#running-steps-in-parallel-with-fan_out); `workflow graph` refuses it; `workflow simulate` plays it.
+`explore-parallel` is [`explore`](#the-explore-preset)'s read-only research with one `fan_out` group: `read` runs the siblings `code` and `tests` as sub-agents of the run pane's own session (the default execution mode; each `guard: unchanged`, each writing its own file), then `report` joins `code.md` and `tests.md` behind an `approve` gate. Its only input is `task`. It is an example for [`fan_out`](#running-steps-in-parallel-with-fan_out); `workflow graph` draws it with `code` and `tests` side by side; `workflow simulate` plays it.
 
 ```
 workspace workflow validate lib/workflows/explore-parallel.yml
