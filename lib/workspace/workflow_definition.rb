@@ -502,14 +502,14 @@ module Workspace
     # above the run's `max_attempts` never applies, since the run cap is spent first.
     def step_attempt_warnings
       by_id = steps.to_h { |step| [step["id"], step] }
-      loops = steps.filter_map do |step|
-        on_fail = step["on_fail"]
-        next unless on_fail.is_a?(Hash)
+      loops = failing_positions.filter_map do |position|
+        on_fail = position[:on_fail]
         cap = self.class.step_max_attempts(by_id[on_fail["goto"]]) or next
         next if on_fail["max"] + 1 <= cap
-        {"code" => "on_fail_exceeds_step_attempts", "step" => step["id"],
-         "message" => "step #{step["id"]} sets on_fail max: #{on_fail["max"]}, which runs step #{on_fail["goto"]} up to #{on_fail["max"] + 1} times, but step #{on_fail["goto"]} sets max_attempts: #{cap}. Raise its max_attempts to #{on_fail["max"] + 1} or more, or lower max."}
+        {"code" => "on_fail_exceeds_step_attempts", "step" => position[:id],
+         "message" => "#{position[:label]} sets on_fail max: #{on_fail["max"]}, which runs step #{on_fail["goto"]} up to #{on_fail["max"] + 1} times, but step #{on_fail["goto"]} sets max_attempts: #{cap}. Raise its max_attempts to #{on_fail["max"] + 1} or more, or lower max."}
       end
+      loops += sibling_attempt_warnings
       run_cap = @data["max_attempts"]
       over = steps.filter_map do |step|
         cap = self.class.step_max_attempts(step)
@@ -518,6 +518,38 @@ module Workspace
          "message" => "step #{step["id"]} sets max_attempts: #{cap}, above the workflow's max_attempts: #{run_cap}, so the run stops first. Lower the step's cap or raise the workflow's."}
       end
       loops + over
+    end
+
+    # Every `on_fail` that loops back: a step's own, and a `fan_out` group's goto, which counts as one
+    # failing position at the group's last sibling.
+    def failing_positions
+      found = steps.each_with_index.filter_map do |step, index|
+        on_fail = step["on_fail"]
+        {id: step["id"], label: "step #{step["id"]}", noun: "step", index: index, on_fail: on_fail} if on_fail.is_a?(Hash)
+      end
+      (@data["groups"] || {}).each do |gid, group|
+        on_fail = group["on_fail"]
+        next unless on_fail.is_a?(Hash)
+        last = steps.rindex { |step| step["group"] == gid } or next
+        found << {id: gid, label: "group #{gid}", noun: "group", index: last, on_fail: on_fail}
+      end
+      found
+    end
+
+    # A sibling with no `on_fail` of its own takes its group's goto, so a later round dispatches it
+    # again: its cap must reach the group's `max + 1`, or the run stops there before `max` rounds.
+    def sibling_attempt_warnings
+      (@data["groups"] || {}).flat_map do |gid, group|
+        on_fail = group["on_fail"]
+        next [] unless on_fail.is_a?(Hash)
+        steps.filter_map do |step|
+          next unless step["group"] == gid && step["on_fail"].nil?
+          cap = self.class.step_max_attempts(step) or next
+          next if cap >= on_fail["max"] + 1
+          {"code" => "on_fail_exceeds_step_attempts", "step" => step["id"],
+           "message" => "step #{step["id"]} takes group #{gid}'s on_fail max: #{on_fail["max"]}, which runs it up to #{on_fail["max"] + 1} times, but it sets max_attempts: #{cap}. Raise its max_attempts to #{on_fail["max"] + 1} or more, or lower max."}
+        end
+      end
     end
 
     # An `on_fail` whose retries can never all start. The run spends one attempt per step it
@@ -530,9 +562,10 @@ module Workspace
     # "if every review round is used". The failing step itself fails before its review.
     def retry_warnings
       ids = steps.map { |step| step["id"] }
-      steps.each_with_index.filter_map do |step, index|
-        on_fail = step["on_fail"]
-        next unless on_fail.is_a?(Hash)
+      failing_positions.filter_map do |position|
+        on_fail = position[:on_fail]
+        index = position[:index]
+        noun = position[:noun]
         goto = ids.index(on_fail["goto"])
         first = steps[0...index].sum { |each| WorkflowReviewSpec.attempt_weight(each) } + 1
         span = steps[goto...index].sum { |each| WorkflowReviewSpec.attempt_weight(each) } + 1
@@ -543,11 +576,11 @@ module Workspace
         next if needed < allowed
         fits = (first < allowed) ? (allowed - first - 1) / span + 1 : 0
         message = if reviewed
-          "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start if every review round is used (the step then fails first on attempt #{first}, and each retry runs #{span} attempt#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max or the review max_rounds."
+          "#{position[:label]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start if every review round is used (the #{noun} then fails first on attempt #{first}, and each retry runs #{span} attempt#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max or the review max_rounds."
         else
-          "step #{step["id"]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start (the step fails first on attempt #{first} at the earliest, and each retry runs #{span} step#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max."
+          "#{position[:label]} sets on_fail max: #{wanted}, but max_attempts: #{allowed} lets only #{fits} of those retries start (the #{noun} fails first on attempt #{first} at the earliest, and each retry runs #{span} step#{"s" if span != 1} again). Raise max_attempts to #{needed + 1} or more, or lower max."
         end
-        {"code" => "on_fail_exceeds_max_attempts", "step" => step["id"], "message" => message}
+        {"code" => "on_fail_exceeds_max_attempts", "step" => position[:id], "message" => message}
       end
     end
 

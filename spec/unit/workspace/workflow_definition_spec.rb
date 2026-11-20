@@ -1463,5 +1463,43 @@ RSpec.describe Workspace::WorkflowDefinition do
       found = parse(yaml).warnings.select { |each| each["code"] == "on_fail_exceeds_max_attempts" }
       expect(found).to match([include("step" => "test", "message" => /3 steps again/)])
     end
+
+    describe "a group goto's attempt warnings" do
+      let(:goto) { "    on_fail: {goto: plan, max: 2}\n" }
+      let(:tally) { "  tally:\n    prompt: P\n    produces: [tally.md]\n" }
+
+      def found(yaml, code) = parse(yaml).warnings.select { |each| each["code"] == code }
+
+      def worked(attempts, siblings: [["r1"], ["r2"], ["r3"]])
+        grouped(siblings, group_extra: goto, after: tally, top: "max_attempts: #{attempts}\n")
+      end
+
+      it "counts the group as one failing position after every sibling, and suggests the attempts it needs" do
+        # plan=1, r1-r3=2-4; retry 1: plan=5, r=6-8; retry 2: plan=9
+        expect(found(worked(8), "on_fail_exceeds_max_attempts"))
+          .to match([include("step" => "checks", "message" => /group checks sets on_fail max: 2.*fails first on attempt 4.*4 steps again.*Raise max_attempts to 9 or more/)])
+      end
+
+      it "is quiet once max_attempts reaches the suggested number" do
+        expect(found(worked(9), "on_fail_exceeds_max_attempts")).to eq([])
+      end
+
+      it "warns when the goto step's max_attempts is below max + 1" do
+        yaml = worked(9).sub("  plan:\n    prompt: P\n", "  plan:\n    max_attempts: 2\n    prompt: P\n")
+        expect(found(yaml, "on_fail_exceeds_step_attempts"))
+          .to match([include("step" => "checks", "message" => /group checks sets on_fail max: 2.*step plan up to 3 times.*max_attempts: 2/)])
+      end
+
+      it "warns for a sibling that takes the group goto with max_attempts below max + 1" do
+        yaml = worked(9, siblings: [["r1", "        max_attempts: 1\n"], ["r2"], ["r3"]])
+        expect(found(yaml, "on_fail_exceeds_step_attempts"))
+          .to match([include("step" => "r1", "message" => /step r1 takes group checks's on_fail max: 2.*max_attempts: 1/)])
+      end
+
+      it "is quiet for a sibling with its own on_fail" do
+        yaml = worked(9, siblings: [["r1", "        max_attempts: 1\n        on_fail: stop\n"], ["r2"], ["r3"]])
+        expect(found(yaml, "on_fail_exceeds_step_attempts")).to eq([])
+      end
+    end
   end
 end
