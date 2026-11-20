@@ -43,10 +43,17 @@ module Workspace
     # step id to an ordinary step body, and the siblings are flattened into the steps list at the group's place,
     # each tagged `"group" => GROUP_ID` (the tag {WorkflowRun.step_scoped?} reads). `fan_out` is kept out of
     # {STEP_KEYS} so a step's unknown-key message reads as before; {#steps_from} routes a step holding it here.
-    GROUP_KEYS = %w[title fan_out checkout on_fail].freeze
+    GROUP_KEYS = %w[title fan_out checkout on_fail execution_mode].freeze
 
     # How a group's siblings share the checkout; the first is the default.
     GROUP_CHECKOUTS = %w[shared shared-edit].freeze
+
+    # How a group's siblings run: each as a sub-agent of the run's own pane, or each in its own author pane.
+    EXECUTION_MODES = %w[subagents process_separation].freeze
+
+    # The execution mode a group runs with when its definition does not say. `process_separation` until the
+    # default flips to `subagents`, so a definition that does not set the key keeps today's behavior.
+    DEFAULT_EXECUTION_MODE = "process_separation"
 
     # Step keys a `fan_out` sibling may not hold, and why.
     SIBLING_REFUSALS = {
@@ -226,7 +233,8 @@ module Workspace
     #   "timeout" seconds), "gate", "guard" (nil, "unchanged" or "config"), "require" (a list of one-key proofs such as `{"commits" => 1}`), "uses", "on_fail" (nil, "stop", or "goto", "max", "context", and, only when set, "log_tail" and "backoff" seconds),
     #   "context" and "timeout" (seconds or nil); a `fan_out` group's siblings sit in "steps" at the group's place,
     #   each also with "group" (the group step's id), and only then is there "groups": group id to "title",
-    #   "checkout", "on_fail" (`stop`) and "steps" (its sibling ids, in order)
+    #   "checkout", "on_fail" (`stop`), "steps" (its sibling ids, in order) and, only when the definition set it,
+    #   "execution_mode"
     def to_h
       @data
     end
@@ -431,6 +439,17 @@ module Workspace
         next unless step.is_a?(Hash) && step["group"].is_a?(String) && !step["group"].empty?
         (found[step["group"]] ||= []) << step["id"]
       end
+    end
+
+    # The execution mode a group hash runs with: the mode its definition set, or {DEFAULT_EXECUTION_MODE} when it
+    # says nothing — which is also every group stored before the key existed, so a run resumed across an upgrade
+    # reads consistently. The one reader of the group hash for behavior; dispatch and the engine go through this.
+    #
+    # @param group [Hash] one of {#to_h}'s "groups" values
+    # @return [String] a member of {EXECUTION_MODES}
+    def self.execution_mode(group)
+      mode = group.is_a?(Hash) ? group["execution_mode"] : nil
+      EXECUTION_MODES.include?(mode) ? mode : DEFAULT_EXECUTION_MODE
     end
 
     # The refusal of a tool that would play or draw a definition's `fan_out` groups as plain steps in a row.
@@ -765,6 +784,11 @@ module Workspace
         problem "#{where}: checkout must be #{GROUP_CHECKOUTS.join(" or ")}, got #{checkout.inspect[0, 60]}"
         checkout = GROUP_CHECKOUTS.first
       end
+      mode = raw["execution_mode"]
+      unless mode.nil? || EXECUTION_MODES.include?(mode)
+        problem "#{where}: execution_mode must be #{EXECUTION_MODES.join(" or ")}, got #{mode.inspect[0, 60]}"
+        mode = nil
+      end
       title = text_or_nil(raw["title"], "#{where}: title") || group_id
       bodies = raw["fan_out"]
       unless bodies.is_a?(Hash) && bodies.any?
@@ -778,6 +802,10 @@ module Workspace
         taken << sibling_id
         if body.is_a?(Hash)
           SIBLING_REFUSALS.each { |name, why| problem "step #{sibling_id} (in fan_out group #{group_id}): #{why}" if body.key?(name) }
+          if mode == "subagents" && body.key?("timeout")
+            problem "step #{sibling_id} (in fan_out group #{group_id}): a sibling of a subagents group can't take timeout: " \
+              "(the pane agent schedules its siblings, so a sibling's wall clock can't be enforced); the run's own timeout: still applies"
+          end
           body = body.except(*SIBLING_REFUSALS.keys)
         end
         step = step_from(sibling_id, body, earlier.dup, inputs, group: group_id)
@@ -785,6 +813,7 @@ module Workspace
         step.merge("group" => group_id)
       end
       @groups[group_id] = {"title" => title, "checkout" => checkout, "on_fail" => "stop", "steps" => siblings.map { |step| step["id"] }}
+      @groups[group_id]["execution_mode"] = mode if mode
       siblings
     end
 
