@@ -127,10 +127,10 @@ RSpec.describe Workspace::LaunchHookCheck do
       let(:on_path) { %w[codex] }
 
       it "stays silent when codex.hooks.install is off, as start does" do
-        hooks_config = instance_double(Workspace::HooksConfig)
-        allow(hooks_config).to receive(:install_user_hooks?).and_return(true)
-        allow(hooks_config).to receive(:install_user_hooks?).with(codex).and_return(false)
-        codex_only = described_class.new(hook_installer: installer, hooks_config: hooks_config, which: ->(exe) { on_path.include?(exe) })
+        off_config = instance_double(Workspace::HooksConfig)
+        allow(off_config).to receive(:install_user_hooks?).and_return(true)
+        allow(off_config).to receive(:install_user_hooks?).with(codex).and_return(false)
+        codex_only = described_class.new(hook_installer: installer, hooks_config: off_config, which: ->(exe) { on_path.include?(exe) })
 
         codex_only.check(tmpdir, io: io)
 
