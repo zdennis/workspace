@@ -44,8 +44,8 @@ workspace workflow unpause [RUN] [--json]
 workspace workflow approve [RUN] [--step STEP [--attempt N]] [--note-sha256 HEX] [--note TEXT] [--json]
 workspace workflow reject [RUN] --note TEXT [--step STEP [--attempt N]] [--to STEP] [--extra-attempts N] [--extra-tokens N] [--extra-time DURATION] [--json]
 
-workspace step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--json]
-workspace step status [--json]
+workspace step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]
+workspace step status [--run RUN_ID] [--json]
 workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 ```
 
@@ -126,6 +126,7 @@ workspace step expect-fail [--match-file PATH] [--timeout SECONDS] [--] FILE...
 | `--match-file PATH` | `step expect-fail`: a file whose text (trimmed) the failing tests' stdout and stderr must hold |
 | `--timeout SECONDS` | `step expect-fail`: seconds the tests may run (default 240) |
 | `--code WORD` | `step done`: a word for why, kept as the failed step's `details.code` (see [Failure codes](#failure-codes)). Lowercase letters, digits and `_`, starting with a letter, at most 40 characters; anything else is a `usage` error |
+| `--run RUN_ID` | `step done`, `step status`: the run to work on when this process has no pane binding (a subagent or background run, no `$TMUX_PANE`). With no `--run`, the checkout's one going run is used when unambiguous; several is an `ambiguous_run` error naming them |
 | `--json` | Print one JSON document |
 
 ## How a run works

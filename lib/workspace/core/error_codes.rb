@@ -235,7 +235,7 @@ module Workspace
       "no_interrupt_key" => "agent-run send --interrupt: workspace knows no interrupt key for the pane's agent, so nothing was pressed or typed. details.kind.",
       "restart_in_progress" => "A restart is already running on the pane. From agent status request also while an agent-run send --clear-first delivery holds the pane; nothing was typed.",
       "agent_stopped" => "The agent stopped during the restart.",
-      "not_bound" => "The pane isn't bound to a run, review or play.",
+      "not_bound" => "The pane isn't bound to a run, review or play (`binding show`, `binding clear`), or not to a workflow run (`step done`, `step status`; details.pane).",
       "pane_not_ready" => "agent status request: the pane can't take typed text safely now, so nothing was typed. details.reason: unknown, unsupported_agent, waiting, question_open, no_input_prompt, input_not_empty or input_changed (after pasting). Also agent-run send --when-idle, reason unknown: the agent daemon hasn't scanned or identified the pane yet, so nothing was queued.",
       "status_request_open" => "agent status request: the pane already has an open status request, so nothing was typed. details.request_id, details.expires_at.",
       "status_request_unknown" => "agent status post: --reply-to names no open request (already answered, never made, or the agent daemon restarted). details.request_id.",

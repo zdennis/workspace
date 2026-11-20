@@ -806,7 +806,7 @@ RSpec.describe Workspace::CLI do
       workflow_command.error = Workspace::Error.new("This pane is not bound to a workflow run (not inside tmux).", code: "not_bound")
 
       expect { cli.run(["step", "done", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
-      expect(workflow_command.calls).to eq([[:step_done, {pane: nil, status: "pass", summary: nil, code: nil}]])
+      expect(workflow_command.calls).to match([[:step_done, hash_including(pane: nil, run_id: nil, status: "pass", summary: nil, code: nil)]])
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_bound")
     end
 

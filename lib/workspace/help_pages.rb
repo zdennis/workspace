@@ -1843,7 +1843,7 @@ module Workspace
 
     STEP = {
       "done" => {
-        usage: ["step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--json]"],
+        usage: ["step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]"],
         summary: "Record what you say about a workflow step, then end your turn",
         about: [
           "For the agent working on a workflow step, run from the pane the run is bound to. --status fail fails",
@@ -1854,6 +1854,7 @@ module Workspace
         options: [["--status STATUS", "pass (default), fail, or a stated status: done, running, needs_input, stuck (--summary is its detail)"],
           ["--summary TEXT", "One line about what was done, or what is left"],
           ["--code WORD", "A word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)"],
+          ["--run RUN_ID", "The run to report on, when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous"],
           JSON_OPT],
         examples: [
           ["workspace step done", "record a pass for the step your pane is on; then end your turn"],
@@ -1864,13 +1865,13 @@ module Workspace
         ]
       },
       "status" => {
-        usage: ["step status [--json]"],
+        usage: ["step status [--run RUN_ID] [--json]"],
         summary: "Show which workflow run, step and attempt this pane is on",
         about: [
           "Also shows where the step's instructions are, and whether the files the step must leave are there: written this attempt, non-empty, regular files and not links (problem names the rule broken). Run",
-          "from the pane the run is bound to."
+          "from the pane the run is bound to. With no pane binding (no $TMUX_PANE), the checkout's one going run is used when unambiguous; name it with --run."
         ],
-        options: [JSON_OPT],
+        options: [["--run RUN_ID", "The run to read, when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous"], JSON_OPT],
         examples: [
           ["workspace step status", "which workflow run, step and attempt this pane is on, and the files the step must leave"],
           ["workspace step status --json", "the same as one JSON document, with whether each file is there (produces); outside a run's pane it exits 1 with not_bound"],

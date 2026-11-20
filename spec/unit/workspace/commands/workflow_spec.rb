@@ -2775,6 +2775,57 @@ RSpec.describe Workspace::Commands::Workflow do
         }
       end
     end
+
+    it "reports on the run --run names, without reading a pane" do
+      allow(engine).to receive(:report).with("wr_2", actor: "agent", status: "pass", summary: "Plan written.", code: nil)
+        .and_return("run_id" => "wr_2", "step" => "plan", "attempt" => 1, "reported" => {"status" => "pass", "summary" => "Plan written.", "at" => "t"})
+      allow(store).to receive(:run).with("wr_2").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
+
+      expect(command.step_done(pane: nil, run_id: "wr_2", summary: "Plan written.")).to include("run_id" => "wr_2", "step" => "plan")
+    end
+
+    it "falls back to the checkout's one going run when no pane binding names the run" do
+      allow(panes).to receive(:run_on).and_return(nil)
+      allow(store).to receive(:going).and_return([Workspace::WorkflowRun.from_h("id" => "wr_2", "worktree" => Dir.pwd, "state" => "running")])
+      allow(engine).to receive(:report).with("wr_2", actor: "agent", status: "pass", summary: nil, code: nil)
+        .and_return("run_id" => "wr_2", "step" => "plan", "attempt" => 1, "reported" => {"status" => "pass", "summary" => nil, "at" => "t"})
+      allow(store).to receive(:run).with("wr_2").and_return(Workspace::WorkflowRun.from_h("workspace" => "app"))
+
+      expect(command.step_done(pane: nil, cwd: Dir.pwd)).to include("run_id" => "wr_2", "step" => "plan")
+    end
+
+    it "keeps the not_bound refusal when the checkout has no going run, and ignores another checkout's" do
+      allow(panes).to receive(:run_on).and_return(nil)
+      allow(store).to receive(:going).and_return([Workspace::WorkflowRun.from_h("id" => "wr_other", "worktree" => "/some/other/checkout")])
+
+      expect { command.step_done(pane: nil, cwd: Dir.pwd) }
+        .to raise_error(Workspace::Error, "This pane is not bound to a workflow run (not inside tmux).") { |error|
+          expect(error.code).to eq("not_bound")
+          expect(error.details).to eq("pane" => nil)
+        }
+    end
+
+    it "refuses to pick between a checkout's several going runs with ambiguous_run" do
+      allow(panes).to receive(:run_on).and_return(nil)
+      allow(store).to receive(:going).and_return([
+        Workspace::WorkflowRun.from_h("id" => "wr_1", "worktree" => Dir.pwd),
+        Workspace::WorkflowRun.from_h("id" => "wr_2", "worktree" => Dir.pwd)
+      ])
+
+      expect { command.step_done(pane: nil, cwd: Dir.pwd) }.to raise_error(Workspace::Error, /Several workflow runs are going in this checkout \(#{Regexp.escape(Dir.pwd)}\): wr_2, wr_1/) { |error|
+        expect(error.code).to eq("ambiguous_run")
+        expect(error.details["workspace"]).to eq(Dir.pwd)
+        expect(error.details["runs"].map { |each| each["id"] }).to eq(%w[wr_2 wr_1])
+      }
+    end
+
+    it "still refuses a review pane that names the run with --run" do
+      allow(panes).to receive(:bound_on).with("%9").and_return({run_id: "wr_1", role: "reviewer"})
+
+      expect { command.step_done(pane: "%9", run_id: "wr_1") }.to raise_error(Workspace::Error) { |error|
+        expect(error.code).to eq("review_pane_bound")
+      }
+    end
   end
 
   describe "#step_status" do
@@ -2807,6 +2858,12 @@ RSpec.describe Workspace::Commands::Workflow do
         Must be written by the time your turn ends: #{@dir}/plan.md (missing)
         Reported: pass (Plan written.)
       TEXT
+    end
+
+    it "prints the run --run names, without reading a pane" do
+      command.step_status(pane: nil, run_id: "wr_1", json: true)
+
+      expect(json["step"]).to include("run_id" => "wr_1", "step" => "plan")
     end
 
     it "adds the attempt's proofs to the document once one has run" do

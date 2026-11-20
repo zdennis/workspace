@@ -1081,19 +1081,23 @@ module Workspace
       # The agent's own report on its step (`step done`).
       #
       # @param pane [String, nil] the pane the agent runs in (`$TMUX_PANE`)
+      # @param run_id [String, nil] the run to report on, instead of the pane's binding; for a process
+      #   with no `$TMUX_PANE` (a subagent or background run)
+      # @param cwd [String, nil] the working directory, for the run a checkout fallback resolves when
+      #   the pane binding is missing (see {#report_run!})
       # @param status [String] "pass" or "fail", or "done", "running", "needs_input" or "stuck" (stored as the step's stated status)
       # @param summary [String, nil]
       # @param code [String, nil] a word for why, matching {WorkflowDefinition::CODE_PATTERN} (`usage` otherwise)
       # @return [Hash{String=>Object}] the action row
-      # @raise [Workspace::Error] code `not_bound` outside a run's pane, `review_pane_bound` in a review pane, `step_not_running`
-      def step_done(pane:, status: "pass", summary: nil, code: nil)
+      # @raise [Workspace::Error] code `not_bound` outside a run's pane with no resolvable run, `review_pane_bound` in a review pane, `step_not_running`
+      def step_done(pane:, run_id: nil, cwd: nil, status: "pass", summary: nil, code: nil)
         raise UsageError, "--status must be one of #{REPORT_STATUSES.join(", ")}, got #{status.to_s[0, 40].inspect}." unless REPORT_STATUSES.include?(status)
         raise UsageError, "--code applies to pass/fail reports, not to --status #{status}." if code && WorkflowReportedStatus::STATES.include?(status)
         raise UsageError, "--code must be a lowercase word that starts with a letter, then letters, digits and underscores (at most 40), got #{code.to_s[0, 60].inspect}." unless code.nil? || WorkflowDefinition::CODE_PATTERN.match?(code)
         if (refusal = WorkflowDefinition.engine_code_refusal(code))
           raise UsageError, "--code #{refusal}"
         end
-        run_id = bound_run!(pane)
+        run_id = report_run!(run_id, pane, cwd)
         reported = @engine.report(run_id, actor: "agent", status: status, summary: summary, code: code, **step_kwarg(caller_step(pane)))
         @output.puts "Recorded #{status} for step #{reported["step"]} (attempt #{reported["attempt"]}) of run #{run_id}. " \
           "End your turn now; the step is decided when the turn ends."
@@ -1127,11 +1131,15 @@ module Workspace
       # Prints the step the calling pane is on (`step status`).
       #
       # @param pane [String, nil] the pane the agent runs in (`$TMUX_PANE`)
+      # @param run_id [String, nil] the run to read, instead of the pane's binding; for a process
+      #   with no `$TMUX_PANE` (a subagent or background run)
+      # @param cwd [String, nil] the working directory, for the run a checkout fallback resolves when
+      #   the pane binding is missing (see {#report_run!})
       # @param json [Boolean]
       # @return [void]
-      # @raise [Workspace::Error] code `not_bound` outside a run's pane, `review_pane_bound` in a review pane
-      def step_status(pane:, json: false)
-        run = @store.run(bound_run!(pane))
+      # @raise [Workspace::Error] code `not_bound` outside a run's pane with no resolvable run, `review_pane_bound` in a review pane
+      def step_status(pane:, run_id: nil, cwd: nil, json: false)
+        run = @store.run(report_run!(run_id, pane, cwd))
         step_id = (caller_step(pane) if WorkflowRun.step_scoped?(run.to_h, caller_step(pane))) || run.current
         step = run.definition["steps"].find { |each| each["id"] == step_id }
         state = run.steps.fetch(step_id)
@@ -1212,11 +1220,15 @@ module Workspace
       private
 
       def ambiguous_run_error(workspace, going)
-        runs = going.sort_by { |run| run.to_h["created_at"].to_s }.reverse
-          .map { |run| {"id" => run.id, "workflow" => run.workflow, "state" => run.state, "created_at" => run.to_h["created_at"]} }
-        Workspace::Error.new("Several workflow runs are going in workspace #{workspace}: #{runs.map { |each| each["id"] }.join(", ")}. " \
+        Workspace::Error.new("Several workflow runs are going in workspace #{workspace}: #{ambiguous_run_rows(going).map { |each| each["id"] }.join(", ")}. " \
           "Pass the RUN id to name one.",
-          code: "ambiguous_run", details: {"workspace" => workspace, "runs" => runs})
+          code: "ambiguous_run", details: {"workspace" => workspace, "runs" => ambiguous_run_rows(going)})
+      end
+
+      # The rows of {#ambiguous_run_error}'s `details.runs`, newest first.
+      def ambiguous_run_rows(going)
+        going.sort_by { |run| run.to_h["created_at"].to_s }.reverse
+          .map { |run| {"id" => run.id, "workflow" => run.workflow, "state" => run.state, "created_at" => run.to_h["created_at"]} }
       end
 
       def run_graph(id, stored)
@@ -2148,15 +2160,39 @@ module Workspace
         @panes.step_on(pane)
       end
 
-      def bound_run!(pane)
+      # The run a step report or `step status` works on: the one +run_id+ names, else the calling
+      # pane's binding, else — for a process the binding can't name, a subagent's or background
+      # run's shell with no `$TMUX_PANE` — the one going run whose worktree is +cwd+. Several going
+      # runs in the checkout is {#ambiguous_run_error}; none keeps the `not_bound` refusal. The
+      # pane's binding is read whatever +run_id+ is, so a review pane is refused and a step-scoped
+      # (fan-out) pane keeps its own step.
+      def report_run!(run_id, pane, cwd)
         bound = pane && !pane.empty? && @panes.bound_on(pane)
-        if bound && bound[:role] == "reviewer"
-          raise Workspace::Error.new("This pane reviews run #{bound[:run_id]}; the step is the author\x27s, so a review pane has no step to report or read. Write your verdict file for this round and end your turn.",
-            code: "review_pane_bound", details: {"pane" => pane, "run_id" => bound[:run_id]})
-        end
+        refuse_review_pane!(pane, bound)
+        return run_id if run_id && !run_id.empty?
         return bound[:run_id] if bound
+        going = cwd.to_s.empty? ? [] : @store.going.select { |run| same_path?(run.worktree, cwd) }
+        if going.length > 1
+          raise Workspace::Error.new("Several workflow runs are going in this checkout (#{cwd}): #{ambiguous_run_rows(going).map { |each| each["id"] }.join(", ")}. " \
+            "Pass the RUN id to name one.",
+            code: "ambiguous_run", details: {"workspace" => cwd, "runs" => ambiguous_run_rows(going)})
+        end
+        return going.first.id if going.length == 1
         raise Workspace::Error.new("This pane is not bound to a workflow run#{" (not inside tmux)" if pane.nil? || pane.empty?}.",
           code: "not_bound", details: {"pane" => pane})
+      end
+
+      def refuse_review_pane!(pane, bound)
+        return unless bound && bound[:role] == "reviewer"
+        raise Workspace::Error.new("This pane reviews run #{bound[:run_id]}; the step is the author\x27s, so a review pane has no step to report or read. Write your verdict file for this round and end your turn.",
+          code: "review_pane_bound", details: {"pane" => pane, "run_id" => bound[:run_id]})
+      end
+
+      def same_path?(first, second)
+        return false if first.nil? || first.empty? || second.nil? || second.empty?
+        File.realpath(first) == File.realpath(second)
+      rescue SystemCallError
+        false
       end
 
       # The dry-run line's note of what the branch filled, empty when it filled nothing.

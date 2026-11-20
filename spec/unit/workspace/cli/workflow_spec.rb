@@ -537,6 +537,7 @@ RSpec.describe Workspace::CLI::Workflow do
     it "refuses the flags of done on expect-fail, and the flags of expect-fail on done and status" do
       expect { run("expect-fail", "--status", "pass", "a", verb: "step") }.to raise_error(Workspace::UsageError, "--status is not for `step expect-fail`.")
       expect { run("expect-fail", "--code", "x", "a", verb: "step") }.to raise_error(Workspace::UsageError, "--code is not for `step expect-fail`.")
+      expect { run("expect-fail", "--run", "wr_9", "a", verb: "step") }.to raise_error(Workspace::UsageError, "--run is not for `step expect-fail`.")
       expect { run("done", "--match-file", "f", verb: "step") }.to raise_error(Workspace::UsageError, "--match-file is only for `step expect-fail`.")
       expect { run("status", "--timeout", "5", verb: "step") }.to raise_error(Workspace::UsageError, "--timeout is only for `step expect-fail`.")
       expect(workflow_command.calls).to be_empty
@@ -1031,8 +1032,8 @@ RSpec.describe Workspace::CLI::Workflow do
         cli.run(["step", "done", "--status", "fail", "--summary", "Two specs still fail.", "--json"])
 
         expect(workflow_command.calls).to eq([
-          [:step_done, {pane: "%5", status: "pass", summary: nil, code: nil}],
-          [:step_done, {pane: "%5", status: "fail", summary: "Two specs still fail.", code: nil}]
+          [:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "pass", summary: nil, code: nil}],
+          [:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "fail", summary: "Two specs still fail.", code: nil}]
         ])
         expect(JSON.parse(output.string)).to include("action" => "step done", "status" => "ok", "results" => [workflow_command.row])
       end
@@ -1040,7 +1041,7 @@ RSpec.describe Workspace::CLI::Workflow do
       it "passes --code to the command" do
         cli.run(["step", "done", "--status", "fail", "--code", "not_reproduced"])
 
-        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", status: "fail", summary: nil, code: "not_reproduced"}]])
+        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: nil, cwd: "/some/dir", status: "fail", summary: nil, code: "not_reproduced"}]])
       end
 
       it "refuses a summary that is not valid text, and records nothing" do
@@ -1063,13 +1064,19 @@ RSpec.describe Workspace::CLI::Workflow do
       it "shows the step the pane is on" do
         cli.run(["step", "status", "--json"])
 
-        expect(workflow_command.calls).to eq([[:step_status, {pane: "%5", json: true}]])
+        expect(workflow_command.calls).to eq([[:step_status, {pane: "%5", run_id: nil, cwd: "/some/dir", json: true}]])
+      end
+
+      it "names the run with --run, keeping the pane for the step" do
+        cli.run(["step", "done", "--run", "wr_9"])
+
+        expect(workflow_command.calls).to eq([[:step_done, {pane: "%5", run_id: "wr_9", cwd: "/some/dir", status: "pass", summary: nil, code: nil}]])
       end
 
       it "prints help" do
         cli.run(["step", "--help"])
 
-        expect(output.string).to include("Usage: workspace step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--json]").and include("end your turn")
+        expect(output.string).to include("Usage: workspace step done [--status pass|fail|done|running|needs_input|stuck] [--summary TEXT] [--code WORD] [--run RUN_ID] [--json]").and include("end your turn")
       end
     end
   end

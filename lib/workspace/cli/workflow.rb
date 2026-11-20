@@ -631,6 +631,7 @@ module Workspace
           opts.on("--status STATUS", "done: pass (default), fail, or a stated status: done, running, needs_input, stuck") { |v| options.update(status: v, status_given: true) }
           opts.on("--summary TEXT", "done: one line about what was done, or what is left") { |v| options[:summary] = v }
           opts.on("--code WORD", "done: a word for why, kept with a failed step: starts with a lowercase letter, then lowercase letters, digits, _ (at most 40); not one the engine uses (e.g. check_failed, head_moved)") { |v| options[:code] = v }
+          opts.on("--run RUN_ID", "done, status: the run to work on when this process has no pane binding (a subagent or background run, no $TMUX_PANE); with no --run, the checkout's one going run is used when unambiguous") { |v| options[:run_id] = v }
           opts.on("--match-file PATH", "expect-fail: a file whose text (trimmed) the failing tests' output must hold") { |v| options[:match_file] = v }
           opts.on("--timeout SECONDS", "expect-fail: seconds the tests may run (default #{WorkflowExpectFail::DEFAULT_TIMEOUT})") { |v| options[:timeout] = v }
           opts.on("--json", "done, status: print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
@@ -668,9 +669,9 @@ module Workspace
           result = @workflow_command.step_expect_fail(cwd: @working_dir, files: args, match_file: options[:match_file], timeout: step_timeout(options[:timeout]))
           invocation.exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
         elsif subcommand == "status"
-          @workflow_command.step_status(pane: ENV["TMUX_PANE"], json: options[:json])
+          @workflow_command.step_status(pane: ENV["TMUX_PANE"], run_id: options[:run_id], cwd: @working_dir, json: options[:json])
         else
-          workflow_action(invocation, "step done", options) { @workflow_command.step_done(pane: ENV["TMUX_PANE"], status: options[:status], summary: options[:summary], code: options[:code]) }
+          workflow_action(invocation, "step done", options) { @workflow_command.step_done(pane: ENV["TMUX_PANE"], run_id: options[:run_id], cwd: @working_dir, status: options[:status], summary: options[:summary], code: options[:code]) }
         end
       rescue OptionParser::ParseError, UsageError => e
         raise unless @common.json_requested?(options[:json], given)
@@ -680,7 +681,7 @@ module Workspace
       # Refuses a step flag the verb has no use for.
       def step_flags!(subcommand, options)
         if subcommand == "expect-fail"
-          used = {"--status" => options[:status_given], "--summary" => options.key?(:summary), "--code" => options.key?(:code), "--json" => options[:json]}
+          used = {"--status" => options[:status_given], "--summary" => options.key?(:summary), "--code" => options.key?(:code), "--run" => options.key?(:run_id), "--json" => options[:json]}
           flag = used.find { |_, set| set }&.first
           raise UsageError, "#{flag} is not for `step expect-fail`." if flag
         else
