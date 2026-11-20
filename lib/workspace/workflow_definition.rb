@@ -234,7 +234,7 @@ module Workspace
     #   "context" and "timeout" (seconds or nil); a `fan_out` group's siblings sit in "steps" at the group's place,
     #   each also with "group" (the group step's id) and "execution_mode" (the mode it runs with, its own or the
     #   group's), and only then is there "groups": group id to "title",
-    #   "checkout", "on_fail" (`stop`), "steps" (its sibling ids, in order) and, only when the definition set it,
+    #   "checkout", "on_fail" (`stop`, or the goto mapping a step's `on_fail` has), "steps" (its sibling ids, in order) and, only when the definition set it,
     #   "execution_mode"
     def to_h
       @data
@@ -401,6 +401,18 @@ module Workspace
     def self.log_tail(on_fail)
       value = on_fail.is_a?(Hash) ? on_fail["log_tail"] : nil
       (value.is_a?(Integer) && value.between?(1, MAX_LOG_TAIL)) ? value : nil
+    end
+
+    # The `on_fail` of a `fan_out` group.
+    #
+    # @param definition [Hash, nil] {#to_h}, or a stored run's definition
+    # @param gid [String] the group's id
+    # @return [String, Hash] `"stop"` when the key or the group is missing (a run stored before a group could goto)
+    def self.group_on_fail(definition, gid)
+      groups = definition.is_a?(Hash) ? definition["groups"] : nil
+      group = groups.is_a?(Hash) ? groups[gid] : nil
+      on_fail = group.is_a?(Hash) ? group["on_fail"] : nil
+      on_fail.nil? ? "stop" : on_fail
     end
 
     # @return [Integer, nil] a step's own attempt cap, nil when it has none (an absent key counts as none)
@@ -773,7 +785,7 @@ module Workspace
       ids.each_with_index do |step_id, index|
         body = raw[raw.keys[index]]
         if body.is_a?(Hash) && body.key?("fan_out")
-          steps.concat(group_from(step_id, body, taken, inputs))
+          steps.concat(group_from(step_id, body, taken, inputs, steps.reject { |step| step["group"] }.map { |step| step["id"] }))
         else
           steps << step_from(step_id, body, steps.map { |step| step["id"] }, inputs)
         end
@@ -784,15 +796,14 @@ module Workspace
 
     # The siblings of one `fan_out` group step, flattened and tagged with the group's id; records the group's own
     # keys in @groups. A sibling's `earlier` is the siblings before it, so its goto stays inside the group.
-    def group_from(group_id, raw, taken, inputs)
+    def group_from(group_id, raw, taken, inputs, earlier_ungrouped)
       where = "step #{group_id}"
       problem "step id #{group_id.inspect} must be #{IdPatterns::WORKFLOW_ID_RULE}" unless IdPatterns::WORKFLOW_ID.match?(group_id)
       extra = raw.keys.map(&:to_s) - GROUP_KEYS
       if extra.any?
         problem "#{where} is a fan_out group, which has no body of its own: it takes only #{GROUP_KEYS.join(", ")}, got #{extra.join(", ")}"
       end
-      on_fail = raw.fetch("on_fail", "stop")
-      problem "#{where}: a fan_out group's on_fail must be stop (a group can't goto yet), got #{on_fail.inspect[0, 60]}" unless on_fail == "stop"
+      on_fail = on_fail_from(raw.fetch("on_fail", "stop"), earlier_ungrouped, where, group_of: group_id) || "stop"
       checkout = raw.fetch("checkout", GROUP_CHECKOUTS.first)
       unless GROUP_CHECKOUTS.include?(checkout)
         problem "#{where}: checkout must be #{GROUP_CHECKOUTS.join(" or ")}, got #{checkout.inspect[0, 60]}"
@@ -826,7 +837,7 @@ module Workspace
         earlier << sibling_id
         step.merge("group" => group_id)
       end
-      @groups[group_id] = {"title" => title, "checkout" => checkout, "on_fail" => "stop", "steps" => siblings.map { |step| step["id"] }}
+      @groups[group_id] = {"title" => title, "checkout" => checkout, "on_fail" => on_fail, "steps" => siblings.map { |step| step["id"] }}
       @groups[group_id]["execution_mode"] = mode if mode
       siblings
     end
@@ -1104,13 +1115,15 @@ module Workspace
       []
     end
 
-    def on_fail_from(value, earlier, where, group: nil)
+    def on_fail_from(value, earlier, where, group: nil, group_of: nil)
       return nil if value.nil?
       return "stop" if value == "stop"
       return problem("#{where}: on_fail must be stop, or a mapping with goto and max") unless value.is_a?(Hash)
       unknown_keys(value, ON_FAIL_KEYS, "#{where}: on_fail")
       goto = value["goto"].to_s
-      if group && !earlier.include?(goto)
+      if group_of && !earlier.include?(goto)
+        problem "#{where}: a fan_out group's on_fail goto must name a step before the group that is in no group (#{earlier.empty? ? "there is none" : earlier.join(", ")}), got #{value["goto"].inspect}"
+      elsif group && !earlier.include?(goto)
         problem "#{where}: on_fail goto must name an earlier step of its fan_out group #{group} (#{earlier.empty? ? "there is none" : earlier.join(", ")}); a goto can't leave the group yet, got #{value["goto"].inspect}"
       elsif !earlier.include?(goto)
         problem "#{where}: on_fail goto must name an earlier step (#{earlier.empty? ? "there is none" : earlier.join(", ")}), got #{value["goto"].inspect}"
