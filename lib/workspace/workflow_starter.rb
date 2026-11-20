@@ -20,9 +20,11 @@ module Workspace
     # @param task_store [Workspace::TaskStore, nil] names the workspace's task in the run
     # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
     # @param exec_program [#problem] judges argument 1 of each `exec` proof, as {WorkflowExecProgram} does (default); `workflow simulate` gives one that accepts every program
+    # @param main_agent [Workspace::MainAgent, nil] reads the project's main agent kind; nil (a builder that
+    #   does not wire one) skips the `subagents` refusal
     # @param clock [#call] returns the current Time
     def initialize(change:, store:, prompt:, dispatch:, lineage:, commands_config:, guard:, gate_note:,
-      task_store: nil, workspace_known: nil, exec_program: WorkflowExecProgram, clock: -> { Time.now })
+      task_store: nil, workspace_known: nil, exec_program: WorkflowExecProgram, main_agent: nil, clock: -> { Time.now })
       @change = change
       @store = store
       @prompt = prompt
@@ -34,6 +36,7 @@ module Workspace
       @task_store = task_store
       @workspace_known = workspace_known
       @exec_program = exec_program
+      @main_agent = main_agent
       @clock = clock
     end
 
@@ -62,6 +65,7 @@ module Workspace
       check_notes_path(data, workspace)
       check_tree(data, tree)
       project = @lineage.resolve(cwd: worktree).name
+      check_execution_mode(data, project)
       check_commands(data, project)
       check_test_files(data, workspace)
       check_exec_programs(data, tree)
@@ -219,6 +223,23 @@ module Workspace
 
     def check_inputs(data, inputs)
       WorkflowInputs.check(data, inputs)
+    end
+
+    # A `subagents` group's siblings run as sub-agents of the run pane's Claude Code session, which no other
+    # agent launches. The definition parses anywhere (the run pane's agent kind is only known at start), so
+    # this is a start-time refusal, and `process_separation` groups pass for every kind.
+    def check_execution_mode(data, project)
+      siblings = Array(data["steps"]).select { |step| step.is_a?(Hash) && step["group"].is_a?(String) && step["execution_mode"] == "subagents" }
+      return if siblings.empty? || @main_agent.nil?
+      kind = @main_agent.kind(project)
+      return if kind == "claude"
+      raise Workspace::Error.new(
+        "Workflow #{data["id"]} runs the fan_out step#{"s" if siblings.size > 1} #{siblings.map { |step| step["id"] }.join(", ")} " \
+          "as sub-agents of the run's own pane (execution_mode: subagents), and only Claude Code launches those. " \
+          "The project #{project}'s main agent is #{kind}. Set execution_mode: process_separation on the group or the sibling " \
+          "to run each in its own author pane instead.",
+        code: "subagents_needs_claude", details: {"workflow" => data["id"], "project" => project, "agent_kind" => kind, "steps" => siblings.map { |step| step["id"] }}
+      )
     end
 
     # Every step's `status: command:` and every `require: command:` that isn't optional, each unset one listed.

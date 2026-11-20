@@ -87,6 +87,42 @@ RSpec.describe Workspace::WorkflowStarter do
       expect(dirty.code).to eq("dirty_worktree")
       expect(dirty.details).to eq("path" => worktree, "guard" => "tracked_changed", "files" => ["a.txt"])
     end
+
+    describe "subagents execution mode" do
+      let(:fan_yaml) do
+        "steps:\n  checks:\n    execution_mode: subagents\n" \
+          "    fan_out:\n      lint:\n        prompt: L\n        produces: [lint.md]\n"
+      end
+      let(:fan_definition) { Workspace::WorkflowDefinition.parse(fan_yaml, id: "fan", source: "global", path: "/defs/fan.yml") }
+
+      def starter_with_agent(kind)
+        agent = instance_double(Workspace::MainAgent, kind: kind)
+        described_class.new(change: change, store: store, prompt: prompt, dispatch: dispatch, lineage: lineage,
+          commands_config: commands_config, guard: guard, gate_note: gate_note, main_agent: agent, clock: clock)
+      end
+
+      it "refuses a subagents group when the project's main agent is not claude, naming the opt-out" do
+        error = refusal { starter_with_agent("codex").preflight(definition: fan_definition, workspace: "app", worktree: worktree, inputs: {}) }
+
+        expect(error.code).to eq("subagents_needs_claude")
+        expect(error.details).to include("workflow" => "fan", "project" => "app", "agent_kind" => "codex", "steps" => %w[lint])
+        expect(error.message).to include("Set execution_mode: process_separation")
+      end
+
+      it "lets a process_separation group and a keyless group pass for any agent kind" do
+        keyed = fan_yaml.sub("execution_mode: subagents", "execution_mode: process_separation")
+        process = Workspace::WorkflowDefinition.parse(keyed, id: "fan", source: "global", path: "/defs/fan.yml")
+        keyless = Workspace::WorkflowDefinition.parse(fan_yaml.sub("    execution_mode: subagents\n", ""), id: "fan", source: "global", path: "/defs/fan.yml")
+
+        expect(refusal { starter_with_agent("codex").preflight(definition: process, workspace: "app", worktree: worktree, inputs: {}) }).to be_nil
+        expect(refusal { starter_with_agent("none").preflight(definition: keyless, workspace: "app", worktree: worktree, inputs: {}) }).to be_nil
+        expect(refusal { starter_with_agent("claude").preflight(definition: fan_definition, workspace: "app", worktree: worktree, inputs: {}) }).to be_nil
+      end
+
+      it "skips the check when no main agent was wired" do
+        expect(refusal { starter.preflight(definition: fan_definition, workspace: "app", worktree: worktree, inputs: {}) }).to be_nil
+      end
+    end
   end
 
   describe "#render" do
