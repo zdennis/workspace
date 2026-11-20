@@ -370,6 +370,11 @@ RSpec.describe Workspace::Config, "inbox paths" do
     expect(config.inbox_path("workspace", "inbox")).to eq(File.join(config.inbox_dir, "workspace", "inbox.json"))
   end
 
+  it "puts the work queue and its history beside the prompt queue" do
+    expect(config.work_queue_path("api")).to eq(File.join(config.pipeline_state_dir("api"), "work-queue.json"))
+    expect(config.work_queue_history_path("api")).to eq(File.join(config.pipeline_state_dir("api"), "work-queue-history.jsonl"))
+  end
+
   it "files a workspace under .inbox/workspace and the global list at .inbox/global.json" do
     expect(config.inbox_path("workspace", "api.fix-login")).to eq(File.join(config.inbox_dir, "workspace", "api.fix-login.json"))
     expect(config.inbox_path("global")).to eq(File.join(config.inbox_dir, "global.json"))

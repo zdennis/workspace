@@ -151,6 +151,48 @@ The same pane list carries `waits` per pane: every open wait as `agent_id`, `too
 
 `goal show [REF] --json` prints `{"schema_version":1,"ok":true,"goal":{...},"warnings":[]}` and `goal list [--all] --json` prints `{"schema_version":1,"ok":true,"goals":[...],"warnings":[]}`. Both are read-only; a source that can't answer is a null level plus a warning. `show` also carries `done_means` and `not_yet` (lists of `{code, text}`) and `delivery`, and `list` rows `delivered` and `not_yet_codes`: a finished plan or spine is `done` only once the branch's commits are on the default branch (local git only). Every field, the closed value sets, nullability and warning codes are in [README.goal.md](README.goal.md).
 
+## Work queue
+
+`work-queue` (alias `wq`) action verbs (`add`, `rm`, `move`, `cancel`, `enable`, `disable`, `resume`, `skip`, `advance`, `history clear`) print an [action document](#actions) with two more top-level keys, `queue` (the workspace) and `revision` (the queue file's revision, which `move --if-revision` takes). Each row is `{"workspace","outcome","id","position","kind"}`; `id`, `position` and `kind` are null where no item applies (`enable`, `resume`, `history clear`, an `advance` refusal). There is no `message` key. Rows add keys where they apply:
+
+- `advance` rows (and the pass rows of `cancel --and-continue`) add `reason`, `run_id` and `next_actions`; `id` and `kind` are null on a refusal.
+- A `cancel` row adds `run_id`, and `skip` adds `run_id` and, while the run still goes, `warnings` (a list of `{code, message}`; the document's `warnings` carries them too) and `next_actions`.
+- `history clear` adds `count`.
+
+`outcome` by verb: `add` gives `added` or `unchanged`; `rm` `removed`; `move` `moved` or `unchanged`; `enable` `enabled` or `unchanged`; `disable` `disabled` or `unchanged`; `resume` `resumed` or `unchanged`; `skip` `skipped`; `cancel` `cancelled`; `history clear` `cleared`, `unchanged` or `cancelled` (the question was answered no). For `advance`:
+
+| Outcome | `reason` |
+|---------|----------|
+| `started` | none; `run_id` is the new run |
+| `succeeded` | none; the item's run completed |
+| `active` | none; the run goes on |
+| `held` | `gate`, `parked`, `failed_check`, `budget_spent` or `run_timed_out` |
+| `failed`, `cancelled` | the run's state; the queue paused unless the item had `--on-fail continue` |
+| `unchanged` | `disabled`, `paused`, `empty`, `run_going` or `starting` |
+| `launch_failed` | `unknown_kind`, `usage_error`, `start_failed`, or the error code of the failed start |
+| `interrupted` | `interrupted` (a start whose process died, with no run found) or `unknown_run` (the item's run is gone) |
+| `claim_lost` | `claim_lost` |
+
+The status and exit code of `advance` and of `cancel --and-continue`: `failed` (1) when every row ended badly, `partial` (3) when some did, else `ok` (0). Ending badly is `launch_failed`, `claim_lost` or `interrupted`, and a `failed` or `cancelled` run only when the queue paused for it (a row that offers `work-queue resume`), not under `--on-fail continue`. A held item and the `cancelled` row of `cancel --and-continue` are not counted, so a pass that fails after the cancel gives `partial`.
+
+```json
+{"schema_version":1,"ok":true,"action":"work-queue add","status":"ok","queue":"api.worktree-x","revision":4,
+ "results":[{"workspace":"api.worktree-x","outcome":"added","id":"3fa9c1d2","position":2,"kind":"workflow"}],
+ "warnings":[],"summary":{"added":1}}
+```
+
+The reading verbs print a success document with a `warnings` list and their payload beside it:
+
+| Verb | Keys |
+|------|------|
+| `list`, `status` | `queues`: one per workspace, each with `workspace`, `state` (`on`, `off` or `paused`), `paused_reason`, `revision` and `next_actions`; `list` adds `enabled` and `items` (item rows), `status` adds `active` (an item row or null) and `queued` (a count) |
+| `show` | `workspace`, `item` (the full item: its `spec`, `result` and the rest, plus `position`, `what` and `run_id`) and `next_actions` |
+| `active` | `workspace`, `item` (an item row, or null when nothing is active), `waiting_on` (`on`, `reason`, `run_id`, `run_state`, `step`; null with no item) and `next_actions` |
+| `history list` | `entries`, each a finished item with `outcome`, `reason`, `finished_at` and `workspace`, and `next_actions` |
+| `history show` | `workspace`, `entry` and `next_actions` (the `work-queue add` that queues it again) |
+
+An item row, as `list`, `status` and `active` give it, is `{id, position, state, kind, what, headless, on_fail, added_at, started_at, reason, run_id, dedupe_key}`; `state` is `queued`, `starting`, `active` or `held`. `show` gives the whole item, with `spec`, `added_by` and `result` (`run_id`, `log_path`, `error`). See [`work-queue`](README.work-queue.md).
+
 ## Tmuxinator templates
 
 `template list [--scope SCOPE] [--name WS] --json` prints `{"schema_version":1,"ok":true,"workspace":...,"selected":{"project":{...},"worktree":{...}},"templates":[...],"warnings":[]}`. Each `templates` row has `name`, `ref`, `scope`, `project`, `description`, `path`, `files`, `effective` and `selected_for` (the kinds, `project` and `worktree`, that render from it for that workspace). `selected.<kind>` is `{name, scope, source}`, or null with a warning (`code`, `kind`, `message`) when the set it names can't be found; an edited copy `init` installed shows as the set `legacy`. `template show [NAME] --json` prints `{"schema_version":1,"ok":true,"templates":[...],"warnings":[]}` with one row per file (`kind`, `template`, `scope`, `source`, `path`, `content`, `sha256`), and `template path --json` the same rows without `content` and `sha256`. `source` is where the set's name came from (`worktree`, `project`, `global`, `default`, `legacy`), or `argument` when NAME was given. All three read only. `template variables [--kind K] [--name WS] --json` prints `{"schema_version":1,"ok":true,"variables":[...],"warnings":[],"workspace":...}`; each row has `name`, `kinds`, `required` (per kind), `description`, `source`, `sample`, `whole_line` and, with `--name`, `value` (null when the record holds none), and `value_state` (`recorded`, `no_record`, or null without `--name`) is set at the top; `value` is what `render --name` would fill (the agent command from current settings, `PRE_WINDOW` as its line or `(dropped)`). `template render ... --json` prints `{"schema_version":1,"ok":...,"template":...,"source":...,"path":...,"kind":...,"workspace":...,"inputs":{...},"content":...,"diff":...,"warnings":[...]}`: `template` is the set's name (null for `--file`), `content` the filled text (null when the renderer refused), `diff` the unified diff under `--diff` (with `changed`, true or false, only then), and `warnings` the file's problems (`severity`, `code`, `kind`, `message`); `ok` is false, and the exit status 1, when one is an error. Neither writes anything; a workspace with no render record is `no_render_record` for `render --name`.
@@ -302,7 +344,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `unknown_stage` | `spine set`, `spine verify`, `spine start` or `spine show --stage` was given a stage path no stage has (`details.path`, `details.stages` lists the paths there are). |
 | `unknown_item` | `spine check` named an item number the stage's `## Done when` checklist does not have (`details.item`, `details.total`, `details.file`). Nothing is written. |
 | `invalid_status` | `spine set --status` is not a status or an alias of one; `unknown` can't be set (`details.status`, `details.allowed`). |
-| `stale_revision` | `spine set --if-revision`, `spine check --if-revision`, `spine verify --if-revision`, `spine start --if-revision` or `plan task --if-revision` named a revision the file no longer has. `details.revision` is the current one; `details.status` is the stage's for `spine set`, `details.path` the plan's for `plan task`. `workflow approve --note-sha256`: the gate's note changed since the caller read it; `details.revision` is its sha256 now, `details.path` the note, and `details.run_id`, `details.step` and `details.attempt` the gate. |
+| `stale_revision` | `spine set --if-revision`, `spine check --if-revision`, `spine verify --if-revision`, `spine start --if-revision` or `plan task --if-revision` named a revision the file no longer has; `work-queue move --if-revision` likewise for the queue (`details.revision`, `details.path`). `details.revision` is the current one; `details.status` is the stage's for `spine set`, `details.path` the plan's for `plan task`. `workflow approve --note-sha256`: the gate's note changed since the caller read it; `details.revision` is its sha256 now, `details.path` the note, and `details.run_id`, `details.step` and `details.attempt` the gate. |
 | `dev_held_by` | `dev down` from a workspace that does not hold the `devenv` lock, and `--force` was not given; nothing was stopped. `details.workspace` names the holder, with `worktree`, `branch`, `pane`, `pid` and `run_id` when known (`run_id` only when a workflow run holds the lock). `retry` is `--force`, marked destructive. |
 | `spine_unwritable` | `spine init` could not write (`spine/` is a link, the notes directory could not be made, or a file could not be written or renamed into place; `details.path`; nothing is left half-written). `spine set`, `spine check`, `spine verify` and `spine goal set` can't rewrite the stage file safely (`no_frontmatter` does not apply to `spine check`): `details.reason` is `link`, `not_a_file`, `too_large` (over 64 KB), `not_utf8`, `no_frontmatter` (no block closed within 100 lines), `no_file` (a folder with no stage file), `missing`, `lock_unavailable` (the lock file in the state folder can't be opened), `unreadable_result` (the change would put the closing `---` past line 100 or the status past the 40-key cap, where it could not be read back), `io_error`, `changed_while_writing`, or `lock_busy` (another write held the workspace's lock for 10 seconds); `details.file` is the file below `spine/`. With `--recursive`, `details.written` lists what was already written. |
 | `unknown_task` | `plan start --task`, `plan task` (or any write to one task line) named an id that no task under `## Tasks` has. `details.path`, `details.task`. |
@@ -475,7 +517,12 @@ The plan (`rename --dry-run --json`, from `RenamePlan::Plan#to_h`) has these fie
 | `not_an_agent` | The pane is running a shell, not a coding agent (`agent-run restart`, `agent-run send --when-idle` or `--clear-first`). |
 | `unsupported_agent` | The pane's agent can't be restarted. From `agent-run send --when-idle`: the pane runs an agent whose screen can't be checked for an open dialog or a draft (Codex, OpenCode, Pi; only Claude Code is supported), so nothing was queued. `details.kind`. |
 | `pane_waiting` | `agent-run send --when-idle`, `--clear-first` or `--interrupt`: the pane's agent waits on a person (a permission prompt or question, or `AskUserQuestion`/`ExitPlanMode` is running), so nothing was queued; answer it first. `details.reason`: `waiting` or `question_open`. |
-| `queue_full` | `agent-run send --when-idle` or `--clear-first`: the pane already has 8 prompts queued, so nothing was queued. `details.limit`. |
+| `queue_full` | `agent-run send --when-idle` or `--clear-first`: the pane already has 8 prompts queued, so nothing was queued. `work-queue add`: the workspace's queue already holds the most items. `details.limit`. |
+| `item_active` | `work-queue rm` or `move`: the item is active or held; use `work-queue cancel`. `details.id`, `details.state`. |
+| `item_not_active` | `work-queue cancel`: the item is only queued, or nothing is current, so there is no run to cancel; use `work-queue rm` for a queued item. `details.id`, `details.state`. |
+| `item_not_held` | `work-queue skip`: the item is not held, or no item is held; a failed run that ended has already moved to history. `details.id`, `details.state`, `details.next_actions`. |
+| `run_going` | `work-queue advance`: a `go` item took the task route because a run is going, so nothing was started and the item is `launch_failed`. `details.workspace`. |
+| `item_starting` | `work-queue rm`, `move`, `skip` or `cancel`: the item is being started; retry once its start has landed. `details.id`. |
 | `unknown_id` | `agent-run queue cancel --id ID`: no prompt with that id is queued (it was typed, dropped or never made), or the delivery has started pasting it, so its text may already be in the pane (`details.state: "delivering"`; check the pane). `details.id`; `details.workspace` when `--name` was given; `details.unreadable` lists workspaces whose queue file could not be read while searching (the id may be in one of them). |
 | `context_unavailable` | The agent can't report context usage, so /clear can't be confirmed. |
 | `context_unknown` | The agent's context usage couldn't be read. |
@@ -566,6 +613,8 @@ The plan (`rename --dry-run --json`, from `RenamePlan::Plan#to_h`) has these fie
 | `evidence_dir_linked` | `workflow learn reflect` found the evidence root or the run's evidence directory reached through a symbolic link; nothing was written or started. `details.run_id`. |
 | `reflection_path_not_file` | `workflow learn reflect` found `reflection.md` in the run's evidence directory but it is not a regular file (a link, a directory or something else); nothing was started or written. Remove it and run the command again. `details.run_id`, `details.path`. |
 | `unknown_run` | No workflow run has that id. `details.run_id`; `details.path` when a run file of that id exists and can't be read as a run. |
+| `unknown_queue_item` | No work queue item (finished, for `history show`; pending, for the other verbs) has an id starting with the given text. `details.id`. |
+| `ambiguous_queue_item` | The given text starts the id of more than one work queue item; give more of the id. `details.id`, `details.matches`. |
 | `ambiguous_run` | Several workflow runs are going in one place, so a run-id verb given no RUN cannot default to one. `details.workspace` (the workspace's name, or the checkout the step verbs resolved from), `details.runs` (newest first, each with `id`, `workflow`, `state`, `created_at`); pass a RUN id. |
 | `unknown_step` | `workflow attempts --attempt-of` or `workflow audit --attempt-of` named a step the run doesn't have, or `workflow render` or `workflow check` a step the definition doesn't have. `details.run_id` (not for render or check), `details.workflow` (render and check only), `details.step`, `details.steps` (the step ids). |
 | `unknown_goal` | `goal show` was given a REF that matches no workspace name, run id, task id, ticket key or URL, or branch. `details.ref`, `details.tried` (`workspace`, `run`, `task`, `ref`, `branch`). |

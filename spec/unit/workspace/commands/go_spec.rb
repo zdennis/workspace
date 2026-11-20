@@ -90,7 +90,7 @@ RSpec.describe Workspace::Commands::Go do
       it "starts a new worktree workspace for free text#{" (dry run)" if dry_run}" do
         row = command.call(argument: "fix the bug", dry_run: dry_run)
 
-        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: dry_run)
+        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: dry_run, root: root, note: nil)
         expect(workflow).not_to have_received(:run)
         expect(row["decision"]["route"]).to eq("start")
         expect(output.string).to include("makes a new worktree workspace")
@@ -122,7 +122,7 @@ RSpec.describe Workspace::Commands::Go do
     it "runs a bare go here with kind prompt" do
       row = command.call(caller_pane: "%3")
 
-      expect(workflow).to have_received(:run).with(id: "rpiv", workspace: detected, worktree: root, inputs: {}, dry_run: false, caller_pane: "%3", project: "app")
+      expect(workflow).to have_received(:run).with(id: "rpiv", workspace: detected, worktree: root, inputs: {}, dry_run: false, caller_pane: "%3", project: "app", note: nil)
       expect(workflow_start).not_to have_received(:call)
       expect(row["decision"]).to include("kind" => "prompt", "route" => "run")
     end
@@ -137,7 +137,7 @@ RSpec.describe Workspace::Commands::Go do
     it "passes a ref to this checkout's branch to WorkflowStart with here" do
       row = command.call(argument: "feature", caller_pane: "%3", dry_run: true, headless: true)
 
-      expect(workflow_start).to have_received(:call) do |id:, ref:, here:, headless:, inputs:, dry_run:|
+      expect(workflow_start).to have_received(:call) do |id:, ref:, here:, headless:, inputs:, dry_run:, root:, note:|
         expect([id, ref, headless, inputs, dry_run]).to eq(["rpiv", "feature", true, {}, true])
         expect(here.to_h).to eq(workspace: detected, path: root, caller_pane: "%3")
       end
@@ -156,7 +156,7 @@ RSpec.describe Workspace::Commands::Go do
     it "leaves here out for any other ref" do
       row = command.call(argument: "other")
 
-      expect(workflow_start).to have_received(:call).with(id: "rpiv", ref: "other", headless: false, here: nil, inputs: {}, dry_run: false)
+      expect(workflow_start).to have_received(:call).with(id: "rpiv", ref: "other", headless: false, here: nil, inputs: {}, dry_run: false, root: root, note: nil)
       expect(row["decision"]["route"]).to eq("start")
       expect(output.string).to include("makes or reuses the worktree workspace for other")
     end
@@ -166,7 +166,7 @@ RSpec.describe Workspace::Commands::Go do
     it "starts a new workspace and touches nothing in the current one" do
       row = command.call(argument: "fix the bug", caller_pane: "%3")
 
-      expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: false)
+      expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: false, root: root, note: nil)
       expect(workflow).not_to have_received(:run)
       expect(row["decision"]).to include("kind" => "prompt", "route" => "start")
       expect(output.string).to include("makes a new worktree workspace")
@@ -203,7 +203,7 @@ RSpec.describe Workspace::Commands::Go do
         row = command.call(argument: "fix the bug", dry_run: true)
 
         expect(picker).to have_received(:call).with(text: "fix the bug", project: "app", root: root)
-        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: "fix-login-bug", dry_run: true)
+        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: "fix-login-bug", dry_run: true, root: root, note: nil)
         expect(row["warnings"]).to eq(["from start"])
       end
 
@@ -253,7 +253,7 @@ RSpec.describe Workspace::Commands::Go do
       it "falls back to the slug, warns, and puts the warning in the row" do
         row = command.call(argument: "fix the bug")
 
-        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: false)
+        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: false, root: root, note: nil)
         message = "The branch namer failed (timed out); using fix-the-bug from the text instead."
         expect(output.string).to include("Warning: #{message}")
         expect(row["warnings"]).to eq(["from start", message])
@@ -782,7 +782,7 @@ RSpec.describe Workspace::Commands::Go do
     it "hands the file, not an id, to WorkflowStart" do
       command.call(argument: "fix the bug", file: "/tmp/mine.yml")
 
-      expect(workflow_start).to have_received(:call).with(file: "/tmp/mine.yml", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: false)
+      expect(workflow_start).to have_received(:call).with(file: "/tmp/mine.yml", prompt: "fix the bug", headless: false, inputs: {}, derived_branch: nil, dry_run: false, root: root, note: nil)
     end
 
     it "hands the file to WorkflowStart for a ref" do
@@ -794,7 +794,7 @@ RSpec.describe Workspace::Commands::Go do
     it "runs in place with the loaded definition and no id lookup" do
       command.call(argument: "fix the bug", here: true, file: "/tmp/mine.yml", caller_pane: "%3")
 
-      expect(workflow).to have_received(:run).with(definition: file_definition, workspace: detected, worktree: root, inputs: {"task" => "fix the bug"}, dry_run: false, caller_pane: "%3", project: "app")
+      expect(workflow).to have_received(:run).with(definition: file_definition, workspace: detected, worktree: root, inputs: {"task" => "fix the bug"}, dry_run: false, caller_pane: "%3", project: "app", note: nil)
     end
 
     it "refuses a file that fell back to the file id before printing anything" do
@@ -971,6 +971,83 @@ RSpec.describe Workspace::Commands::Go do
     let(:detected) { "app" }
 
     it_behaves_like "not in place"
+  end
+
+  describe "a given checkout" do
+    let(:other) { "/elsewhere/app/.worktrees/other" }
+    let(:given) { Workspace::Commands::WorkflowStart::Here.new(workspace: "app.worktree-other", path: other, caller_pane: nil) }
+
+    before do
+      allow(git).to receive(:worktree_branch).with(other).and_return("other")
+      allow(workflow_start).to receive(:locate_project).with(other).and_return({root: other, project: project, project_workspace: "app"})
+      allow(workflow_start).to receive(:catalog_project).with(other).and_return(tied)
+    end
+
+    it "never reads the process's checkout and runs free text in the given one with the note" do
+      expect(git).not_to receive(:root)
+      expect(project_detector).not_to receive(:detect)
+
+      row = command.call(argument: "fix the bug", checkout: given, note: "Started by queue")
+
+      expect(workflow).to have_received(:run).with(hash_including(workspace: "app.worktree-other", worktree: other, note: "Started by queue", project: "app", inputs: {"task" => "fix the bug"}))
+      expect(row["decision"]["route"]).to eq("run")
+    end
+
+    it "gives a ref's start the given root, the checkout and the note" do
+      allow(workflow_start).to receive(:call).and_return(start_row)
+      allow(git).to receive(:branch_names).and_return(%w[other main])
+
+      command.call(argument: "other", checkout: given, note: "n")
+
+      expect(workflow_start).to have_received(:call).with(hash_including(ref: "other", here: given, root: other, note: "n"))
+    end
+  end
+
+  describe "unknown_ref with a given checkout" do
+    let(:other) { "/elsewhere/app/.worktrees/other" }
+    let(:given) { Workspace::Commands::WorkflowStart::Here.new(workspace: "app.worktree-other", path: other, caller_pane: nil) }
+
+    it "lists the workflows of the checkout's project" do
+      allow(git).to receive(:worktree_branch).with(other).and_return("other")
+      allow(git).to receive(:branch_names).with(other).and_return(%w[other main])
+      allow(git).to receive(:local_branch_names).with(other).and_return(%w[other main])
+      allow(workflow_start).to receive(:catalog_project).with(other).and_return("team-app")
+
+      error = refusal(argument: "nope", checkout: given)
+
+      expect(error.code).to eq("unknown_ref")
+      expect(catalog).to have_received(:known_ids).with(project: "team-app")
+    end
+  end
+
+  describe "#in_place_checkout" do
+    it "answers the checkout of a linked worktree on its own branch" do
+      expect(command.in_place_checkout(root, workspace: detected, caller_pane: "%1")).to eq(Workspace::Commands::WorkflowStart::Here.new(workspace: detected, path: root, caller_pane: "%1"))
+    end
+
+    context "with a main checkout" do
+      include_context "main checkout"
+
+      it "answers nil" do
+        expect(command.in_place_checkout(root, workspace: detected)).to be_nil
+      end
+    end
+
+    context "with a protected branch" do
+      let(:current_branch) { "main" }
+
+      it "answers nil" do
+        expect(command.in_place_checkout(root, workspace: detected)).to be_nil
+      end
+    end
+
+    context "with a root the workspace is not configured for" do
+      let(:configured_root) { "/src/app/.worktrees/else" }
+
+      it "answers nil" do
+        expect(command.in_place_checkout(root, workspace: detected)).to be_nil
+      end
+    end
   end
 
   describe "#checkout_here" do
@@ -1362,7 +1439,7 @@ RSpec.describe Workspace::Commands::Go do
         row = prompt_row(text, dry_run: true)
 
         expect(picker).not_to have_received(:call)
-        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: text, headless: false, inputs: {}, derived_branch: "PUFFINS-123-pr-456", dry_run: true)
+        expect(workflow_start).to have_received(:call).with(id: "rpiv", prompt: text, headless: false, inputs: {}, derived_branch: "PUFFINS-123-pr-456", dry_run: true, root: root, note: nil)
         expect(row["decision"]).to include("kind" => "prompt", "extracted" => "#{pr_link} and PUFFINS-123")
       end
 

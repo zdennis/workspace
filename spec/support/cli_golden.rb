@@ -52,12 +52,16 @@ module HelpExamplesSpec
     "wait-until-content", "whereis",
     "workflow", "workflow list", "workflow show", "workflow graph", "workflow validate", "workflow add", "workflow update", "workflow remove", "workflow edit", "workflow install", "workflow uninstall",
     "workflow run", "workflow render", "workflow check", "workflow simulate", "workflow start", "workflow status", "workflow events", "workflow files", "workflow attempts", "workflow trace", "workflow audit", "workflow stats", "workflow compare", "workflow insights", "workflow learn", "workflow learn reflect", "workflow sweep", "workflow recover", "workflow resume",
-    "workflow cancel", "workflow pause", "workflow unpause", "workflow approve", "workflow reject", "workflow advance"
+    "workflow cancel", "workflow pause", "workflow unpause", "workflow approve", "workflow reject", "workflow advance",
+    "work-queue", "work-queue add", "work-queue list", "work-queue show", "work-queue active", "work-queue rm", "work-queue move",
+    "work-queue cancel", "work-queue enable", "work-queue disable", "work-queue resume", "work-queue skip", "work-queue advance",
+    "work-queue status", "work-queue history list", "work-queue history show", "work-queue history clear"
   ].freeze
 
   # Each alias must print the page of the command it names.
   ALIASES = {
     "journey" => "spine",
+    "wq" => "work-queue",
     "lib" => "library",
     "add-project" => "add",
     "list-projects" => "list"

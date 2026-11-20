@@ -366,6 +366,18 @@ module Workspace
     end
 
     # @param name [String] the workspace name
+    # @return [String] path to the workspace's work queue of pending items
+    def work_queue_path(name)
+      File.join(pipeline_state_dir(name), "work-queue.json")
+    end
+
+    # @param name [String] the workspace name
+    # @return [String] path to the workspace's log of finished work queue items
+    def work_queue_history_path(name)
+      File.join(pipeline_state_dir(name), "work-queue-history.jsonl")
+    end
+
+    # @param name [String] the workspace name
     # @return [String] path to the workspace's record of panes waiting for an agent recovery
     def agent_recovery_path(name)
       File.join(pipeline_state_dir(name), "agent-recovery.json")

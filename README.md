@@ -163,6 +163,7 @@ workspace <subcommand> [options]
 | version | [README](docs/README.version.md) | Print the workspace version |
 | wait-until-content | [README](docs/README.wait-until-content.md) | Block until a pane shows content, then exec a command |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
+| work-queue | [README](docs/README.work-queue.md) | Keep a queue of workflow and `go` items per workspace that run one at a time; a queue is off until `enable`, and only `advance` moves it |
 | workflow | [README](docs/README.workflow.md) | Run a workflow (ordered steps, e.g. `rpiv`) in a workspace's agent pane: `show`, `validate`, `add`, `update`, `remove`, `edit` (open a definition in your editor), `install` (fetch and check the definitions listed in `workflows.sources`), `uninstall` (drop every workflow installed from a source), `run`, `start` (from a ticket, a ref or a prompt; the ID may come from `workflows.default`), `render`, `graph` (draw a definition, or a run's progress on it), `check`, `simulate`, `status`, `events`, `files`, `attempts`, `audit`, `stats`, `compare`, `learn reflect` (ask an agent to look back at a finished run), `sweep`, `recover` (bring going runs back after a reboot), `resume`, `cancel`, `pause`, `unpause`, `approve`, `reject` |
 
 Run `workspace <subcommand> --help` for subcommand-specific help. Scripts and agents: every `--json` result is one object with `schema_version` and `ok`, and failures carry a stable `code`; see [`--json` output](docs/README.json.md).

@@ -278,6 +278,10 @@ require_relative "workspace/context_reader"
 require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
 require_relative "workspace/prompt_queue_store"
+require_relative "workspace/work_queue_history"
+require_relative "workspace/work_queue_store"
+require_relative "workspace/work_queue_starters"
+require_relative "workspace/work_queue_advance"
 require_relative "workspace/pane_locks"
 require_relative "workspace/prompt_queue_desk"
 require_relative "workspace/agent_recovery_store"
@@ -479,6 +483,7 @@ require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
 require_relative "workspace/commands/send"
 require_relative "workspace/commands/prompt_queue"
+require_relative "workspace/commands/work_queue"
 require_relative "workspace/commands/capture"
 require_relative "workspace/commands/lock"
 require_relative "workspace/commands/dev"
@@ -551,6 +556,7 @@ require_relative "workspace/cli/agent"
 require_relative "workspace/cli/agent_run"
 require_relative "workspace/cli/pipeline"
 require_relative "workspace/cli/plan_spine"
+require_relative "workspace/cli/work_queue"
 require_relative "workspace/cli/template"
 require_relative "workspace/cli"
 
@@ -1470,12 +1476,24 @@ module Workspace
       spine_command: spine_command, spine_init_command: spine_init_command, spine_start_command: spine_start_command, goal_command: goal_command,
       status_scope: status_scope, project_detector: project_detector, launcher: launcher, common: common, names: names, working_dir: working_dir)
 
+    work_queue_history_for = ->(workspace) { WorkQueueHistory.new(path: config.work_queue_history_path(workspace)) }
+    work_queue_store_for = ->(workspace) { WorkQueueStore.new(path: config.work_queue_path(workspace), history: work_queue_history_for.call(workspace)) }
+    work_queue_starters = WorkQueueStarters.new(workflow: workflow_command, workflow_start: workflow_start_command, go: go_command,
+      workflow_project: workflow_project, catalog: workflow_catalog)
+    work_queue_advance = WorkQueueAdvance.new(store_factory: work_queue_store_for, run_store: workflow_store, starters: work_queue_starters.to_h,
+      lock_holder: lock_holder, status: workflow_status)
+    work_queue_command = Commands::WorkQueue.new(store_factory: work_queue_store_for, history_factory: work_queue_history_for, advance: work_queue_advance,
+      decisions: workflow_engine, run_store: workflow_store, checkout: workspace_checkout, go: go_command, status_scope: status_scope,
+      working_dir: working_dir, output: output, error_output: error_output, input: input)
+
+    work_queue_family = CLI::WorkQueue.new(work_queue_command: work_queue_command, common: common)
+
     CLI.new(
       common: common,
       names: names,
       launcher: launcher,
       relauncher: relauncher,
-      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family, template: template_family},
+      families: {workflow: workflow_family, agent: agent_family, agent_run: agent_run_family, pipeline: pipeline_family, plan_spine: plan_spine_family, template: template_family, work_queue: work_queue_family},
       working_dir: working_dir,
       config: config,
       state: state,

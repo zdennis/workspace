@@ -6,6 +6,7 @@ Per-file detail for `lib/`, `spec/support/` and `script/`, split by subsystem. `
 - [Agent daemon](agentd.md): The per-workspace agent daemon: its socket and router, the recovery desk, restart and prompt-queue desks, handoff and pipeline traffic.
 - [Templates](template.md): Tmuxinator template sets, rendering, status, apply, adopt and the backup batches behind them.
 - [CLI](cli.md): CLI dispatch, the verb-family parsers under `lib/workspace/cli/`, the `build_cli` composition root and the CLI spec tooling.
+- [Work queue](work-queue.md): The per-workspace work queue: its pending-item store, finished-item history and commands.
 - [Locks, plan, spine, inbox](locks-plan-spine-inbox.md): Locks and dev sessions, plan and spine files and commands, the inbox, asks, tasks and alerts.
 - [Panes and session monitor](panes.md): Tmux panes, the session monitor and its pane_* helpers, typing safety and screen reading.
 - [Other](other.md): Everything else: config, git, library, skills, rename, ticket and pull-request commands, the core layer, and spec tooling.

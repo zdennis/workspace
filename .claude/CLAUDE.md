@@ -228,6 +228,15 @@ New per-file detail goes there, never here.
 - `spec/support/cli_test_helpers.rb` — The CLI's spec fakes and `CLITestHelpers.build_cli`.
 - `lib/workspace/help_json.rb` — `--help --json`: decides whether a command line truly asks for a help page in JSON, and turns the page text the command prints into one document, so the JSON and the text are the same words and cannot drift.
 
+### Work queue (`docs/architecture/work-queue.md`)
+
+- `lib/workspace/work_queue_history.rb` — Age-pruned `work-queue-history.jsonl` of finished queue items: append, filtered reads, id-prefix lookup and clear.
+- `lib/workspace/work_queue_store.rb` — Flock-guarded `work-queue.json` of pending queue items: revision, toggle, pause, claims and one `transaction` for the advance pass.
+- `lib/workspace/work_queue_starters.rb` — The `workflow` and `go` starters of a queue item, run in the queue workspace's checkout.
+- `lib/workspace/work_queue_advance.rb` — One advance pass of a work queue: reconciles the current item from its run, then claims, starts and records the next.
+- `lib/workspace/commands/work_queue.rb` — `work-queue` verbs over a workspace's queue and history: add, list, show, skip, cancel, advance and the rest.
+- `lib/workspace/cli/work_queue.rb` — `CLI::WorkQueue`, the `work-queue` (`wq`) verb family parser: checks each verb's flags, parses dates and wraps results as documents.
+
 ### Locks, plan, spine, inbox (`docs/architecture/locks-plan-spine-inbox.md`)
 
 - `lib/workspace/spine_file.rb` — Reads one spine file (a stage or `goal.md`) without ever failing.

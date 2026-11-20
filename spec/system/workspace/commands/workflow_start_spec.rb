@@ -1685,8 +1685,47 @@ RSpec.describe Workspace::Commands::WorkflowStart do
     end
   end
 
+  describe "with root:" do
+    let(:other) { "/elsewhere/app" }
+
+    before do
+      allow(git).to receive(:checkout_layout).and_return({toplevel: other, common_dir: "/elsewhere/app/.git", linked: false})
+    end
+
+    it "never asks git for the process's root and reads the project, catalog and branches from the given one" do
+      expect(git).not_to receive(:root)
+      seen = []
+      allow(workflow_project).to receive(:for_directory) { |dir| seen << dir && nil }
+      repos = []
+      allow(git).to receive(:branch_exists?) { |_name, repo: nil| repos << repo && false }
+      allow(git).to receive(:local_branch_exists?) { |_name, repo: nil| repos << repo && false }
+
+      row = command.call(id: "flow", prompt: "Fix login", dry_run: true, root: other)
+
+      expect(seen).to eq([other])
+      expect(repos).to include(other)
+      expect(row["path"]).to start_with(File.join(other, ".worktrees"))
+    end
+
+    it "routes a ref from the given root" do
+      expect(git).not_to receive(:root)
+      seen = []
+      allow(workflow_project).to receive(:for_directory) { |dir| seen << dir && nil }
+      allow(router).to receive(:route).and_return({"workflow" => "flow", "kind" => "jira", "source" => "default", "scope" => "project", "key" => "workflows.by_ref.jira"})
+
+      command.call(ref: "PROJ-1", route: true, dry_run: true, root: other)
+
+      expect(seen).to all(eq(other))
+    end
+
+    it "answers catalog_project and locate_project for a given root" do
+      expect(command.locate_project(other)).to include(root: other)
+      expect(command.catalog_project(other)).to be_nil
+    end
+  end
+
   it "makes locate_project public" do
-    expect(command.locate_project).to include(root: root, project_workspace: "app")
+    expect(command.locate_project(root)).to include(root: root, project_workspace: "app")
   end
 
   describe "with file:" do

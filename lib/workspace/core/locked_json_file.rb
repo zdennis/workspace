@@ -45,16 +45,20 @@ module Workspace
     # @param write [Symbol] `:always`; `:if_changed` skips a write when the data equals what
     #   was read (AgentRecoveryStore, PromptQueueStore); `:if_true` writes only
     #   when the block returned a true value (InboxAcks)
+    # @param after [#call, nil] `(result)` called under the same lock once the write step is done
+    #   (it ran, or was skipped); not called when `parse:` or the block raised or the write failed
+    #   (WorkQueueStore, to append history only after the queue is written)
     # @yieldparam data [Object] what `parse:` made of the file
     # @return [Object] the block's result
     # @raise [Exception] whatever `parse:` or the block raises; nothing is written then
-    def exclusive(write: :always, &block)
+    def exclusive(write: :always, after: nil, &block)
       guarded do
         @lock.hold do
           data = read
           before = @fingerprint.call(data) if write == :if_changed
           result = block.call(data)
           store(data) unless skip_write?(write, before, data, result)
+          after&.call(result)
           result
         end
       end

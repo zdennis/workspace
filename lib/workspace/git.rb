@@ -306,21 +306,24 @@ module Workspace
     end
 
     # @param name [String] branch name
+    # @param repo [String, nil] a checkout of the repository to ask (`git -C`); nil asks the process's own
     # @return [Boolean] true if branch exists locally or remotely
-    def branch_exists?(name)
-      local_branch_exists?(name) || remote_branch_exists?(name)
+    def branch_exists?(name, repo: nil)
+      local_branch_exists?(name, repo: repo) || remote_branch_exists?(name, repo: repo)
     end
 
     # @param name [String] branch name
+    # @param repo [String, nil] a checkout of the repository to ask (`git -C`); nil asks the process's own
     # @return [Boolean] true if branch exists locally
-    def local_branch_exists?(name)
-      system("git", "show-ref", "--verify", "--quiet", "refs/heads/#{name}")
+    def local_branch_exists?(name, repo: nil)
+      system(*in_repo(repo), "show-ref", "--verify", "--quiet", "refs/heads/#{name}")
     end
 
     # @param name [String] branch name
+    # @param repo [String, nil] a checkout of the repository to ask (`git -C`); nil asks the process's own
     # @return [Boolean] true if branch exists on origin
-    def remote_branch_exists?(name)
-      system("git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/#{name}")
+    def remote_branch_exists?(name, repo: nil)
+      system(*in_repo(repo), "show-ref", "--verify", "--quiet", "refs/remotes/origin/#{name}")
     end
 
     # The exact branch names of the repository, read from git's refs, so unlike
@@ -1275,6 +1278,10 @@ module Workspace
     end
 
     private
+
+    def in_repo(repo)
+      repo ? ["git", "-C", repo] : ["git"]
+    end
 
     # Puts a stash commit back on the list under its own subject, which is the
     # message `git stash list` showed for it ("On main: ...").

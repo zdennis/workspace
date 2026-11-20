@@ -2061,6 +2061,248 @@ module Workspace
       }
     }.freeze
 
+    WQ_ID = "ITEM is an item id or a unique start of one (see `workspace work-queue list`)."
+    WQ_POSITION = "Give at most one of --top, --after-current, --before and --after."
+    WQ_PROJECT_OPT = ["--project [NAME]", "Every workspace of a project (NAME, or the project of the current workspace), read only"]
+    WQ_DATE = "DATE is 2026-01-31 or 2026-01-31T09:00:00Z."
+
+    WORK_QUEUE = {
+      "add" => {
+        usage: [
+          "work-queue add workflow ID [--ref REF] [--prompt TEXT] [--input K=V]... [OPTIONS]",
+          "work-queue add go ARG [--text] [--workflow ID] [--input K=V]... [OPTIONS]"
+        ],
+        summary: "Add an item to the end of a workspace's queue",
+        about: [
+          "A `workflow` item starts a workflow run in the workspace's checkout; a `go` item runs `workspace go",
+          "--here` there. It prints the item's id and position. #{WQ_POSITION}",
+          "The queue runs items only once it is on (`workspace work-queue enable`). Adding the same --dedupe-key",
+          "again changes nothing and says `unchanged`. Anything but `workflow` or `go` is a usage error."
+        ],
+        options: [NAME_OPT,
+          ["--top", "Put the item first among the queued ones"],
+          ["--after-current", "Put the item right after the one that is running"],
+          ["--before ID", "Put the item before this item"],
+          ["--after ID", "Put the item after this item"],
+          ["--headless", "Run the item without a pane"],
+          ["--on-fail MODE", "stop (pause the queue when it fails, the default) or continue"],
+          ["--dedupe-key KEY", "Adding the same key again changes nothing"],
+          ["--ref REF", "workflow: the ticket, pull request or branch to start from"],
+          ["--prompt TEXT", "workflow: the task text"],
+          ["--input K=V", "A workflow input (repeatable)"],
+          ["--text", "go: ARG is free text, not a ticket, pull request or branch"],
+          ["--workflow ID", "go: the workflow to run instead of the one config picks"],
+          JSON_OPT],
+        examples: [
+          ["workspace work-queue add workflow rpiv --prompt \"Add SSO login\"", "queue an rpiv run for that task"],
+          ["workspace work-queue add workflow pr-feedback --ref 123", "queue a workflow for pull request 123"],
+          ["workspace work-queue add go PROJ-42 --top", "queue `go` for a ticket and run it before the others"],
+          ["workspace work-queue add go --text \"Fix the flaky login spec\" --on-fail continue", "queue free text; a failure does not pause the queue"],
+          ["workspace work-queue add go PROJ-43 --dedupe-key PROJ-43 --json", "for a script: adding it twice answers `unchanged`"]
+        ]
+      },
+      "list" => {
+        usage: ["work-queue list [--name WORKSPACE | --project [NAME]] [--json]"],
+        summary: "Show the queue as a table",
+        about: [
+          "One row per item: position, id, state, kind, what it runs, headless and age. A footer says whether the",
+          "queue is on, off or paused (and why); an off queue says how to turn it on. --project reads every",
+          "workspace of a project and writes nothing."
+        ],
+        options: [NAME_OPT, WQ_PROJECT_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue list", "the queue of the workspace you are in"],
+          ["workspace work-queue list --project", "every queue of the project, to see which one is stuck"],
+          ["workspace work-queue list --name api.worktree-x --json", "one JSON document, with the revision that --if-revision takes"]
+        ]
+      },
+      "show" => {
+        usage: ["work-queue show ITEM [--name WORKSPACE] [--json]"],
+        summary: "Show one queued item in full",
+        about: [WQ_ID, "It prints the item's spec, state, run and log path. A finished item is in `work-queue history show`."],
+        options: [NAME_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue show 3fa9", "one item by the start of its id"],
+          ["workspace work-queue show 3fa9 --name api.worktree-x", "the same in another workspace"],
+          ["workspace work-queue show 3fa9 --json", "one JSON document, with next actions"]
+        ]
+      },
+      "active" => {
+        usage: ["work-queue active [--name WORKSPACE] [--json]"],
+        summary: "Show the item that is running and what it waits on",
+        about: ["Says `Nothing is active` when no item is starting, active or held. A held item waits on a person; its next actions say how to approve or skip."],
+        options: [NAME_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue active", "which item the queue is on, and what it waits for"],
+          ["workspace work-queue active --name api.worktree-x", "the same for another workspace"],
+          ["workspace work-queue active --json", "one JSON document, for a script"]
+        ]
+      },
+      "rm" => {
+        usage: ["work-queue rm ITEM... [--name WORKSPACE] [--json]"],
+        summary: "Remove queued items",
+        about: [WQ_ID, "All or none: a name that matches no item, or two, removes nothing. The running item refuses with item_active; use `work-queue cancel`."],
+        options: [NAME_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue rm 3fa9", "drop one queued item"],
+          ["workspace work-queue rm 3fa9 b71c", "drop two at once"],
+          ["workspace work-queue rm 3fa9 --json", "for a script: one result row per item removed"]
+        ]
+      },
+      "move" => {
+        usage: ["work-queue move ITEM (--before ID | --after ID | --top | --bottom) [--if-revision N] [--name WORKSPACE] [--json]"],
+        summary: "Move a queued item",
+        about: [WQ_ID, "Give exactly one of --before, --after, --top and --bottom. The running item can't move. Moving an item to where it is says `unchanged`."],
+        options: [NAME_OPT,
+          ["--before ID", "Put the item before this item"],
+          ["--after ID", "Put the item after this item"],
+          ["--top", "Put the item first among the queued ones"],
+          ["--bottom", "Put the item last"],
+          ["--if-revision N", "Refuse with stale_revision unless the queue's revision is N"],
+          JSON_OPT],
+        examples: [
+          ["workspace work-queue move 3fa9 --top", "run this one next"],
+          ["workspace work-queue move 3fa9 --after b71c", "place it behind another item"],
+          ["workspace work-queue move 3fa9 --bottom --if-revision 12", "only if nobody changed the queue since you read revision 12"]
+        ]
+      },
+      "cancel" => {
+        usage: ["work-queue cancel [ITEM] [--and-continue] [--name WORKSPACE] [--json]"],
+        summary: "Cancel the running item and pause the queue",
+        about: [
+          "With no ITEM it is the item that is starting, active or held. Its workflow run is cancelled and the item",
+          "goes to history as `cancelled`; the queue pauses until `work-queue resume`. With --and-continue it does not",
+          "pause, and one pass starts the next item. A queued item is removed with `work-queue rm`."
+        ],
+        options: [NAME_OPT, ["--and-continue", "Go on to the next item instead of pausing the queue"], JSON_OPT],
+        examples: [
+          ["workspace work-queue cancel", "stop the running item and hold the queue"],
+          ["workspace work-queue cancel --and-continue", "stop it and start the next one"],
+          ["workspace work-queue cancel 3fa9 --json", "for a script: the cancelled item's row"]
+        ]
+      },
+      "enable" => {
+        usage: ["work-queue enable [--name WORKSPACE] [--json]"],
+        summary: "Turn the workspace's queue on",
+        about: [
+          "A queue is off until it is enabled; `work-queue add` alone does not run anything. Enable it, then",
+          "`work-queue advance` runs one pass by hand. The setting is kept in the queue file."
+        ],
+        options: [NAME_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue enable", "turn the queue on, then run `workspace work-queue advance`"],
+          ["workspace work-queue enable --name api.worktree-x", "turn on another workspace's queue"],
+          ["workspace work-queue enable --json", "one JSON document: `enabled` or `unchanged`"]
+        ]
+      },
+      "disable" => {
+        usage: ["work-queue disable [--name WORKSPACE] [--json]"],
+        summary: "Turn the workspace's queue off",
+        about: ["The running item keeps going and is still read by a pass; no new item starts."],
+        options: [NAME_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue disable", "stop the queue from starting anything new"],
+          ["workspace work-queue disable --name api.worktree-x", "the same for another workspace"],
+          ["workspace work-queue disable --json", "one JSON document: `disabled` or `unchanged`"]
+        ]
+      },
+      "resume" => {
+        usage: ["work-queue resume [--name WORKSPACE] [--json]"],
+        summary: "Clear the queue's pause",
+        about: ["A failed or cancelled item pauses the queue. Resume changes only the pause; a held item is still held (see `work-queue skip`)."],
+        options: [NAME_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue resume", "let the queue go on after a pause"],
+          ["workspace work-queue resume --name api.worktree-x", "the same for another workspace"],
+          ["workspace work-queue resume --json", "one JSON document: `resumed` or `unchanged`"]
+        ]
+      },
+      "skip" => {
+        usage: ["work-queue skip [ITEM] [--name WORKSPACE] [--json]"],
+        summary: "Skip the held item and clear the pause",
+        about: [
+          "The held item goes to history as `skipped` and the queue resumes; its workflow run is left alone, and a warning",
+          "says so when it still goes and so blocks the next start (`workspace workflow cancel RUN` ends it)."
+        ],
+        options: [NAME_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue skip", "give up on the held item and move on"],
+          ["workspace work-queue skip 3fa9", "name the item"],
+          ["workspace work-queue skip --json", "for a script: the row has the run id and a next action"]
+        ]
+      },
+      "advance" => {
+        usage: ["work-queue advance [--name WORKSPACE] [--json]"],
+        summary: "Run one pass of the queue by hand",
+        about: [
+          "The pass reads the running item and finishes or holds it, or starts the next item when the queue is on, not",
+          "paused and no workflow run is going in the workspace. It works in the workspace's own checkout. Turn the queue",
+          "on first with `workspace work-queue enable`; an off queue starts nothing. Only this verb moves a queue, so run it",
+          "again after each item ends. Each thing the pass did is printed as a sentence; the exit code is 1 when the pass",
+          "hit a failure (a start that failed, a lost claim, an interrupted, failed or cancelled run), 3 when only some",
+          "rows did, and 0 when an item is just held at a gate."
+        ],
+        options: [NAME_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue advance", "after `workspace work-queue enable`: start the next item"],
+          ["workspace work-queue advance --name api.worktree-x", "one pass for another workspace"],
+          ["workspace work-queue advance --json", "for a script: one row per thing the pass did"]
+        ]
+      },
+      "status" => {
+        usage: ["work-queue status [--name WORKSPACE | --project [NAME]] [--json]"],
+        summary: "Show one line per queue: on or off, pause, active item",
+        about: ["The line says on, off or paused (and why), the active item and how many are queued."],
+        options: [NAME_OPT, WQ_PROJECT_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue status", "the queue of the workspace you are in"],
+          ["workspace work-queue status --project", "one line per workspace of the project"],
+          ["workspace work-queue status --json", "one JSON document, with next actions"]
+        ]
+      },
+      "history list" => {
+        usage: ["work-queue history list [--since DATE] [--before DATE] [--state STATE] [--name WORKSPACE | --project [NAME]] [--json]"],
+        summary: "List finished items, oldest first",
+        about: [WQ_DATE, "STATE is one of succeeded, failed, cancelled, skipped, interrupted, launch_failed. History is kept for 365 days. --project reads and prunes nothing."],
+        options: [NAME_OPT, WQ_PROJECT_OPT,
+          ["--since DATE", "Finished at or after this date"],
+          ["--before DATE", "Finished before this date"],
+          ["--state STATE", "Only this outcome"],
+          JSON_OPT],
+        examples: [
+          ["workspace work-queue history list", "everything the queue finished"],
+          ["workspace work-queue history list --state failed --since 2026-01-01", "the failures of this year"],
+          ["workspace work-queue history list --project --json", "every workspace of the project, as one JSON document"]
+        ]
+      },
+      "history show" => {
+        usage: ["work-queue history show ITEM [--name WORKSPACE] [--json]"],
+        summary: "Show one finished item with its spec",
+        about: ["ITEM is an item id or a unique start of one. The next action is the `work-queue add` that queues it again."],
+        options: [NAME_OPT, JSON_OPT],
+        examples: [
+          ["workspace work-queue history show 3fa9", "what ran, how it ended and its run id"],
+          ["workspace work-queue history show 3fa9 --name api.worktree-x", "the same in another workspace"],
+          ["workspace work-queue history show 3fa9 --json", "one JSON document, with the command that adds it again"]
+        ]
+      },
+      "history clear" => {
+        usage: ["work-queue history clear (--before DATE | --all) [--yes] [--name WORKSPACE] [--json]"],
+        summary: "Delete finished items",
+        about: [WQ_DATE, "Give exactly one of --before and --all. It asks first; --yes skips the question, and --json needs it."],
+        options: [NAME_OPT,
+          ["--before DATE", "Delete items finished before this date"],
+          ["--all", "Delete every finished item"],
+          ["--yes", "Skip the question"],
+          JSON_OPT],
+        examples: [
+          ["workspace work-queue history clear --before 2026-01-01", "drop the old entries, after a question"],
+          ["workspace work-queue history clear --all --yes", "empty the history with no question"],
+          ["workspace work-queue history clear --all --yes --json", "for a script: one row with the count removed"]
+        ]
+      }
+    }.freeze
+
     TEMPLATE_SCOPE_TEXT = "list: only this scope, global, project or builtin (default: all of them); new and use: global or project (new: default global; use: the layer `config set` picks, global outside a workspace)"
     TEMPLATE_KIND_TEXT = "show, path, variables, validate, diff and edit: only this kind, project or worktree (default: both); render: the kind to fill (default: the workspace's); use: worktree sets tmuxinator.worktree_template (default: tmuxinator.template)"
     TEMPLATE_NAME_TEXT = "Workspace whose settings choose the set (every verb), and for render and variables whose render record fills it (default: detected from the current directory, else the global settings)"
@@ -4085,7 +4327,7 @@ module Workspace
     # The tables by command; the specs and the routing tests read them.
     COMMANDS = {
       "plan" => PLAN, "daemon" => DAEMON, "workflow" => WORKFLOW, "library" => LIBRARY, "spine" => SPINE,
-      "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL, "template" => TEMPLATE,
+      "binding" => BINDING, "step" => STEP, "review" => REVIEW, "pr" => PR, "ticket" => TICKET, "goal" => GOAL, "template" => TEMPLATE, "work-queue" => WORK_QUEUE,
       "notes" => NOTES, "instructions" => INSTRUCTIONS, "ui" => UI, "event-log" => EVENT_LOG, "projects" => PROJECTS,
       "projects group" => GROUPS, "config" => CONFIG, "layout" => LAYOUT, "ask" => ASK, "inbox" => INBOX,
       "agent-run" => AGENT_RUN, "handoff" => HANDOFF, "lock" => LOCK, "dev" => DEV, "pipeline" => PIPELINE,

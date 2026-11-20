@@ -69,6 +69,9 @@ RSpec.describe Workspace::HelpPages do
       expect(pages["pr"].keys).to match_array(%w[create feedback])
       expect(pages["ticket"].keys).to match_array(%w[show list])
       expect(pages["goal"].keys).to match_array(%w[show list])
+      expect(pages["work-queue"].keys).to match_array(
+        (Workspace::CLI::WorkQueue::SUBCOMMANDS.keys - ["history"]) + Workspace::CLI::WorkQueue::HISTORY_SUBCOMMANDS.keys.map { |verb| "history #{verb}" }
+      )
       expect(pages["pipeline"].keys).to match_array(%w[start advance status reset])
       expect(pages["notes"].keys).to eq(["dir"])
       expect(pages["instructions"].keys).to eq(["compose"])
@@ -142,7 +145,7 @@ RSpec.describe Workspace::HelpPages do
     checked = {
       "plan" => nil, "daemon" => nil, "workflow" => nil, "library" => nil, "spine" => nil, "binding" => nil,
       "step" => nil, "review" => nil, "pr" => nil, "ticket" => nil, "goal" => nil, "notes" => nil,
-      "instructions" => nil, "ui" => nil, "skills" => nil, "template" => nil, "event-log" => ["show"],
+      "instructions" => nil, "ui" => nil, "skills" => nil, "template" => nil, "work-queue" => nil, "event-log" => ["show"],
       "projects" => %w[show members stop kill]
     }
     checked.each do |command, only|

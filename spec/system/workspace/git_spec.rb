@@ -733,6 +733,20 @@ RSpec.describe Workspace::Git do
       end
     end
 
+    describe "#local_branch_exists?, #remote_branch_exists? and #branch_exists? with repo:" do
+      it "answer for the given repository, not the process's directory" do
+        Dir.mktmpdir do |elsewhere|
+          Dir.chdir(elsewhere) do
+            expect(git.local_branch_exists?("main", repo: @repo_dir)).to be(true)
+            expect(git.remote_branch_exists?("main", repo: @repo_dir)).to be(true)
+            expect(git.branch_exists?("main", repo: @repo_dir)).to be(true)
+            expect(git.branch_exists?("gone", repo: @repo_dir)).to be(false)
+            expect(git.local_branch_exists?("main")).to be_falsey
+          end
+        end
+      end
+    end
+
     describe "#remote_ref_exists?" do
       it "is true for a branch the remote has" do
         expect(git.remote_ref_exists?(@repo_dir, "origin", "refs/heads/main")).to be(true)

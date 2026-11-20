@@ -97,6 +97,7 @@ module Workspace
       # @param derived_branch [String, nil] the branch name for a prompt start, picked by the caller (`go`); unlike +branch+ it is still a derived name, so an existing branch of that name is refused with `branch_exists`
       # @param file [String, nil] a workflow definition file to run instead of an installed one (`--file`); read through
       #   {Workspace::WorkflowCatalog#load_file}, so it names no id, ref router or positional workflow
+      # @param root [String, nil] the checkout to read the project, catalog and branches from; nil reads the process's own (`@git.root`)
       # @param route [Boolean] +id+ is not given: {Workspace::WorkflowRouter} picks it from the ref's kind (`--ref`); the row
       #   then has "routed" ("ref", "kind", "workflow", "source", "scope", "key")
       # @return [Hash{String=>Object}] the action row: outcome "dry_run" with "workflow", "step", "project",
@@ -108,10 +109,11 @@ module Workspace
       #   `workflow_command_unset`, `invalid_input`, and `dirty_worktree` for a reused or adopted checkout); with +here+,
       #   `branch_exists` when the ref's checkout is not the one it runs in
       def call(id: nil, ref: nil, positional: nil, prompt: nil, branch: nil, slug: false, inputs: {}, note: nil, base: nil, headless: false,
-        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil, force: false, route: false, derived_branch: nil, file: nil)
+        agent_kind: nil, prompt_timeout: nil, dry_run: false, here: nil, force: false, route: false, derived_branch: nil, file: nil, root: nil)
         prompt = prompt.to_s.strip
         prompt = nil if prompt.empty?
-        project = catalog_project
+        root ||= @git.root
+        project = catalog_project(root)
         raise Workspace::UsageError, "--file takes the place of the workflow ID: use `workflow start --file PATH REF`." if file && (id || positional || route)
         id, ref = split(id, ref, positional, prompt, project) unless file
         warnings = []
@@ -121,19 +123,19 @@ module Workspace
           definition = load_file!(file, project, warnings)
           id = definition.id
           check_usage!(ref, prompt, branch)
-          where = locate_project
+          where = locate_project(root)
         elsif route
           check_usage!(ref, prompt, branch)
-          where = locate_project
-          id, routed = route_ref(ref, force: force, dry_run: dry_run)
+          where = locate_project(root)
+          id, routed = route_ref(ref, root: root, force: force, dry_run: dry_run)
           definition = @catalog.find(id, project: project)
         elsif id
           definition = @catalog.find(id, project: project)
           check_usage!(ref, prompt, branch)
-          where = locate_project
+          where = locate_project(root)
         else
           check_usage!(ref, prompt, branch)
-          where = locate_project
+          where = locate_project(root)
           id = default_id(ref, project)
           definition = @catalog.find(id, project: project)
           warnings = read_as_branch(ref, id, project) if positional
@@ -152,19 +154,20 @@ module Workspace
       # The project whose definitions and project config keys are read: the one the checkout joins, the same answer every
       # other `workflow` reader gets (see {Workspace::WorkflowProject}). nil outside a git checkout (the later checks refuse that).
       #
+      # @param root [String, nil] the checkout to read
       # @return [String, nil]
-      def catalog_project
-        root = @git.root
+      def catalog_project(root)
         return nil unless root
         @workflow_project.for_directory(root)&.project
       end
 
       # The checkout's root, the project it belongs to and the project's workspace name.
       #
+      # @param root [String, nil] the checkout to read
       # @return [Hash{Symbol=>Object}] +root+, +project+ ({Workspace::StartRef::Project}) and +project_workspace+
       # @raise [Workspace::Error] outside a git repository
-      def locate_project
-        root = @git.root or raise Workspace::Error, "workflow start must run inside a git repository."
+      def locate_project(root)
+        root or raise Workspace::Error, "workflow start must run inside a git repository."
         project = @start_ref.project(root)
         project_workspace = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
         {root: root, project: project, project_workspace: project_workspace}
@@ -254,8 +257,8 @@ module Workspace
 
       # The workflow for a ref's kind, and the line saying so. The line goes through the output gate, so
       # `--json` keeps it off stdout; the same facts are the row's "routed".
-      def route_ref(ref, force:, dry_run:)
-        root = @git.root or raise Workspace::Error, "workflow start must run inside a git repository."
+      def route_ref(ref, root:, force:, dry_run:)
+        root or raise Workspace::Error, "workflow start must run inside a git repository."
         resolved = @workflow_project.for_directory(root)
         kind = @start_ref.kind(ref)
         route = @router.route(kind: kind, workspace: resolved&.project, ref: ref, force: force, registered: !resolved.nil?)
@@ -314,7 +317,7 @@ module Workspace
         path = File.join(project.root, ".worktrees", @git.sanitize_for_filesystem(name))
         derived = resolved.nil? && branch.nil?
         exists = @git.worktree_exists?(path)
-        refuse_existing(name, path, exists) if derived && (exists || File.exist?(path) || @git.branch_exists?(name))
+        refuse_existing(name, path, exists) if derived && (exists || File.exist?(path) || @git.branch_exists?(name, repo: project.root))
         # `start` adopts a branch that is checked out in another worktree.
         adopted = (exists || derived) ? nil : @git.find_worktree_by_branch(name, repo: project.root)
         path = adopted if adopted
@@ -322,7 +325,7 @@ module Workspace
         # A reused or adopted worktree can have an agent kind of its own; +here+ was checked by its real name above.
         require_claude!(@agent_commands.kind(WorkspaceName.join(project_workspace, @git.sanitize_for_filesystem(File.basename(path))))) if exists && !agent_kind && !here
         # A local branch with no worktree is the one `start` would check out.
-        if exists || @git.local_branch_exists?(name)
+        if exists || @git.local_branch_exists?(name, repo: project.root)
           refuse_foreign_branch!(definition, name, exists ? path : root, root, checked, allowed)
         end
 
