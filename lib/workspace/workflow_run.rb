@@ -81,7 +81,7 @@ module Workspace
     # Slots a step keeps for itself under +steps[id]+, each read by its +<key>_for(step_id)+ method.
     PER_STEP_KEYS = %w[
       reason reasons backoff pending_context continue_pending pause_hold retry_of_pending
-      dispatch_cause_pending review_retry pending_move budget_hold timeout_hold
+      dispatch_cause_pending review_retry pending_move budget_hold timeout_hold sweep
     ].freeze
 
     PER_STEP_KEYS.each do |key|

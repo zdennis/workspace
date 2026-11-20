@@ -182,7 +182,7 @@ RSpec.describe Workspace::WorkflowProgress do
     end
 
     it "drops every run-level slot of what comes next, keeping the reason key, its history and the pending context" do
-      slots = (Workspace::WorkflowRun::PER_STEP_KEYS - %w[reason reasons pending_context]).to_h { |key| [key, {"left" => key}] }
+      slots = (Workspace::WorkflowRun::PER_STEP_KEYS - %w[reason reasons pending_context sweep]).to_h { |key| [key, {"left" => key}] }
       run = progress.finish(run_hash(**slots, "reasons" => [{"code" => "x"}], "pending_context" => ["kept"]), "cancelled")
 
       expect(run.to_h.keys & slots.keys).to eq([])

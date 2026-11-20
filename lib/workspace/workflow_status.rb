@@ -359,8 +359,8 @@ module Workspace
     def sibling_views(run, cursor_view, warnings)
       return {} if run.paused || run.parked
       WorkflowDefinition.group_steps(run.definition).values.flatten.each_with_object({}) do |id, found|
-        step = run.step(id)
-        next if step&.state == "pending" || (step&.state == "passed" && !step.gate_waiting? && run.reason_for(id).nil?)
+        # The one rule of a sibling under way, which the sweep, recovery and decisions share.
+        next unless WorkflowTransitions.under_way?(run.to_h, id)
         found[id] = if id == run.current
           cursor_view
         else

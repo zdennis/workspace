@@ -31,7 +31,10 @@ module Workspace
     # @param plan_present [Boolean] whether the workspace has a readable plan file
     # @param delivery [#call, nil] gives {Workspace::DeliveryFacts#read}'s Hash (nil when git cannot
     #   answer); with none given, delivery is not judged and a finished plan or spine is done
-    def initialize(name:, member:, run:, turn:, pane:, plan_present:, delivery: nil)
+    # @param step [String, nil] the run's step the goal is read on: a fan_out sibling under way is read from its own
+    #   entry in the row's `steps` (its `reason`, `flags` and `state`). Nil reads the run's cursor step, unless the
+    #   cursor's step waits for no person and a sibling under way does: then that sibling's
+    def initialize(name:, member:, run:, turn:, pane:, plan_present:, delivery: nil, step: nil)
       @name = name
       @member = member
       @run = run && WorkflowStatus::Row.from_h(run)
@@ -39,7 +42,8 @@ module Workspace
       @pane = pane
       @plan_present = plan_present
       @delivery_source = delivery
-      @reason = @run&.current&.dig("reason")
+      @current = step_row(step)
+      @reason = @current&.dig("reason")
       @plan_state = member.dig("plan", "state")
       @state = derive
       @waiting_on, @next_step = expect
@@ -86,8 +90,23 @@ module Workspace
 
     private
 
+    # The step the goal is read on, as a `current` row: +step+'s sibling entry when it is one under way, else the
+    # cursor's, else (with no +step+) the first sibling under way that waits for a person when the cursor's does not.
+    def step_row(step)
+      current = @run&.current
+      siblings = Array(@run&.steps).select { |each| each.is_a?(Hash) && each["group"] && each.key?("flags") && each["id"] != current&.dig("step") }
+      named = siblings.find { |each| each["id"] == step } if step
+      return sibling_current(named) if named
+      return current if step || WAITING_REASONS.include?(current&.dig("reason", "code"))
+      waiting = siblings.find { |each| WAITING_REASONS.include?(each.dig("reason", "code")) }
+      waiting ? sibling_current(waiting) : current
+    end
+
+    # A sibling's `steps` entry read as a `current` row.
+    def sibling_current(entry) = entry.merge("step" => entry["id"])
+
     def derive
-      flags = @run&.current&.dig("flags") || []
+      flags = @current&.dig("flags") || []
       spine = @member["spine"]
       return "done" if done?(spine)
       return "waiting" if (@reason && WAITING_REASONS.include?(@reason["code"]) && !incomplete_while_working?) || @plan_state == "waiting" || @turn&.dig("state") == "waiting"
@@ -143,7 +162,7 @@ module Workspace
     end
 
     def run_without_daemon?
-      @run && %w[running checking reviewing].include?(@run.current&.dig("state")) && @member["daemon"] && @member["daemon"]["up"] == false && @member["running"] != false
+      @run && %w[running checking reviewing].include?(@current&.dig("state")) && @member["daemon"] && @member["daemon"]["up"] == false && @member["running"] != false
     end
 
     def structure?(spine)

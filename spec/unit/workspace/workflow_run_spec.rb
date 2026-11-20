@@ -424,7 +424,8 @@ RSpec.describe Workspace::WorkflowRun do
       expect(given.pending_move_for("s1")).to be_nil
       expect(given.budget_hold_for("s1")).to be_nil
       expect(given.timeout_hold_for("s1")).to be_nil
-      expect(described_class::PER_STEP_KEYS.length).to eq(12)
+      expect(given.sweep_for("s1")).to be_nil
+      expect(described_class::PER_STEP_KEYS.length).to eq(13)
     end
 
     it "reads a step's pane from its own hash, else the run's, and is not a per-step key" do

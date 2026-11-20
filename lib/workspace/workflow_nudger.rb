@@ -101,7 +101,9 @@ module Workspace
       stops = downtime_stops(now)
       note_reasons(workspace, runs.map(&:id))
       woken = runs.filter_map do |run|
-        wake = WorkflowEngine.wakeable?(run.to_h, now, alive: @holder_alive, stops: stops)
+        # A fan_out sibling off the cursor wakes the run too, read on its own step and slots.
+        wake = WorkflowEngine.wakeable?(run.to_h, now, alive: @holder_alive, stops: stops) ||
+          WorkflowTransitions.step_wake(run.to_h, now, alive: @holder_alive, stops: stops)&.first
         reason = (wake || skip_reason(run.to_h)).to_s
         changed = reason_changed?(workspace, run.id, reason)
         unless wake
@@ -182,8 +184,10 @@ module Workspace
       @logger.debug { "workflow: could not start the budget sweep for #{workspace} (#{e.class}: #{e.message})" }
     end
 
+    # The cursor's step, or a fan_out sibling under way, is running.
     def interrupt_budget_running?(run)
-      WorkflowDefinition.budget(run.definition)&.fetch("action", nil) == "interrupt" && run.steps[run.current]&.state == "running"
+      WorkflowDefinition.budget(run.definition)&.fetch("action", nil) == "interrupt" &&
+        WorkflowTransitions.step_views(run.to_h).any? { |view| run.steps[view["current"]]&.state == "running" }
     rescue KeyError, TypeError
       false
     end

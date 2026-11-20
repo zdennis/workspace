@@ -27,6 +27,10 @@ module Workspace
   # run's lock), which raises the run's count and records `reboot_recovered` in the same change. Each wake run, once
   # its session is up, gets one {WorkflowEngine#tick} (actor `sweep`) and raises no count. A failed or skipped row
   # changes no run.
+  #
+  # While a fan_out group is under way each sibling under way is sorted on its own, read on its own step, pane and
+  # slots ({WorkflowTransitions.step_views}), and has a row of its own: one sibling whose pane is gone is restarted in
+  # a pane of its own (`resume` with its `step`) while another one's live pane is left alone.
   class WorkflowRecover
     # Seconds a restored pane's agent has to be ready.
     READY_SECONDS = 60
@@ -85,16 +89,19 @@ module Workspace
       now = @clock.call
       done = {}
       picked = []
-      runs.each do |run|
-        kind = classify(run, alive, max, now, dry_run)
-        kind.key?("outcome") ? done[run.id] = kind : picked << kind
+      views = runs.to_h { |run| [run.id, live_views(run)] }
+      views.each_value do |list|
+        list.each do |run|
+          kind = classify(run, alive, max, now, dry_run)
+          kind.key?("outcome") ? done[[run.id, run.current]] = kind : picked << kind
+        end
       end
       picked.group_by { |entry| entry[:run].workspace }.each do |workspace, entries|
         found = dry_run ? preview(workspace, entries) : recover(workspace, entries, launch, max)
-        found.each { |row| done[row["run_id"]] = row }
+        found.each { |row| done[[row["run_id"], row["step"]]] = row }
       end
       unreadable = @store.unreadable
-      rows = runs.map { |run| done.fetch(run.id) } + unreadable_rows(unreadable)
+      rows = views.values.flatten.map { |run| done.fetch([run.id, run.current]) } + unreadable_rows(unreadable)
       status = if rows.any? { |each| JsonEnvelope::FAILED_OUTCOMES.include?(each["outcome"]) } then JsonEnvelope.action_status(rows)
       elsif dry_run then "dry_run"
       else
@@ -104,6 +111,16 @@ module Workspace
     end
 
     private
+
+    # The run read on each step it is sorted on: itself (its cursor's step), then each other fan_out sibling under way.
+    def live_views(run)
+      WorkflowTransitions.step_views(run.to_h).map { |view| view.equal?(run.to_h) ? run : WorkflowRun.from_h(view) }
+    rescue KeyError, TypeError, NoMethodError
+      [run]
+    end
+
+    # The bindings' step argument for the step the run is read on: none outside a fan_out group.
+    def step_kw(run) = WorkflowRun.step_scoped?(run.to_h, run.current) ? {step: run.current} : {}
 
     # A row for a run left alone (a `failed/unreadable_run` row, built from its id and workspace alone, when the stored
     # run is not shaped as a run), or `{kind:, run:}` for a run to restart (with the open attempt's `n`, which the
@@ -128,7 +145,7 @@ module Workspace
       return row(run, "skipped", "unknown_liveness", "can't tell whether workspace '#{workspace}' has a tmux session (a custom socket, or tmux did not answer); check `tmux ls`, then run `workspace workflow status #{run.id}`") if live.nil?
       if live
         return row(run, "skipped", "nothing_to_restart", "workspace '#{workspace}' is running and step #{run.current} is between turns; the agent daemon moves it on when the agent's turn ends") unless open
-        return row(run, "skipped", "pane_alive", "workspace '#{workspace}' is running and the run's pane is there") if @panes.alive?(run.id)
+        return row(run, "skipped", "pane_alive", "workspace '#{workspace}' is running and the run's pane is there") if @panes.alive?(run.id, **step_kw(run))
       end
       if open && infra && (live ? PENDING_INFRA : [:claimed]).include?(infra[:state])
         return row(run, "skipped", "infra_retry_pending", "step #{run.current} has an automatic restart #{infra[:state]}; another process is already restarting it, or the workspace's daemon will")
@@ -228,8 +245,8 @@ module Workspace
       run = entry[:run]
       moved = moved_row(entry)
       return moved if moved
-      pane = @panes.pane_of(run.id)
-      unless pane && @panes.alive?(run.id)
+      pane = @panes.pane_of(run.id, **step_kw(run))
+      unless pane && @panes.alive?(run.id, **step_kw(run))
         what = pane ? "pane #{pane}, bound to the run, is not there" : "no pane is bound to the run"
         return row(run, "failed", "no_pane", "#{what} after restoring workspace '#{workspace}'", actions: manual_actions(run, "no_pane", restart: true))
       end
@@ -250,7 +267,7 @@ module Workspace
         moved = moved_row(entry)
         return moved if moved
         begin
-          after = @engine.resume(run.id, actor: "person", restart_step: true, bound: "idle", reboot_recovery: {"workspace" => workspace, "attempt" => entry[:n]})
+          after = @engine.resume(run.id, actor: "person", restart_step: true, bound: "idle", reboot_recovery: {"workspace" => workspace, "attempt" => entry[:n]}, **step_kw(run))
           return restarted_row(run, after, pane, max)
         rescue Workspace::Error => e
           case e.code
@@ -284,7 +301,8 @@ module Workspace
     # The run as stored now; nil when it is gone or has finished.
     def reread(run)
       fresh = @store.run(run.id)
-      WorkflowRunStore::TERMINAL_STATES.include?(fresh.state) ? nil : fresh
+      return nil if WorkflowRunStore::TERMINAL_STATES.include?(fresh.state)
+      step_kw(run).empty? ? fresh : WorkflowRun.from_h(WorkflowTransitions.at_step(fresh.to_h, run.current))
     rescue Workspace::Error
       nil
     end

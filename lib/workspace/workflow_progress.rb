@@ -624,7 +624,8 @@ module Workspace
 
     # The run-level {WorkflowRun::PER_STEP_KEYS} slots an ended run drops: every one but its reason (set to nil
     # below), its reason history, and the pending context (kept, as an ended run always has).
-    ENDED_RUN_SLOTS = (WorkflowRun::PER_STEP_KEYS - %w[reason reasons pending_context]).freeze
+    # The run-level `sweep` marks stay too, as an ended run has always kept them; a step's own are dropped with its other slots.
+    ENDED_RUN_SLOTS = (WorkflowRun::PER_STEP_KEYS - %w[reason reasons pending_context sweep]).freeze
 
     def end_run(run, state, ctx)
       adopt(run, @dispatch.drop_park(run, "ended")) if run.key?("parked")
@@ -788,8 +789,16 @@ module Workspace
         run["current"] = busy.each_with_index.max_by { |id, index| [Array(run.dig("steps", id, "attempts")).last&.fetch("started_at", nil).to_s, index] }.first
       else
         run["state"] = "waiting"
-        run["current"] = ids.find { |id| !WorkflowTransitions.sibling_at_rest?(run, id, now) } || ids.first
+        # The sibling whose wait ends first (a deferred move's or a backoff's `until`), else the first not at rest, so
+        # a reader of the cursor's step sees the soonest wake first.
+        owed = ids.reject { |id| WorkflowTransitions.sibling_at_rest?(run, id, now) }
+        run["current"] = owed.each_with_index.min_by { |id, index| [wait_until(run, id) || "~", index] }&.first || ids.first
       end
+    end
+
+    # When +id+'s wait ends, as stored (ISO 8601): its deferred move's `until`, else its backoff's; nil for neither.
+    def wait_until(run, id)
+      [WorkflowRun.slot_dig(run, id, "pending_move", "until"), WorkflowRun.slot_dig(run, id, "backoff", "until")].find { |each| each.is_a?(String) }
     end
 
     # Branch 2: the first deferred move, and only it. The move's slot (its wait with it) goes whether or not it applies.

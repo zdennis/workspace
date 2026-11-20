@@ -67,7 +67,9 @@ module Workspace
     # Passes a gate: the run goes on to the step after the gated one. When the gated step's first file names a
     # note (`note: <file>`), the note's sha256 is recorded with the approval and named in the next step's
     # instructions. Every check runs under the run's lock, in this order: the gate is waiting (at +step+ and
-    # +attempt+ when given), +guard+, then the note. A refusal leaves the run file as it was.
+    # +attempt+ when given), +guard+, then the note. A refusal leaves the run file as it was. A +step+ that is a
+    # fan_out sibling under way is approved whichever sibling the cursor is on: its gate is the one checked, and the
+    # group's join decides what comes next.
     #
     # @param note [String, nil] added to the next step's instructions
     # @param step [String, nil] the gated step the caller saw; refused when the run is elsewhere
@@ -79,7 +81,7 @@ module Workspace
     # @raise [Workspace::Error] code `gate_not_waiting`, `stale_revision`, `gate_note_unreadable`, and what +guard+ raises
     def approve(run_id, actor:, note: nil, step: nil, attempt: nil, note_sha256: nil, guard: nil)
       @change.call(run_id, actor: actor, cause: "approve") do |read, ctx|
-        stored = read.thawed
+        stored = WorkflowTransitions.at_step(read.thawed, step)
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
         file = gate_file(stored, note_sha256)
@@ -92,7 +94,8 @@ module Workspace
       end
     end
 
-    # Turns a gate down: the gated step, or an earlier one, runs again with the note.
+    # Turns a gate down: the gated step, or an earlier one, runs again with the note. A +step+ that is a fan_out
+    # sibling under way is rejected as {#approve} approves one, and only that sibling runs again: +to+ must name it.
     #
     # @param note [String] why, added to that step's instructions
     # @param to [String, nil] the step to run again; nil for the gated step
@@ -108,12 +111,17 @@ module Workspace
     # @raise [Workspace::UsageError] when +to+ is not the gated step or one before it
     def reject(run_id, actor:, note:, to: nil, step: nil, attempt: nil, guard: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil)
       @change.call(run_id, actor: actor, cause: "reject") do |read, ctx|
-        stored = read.thawed
+        stored = WorkflowTransitions.at_step(read.thawed, step)
         gate = waiting_gate(stored, step: step, attempt: attempt)
         guard&.call(stored)
         target = to || stored["current"]
         ids = step_ids(stored)
-        unless ids.first(ids.index(stored["current"]) + 1).include?(target)
+        # A fan_out sibling runs beside its fellows, so a step before it may be one still at work: only it runs again.
+        if WorkflowRun.step_scoped?(stored, stored["current"])
+          unless target == stored["current"]
+            raise UsageError, "--to must be #{stored["current"]}: a fan_out sibling's gate sends back only that sibling, got #{target.to_s[0, 60].inspect}."
+          end
+        elsif !ids.first(ids.index(stored["current"]) + 1).include?(target)
           raise UsageError, "--to must be #{stored["current"]} or a step before it (#{ids.first(ids.index(stored["current"]) + 1).join(", ")}), got #{target.to_s[0, 60].inspect}."
         end
         # The step runs again, which is a new attempt.
@@ -171,6 +179,8 @@ module Workspace
     #   retry's `n`); a claimant without both "pid" and "started" raises ArgumentError
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}; any actor but `daemon` also clears the
     #   step's `infra_retries` count, so a person's resume gives the run a fresh set of automatic retries
+    # @param step [String, nil] with +restart_step+, a fan_out sibling under way to restart instead of the cursor's step
+    #   (its own pane and slots; the other siblings are left as they are); nil, or a step in no group, is the cursor's
     # @return [Resumed] the run afterwards, and why nothing was done when it did nothing
     # @raise [Workspace::Error] see {#refuse_resume}; code `attempts_spent` or `budget_spent` when the resume would
     #   start an attempt the run has no allowance left for; `budget_spent` or `run_timed_out` when it would start a
@@ -181,8 +191,9 @@ module Workspace
     #   `max_rounds`, or start again a step a review rejected with every round spent; with +restart_step+, also
     #   `no_open_attempt`, `step_still_working`, `pane_has_run` and `restart_not_closed`; with +infra_retry+, `infra_retry_not_claimed`
     def resume(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
-      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil, infra_retry: nil, reboot_recovery: nil)
+      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil, infra_retry: nil, reboot_recovery: nil, step: nil)
       refuse_guard_flags(from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry, extra_rounds: extra_rounds, restart_step: restart_step, turn_over: turn_over)
+      raise UsageError, "step names the fan_out sibling a restart starts again; it needs restart_step." if step && !restart_step
       raise UsageError, "infra_retry is the claimant of an automatic restart; it needs restart_step." if infra_retry && !restart_step
       raise UsageError, "reboot_recovery is the workspace of a recovery restart; it needs restart_step." if reboot_recovery && !restart_step
       infra_retry &&= WorkflowRecovery.infra_retry_claimant(infra_retry)
@@ -190,6 +201,7 @@ module Workspace
       unchanged = nil
       run = @change.call(run_id, actor: actor, cause: "resume") do |read, ctx|
         follow = ctx
+        read = WorkflowRun.from_h(named_step(read.thawed, step)) if step
         step = read.current
         changed = if restart_step
           restart_in(read, ctx, note: note, pane: pane, bound: bound, infra_retry: infra_retry, reboot_recovery: reboot_recovery,
@@ -414,7 +426,9 @@ module Workspace
     # lock given up, but only into the run's own bound pane while its attempt is open and `running` and the daemon
     # shows the pane `working`. Only then is `paused.interrupt` written ("pane", "pid" (the pane's process),
     # "kind", "step", "attempt"), which {#unpause} reads to type one continue line. A press that fails drops the mark
-    # again. The attempt stays open and `running`: no attempt is added and no delivery is marked.
+    # again. The attempt stays open and `running`: no attempt is added and no delivery is marked. While a fan_out group
+    # is under way every sibling at work is pressed in its own pane, the cursor's first: the first press's mark is
+    # `paused.interrupt` as above and each other one is in `paused.interrupts`.
     #
     # @param text [String, nil] why, kept with the pause and on `run_paused`
     # @param interrupt [Boolean] also stop the agent's turn
@@ -423,20 +437,24 @@ module Workspace
     # @raise [Workspace::Error] code `already_paused`, `unknown_run` or `run_not_active`
     def pause(run_id, actor:, text: nil, interrupt: false)
       press = nil
+      presses = []
       run = @change.call(run_id, actor: actor, cause: "pause") do |read|
         refuse_already_paused(read.to_h)
         stored = read.thawed
         drop_park(stored, "paused")
         adopt(stored, WorkflowRun.from_h(stored).with_paused(since: now_iso, by: actor, text: text))
-        press = interrupt_target(stored) if interrupt
+        presses = interrupt ? interrupt_targets(stored) : []
+        press = presses.first
         stored["paused"]["interrupt"] = press.except("keys") if press
+        stored["paused"]["interrupts"] = presses.drop(1).map { |each| each.except("keys") } if presses.size > 1
         event(stored, "run_paused", with_text({"step" => stored["current"]}, text).merge(press ? {"interrupt" => true} : {}))
         WorkflowRun.from_h(stored)
       end
       return Paused.new(run: run, interrupted: false) unless press
-      failure = press_keys(run, press)
-      return Paused.new(run: run, interrupted: true) unless failure
-      Paused.new(run: interrupt_failed(run_id, press, failure, actor), interrupted: false, warning: failure)
+      failures = presses.map { |each| press_keys(run, each) }
+      return Paused.new(run: run, interrupted: true) if failures.none?
+      presses.zip(failures).each { |each, failure| run = interrupt_failed(run_id, each, failure, actor) if failure }
+      Paused.new(run: run, interrupted: failures.any?(&:nil?), warning: failures.compact.first)
     end
 
     # Ends a pause and does what it held, never through {#resume} (which would start nothing without a pane, or a
@@ -472,7 +490,9 @@ module Workspace
       run = @change.call(run_id, actor: actor, cause: "unpause") do |read, ctx|
         follow = ctx
         refuse_not_paused(read.to_h)
-        mark = read.to_h.dig("paused", "interrupt") || read.continue_pending_for(read.current)
+        marks = [read.to_h.dig("paused", "interrupt"), *Array(read.to_h.dig("paused", "interrupts"))].grep(Hash)
+        siblings = WorkflowTransitions.under_way_siblings(read.to_h) - [read.current]
+        mark = marks.find { |each| each["step"] == read.current } || (marks.first if siblings.empty?) || read.continue_pending_for(read.current)
         stored = read.drop_paused.thawed
         slots(stored).delete("continue_pending")
         hold = slots(stored).delete("pause_hold")
@@ -480,6 +500,7 @@ module Workspace
         action = unpause_action(stored, hold.is_a?(Hash) ? hold : nil, mark).to_s
         event(stored, "run_unpaused", {"step" => stored["current"], "action" => action, "held" => held}.compact)
         apply_unpause(stored, ctx, action.to_sym, hold, mark)
+        unpause_siblings(stored, ctx, siblings, marks)
         WorkflowRun.from_h(stored)
       end
       continued, warning = continue_after_unpause(run, action, mark, actor)
@@ -487,6 +508,42 @@ module Workspace
     end
 
     private
+
+    # The rest of {#unpause} while a fan_out group is under way: each other sibling still under way, read on its own
+    # step, takes the branch that applies to it. What it held starts, or its held line is typed, as for the cursor's
+    # step; a sibling `pause --interrupt` stopped (its mark in `paused.interrupts`, or its own `continue_pending`)
+    # gets its continue line through its own `continue_pending`, which the tick types once its pane proves idle. The
+    # cursor goes back to the step it was on unless a sibling's change moved the run past the group.
+    def unpause_siblings(stored, ctx, siblings, marks)
+      cursor = stored["current"]
+      siblings.each do |id|
+        break if WorkflowRunStore::TERMINAL_STATES.include?(stored["state"]) || !WorkflowRun.step_scoped?(stored, stored["current"])
+        next unless WorkflowTransitions.under_way?(stored, id)
+        stored["current"] = id
+        pending = slots(stored).delete("continue_pending")
+        hold = slots(stored).delete("pause_hold")
+        mark = marks.find { |each| each["step"] == id } || pending
+        action = unpause_action(stored, hold.is_a?(Hash) ? hold : nil, mark)
+        if %i[continue continue_pending].include?(action)
+          slots(stored)["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
+        else
+          apply_unpause(stored, ctx, action, hold, mark)
+        end
+      end
+      stored["current"] = cursor if WorkflowRun.step_scoped?(stored, stored["current"])
+    end
+
+    # +run+ read on the fan_out sibling +step+ names ({WorkflowTransitions.at_step}); the cursor's own step reads as it is.
+    # A step that is neither (unknown, in no group, or with no state yet) is refused rather than taken for the cursor's.
+    def named_step(run, step)
+      view = WorkflowTransitions.at_step(run, step)
+      return view unless view.equal?(run) && step != run["current"]
+      raise UsageError, "Step #{step.to_s[0, 60].inspect} of run #{run["id"]} is not a fan_out sibling under way, so it can't be restarted on its own; " \
+        "the run's step is #{run["current"]}."
+    end
+
+    # Where `pause --interrupt` presses: {#interrupt_target} of the cursor's step, then of each other fan_out sibling under way.
+    def interrupt_targets(run) = WorkflowTransitions.step_views(run).filter_map { |view| interrupt_target(view) }
 
     def refuse_already_paused(run)
       paused = run["paused"]
@@ -580,7 +637,7 @@ module Workspace
       state = step_state(run)
       attempt = state["attempts"].last
       return nil unless state["state"] == "running" && attempt.is_a?(Hash) && attempt["ended_at"].nil?
-      pane = @panes.pane_of(run["id"])
+      pane = bound_pane_of(run)
       return nil unless pane && @panes.run_on(pane) == run["id"]
       row = @panes.pane_row(run["workspace"], pane)
       return nil unless row.is_a?(Hash) && row["state"] == "working"
@@ -603,6 +660,7 @@ module Workspace
       @change.call(run_id, actor: actor, cause: "pause") do |read|
         stored = read.thawed
         stored["paused"].delete("interrupt") if stored["paused"].is_a?(Hash) && stored.dig("paused", "interrupt", "pid") == press["pid"]
+        stored["paused"]["interrupts"].reject! { |each| each.is_a?(Hash) && each["pid"] == press["pid"] } if stored.dig("paused", "interrupts").is_a?(Array)
         event(stored, "pause_interrupt_failed", {"step" => press["step"], "attempt" => press["attempt"], "pane" => press["pane"], "message" => failure})
         WorkflowRun.from_h(stored)
       end
@@ -1204,7 +1262,11 @@ module Workspace
       current = state["attempts"].last&.fetch("n", nil)
       waiting = gate && gate["state"] == "waiting"
       return gate if waiting && (step.nil? || step == run["current"]) && (attempt.nil? || attempt == current)
-      message = if step
+      message = if step && step != run["current"] && WorkflowRun.step_scoped?(run, run["current"])
+        # A fan_out run read on the named sibling has its cursor there; one still elsewhere was given no sibling it has.
+        "Run #{run["id"]} is not waiting at the gate of step #{step.to_s[0, 60]}: it has no such step under way " \
+          "(the run's step #{run["current"]} is #{state["state"]}). Read `workspace workflow status #{run["id"]}` again."
+      elsif step
         "Run #{run["id"]} is not waiting at the gate of step #{step.to_s[0, 60]}#{", attempt #{attempt}," if attempt} " \
           "(step #{run["current"]}, attempt #{current.inspect}, is #{state["state"]}#{" and waits at its gate" if waiting}). " \
           "Read `workspace workflow status #{run["id"]}` again."
@@ -1253,7 +1315,9 @@ module Workspace
     def dispatch(run, ctx, cause, **options) = adopt(run, @dispatch.dispatch(run, ctx: ctx, cause: cause, **options))
     def evaluate(run, ctx) = adopt(run, @evaluation.evaluate(run, ctx: ctx))
     def event(run, type, data = {}) = @change.event(run, type, data)
-    def bound_pane(run) = @panes.pane_of(run["id"]) || run["pane"]
+    def bound_pane(run) = bound_pane_of(run) || WorkflowRun.slot(run, run["current"], "pane")
+    # The pane bound for the cursor's step: a fan_out sibling's own binding, else the run's first author pane.
+    def bound_pane_of(run) = WorkflowRun.step_scoped?(run, run["current"]) ? @panes.pane_of(run["id"], step: run["current"]) : @panes.pane_of(run["id"])
     def step_ids(run) = run["definition"]["steps"].map { |step| step["id"] }
     def step_state(run) = run["steps"].fetch(run["current"])
     # The Hash the current step's {WorkflowRun::PER_STEP_KEYS} slots are written into ({WorkflowRun.slots}).

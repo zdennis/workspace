@@ -858,6 +858,7 @@ RSpec.describe Workspace::WorkflowTransitions do
       expect(described_class::SIBLING_SLOTS_OWED + described_class::SIBLING_SLOTS_NOT_OWED).to match_array(Workspace::WorkflowRun::PER_STEP_KEYS)
       expect(described_class::SIBLING_SLOTS_OWED & described_class::SIBLING_SLOTS_NOT_OWED).to eq([])
       expect(described_class::SIBLING_SLOTS_OWED).to include("review_retry", "budget_hold", "timeout_hold", "backoff")
+      expect(described_class::SIBLING_SLOTS_NOT_OWED).to include("sweep")
     end
 
     described_class::SIBLING_SLOTS_OWED.each do |key|

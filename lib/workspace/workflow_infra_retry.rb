@@ -33,7 +33,9 @@ module Workspace
       @clock = clock
     end
 
-    # Restarts the run's current step for its due infra retry, if this process wins the claim.
+    # Restarts the run's current step for its due infra retry, if this process wins the claim. While a fan_out group is
+    # under way the step is the first sibling whose retry is due ({WorkflowTransitions.step_views}, the cursor's first),
+    # and only that sibling's pane is replaced: the others are left as they are.
     #
     # @param run [Workspace::WorkflowRun] the stored run, one {WorkflowTransitions.wakeable?} reads as `:infra_retry`
     # @return [Array, Symbol] [:restarted, n, pane]; [:gave_up, reason]; what {WorkflowEngine#release_infra_retry}
@@ -45,12 +47,13 @@ module Workspace
     #   after the new pane is closed and the retry given up with `restart_error` (both skipped when the run can't be
     #   read again), so the advance fails and is logged as any other does
     def call(run)
-      stored = run.to_h
+      stored = due_view(run.to_h)
       info = WorkflowTransitions.infra_retry(stored, @clock.call) or return :not_due
       claimant = own_claimant or return :no_claimant
       step = stored["current"]
       attempt = stored.dig("steps", step, "attempts")&.last&.fetch("n", nil)
-      target = {run_id: run.id, workspace: run.workspace, step: step, attempt: attempt, cause: info[:cause], claimant: claimant}
+      target = {run_id: run.id, workspace: run.workspace, step: step, attempt: attempt, cause: info[:cause], claimant: claimant,
+                scope: WorkflowRun.step_scoped?(stored, step) ? {step: step} : {}}
       claim = @engine.claim_infra_retry(run.id, actor: ACTOR, step: step, attempt: attempt, claimant: claimant, alive: method(:alive?))
       return claim unless claim.is_a?(Array) && claim.first == :claimed
       restart(target, claim.last)
@@ -78,7 +81,7 @@ module Workspace
     end
 
     def resume(target, pane, n)
-      @engine.resume(target[:run_id], actor: ACTOR, restart_step: true, bound: "unknown", infra_retry: target[:claimant], pane: pane)
+      @engine.resume(target[:run_id], actor: ACTOR, restart_step: true, bound: "unknown", infra_retry: target[:claimant], pane: pane, **target[:scope])
       [:restarted, n, pane]
     rescue Workspace::Error => e
       case restarted?(target, pane)
@@ -107,9 +110,17 @@ module Workspace
     def restarted?(target, pane)
       run = @store.run(target[:run_id]).to_h
       attempt = run.dig("steps", target[:step], "attempts")&.last&.fetch("n", nil)
+      # A fan_out sibling is restarted beside the others, so the cursor being elsewhere says nothing of it.
+      return attempt != target[:attempt] || WorkflowRun.slot(run, target[:step], "pane") == pane unless target[:scope].empty?
       run["current"] != target[:step] || attempt != target[:attempt] || run["pane"] == pane
     rescue Workspace::Error, SystemCallError
       nil
+    end
+
+    # The run read on the step whose infra retry is due or whose claim is stale; the run as it is when none is.
+    def due_view(stored)
+      views = WorkflowTransitions.step_views(stored)
+      views.find { |view| %i[due stale_claim].include?(WorkflowTransitions.infra_retry(view, @clock.call)&.fetch(:state)) } || stored
     end
 
     def give_up(target, reason)

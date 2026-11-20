@@ -164,7 +164,8 @@ module Workspace
     # @return [Hash] the kick's answer: :ok, and when false :code, :message and :pending (whether the mark was put back)
     def type_continue(run_id, mark, workspace:, text:, actor:, cause:)
       run = @store.run(run_id)
-      kick = if WorkflowRunStore::TERMINAL_STATES.include?(run.state) || !WorkflowTransitions.continue_mark?(run.to_h, mark)
+      # A fan_out sibling's mark is read on its own step, whichever sibling the cursor is on.
+      kick = if WorkflowRunStore::TERMINAL_STATES.include?(run.state) || !WorkflowTransitions.continue_mark?(WorkflowTransitions.at_step(run.to_h, mark_step(mark)), mark)
         {ok: false, code: "moved_on", message: "the run has ended or moved past the attempt the line was for"}
       elsif run.paused
         {ok: false, code: "run_paused", message: "the run was paused again before the line was typed"}
@@ -724,7 +725,7 @@ module Workspace
       kept = false
       @change.call(run_id, actor: actor, cause: cause) do |read|
         stored = read.thawed
-        next read unless WorkflowTransitions.continue_mark?(stored, mark)
+        next read unless WorkflowTransitions.continue_mark?(WorkflowTransitions.at_step(stored, mark_step(mark)), mark)
         attempt = stored.dig("steps", mark["step"], "attempts")&.find { |a| a["n"] == mark["attempt"] }
         attempt["refusal"] = refusal if attempt && refusal
         unless WorkflowRun.slot_key?(stored, mark["step"], "continue_pending")
@@ -738,6 +739,9 @@ module Workspace
       raise unless %w[run_not_active unknown_run].include?(e.code)
       false
     end
+
+    # The step a continue mark names, when it names one as a String.
+    def mark_step(mark) = (mark.is_a?(Hash) && mark["step"].is_a?(String)) ? mark["step"] : nil
 
     def now_iso
       @clock.call.utc.iso8601

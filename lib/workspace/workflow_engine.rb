@@ -128,11 +128,12 @@ module Workspace
     # new one starts; with +infra_retry+ (the claimant of {#claim_infra_retry}) that restart is the step's infra retry.
     # See {WorkflowDecisions#resume}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @param step [String, nil] with +restart_step+, the fan_out sibling to restart instead of the cursor's step
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was done
     def resume(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
-      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil, infra_retry: nil, reboot_recovery: nil)
+      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil, infra_retry: nil, reboot_recovery: nil, step: nil)
       resumed_h(@decisions.resume(run_id, actor: actor, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
-        accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane, restart_step: restart_step, bound: bound, infra_retry: infra_retry, reboot_recovery: reboot_recovery))
+        accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane, restart_step: restart_step, bound: bound, infra_retry: infra_retry, reboot_recovery: reboot_recovery, **(step ? {step: step} : {})))
     end
 
     # Why a restart of the run's current step would be refused, without changing anything. See {WorkflowDecisions#restart_refusal}.

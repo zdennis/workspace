@@ -263,6 +263,53 @@ module Workspace
       nil
     end
 
+    # Whether a fan_out sibling is under way, as `workflow status` shows one: not `pending` (or without a state), and
+    # not `passed` unless it waits at its gate or holds a reason.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a step id
+    # @return [Boolean]
+    def self.under_way?(run, step)
+      state = run["steps"].is_a?(Hash) ? run["steps"][step] : nil
+      return false unless state.is_a?(Hash) && state["state"].is_a?(String) && state["state"] != "pending"
+      return true unless state["state"] == "passed"
+      state.dig("gate", "state") == "waiting" || !slot(run, "reason", step).nil?
+    end
+
+    # The siblings of the fan_out group the run's cursor is in that are under way ({.under_way?}), in the group's
+    # order; empty when the cursor's step is in no group.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Array<String>]
+    def self.under_way_siblings(run)
+      return [] unless WorkflowRun.step_scoped?(run, run["current"])
+      entry = Array(run.dig("definition", "steps")).find { |each| each.is_a?(Hash) && each["id"] == run["current"] }
+      Array(WorkflowDefinition.group_steps(run["definition"])[entry["group"]]).select { |id| under_way?(run, id) }
+    end
+
+    # +run+ read on +step+: a copy with the cursor on that step when it is a fan_out sibling with a stored state (so
+    # every rule that reads the cursor's step reads that sibling's own step, pane and slots); +run+ itself for the
+    # cursor's step, a step in no group, an unknown step or nil. The copy is shallow: its nested Hashes are +run+'s.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String, nil] a step id
+    # @return [Hash{String=>Object}]
+    def self.at_step(run, step)
+      return run if step.nil? || step == run["current"] || !WorkflowRun.step_scoped?(run, step)
+      return run unless run["steps"].is_a?(Hash) && run["steps"][step].is_a?(Hash)
+      run.merge("current" => step)
+    end
+
+    # The views a reader that acts on one step at a time goes through: +run+ itself (its cursor's step) first, then
+    # +run+ read on each other fan_out sibling under way ({.under_way_siblings}, {.at_step}). A run whose cursor is in
+    # no group has the one view, +run+ itself.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Array<Hash{String=>Object}>]
+    def self.step_views(run)
+      [run] + (under_way_siblings(run) - [run["current"]]).map { |id| at_step(run, id) }
+    end
+
     # Whether a resume would start a review round, which the token budget and the run's timeout are asked about as
     # an attempt's start is: a round the budget or timeout held, or a fresh round after one that stopped for a
     # person. Not `--from` (it starts an attempt), nor a round whose delivery failed or lapsed (delivered again as
@@ -763,7 +810,8 @@ module Workspace
     #   :retries (done), :limit, :wait (seconds left), :code
     def self.redelivery(run, now)
       limit = WorkflowDefinition.redeliver(run["definition"])
-      return nil if limit.zero? || run["parked"] || run["state"] != "waiting"
+      # A fan_out sibling waits on its own while the others keep the run `running`: its own step's state says so below.
+      return nil if limit.zero? || run["parked"] || (run["state"] != "waiting" && !WorkflowRun.step_scoped?(run, run["current"]))
       reason = slot(run, "reason")
       details = reason.is_a?(Hash) ? reason["details"] : nil
       return nil unless reason.is_a?(Hash) && reason["code"] == "waiting_you" && details.is_a?(Hash) && details["kind"] == "dispatch"
@@ -913,6 +961,29 @@ module Workspace
       :check if slot(run, "reason").nil? && lost_check?(run, now)
     end
 
+    # The {.wakeable?} causes a fan_out sibling that is not the cursor's step wakes for, read on its own step: a
+    # continue line, its infra retry, a background hold that ran out, a check that never reported back. The cursor's
+    # step wakes for any cause.
+    SIBLING_WAKES = %i[continue continue_expired infra_retry background check].freeze
+
+    # {.wakeable?} for the cursor's step, else for the first other fan_out sibling under way ({.step_views}) that
+    # wakes for one of {SIBLING_WAKES}.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @param alive [#call, nil] see {.wakeable?}
+    # @param stops [Array<Hash{String=>Object}>] see {.wakeable?}
+    # @return [Array(Symbol, Hash), nil] the cause and the run read on the step that wakes; nil when none does
+    def self.step_wake(run, now, alive: nil, stops: [])
+      cause = wakeable?(run, now, alive: alive, stops: stops)
+      return [cause, run] if cause
+      step_views(run).drop(1).each do |view|
+        found = wakeable?(view, now, alive: alive, stops: stops)
+        return [found, view] if SIBLING_WAKES.include?(found)
+      end
+      nil
+    end
+
     # Whether the end of the current step's review round was being judged and nothing reported back: its revision
     # was being computed again with the lock given up (the round's `recompute` mark) and the mark is older than
     # {DELIVERY_WINDOW}, so the process doing it died. The sibling of {.lost_check?}, which stays `checking`-only.
@@ -974,10 +1045,13 @@ module Workspace
     # "interrupt" (a step timeout's press) and "run_interrupt" (the run timeout's press) and "budget_interrupt" (the token budget's press), each `state` `pending`
     # or `sent` and `at`. Empty once the run is on another step or attempt.
     #
+    # A fan_out sibling keeps its marks under its own step hash ({WorkflowRun.slots}), so two siblings the sweep acts
+    # on in one pass keep apart; every other step keeps them at the run's top level.
+    #
     # @param run [Hash{String=>Object}] a stored run
     # @return [Hash{String=>Object}]
     def self.sweep_marks(run)
-      marks = run["sweep"]
+      marks = WorkflowRun.slot(run, run["current"], "sweep")
       attempt = run.dig("steps", run["current"], "attempts")&.last&.fetch("n", nil)
       (marks.is_a?(Hash) && marks["step"] == run["current"] && marks["attempt"] == attempt) ? marks : {}
     end
@@ -1188,8 +1262,9 @@ module Workspace
 
     # The {WorkflowRun::PER_STEP_KEYS} slots that say nothing about whether a sibling owes an attempt: `reason` and
     # `reasons` are its stop and history ({.held_reason} reads the reason), `pending_context` is input for its next
-    # attempt, and `pending_move` has its own role in the join (owed only while its wait lasts, {.move_waits?}).
-    SIBLING_SLOTS_NOT_OWED = %w[reason reasons pending_context pending_move].freeze
+    # attempt, `pending_move` has its own role in the join (owed only while its wait lasts, {.move_waits?}), and `sweep`
+    # is the sweep's bookkeeping of what it saw and did, so a swept sibling still reads at rest.
+    SIBLING_SLOTS_NOT_OWED = %w[reason reasons pending_context pending_move sweep].freeze
 
     # Every other {WorkflowRun::PER_STEP_KEYS} slot: one a sibling holds only while an attempt or a round is owed to
     # it (a retry wait, a continue line, a paused or lock-held dispatch, a review retry, a budget or timeout hold).

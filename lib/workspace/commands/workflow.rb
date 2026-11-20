@@ -2014,8 +2014,9 @@ module Workspace
       end
 
       # The timer's look at a run whose infra retry is due ({WorkflowTransitions.wakeable?} `:infra_retry`).
+      # A fan_out sibling off the cursor whose infra retry is due counts too ({WorkflowTransitions.step_wake}).
       def infra_retry_due?(stored)
-        @infra_retry && stored && WorkflowEngine.wakeable?(stored.to_h, @clock.call) == :infra_retry
+        @infra_retry && stored && WorkflowTransitions.step_wake(stored.to_h, @clock.call)&.first == :infra_retry
       end
 
       def restart_hint?(stored)
@@ -2232,6 +2233,7 @@ module Workspace
         current = run["current"]
         where = %w[completed cancelled failed].include?(run["state"]) ? "" : "  step #{current["step"]}#{" (attempt #{current["attempt"]})" if current["attempt"]}, #{current["state"]}"
         @output.puts "#{run["id"]}  #{run["workflow"]}  #{run["workspace"]}  #{run["state"]}#{where}"
+        describe_siblings(run, current["step"]) unless where.empty?
         if run["definition_path"]
           source = run["definition_source"] ? "#{TerminalText.escape(run["definition_source"])}, " : ""
           @output.puts "  definition: #{source}#{TerminalText.escape(run["definition_path"])}"
@@ -2259,6 +2261,19 @@ module Workspace
         @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }
+      end
+
+      # One line for each fan_out sibling under way that is not the cursor's step, from its `steps` entry ({WorkflowStatus}
+      # gives a sibling under way its own `attempt`, `reason` and `flags`): `sibling ID (attempt N), STATE`, then its
+      # reason in words and its flags. A run with no group prints none.
+      def describe_siblings(run, cursor)
+        Array(run["steps"]).each do |entry|
+          next unless entry.is_a?(Hash) && entry["group"] && entry.key?("flags") && entry["id"] != cursor
+          reason = entry["reason"]
+          said = reason ? ": #{reason["code"]}: #{reason_text(reason)}" : ""
+          @output.puts "  sibling #{entry["id"]}#{" (attempt #{entry["attempt"]})" if entry["attempt"]}, #{entry["state"]}#{said}"
+          Array(entry["flags"]).each { |flag| @output.puts "    flag: #{flag}" }
+        end
       end
 
       # The automatic restart of a stalled step in words, from the status row's `infra_retry`: `step restarts on its own:

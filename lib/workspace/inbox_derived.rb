@@ -196,21 +196,36 @@ module Workspace
         warnings << {"code" => "workflow_unreadable", "message" => "Failed checks, lock waits and stalls could not be worked out, so they are not shown: #{first_line(e)}"}
         {}
       end
-      reply[:runs]["runs"].map { |each| WorkflowStatus::Row.from_h(each) }.filter_map do |run|
-        next unless workspaces.include?(run.workspace)
-        next attention_row(run, attention[run.id]) if attention.key?(run.id)
-        current = run.current || {}
-        reason = current["reason"]
-        next unless reason
-        next undelivered_row(run, current, reason) if undelivered?(reason)
-        next review_stop_row(run, current, reason) if review_stop?(reason)
-        next unless reason["code"] == "waiting_you" && reason.dig("details", "kind") == "gate"
-        step = Array(run.steps).find { |each| each["id"] == current["step"] }
-        next unless step && step["gate"] == "waiting"
-        row(id: "workflow:waiting_you:#{run.id}", kind: "workflow_waiting_you", fingerprint: "#{current["step"]}:#{reason["since"]}",
-          scope: workspace_scope(run.workspace), title: "Workflow #{run.title || run.workflow} waits for approval at #{current["step"]}",
-          body: nil, since: reason["since"],
-          links: {"run_id" => run.id, "step" => current["step"], "attempt" => current["attempt"]})
+      reply[:runs]["runs"].map { |each| WorkflowStatus::Row.from_h(each) }.flat_map do |run|
+        next [] unless workspaces.include?(run.workspace)
+        next [attention_row(run, attention[run.id])] if attention.key?(run.id)
+        [step_row(run, run.current || {}), *sibling_gate_rows(run)].compact
+      end
+    end
+
+    # The row of the step +current+ (the run's cursor, or a fan_out sibling read as one) when it waits for a person:
+    # undelivered, a stopped review, or a gate. +suffix+ tells a sibling's row id from the cursor's.
+    def step_row(run, current, suffix: "")
+      reason = current["reason"]
+      return nil unless reason
+      return undelivered_row(run, current, reason) if undelivered?(reason) && suffix.empty?
+      return review_stop_row(run, current, reason) if review_stop?(reason) && suffix.empty?
+      return nil unless reason["code"] == "waiting_you" && reason.dig("details", "kind") == "gate"
+      step = Array(run.steps).find { |each| each["id"] == current["step"] }
+      return nil unless step && step["gate"] == "waiting"
+      row(id: "workflow:waiting_you:#{run.id}#{suffix}", kind: "workflow_waiting_you", fingerprint: "#{current["step"]}:#{reason["since"]}",
+        scope: workspace_scope(run.workspace), title: "Workflow #{run.title || run.workflow} waits for approval at #{current["step"]}",
+        body: nil, since: reason["since"],
+        links: {"run_id" => run.id, "step" => current["step"], "attempt" => current["attempt"]})
+    end
+
+    # A gate row for each fan_out sibling under way, other than the cursor's step, whose own gate waits ({WorkflowStatus}
+    # gives a sibling under way its own `reason` in its `steps` entry); its id ends in `:STEP`.
+    def sibling_gate_rows(run)
+      cursor = run.current&.dig("step")
+      Array(run.steps).filter_map do |entry|
+        next unless entry.is_a?(Hash) && entry["group"] && entry.key?("flags") && entry["id"] != cursor
+        step_row(run, entry.merge("step" => entry["id"]), suffix: ":#{entry["id"]}")
       end
     end
 

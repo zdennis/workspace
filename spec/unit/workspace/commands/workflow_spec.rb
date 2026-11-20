@@ -811,6 +811,20 @@ RSpec.describe Workspace::Commands::Workflow do
       expect(output.string).not_to include("\e")
     end
 
+    it "prints a line for each fan_out sibling under way after the cursor's, with its reason and flags" do
+      gate = {"code" => "waiting_you", "details" => {"kind" => "gate", "step" => "lint", "artifacts" => []}}
+      grouped = shown("current" => {"step" => "test", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => []},
+        "steps" => [{"id" => "lint", "state" => "passed", "group" => "checks", "attempt" => 1, "reason" => gate, "flags" => ["idle"]},
+          {"id" => "test", "state" => "running", "group" => "checks", "attempt" => 1, "reason" => nil, "flags" => []},
+          {"id" => "docs", "state" => "pending", "group" => "checks"}, {"id" => "report", "state" => "pending"}])
+      allow(status).to receive(:runs).with(workspace: "app", all: false).and_return("runs" => [grouped], "warnings" => [])
+
+      command.status(scope: workspace_scope("app"))
+
+      expect(output.string).to include("  step test (attempt 1), running\n  sibling lint (attempt 1), passed: waiting_you: step lint passed and waits for approval\n    flag: idle\n")
+      expect(output.string).not_to include("sibling test", "sibling docs", "sibling report")
+    end
+
     describe "an automatic restart" do
       def printed(retry_row, reason: nil)
         row = shown("current" => {"step" => "plan", "attempt" => 1, "state" => "running", "reason" => reason, "flags" => [], "infra_retry" => retry_row})

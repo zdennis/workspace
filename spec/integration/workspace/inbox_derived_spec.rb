@@ -742,4 +742,23 @@ RSpec.describe Workspace::InboxDerived do
       expect(read[:rows].find { |r| r["kind"] == "workflow_waiting_you" }["title"]).not_to include("\e")
     end
   end
+
+  context "with a fan_out sibling off the cursor waiting at its gate" do
+    let(:lock_entries) { {} }
+    let(:workflow_reply) do
+      gate = {"code" => "waiting_you", "since" => "2026-10-16T11:40:00Z", "details" => {"kind" => "gate", "step" => "lint"}, "actions" => []}
+      run = {"id" => "r-group", "workflow" => "flow", "title" => "Checks", "workspace" => "api.worktree-c", "project" => "api", "state" => "running",
+             "current" => {"step" => "test", "attempt" => 1, "state" => "running", "reason" => nil, "flags" => []},
+             "steps" => [{"id" => "lint", "title" => "Lint", "state" => "passed", "attempts" => 1, "gate" => "waiting", "group" => "checks", "attempt" => 1, "reason" => gate, "flags" => []},
+               {"id" => "test", "title" => "Test", "state" => "running", "attempts" => 1, "gate" => nil, "group" => "checks", "attempt" => 1, "reason" => nil, "flags" => []}]}
+      {"runs" => [run], "warnings" => []}
+    end
+
+    it "gives the sibling a gate row of its own, its id naming the step" do
+      rows = read[:rows].select { |row| row["kind"] == "workflow_waiting_you" }
+
+      expect(rows.map { |row| [row["id"], row["fingerprint"], row["links"]["step"]] }).to eq([["workflow:waiting_you:r-group:lint", "lint:2026-10-16T11:40:00Z", "lint"]])
+      expect(rows.first["title"]).to eq("Workflow Checks waits for approval at lint")
+    end
+  end
 end
