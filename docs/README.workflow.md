@@ -624,6 +624,17 @@ steps:
 
 A bad `reviews:` is refused as `invalid_script` with problems such as `steps.design attempt 1: reviews "nobody": the step has no such reviewer (reviewers: skeptic, builder)`, `reviews "skeptic" must be one of approve, reject, not "maybe"`, `reviews must be a mapping of the step's reviewers to approve or reject`, `reviews is set, and the step has no review:`, `revision_changes must be true or false`, `reruns must be a list, ...`, `reruns[0] "nobody": the step has no such reviewer ...` and `unchanged must be true or false`.
 
+A `fan_out` group plays as a run does: every sibling starts at once, the first in the run's pane and each after it in a new one (`%sim-2`, `%sim-3`, ...), and the engine's join decides what follows. The fake agent ends the running siblings' turns one at a time in the group's step order, then decides any sibling's gate, then waits out a sibling's backoff. Name a sibling's attempts under the group's id, listing the siblings in the group's order (or under the sibling's own id, as any step):
+
+```yaml
+steps:
+  checks:                    # a fan_out group
+    lint: [{report: fail}]   # fails at the join, once test and docs are done
+    test: [{tokens: 9000}]
+```
+
+Refused as `invalid_script`: `steps.checks.nope: the fan_out group has no such sibling (siblings: ...)`, `steps.checks.audit: audit is a sibling of the fan_out group more, not of checks (...)`, `steps.checks: siblings must be listed in the group's order (lint, test, docs), not docs, lint`, `steps.lint: the attempts are given twice, here and under steps.checks`, `steps.checks is a fan_out group: give a mapping of its siblings (...) to lists of attempts`, and `pause can't be set on a fan_out sibling` (a pause holds the whole run and is played only at the cursor's step).
+
 An attempt the list has no entry for does the plain thing. A script with a key, step, input, file or proof the workflow does not have, a bad value, a `code:` the engine sets itself (as `step done --code` refuses), or text that is not YAML is refused with `invalid_script`, listing every problem in `details.problems`. Problems for the pause keys read `pause must be true or a non-empty reason of at most 4000 characters (omit the key for no pause)`, `unpause must be true` and `unpause is set, and the attempt does not pause`. The composed instructions are the workflow's and the step's own text, without library packs: use `workflow render` for the real text.
 
 Limits: programs of `require: exec:` entries are not looked up (the proofs do not run, so one that is not installed here does not stop the simulation) and `{{changed.tests}}` needs no `commands.test_files`; the checkout stub reads no repository, so a `guard:` can never fail and no `guard` failure can be scripted; `start`'s refusals for an unset `commands.test`/`lint` and for a first-step pack the library can't find are not made here (use `workflow validate`); locks are always free, so a `uses:` wait is not simulated; there is no daemon, so a sweep, a timeout or a lost turn is not either; a person's `resume` is not scripted, so a stop ends the simulation; a reviewed step's round is delivered at once with no review window, and every verdict the script gives is proven (the daemon's hook log is not read), so `review_unproven` and the other proof failures can't be scripted, and the checkout cannot change under a round (`review_guard`).
@@ -1517,7 +1528,7 @@ A sibling that is under way also carries what `current` shows of a step: `attemp
 
 **What does not read a grouped definition.**
 
-- `workflow simulate` and `workflow graph` refuse it (`invalid_workflow`, naming the groups): they would play or draw the siblings as a row of plain steps.
+- `workflow graph` refuses it (`invalid_workflow`, naming the groups): it would draw the siblings as a row of plain steps. `workflow simulate` plays it (see [Simulating a workflow](#simulating-a-workflow)).
 - `workflow stats`, `workflow trace` and `workflow insights` read grouped runs **best-effort**. They are read-only analytics over finished runs, so they are not refused. Per-step attempt and token rows still land per sibling (the attempt record is keyed by step). Their group-level roll-ups assume definition order, so they may mislead until later work makes them group-aware.
 - `validate`'s `on_fail_exceeds_max_attempts` warning can fire early on a grouped definition: its span math sums the siblings between the failing step and its `goto`, which a group retry does not re-run. It warns; it never refuses.
 
@@ -1668,7 +1679,7 @@ workspace workflow start explore --prompt "What would make uploads resumable?"
 
 ### The `explore-parallel` preset
 
-`explore-parallel` is [`explore`](#the-explore-preset)'s read-only research with one `fan_out` group: `read` runs the siblings `code` and `tests` as sub-agents of the run pane's own session (the default execution mode; each `guard: unchanged`, each writing its own file), then `report` joins `code.md` and `tests.md` behind an `approve` gate. Its only input is `task`. It is the example for [`fan_out`](#running-steps-in-parallel-with-fan_out); `workflow simulate` and `workflow graph` refuse it.
+`explore-parallel` is [`explore`](#the-explore-preset)'s read-only research with one `fan_out` group: `read` runs the siblings `code` and `tests` as sub-agents of the run pane's own session (the default execution mode; each `guard: unchanged`, each writing its own file), then `report` joins `code.md` and `tests.md` behind an `approve` gate. Its only input is `task`. It is the example for [`fan_out`](#running-steps-in-parallel-with-fan_out); `workflow graph` refuses it; `workflow simulate` plays it.
 
 ```
 workspace workflow validate lib/workflows/explore-parallel.yml

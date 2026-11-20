@@ -324,9 +324,7 @@ module Workspace
 
     # The ids of +step_id+'s fan_out group, in step order; nil for a step in no group.
     def group_of(run, step_id)
-      return nil unless WorkflowRun.step_scoped?(run, step_id)
-      group = run["definition"]["steps"].find { |step| step["id"] == step_id }["group"]
-      WorkflowDefinition.group_steps(run["definition"])[group]
+      WorkflowDefinition.siblings_of(run["definition"], step_id)
     end
 
     # Starts every sibling of a group at once, each in its own author pane: the first in the run's pane, each after it

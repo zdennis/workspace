@@ -16,6 +16,10 @@ module Workspace
   # The fake agent acts when the engine says a step is waiting for it: it writes the step's files, reports if the
   # script says so, and ends its turn. The simulation ends when the run is finished, when it waits for a person
   # (a failed check, a spent budget, a missing file, a refusal), or after {MAX_ACTIONS} actions.
+  #
+  # A `fan_out` group plays as the engine runs it: every sibling starts at once, the first in {PANE} and each after it
+  # in a new pane ({SimPanes#spawn_author}); the fake agent ends the siblings' turns one at a time in the group's step
+  # order, and the engine's join decides what follows.
   class WorkflowSimulator
     # The most actions (agent turns, gate decisions, ended waits) one simulation takes.
     MAX_ACTIONS = 200
@@ -54,10 +58,8 @@ module Workspace
     #   "capped", "max_actions", "actions", "run" (state, current step, reason code, loops), "steps"
     #   (each step's attempts: n, outcome, code), "budget" (the token reading, or nil) and "transitions" (the
     #   run's history: n, at (seconds into the simulation), type and the event's own keys)
-    # @raise [Workspace::Error] the engine's refusals of a start (`input_required`, `invalid_input`, ...); code
-    #   `invalid_workflow` for a definition with a `fan_out` group, which a simulation would play as steps in a row
+    # @raise [Workspace::Error] the engine's refusals of a start (`input_required`, `invalid_input`, ...)
     def call(definition:, script:, inputs: {})
-      WorkflowDefinition.refuse_groups(definition.to_h, doing: "simulated", later: "the simulator playing a group's steps interleaved (a later change)")
       @tmpdir.call("workspace-simulate") do |dir|
         play(definition, script, script.inputs.merge(inputs), dir)
       end
@@ -126,12 +128,12 @@ module Workspace
         run = store.run(id)
         return [actions, false] if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
         return [actions, true] if actions >= @max_actions
-        move = next_move(run, script, marks)
+        move, step = next_move(run, script, marks)
         return [actions, false] unless move
         actions += 1
         begin
-          act(move, engine, store, run, data, script, clock, records)
-          marks << [move, run.current, run.step(run.current).last_attempt&.n] if %i[pause turn].include?(move)
+          act(move, step, engine, store, run, data, script, clock, records)
+          marks << [move, step, run.step(step).last_attempt&.n] if %i[pause turn].include?(move)
         rescue Workspace::Error => e
           store.record_event(id, "simulated_refused", "code" => e.code, "message" => e.message.lines.first.to_s.strip)
           return [actions, false]
@@ -139,16 +141,50 @@ module Workspace
       end
     end
 
+    # The next move and the step it is for. Outside a group that is the run's current step. While a fan_out group is
+    # under way every sibling is looked at, in the group's step order: first each running sibling's agent ends its turn,
+    # then each sibling's gate is decided, then a sibling's backoff is waited out, so siblings at work finish before the
+    # clock jumps.
     def next_move(run, script, marks)
       state = run.steps.fetch(run.current)
       here = [run.current, state.last_attempt&.n]
-      return :unpause if run.paused && unpause?(script, marks)
-      return :pause if !run.paused && state.state == "running" && here.last && script.attempt(*here).key?("pause") && !marks.include?([:pause, *here])
-      backoff = run.backoff_for(run.current)
-      return :backoff if backoff.is_a?(Hash) && backoff["to"].is_a?(String) && !backoff["blocked"]
-      return :gate if state.gate_waiting?
-      return :review if state.state == "reviewing" && run.reason_for(run.current).nil? && !run.parked && state.review.is_a?(Hash) && state.review["pane"] == REVIEW_PANE
-      :turn if state.state == "running" && run.reason_for(run.current).nil? && !run.parked
+      return [:unpause, run.current] if run.paused && unpause?(script, marks)
+      return [:pause, run.current] if !run.paused && state.state == "running" && here.last && script.attempt(*here).key?("pause") && !marks.include?([:pause, *here])
+      siblings = siblings_of(run, run.current)
+      return group_move(run, siblings) if siblings
+      return [:backoff, run.current] if waiting_out?(run, run.current)
+      return [:gate, run.current] if state.gate_waiting?
+      return [:review, run.current] if state.state == "reviewing" && run.reason_for(run.current).nil? && !run.parked && state.review.is_a?(Hash) && state.review["pane"] == REVIEW_PANE
+      [:turn, run.current] if at_work?(run, run.current)
+    end
+
+    # No review move: a fan_out sibling can't take `review:` (the definition refuses it).
+    def group_move(run, siblings)
+      step = siblings.find { |id| at_work?(run, id) }
+      return [:turn, step] if step
+      step = siblings.find { |id| run.step(id).gate_waiting? }
+      return [:gate, step] if step
+      step = siblings.find { |id| waiting_out?(run, id) }
+      [:backoff, step] if step
+    end
+
+    def at_work?(run, step)
+      run.step(step).state == "running" && run.reason_for(step).nil? && !run.parked
+    end
+
+    def waiting_out?(run, step)
+      backoff = run.backoff_for(step)
+      backoff.is_a?(Hash) && backoff["to"].is_a?(String) && !backoff["blocked"]
+    end
+
+    # The ids of +step+'s fan_out group in step order; nil for a step in no group.
+    def siblings_of(run, step)
+      WorkflowDefinition.siblings_of(run.definition, step)
+    end
+
+    # The step keyword the engine's calls take for a fan_out sibling, which names the one it is about; empty otherwise.
+    def step_kw(run, step)
+      WorkflowRun.step_scoped?(run.to_h, step) ? {step: step} : {}
     end
 
     # Whether the attempt that paused the run says to unpause, once its agent's turn has ended.
@@ -157,13 +193,12 @@ module Workspace
       paused && marks.include?([:turn, *paused.drop(1)]) && script.attempt(*paused.drop(1))["unpause"] == true
     end
 
-    def act(move, engine, store, run, data, script, clock, records)
+    def act(move, step, engine, store, run, data, script, clock, records)
       id = run.id
-      step = run.current
       case move
       when :backoff
-        clock.advance_to(Time.iso8601(run.backoff_for(run.current)["until"]))
-        store.record_event(id, "simulated_wait", "step" => step, "until" => run.backoff_for(run.current)["until"])
+        clock.advance_to(Time.iso8601(run.backoff_for(step)["until"]))
+        store.record_event(id, "simulated_wait", "step" => step, "until" => run.backoff_for(step)["until"])
         engine.tick(id, actor: "daemon")
       when :gate
         number = run.step(step).last_attempt.n
@@ -171,10 +206,10 @@ module Workspace
         if said["gate"] == "reject"
           note = said["note"] || "rejected by the script"
           store.record_event(id, "simulated_person", "action" => "reject", "step" => step, "attempt" => number)
-          engine.reject(id, actor: "person", note: note)
+          engine.reject(id, actor: "person", note: note, **step_kw(run, step))
         else
           store.record_event(id, "simulated_person", "action" => "approve", "step" => step, "attempt" => number)
-          engine.approve(id, actor: "person", note: said["note"])
+          engine.approve(id, actor: "person", note: said["note"], **step_kw(run, step))
         end
       when :pause
         text = said_text(script, run)
@@ -184,7 +219,7 @@ module Workspace
         store.record_event(id, "simulated_person", "action" => "unpause", "step" => step)
         engine.unpause(id, actor: "person")
       when :turn
-        turn(engine, store, run, data, script, records, clock)
+        turn(engine, store, run, step, data, script, records, clock)
       when :review
         review(engine, store, run, script, clock)
       end
@@ -216,9 +251,9 @@ module Workspace
       engine.turn_ended(id, actor: "daemon", pane: REVIEW_PANE)
     end
 
-    def turn(engine, store, run, data, script, records, clock)
+    # The agent in +step+'s pane does the attempt and ends its turn; a fan_out sibling's in the pane it was started in.
+    def turn(engine, store, run, step, data, script, records, clock)
       id = run.id
-      step = run.current
       number = run.step(step).last_attempt.n
       said = script.attempt(step, number)
       definition = data["steps"].find { |each| each["id"] == step }
@@ -226,10 +261,10 @@ module Workspace
       files.each { |file| write(run, file, clock) }
       store.record_event(id, "simulated_agent", {"action" => "turn", "step" => step, "attempt" => number, "wrote" => files}.merge(said.slice("report", "summary", "code")))
       records.tokens[[step, number]] = said["tokens"].to_i
-      engine.report(id, actor: "agent", status: said["report"], summary: said["summary"], code: said["code"]) if said["report"]
+      engine.report(id, actor: "agent", status: said["report"], summary: said["summary"], code: said["code"], **step_kw(run, step)) if said["report"]
       # The turn takes a second, so the next attempt starts after this one's files and an old file reads as stale.
       clock.advance(1)
-      engine.turn_ended(id, actor: "daemon", pane: PANE)
+      engine.turn_ended(id, actor: "daemon", pane: run.pane_for(step) || PANE, **step_kw(run, step))
     end
 
     def write(run, file, clock)
@@ -301,23 +336,32 @@ module Workspace
       end
     end
 
-    # A pane that is only a name: bound to one run, always there, and it takes every line.
+    # Panes that are only names: always there, and they take every line. The run's own pane is {PANE}; each fan_out
+    # sibling after the first gets a new one ({#spawn_author}), `%sim-2`, `%sim-3`, ... in the order they are made.
     class SimPanes
       def initialize
         @bound = {}
+        @spawned = 0
       end
 
-      def bind(run_id:, pane:, **)
-        @bound[run_id] = pane
+      def bind(run_id:, pane:, step: nil, **)
+        @bound[pane] = {run_id: run_id, step: step}
       end
 
-      # Only the author is ever bound here: the review pane is a name nobody binds.
-      def unbind(run_id, role: nil)
-        @bound.delete(run_id) unless role == "reviewer"
+      # A `subagents` group's one binding: the run pane works on the group whole, with no sibling's step id on it
+      # ({WorkflowPanes#bind_group}); the pane's next normal step binds over it.
+      def bind_group(run_id:, pane:, group:, **)
+        @bound[pane] = {run_id: run_id, group: group}
+      end
+
+      # Only authors are ever bound here: the review pane is a name nobody binds.
+      def unbind(run_id, role: nil, pane: nil, step: nil)
+        return if role == "reviewer"
+        @bound.delete_if { |bound, entry| entry[:run_id] == run_id && (pane.nil? || bound == pane) && (step.nil? || entry[:step] == step) }
       end
 
       def run_on(pane)
-        @bound.key(pane)
+        @bound[pane]&.fetch(:run_id)
       end
 
       def bound_on(pane)
@@ -325,11 +369,20 @@ module Workspace
         run_id && {run_id: run_id, role: "author"}
       end
 
-      def pane_of(run_id, step: nil)
-        @bound[run_id]
+      def step_on(pane)
+        @bound[pane]&.fetch(:step)
       end
 
-      def alive?(_run_id)
+      def pane_of(run_id, step: nil)
+        @bound.find { |_, entry| entry[:run_id] == run_id && (step.nil? || entry[:step] == step) }&.first
+      end
+
+      def spawn_author(_workspace)
+        @spawned += 1
+        {pane: "#{PANE}-#{@spawned + 1}"}
+      end
+
+      def alive?(_run_id, step: nil)
         true
       end
 
@@ -364,7 +417,12 @@ module Workspace
         true
       end
 
-      def identity(_run_id)
+      def identity(_run_id, step: nil)
+        nil
+      end
+
+      # A pane of the simulation runs no process tmux could name, which proves nothing about a continue mark.
+      def pane_pid(_workspace, _pane)
         nil
       end
 
@@ -486,7 +544,7 @@ module Workspace
 
       def finish(run:, step:, attempt:)
         finished = __getobj__.finish(run: run, step: step, attempt: attempt).thawed
-        finished["usage"] = {"input_tokens" => 0, "output_tokens" => @tokens.fetch([run["current"], finished["n"]], 0)}
+        finished["usage"] = {"input_tokens" => 0, "output_tokens" => @tokens.fetch([step["id"], finished["n"]], 0)}
         WorkflowRun::Attempt.from_h(finished)
       end
     end

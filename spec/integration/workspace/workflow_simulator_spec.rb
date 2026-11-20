@@ -227,16 +227,100 @@ RSpec.describe Workspace::WorkflowSimulator do
     expect(Dir.children(base)).to eq([])
   end
 
-  it "refuses a definition with a fan_out group, naming the group, before it makes anything" do
-    grouped = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "fan_out.yml")), id: "fan_out", source: "file", path: nil)
-    script = Workspace::WorkflowSimScript.parse("steps: {}\n", definition: grouped.to_h, source: "s.yml")
+  describe "a fan_out group" do
+    let(:fixture) { File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "fan_out.yml")) }
+    # The fixture's group runs in the default mode, `subagents`; the pane-path specs pin `process_separation`,
+    # where each sibling is dispatched into a pane of its own.
+    let(:grouped) { Workspace::WorkflowDefinition.parse(fixture, id: "fan_out", source: "file", path: nil) }
+    let(:separate) do
+      Workspace::WorkflowDefinition.parse(fixture.sub("    fan_out:", "    execution_mode: process_separation\n    fan_out:"),
+        id: "fan_out", source: "file", path: nil)
+    end
 
-    expect { simulator.call(definition: grouped, script: script, inputs: {"task" => "t"}) }.to raise_error(Workspace::Error) { |error|
-      expect(error.code).to eq("invalid_workflow")
-      expect(error.message).to include("can't be simulated", "fan_out group checks (lint, test, docs)", "interleaved")
-      expect(error.details).to eq("workflow" => "fan_out", "groups" => {"checks" => %w[lint test docs]})
-    }
-    expect(made).to eq([])
+    def play_grouped(text, definition: grouped)
+      play(text, definition: definition, inputs: {"task" => "t"})
+    end
+
+    def rows(result, type)
+      result["transitions"].select { |each| each["type"] == type }.map { |each| each.slice("step", "attempt", "pane", "cause") }
+    end
+
+    it "starts every sibling at once, the first in the run's pane and each after it in a new one, and starts report once all passed" do
+      result = play_grouped("steps: {}\n", definition: separate)
+
+      expect(result).to include("outcome" => "completed", "stopped" => nil)
+      expect(rows(result, "step_dispatching")).to eq([
+        {"step" => "plan", "attempt" => 1, "pane" => "%sim", "cause" => "first"},
+        {"step" => "lint", "attempt" => 1, "pane" => "%sim", "cause" => "next_step"},
+        {"step" => "test", "attempt" => 1, "pane" => "%sim-2", "cause" => "next_step"},
+        {"step" => "docs", "attempt" => 1, "pane" => "%sim-3", "cause" => "next_step"},
+        {"step" => "report", "attempt" => 1, "pane" => "%sim", "cause" => "next_step"}
+      ])
+      # The siblings' turns end one at a time in the group's order, and report waits for the last.
+      turns = result["transitions"].select { |each| each["type"] == "simulated_agent" }.map { |each| each["step"] }
+      expect(turns).to eq(%w[plan lint test docs report])
+    end
+
+    it "runs a subagents group's siblings in the run pane's own session, still in the group's order" do
+      result = play_grouped("steps: {}\n")
+
+      expect(result).to include("outcome" => "completed", "stopped" => nil)
+      expect(rows(result, "step_dispatching")).to eq([
+        {"step" => "plan", "attempt" => 1, "pane" => "%sim", "cause" => "first"},
+        {"step" => "lint", "attempt" => 1, "pane" => "%sim", "cause" => "next_step"},
+        {"step" => "test", "attempt" => 1, "pane" => "%sim", "cause" => "next_step"},
+        {"step" => "docs", "attempt" => 1, "pane" => "%sim", "cause" => "next_step"},
+        {"step" => "report", "attempt" => 1, "pane" => "%sim", "cause" => "next_step"}
+      ])
+      turns = result["transitions"].select { |each| each["type"] == "simulated_agent" }.map { |each| each["step"] }
+      expect(turns).to eq(%w[plan lint test docs report])
+    end
+
+    it "defers a sibling's failure until the others drain, then applies its on_fail move inside the group" do
+      budgeted = Workspace::WorkflowDefinition.parse(fixture.sub("    fan_out:", "    execution_mode: process_separation\n    fan_out:").sub("steps:", "budget: {tokens: 1000}\nsteps:"), id: "fan_out", source: "file", path: nil)
+
+      result = play_grouped("steps:\n  checks:\n    lint: [{tokens: 5}]\n    test: [{report: fail, tokens: 7}]\n", definition: budgeted)
+
+      expect(result).to include("outcome" => "completed")
+      expect(result["run"]["loops"]).to eq("test->lint" => 1)
+      types = result["transitions"].map { |each| [each["type"], each["step"]] }
+      failed = types.index(["step_failed", "test"])
+      expect(types.index(["step_passed", "docs"])).to be > failed
+      expect(types.index(["step_retry_started", nil])).to be > types.index(["step_passed", "docs"])
+      expect(rows(result, "step_dispatching").drop(4).first(2)).to eq([
+        {"step" => "lint", "attempt" => 2, "pane" => "%sim", "cause" => "loop"},
+        {"step" => "test", "attempt" => 2, "pane" => "%sim-2", "cause" => "next_step"}
+      ])
+      test = result["steps"].find { |each| each["id"] == "test" }
+      expect(test["attempts"].map { |each| each["outcome"] }).to eq(%w[failed passed])
+      # Each sibling's tokens are its own attempt's, whichever sibling the cursor is on when it ends.
+      expect(result["budget"]).to include("used" => 12, "allowance" => 1000)
+    end
+
+    it "stops at the join with the failed sibling's reason once its move leaves the group" do
+      result = play_grouped("steps:\n  checks:\n    lint: [{report: fail}]\n")
+
+      expect(result).to include("outcome" => "stopped", "stopped" => {"step" => "lint", "attempt" => 1, "reason" => "failed_check"})
+      expect(result["steps"].to_h { |each| [each["id"], each["state"]] }).to eq("plan" => "passed", "lint" => "failed", "test" => "passed", "docs" => "passed", "report" => "pending")
+    end
+
+    it "decides a sibling's gate while its group is under way, naming the sibling" do
+      gated = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "fan_out.yml")).sub("produces: [test.md]", "produces: [test.md]\n        gate: approve"),
+        id: "fan_out", source: "file", path: nil)
+
+      result = play_grouped("steps: {}\n", definition: gated)
+
+      expect(result).to include("outcome" => "completed")
+      person = result["transitions"].select { |each| each["type"] == "simulated_person" }
+      expect(person).to match([include("action" => "approve", "step" => "test", "attempt" => 1)])
+
+      rejected = play_grouped("steps:\n  checks:\n    test: [{gate: reject}, {}]\n", definition: gated)
+
+      expect(rejected).to include("outcome" => "completed")
+      person = rejected["transitions"].select { |each| each["type"] == "simulated_person" }
+      expect(person).to match([include("action" => "reject", "step" => "test", "attempt" => 1), include("action" => "approve", "step" => "test", "attempt" => 2)])
+      expect(rejected["steps"].find { |each| each["id"] == "test" }["attempts"].size).to eq(2)
+    end
   end
 end
 
