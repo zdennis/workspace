@@ -97,8 +97,8 @@ module Workspace
     # The agent's turn ended in the run's pane: decides the current step. See {WorkflowEvaluation#turn_ended}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run afterwards
-    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, step: nil)
-      @evaluation.turn_ended(run_id, actor: actor, pane: pane, step: step, turn_started: turn_started, stopped_at: stopped_at, background: background, transcript_path: transcript_path).to_h
+    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, step: nil, group: nil)
+      @evaluation.turn_ended(run_id, actor: actor, pane: pane, step: step, group: group, turn_started: turn_started, stopped_at: stopped_at, background: background, transcript_path: transcript_path).to_h
     end
 
     # Records what the agent says about its current attempt. See {WorkflowEvaluation#report}.

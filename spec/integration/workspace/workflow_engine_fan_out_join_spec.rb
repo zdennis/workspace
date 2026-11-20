@@ -405,4 +405,69 @@ RSpec.describe Workspace::WorkflowEngine do
     expect(kicks_into("%5").size).to eq(2)
     expect(events.count { |line| line["type"] == "step_retry_started" }).to eq(1)
   end
+
+  describe "a subagents group's turn end" do
+    def sub_flow(on_fail: false)
+      yaml = <<~YAML
+        max_attempts: 40
+        steps:
+          checks:
+            execution_mode: subagents
+            fan_out:
+              lint:
+                prompt: Do lint.
+                produces: [lint.md]
+              test:
+                prompt: Do test.
+                produces: [test.md]
+          report:
+            prompt: Report.
+            produces: [report.md]
+      YAML
+      yaml = yaml.sub("        produces: [test.md]\n", "        produces: [test.md]\n        on_fail: {goto: lint, max: 2}\n") if on_fail
+      Workspace::WorkflowDefinition.parse(yaml, id: "flow", source: "global", path: "/defs/flow.yml")
+    end
+
+    it "judges every sibling still without an outcome when the run pane's turn ends, and starts the step after the group" do
+      start(sub_flow)
+      write("lint")
+      write("test")
+
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5", group: "checks")
+
+      expect(state("lint")).to eq("passed")
+      expect(state("test")).to eq("passed")
+      expect(state("report")).to eq("running")
+      expect(run).to include("state" => "running", "current" => "report")
+    end
+
+    it "judges a sibling that reported pass from its report, and the unreported one from its files" do
+      start(sub_flow)
+      write("lint")
+      engine.report("wr_1", actor: "agent", status: "pass", summary: "lint done", step: "lint")
+      write("test")
+
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5", group: "checks")
+
+      expect(state("report")).to eq("running")
+      expect(attempts("lint").last).to include("reported" => include("status" => "pass"))
+    end
+
+    it "drives the group's failure loop from a reported fail, re-attempting the target with a one-sibling line" do
+      start(sub_flow(on_fail: true))
+
+      write("lint")
+      write("test")
+      engine.report("wr_1", actor: "agent", status: "fail", summary: "test broke", step: "test")
+      engine.turn_ended("wr_1", actor: "agent", pane: "%5", group: "checks")
+
+      expect(dispatched).to include(["lint", "loop"])
+      expect(attempts("lint").size).to eq(2)
+      lint_file = attempts("lint").last["prompt_file"]
+      last_kick = kicks_into("%5").last
+      expect(last_kick[:text]).to include(Workspace::WorkflowDispatch::SUBAGENT_KICK)
+      expect(last_kick[:text]).to include("Step lint: Read #{lint_file} and follow it.")
+      expect(last_kick[:text]).not_to include("Step test")
+    end
+  end
 end

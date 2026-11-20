@@ -175,6 +175,7 @@ module Workspace
             options[:prompt_timeout] = @common.parse_duration_option("--prompt-timeout", v, positive: true)
           end
           opts.on("--turn-ended", "advance: a turn ended in the run's pane") { options[:turn_ended] = true }
+          opts.on("--group GROUP", "advance --turn-ended: the fan_out group the run pane is bound to whole; the turn end judges every sibling still without an outcome") { |v| options[:group] = v }
           opts.on("--turn-started AT", "advance: when that turn began (ISO 8601)") { |v| options[:turn_started] = v }
           opts.on("--stopped-at AT", "advance: when the daemon saw that turn end (ISO 8601)") { |v| options[:stopped_at] = v }
           opts.on("--background-task TYPE:ID", "advance: a background task still going when the turn ended (repeatable)") { |v| options[:background] << workflow_background_task(v) }
@@ -394,7 +395,7 @@ module Workspace
           code = outcome[:exit_code] if outcome.is_a?(Hash)
           invocation.exit_handler.exit(code) if code && !code.zero?
         when "advance"
-          @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], step: options[:step], turn_started: workflow_time(options[:turn_started], "--turn-started"),
+          @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], step: options[:step], group: options[:group], turn_started: workflow_time(options[:turn_started], "--turn-started"),
             stopped_at: workflow_time(options[:stopped_at], "--stopped-at"), background: options[:background], transcript_path: options[:transcript_path], caller_pane: ENV["TMUX_PANE"])
         when "run"
           name = workflow_workspace(options)
@@ -570,6 +571,7 @@ module Workspace
       def workflow_gate_options(subcommand, options)
         gated = %w[approve reject].include?(subcommand)
         raise UsageError, "--step and --attempt are for `workflow approve` and `workflow reject`." if !gated && (options[:attempt] || (options[:step] && !(subcommand == "advance" && options[:turn_ended])))
+        raise UsageError, "--group is only for `workflow advance --turn-ended`." if options[:group] && !(subcommand == "advance" && options[:turn_ended])
         raise UsageError, "--note-sha256 is for `workflow approve`." if options[:note_sha256] && subcommand != "approve"
         raise UsageError, "--attempt needs --step: the attempt is of the gated step." if options[:attempt] && !options[:step]
         if options[:note_sha256] && !options[:note_sha256].match?(/\A[0-9a-f]{64}\z/)

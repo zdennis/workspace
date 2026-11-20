@@ -1057,7 +1057,7 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] code `bound_pane` for a step with a guard or a status check, from a pane
       #   bound to the run or a process under it
-      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, transcript_path: nil, caller_pane: nil, step: nil)
+      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, transcript_path: nil, caller_pane: nil, step: nil, group: nil)
         stored = begin
           @store.run(run)
         rescue Workspace::Error
@@ -1074,7 +1074,11 @@ module Workspace
           @infra_retry.call(stored)
           return nil
         end
-        turn_ended ? @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || [], transcript_path: transcript_path, **step_kwarg(step)) : @engine.tick(run, actor: "daemon")
+        if turn_ended
+          @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || [], transcript_path: transcript_path, **step_kwarg(step), **(group ? {group: group} : {}))
+        else
+          @engine.tick(run, actor: "daemon")
+        end
         nil
       end
 

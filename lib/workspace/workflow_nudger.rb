@@ -67,8 +67,15 @@ module Workspace
       run_id = @panes.bound_on(pane_id)&.fetch(:run_id)
       return nil unless run_id
       # An author pane's binding names its step; the run uses it to tell a fan_out sibling's turn end from the cursor's.
+      # A pane bound to a fan_out group whole (the run pane working on its subagent siblings) names the group instead:
+      # the turn end judges every sibling still without an outcome.
       bound_step = @panes.step_on(pane_id) if @panes.respond_to?(:step_on)
-      step = bound_step ? ["--step", bound_step] : []
+      group = @panes.group_on(pane_id) if @panes.respond_to?(:group_on)
+      step = if bound_step
+        ["--step", bound_step]
+      else
+        (group ? ["--group", group] : [])
+      end
       started = turn_started ? ["--turn-started", turn_started.utc.iso8601(3)] : []
       tasks = Array(background).flat_map { |task| ["--background-task", "#{task["type"]}:#{task["id"]}"] }
       transcript = (transcript_path.is_a?(String) && !transcript_path.empty?) ? ["--transcript-path", transcript_path] : []
