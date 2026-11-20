@@ -13,6 +13,12 @@ module Workspace
     # The one line typed into the pane; the instructions themselves are in the file.
     KICK = "Read %s and follow it."
 
+    # The one line typed into the run pane for the subagent siblings of a fan_out group: each runs as a sub-agent of
+    # the pane's agent, and the pane reports each one as it finishes. Always delivered fresh, as one line: the
+    # per-sibling lines of the process-separation path would hit `pane_busy`, and one `/clear` per sibling would
+    # queue several into the shared pane. The instructions themselves are in each sibling's prompt file.
+    SUBAGENT_KICK = "Run each step below as its own sub-agent of yours: read its prompt file and follow it, then report the step with `workspace step done --step <step id>` as its instructions say. End your turn once every step is reported."
+
     # What a line refused as `pane_busy` leaves on the attempt, the run's reason and the events; text that may hold
     # pane content is escaped with {TerminalText}.
     #
@@ -137,9 +143,12 @@ module Workspace
       if %w[no_such_pane pane_gone].include?(kick[:code].to_s) && !@panes.pane_gone?(delivery["pane"], workspace: delivery["workspace"])
         kick = kick.merge(pane_listed: true)
       end
-      @store.record_event(run_id, "step_dispatched", "step" => delivery["step"], "attempt" => delivery["attempt"],
-        "pane" => delivery["pane"], "delivered" => kick[:ok], "actor" => "engine", "cause" => delivery["cause"], "from_state" => nil, "to_state" => nil, **kick.slice(:warning, :proof_missing).transform_keys(&:to_s),
-        **self.class.refusal_event_keys(self.class.refusal(kick)))
+      event = {"step" => delivery["step"], "attempt" => delivery["attempt"], "pane" => delivery["pane"], "delivered" => kick[:ok],
+               "actor" => "engine", "cause" => delivery["cause"], "from_state" => nil, "to_state" => nil,
+               **kick.slice(:warning, :proof_missing).transform_keys(&:to_s),
+               **self.class.refusal_event_keys(self.class.refusal(kick))}
+      event["steps"] = delivery["steps"] if delivery["steps"].is_a?(Array)
+      @store.record_event(run_id, "step_dispatched", event)
       @change.call(run_id, actor: "engine", cause: "delivery") { |run| settle(run, delivery, kick) }
     rescue Workspace::Error => e
       # Cancelled while the line was on its way: the cancel stands.
@@ -326,35 +335,75 @@ module Workspace
     # cursor is left on the last sibling started. A paused run, or one whose budget or timeout is used up, holds the
     # first sibling only, as it would one step: the dispatch that ends the hold finds the group still unstarted and
     # fans it out then.
+    #
+    # A sibling whose resolved execution mode is `subagents` runs in the run's own pane instead: no author pane is
+    # spawned, no binding or pane slot is written for it, and its line is not its own — every subagent sibling of the
+    # group shares the one composed line (see {SUBAGENT_KICK}), typed into the run pane after the change.
     def fan_out(run, ids, ctx:, cause:, context:, budgeted:, retry_of:)
       run["current"] = ids.first
       held = run["paused"] || (budgeted && (budget_holds?(run) || time_holds?(run)))
-      start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of)
+      start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of, group_entry: true)
       return if held
       ids.drop(1).each do |id|
         run["current"] = id
         # A checkout that is gone fails the sibling before any pane is made for it.
-        next start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil) unless File.directory?(run["worktree"])
+        next start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil, group_entry: true) unless File.directory?(run["worktree"])
         # The run's lock is held across each sibling's pane spawn, up to that sibling's readiness deadline, so a caller
         # that blocks on the lock (the nudger's advance, approve, cancel, resume) can wait that long. Spawning outside
         # the lock (a two-phase fan-out, as infra retry does) is deferred follow-up work.
+        next start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil, group_entry: true) if subagent_step?(run)
         made = @panes.spawn_author(run["workspace"])
         if made[:error]
           not_delivered(run, step_state(run), nil, {code: made[:error], message: made[:message]})
           slot(run, "reason")["details"]["pane"] = made[:pane] if made[:pane]
           next
         end
-        start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil, pane: made[:pane])
+        start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil, pane: made[:pane], group_entry: true)
       end
+      compose_group_line(run, ids, ctx, cause: cause)
+    end
+
+    # Whether the current step is a fan_out sibling that runs as a sub-agent of the run's own pane.
+    def subagent_step?(run)
+      step = step_def(run)
+      step && step["group"].is_a?(String) && step["execution_mode"] == "subagents"
+    end
+
+    # The one delivery line a `subagents` group's started siblings share, registered once after every sibling's
+    # attempt is stored. A sibling whose attempt never started (its checkout was gone, its prompt could not be
+    # written) is not named: it waits on its own reason. A re-attempt of a single subagent sibling delivers a line
+    # naming only that sibling ({#start_attempt} with +group_entry: false+, from {#dispatch}).
+    def compose_group_line(run, ids, ctx, cause:)
+      started = ids.filter_map do |id|
+        step = step_def_for(run, id)
+        next unless step["execution_mode"] == "subagents"
+        attempt = run.dig("steps", id, "attempts", -1)
+        next unless attempt.is_a?(Hash) && attempt["prompt_file"] && attempt["outcome"] != "not_delivered"
+        [id, attempt["prompt_file"], attempt["n"]]
+      end
+      ctx.add_delivery(subagent_line(run, started, cause: cause)) unless started.empty?
+    end
+
+    # The run's own pane — never a fan_out sibling's author pane, which the cursor's step may name.
+    def run_pane(run)
+      run["pane"] || @panes.pane_of(run["id"])
+    end
+
+    def step_def_for(run, step_id)
+      run["definition"]["steps"].find { |step| step["id"] == step_id }
     end
 
     # The body of {#dispatch}, over a working copy of the run. +pane+ is the pane to type into when the caller made it
-    # (a fan_out sibling's new pane); nil uses the pane the step is bound to.
-    def start_attempt(run, ctx:, cause:, context:, budgeted:, retry_of:, pane: nil)
+    # (a fan_out sibling's new pane); nil uses the pane the step is bound to. +group_entry+ is true when the attempt
+    # starts inside {#fan_out}: a `subagents` sibling then registers no line of its own, because the group's one
+    # composed line is registered once after every sibling's attempt is stored ({#compose_group_line}). A subagent
+    # sibling's attempt outside a group entry (its failure loop's re-attempt) delivers a composed line naming only it.
+    def start_attempt(run, ctx:, cause:, context:, budgeted:, retry_of:, pane: nil, group_entry: false)
       return pause_attempt(run, cause, context, budgeted, retry_of) if run["paused"]
       adopt(run, drop_park(run, "moved_on")) if run.key?("parked")
       step = step_def(run)
       state = step_state(run)
+      subagent = !step["group"].to_s.empty? && step["execution_mode"] == "subagents"
       if budgeted
         spent = budget_holds?(run)
         late = time_holds?(run)
@@ -399,22 +448,45 @@ module Workspace
       adopt(run, WorkflowRun.from_h(run).with_attempt(step["id"], started))
       state = step_state(run)
       attempt = state["attempts"].last
-      @panes.bind(workspace: run["workspace"], pane: pane, run_id: run["id"], step: step["id"], attempt: attempt["n"],
-        instructions: attempt["prompt_file"], artifacts: run["artifacts_dir"])
-      # A step of a group records its pane under its own hash; every other step, at the run's top level as always.
-      WorkflowRun.slots(run, step["id"])["pane"] = pane
+      # A subagent sibling has no pane of its own: the run pane keeps its one binding (the group's, when one is
+      # written) and the sibling records no pane slot, so every pane-keyed reader falls back to the run pane.
+      unless subagent
+        @panes.bind(workspace: run["workspace"], pane: pane, run_id: run["id"], step: step["id"], attempt: attempt["n"],
+          instructions: attempt["prompt_file"], artifacts: run["artifacts_dir"])
+        # A step of a group records its pane under its own hash; every other step, at the run's top level as always.
+        WorkflowRun.slots(run, step["id"])["pane"] = pane
+      end
       state["state"] = "running"
       run["state"] = "running"
       slots(run)["reason"] = nil
       @change.event(run, "step_dispatching", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane, "cause" => cause, "retry_of" => attempt["retry_of"])
-      line = {"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
-              "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh",
-              "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"], "cause" => cause}
-      # A fan_out sibling's line is typed after its siblings'; any other step's is the change's one line.
-      WorkflowRun.step_scoped?(run, step["id"]) ? ctx.add_delivery(line) : ctx.deliver(line)
+      if subagent
+        # The group's composed line is registered once, after every sibling's attempt is stored; a re-attempt on its
+        # own (the failure loop) delivers a composed line naming only this sibling. Its delivery is always fresh: the
+        # run pane's one conversation is cleared before the line is typed, and the sub-agents it starts are new ones.
+        return run if group_entry
+        ctx.add_delivery(subagent_line(run, [[step["id"], attempt["prompt_file"], attempt["n"]]], cause: cause))
+      else
+        line = {"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
+                "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh",
+                "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"], "cause" => cause}
+        # A fan_out sibling's line is typed after its siblings'; any other step's is the change's one line.
+        WorkflowRun.step_scoped?(run, step["id"]) ? ctx.add_delivery(line) : ctx.deliver(line)
+      end
     rescue Workspace::Error, SystemCallError, EncodingError => e
       # The step could not be started (no pane, an unreadable pack, a checkout that is gone, text that can't be written as UTF-8).
       not_delivered(run, state, attempt, {code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.strip})
+    end
+
+    # The delivery line a `subagents` group's (or one re-attempted subagent sibling's) shared line is: the run pane's
+    # agent is told to run each named sibling's prompt file as its own sub-agent and report each step as it finishes.
+    def subagent_line(run, started, cause:)
+      first = started.first
+      {"step" => first[0], "steps" => started.map { |id, _file, _n| id }, "attempts" => started.to_h { |id, _file, n| [id, n] },
+       "workspace" => run["workspace"], "pane" => run_pane(run),
+       "text" => "#{SUBAGENT_KICK} " + started.map { |id, file, _n| "Step #{id}: #{format(KICK, file)}" }.join(" "),
+       "fresh" => true, "remote_baseline" => started.any? { |id, _file, _n| WorkflowRequire.remote_baseline?(step_def_for(run, id)) },
+       "worktree" => run["worktree"], "cause" => cause}
     end
 
     # The cause a dispatch that ends a lock wait is written with: the one the waiting dispatch had, for the same step.
@@ -437,16 +509,25 @@ module Workspace
 
     # The daemon's answer to a typed line, applied to the stored run.
     # A fan_out sibling's line is settled whichever sibling the cursor is on: the group's lines are typed one after another.
+    # A `subagents` group's one composed line names every sibling it was typed for ("steps" with each one's attempt
+    # number under "attempts"): a kick's answer settles them all — a failed one puts each named sibling on its own wait.
     def settle(run, delivery, kick)
       work = run.thawed
-      state = work["steps"].fetch(delivery["step"])
-      attempt = state["attempts"].last
-      after = (attempt["n"] == delivery["attempt"]) ? attempt.delete("after_park") : nil
-      return WorkflowRun.from_h(work) unless on_step?(work, delivery["step"]) && attempt["n"] == delivery["attempt"] && attempt["delivery"] == "delivering"
-      attempt.delete("delivery")
+      ids = (delivery["steps"].is_a?(Array) && delivery["steps"].any?) ? delivery["steps"] : [delivery["step"]]
+      numbers = delivery["attempts"].is_a?(Hash) ? delivery["attempts"] : {delivery["step"] => delivery["attempt"]}
+      after = nil
+      settled = ids.filter_map do |id|
+        state = work["steps"].fetch(id)
+        attempt = state["attempts"].last
+        next unless on_step?(work, id) && attempt.is_a?(Hash) && attempt["n"] == numbers[id] && attempt["delivery"] == "delivering"
+        attempt.delete("delivery")
+        after ||= attempt.delete("after_park")
+        [state, attempt, id]
+      end
+      return WorkflowRun.from_h(work) if settled.empty?
       return WorkflowRun.from_h(work) if kick[:ok]
-      not_delivered(work, state, attempt, kick, delivery["step"])
-      return WorkflowRun.from_h(work) unless work["current"] == delivery["step"]
+      settled.each { |state, attempt, id| not_delivered(work, state, attempt, kick, id) }
+      return WorkflowRun.from_h(work) unless ids.include?(work["current"])
       park_again(WorkflowRun.from_h(work), after, kick)
     end
 
@@ -459,10 +540,15 @@ module Workspace
     # that dies here leaves an attempt with no reading, which that proof fails as unproven.
     def record_remote(run_id, delivery)
       reading = @guard.remote_head(delivery["worktree"])
+      ids = (delivery["steps"].is_a?(Array) && delivery["steps"].any?) ? delivery["steps"] : [delivery["step"]]
+      numbers = delivery["attempts"].is_a?(Hash) ? delivery["attempts"] : {delivery["step"] => delivery["attempt"]}
       @change.call(run_id, actor: "engine", cause: "delivery") do |run|
-        attempt = run.step(delivery["step"]).last_attempt
-        next unless on_step?(run.to_h, delivery["step"]) && attempt.n == delivery["attempt"]
-        run.with_attempt(delivery["step"], WorkflowRun::Attempt.from_h(attempt.to_h.merge("remote" => reading)))
+        ids.each do |id|
+          attempt = run.step(id).last_attempt
+          next unless on_step?(run.to_h, id) && attempt.n == numbers[id]
+          run = run.with_attempt(id, WorkflowRun::Attempt.from_h(attempt.to_h.merge("remote" => reading)))
+        end
+        run
       end
     rescue Workspace::Error => e
       # Only a cancel stops the line; otherwise the attempt goes on with no reading, which that proof fails as unproven.
