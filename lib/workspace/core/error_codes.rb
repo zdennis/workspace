@@ -225,6 +225,8 @@ module Workspace
       "unsupported_agent" => "The pane's agent can't be restarted; or, from agent-run send --when-idle, its screen can't be checked for a dialog or a draft (every agent but Claude Code), so nothing was queued. details.kind.",
       "pane_waiting" => "agent-run send --when-idle, --clear-first or --interrupt:the pane's agent waits on a person (a permission prompt, a question, AskUserQuestion or ExitPlanMode), so nothing was queued. details.reason: waiting or question_open.",
       "queue_full" => "agent-run send --when-idle or --clear-first: the pane already has the most prompts queued, so nothing was queued. details.limit.",
+      "unknown_queue_item" => "No finished work queue item has an id starting with the given text. details.id.",
+      "ambiguous_queue_item" => "The given text starts the id of more than one finished work queue item; give more of the id. details.id, details.matches.",
       "unknown_id" => "agent-run queue cancel: no prompt with that id is queued (it was typed, dropped or never made), or its text may already be in the pane (details.state: delivering).",
       "context_unavailable" => "The agent can't report context usage, so /clear can't be confirmed.",
       "context_unknown" => "The agent's context usage couldn't be read.",

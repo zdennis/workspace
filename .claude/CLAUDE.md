@@ -228,6 +228,10 @@ New per-file detail goes there, never here.
 - `spec/support/cli_test_helpers.rb` — The CLI's spec fakes and `CLITestHelpers.build_cli`.
 - `lib/workspace/help_json.rb` — `--help --json`: decides whether a command line truly asks for a help page in JSON, and turns the page text the command prints into one document, so the JSON and the text are the same words and cannot drift.
 
+### Work queue (`docs/architecture/work-queue.md`)
+
+- `lib/workspace/work_queue_history.rb` — Age-pruned `work-queue-history.jsonl` of finished queue items: append, filtered reads, id-prefix lookup and clear.
+
 ### Locks, plan, spine, inbox (`docs/architecture/locks-plan-spine-inbox.md`)
 
 - `lib/workspace/spine_file.rb` — Reads one spine file (a stage or `goal.md`) without ever failing.
