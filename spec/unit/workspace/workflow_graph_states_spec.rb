@@ -173,18 +173,8 @@ RSpec.describe Workspace::WorkflowGraphStates do
       )
     end
 
-    it "reads a sibling's goto that names a group id from the group's fork" do
-      hash = fixture("looped_twice").merge(
-        "definition" => {"id" => "demo", "steps" => [{"id" => "a", "group" => "g"}, {"id" => "b", "group" => "g"},
-          {"id" => "after", "on_fail" => {"goto" => "g", "max" => 2}}],
-                         "groups" => {"g" => {"steps" => %w[a b]}}},
-        "loops" => {"after->g" => 1}, "steps" => {}, "current" => "after"
-      )
-      expect(fail_edge(mark(hash), "after")).to include("to" => "g.group", "loops" => 1)
-    end
-
     it "counts the group's loops from its join edge and a sibling's own goto from its own key" do
-      expect(fail_edge(model, "checks.join")["loops"]).to eq(2)
+      expect(fail_edge(model, "checks.join")).to include("loop_key" => "checks->plan", "loops" => 2)
       expect(fail_edge(model, "lint")["loops"]).to eq(0)
     end
   end

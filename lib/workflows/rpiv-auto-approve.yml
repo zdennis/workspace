@@ -92,9 +92,9 @@ steps:
     fan_out:
       review_supportive:
         title: Supportive review
-        # A conversation of its own, dispatched by the engine: none of the planner's or another
-        # reviewer's reasoning is in it, and the run's attempt record ties it to its session.
-        # context: fresh  # no-op under subagents (only applies to process_separation)
+        # Under subagents, a sub-agent of the run pane with a conversation of its own: none of the
+        # planner's or another reviewer's reasoning is in it, and the run's attempt record ties it to its session.
+        # context: fresh  # refused under subagents (only applies to process_separation)
         prompt: |
           You are the supportive reviewer of the workspace plan (`workspace plan path`). No person
           will look at it, so this review is the only approval it gets.
@@ -110,11 +110,11 @@ steps:
           plan_revision: REV
         produces: [approval-supportive.md]
         guard: unchanged
-        # timeout: 30m  # no-op under subagents (only applies to process_separation)
+        # timeout: 30m  # refused under subagents (only applies to process_separation)
 
       review_skeptical:
         title: Skeptical review
-        # context: fresh  # no-op under subagents (only applies to process_separation)
+        # context: fresh  # refused under subagents (only applies to process_separation)
         prompt: |
           You are the skeptical reviewer of the workspace plan (`workspace plan path`). No person
           will look at it, so this review is the only approval it gets.
@@ -131,11 +131,11 @@ steps:
           plan_revision: REV
         produces: [approval-skeptical.md]
         guard: unchanged
-        # timeout: 30m  # no-op under subagents (only applies to process_separation)
+        # timeout: 30m  # refused under subagents (only applies to process_separation)
 
       review_implementer:
         title: Implementer review
-        # context: fresh  # no-op under subagents (only applies to process_separation)
+        # context: fresh  # refused under subagents (only applies to process_separation)
         prompt: |
           You are the implementer reviewer of the workspace plan (`workspace plan path`). No person
           will look at it, so this review is the only approval it gets. You will have to build this.
@@ -151,7 +151,7 @@ steps:
           plan_revision: REV
         produces: [approval-implementer.md]
         guard: unchanged
-        # timeout: 30m  # no-op under subagents (only applies to process_separation)
+        # timeout: 30m  # refused under subagents (only applies to process_separation)
 
   plan_review:
     title: Plan review

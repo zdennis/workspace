@@ -39,7 +39,7 @@ RSpec.describe Workspace::WorkflowGraph do
     end
 
     it "has the verify fail edge and the gate reject edge" do
-      expect(edges_of(graph, "fail")).to eq([{"from" => "verify", "to" => "implement", "kind" => "fail", "label" => "max 3"}])
+      expect(edges_of(graph, "fail")).to eq([{"from" => "verify", "to" => "implement", "kind" => "fail", "label" => "max 3", "loop_key" => "verify->implement"}])
       expect(edges_of(graph, "reject").map { |edge| edge.values_at("from", "to") }).to eq([%w[plan.gate plan]])
     end
 
@@ -178,14 +178,25 @@ RSpec.describe Workspace::WorkflowGraph do
 
     it "draws the group's goto as a fail edge from the join and a sibling's goto as an ordinary one" do
       expect(edges_of(graph, "fail")).to eq([
-        {"from" => "lint", "to" => "test", "kind" => "fail", "label" => "max 1"},
-        {"from" => "checks.join", "to" => "plan", "kind" => "fail", "label" => "max 2"}
+        {"from" => "lint", "to" => "test", "kind" => "fail", "label" => "max 1", "loop_key" => "lint->test"},
+        {"from" => "checks.join", "to" => "plan", "kind" => "fail", "label" => "max 2", "loop_key" => "checks->plan"}
       ].sort_by { |edge| (edge["from"] == "lint") ? 0 : 1 })
     end
 
-    it "points a goto at the group's id at its fork" do
-      definition = WorkflowGraphGolden::GROUPED.merge("steps" => WorkflowGraphGolden::GROUPED["steps"] + [{"id" => "after", "on_fail" => {"goto" => "checks", "max" => 1}}])
-      expect(edges_of(described_class.build(definition).to_h, "fail")).to include(include("from" => "after", "to" => "checks.group"))
+    it "names the group id on the fork and the join, and on no other node" do
+      expect(graph["nodes"].select { |node| node["group_id"] }.map { |node| [node["id"], node["group_id"]] }).to eq([%w[checks.group checks], %w[checks.join checks]])
+    end
+
+    it "draws two adjacent groups as a fork and join each, the second fork fed by the first join" do
+      definition = {"steps" => [step("a", group: "g"), step("b", group: "h")]}
+      graph = described_class.build(definition).to_h
+      expect(graph["nodes"].map { |node| node["id"] }).to eq(%w[.start g.group a g.join h.group b h.join .end])
+      expect(edge_pairs(graph)).to include(["g.join", "h.group", "next"], ["h.group", "b", "next"], ["b", "h.join", "next"])
+    end
+
+    it "drops a group goto that names no step" do
+      definition = {"steps" => [step("a"), step("b", group: "g")], "groups" => {"g" => {"on_fail" => {"goto" => "nowhere", "max" => 1}}}}
+      expect(edges_of(described_class.build(definition).to_h, "fail")).to eq([])
     end
 
     it "draws a group with no on_fail and no groups map" do

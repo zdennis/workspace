@@ -16,8 +16,8 @@ module Workspace
       clustered = model["nodes"].select { |node| node["group"] }.group_by { |node| node["group"] }
       model["nodes"].each do |node|
         next if node["group"]
-        if node["kind"] == "fork" && clustered[node["id"].delete_suffix(".group")]
-          gid = node["id"].delete_suffix(".group")
+        gid = node["group_id"]
+        if node["kind"] == "fork" && clustered[gid]
           lines << "  subgraph #{quote("cluster_#{gid}")} {" << "    style=dashed;" << "    label=#{quote(node["title"])};"
           clustered[gid].each { |member| lines << "    #{quote(member["id"])} [#{attributes(member)}#{fill(member)}];" }
           lines << "  }"

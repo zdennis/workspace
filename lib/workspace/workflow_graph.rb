@@ -1,7 +1,8 @@
 module Workspace
   # The shape of one workflow definition as a graph of nodes and edges: a `.start` terminal, a node per step, a
   # `<group>.group` fork and `<group>.join` join node around the siblings of a `fan_out` group (each sibling
-  # node, and its review node, carries `"group"`; the group's `on_fail` goto is a `fail` edge from the join), a
+  # node, and its gate node, carries `"group"`, the fork and join `"group_id"`; the group's `on_fail` goto is a `fail`
+  # edge from the join; each `fail` edge carries `"loop_key"`, the run's `loops` key for it), a
   # `<step>.review` node after a step with `review:`, a `<step>.gate` node after a step with `gate: approve`, and
   # an `.end` terminal. A model id that is not a step id holds a `.`, which a step id never does, so no step can
   # collide with one. A `fail` edge whose `goto` is not a step id (a hand-edited stored run) is left out, so
@@ -24,81 +25,97 @@ module Workspace
     attr_reader :to_h
 
     def initialize(definition, origins)
+      @origins = origins
+      @groups = definition["groups"].is_a?(Hash) ? definition["groups"] : {}
+      @nodes = [node(".start", "start", "Start", {})]
+      @edges = []
+      @fails = []
+      @rejects = []
+      @tails = [".start"]
+      @open = nil
       steps = Array(definition["steps"]).select { |step| step.is_a?(Hash) }
-      groups = definition["groups"].is_a?(Hash) ? definition["groups"] : {}
-      nodes = [node(".start", "start", "Start", {})]
-      edges = []
-      fails = []
-      rejects = []
-      tails = [".start"]
-      open_group = nil
-      fork = nil
-      sibling_tails = []
-      closing = lambda do
-        next unless open_group
-        gid = open_group
-        group = groups[gid].is_a?(Hash) ? groups[gid] : {}
-        join = "#{gid}.join"
-        nodes << node(join, "join", "Join: #{group["title"] || gid}", {})
-        sibling_tails.each { |tail| edges << edge(tail, join, "next", nil) }
-        tails = [join]
-        fails << edge(join, group["on_fail"]["goto"], "fail", fail_label(group["on_fail"])) if group["on_fail"].is_a?(Hash)
-        open_group = nil
-      end
-      steps.each do |step|
-        id = step["id"]
-        title = step["title"] || id
-        gid = (step["group"].is_a?(String) && !step["group"].empty?) ? step["group"] : nil
-        closing.call if open_group && open_group != gid
-        if gid && open_group.nil?
-          group = groups[gid].is_a?(Hash) ? groups[gid] : {}
-          fork = "#{gid}.group"
-          annotations = %w[checkout execution_mode].each_with_object({}) { |key, found| found[key] = group[key] if set?(group[key]) }
-          nodes << node(fork, "fork", "Fan out: #{group["title"] || gid}", annotations)
-          tails.each { |tail| edges << edge(tail, fork, "next", nil) }
-          tails = [fork]
-          open_group = gid
-          sibling_tails = []
-        end
-        entry = gid ? [fork] : tails
-        chain = [id]
-        nodes << node(id, "step", title, step_annotations(step, origins[id]), gid)
-        if step["review"].is_a?(Hash)
-          review = step["review"]
-          nodes << node("#{id}.review", "review", "#{title} review", review_annotations(review), gid)
-          chain << "#{id}.review"
-          rejects << edge("#{id}.review", id, "review_rejected", review["max_rounds"] && "max_rounds #{review["max_rounds"]}")
-        end
-        if step["gate"] == "approve"
-          nodes << node("#{id}.gate", "gate", "#{title} gate", {}, gid)
-          chain << "#{id}.gate"
-          rejects << edge("#{id}.gate", id, "reject", "reject (or --to an earlier step)")
-        end
-        entry.each { |tail| edges << edge(tail, id, "next", nil) }
-        chain.each_cons(2) { |from, to| edges << edge(from, to, "next", nil) }
-        if gid
-          sibling_tails << chain.last
-        else
-          tails = [chain.last]
-        end
-        fails << edge(id, step["on_fail"]["goto"], "fail", fail_label(step["on_fail"])) if step["on_fail"].is_a?(Hash)
-      end
-      closing.call
-      nodes << node(".end", "end", "End", {})
-      tails.each { |tail| edges << edge(tail, ".end", "next", nil) }
+      steps.each { |step| add_step(step) }
+      close_group
+      @nodes << node(".end", "end", "End", {})
+      @tails.each { |tail| @edges << edge(tail, ".end", "next", nil) }
       ids = steps.map { |each| each["id"] }
-      forks = groups.keys.select { |gid| steps.any? { |step| step["group"] == gid } }
-      fails.each { |each| each["to"] = "#{each["to"]}.group" if forks.include?(each["to"]) }
-      fails.select! { |each| ids.include?(each["to"]) || forks.any? { |gid| each["to"] == "#{gid}.group" } }
-      @to_h = WorkflowRun.deep_freeze("nodes" => nodes, "edges" => edges + fails + rejects, "legend" => legend(definition))
+      @fails.select! { |each| ids.include?(each["to"]) }
+      @to_h = WorkflowRun.deep_freeze("nodes" => @nodes, "edges" => @edges + @fails + @rejects, "legend" => legend(definition))
       freeze
     end
 
     private
 
-    def node(id, kind, title, annotations, group = nil)
+    def add_step(step)
+      id = step["id"]
+      gid = (step["group"].is_a?(String) && !step["group"].empty?) ? step["group"] : nil
+      close_group if @open && @open[:id] != gid
+      open_group(gid) if gid && @open.nil?
+      entry = gid ? [@open[:fork]] : @tails
+      chain = add_chain(step, gid)
+      entry.each { |tail| @edges << edge(tail, id, "next", nil) }
+      chain.each_cons(2) { |from, to| @edges << edge(from, to, "next", nil) }
+      if gid
+        @open[:tails] << chain.last
+      else
+        @tails = [chain.last]
+      end
+      @fails << fail_edge(id, id, step["on_fail"]) if step["on_fail"].is_a?(Hash)
+    end
+
+    def add_chain(step, gid)
+      id = step["id"]
+      title = step["title"] || id
+      @nodes << node(id, "step", title, step_annotations(step, @origins[id]), gid)
+      chain = [id]
+      if step["review"].is_a?(Hash)
+        review = step["review"]
+        @nodes << node("#{id}.review", "review", "#{title} review", review_annotations(review), gid)
+        chain << "#{id}.review"
+        @rejects << edge("#{id}.review", id, "review_rejected", review["max_rounds"] && "max_rounds #{review["max_rounds"]}")
+      end
+      if step["gate"] == "approve"
+        @nodes << node("#{id}.gate", "gate", "#{title} gate", {}, gid)
+        chain << "#{id}.gate"
+        @rejects << edge("#{id}.gate", id, "reject", "reject (or --to an earlier step)")
+      end
+      chain
+    end
+
+    def open_group(gid)
+      group = group_of(gid)
+      fork = "#{gid}.group"
+      annotations = %w[checkout execution_mode].each_with_object({}) { |key, found| found[key] = group[key] if set?(group[key]) }
+      @nodes << node(fork, "fork", "Fan out: #{group["title"] || gid}", annotations, nil, gid)
+      @tails.each { |tail| @edges << edge(tail, fork, "next", nil) }
+      @tails = [fork]
+      @open = {id: gid, fork: fork, tails: []}
+    end
+
+    def close_group
+      return unless @open
+      gid = @open[:id]
+      group = group_of(gid)
+      join = "#{gid}.join"
+      @nodes << node(join, "join", "Join: #{group["title"] || gid}", {}, nil, gid)
+      @open[:tails].each { |tail| @edges << edge(tail, join, "next", nil) }
+      @tails = [join]
+      @fails << fail_edge(join, gid, group["on_fail"]) if group["on_fail"].is_a?(Hash)
+      @open = nil
+    end
+
+    def group_of(gid)
+      @groups[gid].is_a?(Hash) ? @groups[gid] : {}
+    end
+
+    def fail_edge(from, owner, on_fail)
+      edge(from, on_fail["goto"], "fail", fail_label(on_fail)).merge("loop_key" => "#{owner}->#{on_fail["goto"]}")
+    end
+
+    def node(id, kind, title, annotations, group = nil, group_id = nil)
       node = {"id" => id, "kind" => kind, "title" => title, "annotations" => annotations}
       node["group"] = group if group
+      node["group_id"] = group_id if group_id
       node
     end
 
