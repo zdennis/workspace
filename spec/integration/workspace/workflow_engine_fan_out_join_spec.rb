@@ -50,7 +50,7 @@ RSpec.describe Workspace::WorkflowEngine do
       "      #{id}:\n        prompt: Do #{id}.\n        produces: [#{id}.md]\n#{extra.to_s.lines.map { |line| "        #{line}" }.join}"
     end.join
     plan = before ? "  plan:\n    prompt: Plan.\n    produces: [plan.md]\n" : ""
-    yaml = "max_attempts: #{max_attempts}\nsteps:\n#{plan}  checks:\n    checkout: shared\n    fan_out:\n#{body}  report:\n    prompt: Report.\n    produces: [report.md]\n#{report.lines.map { |line| "    #{line}" }.join}"
+    yaml = "max_attempts: #{max_attempts}\nsteps:\n#{plan}  checks:\n    checkout: shared\n    execution_mode: process_separation\n    fan_out:\n#{body}  report:\n    prompt: Report.\n    produces: [report.md]\n#{report.lines.map { |line| "    #{line}" }.join}"
     Workspace::WorkflowDefinition.parse(yaml, id: "flow", source: "global", path: "/defs/flow.yml")
   end
 

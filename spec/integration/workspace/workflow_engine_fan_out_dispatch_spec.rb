@@ -47,6 +47,7 @@ RSpec.describe Workspace::WorkflowEngine do
     <<~YAML
       checks:
         checkout: shared
+        execution_mode: process_separation
         fan_out:
           lint:
             prompt: Lint the change.

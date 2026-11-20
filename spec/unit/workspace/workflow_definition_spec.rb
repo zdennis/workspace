@@ -1153,7 +1153,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     it "gives each sibling an ordinary step's defaults, plus its resolved execution mode" do
       sibling = parse(grouped([["lint"]])).steps[1]
       plain = parse("steps:\n  lint:\n    prompt: P\n    produces: [lint.md]\n").steps.first
-      expect(sibling).to eq(plain.merge("group" => "checks", "execution_mode" => "process_separation"))
+      expect(sibling).to eq(plain.merge("group" => "checks", "execution_mode" => "subagents"))
     end
 
     it "tags the siblings the way a run's placement rule reads them" do
@@ -1233,18 +1233,20 @@ RSpec.describe Workspace::WorkflowDefinition do
         siblings = [["lint"], ["test", "        timeout: 5m\n"]]
         expect(problems(grouped(siblings, group_extra: "    execution_mode: subagents\n")))
           .to include(a_string_matching(/\Astep test \(in fan_out group checks\): a sibling that runs as a sub-agent of the run's pane can't take timeout:/))
+        # A mode nothing validates still resolves to the default, which refuses the sibling's timeout: too.
         expect(problems(grouped(siblings, group_extra: "    execution_mode: threads\n")))
-          .to eq(["step checks: execution_mode must be subagents or process_separation, got \"threads\""])
+          .to include(a_string_matching(/execution_mode must be subagents or process_separation, got "threads"/))
+          .and include(a_string_matching(/step test \(in fan_out group checks\): a sibling that runs as a sub-agent of the run's pane can't take timeout:/))
       end
 
       it "falls back to the default for a stored mode nothing validates, and reads an absent key as the default" do
         expect(described_class.execution_mode(parse(grouped([["lint"]])).to_h["groups"]["checks"]))
-          .to eq("process_separation")
+          .to eq("subagents")
         expect(described_class.execution_mode({"title" => "Checks", "checkout" => "shared", "on_fail" => "stop", "steps" => %w[lint]}))
-          .to eq("process_separation")
-        expect(described_class.execution_mode(nil)).to eq("process_separation")
-        expect(described_class.execution_mode({"execution_mode" => "subagents"})).to eq("subagents")
-        expect(described_class.execution_mode({"execution_mode" => "threads"})).to eq("process_separation")
+          .to eq("subagents")
+        expect(described_class.execution_mode(nil)).to eq("subagents")
+        expect(described_class.execution_mode({"execution_mode" => "process_separation"})).to eq("process_separation")
+        expect(described_class.execution_mode({"execution_mode" => "threads"})).to eq("subagents")
       end
 
       it "refuses a sibling's timeout: under a subagents group, and accepts it under process_separation" do
@@ -1252,7 +1254,6 @@ RSpec.describe Workspace::WorkflowDefinition do
         expect(problems(grouped(sibling, group_extra: "    execution_mode: subagents\n")))
           .to include(a_string_matching(/\Astep lint \(in fan_out group checks\): a sibling that runs as a sub-agent of the run's pane can't take timeout:/))
         expect(problems(grouped(sibling, group_extra: "    execution_mode: process_separation\n"))).to be_empty
-        expect(problems(grouped(sibling))).to be_empty
       end
 
       describe "per-sibling override" do
@@ -1271,7 +1272,7 @@ RSpec.describe Workspace::WorkflowDefinition do
         it "refuses context: on a subagent sibling, and accepts it on a process_separation sibling" do
           expect(problems(grouped([["lint", "        context: continue\n"]], group_extra: "    execution_mode: subagents\n")))
             .to include(a_string_matching(/\Astep lint: a sibling that runs as a sub-agent of the run's pane can't set context:/))
-          expect(problems(grouped([["lint", "        context: continue\n"]]))).to be_empty
+          expect(problems(grouped([["lint", "        context: continue\n"]], group_extra: "    execution_mode: process_separation\n"))).to be_empty
           expect(problems(grouped([["lint", "        context: continue\n        execution_mode: process_separation\n"]], group_extra: "    execution_mode: subagents\n")))
             .to be_empty
         end

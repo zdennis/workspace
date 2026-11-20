@@ -52,7 +52,7 @@ RSpec.describe Workspace::WorkflowEngine, "with a fan_out group under way" do
   # One group of two siblings, then a report step.
   def flow(lint: "", test: "", before: false)
     plan = before ? "  plan:\n    prompt: Plan.\n    produces: [plan.md]\n" : ""
-    yaml = "max_attempts: 20\nsteps:\n#{plan}  checks:\n    checkout: shared\n    fan_out:\n" \
+    yaml = "max_attempts: 20\nsteps:\n#{plan}  checks:\n    checkout: shared\n    execution_mode: process_separation\n    fan_out:\n" \
       "      lint:\n        prompt: Do lint.\n        produces: [lint.md]\n#{lint.lines.map { |line| "        #{line}" }.join}" \
       "      test:\n        prompt: Do test.\n        produces: [test.md]\n#{test.lines.map { |line| "        #{line}" }.join}" \
       "  report:\n    prompt: Report.\n    produces: [report.md]\n"

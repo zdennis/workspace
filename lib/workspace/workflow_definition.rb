@@ -51,9 +51,9 @@ module Workspace
     # How a group's siblings run: each as a sub-agent of the run's own pane, or each in its own author pane.
     EXECUTION_MODES = %w[subagents process_separation].freeze
 
-    # The execution mode a group runs with when its definition does not say. `process_separation` until the
-    # default flips to `subagents`, so a definition that does not set the key keeps today's behavior.
-    DEFAULT_EXECUTION_MODE = "process_separation"
+    # The execution mode a group runs with when its definition does not say: each sibling as a sub-agent of the
+    # run's own pane.
+    DEFAULT_EXECUTION_MODE = "subagents"
 
     # Step keys a `fan_out` sibling may not hold, and why.
     SIBLING_REFUSALS = {
