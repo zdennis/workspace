@@ -12,8 +12,8 @@ module Workspace
     # `name`, else the one the working directory is in. `--project` reads never
     # write, not even a pruned history.
     class WorkQueue
-      # The warning code for a workspace whose agent daemon is not answering.
-      DAEMON_WARNING = "daemon_not_running"
+      # What a person is told when a queue is off, where it matters.
+      OFF_HINT = "The queue is off; run `workspace work-queue enable`, then `workspace work-queue advance`."
 
       # Characters of an item's summary a list row shows.
       WHAT_LENGTH = 60
@@ -26,13 +26,12 @@ module Workspace
       # @param checkout [Workspace::WorkspaceCheckout] names a workspace and its checkout
       # @param go [Workspace::Commands::Go] says whether a checkout can run `go` in place
       # @param status_scope [Workspace::StatusScope] picks the workspaces of `--project`
-      # @param config [Workspace::Config] says whether a workspace's daemon answers
       # @param clock [#now] time source, for ages
       # @param working_dir [String] where the current workspace is looked for
       # @param output [IO] stream for the human result
       # @param error_output [IO] stream for warnings
       # @param input [IO, Workspace::PromptInput] where `history clear` reads its answer
-      def initialize(store_factory:, history_factory:, advance:, decisions:, run_store:, checkout:, go:, status_scope:, config:,
+      def initialize(store_factory:, history_factory:, advance:, decisions:, run_store:, checkout:, go:, status_scope:,
         clock: Time, working_dir: Dir.pwd, output: $stdout, error_output: $stderr, input: $stdin)
         @store_factory = store_factory
         @history_factory = history_factory
@@ -42,7 +41,6 @@ module Workspace
         @checkout = checkout
         @go = go
         @status_scope = status_scope
-        @config = config
         @clock = clock
         @working_dir = working_dir
         @output = output
@@ -75,6 +73,7 @@ module Workspace
         outcome, item, place = @store_factory.call(workspace).add(kind: kind, spec: spec, position: position, headless: headless,
           on_fail: on_fail, dedupe_key: dedupe_key, added_by: added_by)
         @output.puts((outcome == :added) ? "Queued #{item["id"]} (#{kind}) at position #{place} in '#{workspace}'." : "Item #{item["id"]} is already queued for that key.")
+        @output.puts OFF_HINT unless @store_factory.call(workspace).snapshot["enabled"] == true
         [row(outcome.to_s, item, place)]
       end
 
@@ -177,24 +176,23 @@ module Workspace
         end
         @output.puts "Cancelled #{item["id"]} in '#{workspace}'#{and_continue ? "." : "; the queue is paused."}"
         rows = [row("cancelled", item, nil).merge("run_id" => run_id)]
-        rows.concat(pass_rows(found)) if and_continue
+        rows.concat(pass_rows(found).tap { |pass| print_pass(pass, workspace) }) if and_continue
         rows
       end
 
-      # Runs one pass in the workspace's own checkout, whatever the daemon does.
+      # Runs one pass in the workspace's own checkout. In this version only this verb moves a queue.
       #
       # @return [Array<Hash>] the pass's rows
       def advance(name: nil)
-        pass_rows(checkout_of(name)).tap do |rows|
-          rows.each { |r| @output.puts "#{r["outcome"]}#{" #{r["id"]}" if r["id"]}#{" (#{r["reason"]})" if r["reason"]}" }
-        end
+        found = checkout_of(name)
+        pass_rows(found).tap { |rows| print_pass(rows, found["workspace"]) }
       end
 
       # The queue as a table with a footer of its state, for one workspace or a project's, read only.
       #
       # @param project [nil, true, String] as {Workspace::StatusScope#resolve}
       # @return [Hash] `"queues"`, one per workspace (`workspace`, `state` of on, off or paused, `enabled`,
-      #   `paused_reason`, `daemon_running`, `revision`, `items`, `next_actions`), and `"warnings"`
+      #   `paused_reason`, `revision`, `items`, `next_actions`), and `"warnings"`
       def list(name: nil, project: nil)
         queues, warnings = read_queues(name, project)
         queues.each { |queue| print_list(queue) }
@@ -209,7 +207,7 @@ module Workspace
       def show(id:, name: nil)
         workspace = workspace_of(name)
         snapshot = @store_factory.call(workspace).snapshot
-        item = @store_factory.call(workspace).find(id)
+        item = find_pending(workspace, id)
         position = snapshot["items"].index { |i| i["id"] == item["id"] } + 1
         doc = item.merge("position" => position, "what" => what(item), "run_id" => item.dig("result", "run_id"))
         print_item(workspace, doc)
@@ -234,16 +232,16 @@ module Workspace
         {"workspace" => workspace, "item" => item_row(item, items.index(item) + 1), "waiting_on" => waiting, "next_actions" => item_actions(item, workspace), "warnings" => []}
       end
 
-      # One line per queue: on, off or paused, daemon, the active item and the queued count.
+      # One line per queue: on, off or paused, the active item and the queued count.
       #
       # @param project [nil, true, String] as {Workspace::StatusScope#resolve}
-      # @return [Hash] `"queues"` (`workspace`, `state`, `paused_reason`, `daemon_running`, `active`, `queued`, `revision`,
+      # @return [Hash] `"queues"` (`workspace`, `state`, `paused_reason`, `active`, `queued`, `revision`,
       #   `next_actions`) and `"warnings"`
       def status(name: nil, project: nil)
         queues, warnings = read_queues(name, project)
         rows = queues.map do |queue|
           current = queue["items"].find { |i| WorkQueueStore::CURRENT_STATES.include?(i["state"]) }
-          line = queue.slice("workspace", "state", "paused_reason", "daemon_running", "revision", "next_actions")
+          line = queue.slice("workspace", "state", "paused_reason", "revision", "next_actions")
           line.merge("active" => current, "queued" => queue["items"].count { |i| i["state"] == "queued" })
         end
         rows.each { |r| @output.puts status_line(r) }
@@ -313,6 +311,58 @@ module Workspace
 
       def checkout_of(name, allow_detached: false)
         @checkout.resolve(name, working_dir: @working_dir, allow_detached: allow_detached)
+      end
+
+      # The queued item, or the error with a pointer to history when the id is a finished item's.
+      def find_pending(workspace, id)
+        @store_factory.call(workspace).find(id)
+      rescue Workspace::Error => e
+        raise unless e.code == "unknown_queue_item"
+        finished = begin
+          @history_factory.call(workspace).find(id)
+        rescue Workspace::Error
+          nil
+        end
+        raise unless finished
+        again = NextAction.build("work-queue history show", finished["id"], "--name", workspace)
+        raise Workspace::Error.new("#{e.message} #{finished["id"]} is a finished item; run `workspace work-queue history show #{finished["id"]}`.",
+          code: e.code, details: (e.details || {}).merge("next_actions" => [again]))
+      end
+
+      def print_pass(rows, workspace)
+        rows.each { |r| @output.puts pass_sentence(r, workspace) }
+      end
+
+      def pass_sentence(r, workspace)
+        id = r["id"]
+        run = r["run_id"] ? " (run #{r["run_id"]})" : ""
+        case r["outcome"]
+        when "started" then "Started #{id}#{run}."
+        when "active" then "#{id} is running#{run}."
+        when "succeeded" then "#{id} finished#{run}."
+        when "held"
+          approve = (r["reason"] == "gate" && r["run_id"]) ? " Approve it with `workspace workflow approve #{r["run_id"]}`." : ""
+          "#{id} is held (#{r["reason"]})#{run}; see `workspace work-queue active`.#{approve}"
+        when "failed", "cancelled" then "#{id} ended #{r["outcome"]}#{run}."
+        when "launch_failed" then "#{id} could not start (#{r["reason"]}); see `workspace work-queue history show #{id}`."
+        when "claim_lost" then "#{id} was taken by another pass#{run}; check `workspace work-queue status`."
+        when "interrupted" then "#{id} was interrupted (#{r["reason"]}); see `workspace work-queue history show #{id}`."
+        when "unchanged" then unchanged_sentence(r, workspace)
+        else "#{r["outcome"]}#{" #{id}" if id}#{" (#{r["reason"]})" if r["reason"]}"
+        end
+      end
+
+      def unchanged_sentence(r, workspace)
+        case r["reason"]
+        when "disabled" then "Queue is off; nothing started. Run `workspace work-queue enable`."
+        when "paused"
+          why = @store_factory.call(workspace).snapshot.dig("paused", "reason")
+          "Queue is paused#{" (#{why})" if why}; run `workspace work-queue resume`."
+        when "empty" then "Queue is empty."
+        when "run_going" then "A run is going in this workspace (run #{r["run_id"]}); nothing started."
+        when "starting" then "#{r["id"]} is being started by another pass; run advance again once it has landed."
+        else "Nothing changed#{" (#{r["reason"]})" if r["reason"]}."
+        end
       end
 
       def pass_rows(found)
@@ -407,17 +457,7 @@ module Workspace
       end
 
       def read_queues(name, project)
-        warnings = []
-        queues = workspaces_for(name, project).map do |workspace|
-          queue = queue_doc(workspace)
-          unless queue["daemon_running"]
-            message = "The agent daemon of '#{workspace}' is not answering, so only a manual work-queue advance moves its queue."
-            warnings << {"code" => DAEMON_WARNING, "workspace" => workspace, "message" => message}
-            @error_output.puts "warning: #{message}"
-          end
-          queue
-        end
-        [queues, warnings]
+        [workspaces_for(name, project).map { |workspace| queue_doc(workspace) }, []]
       end
 
       def queue_doc(workspace)
@@ -436,7 +476,7 @@ module Workspace
         actions << NextAction.build("work-queue enable", *name) if data["enabled"] != true
         actions << NextAction.build("work-queue advance", *name) if data["enabled"] == true && !paused && data["items"].any?
         {"workspace" => workspace, "state" => state, "enabled" => data["enabled"] == true, "paused_reason" => paused&.dig("reason"),
-         "daemon_running" => @config.agent_running?(workspace), "revision" => data["revision"],
+         "revision" => data["revision"],
          "items" => data["items"].each_with_index.map { |item, i| item_row(item, i + 1) }, "next_actions" => actions}
       end
 
@@ -466,7 +506,8 @@ module Workspace
             @output.puts format("%-3d %-8s %-9s %-9s %-*s %-8s %s", i["position"], i["id"], i["state"], i["kind"], WHAT_LENGTH, i["what"], i["headless"] ? "yes" : "no", age(i["added_at"]))
           end
         end
-        @output.puts "#{queue["workspace"]}: #{queue["state"]}#{" (#{queue["paused_reason"]})" if queue["paused_reason"]}, daemon #{queue["daemon_running"] ? "up" : "down"}"
+        @output.puts "#{queue["workspace"]}: #{queue["state"]}#{" (#{queue["paused_reason"]})" if queue["paused_reason"]}"
+        @output.puts OFF_HINT if queue["state"] == "off"
       end
 
       def print_item(workspace, item)
@@ -474,13 +515,13 @@ module Workspace
         @output.puts "  position #{item["position"]}, headless #{item["headless"] ? "yes" : "no"}, on_fail #{item["on_fail"]}, added #{item["added_at"]}"
         @output.puts "  run #{item["run_id"]}" if item["run_id"]
         @output.puts "  reason #{item["reason"]}" if item["reason"]
-        @output.puts "  log #{item.dig("result", "log_path") || "none"}"
+        @output.puts "  log #{item.dig("result", "log_path")}" if item.dig("result", "log_path")
         @output.puts "  error #{TerminalText.escape(item.dig("result", "error"))}" if item.dig("result", "error")
       end
 
       def status_line(line)
         active = line["active"]
-        text = "#{line["workspace"]}: #{line["state"]}#{" (#{line["paused_reason"]})" if line["paused_reason"]}, daemon #{line["daemon_running"] ? "up" : "down"}"
+        text = "#{line["workspace"]}: #{line["state"]}#{" (#{line["paused_reason"]})" if line["paused_reason"]}"
         text += active ? ", active #{active["id"]} (#{active["state"]})" : ", nothing active"
         "#{text}, #{line["queued"]} queued"
       end

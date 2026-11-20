@@ -1,0 +1,91 @@
+### workspace wq --bogus
+--- exit 1
+--- stdout
+--- stderr
+invalid option: --bogus
+--- end
+### workspace wq --bogus --json
+--- exit 1
+--- stdout
+{"schema_version":1,"ok":false,"error":"invalid option: --bogus","code":"usage"}
+--- stderr
+--- end
+### workspace wq
+--- exit 0
+--- stdout
+Usage: workspace work-queue add workflow ID [--ref REF] [--prompt TEXT] [--input K=V]... [OPTIONS]
+       workspace work-queue add go ARG [--text] [--workflow ID] [--input K=V]... [OPTIONS]
+       workspace work-queue list [--name WORKSPACE | --project [NAME]] [--json]
+       workspace work-queue show ITEM [--name WORKSPACE] [--json]
+       workspace work-queue active [--name WORKSPACE] [--json]
+       workspace work-queue rm ITEM... [--name WORKSPACE] [--json]
+       workspace work-queue move ITEM (--before ID | --after ID | --top | --bottom) [--if-revision N] [--name WORKSPACE] [--json]
+       workspace work-queue cancel [ITEM] [--and-continue] [--name WORKSPACE] [--json]
+       workspace work-queue enable [--name WORKSPACE] [--json]
+       workspace work-queue disable [--name WORKSPACE] [--json]
+       workspace work-queue resume [--name WORKSPACE] [--json]
+       workspace work-queue skip [ITEM] [--name WORKSPACE] [--json]
+       workspace work-queue advance [--name WORKSPACE] [--json]
+       workspace work-queue status [--name WORKSPACE | --project [NAME]] [--json]
+       workspace work-queue history list [--since DATE] [--before DATE] [--state STATE] [--name WORKSPACE | --project [NAME]] [--json]
+       workspace work-queue history show ITEM [--name WORKSPACE] [--json]
+       workspace work-queue history clear (--before DATE | --all) [--yes] [--name WORKSPACE] [--json]
+
+Each workspace has its own queue of items that run one at a time (`wq` is another name for
+`work-queue`). A queue is off until `work-queue enable`. Only `work-queue advance` moves it, one
+pass by hand, so run it again after each item ends.
+
+Subcommands:
+  add            Add an item to the end of a workspace's queue
+  list           Show the queue as a table
+  show           Show one queued item in full
+  active         Show the item that is running and what it waits on
+  rm             Remove queued items
+  move           Move a queued item
+  cancel         Cancel the running item and pause the queue
+  enable         Turn the workspace's queue on
+  disable        Turn the workspace's queue off
+  resume         Clear the queue's pause
+  skip           Skip the held item and clear the pause
+  advance        Run one pass of the queue by hand
+  status         Show one line per queue: on or off, pause, active item
+  history list   List finished items, oldest first
+  history show   Show one finished item with its spec
+  history clear  Delete finished items
+Run `workspace work-queue VERB --help` for a verb's options.
+
+        --name NAME                  Workspace whose queue to use (default: detected from the current directory)
+        --project [NAME]             list, status and history list: every workspace of a project (read only)
+        --top                        add: put the item first among the queued ones; move: move it there
+        --bottom                     move: move the item to the end
+        --after-current              add: put the item right after the one that is running
+        --before VALUE               add and move: place the item before this item id; history list and clear: finished before this date
+        --after ID                   add and move: place the item after this item id
+        --if-revision N              move: refuse with stale_revision unless the queue's revision is N
+        --headless                   add: run the item without a pane
+        --on-fail MODE               add: stop (pause the queue when it fails, the default) or continue
+        --dedupe-key KEY             add: adding the same key again changes nothing
+        --ref REF                    add workflow: the ticket, pull request or branch to start from
+        --prompt TEXT                add workflow: the task text
+        --input K=V                  add: a workflow input (repeatable)
+        --text                       add go: ARG is free text, not a ticket, pull request or branch
+        --workflow ID                add go: the workflow to run instead of the one config picks
+        --and-continue               cancel: go on to the next item instead of pausing the queue
+        --since DATE                 history list: finished at or after this date (2026-01-31 or 2026-01-31T09:00:00Z)
+        --state STATE                history list: only this outcome (succeeded, failed, cancelled, skipped, interrupted, launch_failed)
+        --all                        history clear: remove every finished item
+        --yes                        history clear: skip the question
+        --json                       Print one JSON document
+    -h, --help                       Show this help
+
+Examples:
+  workspace work-queue add workflow rpiv --prompt "Add SSO login"    # queue an rpiv run for that task
+  workspace work-queue list    # the queue of the workspace you are in
+  workspace work-queue show 3fa9    # one item by the start of its id
+  workspace work-queue active    # which item the queue is on, and what it waits for
+  workspace work-queue rm 3fa9    # drop one queued item
+  workspace work-queue move 3fa9 --top    # run this one next
+  workspace work-queue cancel    # stop the running item and hold the queue
+  workspace work-queue enable    # turn the queue on, then run `workspace work-queue advance`
+--- stderr
+--- end

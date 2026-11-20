@@ -39,10 +39,10 @@ module CLITestHelpers
   # (AGENT_RUN_FAMILY_KEYWORDS) to CLI::AgentRun, whose #prompt CLI::Agent hands `agent run`, and
   # the pipeline family's (PIPELINE_FAMILY_KEYWORDS) to CLI::Pipeline, and the plan and spine
   # family's (PLAN_SPINE_FAMILY_KEYWORDS) to CLI::PlanSpine, which shares +status_scope:+ with
-  # CLI::Workflow, as build_cli wires them, and the template family's (TEMPLATE_FAMILY_KEYWORDS) to CLI::Template;
+  # CLI::Workflow, as build_cli wires them, and the template family's (TEMPLATE_FAMILY_KEYWORDS) to CLI::Template, and +work_queue_command:+ to CLI::WorkQueue;
   # CLI::Common, CLI::Launcher, CLI::Relauncher (or the +relauncher:+ given; its tmux is +relauncher_tmux:+, else a quiet FakeTmux; its detacher +relauncher_detacher:+, else none, so a detach is refused; its program this Ruby and `bin/workspace`; logs under +relauncher_log_dir:+, else `/relaunch-logs`, named `20260102T030405Z-4242.log`) and the AgentMessageClient the agent-run and pipeline families
   # share (unless given as +agent_client:+) are built over the same keywords.
-  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_client: nil, status_scope: nil, editor_launcher: nil, interactive: nil, relauncher: nil, relauncher_tmux: nil, relauncher_detacher: nil, relauncher_log_dir: nil, **keywords)
+  def self.cli_parts(lineage: nil, workflow_command: nil, workflow_project: nil, agent_client: nil, status_scope: nil, editor_launcher: nil, interactive: nil, relauncher: nil, relauncher_tmux: nil, relauncher_detacher: nil, relauncher_log_dir: nil, work_queue_command: nil, **keywords)
     agent_commands = AGENT_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
     agent_run_commands = AGENT_RUN_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }
     pipeline_keywords = PIPELINE_FAMILY_KEYWORDS.to_h { |key| [key, keywords.delete(key)] }.compact
@@ -73,7 +73,8 @@ module CLITestHelpers
     plan_spine = Workspace::CLI::PlanSpine.new(**plan_spine_commands, status_scope: status_scope, project_detector: keywords[:project_detector], launcher: launcher,
       common: common, names: names, working_dir: keywords[:working_dir])
     template = Workspace::CLI::Template.new(**template_commands, relauncher: relauncher, common: common, names: names, working_dir: keywords[:working_dir])
-    keywords.merge(common: common, names: names, launcher: launcher, relauncher: relauncher, families: {workflow: workflow, agent: agent, agent_run: agent_run, pipeline: pipeline, plan_spine: plan_spine, template: template})
+    work_queue = Workspace::CLI::WorkQueue.new(work_queue_command: work_queue_command, common: common)
+    keywords.merge(common: common, names: names, launcher: launcher, relauncher: relauncher, families: {workflow: workflow, agent: agent, agent_run: agent_run, pipeline: pipeline, plan_spine: plan_spine, template: template, work_queue: work_queue})
   end
 
   # A LaunchMode whose automatic choice is fixed, so specs never depend on the

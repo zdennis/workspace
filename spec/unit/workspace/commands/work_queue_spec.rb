@@ -34,15 +34,13 @@ RSpec.describe Workspace::Commands::WorkQueue do
     ])
   end
   let(:status_scope) { double("status_scope", resolve: Workspace::StatusScope::Scope.new(kind: :project, project: project)) }
-  let(:running) { true }
-  let(:config) { double("config", agent_running?: running) }
   let(:input) { Workspace::PromptInput.new(StringIO.new("y\n")) }
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
   let(:command) do
     described_class.new(store_factory: ->(name) { stores[name] }, history_factory: ->(name) { histories[name] },
       advance: advance, decisions: decisions, run_store: run_store, checkout: checkout, go: go, status_scope: status_scope,
-      config: config, clock: clock, working_dir: "/repo/api-w", output: output, error_output: error_output, input: input)
+      clock: clock, working_dir: "/repo/api-w", output: output, error_output: error_output, input: input)
   end
 
   before do
@@ -72,6 +70,15 @@ RSpec.describe Workspace::Commands::WorkQueue do
   end
 
   describe "#add" do
+    it "tells the person how to start an off queue, and not an enabled one" do
+      command.add(kind: "workflow", spec: {})
+      expect(output.string).to include(described_class::OFF_HINT)
+      output.truncate(0)
+      store.set_enabled(true)
+      command.add(kind: "workflow", spec: {})
+      expect(output.string).not_to include("enable")
+    end
+
     it "queues an item and returns its row" do
       rows = command.add(kind: "workflow", spec: {"workflow" => "rpiv"})
       expect(rows).to eq([{"outcome" => "added", "id" => "aaaa1111", "position" => 1, "kind" => "workflow"}])
@@ -154,6 +161,20 @@ RSpec.describe Workspace::Commands::WorkQueue do
   end
 
   describe "#skip" do
+    it "prints its warning to stderr once under the CLI's --json" do
+      make_current("held", reason: "failed_check")
+      err = StringIO.new
+      out = StringIO.new
+      invocation = Workspace::CLI::Invocation.new(output: Workspace::OutputGate.new(out), error_output: err, exit_handler: FakeExitHandler, help_asked: false, quiet: true, env: {})
+      gated = described_class.new(store_factory: ->(name) { stores[name] }, history_factory: ->(name) { histories[name] }, advance: advance, decisions: decisions,
+        run_store: run_store, checkout: checkout, go: go, status_scope: status_scope, clock: clock, working_dir: "/repo/api-w", output: invocation.output, error_output: err, input: input)
+
+      Workspace::CLI::WorkQueue.new(work_queue_command: gated, common: Workspace::CLI::Common.new).call("work-queue", ["skip", "--json"], invocation)
+
+      expect(err.string.scan("Run r1 is still going").size).to eq(1)
+      expect(JSON.parse(out.string)["warnings"].size).to eq(1)
+    end
+
     it "skips the held item, clears the pause and warns about a run still going" do
       id = make_current("held", reason: "failed_check")
       store.pause("failed_check")
@@ -251,6 +272,44 @@ RSpec.describe Workspace::Commands::WorkQueue do
       rows = command.advance(name: "other")
       expect(advance).to have_received(:call).with(workspace: "other", checkout: Workspace::Commands::WorkflowStart::Here.new(workspace: "other", path: "/repo/other", caller_pane: nil))
       expect(rows.first).to include("outcome" => "started", "position" => nil)
+      expect(output.string).to eq("Started aaaa1111 (run r9).\n")
+    end
+
+    row_of = lambda do |outcome, reason: nil, id: "aaaa1111", run_id: "r9"|
+      {"outcome" => outcome, "id" => id, "kind" => "workflow", "reason" => reason, "run_id" => run_id, "next_actions" => []}
+    end
+
+    {
+      [row_of.call("unchanged", reason: "disabled", id: nil, run_id: nil)] => "Queue is off; nothing started.",
+      [row_of.call("unchanged", reason: "empty", id: nil, run_id: nil)] => "Queue is empty.",
+      [row_of.call("unchanged", reason: "run_going", id: nil)] => "A run is going in this workspace (run r9); nothing started.",
+      [row_of.call("unchanged", reason: "starting", run_id: nil)] => "aaaa1111 is being started by another pass",
+      [row_of.call("active")] => "aaaa1111 is running (run r9).",
+      [row_of.call("succeeded")] => "aaaa1111 finished (run r9).",
+      [row_of.call("held", reason: "gate")] => "Approve it with `workspace workflow approve r9`.",
+      [row_of.call("failed", reason: "failed")] => "aaaa1111 ended failed (run r9).",
+      [row_of.call("launch_failed", reason: "agent_missing", run_id: nil)] => "aaaa1111 could not start (agent_missing)",
+      [row_of.call("claim_lost", reason: "claim_lost", run_id: nil)] => "aaaa1111 was taken by another pass",
+      [row_of.call("interrupted", reason: "unknown_run", run_id: nil)] => "aaaa1111 was interrupted (unknown_run)"
+    }.each do |rows, sentence|
+      it "says #{rows.first["outcome"]}/#{rows.first["reason"]} as a sentence" do
+        allow(advance).to receive(:call).and_return(rows)
+        command.advance
+        expect(output.string).to include(sentence)
+      end
+    end
+
+    it "says a pause with its reason and the way out" do
+      store.pause("failed_check")
+      allow(advance).to receive(:call).and_return([row_of.call("unchanged", reason: "paused", id: nil, run_id: nil)])
+      command.advance
+      expect(output.string).to include("Queue is paused (failed_check); run `workspace work-queue resume`.")
+    end
+
+    it "prints the pass rows of cancel --and-continue" do
+      make_current("active")
+      command.cancel(and_continue: true)
+      expect(output.string).to include("Cancelled").and include("Started aaaa1111 (run r9).")
     end
   end
 
@@ -270,10 +329,10 @@ RSpec.describe Workspace::Commands::WorkQueue do
     it "lists a queue with its footer facts and next actions" do
       doc = command.list
       queue = doc["queues"].first
-      expect(queue).to include("workspace" => "api-w", "state" => "off", "daemon_running" => true, "revision" => 2)
+      expect(queue).to include("workspace" => "api-w", "state" => "off", "revision" => 2)
       expect(queue["items"].map { |i| i["position"] }).to eq([1, 2])
       expect(queue["next_actions"]).to include(Workspace::NextAction.build("work-queue enable", "--name", "api-w"))
-      expect(output.string).to include("aaaa1111").and include("off, daemon up")
+      expect(output.string).to include("aaaa1111").and include("api-w: off").and include(described_class::OFF_HINT)
     end
 
     it "reports paused with its reason" do
@@ -283,15 +342,11 @@ RSpec.describe Workspace::Commands::WorkQueue do
       expect(output.string).to include("paused (failed_check)")
     end
 
-    context "when the daemon is not answering" do
-      let(:running) { false }
-
-      it "warns in the document and on stderr" do
-        doc = command.list
-        expect(doc["warnings"].first).to include("code" => "daemon_not_running", "workspace" => "api-w")
-        expect(error_output.string).to include("not answering")
-        expect(command.status["warnings"].size).to eq(1)
-      end
+    it "says nothing about a daemon and warns of nothing" do
+      doc = command.list
+      expect(doc["warnings"]).to eq([])
+      expect(doc["queues"].first).not_to have_key("daemon_running")
+      expect(output.string + error_output.string).not_to match(/daemon/i)
     end
 
     it "lists a project's workspaces without writing anything" do
@@ -309,6 +364,20 @@ RSpec.describe Workspace::Commands::WorkQueue do
       doc = command.show(id: "bbbb")
       expect(doc["item"]).to include("id" => "bbbb2222", "position" => 2, "what" => "rpiv", "run_id" => nil)
       expect(doc["item"]["result"]["log_path"]).to be_nil
+    end
+
+    it "points at history for an id that only a finished item has" do
+      history.append("id" => "fin00001", "kind" => "workflow", "spec" => {}, "outcome" => "succeeded", "finished_at" => "2026-01-01T00:00:00.000Z")
+      expect { command.show(id: "fin0") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_queue_item")
+        expect(e.message).to include("`workspace work-queue history show fin00001`")
+      }
+      expect { command.show(id: "zzzz") }.to raise_error(Workspace::Error) { |e| expect(e.message).not_to include("history show") }
+    end
+
+    it "leaves the log line out when an item has no log" do
+      command.show(id: "bbbb")
+      expect(output.string).not_to include("log ")
     end
 
     it "shows nothing active when idle" do

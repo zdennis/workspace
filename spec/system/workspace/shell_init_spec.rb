@@ -533,7 +533,7 @@ RSpec.describe Workspace::ShellInit do
       end
 
       it "narrows by prefix" do
-        expect(bash_tab(["workspace", "wor"])).to eq(%w[workflow])
+        expect(bash_tab(["workspace", "wor"])).to eq(%w[workflow work-queue])
         expect(bash_tab(%w[workspace workflow st])).to eq(%w[start status stats])
       end
 

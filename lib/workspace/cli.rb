@@ -16,7 +16,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill rename finish relaunch restore
       focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket skills spine journey goal pr rebase push promote projects go
-      template capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
+      template capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step work-queue wq
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log events
       whereis lookup dir alfred shell-init version help
@@ -24,7 +24,7 @@ module Workspace
 
     # The verbs a family parser takes, each to the key of its object in +families:+. {#run} hands
     # such a verb, its arguments and the run's {Invocation} to that family before its own case.
-    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent, "agent-run" => :agent_run, "handoff" => :agent_run, "pipeline" => :pipeline, "plan" => :plan_spine, "spine" => :plan_spine, "journey" => :plan_spine, "goal" => :plan_spine, "template" => :template}.freeze
+    ROUTES = {"workflow" => :workflow, "step" => :workflow, "agent" => :agent, "agentd" => :agent, "daemon" => :agent, "sessions" => :agent, "review" => :agent, "agent-run" => :agent_run, "handoff" => :agent_run, "pipeline" => :pipeline, "plan" => :plan_spine, "spine" => :plan_spine, "journey" => :plan_spine, "goal" => :plan_spine, "template" => :template, "work-queue" => :work_queue, "wq" => :work_queue}.freeze
 
     # @param workspace_name [Workspace::WorkspaceName, nil] settles a given workspace name to its on-disk spelling (nil leaves names as given)
     # @param config [Workspace::Config] configuration for path lookups
@@ -606,6 +606,7 @@ module Workspace
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
           workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands; print a step's composed instructions (render), run its status check (check) or play a workflow with a scripted fake agent (simulate), all without a run; manage your own definitions (validate, add, update, remove); read a run's history (events, files, attempts), check its evidence (audit) and act on runs that have stopped (sweep)
+          work-queue      Queue items (workflow runs, go) for a workspace to run one at a time: add, list, move, enable, advance, cancel, history (alias: wq)
 
         Global options:
           --debug         Print detailed debug output to stderr
