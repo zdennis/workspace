@@ -172,6 +172,9 @@ module Workspace
           "error" => "not_started", "message" => "the run was created and its first step never started"),
         "steps" => data["steps"].to_h { |step| [step["id"], {"state" => "pending", "attempts" => []}] }
       }
+      # A first step that keeps its own slots holds its not-started reason itself ({WorkflowRun.step_scoped?}).
+      first = attributes["current"]
+      WorkflowRun.slots(attributes, first)["reason"] = attributes.delete("reason") if WorkflowRun.step_scoped?(attributes, first)
       run = WorkflowRun.from_h(@store.create(attributes, -> {
         @dispatch.check_pane(pane)
         check_checkout(worktree)

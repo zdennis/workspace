@@ -93,10 +93,19 @@ module Workspace
     # @param budgeted [Boolean] false starts the attempt even when the token budget is used up
     # @param retry_of [Hash{String=>Object}, nil] the retry's "pane", "identity" and "text", kept by a budget hold, and
     #   "attempt": the attempt of the step a review rejected, recorded as the new attempt's `retry_of`
+    # A step of a fan_out group none of whose siblings has started yet (each still `pending`, with no attempt) is not
+    # started alone: the whole group is ({#fan_out}). This is the one place a group is entered, so the first step of a
+    # run, a resume of a run that never started, and the step before the group passing all enter it the same way.
+    #
     # @return [WorkflowRun] the run afterwards
     def dispatch(run, ctx:, cause:, context: nil, budgeted: true, retry_of: nil)
       work = WorkflowRun.from_h(run).thawed
-      start_attempt(work, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of)
+      siblings = unstarted_group(work)
+      if siblings
+        fan_out(work, siblings, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of)
+      else
+        start_attempt(work, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of)
+      end
       WorkflowRun.from_h(work)
     end
 
@@ -155,7 +164,8 @@ module Workspace
     # @return [Hash] the kick's answer: :ok, and when false :code, :message and :pending (whether the mark was put back)
     def type_continue(run_id, mark, workspace:, text:, actor:, cause:)
       run = @store.run(run_id)
-      kick = if WorkflowRunStore::TERMINAL_STATES.include?(run.state) || !WorkflowTransitions.continue_mark?(run.to_h, mark)
+      # A fan_out sibling's mark is read on its own step, whichever sibling the cursor is on.
+      kick = if WorkflowRunStore::TERMINAL_STATES.include?(run.state) || !WorkflowTransitions.continue_mark?(WorkflowTransitions.at_step(run.to_h, mark_step(mark)), mark)
         {ok: false, code: "moved_on", message: "the run has ended or moved past the attempt the line was for"}
       elsif run.paused
         {ok: false, code: "run_paused", message: "the run was paused again before the line was typed"}
@@ -219,7 +229,7 @@ module Workspace
       late = time_holds?(work)
       return nil unless spent || late
       hold(work, {"review_round" => round}, budget: spent, time: late)
-      work["reason"]["details"]["review_round"] = round
+      slot(work, "reason")["details"]["review_round"] = round
       WorkflowRun.from_h(work)
     end
 
@@ -258,13 +268,13 @@ module Workspace
         acquire(work, {"id" => work["current"], "uses" => review["uses"]}, nil)
       rescue Workspace::Error, SystemCallError => e
         work["state"] = "waiting"
-        work["reason"] = reason("waiting_you", {"kind" => "review", "step" => work["current"], "review_round" => round,
+        slots(work)["reason"] = reason("waiting_you", {"kind" => "review", "step" => work["current"], "review_round" => round,
           "error" => e.respond_to?(:code) ? e.code : "error", "message" => e.message.lines.first.to_s.scrub.strip})
         return WorkflowRun.from_h(work)
       end
       return nil unless waiting
       wait_for_lock(work, step_state(work), waiting, step_state: step_state)
-      work["reason"]["details"]["review_round"] = round
+      slot(work, "reason")["details"]["review_round"] = round
       WorkflowRun.from_h(work)
     end
 
@@ -288,8 +298,59 @@ module Workspace
     # Puts the phase answer +changed+ (a WorkflowRun) into the run Hash being changed in place.
     def adopt(run, changed) = run.replace(changed.thawed)
 
-    # The body of {#dispatch}, over a working copy of the run.
-    def start_attempt(run, ctx:, cause:, context:, budgeted:, retry_of:)
+    # Step states of a fan_out sibling at work: a sibling that can't start leaves the run running while another is in one.
+    SIBLING_WORKING = %w[running checking reviewing].freeze
+
+    # The ids of the current step's fan_out group, in step order, when the current step is a sibling and no sibling has
+    # started (each `pending`, with no attempt); nil for any other step, and for a group already under way.
+    def unstarted_group(run)
+      ids = group_of(run, run["current"])
+      return nil unless ids
+      started = ids.any? do |id|
+        state = run["steps"].is_a?(Hash) ? run["steps"][id] : nil
+        !state.is_a?(Hash) || state["state"] != "pending" || Array(state["attempts"]).any?
+      end
+      started ? nil : ids
+    end
+
+    # The ids of +step_id+'s fan_out group, in step order; nil for a step in no group.
+    def group_of(run, step_id)
+      return nil unless WorkflowRun.step_scoped?(run, step_id)
+      group = run["definition"]["steps"].find { |step| step["id"] == step_id }["group"]
+      WorkflowDefinition.group_steps(run["definition"])[group]
+    end
+
+    # Starts every sibling of a group at once, each in its own author pane: the first in the run's pane, each after it
+    # in a new pane split off the workspace's session ({WorkflowPanes#spawn_author}). Each sibling gets its own attempt,
+    # binding and line; a sibling whose pane can't be made or used waits on its own, and the others start anyway. The
+    # cursor is left on the last sibling started. A paused run, or one whose budget or timeout is used up, holds the
+    # first sibling only, as it would one step: the dispatch that ends the hold finds the group still unstarted and
+    # fans it out then.
+    def fan_out(run, ids, ctx:, cause:, context:, budgeted:, retry_of:)
+      run["current"] = ids.first
+      held = run["paused"] || (budgeted && (budget_holds?(run) || time_holds?(run)))
+      start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: retry_of)
+      return if held
+      ids.drop(1).each do |id|
+        run["current"] = id
+        # A checkout that is gone fails the sibling before any pane is made for it.
+        next start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil) unless File.directory?(run["worktree"])
+        # The run's lock is held across each sibling's pane spawn, up to that sibling's readiness deadline, so a caller
+        # that blocks on the lock (the nudger's advance, approve, cancel, resume) can wait that long. Spawning outside
+        # the lock (a two-phase fan-out, as infra retry does) is deferred follow-up work.
+        made = @panes.spawn_author(run["workspace"])
+        if made[:error]
+          not_delivered(run, step_state(run), nil, {code: made[:error], message: made[:message]})
+          slot(run, "reason")["details"]["pane"] = made[:pane] if made[:pane]
+          next
+        end
+        start_attempt(run, ctx: ctx, cause: cause, context: context, budgeted: budgeted, retry_of: nil, pane: made[:pane])
+      end
+    end
+
+    # The body of {#dispatch}, over a working copy of the run. +pane+ is the pane to type into when the caller made it
+    # (a fan_out sibling's new pane); nil uses the pane the step is bound to.
+    def start_attempt(run, ctx:, cause:, context:, budgeted:, retry_of:, pane: nil)
       return pause_attempt(run, cause, context, budgeted, retry_of) if run["paused"]
       adopt(run, drop_park(run, "moved_on")) if run.key?("parked")
       step = step_def(run)
@@ -305,9 +366,9 @@ module Workspace
       run["artifacts_dir"] ||= @prompt.artifacts_dir(run["worktree"], run["id"])
       # Before anything is written: a removed checkout must not come back as a directory.
       raise Workspace::Error, "the checkout #{run["worktree"]} is gone" unless File.directory?(run["worktree"])
-      pane = bound_pane(run)
+      pane ||= bound_pane(run)
       # A binding made for another pane (a tmux restart reuses pane ids) is not typed into.
-      if @panes.pane_of(run["id"]) && !@panes.alive?(run["id"])
+      if stale_binding?(run, pane)
         return not_delivered(run, state, nil, {code: "pane_gone", message: "pane #{pane} is no longer the pane the run was bound in"})
       end
       pending_retry = retry_pending(run, retry_of, context)
@@ -317,22 +378,22 @@ module Workspace
       if waiting
         # A review's retry waiting for a lock is still that retry when the wait ends (a tick or a resume dispatches it
         # again): its attempt, its context and its text (which a `--from` takes out of the pending context).
-        pending_retry ? run["retry_of_pending"] = pending_retry : run.delete("retry_of_pending")
+        pending_retry ? slots(run)["retry_of_pending"] = pending_retry : slots(run).delete("retry_of_pending")
         # The cause this dispatch had is kept for the one that ends the wait (a tick says `lock_ended`).
-        run["dispatch_cause_pending"] = {"step" => run["current"], "cause" => kept_cause(run, cause)}
+        slots(run)["dispatch_cause_pending"] = {"step" => run["current"], "cause" => kept_cause(run, cause)}
         return wait_for_lock(run, state, waiting)
       end
-      run.delete("retry_of_pending")
+      slots(run).delete("retry_of_pending")
       cause = kept_cause(run, cause)
-      run.delete("dispatch_cause_pending")
+      slots(run).delete("dispatch_cause_pending")
 
       # To the millisecond: the end of a turn is matched to the attempt by when that turn began.
-      attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => run["pending_context"],
+      attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => slot(run, "pending_context"),
                  "delivery" => "delivering"}
       pending = state.delete("redelivery_pending")
       attempt["redelivery"] = pending if pending
       attempt["retry_of"] = retry_n if retry_n
-      run["pending_context"] = []
+      slots(run)["pending_context"] = []
       attempt["prompt_file"], composed = @prompt.write(run, step, attempt["n"], attempt["context"])
       started = @attempt_record.start(run: run, attempt: attempt, composed: composed)
       adopt(run, WorkflowRun.from_h(run).with_attempt(step["id"], started))
@@ -340,14 +401,17 @@ module Workspace
       attempt = state["attempts"].last
       @panes.bind(workspace: run["workspace"], pane: pane, run_id: run["id"], step: step["id"], attempt: attempt["n"],
         instructions: attempt["prompt_file"], artifacts: run["artifacts_dir"])
-      run["pane"] = pane
+      # A step of a group records its pane under its own hash; every other step, at the run's top level as always.
+      WorkflowRun.slots(run, step["id"])["pane"] = pane
       state["state"] = "running"
       run["state"] = "running"
-      run["reason"] = nil
+      slots(run)["reason"] = nil
       @change.event(run, "step_dispatching", "step" => step["id"], "attempt" => attempt["n"], "pane" => pane, "cause" => cause, "retry_of" => attempt["retry_of"])
-      ctx.deliver({"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
-                   "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh",
-                   "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"], "cause" => cause})
+      line = {"step" => step["id"], "attempt" => attempt["n"], "workspace" => run["workspace"], "pane" => pane,
+              "text" => format(KICK, attempt["prompt_file"]), "fresh" => (context || step["context"]) == "fresh",
+              "remote_baseline" => WorkflowRequire.remote_baseline?(step), "worktree" => run["worktree"], "cause" => cause}
+      # A fan_out sibling's line is typed after its siblings'; any other step's is the change's one line.
+      WorkflowRun.step_scoped?(run, step["id"]) ? ctx.add_delivery(line) : ctx.deliver(line)
     rescue Workspace::Error, SystemCallError, EncodingError => e
       # The step could not be started (no pane, an unreadable pack, a checkout that is gone, text that can't be written as UTF-8).
       not_delivered(run, state, attempt, {code: e.respond_to?(:code) ? e.code : "error", message: e.message.lines.first.to_s.strip})
@@ -356,7 +420,7 @@ module Workspace
     # The cause a dispatch that ends a lock wait is written with: the one the waiting dispatch had, for the same step.
     # A `lock_ended` dispatch with none kept (a run stored before it was kept) stays `lock_ended`.
     def kept_cause(run, cause)
-      kept = run["dispatch_cause_pending"]
+      kept = slot(run, "dispatch_cause_pending")
       return cause unless cause == "lock_ended" && kept.is_a?(Hash) && kept["step"] == run["current"] && kept["cause"].is_a?(String)
       kept["cause"]
     end
@@ -367,22 +431,27 @@ module Workspace
       if retry_of.is_a?(Hash) && retry_of["attempt"].is_a?(Integer)
         return {"step" => run["current"], "attempt" => retry_of["attempt"], "context" => context, "text" => retry_of["text"]}.compact
       end
-      kept = run["retry_of_pending"]
+      kept = slot(run, "retry_of_pending")
       (kept.is_a?(Hash) && kept["step"] == run["current"] && kept["attempt"].is_a?(Integer)) ? kept : nil
     end
 
     # The daemon's answer to a typed line, applied to the stored run.
+    # A fan_out sibling's line is settled whichever sibling the cursor is on: the group's lines are typed one after another.
     def settle(run, delivery, kick)
       work = run.thawed
       state = work["steps"].fetch(delivery["step"])
       attempt = state["attempts"].last
       after = (attempt["n"] == delivery["attempt"]) ? attempt.delete("after_park") : nil
-      return WorkflowRun.from_h(work) unless work["current"] == delivery["step"] && attempt["n"] == delivery["attempt"] && attempt["delivery"] == "delivering"
+      return WorkflowRun.from_h(work) unless on_step?(work, delivery["step"]) && attempt["n"] == delivery["attempt"] && attempt["delivery"] == "delivering"
       attempt.delete("delivery")
       return WorkflowRun.from_h(work) if kick[:ok]
-      not_delivered(work, state, attempt, kick)
+      not_delivered(work, state, attempt, kick, delivery["step"])
+      return WorkflowRun.from_h(work) unless work["current"] == delivery["step"]
       park_again(WorkflowRun.from_h(work), after, kick)
     end
+
+    # Whether the run is still on +step_id+: the cursor names it, or it is a fan_out sibling (the cursor names only one).
+    def on_step?(run, step_id) = run["current"] == step_id || WorkflowRun.step_scoped?(run, step_id)
 
     # The reading `remote_unchanged` compares with. It is taken here, the one place every attempt passes with the
     # lock given up and the agent not yet told: `dispatch` runs inside a transition, from many callers. It may take
@@ -392,7 +461,7 @@ module Workspace
       reading = @guard.remote_head(delivery["worktree"])
       @change.call(run_id, actor: "engine", cause: "delivery") do |run|
         attempt = run.step(delivery["step"]).last_attempt
-        next unless run.current == delivery["step"] && attempt.n == delivery["attempt"]
+        next unless on_step?(run.to_h, delivery["step"]) && attempt.n == delivery["attempt"]
         run.with_attempt(delivery["step"], WorkflowRun::Attempt.from_h(attempt.to_h.merge("remote" => reading)))
       end
     rescue Workspace::Error => e
@@ -404,7 +473,7 @@ module Workspace
     # pass already moved the step and the pane, and {#not_delivered} put the note back, so the new park only waits.
     def park_again(run, after, kick)
       # {#not_delivered} has already written the reason, so a pane tmux confirmed gone is read here.
-      return run if run.reason.is_a?(Hash) && run.reason["code"] == "pane_gone"
+      return run if run.reason_for(run.current).is_a?(Hash) && run.reason_for(run.current)["code"] == "pane_gone"
       return run unless after && PARK_AGAIN_CODES.include?(kick[:code].to_s) && after["retries"] < PARK_RETRIES
       return run unless WorkflowTransitions.parked({"parked" => after}, @clock.call) == :waiting
       parked = run.with_park({"from" => nil, "note" => nil, "pane" => nil, "turn_over" => nil}, id: SecureRandom.hex(8),
@@ -413,21 +482,23 @@ module Workspace
       parked
     end
 
-    def not_delivered(run, state, attempt, kick)
+    # +step_id+ is the step that was not started: the cursor's, or a fan_out sibling's whose line was typed after another's.
+    def not_delivered(run, state, attempt, kick, step_id = run["current"])
       attempt&.delete("delivery")
       attempt&.merge!("ended_at" => now_iso, "outcome" => "not_delivered")
       refusal = self.class.refusal(kick)
       attempt["refusal"] = refusal if attempt && refusal
       attempt["code"] = kick[:code].to_s if attempt && kick[:code]
       # The next attempt is told what this one would have been.
-      run["pending_context"] = attempt["context"] + run["pending_context"] if attempt
+      slots = WorkflowRun.slots(run, step_id)
+      slots["pending_context"] = attempt["context"] + WorkflowRun.slot(run, step_id, "pending_context") if attempt
       release(run)
       state["state"] = "waiting"
-      run["state"] = "waiting"
+      wait_run(run, step_id)
       # A pane tmux still lists (`pane_listed`, set by {#deliver}) is not gone, whatever code the daemon answered.
       gone = PANE_GONE_CODES.include?(kick[:code].to_s) && !kick[:pane_listed]
-      run["reason"] = reason(gone ? "pane_gone" : "waiting_you",
-        {"kind" => "dispatch", "step" => run["current"], "pane" => run["pane"], "workspace" => run["workspace"],
+      slots["reason"] = reason(gone ? "pane_gone" : "waiting_you",
+        {"kind" => "dispatch", "step" => step_id, "pane" => WorkflowRun.slot(run, step_id, "pane"), "workspace" => run["workspace"],
          "error" => kick[:code].to_s, "message" => refusal&.fetch("message", nil) || kick[:message]&.to_s&.scrub, "reason" => refusal&.fetch("reason", nil) || kick[:reason]&.to_s,
          "proof_missing" => kick[:proof_missing]&.to_s, "seen" => refusal&.fetch("seen", nil)}.compact)
     end
@@ -435,18 +506,36 @@ module Workspace
     # Whether the attempt about to start is held: the budget is used up. Not for a lock wait that ends (the attempt
     # was allowed when the step was reached). A run none of whose attempts could be counted has a total of 0, which is
     # under any budget, so it is never held.
+    #
+    # The purse is the run's, shared by a fan_out group's siblings: one sibling held for it holds the others' attempts too.
     def budget_holds?(run)
-      return false if run.dig("reason", "code") == "waiting_lock"
+      return false if slot_dig(run, "reason", "code") == "waiting_lock"
       reading = WorkflowBudget.reading(run, live: false)
-      !!(reading && reading["spent"])
+      return false unless reading
+      !!reading["spent"] || sibling_holds?(run, "budget_hold")
     end
 
     # Whether the attempt about to start is held: the run's `timeout:` is used up (machine time, see
     # {WorkflowDeadline}). Exempt as {#budget_holds?} is: a lock wait that ends was allowed when the step was reached.
     def time_holds?(run)
-      return false if run.dig("reason", "code") == "waiting_lock"
+      return false if slot_dig(run, "reason", "code") == "waiting_lock"
       reading = WorkflowDeadline.reading(run, @clock.call, stops: downtime_stops)
-      !!(reading && reading["spent"])
+      return false unless reading
+      !!reading["spent"] || sibling_holds?(run, "timeout_hold")
+    end
+
+    # Whether a sibling of the current step's fan_out group holds +key+ (`budget_hold`, `timeout_hold`) under its own
+    # step; false for a step in no group.
+    def sibling_holds?(run, key)
+      (group_of(run, run["current"]) || []).any? { |id| run["steps"].is_a?(Hash) && run["steps"][id].is_a?(Hash) && run["steps"][id][key].is_a?(Hash) }
+    end
+
+    # Sets the run waiting as a step that can't start leaves it, unless +step_id+ is a fan_out sibling with another
+    # sibling still at work: the run is running while any of them is.
+    def wait_run(run, step_id = run["current"])
+      others = (group_of(run, step_id) || []) - [step_id]
+      working = others.any? { |id| SIBLING_WORKING.include?(run.dig("steps", id, "state")) }
+      run["state"] = working ? "running" : "waiting"
     end
 
     # Stops the run before the attempt: nothing is held, the step is left as it was, and the run waits for a
@@ -455,7 +544,7 @@ module Workspace
     # is spent, else `run_timed_out`, and carries the other's details under `run_timed_out` when both are.
     def hold_attempt(run, context, retry_of, budget:, time:)
       pane = retry_of&.fetch("pane", nil) || bound_pane(run)
-      identity = retry_of&.fetch("identity", nil) || @panes.identity(run["id"])
+      identity = retry_of&.fetch("identity", nil) || pane_identity(run)
       hold(run, {"context" => context, "pane" => pane, "identity" => identity, "text" => retry_of&.fetch("text", nil),
                  "retry_of" => retry_of&.fetch("attempt", nil)}.compact, budget: budget, time: time)
     end
@@ -464,18 +553,18 @@ module Workspace
     # keeps, so its replay starts the attempt this dispatch would have.
     def pause_attempt(run, cause, context, budgeted, retry_of)
       pane = retry_of&.fetch("pane", nil) || bound_pane(run)
-      identity = retry_of&.fetch("identity", nil) || @panes.identity(run["id"])
+      identity = retry_of&.fetch("identity", nil) || pane_identity(run)
       pause_hold(run, {"kind" => "attempt", "cause" => cause, "context" => context, "budgeted" => budgeted, "pane" => pane, "identity" => identity,
                        "text" => retry_of&.fetch("text", nil), "retry_of" => retry_of&.fetch("attempt", nil)}.compact)
     end
 
     # There is only ever one held dispatch: a run that already holds one keeps it and is left as it is.
     def pause_hold(run, hold, release: true)
-      return true if run["pause_hold"]
+      return true if slot(run, "pause_hold")
       release(run) if release
-      run["pause_hold"] = hold
+      slots(run)["pause_hold"] = hold
       run["state"] = "waiting"
-      run["reason"] = nil
+      slots(run)["reason"] = nil
       true
     end
 
@@ -490,13 +579,13 @@ module Workspace
       run = @change.call(run_id, actor: "engine", cause: "delivery") do |stored|
         next unless (paused = !!stored.paused)
         attempt = stored.step(delivery["step"])&.last_attempt
-        next unless stored.current == delivery["step"] && attempt&.n == delivery["attempt"] && attempt.to_h["delivery"] == "delivering"
+        next unless on_step?(stored.to_h, delivery["step"]) && attempt&.n == delivery["attempt"] && attempt.to_h["delivery"] == "delivering"
         # The first hold is kept; this line's mark lapses, and the tick after the unpause sees to it.
-        next if stored.to_h["pause_hold"]
+        next if stored.pause_hold_for(delivery["step"])
         held = true
         work = stored.thawed
         work["steps"].fetch(delivery["step"])["attempts"].last.delete("delivery")
-        work["pause_hold"] = {"kind" => "delivery", "step" => delivery["step"], "attempt" => delivery["attempt"], "delivery" => delivery}
+        WorkflowRun.slots(work, delivery["step"])["pause_hold"] = {"kind" => "delivery", "step" => delivery["step"], "attempt" => delivery["attempt"], "delivery" => delivery}
         WorkflowRun.from_h(work)
       end
       return nil unless paused
@@ -512,15 +601,15 @@ module Workspace
       reading = WorkflowBudget.reading(run, live: false) if budget
       deadline = WorkflowDeadline.reading(run, @clock.call, stops: downtime_stops) if time
       release(run)
-      run["budget_hold"] = hold if budget
-      run["timeout_hold"] = hold.dup if time
-      run["state"] = "waiting"
+      slots(run)["budget_hold"] = hold if budget
+      slots(run)["timeout_hold"] = hold.dup if time
+      wait_run(run)
       if budget
         details = WorkflowTransitions.budget_details(run, reading).merge("kind" => "budget")
         details["run_timed_out"] = WorkflowTransitions.deadline_details(run, deadline) if time
-        run["reason"] = reason("budget_spent", details)
+        slots(run)["reason"] = reason("budget_spent", details)
       else
-        run["reason"] = reason("run_timed_out", WorkflowTransitions.deadline_details(run, deadline))
+        slots(run)["reason"] = reason("run_timed_out", WorkflowTransitions.deadline_details(run, deadline))
       end
       @change.event(run, "budget_spent", reading.slice("used", "allowance", "counted", "uncounted", "estimated").merge("step" => run["current"])) if budget
       @change.event(run, "run_timed_out", deadline.slice("used", "limit", "timeout", "extra_seconds").merge("step" => run["current"])) if time
@@ -532,7 +621,7 @@ module Workspace
       result = @resources.acquire(run_id: run["id"], step: step["id"], uses: step["uses"], worktree: run["worktree"],
         workflow: run["workflow"], workspace: run["workspace"], pane: pane)
       raise Workspace::Error, "run #{run["id"]} has no run file, so it can hold no lock" if result[:status] == :not_alive
-      waited = (run.dig("reason", "code") == "waiting_lock") ? run["reason"] : nil
+      waited = (slot_dig(run, "reason", "code") == "waiting_lock") ? slot(run, "reason") : nil
       result[:released].each { |name| lock_event(run, "lock_released", name) }
       result[:acquired].each do |name|
         was_waiting = waited && waited.dig("details", "resource") == name
@@ -561,10 +650,10 @@ module Workspace
       details = {"resource" => waiting[:name], "step" => run["current"], "position" => waiting[:position], "total" => waiting[:total],
                  "holder" => {"run_id" => holder["run_id"], "step" => holder["step"], "workspace" => holder["workspace"],
                               "worktree" => holder["worktree"], "pid" => holder["pid"], "kind" => holder["kind"]}.compact}
-      since = (run.dig("reason", "code") == "waiting_lock" && run.dig("reason", "details", "resource") == waiting[:name]) ? run["reason"]["since"] : now_iso
+      since = (slot_dig(run, "reason", "code") == "waiting_lock" && slot_dig(run, "reason", "details", "resource") == waiting[:name]) ? slot(run, "reason")["since"] : now_iso
       state["state"] = step_state
-      run["state"] = "waiting"
-      run["reason"] = {"code" => "waiting_lock", "since" => since, "details" => details}
+      wait_run(run)
+      slots(run)["reason"] = {"code" => "waiting_lock", "since" => since, "details" => details}
     end
 
     def lock_event(run, type, name, data = {})
@@ -578,8 +667,35 @@ module Workspace
     # Another run whose `on_fail` retry or token budget hold waits for +pane+ (a dead or reused id holds nothing).
     def backoff_on(pane, run_id) = @store.backoff_on(pane, except: run_id, same_pane: ->(each, identity) { @panes.same_pane?(each, identity) })&.id
 
+    # The pane the current step's agent works in: for a fan_out sibling, its own binding, then the pane it recorded;
+    # else (and for a sibling that has neither yet, the first of a group) the run's author pane.
     def bound_pane(run)
+      step = run["current"]
+      if WorkflowRun.step_scoped?(run, step)
+        own = @panes.pane_of(run["id"], step: step) || run.dig("steps", step, "pane")
+        return own if own
+      end
       @panes.pane_of(run["id"]) || run["pane"]
+    end
+
+    # What identifies the pane {#bound_pane} names, for a hold to compare later: a fan_out sibling's own binding's,
+    # else the run's.
+    def pane_identity(run)
+      step = run["current"]
+      own = @panes.identity(run["id"], step: step) if WorkflowRun.step_scoped?(run, step) && @panes.pane_of(run["id"], step: step)
+      own || @panes.identity(run["id"])
+    end
+
+    # Whether the binding of the pane the current step would be typed into was made for another pane. A fan_out
+    # sibling's own binding is asked about alone, so one dead sibling pane stops only that sibling; a sibling with no
+    # binding of its own yet is asked about through the run's when it is typed into the run's pane, and a pane just
+    # made for it has none to ask about.
+    def stale_binding?(run, pane)
+      id = run["id"]
+      step = run["current"]
+      return !!(@panes.pane_of(id) && !@panes.alive?(id)) unless WorkflowRun.step_scoped?(run, step)
+      return !@panes.alive?(id, step: step) if @panes.pane_of(id, step: step)
+      pane == @panes.pane_of(id) && !@panes.alive?(id)
     end
 
     def step_def(run)
@@ -594,17 +710,26 @@ module Workspace
       {"code" => code, "since" => now_iso, "details" => details}
     end
 
+    # The Hash the current step's {WorkflowRun::PER_STEP_KEYS} slots are written into ({WorkflowRun.slots}).
+    def slots(run) = WorkflowRun.slots(run, run["current"])
+
+    # One of the current step's slots ({WorkflowRun.slot}).
+    def slot(run, key) = WorkflowRun.slot(run, run["current"], key)
+
+    # {#slot} dug into ({WorkflowRun.slot_dig}).
+    def slot_dig(run, key, *path) = WorkflowRun.slot_dig(run, run["current"], key, *path)
+
     # Puts a continue mark back as `continue_pending`, so a later tick types the line; true when it did.
     # A refusal is written on the marked attempt every time, so a second refusal on the same mark replaces the first.
     def keep_continue(run_id, mark, actor, cause, refusal = nil)
       kept = false
       @change.call(run_id, actor: actor, cause: cause) do |read|
         stored = read.thawed
-        next read unless WorkflowTransitions.continue_mark?(stored, mark)
+        next read unless WorkflowTransitions.continue_mark?(WorkflowTransitions.at_step(stored, mark_step(mark)), mark)
         attempt = stored.dig("steps", mark["step"], "attempts")&.find { |a| a["n"] == mark["attempt"] }
         attempt["refusal"] = refusal if attempt && refusal
-        unless stored.key?("continue_pending")
-          stored["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
+        unless WorkflowRun.slot_key?(stored, mark["step"], "continue_pending")
+          WorkflowRun.slots(stored, mark["step"])["continue_pending"] = mark.merge("since" => mark["since"] || now_iso)
           kept = true
         end
         WorkflowRun.from_h(stored)
@@ -614,6 +739,9 @@ module Workspace
       raise unless %w[run_not_active unknown_run].include?(e.code)
       false
     end
+
+    # The step a continue mark names, when it names one as a String.
+    def mark_step(mark) = (mark.is_a?(Hash) && mark["step"].is_a?(String)) ? mark["step"] : nil
 
     def now_iso
       @clock.call.utc.iso8601

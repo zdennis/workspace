@@ -57,6 +57,19 @@ RSpec.describe Workspace::WorkflowLiveUsage do
     expect(live.reading(run, now: now)).to eq(120)
   end
 
+  it "reads the transcript of the pane a step of a group recorded for itself" do
+    File.open(ledger_path, "a") do |file|
+      file.puts(JSON.generate("at" => "2026-10-04T12:00:01Z", "event" => "session_start", "workspace" => "ws", "pane_id" => "%9", "session_id" => "s9",
+        "transcript_path" => File.join(@dir, "s9.jsonl"), "source" => "startup"))
+    end
+    append(File.join(@dir, "s9.jsonl"), assistant("m9", "2026-10-04T12:00:02Z", input: 7))
+    grouped = Marshal.load(Marshal.dump(run)).merge("definition" => {"steps" => [{"id" => "impl", "group" => "g1"}]})
+    grouped["steps"]["impl"]["pane"] = "%9"
+
+    expect(live.reading(grouped, now: now)).to eq(7)
+    expect(live.reading(run, now: now)).to be_nil
+  end
+
   it "reads no bytes on a second call when nothing was written, however long the transcript" do
     lines = (1..2000).map { |i| assistant("m#{i}", "2026-10-04T12:00:02Z", input: 1, output: 1) }
     append(transcript, *lines)

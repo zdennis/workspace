@@ -42,25 +42,26 @@ module Workspace
       why = row["reason"] || row["cause"]
       id = row["run_id"]
       return [] unless id
-      return scheduled_actions(id, row["cause"]) if row["outcome"] == "recorded" && row["action"] == "infra_retry_scheduled"
-      return recorded_actions(id, why) if row["outcome"] == "recorded"
+      return scheduled_actions(id, row["cause"], row["step"]) if row["outcome"] == "recorded" && row["action"] == "infra_retry_scheduled"
+      return recorded_actions(id, why, row["step"]) if row["outcome"] == "recorded"
       return [] unless row["outcome"] == "nothing"
       reason_actions(row, id, why)
     end
 
     # A stall the pass recorded with an automatic restart scheduled: nothing for a person to do but wait; the run's
     # status shows when the restart is due. A row of `infra_retries_exhausted` gets the stall's actions below.
-    def scheduled_actions(id, cause)
+    def scheduled_actions(id, cause, step)
       stored = lookup { @store.run(id) }
-      info = stored && WorkflowEngine.infra_retry(stored.to_h, @clock.call)
+      info = stored && WorkflowEngine.infra_retry(WorkflowTransitions.at_step(stored.to_h, step), @clock.call)
       at = info&.fetch(:due) ? " at #{info[:due]}" : ""
       [NextAction.build("workflow status", id, why: "wait: the step restarts on its own (#{WorkflowStatus.infra_cause_words(cause)})#{at}; no action needed")]
     end
 
     # A recorded stall: resume or cancel, and for a gone pane or agent on a still-open attempt, a restart of the step.
-    def recorded_actions(id, why)
+    # `--restart-step` restarts the cursor's step, so a fan_out sibling off the cursor is offered none.
+    def recorded_actions(id, why, step)
       stored = lookup { @store.run(id) }
-      restart = if stored && WorkflowStatus.restartable?(stored.to_h, now: @clock.call)
+      restart = if stored && WorkflowTransitions.at_step(stored.to_h, step).equal?(stored.to_h) && WorkflowStatus.restartable?(stored.to_h, now: @clock.call)
         [NextAction.build("workflow resume", id, "--restart-step", needs: @status.limit_needs(stored), why: why)]
       else
         []
@@ -85,16 +86,18 @@ module Workspace
       when "workspace_stopped"
         (row["workspace"] && row["cause"] != "orphan_review_window") ? [NextAction.build("launch", row["workspace"], why: why)] : []
       when "prompt"
-        pane = lookup { prompt_pane(id) }
+        pane = lookup { prompt_pane(id, row["step"]) }
         (row["workspace"] && pane) ? [NextAction.build("focus", row["workspace"], "--pane", pane, why: why)] : []
       else
         []
       end
     end
 
-    # The pane a `prompt` row waits on: the review pane while a round is under way, else the run's own.
-    def prompt_pane(id)
+    # The pane a `prompt` row waits on: the review pane while a round is under way, else the run's own; a fan_out
+    # sibling's row waits on the sibling's own pane.
+    def prompt_pane(id, step = nil)
       stored = @store.run(id)
+      return @panes.pane_of(id, step: step) if WorkflowRun.step_scoped?(stored.to_h, step)
       (stored.step(stored.current)&.state == "reviewing") ? @panes.review_pane_of(id) : @panes.pane_of(id)
     end
 

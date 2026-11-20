@@ -4,9 +4,15 @@
 # (`stale`), and a kick that types nothing when it reports a failure.
 class FakeWorkflowPanes
   CONTROL_METHODS = %i[changed kicks bound stale idle turn_over gone agents_gone rows respawns restarted kick_result kick_result= bind_error bind_error=
-    daemon daemon= respawn_result respawn_result= on_row on_row= session session= queue_kicks pids].freeze
+    daemon daemon= respawn_result respawn_result= on_row on_row= session session= queue_kicks pids spawns spawn_results].freeze
 
   attr_reader :changed, :kicks, :bound, :stale, :idle, :turn_over, :gone, :agents_gone, :rows, :respawns, :restarted, :pids
+
+  # @return [Array<String>] each workspace +spawn_author+ was asked to split a pane in
+  attr_reader :spawns
+
+  # @return [Array<Hash>] what each +spawn_author+ answers, in order; once used up, a new pane %101, %102, ...
+  attr_reader :spawn_results
   attr_accessor :kick_result, :bind_error, :daemon, :respawn_result, :on_row, :session
 
   def initialize
@@ -27,6 +33,8 @@ class FakeWorkflowPanes
     @session = true
     @respawns = []
     @respawn_result = {ok: true}
+    @spawns = []
+    @spawn_results = []
   end
 
   def run_on(pane)
@@ -40,9 +48,16 @@ class FakeWorkflowPanes
     run_id && {run_id: run_id, role: (@bound[pane][:role] == "reviewer") ? "reviewer" : "author"}
   end
 
-  def pane_of(run_id) = @bound.find { |_, entry| entry[:run_id] == run_id }&.first
+  # The step the pane was bound for, for an author binding that records one.
+  def step_on(pane) = (bound_on(pane)&.fetch(:role) == "author") ? @bound[pane][:step] : nil
 
-  def alive?(run_id) = !pane_of(run_id).nil? && !@stale.include?(run_id)
+  def pane_of(run_id, step: nil) = @bound.find { |_, entry| entry[:run_id] == run_id && (step.nil? || entry[:step] == step) }&.first
+
+  # A run id in +stale+ makes every binding of the run stale; a pane id in it, only that pane's.
+  def alive?(run_id, step: nil)
+    pane = pane_of(run_id, step: step)
+    !pane.nil? && !@stale.include?(run_id) && !@stale.include?(pane)
+  end
 
   def idle?(_workspace, pane) = @idle.include?(pane)
 
@@ -82,7 +97,12 @@ class FakeWorkflowPanes
     @respawn_result
   end
 
-  def identity(run_id) = pane_of(run_id) ? {"session" => "app", "pane_slot" => "app:0.1"} : nil
+  def identity(run_id, step: nil) = pane_of(run_id, step: step) ? {"session" => "app", "pane_slot" => "app:0.1"} : nil
+
+  def spawn_author(workspace)
+    @spawns << workspace
+    @spawn_results.shift || {pane: "%#{100 + @spawns.size}"}
+  end
 
   # A pane in +changed+ is a reused id: tmux has it, in another session.
   def same_pane?(pane, identity) = !identity.nil? && !@gone.include?(pane) && !@changed.include?(pane)
@@ -94,8 +114,8 @@ class FakeWorkflowPanes
 
   # +role+ "reviewer" or "author" removes only that role's bindings (one bound with no role is the author's); nil removes
   # all; +pane+ only that pane's.
-  def unbind(run_id, role: nil, pane: nil)
-    @bound.delete_if { |bound, entry| entry[:run_id] == run_id && (role.nil? || (entry[:role] || "author") == role) && (pane.nil? || bound == pane) }
+  def unbind(run_id, role: nil, pane: nil, step: nil)
+    @bound.delete_if { |bound, entry| entry[:run_id] == run_id && (role.nil? || (entry[:role] || "author") == role) && (pane.nil? || bound == pane) && (step.nil? || entry[:step] == step) }
   end
 
   # Answers the next kick with each result given, in order, then with +kick_result+ again.

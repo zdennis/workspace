@@ -1,0 +1,53 @@
+schema_version: 0.1
+id: explore-parallel
+title: Explore in parallel and report
+description: Read-only research that reads the code and the tests at the same time in two panes, then one report that joins them. Changes no code. The example of a `fan_out` group.
+
+use_when: A question to answer by reading, where the code side and the test side can be read independently.
+
+inputs:
+  task:
+    description: The question to explore. `workflow run` fills it from the open pull request, else `Branch NAME`, when left out.
+    required: true
+
+instructions: |
+  You are exploring a question in workspace {{workspace}}. Change no code and commit nothing.
+  Every artifact for this run goes under {{artifacts}}/. Cite evidence as path:line and mark inference as inference.
+
+  The brief:
+
+  {{inputs.task}}
+
+max_attempts: 6
+
+steps:
+  read:
+    title: Read in parallel
+    # Both siblings start together, each in its own pane, on the one checkout. They only read it,
+    # so each keeps the default `guard: unchanged`, and each writes its own file.
+    fan_out:
+      code:
+        title: Read the code
+        prompt: |
+          Answer the brief from the code only. Write the findings, with path:line evidence, to {{artifacts}}/code.md.
+        produces: [code.md]
+        guard: unchanged
+        timeout: 60m
+      tests:
+        title: Read the tests
+        prompt: |
+          Answer the brief from the tests and their fixtures only. Write what they pin down, and what they leave open,
+          to {{artifacts}}/tests.md.
+        produces: [tests.md]
+        guard: unchanged
+        timeout: 60m
+
+  report:
+    title: Report
+    prompt: |
+      Read {{artifacts}}/code.md and {{artifacts}}/tests.md. Write the report to {{artifacts}}/report.md: the verdict
+      first, then ranked recommendations, then the detail. Where the two disagree, say so.
+    produces: [report.md]
+    guard: unchanged
+    gate: approve
+    timeout: 60m

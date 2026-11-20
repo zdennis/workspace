@@ -96,13 +96,17 @@ module Workspace
     # @param transcript_path [String, nil] the hook payload's transcript; the status line its last assistant message ends with is stored
     #   on the attempt as `status_report` (a stated `needs_input` or `stuck` holds the run and `running` spares it
     #   `turn_ended_incomplete`; the step's own checks stay authoritative)
+    # @param step [String, nil] the step the pane was bound for. For a step of a fan_out group (any sibling, the
+    #   cursor's or not) the turn is decided for that step, against that step's own pane; for any other step, or none,
+    #   the cursor's step is decided as always. Left nil, a pane bound to a sibling names its step itself.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun] the run afterwards
     # @raise [Workspace::Error] code `unknown_run` or `run_not_active`
-    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
+    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, step: nil)
       follow = nil
       status_report = read_status_report(transcript_path)
       run = @change.call(run_id, actor: actor, cause: "turn_ended") do |read, ctx|
+        read = on_sibling(read, step, pane)
         stored = read.to_h
         next if stored["parked"]
         state = step_state(stored)
@@ -114,7 +118,7 @@ module Workspace
           next judged
         end
         next unless state["state"] == "running"
-        next if pane && bound_pane(stored) != pane
+        next if pane && bound_pane(stored, stored["current"]) != pane # the cursor was moved to the sibling by on_sibling
         next if turn_started && turn_started < Time.iso8601(state["attempts"].last["started_at"])
         next if stopped_at && stopped_at < Time.iso8601(state["attempts"].last["started_at"])
         judged = evaluate(without_continue_marks(read), ctx: ctx, turn_started: turn_started, background: background, status_report: status_report)
@@ -132,12 +136,14 @@ module Workspace
     # @param summary [String, nil] one line about the attempt
     # @param code [String, nil] a word the agent chose for why (stored; a failed step's `details.code`)
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @param step [String, nil] a fan_out sibling to report on, when the caller's pane is bound to one; nil, or a step
+    #   outside any group, reports on the cursor's step
     # @return [Reported]
     # @raise [Workspace::Error] code `step_not_running` when the run's step is not being worked on
-    def report(run_id, actor:, status:, summary: nil, code: nil)
+    def report(run_id, actor:, status:, summary: nil, code: nil, step: nil)
       result = nil
       @change.call(run_id, actor: actor, cause: "report") do |read|
-        stored = read.thawed
+        stored = on_sibling(read, step, nil).thawed
         state = step_state(stored)
         unless %w[running checking].include?(state["state"])
           raise Workspace::Error.new("Step #{stored["current"]} of run #{run_id} is #{state["state"]}, so there is nothing to report on.",
@@ -186,9 +192,9 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def evaluate_accepted(run, ctx:)
       work = WorkflowRun.from_h(run).thawed
-      guard = work.dig("reason", "details", "guard")
+      guard = WorkflowRun.slot_dig(work, work["current"], "reason", "details", "guard")
       step_state(work)["attempts"].last["guard_accepted"] = guard
-      work["reason"] = nil
+      WorkflowRun.slots(work, work["current"])["reason"] = nil
       work["state"] = "running"
       judge(work, ctx, nil, [], guard: false)
       WorkflowRun.from_h(work)
@@ -267,7 +273,7 @@ module Workspace
 
     # Whether the current attempt's line is the one a pause holds untyped ({WorkflowDispatch#deliver}).
     def held_delivery?(run, state)
-      hold = run["pause_hold"]
+      hold = WorkflowRun.slot(run, run["current"], "pause_hold")
       hold.is_a?(Hash) && hold["kind"] == "delivery" && hold["step"] == run["current"] && hold["attempt"] == state["attempts"].last&.fetch("n", nil)
     end
 
@@ -275,9 +281,9 @@ module Workspace
     # it, or the interrupt did not stop the turn), and the turn is decided as any other.
     def without_continue_marks(read)
       stored = read.to_h
-      return read unless stored.key?("continue_pending") || stored.dig("paused", "interrupt")
+      return read unless WorkflowRun.slot_key?(stored, stored["current"], "continue_pending") || stored.dig("paused", "interrupt")
       work = WorkflowRun.from_h(read).thawed
-      work.delete("continue_pending")
+      WorkflowRun.slots(work, work["current"]).delete("continue_pending")
       work["paused"].delete("interrupt") if work["paused"].is_a?(Hash)
       WorkflowRun.from_h(work)
     end
@@ -373,7 +379,7 @@ module Workspace
     # A turn whose start the daemon does not know (it restarted during the round) counts once it stopped at or after
     # the delivery (`delivered_at`); before a delivery is recorded it does not.
     def review_turn?(run, round, pane, turn_started, stopped_at)
-      return false if run["reason"] || !round.is_a?(Hash) || round["recompute"] || pane.nil? || round["pane"] != pane
+      return false if WorkflowRun.slot(run, run["current"], "reason") || !round.is_a?(Hash) || round["recompute"] || pane.nil? || round["pane"] != pane
       started = Time.iso8601(round["started_at"].to_s)
       return cleared_turn?(round, turn_started, stopped_at) if round["clear_from"]
       !(turn_started && turn_started < started) && !(stopped_at && stopped_at < started)
@@ -433,12 +439,13 @@ module Workspace
         run["state"] = "waiting"
         details = {"step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale}
         details["invalid"] = invalid if invalid.any?
-        run["reason"] = if background.any? || stated_running?(attempt, status_report)
+        slots = WorkflowRun.slots(run, step["id"])
+        slots["reason"] = if background.any? || stated_running?(attempt, status_report)
           # Every notification starts a new turn and a hold is hidden, so its `since` stays. A turn that says it is
           # still running, with no task listed, waits the same way: the next turn or the sweep decides it.
-          stop_reason(run["reason"], nil, "turn_ended_background", details.merge("tasks" => background)).merge("seen_at" => now_iso)
+          stop_reason(slots["reason"], nil, "turn_ended_background", details.merge("tasks" => background)).merge("seen_at" => now_iso)
         else
-          stop_reason(run["reason"], turn_started, "turn_ended_incomplete", details)
+          stop_reason(slots["reason"], turn_started, "turn_ended_incomplete", details)
         end
         return
       end
@@ -458,7 +465,8 @@ module Workspace
       state["state"] = "running"
       run["state"] = "waiting"
       details = {"step" => step["id"], "attempt" => attempt["n"], "state" => stated["state"], "detail" => stated["detail"].to_s}
-      run["reason"] = stop_reason(run["reason"], turn_started, "waiting_agent_input", details)
+      slots = WorkflowRun.slots(run, step["id"])
+      slots["reason"] = stop_reason(slots["reason"], turn_started, "waiting_agent_input", details)
       record_ask(run, attempt, stated)
       true
     end
@@ -512,7 +520,7 @@ module Workspace
       attempt["check"]["command"] = command if command
       state["state"] = "checking"
       run["state"] = "running"
-      run["reason"] = nil
+      WorkflowRun.slots(run, step["id"])["reason"] = nil
       ctx.check({"step" => step["id"], "attempt" => attempt["n"], "command" => command, "timeout" => step["status"]["timeout"], "log" => log,
                  "cwd" => run["worktree"], "role" => step["status"]["command"]})
     end
@@ -524,7 +532,7 @@ module Workspace
       (attempt["proofs"] ||= []) << pending.except(WorkflowRequire::FACTS_KEY).merge("started_at" => now_iso)
       state["state"] = "checking"
       run["state"] = "running"
-      run["reason"] = nil
+      WorkflowRun.slots(run, step["id"])["reason"] = nil
       {"step" => step["id"], "attempt" => attempt["n"], "cwd" => run["worktree"], "proof" => pending}
     end
 
@@ -710,8 +718,22 @@ module Workspace
 
     def event(run, type, data = {}) = @change.event(run, type, data)
 
-    def bound_pane(run)
-      @panes.pane_of(run["id"]) || run["pane"]
+    # The pane the run's author agent works in. For a step of a group, that step's own pane (its binding, then its
+    # recorded pane); otherwise the run's, whatever +step_id+.
+    def bound_pane(run, step_id = nil)
+      return @panes.pane_of(run["id"]) || run["pane"] unless WorkflowRun.step_scoped?(run, step_id)
+      @panes.pane_of(run["id"], step: step_id) || WorkflowRun.slot(run, step_id, "pane")
+    end
+
+    # +read+ with the cursor on the fan_out sibling a turn end or report belongs to, so the decision below reads and
+    # writes that sibling's step; +read+ itself when the step is the cursor's, in no group, or unknown. The step is the
+    # one named, else the one the pane's binding was made for.
+    def on_sibling(read, step, pane)
+      step ||= @panes.step_on(pane) if pane && @panes.respond_to?(:step_on)
+      stored = read.to_h
+      return read if step.nil? || step == stored["current"] || !WorkflowRun.step_scoped?(stored, step)
+      return read unless stored["steps"].is_a?(Hash) && stored["steps"][step].is_a?(Hash)
+      WorkflowRun.from_h(read.thawed.merge("current" => step))
     end
 
     def step_def(run)

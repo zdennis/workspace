@@ -921,7 +921,7 @@ module Workspace
           refuse_bound_pane!(caller_pane, "workflow resume --from") if from && state.gate_waiting?
           refuse_caller!(stored, caller_pane, "workflow resume --accept-guard", "A guard stop is accepted by a person") if accept_guard
           refuse_caller!(stored, caller_pane, "workspace workflow resume #{stored.id} --restart-step", "A step is restarted by a person, from another pane") if restart_step
-          refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && !accept_guard && !restart_step && checked_step?(stored)
+          refuse_caller!(stored, caller_pane, "workflow resume", "A guarded or checked step is resumed by a person") if from.nil? && !accept_guard && !restart_step && checked_step?(stored, caller_step(caller_pane))
           @engine.refuse_resume(stored.to_h, from: from, note: note, accept_guard: accept_guard, guard_retry: guard_retry)
           if restart_step
             target = @panes.restart_target(stored.workspace, stored.id, bound: @panes.pane_of(run) || stored.pane, named: (@panes.locate(stored.workspace, pane) if pane), caller: caller_pane)
@@ -931,7 +931,7 @@ module Workspace
             pane_id = resume_pane(stored, pane)
           end
           hint = restart_hint(stored) if from.nil? && !accept_guard && !restart_step && restart_hint?(stored)
-          if !restart_step && pane_id.nil? && from.nil? && state.state == "running" && stored.reason.nil? &&
+          if !restart_step && pane_id.nil? && from.nil? && state.state == "running" && stored.reason_for(stored.current).nil? &&
               @panes.idle?(stored.workspace, @panes.pane_of(run) || stored.pane)
             turn_over = {"step" => stored.current, "attempt" => state.last_attempt&.n}
           end
@@ -1053,10 +1053,11 @@ module Workspace
       # @param background [Array<Hash>, nil] the tasks (`"id"`, `"type"`) the Stop listed as still going
       # @param transcript_path [String, nil] the agent's transcript, for the status line its last message ends with
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
+      # @param step [String, nil] the step the pane was bound for (a fan_out sibling's); the engine decides that step
       # @return [void]
       # @raise [Workspace::Error] code `bound_pane` for a step with a guard or a status check, from a pane
       #   bound to the run or a process under it
-      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, transcript_path: nil, caller_pane: nil)
+      def advance(run:, turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: nil, transcript_path: nil, caller_pane: nil, step: nil)
         stored = begin
           @store.run(run)
         rescue Workspace::Error
@@ -1064,7 +1065,7 @@ module Workspace
         end
         # The agent daemon runs this as a process of its own. Run from the agent's pane, it would let
         # the agent decide its own step, with a fake `git` first on PATH for the guard.
-        if stored && checked_step?(stored)
+        if stored && checked_step?(stored, step)
           refuse_caller!(stored, caller_pane, "workflow advance", "A guarded or checked step is decided by the agent daemon")
         end
         return release_parked(stored, caller_pane) if stored&.parked
@@ -1073,7 +1074,7 @@ module Workspace
           @infra_retry.call(stored)
           return nil
         end
-        turn_ended ? @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || [], transcript_path: transcript_path) : @engine.tick(run, actor: "daemon")
+        turn_ended ? @engine.turn_ended(run, actor: "daemon", pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background || [], transcript_path: transcript_path, **step_kwarg(step)) : @engine.tick(run, actor: "daemon")
         nil
       end
 
@@ -1093,7 +1094,7 @@ module Workspace
           raise UsageError, "--code #{refusal}"
         end
         run_id = bound_run!(pane)
-        reported = @engine.report(run_id, actor: "agent", status: status, summary: summary, code: code)
+        reported = @engine.report(run_id, actor: "agent", status: status, summary: summary, code: code, **step_kwarg(caller_step(pane)))
         @output.puts "Recorded #{status} for step #{reported["step"]} (attempt #{reported["attempt"]}) of run #{run_id}. " \
           "End your turn now; the step is decided when the turn ends."
         row = reported["reported"]
@@ -1131,8 +1132,9 @@ module Workspace
       # @raise [Workspace::Error] code `not_bound` outside a run's pane, `review_pane_bound` in a review pane
       def step_status(pane:, json: false)
         run = @store.run(bound_run!(pane))
-        step = run.definition["steps"].find { |each| each["id"] == run.current }
-        state = run.steps.fetch(run.current)
+        step_id = (caller_step(pane) if WorkflowRun.step_scoped?(run.to_h, caller_step(pane))) || run.current
+        step = run.definition["steps"].find { |each| each["id"] == step_id }
+        state = run.steps.fetch(step_id)
         attempt = state.last_attempt || WorkflowRun::Attempt.from_h({})
         started = attempt.started_at && Time.iso8601(attempt.started_at)
         strict = Workspace::WorkflowProduced.strict?(run.definition)
@@ -1141,7 +1143,7 @@ module Workspace
           found = Workspace::WorkflowProduced.inspect_file(path, strict: strict)
           {"path" => path, "exists" => found.exists, "problem" => found.rule, "current" => found.current?(started) == true}
         end
-        info = {"run_id" => run.id, "workflow" => run.workflow, "workspace" => run.workspace, "step" => run.current,
+        info = {"run_id" => run.id, "workflow" => run.workflow, "workspace" => run.workspace, "step" => step_id,
                 "attempt" => attempt.n, "state" => state.state, "instructions" => attempt.prompt_file,
                 "artifacts_dir" => run.artifacts_dir, "produces" => produces, "check" => !step["status"].nil?,
                 "reported" => attempt.reported&.slice("status", "summary")}
@@ -1981,8 +1983,9 @@ module Workspace
       # only then is the workspace's Claude pane looked up (which starts its agent daemon).
       # Whether the run's current step has a `guard:`, a `status:` check or a `command` proof. An agent that
       # re-ran its own check from a shell could put a fake `git` first on PATH.
-      def checked_step?(run)
-        step = Array(run.definition&.dig("steps")).find { |each| each["id"] == run.current }
+      def checked_step?(run, step_id = nil)
+        step_id = run.current unless step_id && WorkflowRun.step_scoped?(run.to_h, step_id)
+        step = Array(run.definition&.dig("steps")).find { |each| each["id"] == step_id }
         !!(step && (step["guard"] || step["status"] || Array(step["require"]).any? { |entry| entry.key?("command") || entry.key?("exec") }))
       end
 
@@ -2011,8 +2014,9 @@ module Workspace
       end
 
       # The timer's look at a run whose infra retry is due ({WorkflowTransitions.wakeable?} `:infra_retry`).
+      # A fan_out sibling off the cursor whose infra retry is due counts too ({WorkflowTransitions.step_wake}).
       def infra_retry_due?(stored)
-        @infra_retry && stored && WorkflowEngine.wakeable?(stored.to_h, @clock.call) == :infra_retry
+        @infra_retry && stored && WorkflowTransitions.step_wake(stored.to_h, @clock.call)&.first == :infra_retry
       end
 
       def restart_hint?(stored)
@@ -2024,7 +2028,7 @@ module Workspace
 
       def resume_pane(stored, pane)
         return @panes.locate(stored.workspace, pane) if pane
-        gone = stored.reason&.dig("code") == "pane_gone" || (@panes.pane_of(stored.id) && !@panes.alive?(stored.id))
+        gone = stored.reason_for(stored.current)&.dig("code") == "pane_gone" || (@panes.pane_of(stored.id) && !@panes.alive?(stored.id))
         gone ? @panes.default_pane(stored.workspace) : nil
       end
 
@@ -2135,6 +2139,15 @@ module Workspace
         nil
       end
 
+      # The step a pane's binding was made for, when it records one; the caller of a verb that acts on a step reads it
+      # so a fan_out sibling's pane acts on its own step. Nil for an unbound pane or no pane.
+      def step_kwarg(step) = step ? {step: step} : {}
+
+      def caller_step(pane)
+        return nil if pane.nil? || pane.to_s.empty? || !@panes.respond_to?(:step_on)
+        @panes.step_on(pane)
+      end
+
       def bound_run!(pane)
         bound = pane && !pane.empty? && @panes.bound_on(pane)
         if bound && bound[:role] == "reviewer"
@@ -2220,6 +2233,7 @@ module Workspace
         current = run["current"]
         where = %w[completed cancelled failed].include?(run["state"]) ? "" : "  step #{current["step"]}#{" (attempt #{current["attempt"]})" if current["attempt"]}, #{current["state"]}"
         @output.puts "#{run["id"]}  #{run["workflow"]}  #{run["workspace"]}  #{run["state"]}#{where}"
+        describe_siblings(run, current["step"]) unless where.empty?
         if run["definition_path"]
           source = run["definition_source"] ? "#{TerminalText.escape(run["definition_source"])}, " : ""
           @output.puts "  definition: #{source}#{TerminalText.escape(run["definition_path"])}"
@@ -2247,6 +2261,19 @@ module Workspace
         @output.puts "  recovery: #{TerminalText.escape(reason["recovery"])}" if reason && reason["recovery"]
         reason&.fetch("actions")&.each { |action| @output.puts "    workspace #{action["action"]} #{(action["args"] + needed(action)).join(" ")}" }
         Array(run["guard_warnings"]).each { |each| @output.puts "  warning: #{each["code"]} at step #{each["step"]} (attempt #{each["attempt"]}): #{each["message"]}" }
+      end
+
+      # One line for each fan_out sibling under way that is not the cursor's step, from its `steps` entry ({WorkflowStatus}
+      # gives a sibling under way its own `attempt`, `reason` and `flags`): `sibling ID (attempt N), STATE`, then its
+      # reason in words and its flags. A run with no group prints none.
+      def describe_siblings(run, cursor)
+        Array(run["steps"]).each do |entry|
+          next unless entry.is_a?(Hash) && entry["group"] && entry.key?("flags") && entry["id"] != cursor
+          reason = entry["reason"]
+          said = reason ? ": #{reason["code"]}: #{reason_text(reason)}" : ""
+          @output.puts "  sibling #{entry["id"]}#{" (attempt #{entry["attempt"]})" if entry["attempt"]}, #{entry["state"]}#{said}"
+          Array(entry["flags"]).each { |flag| @output.puts "    flag: #{flag}" }
+        end
       end
 
       # The automatic restart of a stalled step in words, from the status row's `infra_retry`: `step restarts on its own:

@@ -59,6 +59,33 @@ RSpec.describe Workspace::WorkflowRecovery do
       expect(change.calls).to eq([[:call, "wr_1", {nonblocking: true, actor: "sweep", cause: "tick"}]])
     end
 
+    describe "a fan_out sibling's deferred move" do
+      def grouped(until_at)
+        run_hash(state: "waiting", step_state: "failed").tap do |hash|
+          hash["definition"]["steps"] = [{"id" => "build", "group" => "checks", "produces" => []}, {"id" => "lint", "group" => "checks", "produces" => []}]
+          hash["steps"]["build"].merge!("pending_move" => {"to" => "lint", "until" => until_at}, "reason" => {"code" => "retry_backoff"})
+          hash["steps"]["lint"] = {"state" => "passed", "attempts" => [{"n" => 1}]}
+        end
+      end
+
+      it "runs the group's join once the move's wait is over, starting nothing itself" do
+        stored(grouped("2026-11-10T11:59:00Z"))
+
+        expect(recovery.tick("wr_1", actor: "daemon")).to be_a(Workspace::WorkflowRun)
+
+        expect(progress.calls).to eq([[:join, "checks"]])
+        expect(dispatch.calls).to be_empty
+      end
+
+      it "leaves the move alone while its wait lasts" do
+        stored(grouped("2026-11-10T12:01:00Z"))
+
+        expect(recovery.tick("wr_1", actor: "daemon")).to be_nil
+
+        expect(progress.calls).to be_empty
+      end
+    end
+
     it "leaves a paused run's file unchanged, though its backoff is over" do
       paused = run_hash(state: "waiting", step_state: "failed", reason: {"code" => "retry_backoff"},
         extra: {"backoff" => backoff_wait, "paused" => {"since" => "2026-11-10T11:30:00Z", "by" => "person", "text" => nil}})
@@ -426,6 +453,29 @@ RSpec.describe Workspace::WorkflowRecovery do
 
             expect(outcome).to eq(:stopped)
             expect(evaluation.calls).to eq([[:review_ended, "build"]])
+          end
+        end
+
+        describe "when a fan_out sibling is left stopped under its own step" do
+          let(:evaluation) do
+            Class.new(RecordingEvaluation) do
+              def review_ended(run, ctx:)
+                hash = Workspace::WorkflowRun.from_h(run).thawed
+                @calls << [:review_ended, hash["current"]]
+                hash["steps"][hash["current"]]["reason"] = {"code" => "review_incomplete"}
+                Workspace::WorkflowRun.from_h(hash)
+              end
+            end.new(store.runs)
+          end
+
+          it "answers :stopped for interrupt_unanswered from the sibling's own reason slot" do
+            hash = reviewing("delivery" => nil, "pane" => "%9", "window" => "@4", "server_pid" => "100")
+            hash["definition"]["steps"][0]["group"] = "checks"
+            stored(hash)
+
+            outcome = recovery.review_stalled("wr_1", actor: "sweep", step: "build", attempt: 1, round: 1, pane: "%9", cause: "interrupt_unanswered", data: {"waited" => 1800})
+
+            expect(outcome).to eq(:stopped)
           end
         end
 

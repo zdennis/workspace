@@ -22,6 +22,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/run_liveness.rb` — Whether a workflow run is still alive, from its run file.
 - `lib/workspace/run_resources.rb` — Holds a workflow step's `uses:` locks for the run.
 - `lib/workspace/workflow_review_spec.rb` — Parses the `reviewers:` and step `review:` parts of a workflow definition.
+- `lib/workspace/workflow_fan_out_spec.rb` — Checks a `fan_out` group's siblings for checkout contention: guards and `produces` overlap.
 - `lib/workspace/workflow_definition.rb` — One workflow definition (YAML): checks every key, collects problems and fills defaults, `on_fail: stop` included.
 - `lib/workspace/workflow_extends.rb` — Resolves a definition's `extends:` against its parent definitions.
 - `lib/workspace/workflow_lint.rb` — `workflow validate`'s checks that need the person's setup, as warnings.
@@ -29,7 +30,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_router.rb` — Picks a workflow for `workflow start --ref` from the ref kind and config.
 - `lib/workspace/workflow_catalog.rb` — Finds workflow definitions by id across project, user and preset locations.
 - `lib/workspace/workflow_project.rb` — Answers which project's workflow definitions a command reads first.
-- `lib/workspace/workflow_run.rb` — `WorkflowRun`, a frozen value over a stored run hash, with steps and attempts.
+- `lib/workspace/workflow_run.rb` — `WorkflowRun`, a frozen value over a stored run hash, with steps and attempts; each step's slots kept under its own hash and read by `<key>_for`.
 - `lib/workspace/workflow_run_store.rb` — Run files under `~/.local/state/workspace/.workflows/`; the one way a run changes.
 - `lib/workspace/workflow_engine.rb` — Every transition of a run; delegates to the phase classes it is built from.
 - `lib/workspace/workflow_transitions.rb` — The engine's rules over plain values: attempts, delivery, backoff, the default one-step failure loop, sweep marks and review limits.
@@ -104,7 +105,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_workspace_facts.rb` — What `workflow status --table` says about each workspace now.
 - `lib/workspace/workflow_nudger.rb` — The daemon's part that starts `workflow advance` when a bound pane's turn ends.
 - `lib/workspace/workflow_config.rb` — Reads the global default workflow packs.
-- `lib/workflows/` — The workflow presets that ship (rpiv, rpiv-auto-approve, pr-feedback, investigate, explore, bugfix).
+- `lib/workflows/` — The workflow presets that ship (rpiv, rpiv-auto-approve, rpiv-auto-approve-v2, pr-feedback, investigate, explore, explore-parallel, bugfix).
 - `lib/workspace/commands/workflow.rb` — The `workflow` and `step` subcommands: shows definitions, starts a run in a workspace's agent pane, shows where runs stand, and lets a person move one (resume, cancel, approve, reject) or the run's own agent report on its step.
 - `lib/workspace/workflow_argv.rb` — Turns the string of a `require: exec:` entry into an argument vector, checks it, and fills in its placeholders.
 - `lib/workspace/workflow_exec_program.rb` — The one rule for whether the program of a `require: exec:` entry (argument 1 of its argv) can run.

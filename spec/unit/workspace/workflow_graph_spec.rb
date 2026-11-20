@@ -158,4 +158,19 @@ RSpec.describe Workspace::WorkflowGraph do
     expect(built.to_h["edges"].first).to be_frozen
     expect(built.to_h["legend"]).to be_frozen
   end
+
+  it "refuses a definition with a fan_out group, which it would draw as steps in a row" do
+    definition = {"id" => "demo", "steps" => [step("plan"), step("lint", group: "checks"), step("test", group: "checks"), step("report")]}
+
+    expect { described_class.build(definition) }.to raise_error(Workspace::Error) { |error|
+      expect(error.code).to eq("invalid_workflow")
+      expect(error.message).to include("can't be graphed", "fan_out group checks (lint, test)", "side by side")
+      expect(error.details["groups"]).to eq("checks" => %w[lint test])
+    }
+  end
+
+  it "draws a definition whose group tags are empty or not text as it always did" do
+    definition = {"steps" => [step("a", group: ""), step("b", group: nil)]}
+    expect(described_class.build(definition).to_h["nodes"].map { |node| node["id"] }).to eq(%w[.start a b .end])
+  end
 end

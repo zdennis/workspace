@@ -184,7 +184,7 @@ module Workspace
       # Downtime is read once for the pass, after the beat has recorded any gap since the last one.
       pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, sessions: {}, default_stall: @default_stall.call, turn_failed_after: @turn_failed_after.call,
               stops: downtime_stops, budget_only: budget_only, infra_retry_max: budget_only ? 0 : @infra_retry_max.call.to_i}
-      rows = runs.filter_map { |each| sweep_run(each, pass) }
+      rows = runs.flat_map { |each| [sweep_run(each, pass)].flatten(1).compact }
       rows += unreadable_rows unless run || workspace || budget_only
       # Every session of the default tmux server unless a workspace or a run narrows the pass.
       rows += @reviews.orphan_rows(run, workspace || (run && runs.first&.workspace), pass) unless budget_only
@@ -289,11 +289,56 @@ module Workspace
       pass[:sessions].fetch(workspace) { pass[:sessions][workspace] = @panes.session_live?(workspace) }
     end
 
+    # The run read on each step the pass looks at: the run itself (its cursor's step), then, while a fan_out group is
+    # under way, the run read on each other sibling under way ({WorkflowTransitions.step_views}), so each sibling is a
+    # row of its own and is acted on through its own step, pane and slots.
+    def live_views(run)
+      hash = run.to_h
+      WorkflowTransitions.step_views(hash).map { |view| view.equal?(hash) ? run : WorkflowRun.from_h(view) }
+    rescue KeyError, TypeError, NoMethodError
+      [run]
+    end
+
+    # Whether the step the run is read on belongs to a fan_out group, so its pane is its own ({WorkflowRun#pane_for}).
+    def scoped?(run) = WorkflowRun.step_scoped?(run.to_h, run.current)
+
+    # The pane binding's step argument for the step the run is read on: none outside a group.
+    def step_kw(run) = scoped?(run) ? {step: run.current} : {}
+
+    # The pane the step the run is read on was bound in, as the run's bindings have it.
+    def bound_pane(run) = @panes.pane_of(run.id, **step_kw(run))
+
+    # The pane the step the run is read on recorded at dispatch: a fan_out sibling's own, else the run's.
+    def own_pane(run) = scoped?(run) ? run.pane_for(run.current) : run.pane
+
+    # The run read again from its file, on the step +run+ is read on.
+    def reread(run)
+      fresh = @store.run(run.id)
+      return fresh unless scoped?(run)
+      WorkflowRun.from_h(WorkflowTransitions.at_step(fresh.to_h, run.current))
+    end
+
     def sweep_run(run, pass)
-      return nil if pass[:budget_only] && budget_only_skip?(run)
+      # A budget-only pass skips the cursor's step on its own, but not a fan_out sibling under way beside it.
+      if pass[:budget_only] && budget_only_skip?(run)
+        return nil if WorkflowRunStore::TERMINAL_STATES.include?(run.state) || run.paused || live_views(run).size == 1
+      end
       return WorkflowSweepRows.row(run, "nothing", reason: "finished", message: "the run has ended") if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
       held = WorkflowTransitions.held_reason(run.to_h)
       return paused_row(run) if held == "paused"
+      views = live_views(run)
+      return sweep_step(run, pass, held) if views.size == 1
+      # A fan_out group under way: a row for each sibling under way, the cursor's first (a finished or paused run has one).
+      views.filter_map do |view|
+        next if pass[:budget_only] && budget_only_skip?(view)
+        sweep_step(view, pass, WorkflowTransitions.held_reason(view.to_h))
+      end
+    rescue Workspace::Error, KeyError, TypeError, SystemCallError => e
+      failed_row(run, e)
+    end
+
+    # The pass over the step +run+ is read on (the cursor's, or a fan_out sibling's), +held+ its {WorkflowTransitions.held_reason}.
+    def sweep_step(run, pass, held)
       state = run.steps.fetch(run.current)
       running = state.state == "running"
       backoff = WorkflowEngine.backoff(run.to_h, @clock.call)
@@ -303,9 +348,9 @@ module Workspace
       reviewing = state.state == "reviewing"
       # A round stopped for a person waits for that person: no daemon is started for it, and nothing reads its pane.
       return @reviews.held_row(run) if held == "round_held"
-      daemon_needed = running || reviewing || state.state == "checking" || run.parked || run.reason&.dig("code") == "waiting_lock"
-      if running && !@panes.alive?(run.id)
-        pane = run.pane
+      daemon_needed = running || reviewing || state.state == "checking" || run.parked || run.reason_for(run.current)&.dig("code") == "waiting_lock"
+      if running && !@panes.alive?(run.id, **step_kw(run))
+        pane = own_pane(run)
         return note(run, pass, "pane_gone", "pane #{pane} is gone, so nothing will end this step. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", {"pane" => pane}, infra: true)
       end
       seen = {}
@@ -325,14 +370,22 @@ module Workspace
       return @reviews.call(run, state, pass) if reviewing
       return WorkflowSweepRows.row(run, "nothing", reason: "not_running", message: "no agent is working on step #{run.current} (#{state.state})") unless running
       sweep_running(run, state, pass, seen)
-    rescue Workspace::Error => e
-      return WorkflowSweepRows.row(run, "nothing", reason: "finished", message: "the run ended while it was being looked at") if e.code == "run_not_active"
-      WorkflowSweepRows.row(run, "failed", reason: e.code || "error", message: e.message.lines.first.to_s.strip)
-    rescue KeyError, TypeError => e
-      WorkflowSweepRows.row(run, "failed", reason: "unreadable_run", message: "the run file is not shaped as a run is (#{e.class}: #{e.message.lines.first.to_s.strip})")
-    rescue SystemCallError => e
-      program = e.message[/ - (\S+)/, 1]
-      WorkflowSweepRows.row(run, "failed", reason: "tool_unavailable", message: "could not run #{program || "a program the sweep needs"}: #{e.message.lines.first.to_s.strip}. Put it on PATH.")
+    rescue Workspace::Error, KeyError, TypeError, SystemCallError => e
+      failed_row(run, e)
+    end
+
+    # The row of a run whose look raised.
+    def failed_row(run, e)
+      case e
+      when Workspace::Error
+        return WorkflowSweepRows.row(run, "nothing", reason: "finished", message: "the run ended while it was being looked at") if e.code == "run_not_active"
+        WorkflowSweepRows.row(run, "failed", reason: e.code || "error", message: e.message.lines.first.to_s.strip)
+      when KeyError, TypeError
+        WorkflowSweepRows.row(run, "failed", reason: "unreadable_run", message: "the run file is not shaped as a run is (#{e.class}: #{e.message.lines.first.to_s.strip})")
+      else
+        program = e.message[/ - (\S+)/, 1]
+        WorkflowSweepRows.row(run, "failed", reason: "tool_unavailable", message: "could not run #{program || "a program the sweep needs"}: #{e.message.lines.first.to_s.strip}. Put it on PATH.")
+      end
     end
 
     # Whether a budget-only pass leaves the run out (no row). It is looked at only when it is going, not paused, and its
@@ -378,23 +431,23 @@ module Workspace
 
     # The retry's wait is over but the token budget is used: not a failure, and the sweep cannot raise the budget.
     def budget_row(run, **rest)
-      round = (run.budget_hold || run.timeout_hold)&.dig("review_round")
+      round = (run.budget_hold_for(run.current) || run.timeout_hold_for(run.current))&.dig("review_round")
       held = round ? "review round #{round} of step #{run.current}" : "step #{run.current}"
-      if run.reason&.dig("code") == "run_timed_out"
+      if run.reason_for(run.current)&.dig("code") == "run_timed_out"
         return WorkflowSweepRows.row(run, "nothing", reason: "run_timed_out", message: "#{held} was not started: the run's time limit is used. Resume it with --extra-time DURATION (see `workspace workflow status #{run.id}`) or cancel it", **rest)
       end
-      WorkflowSweepRows.row(run, "nothing", reason: "budget_spent", message: "#{held} was not started: the run's token budget is used. Resume it with --extra-tokens N#{" and --extra-time DURATION" if run.reason&.dig("details", "run_timed_out")} (see `workspace workflow status #{run.id}`) or cancel it", **rest)
+      WorkflowSweepRows.row(run, "nothing", reason: "budget_spent", message: "#{held} was not started: the run's token budget is used. Resume it with --extra-tokens N#{" and --extra-time DURATION" if run.reason_for(run.current)&.dig("details", "run_timed_out")} (see `workspace workflow status #{run.id}`) or cancel it", **rest)
     end
 
     # The pane the retry would type into is no longer the run's. Not a failure: the sweep cannot fix it, and a person can.
     def blocked_row(run)
       WorkflowSweepRows.row(run, "nothing", reason: "retry_blocked", cause: "retry_backoff", action: "retry",
-        message: "the retry of step #{run.backoff&.dig("to")} is held: its pane is no longer the run's. Resume the run with --pane for another agent pane, or cancel it")
+        message: "the retry of step #{run.backoff_for(run.current)&.dig("to")} is held: its pane is no longer the run's. Resume the run with --pane for another agent pane, or cancel it")
     end
 
     # The step waits on a line that was not delivered, and {WorkflowEngine.redelivery} says where a retry stands.
     def sweep_undelivered(run, info, pass)
-      pane = run.pane
+      pane = own_pane(run)
       what = "step #{run.current}'s line was not delivered to pane #{pane} (#{info[:code]})"
       case info[:state]
       when :exhausted
@@ -402,7 +455,7 @@ module Workspace
       when :waiting
         return WorkflowSweepRows.row(run, "nothing", reason: "backoff", cause: "undelivered", message: "#{what}; retry #{info[:retries] + 1} of #{info[:limit]} in #{info[:wait]} seconds")
       end
-      unless @panes.alive?(run.id)
+      unless @panes.alive?(run.id, **step_kw(run))
         return note(run, pass, "pane_gone", "pane #{pane} is gone, so #{what} cannot be retried. The run keeps its checkout until it is resumed (`workspace workflow resume #{run.id}`) or cancelled.", {"pane" => pane})
       end
       return respawn(run, pass) if daemon_down?(run.workspace, pass)
@@ -447,12 +500,12 @@ module Workspace
       timed_out = timeout.is_a?(Numeric) && elapsed > timeout
       on_timeout = WorkflowDefinition.on_timeout(step)
 
-      if run.reason
-        return time_out(run, attempt, pass, elapsed, timeout, nil) if timed_out && on_timeout == "fail" && run.reason&.dig("code") == "turn_ended_incomplete"
-        return WorkflowSweepRows.row(run, "nothing", reason: "held", message: "step #{run.current} is held (#{run.reason&.dig("code")}); a person decides it")
+      if run.reason_for(run.current)
+        return time_out(run, attempt, pass, elapsed, timeout, nil) if timed_out && on_timeout == "fail" && run.reason_for(run.current)&.dig("code") == "turn_ended_incomplete"
+        return WorkflowSweepRows.row(run, "nothing", reason: "held", message: "step #{run.current} is held (#{run.reason_for(run.current)&.dig("code")}); a person decides it")
       end
       return WorkflowSweepRows.row(run, "nothing", reason: "delivering", message: "the step's line is still on its way to the pane") if WorkflowEngine.delivery(attempt.to_h, @clock.call) == :delivering
-      pane = @panes.pane_of(run.id)
+      pane = bound_pane(run)
       shown = shown_row(run, seen)
       return WorkflowSweepRows.row(run, "nothing", reason: "unknown", message: "the agent daemon did not say what pane #{pane} shows") unless shown
       if WorkflowPanes.agent_gone_row?(shown)
@@ -512,7 +565,7 @@ module Workspace
       cleared.each do |cause|
         @engine.note_recovery(run.id, actor: "sweep", step: run.current, attempt: WorkflowSweepRows.attempt_of(run), cause: cause, action: STALL_CLEARED.fetch(cause))
       end
-      @store.run(run.id)
+      reread(run)
     end
 
     # Whether +fresh+ is still on the step and attempt +run+ was read on, and that step still reads running.
@@ -524,7 +577,7 @@ module Workspace
 
     # The step's pane row, asked of the daemon at most once in a run's pass.
     def shown_row(run, seen)
-      seen.fetch(:row) { seen[:row] = @panes.pane_row(run.workspace, @panes.pane_of(run.id)) }
+      seen.fetch(:row) { seen[:row] = @panes.pane_row(run.workspace, bound_pane(run)) }
     end
 
     # Records a stall once for each attempt and cause. With +infra+ (a step `pane_gone` or `agent_gone`), the first

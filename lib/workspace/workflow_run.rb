@@ -78,6 +78,124 @@ module Workspace
     # @return [Integer] how many restarts a reboot recovery has made on this run; 0 when none is stored
     def reboot_recoveries = to_h["reboot_recoveries"].is_a?(Integer) ? to_h["reboot_recoveries"] : 0
 
+    # Slots a step keeps for itself under +steps[id]+, each read by its +<key>_for(step_id)+ method.
+    PER_STEP_KEYS = %w[
+      reason reasons backoff pending_context continue_pending pause_hold retry_of_pending
+      dispatch_cause_pending review_retry pending_move budget_hold timeout_hold sweep
+    ].freeze
+
+    PER_STEP_KEYS.each do |key|
+      # @param step_id [String] a step id
+      # @return [Object, nil] the step's own value when its hash holds the key, else the run-level value; nil when neither does
+      define_method(:"#{key}_for") { |step_id| self.class.slot(to_h, step_id, key) }
+    end
+
+    # @param step_id [String] a step id
+    # @return [String, nil] the pane the step's agent was dispatched in when its own hash records one (a step of a
+    #   group does), else the run's +pane+; nil when neither does. Not one of {PER_STEP_KEYS}: it is never swept with them.
+    def pane_for(step_id) = self.class.slot(to_h, step_id, "pane")
+
+    # The one placement rule for the {PER_STEP_KEYS} slots: whether +step_id+ keeps them under its own step hash. A step
+    # does when it belongs to a fan_out group, because its siblings run at the same time and a run-level slot would be
+    # overwritten by theirs; every other step keeps them at the top level of the run, as a run without groups always has.
+    #
+    # A step belongs to a group when its entry in the run's stored definition (+definition["steps"]+) holds a non-empty
+    # String under +"group"+, the id of the fan_out group, e.g. +{"id" => "lint", "group" => "checks"}+.
+    #
+    # @param hash [Hash{String=>Object}] a run Hash
+    # @param step_id [String, nil] a step id
+    # @return [Boolean]
+    def self.step_scoped?(hash, step_id)
+      return false unless hash.is_a?(Hash) && step_id.is_a?(String)
+      list = hash["definition"].is_a?(Hash) ? hash["definition"]["steps"] : nil
+      return false unless list.is_a?(Array)
+      entry = list.find { |each| each.is_a?(Hash) && each["id"] == step_id }
+      entry.is_a?(Hash) && entry["group"].is_a?(String) && !entry["group"].empty?
+    end
+
+    # The Hash a writer of +step_id+'s {PER_STEP_KEYS} slots writes into, by {.step_scoped?}: the step's own hash under
+    # +steps+ (made when missing), or the run Hash itself.
+    #
+    # @param hash [Hash{String=>Object}] a mutable run Hash
+    # @param step_id [String, nil] the step whose slot is written
+    # @return [Hash{String=>Object}]
+    def self.slots(hash, step_id)
+      return hash unless step_scoped?(hash, step_id)
+      steps = hash["steps"].is_a?(Hash) ? hash["steps"] : (hash["steps"] = {})
+      steps[step_id].is_a?(Hash) ? steps[step_id] : (steps[step_id] = {})
+    end
+
+    # Reads one of +step_id+'s {PER_STEP_KEYS} slots from a run Hash, as the +<key>_for+ readers do.
+    #
+    # @param hash [Hash{String=>Object}] a run Hash
+    # @param step_id [String, nil] a step id
+    # @param key [String] one of {PER_STEP_KEYS}
+    # A step of a fan_out group ({.step_scoped?}) reads only its own hash: the run-level fallback is there for old run
+    # files, which never tag a group, so a group member's absent key is absent, never a run-level value an earlier step
+    # left. Two keys still fall back for it: +pending_context+, the run-level list the step before a group hands every
+    # sibling's first attempt, and +pane+ (not one of {PER_STEP_KEYS}), the run's author pane a first sibling starts in.
+    #
+    # @return [Object, nil] the step's own value when its hash holds the key, else the run-level value (none for a
+    #   group member, see above); nil when neither does
+    def self.slot(hash, step_id, key)
+      return nil unless hash.is_a?(Hash)
+      steps = hash["steps"].is_a?(Hash) ? hash["steps"] : nil
+      own = (steps && step_id.is_a?(String)) ? steps[step_id] : nil
+      return own[key] if own.is_a?(Hash) && own.key?(key)
+      return nil if STRICT_KEYS.include?(key) && step_scoped?(hash, step_id)
+      hash[key]
+    end
+
+    # The {PER_STEP_KEYS} a group member never reads from the run's top level ({.slot}).
+    STRICT_KEYS = (PER_STEP_KEYS - %w[pending_context]).freeze
+    private_constant :STRICT_KEYS
+
+    # {.slot} dug into as +hash.dig(key, *path)+ digs the run-level key, raising as that would on a value that can't be dug.
+    #
+    # @param hash [Hash{String=>Object}] a run Hash
+    # @param step_id [String, nil] a step id
+    # @param key [String] one of {PER_STEP_KEYS}
+    # @param path [Array<String, Integer>] the keys below the slot
+    # @return [Object, nil]
+    def self.slot_dig(hash, step_id, key, *path) = {key => slot(hash, step_id, key)}.dig(key, *path)
+
+    # Whether the Hash {.slots} names for +step_id+ holds +key+ (even as nil); makes nothing.
+    #
+    # @param hash [Hash{String=>Object}] a run Hash
+    # @param step_id [String, nil] a step id
+    # @param key [String] one of {PER_STEP_KEYS}
+    # @return [Boolean]
+    def self.slot_key?(hash, step_id, key)
+      return hash.key?(key) unless step_scoped?(hash, step_id)
+      own = hash["steps"].is_a?(Hash) ? hash["steps"][step_id] : nil
+      own.is_a?(Hash) && own.key?(key)
+    end
+
+    # Adds +line+ to the pending context +step_id+'s next attempt is given, in the Hash {.slots} names for it.
+    #
+    # @param hash [Hash{String=>Object}] a mutable run Hash
+    # @param step_id [String, nil] the step the line is for
+    # @param line [String]
+    # @param first [Boolean] put the line before the others rather than after
+    # @return [Hash{String=>Object}] +hash+
+    def self.add_context(hash, step_id, line, first: false)
+      list = (slots(hash, step_id)["pending_context"] ||= [])
+      first ? list.unshift(line) : list << line
+      hash
+    end
+
+    # Removes every {PER_STEP_KEYS} slot a step keeps under its own hash, from every step, so an ended run reads as no
+    # step mid-retry or held. A step's +reasons+ is its reason history, not a slot of what comes next, so it stays (as
+    # the run's own +reasons+ does). The run-level slots are the caller's to remove.
+    #
+    # @param hash [Hash{String=>Object}] a mutable run Hash
+    # @return [Hash{String=>Object}] +hash+
+    def self.drop_step_slots(hash)
+      steps = hash["steps"].is_a?(Hash) ? hash["steps"] : {}
+      steps.each_value { |each| (PER_STEP_KEYS - %w[reasons]).each { |key| each.delete(key) } if each.is_a?(Hash) }
+      hash
+    end
+
     # @param id [String] a step id
     # @return [Step, nil]
     def step(id)
@@ -108,7 +226,7 @@ module Workspace
     def drop_park
       hash = thawed
       note = (parked = hash.delete("parked")).is_a?(Hash) ? parked["note"] : nil
-      hash["pending_context"] << self.class.resume_note(note) if note
+      self.class.add_context(hash, hash["current"], self.class.resume_note(note)) if note
       self.class.new(hash)
     end
 

@@ -394,7 +394,7 @@ module Workspace
           code = outcome[:exit_code] if outcome.is_a?(Hash)
           invocation.exit_handler.exit(code) if code && !code.zero?
         when "advance"
-          @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started], "--turn-started"),
+          @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], step: options[:step], turn_started: workflow_time(options[:turn_started], "--turn-started"),
             stopped_at: workflow_time(options[:stopped_at], "--stopped-at"), background: options[:background], transcript_path: options[:transcript_path], caller_pane: ENV["TMUX_PANE"])
         when "run"
           name = workflow_workspace(options)
@@ -569,7 +569,7 @@ module Workspace
       # The `--step`/`--attempt` pair of approve and reject, checked; `--note-sha256` is approve's.
       def workflow_gate_options(subcommand, options)
         gated = %w[approve reject].include?(subcommand)
-        raise UsageError, "--step and --attempt are for `workflow approve` and `workflow reject`." if !gated && (options[:step] || options[:attempt])
+        raise UsageError, "--step and --attempt are for `workflow approve` and `workflow reject`." if !gated && (options[:attempt] || (options[:step] && !(subcommand == "advance" && options[:turn_ended])))
         raise UsageError, "--note-sha256 is for `workflow approve`." if options[:note_sha256] && subcommand != "approve"
         raise UsageError, "--attempt needs --step: the attempt is of the gated step." if options[:attempt] && !options[:step]
         if options[:note_sha256] && !options[:note_sha256].match?(/\A[0-9a-f]{64}\z/)

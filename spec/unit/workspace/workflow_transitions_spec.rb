@@ -485,6 +485,51 @@ RSpec.describe Workspace::WorkflowTransitions do
     end
   end
 
+  describe "a step that keeps its own slots (a fan_out group member)" do
+    def grouped(lint: {}, test: {}, **fields)
+      run = run_with(:steps => {"lint" => step("failed").merge(lint), "test" => step("running").merge(test)}, "state" => "waiting", "reason" => nil, **fields)
+      run["definition"]["steps"].each { |each| each["group"] = "checks" }
+      run
+    end
+
+    let(:waiting) { {"until" => (now + 120).iso8601, "to" => "lint", "pane" => "%4"} }
+
+    it "finds the step's own waiting retry for the tick and the resume" do
+      run = grouped(lint: {"backoff" => waiting, "reason" => {"code" => "retry_backoff"}})
+
+      expect(described_class.target_step(run)).to eq("lint")
+      expect(described_class.starts_attempt?(run, from: nil, pane: nil)).to be(true)
+      expect(described_class.backoff(run, now)).to include(state: :waiting, wait: 120, to: "lint")
+      expect(described_class.wakeable?(run, now + 120)).to eq(:backoff)
+    end
+
+    it "answers for a sibling from the sibling's own slots" do
+      run = grouped(lint: {"backoff" => waiting})
+
+      expect(described_class.target_step(run, step: "test")).to eq("lint")
+      expect(described_class.starts_attempt?(run, from: nil, pane: nil, step: "test")).to be(false)
+      expect(described_class.starts_attempt?(run, from: nil, pane: "%5", step: "test")).to be(true)
+    end
+
+    it "names a hold from the step's own slots, for the step asked about" do
+      run = grouped(lint: {"backoff" => waiting.merge("blocked" => "pane_gone")}, test: {"budget_hold" => {"context" => "fresh"}})
+
+      expect(described_class.held_reason(run)).to eq("retry_blocked")
+      expect(described_class.held_reason(run, step: "test")).to eq("budget_hold")
+      expect(described_class.starts_attempt?(run, from: nil, pane: nil, step: "test")).to be(true)
+      expect(described_class.held_reason(grouped(test: {"timeout_hold" => {}}), step: "test")).to eq("timeout_hold")
+      expect(described_class.held_reason(grouped(test: {"reason" => {"code" => "waiting_you"}}), step: "test")).to eq("reason")
+      expect(described_class.held_reason(grouped(test: {"reason" => {"code" => "waiting_you"}}))).to be_nil
+    end
+
+    it "takes a round hold from the step's own slots" do
+      run = grouped(test: {"budget_hold" => {"review_round" => 2}})
+
+      expect(described_class.round_hold?(run, step: "test")).to be(true)
+      expect(described_class.round_hold?(run)).to be(false)
+    end
+  end
+
   describe ".backoff" do
     let(:run) { run_with(:steps => {"a" => step("failed")}, "state" => "waiting", "backoff" => {"until" => (now + 120).iso8601, "to" => "a"}) }
 
@@ -576,6 +621,44 @@ RSpec.describe Workspace::WorkflowTransitions do
       stopped = run.merge("reason" => {"code" => "turn_ended_incomplete"})
       expect(described_class.sweep_target?(stopped, "a", 1, true, now)).to be(false)
       expect(described_class.sweep_target?(stopped, "a", 1, :or_incomplete, now)).to be(true)
+    end
+  end
+
+  describe "step-scoped steps" do
+    let(:hold) { {"allowance" => 10} }
+    let(:grouped) do
+      run = run_with(steps: {"a" => step("running", {"n" => 1}).merge("budget_hold" => hold), "b" => step("running", {"n" => 1})})
+      run.merge("current" => "a", "definition" => {"steps" => [{"id" => "a", "group" => "g1"}, {"id" => "b", "group" => "g1"}]})
+    end
+
+    it "reads each step's own holds, so a hold on one does not hold the other" do
+      expect(described_class.starts_attempt?(grouped, from: nil, pane: nil, step: "a")).to be(true)
+      expect(described_class.starts_attempt?(grouped, from: nil, pane: "%1", step: "b")).to be(true)
+      grouped["state"] = "waiting"
+      expect(described_class.held_reason(grouped, step: "a")).to eq("budget_hold")
+      expect(described_class.held_reason(grouped, step: "b")).to be_nil
+    end
+
+    it "answers sweep_target? for the step it is given, not the cursor's" do
+      expect(described_class.sweep_target?(grouped, "b", 1, false, now)).to be(true)
+      expect(described_class.sweep_target?(grouped, "b", 1, true, now)).to be(true)
+      expect(described_class.sweep_target?(grouped.merge("definition" => {"steps" => [{"id" => "a"}, {"id" => "b"}]}), "b", 1, false, now)).to be(false)
+    end
+
+    it "reads the given step's own reason, not the cursor's" do
+      own = grouped.merge("steps" => grouped["steps"].merge("b" => step("running", {"n" => 1}).merge("reason" => {"code" => "waiting_on_person"})))
+      expect(described_class.sweep_target?(own, "b", 1, true, now)).to be(false)
+      expect(described_class.sweep_target?(own, "b", 1, :or_incomplete, now)).to be(false)
+
+      incomplete = grouped.merge("reason" => {"code" => "waiting_on_person"},
+        "steps" => grouped["steps"].merge("b" => step("running", {"n" => 1}).merge("reason" => {"code" => "turn_ended_incomplete"})))
+      expect(described_class.sweep_target?(incomplete, "b", 1, true, now)).to be(false)
+      expect(described_class.sweep_target?(incomplete, "b", 1, :or_incomplete, now)).to be(true)
+    end
+
+    it "reports the given step in budget_details" do
+      expect(described_class.budget_details(grouped, {}, step: "b")["step"]).to eq("b")
+      expect(described_class.budget_details(grouped, {})["step"]).to eq("a")
     end
   end
 
@@ -712,6 +795,93 @@ RSpec.describe Workspace::WorkflowTransitions do
       run["definition"]["steps"][1]["on_fail"] = "stop"
 
       expect(described_class.after_failure(run, failure)).to eq(kind: :stop)
+    end
+  end
+
+  describe "a fan_out group's failures and join" do
+    let(:failure) { {"cause" => "check", "code" => "check_failed"} }
+    let(:now) { Time.utc(2026, 10, 4, 12, 0, 0) }
+
+    # plan, then the group checks (lint, test, docs), then report.
+    def grouped(states = {}, current: "docs")
+      definition = [{"id" => "plan"}, {"id" => "lint", "group" => "checks"}, {"id" => "test", "group" => "checks"},
+        {"id" => "docs", "group" => "checks"}, {"id" => "report"}]
+      steps = %w[plan lint test docs report].to_h { |id| [id, {"state" => states.fetch(id, "passed"), "attempts" => [{"n" => 1}]}] }
+      {"id" => "wr_1", "state" => "running", "current" => current, "loops" => {}, "reason" => nil,
+       "definition" => {"max_attempts" => 20, "steps" => definition}, "steps" => steps}
+    end
+
+    it "takes the failed step's own on_fail when it is named, not the cursor's" do
+      run = grouped({"test" => "failed"}, current: "docs")
+      run["definition"]["steps"][2]["on_fail"] = {"goto" => "lint", "max" => 2}
+      run["definition"]["steps"][3]["on_fail"] = "stop"
+
+      expect(described_class.after_failure(run, failure, step: "test")).to eq(kind: :loop, edge: "test->lint", to: "lint", count: 1, wait: nil)
+      expect(described_class.after_failure(run, failure)).to eq(kind: :stop)
+    end
+
+    it "scopes the implicit move to the sibling before, stopping the group's first" do
+      expect(described_class.after_failure(grouped, failure, step: "test")).to include(kind: :loop, to: "lint")
+      expect(described_class.after_failure(grouped, failure, step: "lint")).to eq(kind: :stop)
+    end
+
+    it "skips a group's siblings for the step after it, and stops when no step before the group is in none" do
+      expect(described_class.after_failure(grouped, failure, step: "report")).to include(kind: :loop, to: "plan", edge: "report->plan")
+      run = grouped
+      run["definition"]["steps"].shift
+      expect(described_class.after_failure(run, failure, step: "report")).to eq(kind: :stop)
+    end
+
+    it "reads a group at rest only when no sibling works, owes, is held or waits out its move" do
+      ids = %w[lint test docs]
+      expect(described_class.group_at_rest?(grouped({"lint" => "failed"}), ids, now)).to be(true)
+      expect(described_class.group_at_rest?(grouped({"test" => "running"}), ids, now)).to be(false)
+
+      gated = grouped
+      gated["steps"]["lint"]["gate"] = {"state" => "waiting"}
+      expect(described_class.group_at_rest?(gated, ids, now)).to be(false)
+
+      held = grouped
+      held["steps"]["test"]["budget_hold"] = {}
+      expect(described_class.group_at_rest?(held, ids, now)).to be(false)
+
+      waiting = grouped({"docs" => "failed"})
+      waiting["steps"]["docs"].merge!("pending_move" => {"to" => "lint", "until" => "2026-10-04T12:01:00Z"}, "reason" => {"code" => "retry_backoff"})
+      expect(described_class.group_at_rest?(waiting, ids, now)).to be(false)
+      expect(described_class.group_at_rest?(waiting, ids, now + 61)).to be(true)
+      expect(described_class.join_due(waiting, now)).to be_nil
+      expect(described_class.join_due(waiting, now + 61)).to eq("checks")
+      expect(described_class.wakeable?(waiting.merge("state" => "waiting"), now + 61)).to eq(:join)
+    end
+
+    it "classes every per-step slot as owed or not, so a new slot is owed until it is named otherwise" do
+      expect(described_class::SIBLING_SLOTS_OWED + described_class::SIBLING_SLOTS_NOT_OWED).to match_array(Workspace::WorkflowRun::PER_STEP_KEYS)
+      expect(described_class::SIBLING_SLOTS_OWED & described_class::SIBLING_SLOTS_NOT_OWED).to eq([])
+      expect(described_class::SIBLING_SLOTS_OWED).to include("review_retry", "budget_hold", "timeout_hold", "backoff")
+      expect(described_class::SIBLING_SLOTS_NOT_OWED).to include("sweep")
+    end
+
+    described_class::SIBLING_SLOTS_OWED.each do |key|
+      it "reads a sibling holding #{key} as not at rest, while another sibling keeps the run running" do
+        run = grouped({"lint" => "running", "test" => "failed"})
+        run["steps"]["test"][key] = {"held" => true}
+
+        expect(run["state"]).to eq("running")
+        expect(described_class.sibling_at_rest?(run, "test", now)).to be(false)
+        expect(described_class.group_at_rest?(run, %w[lint test docs], now)).to be(false)
+      end
+    end
+
+    it "owes a failed sibling its run once its granted move was applied, while it has attempts left" do
+      run = grouped({"docs" => "failed"})
+      expect(described_class.relay_owed?(run, "docs")).to be(false)
+      run["steps"]["docs"]["attempts"].last["move"] = {"to" => "lint", "count" => 1}
+      expect(described_class.relay_owed?(run, "docs")).to be(true)
+      run["steps"]["docs"]["pending_move"] = {"to" => "lint"}
+      expect(described_class.relay_owed?(run, "docs")).to be(false)
+      run["steps"]["docs"].delete("pending_move")
+      run["steps"]["docs"]["attempts"].last["move"]["failed"] = "target_failed"
+      expect(described_class.relay_owed?(run, "docs")).to be(false)
     end
   end
 

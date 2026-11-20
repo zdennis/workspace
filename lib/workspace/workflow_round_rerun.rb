@@ -86,7 +86,7 @@ module Workspace
         event(work, "review_no_change", details)
         @dispatch.release(work)
         work["state"] = "waiting"
-        work["reason"] = {"code" => "review_no_change", "since" => now_iso, "details" => details}
+        WorkflowRun.slots(work, work["current"])["reason"] = {"code" => "review_no_change", "since" => now_iso, "details" => details}
       end
     end
 
@@ -149,7 +149,7 @@ module Workspace
         end
         hold(state["review"])
         work["state"] = "running"
-        work["reason"] = nil
+        WorkflowRun.slots(work, work["current"])["reason"] = nil
         ctx.review(delivery)
       end
     end

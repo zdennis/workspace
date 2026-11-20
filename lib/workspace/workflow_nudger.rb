@@ -66,11 +66,14 @@ module Workspace
       # A review pane's turn ends its round, so a pane bound in any role wakes its run.
       run_id = @panes.bound_on(pane_id)&.fetch(:run_id)
       return nil unless run_id
+      # An author pane's binding names its step; the run uses it to tell a fan_out sibling's turn end from the cursor's.
+      bound_step = @panes.step_on(pane_id) if @panes.respond_to?(:step_on)
+      step = bound_step ? ["--step", bound_step] : []
       started = turn_started ? ["--turn-started", turn_started.utc.iso8601(3)] : []
       tasks = Array(background).flat_map { |task| ["--background-task", "#{task["type"]}:#{task["id"]}"] }
       transcript = (transcript_path.is_a?(String) && !transcript_path.empty?) ? ["--transcript-path", transcript_path] : []
       record(hook_log, "workflow_advance_started", pane_id, "run_id" => run_id, "cause" => "turn_ended")
-      advance(workspace, run_id, hook_log, "--turn-ended", "--pane", pane_id, *started, "--stopped-at", @clock.call.utc.iso8601(3), *tasks, *transcript)
+      advance(workspace, run_id, hook_log, "--turn-ended", "--pane", pane_id, *step, *started, "--stopped-at", @clock.call.utc.iso8601(3), *tasks, *transcript)
       run_id
     rescue => e
       @logger.debug { "workflow: could not wake the run on #{pane_id} (#{e.class}: #{e.message})" }
@@ -98,7 +101,9 @@ module Workspace
       stops = downtime_stops(now)
       note_reasons(workspace, runs.map(&:id))
       woken = runs.filter_map do |run|
-        wake = WorkflowEngine.wakeable?(run.to_h, now, alive: @holder_alive, stops: stops)
+        # A fan_out sibling off the cursor wakes the run too, read on its own step and slots.
+        wake = WorkflowEngine.wakeable?(run.to_h, now, alive: @holder_alive, stops: stops) ||
+          WorkflowTransitions.step_wake(run.to_h, now, alive: @holder_alive, stops: stops)&.first
         reason = (wake || skip_reason(run.to_h)).to_s
         changed = reason_changed?(workspace, run.id, reason)
         unless wake
@@ -179,8 +184,10 @@ module Workspace
       @logger.debug { "workflow: could not start the budget sweep for #{workspace} (#{e.class}: #{e.message})" }
     end
 
+    # The cursor's step, or a fan_out sibling under way, is running.
     def interrupt_budget_running?(run)
-      WorkflowDefinition.budget(run.definition)&.fetch("action", nil) == "interrupt" && run.steps[run.current]&.state == "running"
+      WorkflowDefinition.budget(run.definition)&.fetch("action", nil) == "interrupt" &&
+        WorkflowTransitions.step_views(run.to_h).any? { |view| run.steps[view["current"]]&.state == "running" }
     rescue KeyError, TypeError
       false
     end
@@ -188,7 +195,7 @@ module Workspace
     # Why a run that nothing wakes is left alone, as far as its stored state says.
     def skip_reason(run)
       return "paused" if run["paused"]
-      run.dig("reason", "code") || "not_due"
+      WorkflowRun.slot_dig(run, run["current"], "reason", "code") || "not_due"
     end
 
     # Forgets this workspace's runs that are no longer going, so the memory does not grow with every run seen.

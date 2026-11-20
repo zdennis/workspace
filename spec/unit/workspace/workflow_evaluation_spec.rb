@@ -108,6 +108,142 @@ RSpec.describe Workspace::WorkflowEvaluation do
     end
   end
 
+  describe "#turn_ended for the siblings of a fan_out group" do
+    let(:panes) { RecordingWorkflowPanes.new(bound: {"wr_1" => {"lint" => "%3", "test" => "%4"}}, runs_on: {"%3" => "wr_1", "%4" => "wr_1"}) }
+
+    # The cursor sits on the last sibling started, as the group's dispatch leaves it.
+    def siblings
+      attempt = [{"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z"}]
+      hash = run_hash
+      hash["current"] = "test"
+      hash["definition"]["steps"] = [step("id" => "lint", "group" => "checks", "produces" => ["lint.md"]), step("id" => "test", "group" => "checks", "produces" => ["test.md"])]
+      hash["steps"] = {"lint" => {"state" => "running", "attempts" => attempt, "pane" => "%3"}, "test" => {"state" => "running", "attempts" => attempt, "pane" => "%4"}}
+      hash
+    end
+
+    before do
+      produce("lint.md")
+      produce("test.md")
+      stored(siblings)
+    end
+
+    it "decides the step the turn's pane is bound for, whichever step the cursor is on, and puts the cursor there" do
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3", step: "lint")
+
+      expect(progress.calls).to eq([[:pass_step, "lint"]])
+      expect(store.runs["wr_1"]["current"]).to eq("lint")
+    end
+
+    it "takes the step from the pane's binding when none is named" do
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(progress.calls).to eq([[:pass_step, "lint"]])
+    end
+
+    it "decides the cursor's own sibling from its pane" do
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%4", step: "test")
+
+      expect(progress.calls).to eq([[:pass_step, "test"]])
+    end
+
+    it "ignores a pane that is not the named step's pane" do
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%4", step: "lint")
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%9", step: "lint")
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%9")
+
+      expect(progress.calls).to be_empty
+    end
+
+    it "reports on the named sibling, not the cursor's step" do
+      reported = evaluation.report("wr_1", actor: "agent", status: "pass", step: "lint")
+
+      expect(reported.step).to eq("lint")
+      expect(store.runs["wr_1"]["steps"]["lint"]["attempts"].last).to include("reported" => include("status" => "pass"))
+      expect(store.runs["wr_1"]["steps"]["test"]["attempts"].last).not_to have_key("reported")
+    end
+
+    it "keeps the cursor's step for a step named outside any group" do
+      produce
+      stored(run_hash)
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: nil, step: "other")
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+  end
+
+  describe "#turn_ended for a step of a group" do
+    let(:bound) { {} }
+    let(:panes) { RecordingWorkflowPanes.new(bound: bound) }
+
+    def grouped_run(**own)
+      hash = run_hash(definition_step: step("group" => "checks"))
+      hash["steps"]["plan"].merge!(own)
+      hash
+    end
+
+    it "judges a turn in the step's own recorded pane, not the run's" do
+      produce
+      stored(grouped_run("pane" => "%7"))
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+      expect(progress.calls).to be_empty
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%7")
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+
+    it "falls back to the run's pane when the step records none" do
+      produce
+      stored(grouped_run)
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+
+    context "with a binding for the step" do
+      let(:bound) { {"wr_1" => {"plan" => "%8"}} }
+
+      it "judges the step's binding over a stale recorded pane" do
+        produce
+        stored(grouped_run("pane" => "%7"))
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%7")
+        expect(progress.calls).to be_empty
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%8")
+        expect(progress.calls).to eq([[:pass_step, "plan"]])
+      end
+    end
+
+    context "with a binding for another step only" do
+      let(:bound) { {"wr_1" => {"build" => "%9"}} }
+
+      it "uses the recorded pane of the step" do
+        produce
+        stored(grouped_run("pane" => "%7"))
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%9")
+        expect(progress.calls).to be_empty
+
+        evaluation.turn_ended("wr_1", actor: "agent", pane: "%7")
+        expect(progress.calls).to eq([[:pass_step, "plan"]])
+      end
+    end
+
+    it "ignores a pane recorded under an ungrouped step" do
+      produce
+      stored(run_hash.tap { |hash| hash["steps"]["plan"]["pane"] = "%7" })
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%7")
+      expect(progress.calls).to be_empty
+
+      evaluation.turn_ended("wr_1", actor: "agent", pane: "%3")
+      expect(progress.calls).to eq([[:pass_step, "plan"]])
+    end
+  end
+
   describe "#turn_ended" do
     it "decides nothing for a parked run, another pane, or a turn that began before the attempt" do
       stored(run_hash("parked" => {"id" => "p1"}))

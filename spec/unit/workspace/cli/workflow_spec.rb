@@ -965,9 +965,9 @@ RSpec.describe Workspace::CLI::Workflow do
       cli.run(["workflow", "advance", "wr_1", "--turn-ended", "--pane", "%5", "--turn-started", "2026-10-04T12:29:58.123Z", "--stopped-at", "2026-10-04T12:30:00.500Z"])
 
       expect(workflow_command.calls.map(&:last)).to eq([
-        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]},
-        {run: "wr_1", turn_ended: false, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]},
-        {run: "wr_1", turn_ended: true, pane: "%5", turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000),
+        {run: "wr_1", turn_ended: true, pane: "%5", step: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: false, pane: nil, step: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]},
+        {run: "wr_1", turn_ended: true, pane: "%5", step: nil, turn_started: Time.utc(2026, 10, 4, 12, 29, 58, 123_000),
          stopped_at: Time.utc(2026, 10, 4, 12, 30, 0, 500_000), background: [], transcript_path: nil, caller_pane: ENV["TMUX_PANE"]}
       ])
       expect(output.string).to eq("")

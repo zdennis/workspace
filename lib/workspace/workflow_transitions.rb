@@ -53,6 +53,14 @@ module Workspace
       "hidden_changed" => "tracked files were hidden from git (assume-unchanged or skip-worktree) since the run started"
     }.freeze
 
+    # One of a step's {WorkflowRun::PER_STEP_KEYS} slots, by {WorkflowRun.slot}: the current step's unless +step+ is given.
+    def self.slot(run, key, step = run["current"]) = WorkflowRun.slot(run, step, key)
+    private_class_method :slot
+
+    # {.slot} dug into as `run.dig(key, *path)` digs the run-level key, raising as it would on a value that can't be dug.
+    def self.slot_dig(run, key, *path, step: run["current"]) = WorkflowRun.slot_dig(run, step, key, *path)
+    private_class_method :slot_dig
+
     # @param run [Hash{String=>Object}] a stored run
     # @return [Integer] the attempts that count against the allowance: all but those the sweep typed again
     def self.attempts_made(run)
@@ -162,7 +170,7 @@ module Workspace
       id = run["current"]
       return false unless review_rounds_spent?(run, id)
       state = run.dig("steps", id, "state")
-      return true if state == "failed" && run.dig("reason", "code") == "review_rejected"
+      return true if state == "failed" && slot_dig(run, "reason", "code") == "review_rejected"
       state == "reviewing" && starts_round?(run, from: nil)
     end
 
@@ -190,9 +198,10 @@ module Workspace
     #
     # @param run [Hash{String=>Object}] a stored run
     # @param from [String, nil]
+    # @param step [String, nil] the step whose waiting retry is read; the current step unless given
     # @return [String]
-    def self.target_step(run, from: nil)
-      from || run.dig("backoff", "to") || run["current"]
+    def self.target_step(run, from: nil, step: run["current"])
+      from || slot_dig(run, "backoff", "to", step: step) || run["current"]
     end
 
     # Whether a resume would start a new attempt: `--from`, a run held for its token budget or its timeout before an
@@ -204,14 +213,16 @@ module Workspace
     # @param run [Hash{String=>Object}] a stored run
     # @param from [String, nil] the step a resume would start again at
     # @param pane [String, nil] the pane the resume would name
+    # @param step [String, nil] the step whose holds, wait and state are read; the current step unless given
     # @return [Boolean]
-    def self.starts_attempt?(run, from:, pane:)
+    def self.starts_attempt?(run, from:, pane:, step: run["current"])
       return true if from
-      return false if round_hold?(run)
-      return true if run["budget_hold"].is_a?(Hash) || run["timeout_hold"].is_a?(Hash)
-      return true if run["backoff"].is_a?(Hash) && run["backoff"]["to"].is_a?(String)
-      return false if run.dig("reason", "code") == "waiting_lock"
-      case run["steps"].fetch(run["current"])["state"]
+      return false if round_hold?(run, step: step)
+      return true if slot(run, "budget_hold", step).is_a?(Hash) || slot(run, "timeout_hold", step).is_a?(Hash)
+      waiting = slot(run, "backoff", step)
+      return true if waiting.is_a?(Hash) && waiting["to"].is_a?(String)
+      return false if slot_dig(run, "reason", "code", step: step) == "waiting_lock"
+      case run["steps"].fetch(step)["state"]
       when "running" then !pane.nil?
       when "checking", "reviewing", "passed" then false
       else true
@@ -222,9 +233,10 @@ module Workspace
     # starts that round, never an author attempt.
     #
     # @param run [Hash{String=>Object}] a stored run
+    # @param step [String, nil] the step whose holds are read; the current step unless given
     # @return [Boolean]
-    def self.round_hold?(run)
-      [run["budget_hold"], run["timeout_hold"]].any? { |hold| hold.is_a?(Hash) && hold.key?("review_round") }
+    def self.round_hold?(run, step: run["current"])
+      [slot(run, "budget_hold", step), slot(run, "timeout_hold", step)].any? { |hold| hold.is_a?(Hash) && hold.key?("review_round") }
     end
 
     # Why a run waits for a person, or for nothing the clock will move: the one rule `workflow sweep` and
@@ -232,22 +244,70 @@ module Workspace
     # `waiting_lock` reason and the `retry_backoff` reason that scheduled backoff sets. First match wins.
     #
     # @param run [Hash{String=>Object}] a stored run
+    # @param step [String, nil] the step whose holds, reason and gate are read; the current step unless given
     # @return [String, nil] `paused`, `retry_blocked`, `budget_hold`, `timeout_hold`, `round_held` (a reviewing step
     #   stopped with a reason), `reason`, `gate_waiting`, `parked`, or nil
-    def self.held_reason(run)
+    def self.held_reason(run, step: run["current"])
       return "paused" if run["paused"]
       waiting = run["state"] == "waiting"
-      return "retry_blocked" if run.dig("backoff", "blocked") && waiting
-      return "budget_hold" if run["budget_hold"] && waiting
-      return "timeout_hold" if run["timeout_hold"] && waiting
-      step = run.dig("steps", run["current"]) || {}
-      reason = run["reason"]
+      return "retry_blocked" if slot_dig(run, "backoff", "blocked", step: step) && waiting
+      return "budget_hold" if slot(run, "budget_hold", step) && waiting
+      return "timeout_hold" if slot(run, "timeout_hold", step) && waiting
+      state = run.dig("steps", step) || {}
+      reason = slot(run, "reason", step)
       reason = nil if reason.is_a?(Hash) && %w[waiting_lock retry_backoff].include?(reason["code"])
-      return "round_held" if step["state"] == "reviewing" && reason
+      return "round_held" if state["state"] == "reviewing" && reason
       return "reason" if reason
-      return "gate_waiting" if step.dig("gate", "state") == "waiting"
+      return "gate_waiting" if state.dig("gate", "state") == "waiting"
       return "parked" if run["parked"]
       nil
+    end
+
+    # Whether a fan_out sibling is under way, as `workflow status` shows one: not `pending` (or without a state), and
+    # not `passed` unless it waits at its gate or holds a reason.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a step id
+    # @return [Boolean]
+    def self.under_way?(run, step)
+      state = run["steps"].is_a?(Hash) ? run["steps"][step] : nil
+      return false unless state.is_a?(Hash) && state["state"].is_a?(String) && state["state"] != "pending"
+      return true unless state["state"] == "passed"
+      state.dig("gate", "state") == "waiting" || !slot(run, "reason", step).nil?
+    end
+
+    # The siblings of the fan_out group the run's cursor is in that are under way ({.under_way?}), in the group's
+    # order; empty when the cursor's step is in no group.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Array<String>]
+    def self.under_way_siblings(run)
+      return [] unless WorkflowRun.step_scoped?(run, run["current"])
+      entry = Array(run.dig("definition", "steps")).find { |each| each.is_a?(Hash) && each["id"] == run["current"] }
+      Array(WorkflowDefinition.group_steps(run["definition"])[entry["group"]]).select { |id| under_way?(run, id) }
+    end
+
+    # +run+ read on +step+: a copy with the cursor on that step when it is a fan_out sibling with a stored state (so
+    # every rule that reads the cursor's step reads that sibling's own step, pane and slots); +run+ itself for the
+    # cursor's step, a step in no group, an unknown step or nil. The copy is shallow: its nested Hashes are +run+'s.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String, nil] a step id
+    # @return [Hash{String=>Object}]
+    def self.at_step(run, step)
+      return run if step.nil? || step == run["current"] || !WorkflowRun.step_scoped?(run, step)
+      return run unless run["steps"].is_a?(Hash) && run["steps"][step].is_a?(Hash)
+      run.merge("current" => step)
+    end
+
+    # The views a reader that acts on one step at a time goes through: +run+ itself (its cursor's step) first, then
+    # +run+ read on each other fan_out sibling under way ({.under_way_siblings}, {.at_step}). A run whose cursor is in
+    # no group has the one view, +run+ itself.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @return [Array<Hash{String=>Object}>]
+    def self.step_views(run)
+      [run] + (under_way_siblings(run) - [run["current"]]).map { |id| at_step(run, id) }
     end
 
     # Whether a resume would start a review round, which the token budget and the run's timeout are asked about as
@@ -261,12 +321,12 @@ module Workspace
     # @return [Boolean]
     def self.starts_round?(run, from:)
       return false if from
-      return false if run.dig("reason", "code") == "waiting_lock"
+      return false if slot_dig(run, "reason", "code") == "waiting_lock"
       return true if round_hold?(run)
       state = run["steps"].fetch(run["current"])
       return false unless state["state"] == "reviewing"
       round = state["review"]
-      !(round.is_a?(Hash) && run["reason"].nil? && round["ended_at"].nil?)
+      !(round.is_a?(Hash) && slot(run, "reason").nil? && round["ended_at"].nil?)
     end
 
     # Where the line that starts an attempt stands. An attempt is stored as
@@ -325,7 +385,7 @@ module Workspace
     # @return [Hash, nil] nil when no delivery again applies; else :state (`:due`, `:waiting` for the backoff or
     #   `:exhausted`), :round, :retries (spent), :limit, :mark (`:failed` or `:unknown`) and :wait (seconds left, 0 unless waiting)
     def self.round_redelivery(run, now, alive: nil)
-      return nil if run["parked"] || run["reason"]
+      return nil if run["parked"] || slot(run, "reason")
       state = run.dig("steps", run["current"])
       return nil unless state.is_a?(Hash) && state["state"] == "reviewing"
       round = state["review"]
@@ -580,7 +640,7 @@ module Workspace
       state = run.dig("steps", step)
       attempts = state.is_a?(Hash) ? Array(state["attempts"]).grep(Hash) : []
       entries = attempts.flat_map { |attempt| Array(attempt["reasons"]) }
-      entries += Array(run["reasons"]).grep(Hash).select { |entry| entry["step"] == step }
+      entries += Array(slot(run, "reasons", step)).grep(Hash).select { |entry| entry["step"] == step }
       spans = entries.grep(Hash).select { |entry| entry["code"] == "paused" }
       paused = run["paused"]
       spans << {"since" => paused["since"]} if paused.is_a?(Hash) && step == run["current"]
@@ -708,7 +768,7 @@ module Workspace
     # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
     def self.unanswered_round?(run, now, stops: [])
-      return false if run["parked"] || run["reason"]
+      return false if run["parked"] || slot(run, "reason")
       state = run.dig("steps", run["current"])
       return false unless state.is_a?(Hash) && state["state"] == "reviewing"
       round = state["review"]
@@ -750,8 +810,9 @@ module Workspace
     #   :retries (done), :limit, :wait (seconds left), :code
     def self.redelivery(run, now)
       limit = WorkflowDefinition.redeliver(run["definition"])
-      return nil if limit.zero? || run["parked"] || run["state"] != "waiting"
-      reason = run["reason"]
+      # A fan_out sibling waits on its own while the others keep the run `running`: its own step's state says so below.
+      return nil if limit.zero? || run["parked"] || (run["state"] != "waiting" && !WorkflowRun.step_scoped?(run, run["current"]))
+      reason = slot(run, "reason")
       details = reason.is_a?(Hash) ? reason["details"] : nil
       return nil unless reason.is_a?(Hash) && reason["code"] == "waiting_you" && details.is_a?(Hash) && details["kind"] == "dispatch"
       return nil unless REDELIVER_CODES.include?(details["error"]) && !REDELIVER_NEVER_REASONS.include?(details["reason"])
@@ -779,7 +840,7 @@ module Workspace
     # @return [Hash, nil] nil when the run waits out no backoff (an old run too); else :state (`:waiting` or
     #   `:due`), :wait (seconds left, 0 when due), :until (ISO time), :to (the step the retry goes back to)
     def self.backoff(run, now)
-      stored = run["backoff"]
+      stored = slot(run, "backoff")
       return nil unless stored.is_a?(Hash) && run["state"] == "waiting" && stored["to"].is_a?(String) && !stored["blocked"]
       # A time that can't be read is taken as over: a wait must not outlast what could be measured.
       wait = begin
@@ -845,7 +906,7 @@ module Workspace
     # @param now [Time]
     # @return [Symbol, nil] :due, :expired or nil
     def self.continue_state(run, now)
-      mark = run["continue_pending"]
+      mark = slot(run, "continue_pending")
       return nil unless continue_mark?(run, mark)
       since = Time.iso8601(mark["since"].to_s)
       (now - since > PARK_SECONDS) ? :expired : :due
@@ -877,7 +938,10 @@ module Workspace
     # @param alive [#call, nil] given a review round's `holder`, whether it still runs (see {.round_delivery}); nil
     #   takes every holder as alive, so a lapsed round with a holder is not woken
     # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
-    # @return [Symbol, nil] :parked, :continue, :continue_expired, :backoff (a retry's wait is over), :infra_retry (a running step's infra retry is due or its claim is stale, {.infra_retry}), :lock, :background, :round, :unanswered, :review, :check, or nil
+    # A fan_out sibling's deferred failure move whose wait is over, in a group at rest ({.join_due}), wakes as :join:
+    # the tick runs the group's join, which applies the move; the tick itself never starts it.
+    #
+    # @return [Symbol, nil] :parked, :continue, :continue_expired, :backoff (a retry's wait is over), :join, :infra_retry (a running step's infra retry is due or its claim is stale, {.infra_retry}), :lock, :background, :round, :unanswered, :review, :check, or nil
     def self.wakeable?(run, now, alive: nil, stops: [])
       return nil if run["paused"]
       return :parked if run["parked"]
@@ -886,14 +950,38 @@ module Workspace
       when :expired then return :continue_expired
       end
       return :backoff if backoff(run, now)&.fetch(:state) == :due
+      return :join if join_due(run, now)
       return :infra_retry if infra_retry_wakes?(run, now)
-      return :lock if run.dig("reason", "code") == "waiting_lock"
-      return :background if background_expired?(run["reason"], now)
+      return :lock if slot_dig(run, "reason", "code") == "waiting_lock"
+      return :background if background_expired?(slot(run, "reason"), now)
       # A park that failed left its reason on a checking step: that run waits for a person's resume.
       return :round if lost_round?(run, now, stops: stops)
       return :unanswered if unanswered_round?(run, now, stops: stops)
       return :review if %i[due exhausted].include?(round_redelivery(run, now, alive: alive)&.fetch(:state))
-      :check if run["reason"].nil? && lost_check?(run, now)
+      :check if slot(run, "reason").nil? && lost_check?(run, now)
+    end
+
+    # The {.wakeable?} causes a fan_out sibling that is not the cursor's step wakes for, read on its own step: a
+    # continue line, its infra retry, a background hold that ran out, a check that never reported back. The cursor's
+    # step wakes for any cause.
+    SIBLING_WAKES = %i[continue continue_expired infra_retry background check].freeze
+
+    # {.wakeable?} for the cursor's step, else for the first other fan_out sibling under way ({.step_views}) that
+    # wakes for one of {SIBLING_WAKES}.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @param alive [#call, nil] see {.wakeable?}
+    # @param stops [Array<Hash{String=>Object}>] see {.wakeable?}
+    # @return [Array(Symbol, Hash), nil] the cause and the run read on the step that wakes; nil when none does
+    def self.step_wake(run, now, alive: nil, stops: [])
+      cause = wakeable?(run, now, alive: alive, stops: stops)
+      return [cause, run] if cause
+      step_views(run).drop(1).each do |view|
+        found = wakeable?(view, now, alive: alive, stops: stops)
+        return [found, view] if SIBLING_WAKES.include?(found)
+      end
+      nil
     end
 
     # Whether the end of the current step's review round was being judged and nothing reported back: its revision
@@ -906,7 +994,7 @@ module Workspace
     # @param stops [Array<Hash{String=>Object}>] more spans to cut (`since`, optional `until`), such as downtime
     # @return [Boolean]
     def self.lost_round?(run, now, stops: [])
-      return false if run["parked"] || run["reason"]
+      return false if run["parked"] || slot(run, "reason")
       state = run.dig("steps", run["current"])
       return false unless state.is_a?(Hash) && state["state"] == "reviewing"
       mark = state["review"].is_a?(Hash) ? state["review"]["recompute"] : nil
@@ -926,7 +1014,7 @@ module Workspace
     def self.lost_check?(run, now)
       state = run["steps"].fetch(run["current"])
       return false unless state["state"] == "checking"
-      return true if run["reason"] || parked(run, now) == :expired
+      return true if slot(run, "reason") || parked(run, now) == :expired
       attempt = state["attempts"].last
       # A `require:` proof outside the run's lock has its own start and limit; a run stored without `proofs` has neither.
       proof = Array(attempt&.dig("proofs")).find { |each| !each.key?("ended_at") }
@@ -957,10 +1045,13 @@ module Workspace
     # "interrupt" (a step timeout's press) and "run_interrupt" (the run timeout's press) and "budget_interrupt" (the token budget's press), each `state` `pending`
     # or `sent` and `at`. Empty once the run is on another step or attempt.
     #
+    # A fan_out sibling keeps its marks under its own step hash ({WorkflowRun.slots}), so two siblings the sweep acts
+    # on in one pass keep apart; every other step keeps them at the run's top level.
+    #
     # @param run [Hash{String=>Object}] a stored run
     # @return [Hash{String=>Object}]
     def self.sweep_marks(run)
-      marks = run["sweep"]
+      marks = WorkflowRun.slot(run, run["current"], "sweep")
       attempt = run.dig("steps", run["current"], "attempts")&.last&.fetch("n", nil)
       (marks.is_a?(Hash) && marks["step"] == run["current"] && marks["attempt"] == attempt) ? marks : {}
     end
@@ -987,7 +1078,7 @@ module Workspace
     # @return [Array]
     def self.fingerprint(run)
       state = run["steps"].fetch(run["current"])
-      [run["state"], run["current"], shown_reason(run["reason"]), state["state"], state["attempts"].size, state.dig("gate", "state"), run.key?("parked")]
+      [run["state"], run["current"], shown_reason(slot(run, "reason")), state["state"], state["attempts"].size, state.dig("gate", "state"), run.key?("parked")]
     end
 
     # Whether a sweep's view (step and attempt it saw) still describes the run, so the sweep may change it.
@@ -999,13 +1090,14 @@ module Workspace
     # @param now [Time]
     # @return [Boolean]
     def self.sweep_target?(run, step, attempt, running, now)
-      return false unless run["current"] == step
-      state = run["steps"].fetch(run["current"])
+      # A step that belongs to a group runs beside its siblings, so it need not be the cursor's step.
+      return false unless run["current"] == step || WorkflowRun.step_scoped?(run, step)
+      state = run["steps"].fetch(step)
       last = state["attempts"].last
       return false unless last&.fetch("n", nil) == attempt
       return true unless running
       return false unless state["state"] == "running" && !run["parked"] && delivery(last, now) != :delivering
-      run["reason"].nil? || (running == :or_incomplete && run.dig("reason", "code") == "turn_ended_incomplete")
+      slot(run, "reason", step).nil? || (running == :or_incomplete && slot_dig(run, "reason", "code", step: step) == "turn_ended_incomplete")
     end
 
     # Why a resume does nothing for the step as it stands; nil when it acts.
@@ -1027,13 +1119,13 @@ module Workspace
         end
         # The turn's end counts only for the attempt it was seen on: the run may have moved on since.
         over = turn_over && turn_over["step"] == run["current"] && turn_over["attempt"] == state["attempts"].last&.fetch("n", nil)
-        "an agent is working on step #{run["current"]}" unless pane || run["reason"] || over
+        "an agent is working on step #{run["current"]}" unless pane || slot(run, "reason") || over
       when "checking"
         "the check of step #{run["current"]} is still running" unless lost_check?(run, now)
       when "reviewing"
         # A round stopped for a person, or one whose delivery failed or lapsed (past the window with its holder gone),
         # is the resume's to act on.
-        unless run["reason"] || %i[failed unknown].include?(round_delivery(state["review"], now, alive: alive))
+        unless slot(run, "reason") || %i[failed unknown].include?(round_delivery(state["review"], now, alive: alive))
           "the review round of step #{run["current"]} is still running"
         end
       end
@@ -1093,9 +1185,12 @@ module Workspace
     #
     # @param run [Hash{String=>Object}] a stored run at the failed step
     # @param failure [Hash{String=>Object}] its "cause" and "code"
+    # @param step [String] the failed step: the cursor's unless given. A fan_out sibling's failure names its own step,
+    #   since the cursor names only the sibling dispatched last.
     # @return [Hash{Symbol=>Object}] `{kind: :loop, edge:, to:, count:, wait:}` or `{kind: :stop}`
-    def self.after_failure(run, failure)
-      step = run["definition"]["steps"].find { |each| each["id"] == run["current"] }
+    def self.after_failure(run, failure, step: run["current"])
+      step_id = step
+      step = run["definition"]["steps"].find { |each| each["id"] == step_id }
       on_fail = step["on_fail"]
       return implicit_failure_move(run, step, failure) if on_fail.nil?
       return {kind: :stop} if on_fail == "stop"
@@ -1118,16 +1213,19 @@ module Workspace
       failure["cause"] == "guard" || failure["unproven"] == true || %w[check_error step_timed_out].include?(failure["code"])
     end
 
+    # The step before is scoped by fan_out groups ({.implicit_target}): a sibling goes back only to the sibling before it
+    # (the group's first sibling stops), and a step outside any group skips a group's siblings to the nearest step
+    # before it that is in no group (none, for a group at the start, stops), so no implicit move crosses into or out of
+    # a group.
+    #
     # @param run [Hash{String=>Object}] a stored run at the failed step
     # @param step [Hash{String=>Object}] the failing step's definition
     # @param failure [Hash{String=>Object}] its "cause" and "code"
     # @return [Hash{Symbol=>Object}] `{kind: :loop, edge:, to:, count:, wait: nil}` or `{kind: :stop}`
     def self.implicit_failure_move(run, step, failure)
       return {kind: :stop} if implicit_loop_stops?(failure)
-      steps = run["definition"]["steps"]
-      index = steps.index { |each| each["id"] == step["id"] }
-      return {kind: :stop} if index.to_i.zero?
-      prev = steps[index - 1]["id"]
+      prev = implicit_target(run["definition"]["steps"], step)
+      return {kind: :stop} unless prev
       return {kind: :stop} if attempts_made(run) >= attempt_allowance(run)
       # The loop hands the failure to the step before and, once it passes, runs this step again,
       # so both its own cap and the one before's are checked.
@@ -1137,13 +1235,123 @@ module Workspace
       {kind: :loop, edge: edge, to: prev, count: run["loops"].fetch(edge, 0) + 1, wait: nil}
     end
 
+    # The step a failed step's implicit move goes back to: for a fan_out sibling, the sibling just before it (nil for
+    # the group's first); for any other step, the nearest step before it that is in no group (nil when there is none).
+    # In a definition with no groups this is always the step just before (nil for the first step).
+    #
+    # @param steps [Array<Hash{String=>Object}>] the stored definition's steps, in order
+    # @param step [Hash{String=>Object}] the failing step's definition
+    # @return [String, nil]
+    def self.implicit_target(steps, step)
+      index = steps.index { |each| each["id"] == step["id"] }
+      return nil if index.to_i.zero?
+      if grouped?(step)
+        before = steps[index - 1]
+        return (before["group"] == step["group"]) ? before["id"] : nil
+      end
+      steps[0...index].reverse.find { |each| !grouped?(each) }&.fetch("id")
+    end
+
+    # @param step [Hash{String=>Object}] a stored definition's step
+    # @return [Boolean] whether the step is a fan_out sibling (it carries its group's id)
+    def self.grouped?(step) = step["group"].is_a?(String) && !step["group"].empty?
+    private_class_method :grouped?
+
+    # Step states of a fan_out sibling whose agent is at work, or whose step a check or review round is deciding.
+    SIBLING_BUSY = %w[running checking reviewing].freeze
+
+    # The {WorkflowRun::PER_STEP_KEYS} slots that say nothing about whether a sibling owes an attempt: `reason` and
+    # `reasons` are its stop and history ({.held_reason} reads the reason), `pending_context` is input for its next
+    # attempt, `pending_move` has its own role in the join (owed only while its wait lasts, {.move_waits?}), and `sweep`
+    # is the sweep's bookkeeping of what it saw and did, so a swept sibling still reads at rest.
+    SIBLING_SLOTS_NOT_OWED = %w[reason reasons pending_context pending_move sweep].freeze
+
+    # Every other {WorkflowRun::PER_STEP_KEYS} slot: one a sibling holds only while an attempt or a round is owed to
+    # it (a retry wait, a continue line, a paused or lock-held dispatch, a review retry, a budget or timeout hold).
+    # Derived, so a slot added to the run is owed until it is named in {SIBLING_SLOTS_NOT_OWED}.
+    SIBLING_SLOTS_OWED = (WorkflowRun::PER_STEP_KEYS - SIBLING_SLOTS_NOT_OWED).freeze
+
+    # Whether a fan_out sibling is at rest, as the join reads it: not at work ({SIBLING_BUSY}), not still to start
+    # (`pending`), holding none of its {SIBLING_SLOTS_OWED} (read off its own step whatever the run's state, so a
+    # sibling's budget hold counts while another sibling keeps the run `running`), not on a lock wait, not held by
+    # anything {.held_reason} answers for (a gate waiting, a stored reason such as a pane gone, a pause, a park), and
+    # not carrying a deferred failure move whose wait has yet to end. A deferred move with no wait, or one whose wait
+    # has ended, is at rest: the join applies it.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a sibling's id
+    # @param now [Time]
+    # @return [Boolean]
+    def self.sibling_at_rest?(run, step, now)
+      state = run.dig("steps", step)
+      return false unless state.is_a?(Hash)
+      return false if SIBLING_BUSY.include?(state["state"]) || state["state"] == "pending"
+      return false if held_reason(run, step: step)
+      return false if SIBLING_SLOTS_OWED.any? { |key| !slot(run, key, step).nil? }
+      return false if slot_dig(run, "reason", "code", step: step) == "waiting_lock"
+      !move_waits?(slot(run, "pending_move", step), now)
+    end
+
+    # @param run [Hash{String=>Object}] a stored run
+    # @param steps [Array<String>] a fan_out group's sibling ids
+    # @param now [Time]
+    # @return [Boolean] whether every sibling is at rest ({.sibling_at_rest?})
+    def self.group_at_rest?(run, steps, now) = steps.all? { |id| sibling_at_rest?(run, id, now) }
+
+    # Whether a deferred failure move (a sibling's `pending_move`) still waits out its backoff: its `until` is later
+    # than +now+. A move with no `until` never waits; one whose `until` can't be read is taken as over.
+    #
+    # @param move [Hash{String=>Object}, nil]
+    # @param now [Time]
+    # @return [Boolean]
+    def self.move_waits?(move, now)
+      return false unless move.is_a?(Hash) && move["until"]
+      Time.iso8601(move["until"].to_s) > now
+    rescue ArgumentError
+      false
+    end
+
+    # Whether the join owes a failed sibling its next run: the sibling's last attempt failed with a failure move that
+    # was granted (its `move`, recorded when the move's loop was spent) and has since been applied (no `pending_move`
+    # left), its application did not fail, and the run and the sibling still have an attempt left. This is the second
+    # hop of the relay: the move ran the step it went back to, and now the failed sibling runs again, as a serial loop
+    # runs the failing step again once the step it went back to passes.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param step [String] a sibling's id
+    # @return [Boolean]
+    def self.relay_owed?(run, step)
+      state = run.dig("steps", step)
+      return false unless state.is_a?(Hash) && state["state"] == "failed"
+      move = Array(state["attempts"]).last&.fetch("move", nil)
+      return false unless move.is_a?(Hash) && !move.key?("failed")
+      return false unless slot(run, "pending_move", step).nil?
+      !attempts_spent?(run) && !step_attempts_spent?(run, step)
+    end
+
+    # The fan_out group whose deferred failure move a timer has to wake: a sibling carries a `pending_move` whose wait
+    # has ended and its group is at rest, so the join ({WorkflowProgress#join}) applies it. Nil otherwise: a move
+    # whose group is still at work is applied by the join that runs when the work ends.
+    #
+    # @param run [Hash{String=>Object}] a stored run
+    # @param now [Time]
+    # @return [String, nil] the group's id
+    def self.join_due(run, now)
+      WorkflowDefinition.group_steps(run["definition"]).each do |group, ids|
+        moving = ids.any? { |id| run.dig("steps", id).is_a?(Hash) && slot(run, "pending_move", id).is_a?(Hash) }
+        return group if moving && group_at_rest?(run, ids, now)
+      end
+      nil
+    end
+
     # The `details` of a `budget_spent` refusal or hold.
     #
     # @param run [Hash] a stored run
     # @param reading [Hash] its {WorkflowBudget.reading}
+    # @param step [String, nil] the step the refusal or hold is of; the current step unless given
     # @return [Hash]
-    def self.budget_details(run, reading)
-      {"run_id" => run["id"], "step" => run["current"]}.merge(reading.slice("used", "allowance", "counted", "uncounted", "estimated", "needed", "suggested"))
+    def self.budget_details(run, reading, step: run["current"])
+      {"run_id" => run["id"], "step" => step}.merge(reading.slice("used", "allowance", "counted", "uncounted", "estimated", "needed", "suggested"))
         .merge("tokens" => reading["tokens"], "extra_tokens" => reading["extra_tokens"])
     end
 
@@ -1186,7 +1394,7 @@ module Workspace
     # @return [Boolean]
     def self.guard_unrecoverable?(run)
       run = run.to_h
-      reason = run["reason"]
+      reason = slot(run, "reason")
       return false unless reason.is_a?(Hash) && reason["code"] == "failed_check"
       details = reason["details"]
       details.is_a?(Hash) && details["cause"] == "guard" && details["guard"] == "no_commit" && run["base_sha"].to_s.empty?
@@ -1241,7 +1449,7 @@ module Workspace
     # stop, no park and not ended; else nil.
     def self.round_waits?(run, pending)
       run = WorkflowRun.from_h(run)
-      return nil if run.parked || run.reason || WorkflowRunStore::TERMINAL_STATES.include?(run.state) || run.current != pending["step"]
+      return nil if run.parked || run.reason_for(run.current) || WorkflowRunStore::TERMINAL_STATES.include?(run.state) || run.current != pending["step"]
       step = run.steps[pending["step"]]
       round = step&.review
       return nil unless step&.state == "reviewing" && step.last_attempt&.n == pending["attempt"] && round.is_a?(Hash) && round["round"] == pending["round"]
@@ -1260,7 +1468,7 @@ module Workspace
     # @return [String, nil] the guard's code, nil for any other state or stop
     def self.acceptable_guard(run)
       run = run.to_h
-      reason = run["reason"]
+      reason = slot(run, "reason")
       return nil unless run["state"] == "waiting" && reason.is_a?(Hash) && reason["code"] == "failed_check"
       details = reason["details"]
       return nil unless details.is_a?(Hash) && details["cause"] == "guard" && ACCEPTABLE_GUARDS.include?(details["guard"])
@@ -1289,8 +1497,8 @@ module Workspace
     # @return [String, nil] what to do before a resume can pass, nil for any other stop
     def self.guard_recovery(run)
       run = run.to_h
-      details = run.dig("reason", "details")
-      return nil unless run.dig("reason", "code") == "failed_check" && details.is_a?(Hash) && details["cause"] == "guard"
+      details = slot_dig(run, "reason", "details")
+      return nil unless slot_dig(run, "reason", "code") == "failed_check" && details.is_a?(Hash) && details["cause"] == "guard"
       return nil if guard_unrecoverable?(run)
       case details["guard"]
       when "head_moved" then "Move HEAD back to #{run["base_sha"].to_s[0, 12]} (save any work you want to keep, on a branch, first), then resume."

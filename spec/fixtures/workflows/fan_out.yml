@@ -1,0 +1,36 @@
+# A workflow with one fan_out group of three siblings between two ordinary steps. No step sets on_fail, so each
+# step leans on the engine's default one-step failure loop — which for flattened siblings is unworked until the
+# engine's group tasks land; the parse-time specs never run this definition through the engine. It is the neutral
+# grouped definition for the fan-out specs to reuse.
+schema_version: 0.1
+id: fan_out
+title: Fan-out fixture
+description: A plan step, a group of three checks that run side by side, and a report after the join.
+
+inputs:
+  task:
+    description: What the run is about.
+    required: true
+
+steps:
+  plan:
+    prompt: Write {{artifacts}}/plan.md for {{inputs.task}}.
+    produces: [plan.md]
+
+  checks:
+    title: Checks
+    checkout: shared
+    fan_out:
+      lint:
+        prompt: Lint the change and write {{artifacts}}/lint.md.
+        produces: [lint.md]
+      test:
+        prompt: Test the change and write {{artifacts}}/test.md.
+        produces: [test.md]
+      docs:
+        prompt: Check the docs and write {{artifacts}}/docs.md.
+        produces: [docs.md]
+
+  report:
+    prompt: Join lint.md, test.md and docs.md into {{artifacts}}/report.md.
+    produces: [report.md]

@@ -70,6 +70,7 @@ module Workspace
       merged = base.except("id", "schema_version", "version").merge(raw.except("steps"))
       merged["inputs"] = merge_inputs(base["inputs"], raw["inputs"]) if raw.key?("inputs")
       merged["reviewers"] = merge_inputs(base["reviewers"], raw["reviewers"]) if raw.key?("reviewers")
+      refuse_groups(own, base["steps"], replacements, raw["steps"])
       merged["steps"] = merged_steps("#{own} (#{found["path"]})", base["steps"], replacements, raw["steps"])
       parent_origins = definition.origins
       @origins = merged["steps"].keys.to_h do |step_id|
@@ -80,6 +81,22 @@ module Workspace
     end
 
     private
+
+    # A `fan_out` group on either side of an `extends:` is refused for now: the merge's replace and after rules place
+    # flat steps, and know nothing of a group's siblings.
+    def refuse_groups(parent_id, parent_steps, replacements, added)
+      group_ids(parent_steps).each do |group|
+        @problems << "extends #{parent_id}: workflow #{parent_id} has the fan_out group #{group}, and a workflow with a fan_out group can't be extended yet"
+      end
+      (group_ids(replacements) + group_ids(added)).uniq.each do |group|
+        @problems << "step #{group} is a fan_out group, which workflow #{@id} can't declare while it has extends: yet"
+      end
+    end
+
+    def group_ids(steps)
+      return [] unless steps.is_a?(Hash)
+      steps.select { |_, step| step.is_a?(Hash) && step.key?("fan_out") }.keys.map(&:to_s)
+    end
 
     # A step the parent itself inherited keeps that origin; one the parent defined (or that has none recorded) came from the parent.
     def inherited_origin(parent_origin, parent_id)

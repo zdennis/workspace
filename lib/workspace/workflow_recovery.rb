@@ -57,6 +57,8 @@ module Workspace
     end
 
     # The periodic look at a run nothing else will wake: one whose `on_fail` backoff is over starts its retry, one
+    # whose fan_out sibling's deferred failure move has waited out its backoff runs the group's join
+    # ({WorkflowProgress#join}), one
     # waiting for a lock asks for it again (a review round's through {WorkflowProgress#restart_review}), a hold for background tasks that passed
     # {WorkflowTransitions::BACKGROUND_HOLD} becomes a `turn_ended_incomplete` stop, a check that never
     # reported back (its process died) is run again, and so is the end of a review round whose revision was being
@@ -78,17 +80,42 @@ module Workspace
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [WorkflowRun, nil] the run afterwards; nil when nothing was done
     def tick(run_id, actor:)
+      acted_on = []
+      result = nil
+      # While a fan_out group is under way each sibling that wakes gets its own act in this tick, one change each and
+      # never two for one step; a run whose acted step is in no group stops after the one, as it always has.
+      loop do
+        run, step = tick_once(run_id, actor: actor, skip: acted_on)
+        break unless run
+        result = run
+        break unless step && WorkflowRun.step_scoped?(run.to_h, step) && acted_on.size < MAX_SIBLING_TICKS
+        acted_on << step
+      end
+      result
+    end
+
+    # The most sibling acts one {#tick} makes after its first; more wake on the next tick.
+    MAX_SIBLING_TICKS = 16
+    private_constant :MAX_SIBLING_TICKS
+
+    # One act of {#tick}, on the cursor's step or the first other sibling that wakes, steps in +skip+ left out.
+    # @return [Array(WorkflowRun, String), nil] the run afterwards and the step acted on; nil when nothing was done
+    def tick_once(run_id, actor:, skip: [])
       follow = nil
       acted = false
+      step = nil
       alive = holder_alive_once
       # Read before the lock is taken: no tmux or daemon call is made under it.
       typed = typed_pane_over(run_id, alive)
-      ready = continue_ready(run_id)
+      ready = continue_ready(run_id, skip)
       stops = @downtime&.spans(@clock.call) || []
       continuing = nil
       run = @change.call(run_id, actor: actor, cause: "tick", nonblocking: true) do |read, ctx|
         stored = read.thawed
-        case WorkflowTransitions.wakeable?(stored, @clock.call, alive: alive, stops: stops)
+        cursor = stored["current"]
+        cause = wake_cause(stored, alive, stops, skip)
+        step = stored["current"]
+        case cause
         when :continue
           continuing = take_continue(stored, ready)
           acted = !continuing.nil?
@@ -99,6 +126,11 @@ module Workspace
         when :backoff
           acted = true
           start_retry(stored, ctx, "backoff_ended")
+        when :join
+          acted = true
+          # A fan_out sibling's deferred move whose wait is over: the group's join applies it, never the tick.
+          group = WorkflowTransitions.join_due(stored, @clock.call)
+          stored.replace(@progress.join(stored, ctx: ctx, group: group).thawed)
         when :infra_retry
           # `workflow advance` restarts the agent outside the lock (tmux and daemon calls); tick does nothing.
           nil
@@ -127,15 +159,18 @@ module Workspace
           evaluate(stored, ctx)
         end
         follow = ctx
+        # A sibling's wake that did nothing (its pane not idle yet, say) leaves the cursor where it was.
+        stored["current"] = cursor unless acted
         WorkflowRun.from_h(stored)
       end
       return nil unless run && acted
       if continuing
-        @dispatch.type_continue(run_id, continuing, workspace: run.workspace, text: WorkflowTransitions.continue_line(run.to_h), actor: actor, cause: "tick")
-        return run
+        @dispatch.type_continue(run_id, continuing, workspace: run.workspace, text: WorkflowTransitions.continue_line(WorkflowTransitions.at_step(run.to_h, step)), actor: actor, cause: "tick")
+        return [run, step]
       end
-      @evaluation.finish_follow_ups(run_id, follow, run)
+      [@evaluation.finish_follow_ups(run_id, follow, run), step]
     end
+    private :tick_once
 
     # Records that the step stands in a stall the sweep found, once for each attempt and cause, and changes
     # nothing else. Does not wait for another process that is changing the run.
@@ -295,7 +330,7 @@ module Workspace
         mark_stall(stored, cause, data)
         mark_recovery(stored, cause, "evaluated")
         evaluate(stored, ctx)
-        next :evaluated unless fail_if_incomplete && stored.dig("reason", "code") == "turn_ended_incomplete"
+        next :evaluated unless fail_if_incomplete && WorkflowRun.slot_dig(stored, stored["current"], "reason", "code") == "turn_ended_incomplete"
         fail_timed_out(stored, fail_if_incomplete["elapsed"], fail_if_incomplete["timeout"], ctx)
         :timed_out
       end
@@ -333,8 +368,8 @@ module Workspace
     def redeliver(run_id, actor:, step:, attempt:)
       outcome = :moved_on
       run = @change.call(run_id, actor: actor, cause: "redelivery", nonblocking: true) do |read, ctx|
-        stored = read.thawed
-        next unless sweep_target?(stored, step, attempt, false)
+        next unless sweep_target?(read.to_h, step, attempt, false)
+        stored = on_step(read.thawed, step)
         info = WorkflowTransitions.redelivery(stored, @clock.call)
         next unless info && info[:state] == :due
         mark_stall(stored, "undelivered", {"code" => info[:code], "retry" => info[:retries] + 1, "of" => info[:limit]})
@@ -347,7 +382,7 @@ module Workspace
       return :busy unless run
       return outcome unless outcome == :started
       # The line has been typed (or refused) by now: say what became of it.
-      return :waiting_lock if run.reason&.dig("code") == "waiting_lock"
+      return :waiting_lock if run.reason_for(step)&.dig("code") == "waiting_lock"
       return :not_delivered if run.step(step).last_attempt.outcome == "not_delivered"
       @store.record_event(run_id, "step_recovered", "step" => step, "attempt" => attempt, "action" => "redelivered", "actor" => actor, "cause" => "redelivery", "from_state" => nil, "to_state" => nil)
       :redelivered
@@ -408,7 +443,8 @@ module Workspace
       return :busy unless run
       after = @evaluation.finish_follow_ups(run_id, follow, run)
       return outcome unless outcome == :unanswered
-      (after || run).reason ? :stopped : :evaluated
+      after ||= run
+      after.reason_for(after.current) ? :stopped : :evaluated
     end
 
     # Starts an `on_fail` retry whose backoff is over, as the sweep's act. Does nothing unless the run is still on
@@ -425,10 +461,11 @@ module Workspace
       outcome = :moved_on
       run = @change.call(run_id, actor: actor, cause: "backoff_ended", nonblocking: true) do |read, ctx|
         next unless sweep_target?(read.to_h, step, attempt, false)
+        read = WorkflowRun.from_h(on_step(read.thawed, step))
         next unless WorkflowTransitions.backoff(read.to_h, @clock.call)&.fetch(:state) == :due
         retried = @progress.start_retry(read, ctx: ctx, cause: "backoff_ended")
-        outcome = if retried.backoff&.dig("blocked") then :blocked
-        elsif retried.budget_hold || retried.timeout_hold then :held
+        outcome = if retried.backoff_for(retried.current)&.dig("blocked") then :blocked
+        elsif retried.budget_hold_for(retried.current) || retried.timeout_hold_for(retried.current) then :held
         else :retried
         end
         retried
@@ -593,7 +630,7 @@ module Workspace
 
     # The run is on that step, attempt and round, in that pane, with no stop for a person.
     def same_round?(run, step, attempt, round, pane)
-      return false if run["current"] != step || run["reason"] || run["parked"]
+      return false if run["current"] != step || WorkflowRun.slot(run, run["current"], "reason") || run["parked"]
       state = step_state(run)
       found = state["review"]
       state["state"] == "reviewing" && state["attempts"].last&.fetch("n", nil) == attempt && found.is_a?(Hash) &&
@@ -614,7 +651,7 @@ module Workspace
       follow = nil
       run = @change.call(run_id, actor: actor, cause: cause, nonblocking: !blocking) do |read, ctx|
         next unless sweep_target?(read.to_h, step, attempt, running)
-        stored = read.thawed
+        stored = on_step(read.thawed, step)
         outcome = yield stored, ctx
         follow = ctx
         WorkflowRun.from_h(stored)
@@ -625,6 +662,32 @@ module Workspace
     end
 
     def sweep_target?(run, step, attempt, running) = WorkflowTransitions.sweep_target?(run, step, attempt, running, @clock.call)
+
+    # The mutable run Hash being changed, with its cursor on +step+ when +step+ is a fan_out sibling that is not the
+    # cursor's ({WorkflowTransitions.at_step}), so every mark, stall and decision below is that sibling's own; the
+    # cursor stays on that sibling afterwards, as a sibling's turn end leaves it ({WorkflowEvaluation#turn_ended}).
+    def on_step(run, step)
+      run["current"] = step unless WorkflowTransitions.at_step(run, step).equal?(run)
+      run
+    end
+
+    # What wakes the tick ({WorkflowTransitions.step_wake}): the cursor's step's cause, else the first other fan_out
+    # sibling under way that wakes for one of {WorkflowTransitions::SIBLING_WAKES}, whose step the run Hash's cursor
+    # is moved to. A sibling's infra retry is `workflow advance`'s to restart, so it moves nothing here.
+    def wake_cause(stored, alive, stops, skip = [])
+      unless skip.empty?
+        # A later act of one tick: only the siblings not acted on yet, each for its own sibling causes.
+        view = WorkflowTransitions.step_views(stored).reject { |each| skip.include?(each["current"]) }.find do |each|
+          (WorkflowTransitions::SIBLING_WAKES - [:infra_retry]).include?(WorkflowTransitions.wakeable?(each, @clock.call, alive: alive, stops: stops))
+        end
+        return nil unless view
+        stored["current"] = view["current"]
+        return WorkflowTransitions.wakeable?(view, @clock.call, alive: alive, stops: stops)
+      end
+      cause, view = WorkflowTransitions.step_wake(stored, @clock.call, alive: alive, stops: stops)
+      stored["current"] = view["current"] if view && !view.equal?(stored) && cause != :infra_retry
+      cause
+    end
 
     # {#holder_alive} asked at most once per holder in one tick, so deciding to wake and then what to do reads the
     # process table once.
@@ -643,11 +706,14 @@ module Workspace
     # Before the lock: whether the `continue_pending` mark's pane is ready for its continue line (`:ready`, the mark
     # it was read for), its process is no longer the one marked (`:stale`), or neither yet (nil, which a pid tmux
     # can't name is too).
-    def continue_ready(run_id)
+    def continue_ready(run_id, skip = [])
       return nil unless @panes
-      run = @store.run(run_id).to_h
-      mark = run["continue_pending"]
-      return nil if run["paused"] || WorkflowTransitions.continue_state(run, @clock.call) != :due
+      stored = @store.run(run_id).to_h
+      return nil if stored["paused"]
+      # The cursor's step's mark, else the first fan_out sibling's under way whose mark is due.
+      run = WorkflowTransitions.step_views(stored).find { |view| !skip.include?(view["current"]) && WorkflowTransitions.continue_state(view, @clock.call) == :due }
+      return nil unless run
+      mark = WorkflowRun.slot(run, run["current"], "continue_pending")
       pid = @panes.pane_pid(run["workspace"], mark["pane"])
       # tmux that lists nothing proves nothing: the mark waits, for the gone-pane path or its expiry to clear.
       return nil if pid.nil?
@@ -662,8 +728,8 @@ module Workspace
     # mark to type the line for, :dropped for a stale mark, or nil when nothing changed (the pane not yet idle).
     def take_continue(run, ready)
       verdict, mark = ready
-      return nil unless verdict && run["continue_pending"] == mark
-      run.delete("continue_pending")
+      return nil unless verdict && WorkflowRun.slot(run, run["current"], "continue_pending") == mark
+      WorkflowRun.slots(run, run["current"]).delete("continue_pending")
       how = (verdict == :stale) ? "pane_replaced" : "pane_idle"
       @change.event(run, "continue_pending_ended", {"step" => mark["step"], "attempt" => mark["attempt"], "pane" => mark["pane"], "how" => how})
       (verdict == :stale) ? :dropped : mark
@@ -672,7 +738,7 @@ module Workspace
     # A pending continue line whose pane never proved idle within {WorkflowTransitions::PARK_SECONDS}: the mark goes
     # and nothing is typed; a step that stays stuck is the sweep's stall to handle.
     def expire_continue(run)
-      mark = run.delete("continue_pending")
+      mark = WorkflowRun.slots(run, run["current"]).delete("continue_pending")
       @change.event(run, "continue_pending_ended", {"step" => mark["step"], "attempt" => mark["attempt"], "pane" => mark["pane"], "how" => "expired"})
     end
 
@@ -703,7 +769,7 @@ module Workspace
 
     # The round the sweep read is still the run's, delivered and undecided, in the pane it read.
     def round_target?(run, step, attempt, round, pane)
-      return false if run["parked"] || run["reason"] || run["current"] != step
+      return false if run["parked"] || WorkflowRun.slot(run, run["current"], "reason") || run["current"] != step
       state = step_state(run)
       found = state["review"]
       state["state"] == "reviewing" && state["attempts"].last&.fetch("n", nil) == attempt && found.is_a?(Hash) &&
@@ -826,7 +892,8 @@ module Workspace
     def sweep_marks_for(run)
       marks = WorkflowTransitions.sweep_marks(run)
       return marks unless marks.empty?
-      run["sweep"] = {"step" => run["current"], "attempt" => step_state(run)["attempts"].last&.fetch("n", nil), "stalled" => {}, "recovered" => {}}
+      # A fan_out sibling's marks are its own ({WorkflowTransitions.sweep_marks}); any other step's are the run's.
+      WorkflowRun.slots(run, run["current"])["sweep"] = {"step" => run["current"], "attempt" => step_state(run)["attempts"].last&.fetch("n", nil), "stalled" => {}, "recovered" => {}}
     end
 
     def record_budget_interrupt(run, budget, at)
@@ -986,9 +1053,9 @@ module Workspace
     # No turn ended, so the step is neither passed nor checked: the hold only becomes the stop it was hiding,
     # with a `since` of its own.
     def expire_background(run)
-      held = run["reason"]["details"]
+      held = WorkflowRun.slot(run, run["current"], "reason")["details"]
       details = held.slice("step", "attempt", "missing", "stale", "invalid").merge("background_tasks" => held["tasks"])
-      run["reason"] = {"code" => "turn_ended_incomplete", "since" => now_iso, "details" => details}
+      WorkflowRun.slots(run, run["current"])["reason"] = {"code" => "turn_ended_incomplete", "since" => now_iso, "details" => details}
     end
   end
 end

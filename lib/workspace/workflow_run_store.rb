@@ -177,7 +177,7 @@ module Workspace
     # @return [WorkflowRun, nil] the first run going, oldest first, whose unblocked wait holds +pane+
     def backoff_on(pane, except:, same_pane:)
       going.find do |run|
-        waiting = run.backoff || run.budget_hold || run.timeout_hold
+        waiting = run.backoff_for(run.current) || run.budget_hold_for(run.current) || run.timeout_hold_for(run.current)
         run.id != except && run.state == "waiting" && waiting.is_a?(Hash) && !waiting["blocked"] &&
           (waiting["pane"] || run.pane) == pane && same_pane.call(pane, waiting["identity"])
       end

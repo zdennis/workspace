@@ -114,6 +114,8 @@ module Workspace
       one[:resume] = resumes.call(run).select { |step, count| step && count.positive? }.keys
       Array(run.reasons).grep(Hash).each { |reason| hold(one, run_step(reason), reason) }
       run.steps.each do |id, step|
+        # A step that keeps its own slots ({WorkflowRun.step_scoped?}) keeps its own reason history.
+        Array(step.to_h["reasons"]).grep(Hash).each { |reason| hold(one, id, reason) }
         attempts = WorkflowStats.stored_attempts(step)
         delivered = attempts.reject { |attempt| WorkflowStats.kind_of(attempt) == :not_delivered }
         one[:retry] << id if delivered.size > 1 || attempts.any?(&:retry_of)

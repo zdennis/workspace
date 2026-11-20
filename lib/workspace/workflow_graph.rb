@@ -13,7 +13,10 @@ module Workspace
     # @param definition [Hash] {WorkflowDefinition#to_h}, or a stored run's definition
     # @param origins [Hash{String=>String}] step id to the `extends:` parent it came from
     # @return [WorkflowGraph] frozen
+    # @raise [Workspace::Error] code `invalid_workflow` for a definition with a `fan_out` group, which this model
+    #   would draw as steps in a row
     def self.build(definition, origins: {})
+      WorkflowDefinition.refuse_groups(definition, doing: "graphed", later: "the graph drawing a group's steps side by side (a later change)")
       new(definition, origins)
     end
 

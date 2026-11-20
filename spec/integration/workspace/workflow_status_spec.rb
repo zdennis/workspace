@@ -1952,4 +1952,103 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(current["flags"]).to eq(["paused"])
     end
   end
+  describe "a fan_out group draining after one sibling failed" do
+    let(:failed_reason) { {"code" => "failed_check", "since" => "2026-10-04T12:50:00Z", "details" => {"step" => "spec", "code" => "test"}} }
+
+    # Two siblings of the group `checks` after `build`: lint passed, spec failed with a deferred move still waiting out
+    # its backoff, so the join has not decided the group.
+    def grouped(spec_state: "failed", lint_state: "passed", **rest)
+      move = {"to" => "lint", "until" => "2026-10-04T13:30:00Z"}
+      steps = {
+        "build" => {"state" => "passed", "attempts" => [{"n" => 1}]},
+        "lint" => {"state" => lint_state, "attempts" => [{"n" => 1, "started_at" => "2026-10-04T12:30:00Z"}]},
+        "spec" => {"state" => spec_state, "attempts" => [{"n" => 1, "started_at" => "2026-10-04T12:31:00Z"}], "pending_move" => move}
+      }
+      run = store.create({
+        "workflow" => "ci", "title" => "CI", "workspace" => "app", "project" => "app", "worktree" => "/src/app", "task" => "t1",
+        "inputs" => {}, "state" => "waiting", "created_at" => "2026-10-04T12:00:00Z", "started_at" => "2026-10-04T12:00:00Z", "ended_at" => nil,
+        "current" => "spec", "pane" => "%5", "loops" => {}, "artifacts_dir" => "/src/app/.workflow/wr",
+        "definition" => {"steps" => [{"id" => "build", "title" => "Build"}, {"id" => "lint", "title" => "Lint", "group" => "checks"},
+          {"id" => "spec", "title" => "Spec", "group" => "checks"}], "groups" => {"checks" => {"steps" => %w[lint spec]}}},
+        "steps" => steps
+      }.merge(rest))
+      panes.bind(workspace: "app", pane: "%5", run_id: run["id"])
+      run
+    end
+
+    def row = status.run("wr_1")["runs"].first
+
+    def step(id) = row["steps"].find { |each| each["id"] == id }
+
+    it "shows one passed and one failed sibling and a draining group" do
+      grouped
+
+      expect(step("lint")).to include("state" => "passed", "group" => "checks", "group_state" => "draining", "looping" => false)
+      expect(step("spec")).to include("state" => "failed", "group" => "checks", "group_state" => "draining", "looping" => true)
+      expect(row["groups"]).to eq("checks" => {"state" => "draining", "steps" => %w[lint spec]})
+      expect(step("build")).not_to have_key("group")
+    end
+
+    it "keeps current for the cursor and gives each sibling under way its own reason, actions and flags" do
+      grouped
+      edit_run(store, "wr_1") do |run|
+        run["steps"]["lint"]["state"] = "running"
+        run["steps"]["spec"]["reason"] = failed_reason
+      end
+
+      expect(row["current"]).to include("step" => "spec", "attempt" => 1)
+      expect(step("spec")["reason"]).to include("code" => "failed_check")
+      expect(step("spec")["reason"]["actions"].map { |each| each["action"] }).to include("workflow cancel")
+      expect(step("lint")).to include("attempt" => 1, "reason" => nil, "flags" => [])
+      expect(step("lint")["group_state"]).to eq("draining")
+    end
+
+    it "reads the group as failed once nothing is owed, and as running while a sibling works with none failed" do
+      grouped
+      edit_run(store, "wr_1") { |run| run["steps"]["spec"].delete("pending_move") }
+      expect(step("spec")["group_state"]).to eq("failed")
+
+      edit_run(store, "wr_1") do |run|
+        run["steps"]["spec"]["state"] = "passed"
+        run["steps"]["lint"]["state"] = "running"
+      end
+      expect(step("lint")["group_state"]).to eq("running")
+    end
+
+    it "reads a held sibling's own gate and slots, not the cursor's" do
+      grouped(spec_state: "passed", lint_state: "passed")
+      edit_run(store, "wr_1") do |run|
+        run["steps"]["spec"].delete("pending_move")
+        run["steps"]["lint"]["gate"] = {"state" => "waiting"}
+        run["steps"]["lint"]["reason"] = {"code" => "waiting_you", "since" => "t", "details" => {"kind" => "gate", "step" => "lint"}}
+      end
+
+      expect(step("lint")["reason"]).to include("code" => "waiting_you")
+      expect(step("lint")["reason"]["actions"].first).to include("action" => "workflow approve", "args" => ["wr_1", "--step", "lint", "--attempt", "1"])
+      expect(step("lint")["group_state"]).to eq("waiting")
+      expect(row["current"]["reason"]).to be_nil
+    end
+
+    it "lists the failed sibling that is not the cursor as its own needs-me row" do
+      grouped
+      edit_run(store, "wr_1") do |run|
+        run["current"] = "lint"
+        run["steps"]["lint"]["state"] = "failed"
+        run["steps"]["lint"]["reason"] = failed_reason.merge("details" => {"step" => "lint", "code" => "lint"})
+        run["steps"]["spec"]["reason"] = failed_reason
+        run["steps"]["spec"].delete("pending_move")
+      end
+
+      rows = Workspace::WorkflowNeedsMe.new(clock: -> { now.first }).rows(status.runs["runs"])
+
+      expect(rows.map { |each| [each["step"], each["code"]] }).to contain_exactly(%w[lint failed_check], %w[spec failed_check])
+    end
+
+    it "keeps a run with no group as it was: no group keys on any step, no groups key" do
+      create
+
+      expect(row.keys).not_to include("groups")
+      expect(row["steps"].flat_map(&:keys)).not_to include("group", "group_state", "looping")
+    end
+  end
 end

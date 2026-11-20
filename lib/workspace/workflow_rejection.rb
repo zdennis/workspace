@@ -42,7 +42,7 @@ module Workspace
     # @return [WorkflowRun] the run afterwards
     def start(run, again, rounds:, ctx:)
       work = WorkflowRun.from_h(run).thawed
-      work["pending_context"] << again["text"]
+      WorkflowRun.add_context(work, work["current"], again["text"])
       @change.event(work, "review_retry", "step" => work["current"], "attempt" => again["attempt"], "round" => again["round"],
         "rounds" => rounds["rounds"], "max_rounds" => rounds["max_rounds"])
       @dispatch.dispatch(work, ctx: ctx, cause: "review_rejected", context: again["context"], retry_of: {"text" => again["text"], "attempt" => again["attempt"]})

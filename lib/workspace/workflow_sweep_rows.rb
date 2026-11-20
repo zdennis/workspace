@@ -13,6 +13,9 @@ module Workspace
 
     # One row of a pass.
     #
+    # A run draining a fan_out group yields one row per sibling under way, so several rows of a pass share a
+    # "run_id" and only "step" tells them apart: a reader must not key rows on "run_id" alone.
+    #
     # @param run [WorkflowRun]
     # @param outcome [String] see {WorkflowSweep#call}
     # @return [Hash{String=>Object}] "workspace", "outcome", "reason", "message", "run_id", "step", "attempt", "cause", "action"

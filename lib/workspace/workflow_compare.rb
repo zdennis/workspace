@@ -156,7 +156,7 @@ module Workspace
       state = case run.state
       when "completed" then :settled
       when "cancelled" then missed ? :settled : :cancelled
-      else (missed && STUCK.include?(run.reason&.dig("code"))) ? :stuck : :running
+      else (missed && STUCK.include?(run.reason_for(run.current)&.dig("code"))) ? :stuck : :running
       end
       {id: run.id, state: state, first_try: run.state == "completed" && !missed, resumes: resumes.call(run).values.sum}
     end

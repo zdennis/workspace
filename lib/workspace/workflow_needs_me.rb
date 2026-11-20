@@ -29,18 +29,29 @@ module Workspace
     #   "run", "workflow", "workspace", "step", "attempt", "code" (the reason's code, or `stalled` / `idle`),
     #   "kind" (a `waiting_you` reason's kind, else null), "gate_file" (a gate's note as {WorkflowGateNote} found it, else null), "detail" (the failing check's code, a stall's cause, else null),
     #   "since" (ISO 8601 or null), "waiting_seconds" (whole seconds or null), "next_action" (the first of "actions"),
-    #   "actions" (all, as {WorkflowStatus} gives them). "next_action" is a suggestion for a person who has read the run:
+    #   "actions" (all, as {WorkflowStatus} gives them), and, for a step of a fan_out group only, "group" (its id) and
+    #   "group_state" (as {WorkflowStatus} derives it), so several rows of one run can be told apart from an ordinary step's. "next_action" is a suggestion for a person who has read the run:
     #   a program must not run it unattended (approving a gate or cancelling a run is the person's call)
     def rows(runs)
-      found = runs.filter_map { |run| row(run) }
+      found = runs.flat_map { |run| [row(run), *sibling_rows(run)] }.compact
       found.sort_by { |each| [each["since"] ? 0 : 1, each["since"].to_s, each["run"]] }
     end
 
     private
 
-    def row(run)
+    # One row for each fan_out sibling that waits for a person and is not the run's cursor (the cursor's is {#row}):
+    # {WorkflowStatus} gives a sibling under way its own `reason`, `stuck` and `attempt` in its `steps` entry.
+    def sibling_rows(run)
+      return [] if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
+      cursor = run.dig("current", "step")
+      Array(run["steps"]).filter_map do |entry|
+        next unless entry.is_a?(Hash) && entry["group"] && entry.key?("flags") && entry["id"] != cursor
+        row(run, entry.merge("step" => entry["id"]))
+      end
+    end
+
+    def row(run, current = run["current"] || {})
       return nil if WorkflowRunStore::TERMINAL_STATES.include?(run["state"])
-      current = run["current"] || {}
       reason = current["reason"]
       stuck = current["stuck"]
       source = reason || stuck
@@ -53,7 +64,14 @@ module Workspace
       {"run" => run["id"], "workflow" => run["workflow"], "workspace" => run["workspace"], "step" => current["step"], "attempt" => current["attempt"],
        "code" => source["code"], "kind" => details["kind"], "gate_file" => details["gate_file"], "detail" => reason ? (details["code"] || details["cause"]) : stuck["cause"],
        "since" => since&.utc&.iso8601, "waiting_seconds" => since && [(@clock.call - since).to_i, 0].max,
-       "next_action" => next_action(source, actions), "actions" => actions}
+       "next_action" => next_action(source, actions), "actions" => actions}.merge(group_fields(run, current))
+    end
+
+    # "group" and "group_state" of the step's `steps` entry when it belongs to a fan_out group, else nothing.
+    def group_fields(run, current)
+      entry = current["group"] ? current : Array(run["steps"]).find { |each| each.is_a?(Hash) && each["id"] == current["step"] }
+      return {} unless entry.is_a?(Hash) && entry["group"]
+      {"group" => entry["group"], "group_state" => entry["group_state"]}
     end
 
     # The first action; for a lock wait never a bare cancel, which would end a run for waiting in a queue.

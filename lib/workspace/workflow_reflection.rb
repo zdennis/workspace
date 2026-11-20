@@ -50,7 +50,7 @@ module Workspace
       version = run.definition_sha256.to_s[0, 12]
       lines = ["# Look back at workflow run #{esc(run.id)}", "",
         "Workflow: #{esc(run.workflow)}#{" (definition #{esc(version)})" unless version.empty?}",
-        "Final state: #{esc(run.state)}#{" (#{esc(reason_code(run.reason))})" if reason_code(run.reason)}"]
+        "Final state: #{esc(run.state)}#{" (#{esc(reason_code(run.reason_for(run.current)))})" if reason_code(run.reason_for(run.current))}"]
       lines.join("\n")
     end
 

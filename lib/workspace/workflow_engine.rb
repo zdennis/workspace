@@ -97,15 +97,15 @@ module Workspace
     # The agent's turn ended in the run's pane: decides the current step. See {WorkflowEvaluation#turn_ended}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] the run afterwards
-    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil)
-      @evaluation.turn_ended(run_id, actor: actor, pane: pane, turn_started: turn_started, stopped_at: stopped_at, background: background, transcript_path: transcript_path).to_h
+    def turn_ended(run_id, actor:, pane: nil, turn_started: nil, stopped_at: nil, background: [], transcript_path: nil, step: nil)
+      @evaluation.turn_ended(run_id, actor: actor, pane: pane, step: step, turn_started: turn_started, stopped_at: stopped_at, background: background, transcript_path: transcript_path).to_h
     end
 
     # Records what the agent says about its current attempt. See {WorkflowEvaluation#report}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
     # @return [Hash{String=>Object}] "run_id", "step", "attempt" and "reported"
-    def report(run_id, actor:, status:, summary: nil, code: nil)
-      reported = @evaluation.report(run_id, actor: actor, status: status, summary: summary, code: code)
+    def report(run_id, actor:, status:, summary: nil, code: nil, step: nil)
+      reported = @evaluation.report(run_id, actor: actor, status: status, summary: summary, code: code, step: step)
       {"run_id" => reported.run_id, "step" => reported.step, "attempt" => reported.attempt, "reported" => reported.reported}
     end
 
@@ -128,11 +128,12 @@ module Workspace
     # new one starts; with +infra_retry+ (the claimant of {#claim_infra_retry}) that restart is the step's infra retry.
     # See {WorkflowDecisions#resume}.
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
+    # @param step [String, nil] with +restart_step+, the fan_out sibling to restart instead of the cursor's step
     # @return [Hash{String=>Object}] the run afterwards; with "unchanged" (why) when nothing was done
     def resume(run_id, actor:, from: nil, note: nil, pane: nil, turn_over: nil, extra_attempts: nil, extra_tokens: nil, extra_seconds: nil,
-      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil, infra_retry: nil, reboot_recovery: nil)
+      extra_rounds: nil, accept_guard: false, guard_retry: false, caller_pane: nil, restart_step: false, bound: nil, infra_retry: nil, reboot_recovery: nil, step: nil)
       resumed_h(@decisions.resume(run_id, actor: actor, from: from, note: note, pane: pane, turn_over: turn_over, extra_attempts: extra_attempts, extra_tokens: extra_tokens, extra_seconds: extra_seconds, extra_rounds: extra_rounds,
-        accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane, restart_step: restart_step, bound: bound, infra_retry: infra_retry, reboot_recovery: reboot_recovery))
+        accept_guard: accept_guard, guard_retry: guard_retry, caller_pane: caller_pane, restart_step: restart_step, bound: bound, infra_retry: infra_retry, reboot_recovery: reboot_recovery, **(step ? {step: step} : {})))
     end
 
     # Why a restart of the run's current step would be refused, without changing anything. See {WorkflowDecisions#restart_refusal}.

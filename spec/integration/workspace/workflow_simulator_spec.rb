@@ -226,6 +226,18 @@ RSpec.describe Workspace::WorkflowSimulator do
     expect { play("steps: {}\n", inputs: {"nope" => "x"}) }.to raise_error(Workspace::UsageError)
     expect(Dir.children(base)).to eq([])
   end
+
+  it "refuses a definition with a fan_out group, naming the group, before it makes anything" do
+    grouped = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "fan_out.yml")), id: "fan_out", source: "file", path: nil)
+    script = Workspace::WorkflowSimScript.parse("steps: {}\n", definition: grouped.to_h, source: "s.yml")
+
+    expect { simulator.call(definition: grouped, script: script, inputs: {"task" => "t"}) }.to raise_error(Workspace::Error) { |error|
+      expect(error.code).to eq("invalid_workflow")
+      expect(error.message).to include("can't be simulated", "fan_out group checks (lint, test, docs)", "interleaved")
+      expect(error.details).to eq("workflow" => "fan_out", "groups" => {"checks" => %w[lint test docs]})
+    }
+    expect(made).to eq([])
+  end
 end
 
 RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do

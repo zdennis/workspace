@@ -102,7 +102,7 @@ module Workspace
 
     # What the run does now the round decided, as one sentence.
     def next_words(run, step, attempt)
-      reason = run["reason"]
+      reason = WorkflowRun.slot(run, step, "reason")
       code = reason.is_a?(Hash) ? reason["code"] : nil
       if code == "waiting_you" && reason.dig("details", "kind") == "gate" && run["current"] == step
         "Step #{step} waits at its gate: read the summary, then `workspace workflow approve #{run["id"]}` or `workspace workflow reject #{run["id"]} --note ...`."

@@ -693,4 +693,37 @@ RSpec.describe Workspace::WorkflowRecover do
       expect(result).to include(status: "partial", exit_code: 3)
     end
   end
+
+  describe "a fan_out group under way" do
+    def add_group(id, workspace)
+      attempt = {"n" => 1, "started_at" => iso(-600)}
+      run = {"id" => id, "workspace" => workspace, "state" => "running", "current" => "lint", "pane" => "%1", "created_at" => iso(-100),
+             "definition" => {"steps" => [{"id" => "lint", "group" => "checks"}, {"id" => "test", "group" => "checks"}]},
+             "steps" => {"lint" => {"state" => "running", "pane" => "%1", "attempts" => [attempt]}, "test" => {"state" => "running", "pane" => "%2", "attempts" => [attempt]}}}
+      File.write(path(id), JSON.pretty_generate(run))
+      panes.bind(workspace: workspace, pane: "%1", run_id: id, step: "lint")
+      panes.bind(workspace: workspace, pane: "%2", run_id: id, step: "test")
+    end
+
+    it "sorts and restarts each sibling on its own step and pane, a row for each" do
+      add_group("wr_1", "app")
+
+      result = recover.call { {} }
+
+      expect(result[:results].map { |each| [each["run_id"], each["step"], each["outcome"]] }).to eq([%w[wr_1 lint restarted], %w[wr_1 test restarted]])
+      expect(readiness.waits).to eq([["s-app", "%1"], ["s-app", "%2"]])
+      expect(engine.changes.map { |kind, id, args| [kind, id, args[:step]] }).to eq([[:resume, "wr_1", "lint"], [:resume, "wr_1", "test"]])
+    end
+
+    it "leaves a sibling whose pane is alive in a live session, sorting the other on its own" do
+      add_group("wr_1", "app")
+      live["app"] = true
+      panes.stale << "%2"
+
+      result = recover.call { {} }
+
+      expect(result[:results].map { |each| [each["step"], each["reason"]] }).to include(["lint", "pane_alive"])
+      expect(result[:results].find { |each| each["step"] == "test" }["reason"]).not_to eq("pane_alive")
+    end
+  end
 end

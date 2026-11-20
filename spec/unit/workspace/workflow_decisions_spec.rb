@@ -652,6 +652,20 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(resumed.run.backoff).to be_nil
     end
 
+    it "skips the wait a fan_out group's step keeps under its own step and starts that retry" do
+      backoff = {"until" => "2026-11-10T13:00:00Z", "to" => "plan", "text" => "it failed", "pane" => "%3"}
+      hash = run_hash(state: "failed", extra: {"state" => "waiting"})
+      hash["definition"]["steps"].each { |each| each["group"] = "checks" }
+      hash["steps"]["plan"].merge!("backoff" => backoff, "reason" => {"code" => "retry_backoff"})
+      stored(hash)
+
+      resumed = decisions.resume("wr_1", actor: "person")
+
+      expect(progress.calls).to eq([[:retry_pane_problem, "plan", {proven: false, pane: nil}], [:start_retry, "plan", backoff, {cause: "resume", proven: false, budgeted: true}]])
+      expect(resumed.run.step("plan").to_h).not_to have_key("backoff")
+      expect(resumed.run.backoff_for("build")).to be_nil
+    end
+
     it "holds a retry whose pane is no longer the run's, writing no event, and says why" do
       progress = RecordingProgress.new(pane_problem: {code: "pane_gone", message: "pane %3 is gone"})
       stored(run_hash(state: "failed", extra: {"backoff" => {"until" => "2026-11-10T13:00:00Z", "to" => "plan"}, "state" => "waiting"}))
@@ -736,6 +750,21 @@ RSpec.describe Workspace::WorkflowDecisions do
       expect(resumed.run.pane).to eq("%8")
       expect(panes.calls).to eq([[:unbind, "wr_1"]])
       expect(dispatch.calls.last).to eq([:dispatch, "wr_1", {cause: "resume", context: nil, budgeted: true, retry_of: nil}])
+    end
+
+    it "moves a step of a group to a named pane, unbinding and recording only that step's pane" do
+      grouped = [{"id" => "plan", "group" => "checks", "produces" => [], "gate" => true}, {"id" => "build", "group" => "checks", "produces" => [], "gate" => true}]
+      hash = run_hash(state: "failed", reason: failed_check)
+      hash["definition"]["steps"] = grouped
+      hash["steps"]["build"]["pane"] = "%6"
+      stored(hash)
+
+      resumed = decisions.resume("wr_1", actor: "person", pane: "%8")
+
+      expect(panes.calls).to eq([[:unbind, "wr_1", {step: "plan"}]])
+      expect(resumed.run.step("plan").to_h).to include("pane" => "%8")
+      expect(resumed.run.step("build").to_h).to include("pane" => "%6")
+      expect(resumed.run.pane).to eq("%3")
     end
 
     it "takes over from a parked resume" do

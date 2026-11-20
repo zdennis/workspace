@@ -1460,9 +1460,61 @@ A file that is not there is listed with `exists` false and `bytes` null. A symli
 
 `workflow show ID --source` answers the file itself, for an editor: the text exactly as stored, the `sha256` of its raw bytes and every problem the checks find. It works on a preset and on a global file that does not pass the checks (exit 0, where `show ID` fails with `invalid_workflow`), so a broken file can be loaded, fixed and saved. Without `--json` it prints the text alone and writes the problems to stderr. `--source` needs an ID.
 
+### Running steps in parallel with `fan_out`
+
+A step whose body is a `fan_out:` mapping is a **group**: its siblings (sibling id => an ordinary step body) start together, each in its own author pane, and the run moves on when all of them have passed (the join). Sibling ids are step ids, so they are unique across the whole definition.
+
+```yaml
+steps:
+  read:
+    title: Read in parallel
+    checkout: shared        # shared (default) or shared-edit
+    on_fail: stop           # the only value a group takes
+    fan_out:
+      code:  { prompt: "...", produces: [code.md],  guard: unchanged }
+      tests: { prompt: "...", produces: [tests.md], guard: unchanged }
+```
+
+A group takes only `title`, `fan_out`, `checkout` and `on_fail: stop`. A sibling takes the ordinary step keys (`prompt`, `produces`, `status`, `require`, `guard`, `gate`, `timeout`, `max_attempts`, `on_fail`, `include`, ...). The shipped [`explore-parallel`](#the-explore-parallel-preset) preset is the worked example.
+
+**The checkout.** Siblings share the run's one checkout. Under `checkout: shared` each sibling must leave it alone (`guard: unchanged`, which is also what no `guard:` gets), and no two may name the same `produces` file; validate refuses a `guard: config` sibling and a shared `produces`. `checkout: shared-edit` drops those checks and adds the warning `fan_out_edits_unverified`: the engine can't tell whether the siblings edit disjoint paths, so give each its own paths in its prompt and let the checks of the step after the group be the safety net.
+
+**What PR 1 refuses on a sibling.** These are decisions, each refused by `validate` with its reason:
+
+- `review:`: closing one review round's window closes every other review window of the run.
+- `uses:`: a run holds one step's locks at a time, so one sibling's acquire would release the locks another still needs.
+- `fan_out:` inside a sibling: groups don't nest.
+- A `goto` out of the group: a sibling's `on_fail: goto` may name only an earlier fellow sibling.
+- A `goto` into the group from a step outside it: name a step outside every group.
+- A group `on_fail` other than `stop`.
+
+**Failure.** A failed sibling with no `on_fail` takes the scoped implicit move: it goes back to the preceding fellow sibling; the first sibling stops the run instead. A step after the group goes back to the nearest earlier step that is in no group, so the implicit move never crosses into or out of a group (with no such step, it stops). The group joins with drain semantics: siblings still running when one fails are let finish, and a move the failure asked for waits (`pending_move`) until the group has drained.
+
+**One shared purse.** The workflow's `max_attempts` is one run-wide allowance. Concurrent siblings draw from it together, so a group of N siblings spends at least N attempts. Raise `max_attempts` (or pass `--extra-attempts`) to fit the group.
+
+**`status`, `needs-me` and alerts** show one row per sibling; a draining group shows its siblings.
+
+**In `--json`.** Needs `workflow` 59. In `workflow status --json`, each entry of `steps` that belongs to a group adds:
+
+- `group`: the group's id.
+- `group_state`: where the group stands, the same for every sibling. `pending` (no sibling has started), `running` (a sibling is at work), `waiting` (nothing runs and a sibling is held: a gate, a hold, a backoff), `draining` (a sibling failed and the group is not yet decided: another sibling is still at work or held, or a deferred failure move or a relay run is owed), `failed` (every sibling is at rest and one failed; the join waits for a person) or `passed` (every sibling passed and none is held).
+- `looping`: `true` while a deferred failure move or a relay run is owed this sibling, else `false`.
+
+A sibling that is under way also carries what `current` shows of a step: `attempt`, `reason`, `flags` and the optional keys, so each sibling reads on its own. A run whose definition has groups adds a run-level `groups` map, `{GROUP_ID: {"state": GROUP_STATE, "steps": [SIBLING_IDS]}}`; a run with no groups has no `groups` key. Steps outside a group carry none of these keys. `workflow status --needs-me --json` rows for a step of a group add `group` and `group_state` too (absent for any other step), and a run can have several rows, so key them on `run` and `step` together.
+
+**In `workflow sweep --json`.** A run draining a group yields one row per sibling under way, so several rows of a pass can share one `run_id`; `step` tells them apart. Do not key rows on `run_id` alone.
+
+**What does not read a grouped definition.**
+
+- `workflow simulate` and `workflow graph` refuse it (`invalid_workflow`, naming the groups): they would play or draw the siblings as a row of plain steps.
+- `workflow stats`, `workflow trace` and `workflow insights` read grouped runs **best-effort**. They are read-only analytics over finished runs, so they are not refused. Per-step attempt and token rows still land per sibling (the attempt record is keyed by step). Their group-level roll-ups assume definition order, so they may mislead until later work makes them group-aware.
+- `validate`'s `on_fail_exceeds_max_attempts` warning can fire early on a grouped definition: its span math sums the siblings between the failing step and its `goto`, which a group retry does not re-run. It warns; it never refuses.
+
+**A limit on existing presets.** `rpiv-auto-approve`'s reviewers each carry `on_fail: goto: plan`, the step before them. That goto leaves the would-be group, so they can't be re-expressed as a `fan_out` group until a goto out of a group ships. Under the PR 1 rules a failed reviewer sibling loops to a preceding fellow sibling, or stops the group at the join.
+
 ### The `rpiv` preset
 
-`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`rpiv-auto-approve-v2`](#the-rpiv-auto-approve-v2-preset), [`pr-feedback`](#the-pr-feedback-preset), [`investigate`](#the-investigate-preset), [`explore`](#the-explore-preset) and the experimental [`bugfix`](#the-bugfix-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. `implement` requires `commits: 1` and `plan_status: done`. The agent sets the plan's `status: done` last, and the commit must be made during that attempt, so a rerun (a pass back from `verify`, or a `resume`) has to make a new commit for the fix. The prompt says never to amend or rebase, which makes the proof unproven (`history_rewritten`), and to use `git commit --allow-empty -m '<why>'` when no code change is needed. `verify` requires `command: lint` with `optional: true`, so it passes only when the tests and, if the project sets `commands.lint`, the lint command both exit 0 (a project without one skips that proof, recorded under `proofs`). A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
+`rpiv` is a workflow that ships (with [`rpiv-auto-approve`](#the-rpiv-auto-approve-preset), [`rpiv-auto-approve-v2`](#the-rpiv-auto-approve-v2-preset), [`pr-feedback`](#the-pr-feedback-preset), [`investigate`](#the-investigate-preset), [`explore`](#the-explore-preset), the [`explore-parallel`](#the-explore-parallel-preset) example of a `fan_out` group and the experimental [`bugfix`](#the-bugfix-preset)): research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. `implement` requires `commits: 1` and `plan_status: done`. The agent sets the plan's `status: done` last, and the commit must be made during that attempt, so a rerun (a pass back from `verify`, or a `resume`) has to make a new commit for the fix. The prompt says never to amend or rebase, which makes the proof unproven (`history_rewritten`), and to use `git commit --allow-empty -m '<why>'` when no code change is needed. `verify` requires `command: lint` with `optional: true`, so it passes only when the tests and, if the project sets `commands.lint`, the lint command both exit 0 (a project without one skips that proof, recorded under `proofs`). A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
 
 `research` and `plan` are `guard: unchanged`, so `rpiv` needs a clean checkout to start: a dirty tracked file, a stopped git operation or a branch with no commit is refused as `dirty_worktree` before anything is made, and a research or plan step that commits or edits a tracked file fails with the guard code (`head_moved`, `tracked_changed`). The plan and the artifacts are untracked, so writing them is fine. A run that has already started keeps the definition it started with, so runs begun before this guard behave as they did. `workflow run rpiv` (its tree defaults to the workspace's worktree) is refused on uncommitted tracked changes the same way, not only `workflow start`. A project that tracks `IMPLEMENTATION_PLAN.md` inside the repository fails `plan` with `tracked_changed`; clean the checkout and `workflow resume`. `workflow resume --from research` or `--from plan` after `implement` has committed stops with `head_moved`.
 
@@ -1602,6 +1654,15 @@ workspace workflow start explore --prompt "What would make uploads resumable?"
 
 - `survey` (`guard: unchanged`, gate `approve`, 90m) writes the note `<date>-<topic>-survey.md` in the notes directory: the questions, what exists today, each gap with its evidence, and a ranked list for you to prune. `survey.md` in the run's artifacts names the note on its first line, so the gate shows it, and a `review_request` inbox item (`explore:RUN`) links it. Approve with a note to cut the list or change the emphasis, or reject with a hint and it writes the note again.
 - `report` (`guard: config`, 90m) reads the approved note, closes the inbox item, and writes `<date>-<topic>-report.md` in the notes directory with the verdict first, then ranked recommendations, then the detail, has a skeptical sub-agent check the claims against the code, and hands the note back through the `report` pack as a `note` inbox item. `report.md` in the run's artifacts holds the note's file name.
+
+### The `explore-parallel` preset
+
+`explore-parallel` is [`explore`](#the-explore-preset)'s read-only research with one `fan_out` group: `read` runs the siblings `code` and `tests` side by side in two panes (each `guard: unchanged`, each writing its own file), then `report` joins `code.md` and `tests.md` behind an `approve` gate. Its only input is `task`. It is the example for [`fan_out`](#running-steps-in-parallel-with-fan_out); `workflow simulate` and `workflow graph` refuse it.
+
+```
+workspace workflow validate lib/workflows/explore-parallel.yml
+workspace workflow run explore-parallel --input task="how does retry work?"
+```
 
 ### The `bugfix` preset
 

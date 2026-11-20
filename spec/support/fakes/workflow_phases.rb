@@ -92,7 +92,7 @@ class RecordingRunChange
     raise TypeError, "a run change's block returned #{changed.class}, not a WorkflowRun" unless changed.is_a?(Workspace::WorkflowRun)
     stored.replace(changed.thawed)
     ctx.events.each { |type, data| @events << [run_id, type, data] }
-    @deliveries << ctx.delivery if ctx.delivery
+    @deliveries.concat(ctx.deliveries)
     @reviews << ctx.review if ctx.review
     @review_ends << ctx.review_end if ctx.review_end
     @closes << ctx.close_review if ctx.close_review
@@ -359,7 +359,8 @@ class RecordingWorkflowPanes
   # @return [Array<Array>] each +pane_gone?+ asked: the pane and the workspace it named
   attr_reader :gone_checks
 
-  # @param bound [Hash{String=>String}] the pane each run id is bound to
+  # @param bound [Hash{String=>String, Hash}] the pane each run id is bound to; a Hash of step id => pane for a run with
+  #   a pane bound per step
   # @param runs_on [Hash{String=>String}] the run id each pane is bound to as its author
   # @param reviewing [Hash{String=>String}] the run id each review pane is bound to
   # @param dead [Array<String>] run ids whose binding was made for another pane
@@ -372,7 +373,9 @@ class RecordingWorkflowPanes
   #   the line is typed
   # @param idle [Array<String>] the panes whose agent the daemon says has ended its turn
   # @param pids [Hash{String=>Integer}] the process tmux started in each pane; nil for one it does not list
-  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {}, idle: [], pids: {})
+  # @param spawned [Array<Hash>] what each +spawn_author+ answers, in order
+  def initialize(bound: {}, runs_on: {}, dead: [], kick: {ok: true}, same: true, gone: [], restarted: [], reviewing: {}, no_daemon: false, on_kick: nil, turn_over: [], rows: {}, idle: [], pids: {}, spawned: [])
+    @spawned = spawned.dup
     @pids = pids
     @idle = idle
     @restarted = restarted
@@ -391,7 +394,11 @@ class RecordingWorkflowPanes
     @gone_checks = []
   end
 
-  def pane_of(run_id) = @bound[run_id]
+  def pane_of(run_id, step: nil)
+    bound = @bound[run_id]
+    return bound unless bound.is_a?(Hash)
+    step ? bound[step] : bound.values.first
+  end
 
   def run_on(pane) = @runs_on[pane]
 
@@ -400,7 +407,14 @@ class RecordingWorkflowPanes
     {run_id: @reviewing[pane], role: "reviewer"} if @reviewing[pane]
   end
 
-  def alive?(run_id) = !@dead.include?(run_id)
+  # The step of a grouped run's +bound+ hash (step => pane) the pane is bound for; nil for a run bound to one pane.
+  def step_on(pane)
+    bound = @bound[@runs_on[pane]]
+    bound.is_a?(Hash) ? bound.key(pane) : nil
+  end
+
+  # A run id in +dead+ makes every binding of the run dead; a [run id, step] pair, only that step's.
+  def alive?(run_id, step: nil) = !@dead.include?(run_id) && !(step && @dead.include?([run_id, step]))
 
   def pane_gone?(pane, workspace: nil)
     @gone_checks << [pane, workspace]
@@ -421,7 +435,14 @@ class RecordingWorkflowPanes
   # The process tmux started in +pane+, from +pids+.
   def pane_pid(_workspace, pane) = @pids[pane]
 
-  def identity(run_id) = "identity-of-#{run_id}"
+  # The run's identity; for a step of a run bound per step, its own pane's.
+  def identity(run_id, step: nil) = (step && @bound[run_id].is_a?(Hash)) ? "identity-of-#{pane_of(run_id, step: step)}" : "identity-of-#{run_id}"
+
+  # A new pane from +spawned+, in order, recorded in +calls+; `{error: "spawn_failed"}` once they run out.
+  def spawn_author(workspace)
+    @calls << [:spawn_author, workspace]
+    @spawned.shift || {error: "spawn_failed", message: "no pane"}
+  end
 
   def same_pane?(pane, identity)
     @calls << [:same_pane?, pane, identity]
@@ -453,8 +474,8 @@ class RecordingWorkflowPanes
     @restarted.include?(pane) ? :server_restarted : :live
   end
 
-  def unbind(run_id, role: nil, pane: nil)
-    given = {role: role, pane: pane}.compact
+  def unbind(run_id, role: nil, pane: nil, step: nil)
+    given = {role: role, pane: pane, step: step}.compact
     @calls << (given.empty? ? [:unbind, run_id] : [:unbind, run_id, given])
     true
   end
@@ -483,7 +504,7 @@ class RecordingAttemptRecord
     @calls = []
   end
 
-  def start(run:, attempt:, composed:)
+  def start(run:, attempt:, composed:, step_id: nil)
     @calls << [:start, Workspace::WorkflowRun.from_h(run).id, attempt["n"]]
     Workspace::WorkflowRun::Attempt.from_h(attempt.merge("prompt_sha256" => "sha256-of-#{composed["text"]}"))
   end
@@ -493,10 +514,10 @@ class RecordingAttemptRecord
     Workspace::WorkflowRun::Attempt.from_h(attempt.merge("outputs" => []))
   end
 
-  def abandon(run, outcome: "cancelled")
+  def abandon(run, outcome: "cancelled", step_id: nil)
     hash = Workspace::WorkflowRun.from_h(run).thawed
     @calls << [:abandon, hash["id"]]
-    last = hash["steps"][hash["current"]]["attempts"].last
+    last = hash["steps"][step_id || hash["current"]]["attempts"].last
     if last && !last["ended_at"]
       last["outcome"] = outcome
       last["ended_at"] = "2026-11-10T12:00:00Z"
@@ -504,7 +525,7 @@ class RecordingAttemptRecord
     Workspace::WorkflowRun.from_h(hash)
   end
 
-  def finish_round(run:, round:)
+  def finish_round(run:, round:, step_id: nil)
     @calls << [:finish_round, Workspace::WorkflowRun.from_h(run).id, round["round"]]
     {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => round["ended_at"] || "2026-11-10T12:00:00Z",
      "session" => nil, "agent" => nil, "usage" => @round_usage}.tap do |record|
@@ -578,6 +599,12 @@ class RecordingProgress
   def decide_review(run, tally, ctx:)
     @calls << [:decide_review, Workspace::WorkflowRun.from_h(run).current, tally]
     marked(run, {approved: "passed", rejected: "failed"}.fetch(tally[:outcome], "reviewing"))
+  end
+
+  # Records the group joined (nil for every group with a deferred move) and changes nothing.
+  def join(run, ctx:, group: nil)
+    @calls << [:join, group]
+    Workspace::WorkflowRun.from_h(run)
   end
 
   def advance(run, ctx:)
