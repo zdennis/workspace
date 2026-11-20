@@ -320,16 +320,20 @@ RSpec.describe Workspace::ShellInit do
           expect(fzf_input(2).lines).to end_with("#12\tFix\n")
         end
 
-        it "returns well under the limit when gh is fast" do
+        it "offers what a fast gh lists before the watchdog fires" do
           write_exe(bin_dir, "gh", "printf '#12\\tFix\\n'")
           fzf_plays(["rpiv\n", 0], ["feature-x\n", 0])
           started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
           wfp_run
-          # The watchdog gives gh 5s (shell_init's `sleep 5`); any bound under it
-          # still tells a fast gh from a watchdog kill. The old 3s bound flaked at
-          # 3.39s when the whole suite ran 8-wide, where spawn overhead alone can
-          # pass 3s, so the bound sits closer to the limit it must stay beneath.
-          expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 4.5
+          elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+          # The property the old wall-clock bounds proxied: a fast gh finishes
+          # before the watchdog kills it, so the pull request reaches the menu
+          # (a killed gh leaves branches only, which the slow-gh example pins).
+          # The bounds — first 3s, then 4.5s — flaked 8-wide under load: 3.39s,
+          # then 5.0s, against a 5s watchdog they had to stay beneath. The
+          # elapsed bound here only guards a hang; the menu is the assertion.
+          expect(elapsed).to be < 30
+          expect(fzf_input(2).lines).to end_with("#12\tFix\n")
         end
 
         it "gives up on a slow gh at the limit and still offers the branches" do
