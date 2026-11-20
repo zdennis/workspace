@@ -234,6 +234,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/work_queue_store.rb` — Flock-guarded `work-queue.json` of pending queue items: revision, toggle, pause, claims and one `transaction` for the advance pass.
 - `lib/workspace/work_queue_starters.rb` — The `workflow` and `go` starters of a queue item, run in the queue workspace's checkout.
 - `lib/workspace/work_queue_advance.rb` — One advance pass of a work queue: reconciles the current item from its run, then claims, starts and records the next.
+- `lib/workspace/commands/work_queue.rb` — `work-queue` verbs over a workspace's queue and history: add, list, show, skip, cancel, advance and the rest.
 
 ### Locks, plan, spine, inbox (`docs/architecture/locks-plan-spine-inbox.md`)
 

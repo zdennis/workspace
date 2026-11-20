@@ -227,6 +227,8 @@ module Workspace
       "queue_full" => "agent-run send --when-idle or --clear-first: the pane already has the most prompts queued, so nothing was queued. work-queue add: the workspace's queue already holds the most items. details.limit.",
       "item_active" => "work-queue rm or move: the item is active or held, so it can't be removed or moved; use work-queue cancel. details.id, details.state.",
       "item_starting" => "work-queue rm, move, skip or cancel: the item is being started; retry once its start has landed. details.id.",
+      "item_not_active" => "work-queue cancel: the item is only queued, or nothing is current, so there is no run to cancel; use work-queue rm for a queued item. details.id, details.state.",
+      "item_not_held" => "work-queue skip: the item is not held, or no item is held; a failed run that ended has already moved to history. details.id, details.state, details.next_actions.",
       "run_going" => "work-queue advance: go took the task route because a run is going, so nothing was started and the item is launch_failed. details.workspace.",
       "unknown_queue_item" => "No work queue item (finished, for history show; pending, for the others) has an id starting with the given text. details.id.",
       "ambiguous_queue_item" => "The given text starts the id of more than one work queue item; give more of the id. details.id, details.matches.",

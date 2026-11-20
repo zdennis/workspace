@@ -100,6 +100,11 @@ RSpec.describe Workspace::WorkQueueHistory do
       expect(lines.map { |e| e["id"] }).to eq(%w[fresh])
     end
 
+    it "leaves out old lines without rewriting the file for prune: false" do
+      expect(history.entries(prune: false).map { |e| e["id"] }).to eq(%w[fresh])
+      expect(lines.map { |e| e["id"] }).to eq(%w[old fresh])
+    end
+
     it "drops old lines on write, keeping the append" do
       history.append(entry("next"))
       expect(lines.map { |e| e["id"] }).to eq(%w[fresh next])

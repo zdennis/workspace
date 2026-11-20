@@ -52,11 +52,12 @@ module Workspace
     # @param since [Time, nil] only entries finished at or after this
     # @param before [Time, nil] only entries finished before this
     # @param state [String, nil] only entries with this `outcome`
+    # @param prune [Boolean] false leaves the file as it is: lines past the retention are left out of the answer, not removed
     # @return [Array<Hash>] the entries, oldest first; none when there is no file
-    def entries(since: nil, before: nil, state: nil)
+    def entries(since: nil, before: nil, state: nil, prune: true)
       return [] unless File.exist?(@path)
       @lock.hold do
-        lines = settle(read_lines)
+        lines = prune ? settle(read_lines) : pruned(read_lines).first
         parsed(lines).select { |entry| matches?(entry, since, before, state) }
       end
     end
