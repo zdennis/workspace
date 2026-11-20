@@ -206,7 +206,12 @@ module Workspace
     # 1. The group is not at rest ({WorkflowTransitions.group_at_rest?}: a sibling at work, owing an attempt, held, or
     #    waiting out a deferred move's backoff): nothing moves. The run reads `running` while a sibling works, with the
     #    cursor on the sibling at work dispatched last; else `waiting`, with the cursor on the first sibling held.
-    # 2. A sibling carries a deferred failure move (`pending_move`): the first one, in step order, is applied, and only
+    # 2. A sibling holds the group's own move (its `on_fail` goto, a `pending_move` tagged with the group): when no failed
+    #    sibling stopped, it is applied ahead of every sibling-local move, which is dropped (`move` marked
+    #    `failed: "group_move"`), and the goto step runs (cause `loop`) told what every failed sibling found. When one
+    #    stopped, the move is blocked: every move of the drain is dropped (`failed: "sibling_stopped"`), the edge's loop
+    #    count is put back, one `step_retry_blocked` (`sibling_stopped`) is written, and the group fails (5).
+    #    Otherwise, a sibling carries a deferred failure move (`pending_move`): the first one, in step order, is applied, and only
     #    that one. Its target sibling runs again (cause `loop`), told what failed. A target that is failed with no run
     #    owed, or out of attempts, or that could not be started, is not run: the moving sibling's move is marked failed,
     #    with the target left as it was, and the join goes on down this list.
@@ -731,9 +736,13 @@ module Workspace
     # A fan_out sibling's failure, decided as any step's ({WorkflowTransitions.after_failure}, for the sibling itself)
     # but not acted on here: a granted move spends its loop now and is kept as the sibling's `pending_move` ("to",
     # "context", "text", "count", and "until" for a backoff, whose wait shows as the sibling's `retry_backoff`
-    # reason), and the attempt records it as its `move`; the sibling's failure details are kept as its
+    # reason, "edge" and "was", the edge's count before), and the attempt records it as its `move`; the sibling's failure details are kept as its
     # `failed_reason` for the group's failure path. Nothing else moves: no pane is typed into, no other sibling
     # changes, and the run's state is the join's to say.
+    # A group move (the group's `on_fail` goto) is held once per drain: the first failure spends the loop on the edge
+    # `GROUP->STEP` and keeps the move as its own `pending_move`, tagged with "group", "edge" and "was" (the edge's
+    # count before), its attempt recording `group_move` (never `move`, so no relay is owed it); a failure that joins it
+    # records only `group_move` with "joined".
     def defer_failure(run, step, failure, next_move, ctx)
       id = step["id"]
       state = step_state(run)
@@ -745,8 +754,11 @@ module Workspace
         details["limit"] = "step"
         details["limit_step"] = next_move[:step]
       end
-      if next_move[:kind] == :loop
+      if next_move[:kind] == :loop && next_move[:group]
+        hold_group_move(run, id, attempt, next_move)
+      elsif next_move[:kind] == :loop
         count = next_move[:count]
+        was = run["loops"][next_move[:edge]]
         run["loops"][next_move[:edge]] = count
         text = loop_context(run, step, on_fail, failure, count)
         wait = next_move[:wait]
@@ -759,18 +771,47 @@ module Workspace
           slots["reason"] = reason("retry_backoff", {"step" => id, "attempt" => attempt["n"], "to" => next_move[:to], "until" => time,
                                                      "seconds" => wait, "loops" => run["loops"].dup})
         end
-        slots["pending_move"] = move.compact
+        slots["pending_move"] = move.compact.merge("edge" => next_move[:edge], "was" => was)
         attempt["move"] = {"to" => next_move[:to], "count" => count}
       end
       state["failed_reason"] = details.merge(failure)
       join_in(run, ctx, group_id(run, id))
     end
 
+    # The group move a sibling's failure owes, or joins ({#defer_failure}). Its text is written when it is applied,
+    # so the siblings that fail later in the drain are named too.
+    def hold_group_move(run, id, attempt, next_move)
+      group = next_move[:group]
+      return attempt["group_move"] = {"group" => group, "joined" => true} if next_move[:joined]
+      to = next_move[:to]
+      count = next_move[:count]
+      was = run["loops"][next_move[:edge]]
+      run["loops"][next_move[:edge]] = count
+      wait = next_move[:wait]
+      event(run, "step_looped", {"from" => id, "to" => to, "count" => count, "group" => group}.merge(wait ? {"backoff" => wait} : {}))
+      move = {"group" => group, "to" => to, "context" => WorkflowDefinition.group_on_fail(run["definition"], group)["context"], "count" => count,
+              "edge" => next_move[:edge]}.compact
+      slots = WorkflowRun.slots(run, id)
+      if wait
+        move["until"] = (@clock.call + wait).utc.iso8601
+        slots["reason"] = reason("retry_backoff", {"step" => id, "attempt" => attempt["n"], "to" => to, "until" => move["until"],
+                                                   "seconds" => wait, "loops" => run["loops"].dup, "group" => group})
+      end
+      slots["pending_move"] = move.merge("was" => was)
+      attempt["group_move"] = {"group" => group, "to" => to, "count" => count}
+    end
+
     def join_in(run, ctx, group)
       ids = WorkflowDefinition.group_steps(run["definition"])[group] || []
       return if ids.empty?
       now = @clock.call
+      holder = ids.find { |id| WorkflowRun.slot_dig(run, id, "pending_move", "group") == group }
+      # A stop in the drain blocks the group move whatever is left of its wait, which would only delay the person.
+      if holder && ids.any? { |id| WorkflowTransitions.sibling_stopped?(run, id) } && WorkflowTransitions.group_at_rest?(run, ids, now, moves_due: true)
+        return block_group_move(run, group, ids, holder)
+      end
       return hold_join(run, ids, now) unless WorkflowTransitions.group_at_rest?(run, ids, now)
+      return apply_group_move(run, ctx, group, ids, holder) if holder
       mover = ids.find { |id| WorkflowRun.slot(run, id, "pending_move").is_a?(Hash) }
       return apply_move(run, ctx, group, mover) if mover
       owed = ids.select { |id| WorkflowTransitions.relay_owed?(run, id) }
@@ -801,11 +842,99 @@ module Workspace
       [WorkflowRun.slot_dig(run, id, "pending_move", "until"), WorkflowRun.slot_dig(run, id, "backoff", "until")].find { |each| each.is_a?(String) }
     end
 
+    # The group's owed move, once the group is at rest and no failed sibling stopped: the goto step runs (cause `loop`)
+    # with the group's `context` and a text naming every failed sibling ({#group_loop_context}); the
+    # group is entered again only when the run comes back into it (the goto step passing: `entering: true`). Once it has started, every sibling-local move of the drain
+    # is dropped ({#drop_local_moves}), since the re-entry runs every sibling again. A move that can't run its goto step
+    # ({#move_problem}) or whose start is `not_delivered` is undone instead ({#group_move_failed}).
+    def apply_group_move(run, ctx, group, ids, holder)
+      move = take_pending_move(run, holder)
+      to = move["to"]
+      problem = move_problem(run, to)
+      return group_move_failed(run, ctx, group, ids, holder, move, problem) if problem
+      target = run["steps"][to]
+      was = target["state"]
+      made = target["attempts"].size
+      failed = ids.select { |id| run.dig("steps", id, "state") == "failed" }
+      text = group_loop_context(run, group, failed, move["count"])
+      WorkflowRun.add_context(run, to, text)
+      event(run, "step_retry_started", "from" => holder, "to" => to, "group" => group, "failed" => failed)
+      run["current"] = to
+      dispatch(run, ctx, "loop", {context: move["context"], retry_of: {"text" => text}})
+      target = run["steps"][to]
+      last = target["attempts"].last
+      if target["attempts"].size > made && last["outcome"] == "not_delivered"
+        target["state"] = was
+        WorkflowRun.slots(run, to)["reason"] = nil
+        return group_move_failed(run, ctx, group, ids, holder, move, last["code"] || "not_delivered")
+      end
+      drop_local_moves(run, ids)
+      target.delete("failed_reason")
+    end
+
+    # A group move that will not run: undone ({#void_group_move}), one `step_retry_blocked` written, and the join goes on
+    # to the group's failure path.
+    def group_move_failed(run, ctx, group, ids, holder, move, code)
+      void_group_move(run, group, ids, move, code)
+      event(run, "step_retry_blocked", "from" => holder, "to" => move["to"], "code" => code, "group" => group)
+      join_in(run, ctx, group)
+    end
+
+    # A stop in the drain blocks the group move: it is undone ({#void_group_move}, code `sibling_stopped`), one
+    # `step_retry_blocked` is written, and the group fails for a person ({#fail_group}), so nothing is left for
+    # {WorkflowTransitions.join_due} to wake.
+    def block_group_move(run, group, ids, holder)
+      move = take_pending_move(run, holder)
+      void_group_move(run, group, ids, move, "sibling_stopped")
+      event(run, "step_retry_blocked", "from" => holder, "to" => move["to"], "code" => "sibling_stopped", "group" => group)
+      fail_group(run, ids, group)
+    end
+
+    # Undoes the group move +move+ (already taken off its holder) and every sibling-local move of the drain, so the
+    # group waits for a person and `loops` counts no loop that never ran: the group edge and each still-held local
+    # move's edge go back to their "was" (removed for none), each held local move and its wait go, and every sibling's
+    # granted `move` and every `group_move` of this group (the holder's and each joined one) is marked `failed` with
+    # +code+. A local move already applied keeps its count: its loop ran.
+    def void_group_move(run, group, ids, move, code)
+      restore_loop(run, move)
+      ids.each do |id|
+        held = WorkflowRun.slot(run, id, "pending_move")
+        restore_loop(run, take_pending_move(run, id)) if held.is_a?(Hash)
+        attempt = Array(run.dig("steps", id, "attempts")).last
+        mark_move_failed(run, id, "move", attempt["move"]["to"], code) if WorkflowTransitions.move_granted?(attempt)
+        if WorkflowTransitions.move_granted?(attempt, "group_move") && attempt["group_move"]["group"] == group
+          mark_move_failed(run, id, "group_move", move["to"], code, group: group)
+        end
+      end
+    end
+
+    # Puts a held move's edge back to the count it had before the move spent it ("was"; nil removes the key).
+    def restore_loop(run, move)
+      return unless move["edge"].is_a?(String) && move.key?("was")
+      move["was"].nil? ? run["loops"].delete(move["edge"]) : run["loops"][move["edge"]] = move["was"]
+    end
+
+    # Drops every sibling-local move of the group once its group move has started: its `pending_move` and wait go and
+    # its attempt's `move` is marked `failed: "group_move"`, so {WorkflowTransitions.relay_owed?} reads no run owed.
+    # The loops those moves spent stay counted.
+    def drop_local_moves(run, ids)
+      ids.each do |id|
+        take_pending_move(run, id) if WorkflowRun.slot(run, id, "pending_move").is_a?(Hash)
+        attempt = Array(run.dig("steps", id, "attempts")).last
+        mark_move_failed(run, id, "move", attempt["move"]["to"], "group_move") if WorkflowTransitions.move_granted?(attempt)
+      end
+    end
+
+    # Takes +id+'s `pending_move` off, and the `retry_backoff` reason its wait showed.
+    def take_pending_move(run, id)
+      slots = WorkflowRun.slots(run, id)
+      slots["reason"] = nil if slots.dig("reason", "code") == "retry_backoff"
+      slots.delete("pending_move")
+    end
+
     # Branch 2: the first deferred move, and only it. The move's slot (its wait with it) goes whether or not it applies.
     def apply_move(run, ctx, group, mover)
-      slots = WorkflowRun.slots(run, mover)
-      move = slots.delete("pending_move")
-      slots["reason"] = nil if slots.dig("reason", "code") == "retry_backoff"
+      move = take_pending_move(run, mover)
       to = move["to"]
       problem = move_problem(run, to)
       return move_failed(run, ctx, group, mover, to, problem) if problem
@@ -838,12 +967,18 @@ module Workspace
     # A move that could not be applied: the moving sibling's attempt records why (its `move` marked `failed`, so no
     # run is owed it) and the join goes on, to the group's failure path when nothing else is left.
     def move_failed(run, ctx, group, mover, to, code)
-      state = run["steps"][mover]
-      attempt = state["attempts"].last
-      attempt["move"] = (attempt["move"] || {"to" => to}).merge("failed" => code)
-      state["failed_reason"] = (state["failed_reason"] || {"step" => mover, "attempt" => attempt["n"]}).merge("move" => {"to" => to, "error" => code})
+      mark_move_failed(run, mover, "move", to, code)
       event(run, "step_retry_blocked", "from" => mover, "to" => to, "code" => code)
       join_in(run, ctx, group)
+    end
+
+    # Marks +id+'s last attempt's +key+ (`move` or `group_move`) failed with +code+, and names the move and its error
+    # (and its group, for a group move) in the sibling's kept failure details.
+    def mark_move_failed(run, id, key, to, code, group: nil)
+      state = run["steps"][id]
+      attempt = state["attempts"].last
+      attempt[key] = (attempt[key] || {"to" => to}).merge("failed" => code)
+      state["failed_reason"] = (state["failed_reason"] || {"step" => id, "attempt" => attempt["n"]}).merge("move" => {"to" => to, "error" => code, "group" => group}.compact)
     end
 
     # Branch 3: each failed sibling owed its run starts again, in one change, while the run and it have attempts left.
@@ -877,9 +1012,10 @@ module Workspace
         details = state.delete("failed_reason") || {"step" => id, "attempt" => Array(state["attempts"]).last&.fetch("n", nil)}
         details = details.merge("group" => group, "failed" => failed, "loops" => run["loops"].dup,
           "attempts" => WorkflowTransitions.attempts_made(run), "max_attempts" => WorkflowTransitions.attempt_allowance(run))
-        move = Array(state["attempts"]).last&.fetch("move", nil)
-        # A run that was owed and never made, for the sibling's own cap.
-        if move.is_a?(Hash) && !move.key?("failed") && WorkflowTransitions.step_attempts_spent?(run, id)
+        last = Array(state["attempts"]).last
+        # A run that was owed and never made (its own move or its group's), for the sibling's own cap.
+        owed = %w[move group_move].any? { |key| WorkflowTransitions.move_granted?(last, key) }
+        if owed && WorkflowTransitions.step_attempts_spent?(run, id)
           details["limit"] = "step"
           details["limit_step"] = id
         end
@@ -895,12 +1031,30 @@ module Workspace
     def group_id(run, step_id) = run["definition"]["steps"].find { |step| step["id"] == step_id }["group"]
 
     def loop_context(run, step, on_fail, failure, count)
-      cap = on_fail.is_a?(Hash) ? " of #{on_fail["max"]}" : ""
-      text = "The #{step["id"]} step failed and sent the run back to this step (time #{count}#{cap}): #{WorkflowTransitions.failure_text(failure)}. " \
+      text = "The #{step["id"]} step failed and sent the run back to this step (#{loop_time(on_fail, count)}): #{WorkflowTransitions.failure_text(failure)}. " \
         "Its files are in #{run["artifacts_dir"]}. Fix what it found."
+      with_log_tails(text, on_fail, [failure])
+    end
+
+    # The text a group move hands its goto step: the group, each failed sibling and its failure, and under the group's
+    # `log_tail` each failed check's log tail.
+    def group_loop_context(run, group, failed, count)
+      on_fail = WorkflowDefinition.group_on_fail(run["definition"], group)
+      failures = failed.map { |id| run.dig("steps", id, "failed_reason") || {} }
+      named = failed.zip(failures).map { |id, failure| "#{id} (#{WorkflowTransitions.failure_text(failure)})" }.join("; ")
+      text = "The #{group} group failed and sent the run back to this step (#{loop_time(on_fail, count)}). Its failed steps: #{named}. " \
+        "Their files are in #{run["artifacts_dir"]}. Fix what they found."
+      with_log_tails(text, on_fail, failures)
+    end
+
+    # "time COUNT", with " of MAX" for an `on_fail` goto.
+    def loop_time(on_fail, count) = on_fail.is_a?(Hash) ? "time #{count} of #{on_fail["max"]}" : "time #{count}"
+
+    # +text+, then under the `on_fail`'s `log_tail` the tail of each failure's check log.
+    def with_log_tails(text, on_fail, failures)
       lines = WorkflowDefinition.log_tail(on_fail)
-      tail = (lines && failure["log"].is_a?(String)) ? @log_tail.block(failure["log"], lines: lines) : nil
-      tail ? "#{text}\n\n#{tail}" : text
+      tails = lines ? failures.filter_map { |failure| @log_tail.block(failure["log"], lines: lines) if failure["log"].is_a?(String) } : []
+      [text, *tails].join("\n\n")
     end
 
     # Stores the ended attempt with what {WorkflowAttemptRecord#finish} adds to it.

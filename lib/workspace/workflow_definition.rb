@@ -537,7 +537,8 @@ module Workspace
     end
 
     # A sibling with no `on_fail` of its own takes its group's goto, so a later round dispatches it
-    # again: its cap must reach the group's `max + 1`, or the run stops there before `max` rounds.
+    # again: its cap must reach the group's `max + 1`, or once it is spent the group's next failure stops the run for a
+    # person (`limit: step`) before `max` loops.
     def sibling_attempt_warnings
       (@data["groups"] || {}).flat_map do |gid, group|
         on_fail = group["on_fail"]
@@ -547,7 +548,7 @@ module Workspace
           cap = self.class.step_max_attempts(step) or next
           next if cap >= on_fail["max"] + 1
           {"code" => "on_fail_exceeds_step_attempts", "step" => step["id"],
-           "message" => "step #{step["id"]} takes group #{gid}'s on_fail max: #{on_fail["max"]}, which runs it up to #{on_fail["max"] + 1} times, but it sets max_attempts: #{cap}. Raise its max_attempts to #{on_fail["max"] + 1} or more, or lower max."}
+           "message" => "step #{step["id"]} takes group #{gid}'s on_fail max: #{on_fail["max"]}, which runs it up to #{on_fail["max"] + 1} times, but it sets max_attempts: #{cap}, so once it has run #{cap} times the group's next failure stops the run for a person instead of going back to #{on_fail["goto"]}. Raise its max_attempts to #{on_fail["max"] + 1} or more, or lower max."}
         end
       end
     end

@@ -192,6 +192,15 @@ RSpec.describe Workspace::WorkflowTransitions, "with a fan_out group" do
       expect(described_class.after_failure(group_goto(plan_cap: 1), failure, step: "r1")).to eq(kind: :stop, limit: :step, step: "plan")
     end
 
+    it "stops with a sibling named when its own cap is spent, since the loop runs every sibling again" do
+      capped = group_goto
+      capped["definition"]["steps"].find { |each| each["id"] == "r2" }["max_attempts"] = 1
+
+      expect(described_class.after_failure(capped, failure, step: "r1")).to eq(kind: :stop, limit: :step, step: "r2")
+      expect(described_class.after_failure(capped, failure, step: "r2")).to eq(kind: :stop, limit: :step, step: "r2")
+      expect(described_class.after_failure(owe_move(capped, "r1"), failure, step: "r3")).to eq(kind: :loop, group: "reviews", joined: true)
+    end
+
     it "joins a second failure to the move already owed, never stopping it at max" do
       run = owe_move(group_goto({"goto" => "plan", "max" => 1}), "r1")
 
