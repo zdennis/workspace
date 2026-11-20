@@ -336,8 +336,8 @@ module Workspace
     # sibling has ended ({SIBLING_ENDED}), so {#unstarted_group} fans the whole group out again rather than running the
     # one sibling the cursor names beside siblings that judged earlier work. Each sibling's attempts stay as its
     # history (each new one spends from the run's allowance as any attempt does), as do its pending context and its
-    # reason history; its last stop (`reason`), its deferred move, its kept failure details and a gate still waiting go, as a fresh
-    # sibling has none. A group with a sibling at work or waiting (a lock, a hold, a pane gone) is left as it is. A
+    # reason history; its last stop (`reason`), its kept failure details and a gate still waiting go, as a fresh
+    # sibling has none, and a deferred move it still holds is superseded ({#supersede_held_move}). A group with a sibling at work or waiting (a lock, a hold, a pane gone) is left as it is. A
     # re-entry writes one `group_rearmed` event (`group`, `steps`, and `dropped_gates`: the siblings whose waiting gate
     # it dropped, so a trace can close their gate spans).
     def reenter_group(run)
@@ -350,10 +350,39 @@ module Workspace
         state["state"] = "pending"
         state.delete("failed_reason")
         state.delete("gate") if dropped.include?(id)
-        %w[reason pending_move].each { |key| WorkflowRun.slots(run, id).delete(key) }
+        supersede_held_move(run, id)
+        WorkflowRun.slots(run, id).delete("reason")
       end
       group = run["definition"]["steps"].find { |step| step["id"] == ids.first }["group"]
       @change.event(run, "group_rearmed", "group" => group, "steps" => ids, "dropped_gates" => dropped)
+    end
+
+    # Drops the deferred failure move (`pending_move`) sibling +id+ still holds when it is about to run again outside the
+    # join (a `resume`, a `resume --from`, a re-entry of its group): the failure the move answered is being retried, so
+    # the move must not run after it. The loop it spent goes back to its count before ("was"; removed for none), its wait
+    # and `retry_backoff` reason go, and its attempt's `move` (or `group_move`) is marked `failed: "superseded"`. For a
+    # group move, each other sibling's `group_move` that joined it is marked the same, so a sibling still failed leaves
+    # the group to fail for a person at the join rather than loop. One `step_retry_blocked` (`superseded`) is written.
+    # A sibling holding no move changes nothing.
+    def supersede_held_move(run, id)
+      slots = WorkflowRun.slots(run, id)
+      move = slots["pending_move"]
+      return unless move.is_a?(Hash)
+      slots.delete("pending_move")
+      slots["reason"] = nil if slots.dig("reason", "code") == "retry_backoff"
+      if move["edge"].is_a?(String) && move.key?("was")
+        move["was"].nil? ? run["loops"].delete(move["edge"]) : run["loops"][move["edge"]] = move["was"]
+      end
+      group = move["group"]
+      ids = group ? (WorkflowDefinition.group_steps(run["definition"])[group] || [id]) : [id]
+      key = group ? "group_move" : "move"
+      ids.each do |each|
+        attempt = Array(run.dig("steps", each, "attempts")).last
+        next unless WorkflowTransitions.move_granted?(attempt, key)
+        next if group && attempt[key]["group"] != group
+        attempt[key] = attempt[key].merge("failed" => "superseded")
+      end
+      @change.event(run, "step_retry_blocked", {"from" => id, "to" => move["to"], "code" => "superseded", "group" => group}.compact)
     end
 
     # The pane a sibling of a group entered again ({#reenter_group}) types into: its own from its last run, while that
@@ -527,6 +556,7 @@ module Workspace
       slots(run).delete("retry_of_pending")
       cause = kept_cause(run, cause)
       slots(run).delete("dispatch_cause_pending")
+      supersede_held_move(run, step["id"])
 
       # To the millisecond: the end of a turn is matched to the attempt by when that turn began.
       attempt = {"n" => state["attempts"].size + 1, "started_at" => @clock.call.utc.iso8601(3), "context" => slot(run, "pending_context"),

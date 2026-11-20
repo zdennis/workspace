@@ -327,6 +327,53 @@ RSpec.describe Workspace::WorkflowDispatch do
           expect(change.events.map { |event| event[1] }).not_to include("group_rearmed")
         end
       end
+
+      describe "a sibling that runs again while it holds a deferred move" do
+        def holding(move, joined: false)
+          grouped("current" => "test", "loops" => {"checks->plan" => 1}, "steps" => {
+            "lint" => {"state" => joined ? "failed" : "passed", "pane" => "%3",
+                       "attempts" => [{"n" => 1, "outcome" => joined ? "failed" : "passed"}.merge(joined ? {"group_move" => {"group" => "checks", "joined" => true}} : {})]},
+            "test" => {"state" => "failed", "pane" => "%3", "attempts" => [{"n" => 1, "outcome" => "failed"}.merge(move[:attempt])],
+                       "pending_move" => move[:held], "reason" => {"code" => "retry_backoff"}}
+          })
+        end
+
+        let(:group_move) do
+          {held: {"group" => "checks", "to" => "plan", "count" => 1, "edge" => "checks->plan", "was" => nil, "until" => "2026-11-10T12:01:00Z"},
+           attempt: {"group_move" => {"group" => "checks", "to" => "plan", "count" => 1}}}
+        end
+
+        it "supersedes its group move: the loop count goes back, the holder's and each joined group_move read failed, and one step_retry_blocked is written" do
+          run = dispatch.dispatch(holding(group_move, joined: true), ctx: ctx, cause: "resume")
+
+          expect(run.step("test").state).to eq("running")
+          expect(run.pending_move_for("test")).to be_nil
+          expect(run.to_h["loops"]).to eq({})
+          expect(run.step("test").attempts.first.to_h["group_move"]).to eq("group" => "checks", "to" => "plan", "count" => 1, "failed" => "superseded")
+          expect(run.step("lint").attempts.first.to_h["group_move"]).to eq("group" => "checks", "joined" => true, "failed" => "superseded")
+          expect(change.events.select { |event| event[1] == "step_retry_blocked" })
+            .to eq([["wr_1", "step_retry_blocked", {"from" => "test", "to" => "plan", "code" => "superseded", "group" => "checks"}]])
+        end
+
+        it "supersedes a sibling-local move, putting its edge back to the count it had" do
+          local = {held: {"to" => "lint", "count" => 2, "edge" => "test->lint", "was" => 1}, attempt: {"move" => {"to" => "lint", "count" => 2}}}
+          held = holding(local)
+          held["loops"] = {"test->lint" => 2}
+
+          run = dispatch.dispatch(held, ctx: ctx, cause: "resume")
+
+          expect(run.pending_move_for("test")).to be_nil
+          expect(run.to_h["loops"]).to eq("test->lint" => 1)
+          expect(run.step("test").attempts.first.to_h["move"]).to eq("to" => "lint", "count" => 2, "failed" => "superseded")
+          expect(Workspace::WorkflowTransitions.relay_owed?(run.to_h, "test")).to be(false)
+        end
+
+        it "writes nothing for a sibling that holds no move" do
+          dispatch.dispatch(grouped, ctx: ctx, cause: "first")
+
+          expect(change.events.map { |event| event[1] }).not_to include("step_retry_blocked")
+        end
+      end
     end
 
     it "parks the whole run on a dead binding of an ungrouped step, as always" do

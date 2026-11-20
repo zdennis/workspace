@@ -372,4 +372,42 @@ RSpec.describe Workspace::WorkflowEngine, "with a fan_out group's on_fail goto" 
     expect(run["steps"]["r1"]["reason"]).to include("code" => "failed_check",
       "details" => include("limit" => "step", "limit_step" => "r1", "group" => "reviews", "failed" => %w[r1]))
   end
+
+  it "drops the group move a resumed reviewer held, so its pass moves on to tally with no loop counted" do
+    start(flow({}, on_fail: "{goto: plan, max: 2, backoff: 1m}"))
+    pass("plan")
+    round(failing: %w[r2])
+    expect(run["loops"]).to eq("reviews->plan" => 1)
+
+    engine.resume("wr_1", actor: "person")
+    pass("r2")
+    now[0] += 61
+    engine.tick("wr_1", actor: "daemon")
+
+    expect(dispatched.last(2)).to eq([%w[r2 resume], %w[tally next_step]])
+    expect(run["loops"]).to eq({})
+    expect(attempts("plan").size).to eq(1)
+    expect(attempts("r2").first["group_move"]).to include("failed" => "superseded")
+    expect(typed("step_retry_blocked").map { |line| line.slice("from", "to", "code", "group") })
+      .to eq([{"from" => "r2", "to" => "plan", "code" => "superseded", "group" => "reviews"}])
+  end
+
+  it "drops the held group move on resume --from a reviewer, running the whole group again on the restored count" do
+    start(flow({}, on_fail: "{goto: plan, max: 2, backoff: 1m}"))
+    pass("plan")
+    round(failing: %w[r1 r2])
+
+    engine.resume("wr_1", actor: "person", from: "r2")
+
+    expect(reviewers.map { |id| state(id) }).to eq(%w[running running running])
+    expect(run["loops"]).to eq({})
+    expect(reviewers.map { |id| attempts(id).first["group_move"]&.fetch("failed", nil) }).to eq(["superseded", "superseded", nil])
+
+    round
+    now[0] += 61
+    engine.tick("wr_1", actor: "daemon")
+
+    expect(dispatched.last).to eq(%w[tally next_step])
+    expect(attempts("plan").size).to eq(1)
+  end
 end
