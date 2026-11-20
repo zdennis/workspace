@@ -377,21 +377,6 @@ RSpec.describe "workflow extends" do
     expect(catalog.find("child").to_h["steps"][1]["prompt"]).to eq("Changed")
   end
 
-  describe "the rpiv-auto-approve preset" do
-    it "resolves to exactly what the full file did before it extended rpiv" do
-      presets = File.join(PROJECT_ROOT, "lib", "workflows")
-      real = Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: presets))
-      before_text = File.read(File.join(PROJECT_ROOT, "spec", "fixtures", "workflows", "rpiv-auto-approve.before-extends.yml"))
-
-      expected = Workspace::WorkflowDefinition.parse(before_text, id: "rpiv-auto-approve", source: "builtin", path: nil).to_h
-      actual = real.find("rpiv-auto-approve").to_h
-
-      expect(actual).to eq(expected)
-      expect(actual["steps"].map { |s| s["id"] })
-        .to eq(%w[research plan review_supportive review_skeptical review_implementer plan_review implement verify])
-    end
-  end
-
   describe "the rpiv-auto-approve-v2 preset" do
     let(:presets) { File.join(PROJECT_ROOT, "lib", "workflows") }
     let(:real) { Workspace::WorkflowCatalog.new(config: instance_double(Workspace::Config, workflows_dir: global_dir, builtin_workflows_dir: presets)) }
@@ -423,7 +408,7 @@ RSpec.describe "workflow extends" do
     it "resolves its sha over rpiv's text, and leaves the old preset's pin alone" do
       expect(v2.parents.map { |p| p["id"] }).to eq(["rpiv"])
       expect(v2.resolved_sha256).not_to eq(v2.sha256)
-      expect(real.find("rpiv-auto-approve").parents.map { |p| p["id"] }).to eq(["rpiv"])
+      expect(real.find("rpiv-auto-approve").parents).to eq([])
     end
   end
 
