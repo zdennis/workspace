@@ -455,6 +455,21 @@ module Workspace
       (value.is_a?(Hash) && value["from"].is_a?(Array) && value["from"].any?) ? value : nil
     end
 
+    # Whether a step's review rounds are direct: its `review:` names exactly one reviewer and that reviewer names a
+    # `model:`. A direct round's review pane, started on that model, writes the verdict from its own main thread
+    # instead of through a sub-agent. The one test of it: the prompt, the round's `direct` slot and the pane's
+    # binding all read it here.
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @param step [Hash] a step of +definition+
+    # @return [Boolean]
+    def self.direct_review?(definition, step)
+      from = review(step)&.dig("from")
+      return false unless from.is_a?(Array) && from.size == 1
+      model = reviewers(definition).dig(from.first, "model")
+      model.is_a?(String) && !model.empty?
+    end
+
     # The `fan_out` groups of a definition hash, from its steps' "group" tags (so a stored run's definition reads too).
     #
     # @param definition [Hash] {#to_h}, or a stored run's definition

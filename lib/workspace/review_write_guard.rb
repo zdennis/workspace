@@ -6,7 +6,9 @@ module Workspace
   # MultiEdit, NotebookEdit or apply_patch is refused unless it comes from a
   # sub-agent (the hook payload has an `agent_id`) and names a file directly in the
   # round's own directory ({ReviewRoundPath}), other than the engine's `summary.md`. The pane's main thread only
-  # orchestrates its sub-agents: it writes nothing, not even a verdict file.
+  # orchestrates its sub-agents: it writes nothing, not even a verdict file. The one exception is a pane bound to a
+  # direct round (its binding has `direct: true`; {WorkflowDefinition.direct_review?}): there the main thread is the
+  # one reviewer, and its write is allowed under the same round-directory rule.
   #
   # A tripwire, not a sandbox (Bash is not covered here; the run's `deny:`
   # list is). A pane with no binding costs one read of the bindings file, and a
@@ -74,7 +76,7 @@ module Workspace
     end
 
     def refusal(entry, tool_name, tool_input, cwd, agent_id)
-      return "main_thread" if agent_id.nil?
+      return "main_thread" if agent_id.nil? && entry["direct"] != true
       return "outside_round" if tool_name == "apply_patch" || !ReviewRoundPath.reviewer?(entry)
       raw = tool_input.is_a?(Hash) ? (tool_input["file_path"] || tool_input["notebook_path"]) : nil
       ReviewRoundPath.verdict_path(entry, raw, cwd, direct: true) ? nil : "outside_round"

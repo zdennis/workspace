@@ -202,8 +202,10 @@ module Workspace
       WorkflowRun.from_h(run)
     end
 
-    # How the verdicts a review round read were made: by sub-agents of the round's own review pane. Every row of a
-    # round's `reviews` carries it as `isolation`, so a later reader can tell these verdicts from any other kind.
+    # How the verdicts a review round read were made: in the round's own review pane, by its sub-agents, or in a
+    # direct round ({WorkflowDefinition.direct_review?}) by the pane's main thread (the row's `agent_id` is then
+    # `main:<pane_id>`). Every row of a round's `reviews` carries it as `isolation`, so a later reader can tell these
+    # verdicts from any other kind.
     ISOLATION = "review_pane"
 
     # What an ended review round records about itself: its pane, the session that ran in that pane during the

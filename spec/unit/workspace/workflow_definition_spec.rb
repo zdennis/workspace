@@ -1038,6 +1038,19 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(described_class.reviewers(stored["definition"])).to eq({})
     end
 
+    it "calls a step's review direct only for exactly one reviewer that names a model" do
+      step = ->(from) { {"id" => "plan", "review" => {"from" => from}} }
+      definition = {"reviewers" => {"skeptic" => {"model" => "sonnet"}, "fan" => {"model" => "sonnet"}, "plain" => {}, "blank" => {"model" => ""}}}
+
+      expect(described_class.direct_review?(definition, step.call(%w[skeptic]))).to be(true)
+      expect(described_class.direct_review?(definition, step.call(%w[skeptic fan]))).to be(false)
+      expect(described_class.direct_review?(definition, step.call(%w[plain]))).to be(false)
+      expect(described_class.direct_review?(definition, step.call(%w[blank]))).to be(false)
+      expect(described_class.direct_review?(definition, step.call(%w[missing]))).to be(false)
+      expect(described_class.direct_review?(definition, {"id" => "plan"})).to be(false)
+      expect(described_class.direct_review?(nil, step.call(%w[skeptic]))).to be(false)
+    end
+
     it "counts review as a proof" do
       expect(parse(with_review("    review: [skeptic]\n")).warnings.map { |w| w["code"] }).not_to include("step_without_proof")
       expect(parse(with_review("    review: {from: [skeptic]}\n")).warnings.map { |w| w["code"] }).not_to include("step_without_proof")

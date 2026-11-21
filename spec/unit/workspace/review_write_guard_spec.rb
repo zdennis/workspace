@@ -38,6 +38,34 @@ RSpec.describe Workspace::ReviewWriteGuard do
       data: hash_including("run_id" => "wr_1", "reason" => "main_thread", "tool" => "Write")))
   end
 
+  context "in a pane bound to a direct round (direct: true)" do
+    let(:entry) { super().merge("direct" => true) }
+
+    it "allows the main thread to write the verdict file" do
+      expect(check(agent_id: nil)).to be_nil
+      File.write(verdict, "x")
+      expect(check(tool: "Edit", agent_id: nil)).to be_nil
+    end
+
+    it "refuses a main-thread write outside the round's directory, below it, through a link, to summary.md and by apply_patch" do
+      elsewhere = File.join(tmpdir, "elsewhere")
+      FileUtils.mkdir_p(elsewhere)
+      File.symlink(elsewhere, File.join(round_dir, "link"))
+      [File.join(checkout, "lib", "a.rb"), File.join(round_dir, "..", "other.1.r1", "x.md"), File.join(round_dir, "sub", "x.md"),
+        File.join(round_dir, "link", "x.md"), File.join(round_dir, "summary.md")].each do |path|
+        expect(check(path: path, agent_id: nil)).to include("only its round's verdict files")
+      end
+      expect(check(tool: "apply_patch", input: {"command" => "x"}, agent_id: nil)).to include("verdict files")
+      expect(event_log).to have_received(:record).with(hash_including(data: hash_including("reason" => "outside_round"))).at_least(:once)
+    end
+
+    it "keeps refusing the main thread when direct is anything but true" do
+      allow(bindings).to receive(:binding_for).and_return(entry.merge("direct" => "true"))
+
+      expect(check(agent_id: nil)).to include("main thread (no sub-agent id)")
+    end
+  end
+
   it "refuses a sub-agent's write outside the round's directory" do
     [File.join(checkout, "lib", "a.rb"), File.join(round_dir, "..", "other.1.r1", "x.md"), File.join(checkout, ".workflow", "wr_2", "reviews", "review.1.r2", "x.md")].each do |path|
       expect(check(path: path)).to include("only its round's verdict files")

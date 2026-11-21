@@ -1076,6 +1076,26 @@ RSpec.describe Workspace::Commands::SessionEvent do
         end
       end
 
+      context "in a direct round's reviewer pane" do
+        before do
+          bindings.bind("%2", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "step" => "review", "attempt" => 1, "round" => 2, "direct" => true,
+            "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+        end
+
+        it "allows the main thread's Write of the verdict file" do
+          expect(pre("Write", File.join(round_dir, "skeptic.md")).first).to eq(exit_code: 0)
+        end
+
+        it "refuses the main thread's write outside the round directory and to summary.md" do
+          [File.join(checkout, "lib.rb"), File.join(round_dir, "summary.md")].each do |path|
+            result, stderr = pre("Write", path)
+
+            expect(result).to eq(exit_code: 2)
+            expect(stderr).to include("verdict files")
+          end
+        end
+      end
+
       it "leaves an unbound pane alone" do
         expect(pre("Write", File.join(checkout, "lib.rb")).first).to eq(exit_code: 0)
       end

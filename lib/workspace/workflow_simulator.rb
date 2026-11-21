@@ -477,7 +477,7 @@ module Workspace
 
     # Proves every verdict, as the daemon's hook log would for a sub-agent's write: one agent per reviewer, the file's own hash.
     class SimVerdictProof
-      def proven?(round_dir:, path:, review_pane:, workspace:)
+      def proven?(round_dir:, path:, review_pane:, workspace:, direct: false)
         {ok: true, agent_id: "simulated-#{File.basename(path, ".md")}", sha256: Digest::SHA256.file(path).hexdigest, problem: nil}
       end
     end

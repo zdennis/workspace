@@ -6400,13 +6400,13 @@ steps:
       end
 
       # The skeptic's sub-agent writes its verdict in the review pane, and the daemon logs the write with the file's hash.
-      def review_written(verdict, pane: "%9")
+      def review_written(verdict, pane: "%9", agent: "agent-1")
         FileUtils.mkdir_p([File.join(worktree, ".git"), hook_dir])
         text = (Workspace::WorkflowReviewTally.header_lines(reviewer: "skeptic", verdict: verdict, revision: "rev1") + ["", "Reasons."]).join("\n")
         File.write(File.join(round_dir, "skeptic.md"), text)
         line = {"type" => "tool_finished", "at" => "2026-11-10T12:00:00.000Z", "workspace" => "app.worktree-x", "pane_id" => pane, "boot_id" => "b", "seq" => 1,
-                "tool" => "Write", "tool_use_id" => "toolu_1", "agent_id" => "agent-1", "path" => ".workflow/wr_1/reviews/plan.1.r1/skeptic.md",
-                "sha256" => Digest::SHA256.hexdigest(text), "ok" => true}
+                "tool" => "Write", "tool_use_id" => "toolu_1", "agent_id" => agent, "path" => ".workflow/wr_1/reviews/plan.1.r1/skeptic.md",
+                "sha256" => Digest::SHA256.hexdigest(text), "ok" => true}.compact
         File.write(Workspace::HookEventLog.path_for(hook_dir, "app.worktree-x"), JSON.generate(line) + "\n")
       end
 
@@ -6467,6 +6467,54 @@ steps:
 
           expect(summary.calls.map(&:first)).to eq(%i[write notify])
           expect(run["reason"]["details"]).not_to have_key("summary")
+        end
+      end
+
+      describe "a direct round (one reviewer that names a model)" do
+        # The delivery as WorkflowReviewRound records it: a direct round is marked `direct` from the definition.
+        let(:round_runner) do
+          lambda do |run_id, review|
+            rounds << [run_id, review]
+            store.change(run_id) do |run|
+              hash = run.thawed
+              step = hash["definition"]["steps"].find { |each| each["id"] == hash["current"] }
+              direct = Workspace::WorkflowDefinition.direct_review?(hash["definition"], step) ? {"direct" => true} : {}
+              hash["steps"][hash["current"]]["review"].merge!("pane" => "%9", "delivery" => nil, "revision" => "rev1", **direct)
+              Workspace::WorkflowRun.from_h(hash)
+            end
+          end
+        end
+
+        def direct_yaml(from: "[skeptic]")
+          reviewed_yaml.sub("skeptic: {prompt: Find what is wrong.}", "skeptic: {prompt: Find what is wrong., model: sonnet}\n  fan: {prompt: Like it., model: sonnet}")
+            .sub("review: [skeptic]", "review: #{from}")
+        end
+
+        it "counts a verdict the review pane's main thread wrote, as main:<pane>, and passes the step" do
+          engine = tallied_engine
+          started = start_reviewed(engine, direct_yaml)
+          expect(started["steps"]["plan"]["review"]["direct"]).to be(true)
+          review_written("approve", agent: nil)
+          now[0] += 60
+
+          run = engine.turn_ended("wr_1", actor: "agent", pane: "%9")
+
+          expect(run["current"]).to eq("build")
+          expect(run["steps"]["plan"]["attempts"].last["reviews"].first).to include("reviewer" => "skeptic", "agent_id" => "main:%9", "counted" => true, "problem" => nil)
+        end
+
+        it "refuses the same main-thread line as main_thread in a round of several reviewers, all naming the model" do
+          engine = tallied_engine
+          started = start_reviewed(engine, "redeliver: 0\n#{direct_yaml(from: "{from: [skeptic, fan], need: 1}")}")
+          expect(started["steps"]["plan"]["review"]).not_to have_key("direct")
+          review_written("approve", agent: nil)
+          now[0] += 60
+
+          run = engine.turn_ended("wr_1", actor: "agent", pane: "%9")
+
+          expect(run["reason"]).to include("code" => "review_incomplete")
+          expect(run["reason"]["details"]["problem"]).to include("skeptic (main_thread)")
+          expect(run["steps"]["plan"]["attempts"].last["rounds"].last["reviews"].find { |row| row["reviewer"] == "skeptic" }).to include("counted" => false, "problem" => "main_thread")
         end
       end
 

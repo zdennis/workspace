@@ -135,6 +135,38 @@ RSpec.describe Workspace::WorkflowReviewRound do
 
         expect(opened.first[:command]).to eq(["/bin/zsh", "-lc", "claude"])
         expect(round).not_to have_key("model")
+        expect(round).not_to have_key("direct")
+        expect(panes.calls.find { |call| call.first == :bind }.last).not_to have_key(:direct)
+      end
+
+      it "records a one-reviewer round as direct on the round and the pane's binding" do
+        with_model("sonnet")
+
+        runner.call("wr_1", pending)
+
+        expect(round["direct"]).to be(true)
+        expect(panes.calls.find { |call| call.first == :bind }.last).to include(direct: true, role: "reviewer")
+      end
+
+      it "drops a direct mark an earlier delivery left when the round is no longer direct" do
+        store.runs["wr_1"] = run_hash(review: {"direct" => true})
+
+        runner.call("wr_1", pending)
+
+        expect(round).not_to have_key("direct")
+      end
+
+      it "does not call a round direct when its several reviewers all name the model" do
+        hash = run_hash
+        hash["definition"]["steps"][0]["review"]["from"] = %w[skeptic other]
+        hash["definition"]["reviewers"] = {"skeptic" => {"model" => "opus"}, "other" => {"model" => "opus"}}
+        store.runs["wr_1"] = hash
+
+        runner.call("wr_1", pending)
+
+        expect(round["model"]).to eq("opus")
+        expect(round).not_to have_key("direct")
+        expect(panes.calls.find { |call| call.first == :bind }.last).not_to have_key(:direct)
       end
 
       {"--model opus" => "separate", "--model=opus" => "joined"}.each do |flag, spelling|

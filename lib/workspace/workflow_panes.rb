@@ -430,13 +430,15 @@ module Workspace
     # @param role [String, nil] "reviewer" for a review pane; nil binds the step's own agent
     # @param round [Integer, nil] the review round, for a reviewer
     # @param relative_to [String, nil] the checkout; a reviewer's paths too long for a field are tried relative to it
+    # @param direct [Boolean] a reviewer of a direct round, whose main thread may write the verdict ({ReviewWriteGuard})
     # @return [Hash{String=>Object}] the stored binding
     # @raise [Workspace::Error] when the pane is not one of the workspace's
-    def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:, role: nil, round: nil, relative_to: nil)
+    def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:, role: nil, round: nil, relative_to: nil, direct: false)
       fields = {kind: "run", id: run_id, step: step, attempt: attempt, instructions: instructions, artifacts: artifacts}
       if role
         fields[:role] = role
         fields[:round] = round if round
+        fields[:direct] = true if direct && role == "reviewer"
         %i[instructions artifacts].each { |key| fields[key] = relative_path(fields[key], relative_to) }
       end
       fields.delete_if do |key, value|

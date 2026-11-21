@@ -8,7 +8,9 @@ module Workspace
   # A verdict counts only when it is a non-empty regular file and not a link ({WorkflowProduced}'s strict rule), its
   # header names its own reviewer, a verdict in {VERDICTS} and the revision the round recorded, the +proof+ shows
   # it was written by a sub-agent of the round's review pane ({ReviewVerdictProof}) with the hash of the bytes read
-  # here, and no other counted verdict came from the same sub-agent. The round is approved once the counted
+  # here, and no other counted verdict came from the same sub-agent. A round that recorded `direct: true` (one reviewer
+  # naming a model, {WorkflowDefinition.direct_review?}) also counts its verdict written by the pane's main thread,
+  # whose agent id is `main:<pane_id>`; with one row, `same_agent` never fires. The round is approved once the counted
   # approvals reach `need` and include every `must`; rejected once the verdicts not counted could not make that
   # true; otherwise incomplete (a missing or broken verdict is never a rejection).
   #
@@ -99,7 +101,8 @@ module Workspace
     def self.header_value?(value) = value.is_a?(String) && !value.strip.empty? && !value.match?(/[[:cntrl:]]/)
     private_class_method :header_value?
 
-    # @param proof [#proven?] given `round_dir:`, `path:`, `review_pane:` (the round's panes, an Array) and `workspace:`, answers `{ok:, agent_id:, sha256:, problem:}`
+    # @param proof [#proven?] given `round_dir:`, `path:`, `review_pane:` (the round's panes, an Array), `workspace:` and
+    #   `direct:` (the round recorded `direct: true`), answers `{ok:, agent_id:, sha256:, problem:}`
     # @param files [#read, #directory_problem, #make] the file reads and the directory make (default {Files})
     def initialize(proof:, files: Files.new)
       @proof = proof
@@ -259,7 +262,8 @@ module Workspace
       elsif header["revision"] != round["revision"] then "wrong_revision"
       end
       return fields.merge("problem" => problem) if problem
-      proven = @proof.proven?(round_dir: dir, path: path, review_pane: review_panes(round), workspace: stored["workspace"])
+      proven = @proof.proven?(round_dir: dir, path: path, review_pane: review_panes(round), workspace: stored["workspace"],
+        direct: round["direct"] == true)
       fields["agent_id"] = proven[:agent_id]
       return fields.merge("problem" => proven[:problem] || "unproven") unless proven[:ok]
       # The proof hashed the file again: bytes that changed since they were read here are not the ones it proved.

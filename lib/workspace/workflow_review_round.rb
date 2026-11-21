@@ -119,6 +119,7 @@ module Workspace
         rerun = round["rerun"].is_a?(Array) ? {only: round["rerun"], rerun: round["reruns"]} : {}
         written = @prompt.review_text(run, step, pending["attempt"], pending["round"], answer[:revision], **rerun)
         model = round_model(run, step)
+        direct = WorkflowDefinition.direct_review?(run.definition, step)
         agent = with_model(@main_agent.spawn_command(workspace, AGENT_KIND), model)
         window = review_window(run, pending, agent, model)
         return current(run) if window == :left
@@ -129,8 +130,8 @@ module Workspace
         return unready if unready
         # The pane's binding is replaced, whichever round of the run it held.
         @panes.bind(workspace: workspace, pane: window[:pane], run_id: run.id, step: pending["step"], attempt: pending["attempt"],
-          instructions: written["path"], artifacts: run.artifacts_dir, role: "reviewer", round: pending["round"], relative_to: run.worktree)
-        recorded = record_pane(run, pending, window, answer[:revision], written, model)
+          instructions: written["path"], artifacts: run.artifacts_dir, role: "reviewer", round: pending["round"], relative_to: run.worktree, direct: direct)
+        recorded = record_pane(run, pending, window, answer[:revision], written, model: model, direct: direct)
         return recorded[:run] unless recorded[:wanted]
         # The reviewers start fresh, each told of its own earlier write-up by `review.previous`.
         kicked = true
@@ -272,7 +273,7 @@ module Workspace
     # the round's pane whenever it comes. A run that left the round meanwhile gets what was made taken back.
     #
     # @return [Hash] :wanted and :run (the run afterwards)
-    def record_pane(run, pending, window, revision, written, model = nil)
+    def record_pane(run, pending, window, revision, written, model: nil, direct: false)
       moved = false
       wanted = false
       # Read before the lock is taken: no tmux call is made under the run's lock.
@@ -303,6 +304,8 @@ module Workspace
         end
         model ? round["model"] = model : round.delete("model")
         model ? state["review_model"] = model : state.delete("review_model")
+        # A direct round ({WorkflowDefinition.direct_review?}) has its verdict written by the pane's main thread.
+        direct ? round["direct"] = true : round.delete("direct")
         # The round records its window now; a window an earlier round kept is this one or gone.
         state.delete("review_window")
         WorkflowRun.from_h(hash)

@@ -452,9 +452,10 @@ class RecordingWorkflowPanes
     @same
   end
 
-  def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:, role: nil, round: nil, relative_to: nil)
+  def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:, role: nil, round: nil, relative_to: nil, direct: false)
     fields = {workspace: workspace, pane: pane, run_id: run_id, step: step, attempt: attempt, instructions: instructions, artifacts: artifacts}
     fields.merge!(role: role, round: round, relative_to: relative_to) if role
+    fields[:direct] = true if direct
     @calls << [:bind, fields]
     true
   end

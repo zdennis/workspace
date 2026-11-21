@@ -337,6 +337,18 @@ RSpec.describe Workspace::WorkflowPanes do
       allow(tmux).to receive(:server_pid_for_pane).with("%9").and_return("4242")
     end
 
+    it "stores direct: true for a direct round's reviewer, and nothing for any other binding" do
+      bind_reviewer(direct: true)
+      expect(bindings.binding_for("%9")).to include("direct" => true)
+
+      bind_reviewer
+      expect(bindings.binding_for("%9")).not_to have_key("direct")
+
+      allow(tmux).to receive(:pane_slot).with("%9").and_return("app:3.0")
+      panes.bind(workspace: "app", pane: "%9", run_id: "wr_1", step: "plan", attempt: 2, instructions: "/i.md", artifacts: "/a", direct: true)
+      expect(bindings.binding_for("%9")).not_to have_key("direct")
+    end
+
     it "stores role and round, and is found by review_pane_of but never by pane_of or run_on, in either binding order" do
       [[:author, :reviewer], [:reviewer, :author]].each do |order|
         order.each { |role| (role == :author) ? bind : bind_reviewer }
