@@ -279,6 +279,31 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(text).to include("records every Write and Edit a sub-agent of this pane makes")
     end
 
+    it "tells a direct round (one reviewer naming a model) to review and write the verdict itself, with no sub-agent" do
+      one = review.merge("from" => %w[skeptical])
+      direct_step = step.merge("review" => one)
+      modelled = reviewers.merge("skeptical" => reviewers["skeptical"].merge("model" => "sonnet"))
+      direct_run = Workspace::WorkflowRun.from_h(reviewed_run.to_h.merge("definition" => run.definition.merge("reviewers" => modelled, "steps" => [direct_step])))
+
+      text = text_for(1, run: direct_run, step: direct_step)
+
+      expect(text).to include("You are the reviewer of this round: review the work yourself in this session", "start no sub-agent")
+      expect(text).to include("records every Write and Edit this pane makes", "written in this pane with a file tool")
+      expect(text).not_to include("Start one sub-agent per reviewer", "a sub-agent of this pane", "A verdict you write yourself")
+      expect(text).to include("Write it with a file tool (Write or Edit), not a shell command")
+
+      plain_run = Workspace::WorkflowRun.from_h(direct_run.to_h.merge("definition" => direct_run.definition.merge("reviewers" => reviewers)))
+      expect(text_for(1, run: plain_run, step: direct_step)).to include("Start one sub-agent per reviewer", "records every Write and Edit a sub-agent of this pane makes")
+      expect(text_for(1, run: plain_run, step: direct_step)).not_to include("You are the reviewer of this round")
+    end
+
+    it "keeps the sub-agent text for several reviewers even when every one names a model" do
+      modelled = reviewers.transform_values { |each| each.merge("model" => "sonnet") }
+      many = Workspace::WorkflowRun.from_h(reviewed_run.to_h.merge("definition" => reviewed_run.definition.merge("reviewers" => modelled)))
+
+      expect(text_for(1, run: many)).to eq(text_for(1))
+    end
+
     it "tells each reviewer to write its verdict with a file tool, since a shell write is never proved" do
       text = text_for(1)
 

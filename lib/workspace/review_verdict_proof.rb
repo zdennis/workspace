@@ -8,6 +8,10 @@ module Workspace
   # the file's hash now. An Edit after the Write is fine: only the last write counts. A line missing after that
   # write (a `seq` skipped, or another daemon's `boot_id`) may have been a later write, so it proves nothing.
   #
+  # A direct round ({WorkflowDefinition.direct_review?}: one reviewer, which names a model) has the review pane's
+  # main thread write the verdict itself: given `direct: true`, a write with no `agent_id` proves as
+  # `main:<pane_id>`. Every other rule holds; without `direct:` such a write is refused as `main_thread`.
+  #
   # Not proven: that the hook lines are genuine (a process can send `session-event` a made-up payload).
   class ReviewVerdictProof
     # The tools whose writes `session-event` hashes for a review pane.
@@ -29,10 +33,11 @@ module Workspace
     # @param review_pane [String, Array<String>] the round's review pane id, or every pane the round was delivered into
     #   (a rerun or a delivery again may use a new pane, and a verdict written in an earlier one still counts)
     # @param workspace [String] the run's workspace, whose daemon wrote the hook lines
+    # @param direct [Boolean] the round is direct: a main-thread write of the review pane proves as `main:<pane_id>`
     # @return [Hash{Symbol=>Object}] :ok, :agent_id and :sha256 of the write that proves it (nil when unknown),
     #   and :problem (nil when proven): `no_log`, `outside_checkout`, `no_write`, `log_gap`, `other_pane`,
     #   `main_thread`, `no_hash`, `unreadable` or `hash_mismatch`
-    def proven?(round_dir:, path:, review_pane:, workspace:)
+    def proven?(round_dir:, path:, review_pane:, workspace:, direct: false)
       files = log_files(workspace)
       return refused("no_log") if files.empty?
       relative = relative_path(round_dir, path)
@@ -42,7 +47,10 @@ module Workspace
       return refused("log_gap") if gap
       return refused("other_pane") unless Array(review_pane).include?(last["pane_id"])
       agent = last["agent_id"]
-      return refused("main_thread") unless agent.is_a?(String) && !agent.empty?
+      unless agent.is_a?(String) && !agent.empty?
+        return refused("main_thread") unless direct == true && agent.nil?
+        agent = "main:#{last["pane_id"]}"
+      end
       sha = last["sha256"]
       return refused("no_hash", agent) unless sha.is_a?(String) && sha.match?(/\A\h{64}\z/)
       content = WorkflowProduced.digest(path, max_bytes: @max_bytes)

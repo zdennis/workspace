@@ -117,6 +117,17 @@ RSpec.describe Workspace::WorkflowTrace do
     end
   end
 
+  it "pairs an attempt that ended at a millisecond stamp with the run-end row stamped to the same whole second" do
+    usage = {"input_tokens" => 10, "output_tokens" => 5}
+    run = {"id" => "wr_ms", "steps" => {"build" => {"attempts" => [{"n" => 1, "outcome" => "cancelled", "ended_at" => "2026-10-01T10:00:05.900Z", "usage" => usage}]}}}
+    events = [
+      {"n" => 1, "ts" => "2026-10-01T10:00:00Z", "type" => "step_dispatching", "step" => "build", "attempt" => 1},
+      {"n" => 2, "ts" => "2026-10-01T10:00:05Z", "type" => "run_cancelled"}
+    ]
+    rows = described_class.new.read(run, events, now: now)[:transitions]
+    expect(rows.map { |row| row[:tokens] }).to eq([nil, {total: 15, in: 10, out: 5, cache: 0}])
+  end
+
   it "reads a run with no events or steps" do
     trace = described_class.new.read({"id" => "wr_x"}, [], now: now)
     expect(trace[:transitions]).to eq([])

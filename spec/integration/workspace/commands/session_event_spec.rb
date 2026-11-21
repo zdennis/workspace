@@ -507,11 +507,11 @@ RSpec.describe Workspace::Commands::SessionEvent do
           .to include("agent_id" => "sub-1")
       end
 
-      it "cuts a multi-byte command past the limit to 300 bytes of valid UTF-8" do
+      it "cuts a multi-byte command past the limit to 4096 bytes of valid UTF-8" do
         event = deliver("hook_event_name" => "PermissionRequest", "tool_name" => "Bash",
-          "tool_input" => {"command" => "echo " + "é" * 400})
+          "tool_input" => {"command" => "echo " + "é" * 5000})
 
-        expect(event["input"].bytesize).to be <= 300
+        expect(event["input"].bytesize).to be <= 4096
         expect(event["input"]).to be_valid_encoding
       end
     end
@@ -1073,6 +1073,26 @@ RSpec.describe Workspace::Commands::SessionEvent do
 
           expect(result).to eq(exit_code: 2)
           expect(stderr).to include("verdict files")
+        end
+      end
+
+      context "in a direct round's reviewer pane" do
+        before do
+          bindings.bind("%2", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "step" => "review", "attempt" => 1, "round" => 2, "direct" => true,
+            "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+        end
+
+        it "allows the main thread's Write of the verdict file" do
+          expect(pre("Write", File.join(round_dir, "skeptic.md")).first).to eq(exit_code: 0)
+        end
+
+        it "refuses the main thread's write outside the round directory and to summary.md" do
+          [File.join(checkout, "lib.rb"), File.join(round_dir, "summary.md")].each do |path|
+            result, stderr = pre("Write", path)
+
+            expect(result).to eq(exit_code: 2)
+            expect(stderr).to include("verdict files")
+          end
         end
       end
 

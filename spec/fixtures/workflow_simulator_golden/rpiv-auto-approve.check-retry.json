@@ -24,7 +24,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     },
@@ -34,7 +35,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     },
@@ -74,7 +76,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     },
@@ -84,15 +87,18 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         },
         {
           "n": 2,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": false
         },
         {
           "n": 3,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": false
         }
       ]
     },
@@ -103,16 +109,19 @@
         {
           "n": 1,
           "outcome": "failed",
-          "code": "check_failed"
+          "code": "check_failed",
+          "fresh": true
         },
         {
           "n": 2,
           "outcome": "failed",
-          "code": "check_failed"
+          "code": "check_failed",
+          "fresh": true
         },
         {
           "n": 3,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     }

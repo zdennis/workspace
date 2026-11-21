@@ -284,7 +284,7 @@ module Workspace
       last = step_state(run)["attempts"].last
       # An attempt a round already decided (a gate approved after it, a resume) is never reviewed again.
       return begin_review(run, ctx) if WorkflowDefinition.review(step_def(run)) && !last.key?("review_outcome")
-      record_end(run, last.merge("ended_at" => now_iso, "outcome" => "passed"))
+      record_end(run, last.merge("ended_at" => ended_iso, "outcome" => "passed"))
       passed(run, ctx)
     end
 
@@ -319,7 +319,7 @@ module Workspace
 
     # The author's turn passed every check; the attempt ends now, so its usage counts and its step timeout stops.
     def begin_review(run, ctx)
-      record_end(run, step_state(run)["attempts"].last.merge("ended_at" => now_iso, "outcome" => "checks_passed"))
+      record_end(run, step_state(run)["attempts"].last.merge("ended_at" => ended_iso, "outcome" => "checks_passed"))
       state = step_state(run)
       state["state"] = "reviewing"
       event(run, "step_checks_passed", "step" => run["current"], "attempt" => state["attempts"].last["n"])
@@ -357,7 +357,7 @@ module Workspace
     # it is spent and ended, with its record, and the run stops for a person, whose resume starts a fresh round.
     def refuse_round(run, opened)
       state = step_state(run)
-      ended = state["review"].merge("delivery" => nil, "ended_at" => now_iso)
+      ended = state["review"].merge("delivery" => nil, "ended_at" => ended_iso)
       add_round_record(run, ended, opened[:code])
       state["review"] = ended.merge("recorded" => true)
       details = {"step" => run["current"], "attempt" => state["attempts"].last["n"], "round" => ended["round"]}
@@ -442,7 +442,7 @@ module Workspace
       outcome = tally[:outcome]
       event(run, "review_ended", details.merge("outcome" => outcome.to_s))
       # Every round that ends, decided or not, adds one record to the attempt's `rounds`: the one list its usage is read from.
-      ended = round.merge("delivery" => nil, "ended_at" => now_iso, "reviews" => reviews)
+      ended = round.merge("delivery" => nil, "ended_at" => ended_iso, "reviews" => reviews)
       attempt = @rounds.with_round(run, attempt, ended, outcome.to_s)
       attempt["rounds"].last["summary"] = summary if summary
       # The rows as recorded, each with its `isolation`.
@@ -649,7 +649,7 @@ module Workspace
       WorkflowRun.drop_step_slots(run)
       run["state"] = state
       run["reason"] = nil
-      run["ended_at"] = now_iso
+      run["ended_at"] = ended_iso
     end
 
     def fail_in(run, failure, ctx)
@@ -657,7 +657,7 @@ module Workspace
       last = step_state(run)["attempts"].last
       # An attempt whose guard stop a person accepted ended when the guard stopped it: its end is not recorded twice.
       again = last["guard_accepted"] && last["ended_at"]
-      ended = last.merge("ended_at" => again ? last["ended_at"] : now_iso, "outcome" => "failed")
+      ended = last.merge("ended_at" => again ? last["ended_at"] : ended_iso, "outcome" => "failed")
       ended["code"] = failure["code"] if failure["code"].is_a?(String)
       again ? (step_state(run)["attempts"][-1] = ended) : record_end(run, ended)
       state = step_state(run)
@@ -1098,6 +1098,11 @@ module Workspace
 
     def now_iso
       @clock.call.utc.iso8601
+    end
+
+    # Millisecond stamp for every ended_at, so a usage window keeps the transcript lines of the attempt's last second.
+    def ended_iso
+      @clock.call.utc.iso8601(3)
     end
   end
 end

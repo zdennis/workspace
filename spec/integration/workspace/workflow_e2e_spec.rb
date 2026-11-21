@@ -541,7 +541,7 @@ RSpec.describe "a workflow run from start to completed" do
       expect(panes.bound.values.map { |entry| entry[:run_id] }).not_to include("wr_1")
       attempt = run["steps"]["verify"]["attempts"].last
       expect(attempt).to include("outputs" => [], "usage" => a_kind_of(Hash), "head" => {"before" => "1" * 40, "after" => "1" * 40})
-      expect(attempt).to include("ended_at" => now.first.utc.iso8601, "outcome" => "cancelled")
+      expect(attempt).to include("ended_at" => now.first.utc.iso8601(3), "outcome" => "cancelled")
     end
 
     it "keeps a step that ended its turn without its produces file running, and a resume with a note delivers it again" do

@@ -1038,6 +1038,19 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(described_class.reviewers(stored["definition"])).to eq({})
     end
 
+    it "calls a step's review direct only for exactly one reviewer that names a model" do
+      step = ->(from) { {"id" => "plan", "review" => {"from" => from}} }
+      definition = {"reviewers" => {"skeptic" => {"model" => "sonnet"}, "fan" => {"model" => "sonnet"}, "plain" => {}, "blank" => {"model" => ""}}}
+
+      expect(described_class.direct_review?(definition, step.call(%w[skeptic]))).to be(true)
+      expect(described_class.direct_review?(definition, step.call(%w[skeptic fan]))).to be(false)
+      expect(described_class.direct_review?(definition, step.call(%w[plain]))).to be(false)
+      expect(described_class.direct_review?(definition, step.call(%w[blank]))).to be(false)
+      expect(described_class.direct_review?(definition, step.call(%w[missing]))).to be(false)
+      expect(described_class.direct_review?(definition, {"id" => "plan"})).to be(false)
+      expect(described_class.direct_review?(nil, step.call(%w[skeptic]))).to be(false)
+    end
+
     it "counts review as a proof" do
       expect(parse(with_review("    review: [skeptic]\n")).warnings.map { |w| w["code"] }).not_to include("step_without_proof")
       expect(parse(with_review("    review: {from: [skeptic]}\n")).warnings.map { |w| w["code"] }).not_to include("step_without_proof")
@@ -1087,6 +1100,16 @@ RSpec.describe Workspace::WorkflowDefinition do
       review = parse(with_review("    review: {from: [skeptic], subject: ~, revision: ~}\n")).steps[0]["review"]
       expect(review).to include("subject" => nil, "revision" => nil)
       expect(problems("reviewers:\n  a: {prompt: x, parallel: ~}\n#{minimal}")).to include(a_string_matching(/parallel must be true or false, got nothing/))
+    end
+
+    it "reads a reviewer's optional model, left out of the stored entry when absent, and refuses a value that is no model id" do
+      model = ->(value) { parse("reviewers:\n  a: {prompt: x, model: #{value}}\n#{minimal}").to_h["reviewers"]["a"] }
+      expect(model.call("claude-opus-5-5")["model"]).to eq("claude-opus-5-5")
+      expect(model.call("\"claude-opus-5-5[1m]\"")["model"]).to eq("claude-opus-5-5[1m]")
+      expect(parse("reviewers:\n  a: {prompt: x}\n#{minimal}").to_h["reviewers"]["a"]).not_to have_key("model")
+      ["~", "1", "\"\"", "\"--model\"", "\"opus; rm -rf x\"", "\"op us\"", "\"$(id)\"", "\"-x\"", "\"#{"a" * 101}\""].each do |bad|
+        expect(problems("reviewers:\n  a: {prompt: x, model: #{bad}}\n#{minimal}")).to include(a_string_matching(/reviewer a: model must be a model id/))
+      end
     end
 
     it "reads a reviewer's scope: step, any, or the rule as text, its placeholders checked as the prompt's" do

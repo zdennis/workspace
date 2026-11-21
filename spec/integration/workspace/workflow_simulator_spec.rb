@@ -171,6 +171,12 @@ RSpec.describe Workspace::WorkflowSimulator do
     end
   end
 
+  it "records on each attempt row whether its line started a new conversation" do
+    result = play("steps: {}\n", definition: definition(build_extra: "context: continue"))
+
+    expect(result["steps"].map { |step| step["attempts"].map { |each| each["fresh"] } }).to eq([[false], [true]])
+  end
+
   it "records an engine refusal as the end of the simulation" do
     data = Workspace::WorkflowDefinition.parse(<<~YAML, id: "gated", source: "file", path: nil)
       schema_version: 1

@@ -21,7 +21,7 @@ module Workspace
   #
   # Only names, ids, a checkout-relative path, a pass or fail flag, a
   # duration, a sub-agent's short description (cut to 120 characters) and a
-  # tool call's `input` summary ({ToolInputSummary}: one line, 300 bytes) and,
+  # tool call's `input` summary ({ToolInputSummary}: one line, 4096 bytes) and,
   # for a review pane's write of a verdict file, the file's `sha256` (64 hex
   # characters, anything else dropped) are written: never a prompt, a whole command, tool output, or file contents.
   #

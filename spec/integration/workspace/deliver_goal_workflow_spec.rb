@@ -57,10 +57,22 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(review.call(definition.to_h)["max_rounds"]).to eq(review.call(parent)["max_rounds"])
   end
 
+  it "runs the plan review on sonnet as a direct round, with the parent's skeptical prompt unchanged" do
+    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+    skeptical = definition.to_h["reviewers"]["skeptical"]
+    expect(skeptical["model"]).to eq("sonnet")
+    expect(skeptical.except("model")).to eq(parent["reviewers"]["skeptical"])
+    plan = definition.to_h["steps"].find { |each| each["id"] == "plan" }
+    expect(Workspace::WorkflowDefinition.direct_review?(definition.to_h, plan)).to be(true)
+  end
+
+  def fresh(result, id) = result["steps"].find { |each| each["id"] == id }["attempts"].map { |each| each["fresh"] }
+
   it "overrides only the prompt of implement, which tells it to start no sub-agents and finish before its status line" do
     parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
     implement = ->(d) { d["steps"].find { |each| each["id"] == "implement" } }
-    expect(implement.call(definition.to_h).except("prompt")).to eq(implement.call(parent).except("prompt"))
+    expect(implement.call(definition.to_h).except("prompt", "context")).to eq(implement.call(parent).except("prompt", "context"))
+    expect(implement.call(definition.to_h)["context"]).to eq("continue")
     prompt = implement.call(definition.to_h)["prompt"].gsub(/\s+/, " ")
     expect(prompt).to include("Do not start sub-agents; the verify step runs the checks after you.")
     expect(prompt).to include("End your turn with your status line only after all of that work is finished, never while anything is still running.")
@@ -94,9 +106,17 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(text).to include("Shell commands that mention a hidden or denied path, even one you only saw in a log or error, inside quotes or an inline script, are blocked and reported; keep such paths out of shell command lines.")
   end
 
+  it "starts implement fresh after a failed acceptance and keeps verify's conversation after a failed verify" do
+    steps = definition.to_h["steps"]
+    expect(steps.find { |each| each["id"] == "acceptance" }["on_fail"]).to include("context" => "fresh")
+    expect(steps.find { |each| each["id"] == "verify" }["on_fail"]).to include("context" => "continue")
+  end
+
   it "completes when acceptance passes first time" do
     result = play("happy")
+    expect(fresh(result, "implement")).to eq([false])
     expect(result["outcome"]).to eq("completed")
+    expect(outcomes(result, "plan")).to eq(%w[passed])
     expect(outcomes(result, "acceptance")).to eq(%w[passed])
   end
 
@@ -105,6 +125,7 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(result["outcome"]).to eq("completed")
     expect(outcomes(result, "acceptance")).to eq(%w[failed passed])
     expect(outcomes(result, "implement")).to eq(%w[passed passed])
+    expect(fresh(result, "implement")).to eq([false, true])
   end
 
   it "stops for a person when acceptance fails after the one loop" do

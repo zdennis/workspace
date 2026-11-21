@@ -45,25 +45,30 @@ RSpec.describe Workspace::ToolInputSummary do
     expect(summary("Bash", {"command" => "FOO=bar make"})).to eq("FOO=bar make")
   end
 
-  it "leaves a summary of exactly 300 bytes alone" do
-    command = "a" * 300
+  it "keeps a 1000-byte command whole" do
+    command = "a" * 1000
     expect(summary("Bash", {"command" => command})).to eq(command)
   end
 
-  it "cuts a longer one to 300 bytes including a trailing ellipsis" do
-    result = summary("Bash", {"command" => "a" * 500})
+  it "leaves a summary of exactly 4096 bytes alone" do
+    command = "a" * 4096
+    expect(summary("Bash", {"command" => command})).to eq(command)
+  end
 
-    expect(result.bytesize).to eq(300)
+  it "cuts a longer one to 4096 bytes including a trailing ellipsis" do
+    result = summary("Bash", {"command" => "a" * 5000})
+
+    expect(result.bytesize).to eq(4096)
     expect(result).to end_with("…")
-    expect(result).to eq("#{"a" * 297}…")
+    expect(result).to eq("#{"a" * 4093}…")
   end
 
   it "cuts on a UTF-8 character boundary" do
-    result = summary("Bash", {"command" => "é" * 400})
+    result = summary("Bash", {"command" => "é" * 5000})
 
     expect(result).to be_valid_encoding
-    expect(result.bytesize).to be <= 300
-    expect(result).to eq("#{"é" * 148}…")
+    expect(result.bytesize).to be <= 4096
+    expect(result).to eq("#{"é" * 2046}…")
   end
 
   it "replaces invalid bytes rather than raising" do

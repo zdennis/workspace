@@ -196,14 +196,16 @@ module Workspace
       return value if attempt.nil? || attempt.ended_at
       step = value.definition["steps"].find { |each| each["id"] == step_id }
       # One clock read stamps the end and bounds the usage window ({#agent_facts} reads `ended_at`).
-      ended = attempt.thawed.merge("ended_at" => @clock.call.utc.iso8601, "outcome" => outcome)
+      ended = attempt.thawed.merge("ended_at" => @clock.call.utc.iso8601(3), "outcome" => outcome)
       value.with_attempt(step_id, finish(run: value, step: step, attempt: ended))
     rescue
       WorkflowRun.from_h(run)
     end
 
-    # How the verdicts a review round read were made: by sub-agents of the round's own review pane. Every row of a
-    # round's `reviews` carries it as `isolation`, so a later reader can tell these verdicts from any other kind.
+    # How the verdicts a review round read were made: in the round's own review pane, by its sub-agents, or in a
+    # direct round ({WorkflowDefinition.direct_review?}) by the pane's main thread (the row's `agent_id` is then
+    # `main:<pane_id>`). Every row of a round's `reviews` carries it as `isolation`, so a later reader can tell these
+    # verdicts from any other kind.
     ISOLATION = "review_pane"
 
     # What an ended review round records about itself: its pane, the session that ran in that pane during the
@@ -220,7 +222,7 @@ module Workspace
     #   round read verdicts, also "reviews" and "evidence" (the copies; empty with no evidence collaborator); when its
     #   delivery recorded them, "packs" (one `{"reviewer", "ref", "sha256"}` per reviewer pack composed in)
     def finish_round(run:, round:, step_id: nil)
-      ended_at = round["ended_at"] || @clock.call.utc.iso8601
+      ended_at = round["ended_at"] || @clock.call.utc.iso8601(3)
       record = {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => ended_at,
                 "session" => nil, "agent" => nil, "usage" => nil}
       # The reviewer packs its delivery composed in, as an attempt keeps its own `packs`.

@@ -139,16 +139,17 @@ module DemoCalculator2
     def classify_call(call, redirected, head)
       args = (call.args.last == "$(") ? call.args[0...-1] : call.args
       return :unresolved if call.aliased || call.other_repo || call.fed || args.any? { |word| word.match?(/[$`]/) }
-      return :stat_only if %w[show diff log].include?(call.verb) && args.any? { |word| STAT_FLAG.match?(word) } && args.none? { |word| PATCH_FLAG.match?(word) }
-      touched = touches_acceptance?(call, args, head || "HEAD")
+      stat = %w[show diff log].include?(call.verb) && args.any? { |word| STAT_FLAG.match?(word) } && args.none? { |word| PATCH_FLAG.match?(word) }
+      touched = touches_acceptance?(call, args, head || "HEAD", stat: stat)
       return :unresolved if touched.nil?
-      return :false_positive unless touched
+      return (stat ? :stat_only : :false_positive) unless touched
       redirected ? :near_miss : :unresolved
     end
 
     # True or false when git can say whether the revisions or ranges the call names change the acceptance directory; nil when not.
-    def touches_acceptance?(call, args, tip)
+    def touches_acceptance?(call, args, tip, stat: false)
       revs = rev_words(args).map { |word| BARE_HEAD.include?(word) ? tip : word }
+      revs = [tip] if revs.empty? && stat
       return nil if revs.empty? || !%w[show diff log].include?(call.verb)
       return nil if revs.any? { |word| word.start_with?("-") }
       results = if call.verb == "diff" && revs.size == 2 && revs.none? { |word| word.match?(/\.{2,3}/) }

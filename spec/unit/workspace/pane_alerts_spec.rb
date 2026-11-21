@@ -41,9 +41,9 @@ RSpec.describe Workspace::PaneAlerts do
     end
 
     it "caps a long command and strips NUL" do
-      pane[:waits][nil] = {since: now - 5, permission: true, tool: "Bash", input: "a\0b" + "x" * 500}
+      pane[:waits][nil] = {since: now - 5, permission: true, tool: "Bash", input: "a\0b" + "x" * 5000}
       command = due(pane).first.env["WORKSPACE_ALERT_COMMAND"]
-      expect(command.bytesize).to be <= 300
+      expect(command.bytesize).to be <= Workspace::ToolInputSummary::MAX_BYTES
       expect(command).not_to include("\0")
     end
 

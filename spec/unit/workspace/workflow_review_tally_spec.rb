@@ -5,15 +5,17 @@ require "tmpdir"
 RSpec.describe Workspace::WorkflowReviewTally do
   # Answers each verdict path from +answers+ (default: proven, by a sub-agent named after the file, with the file's hash now).
   proof_stub = Class.new do
-    attr_reader :calls
+    attr_reader :calls, :directs
 
     def initialize(answers = {})
       @answers = answers
       @calls = []
+      @directs = []
     end
 
-    def proven?(round_dir:, path:, review_pane:, workspace:)
+    def proven?(round_dir:, path:, review_pane:, workspace:, direct: false)
       @calls << [File.basename(path), review_pane, workspace]
+      @directs << direct
       @answers.fetch(File.basename(path, ".md")) do
         {ok: true, agent_id: "agent-#{File.basename(path, ".md")}", sha256: Digest::SHA256.file(path).hexdigest, problem: nil}
       end
@@ -184,6 +186,25 @@ RSpec.describe Workspace::WorkflowReviewTally do
       expect(row(result, "skeptic")).to include("counted" => false, "problem" => "main_thread")
       expect(row(result, "supportive")).to include("counted" => false, "problem" => "changed", "agent_id" => "agent-s")
       expect(result).to include(outcome: :incomplete, approvals: 1, problem: "no counted verdict from skeptic (main_thread), supportive (changed)")
+    end
+
+    it "asks the proof to accept a main-thread write only for a round that recorded direct: true" do
+      verdict("skeptic", "approve")
+      one = {"from" => ["skeptic"], "need" => 1, "must" => ["skeptic"]}
+      main = {ok: true, agent_id: "main:%9", sha256: Digest::SHA256.file(File.join(round_dir, "skeptic.md")).hexdigest, problem: nil}
+      direct_proof = ProofStub.new("skeptic" => main)
+
+      result = described_class.new(proof: direct_proof).call(run: run_hash, step: {"id" => "plan", "review" => one}, round: round.merge("direct" => true))
+
+      expect(direct_proof.directs).to eq([true])
+      expect(row(result, "skeptic")).to include("counted" => true, "agent_id" => "main:%9")
+      expect(result[:outcome]).to eq(:approved)
+
+      [round, round.merge("direct" => "true")].each do |each|
+        plain = ProofStub.new
+        described_class.new(proof: plain).call(run: run_hash, step: {"id" => "plan", "review" => one}, round: each)
+        expect(plain.directs).to eq([false])
+      end
     end
 
     it "counts none of the verdicts one sub-agent wrote for two reviewers" do

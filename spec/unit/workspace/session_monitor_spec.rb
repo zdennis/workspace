@@ -740,7 +740,7 @@ RSpec.describe Workspace::SessionMonitor do
 
     describe "storing a request" do
       it "keeps the whole summary, past the length of a message" do
-        input = "x" * 250
+        input = "x" * 1000
         request(input: input)
         prompt
 
@@ -748,7 +748,7 @@ RSpec.describe Workspace::SessionMonitor do
       end
 
       it "caps the input and cleans the tool name" do
-        request(tool: "Ba\nsh", input: "é" * 400)
+        request(tool: "Ba\nsh", input: "é" * 5000)
         prompt
 
         expect(pane("%2")["waiting_tool"]).to eq("Ba sh")

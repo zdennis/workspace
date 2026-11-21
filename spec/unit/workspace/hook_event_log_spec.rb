@@ -242,9 +242,9 @@ RSpec.describe Workspace::HookEventLog do
     end
 
     it "caps a request's input and writes only the fields it knows" do
-      log.record(event("permission_request", tool: "Bash", input: "ls " + "z" * 400, tool_input: {"command" => "secret"}, message: "secret"))
+      log.record(event("permission_request", tool: "Bash", input: "ls " + "z" * 5000, tool_input: {"command" => "secret"}, message: "secret"))
 
-      expect(lines.last["input"].bytesize).to eq(300)
+      expect(lines.last["input"].bytesize).to eq(4096)
       expect(lines.last.keys).to eq(%w[type at workspace pane_id boot_id seq tool agent_id input])
       expect(File.read(log.path)).not_to include("secret")
     end
@@ -316,11 +316,11 @@ RSpec.describe Workspace::HookEventLog do
   end
 
   it "writes a tool call's input on a start and a finish, cleaned and capped again, and leaves it out when absent" do
-    log.record(event("tool_start", tool: "Bash", tool_use_id: "t1", input: "ls\e[0m " + "z" * 400))
+    log.record(event("tool_start", tool: "Bash", tool_use_id: "t1", input: "ls\e[0m " + "z" * 5000))
     log.record(event("tool_use", tool: "Bash", tool_use_id: "t1", input: "ls"))
     log.record(event("tool_use", tool: "Bash", tool_use_id: "t2", input: 5))
 
-    expect(lines[0]["input"].bytesize).to eq(300)
+    expect(lines[0]["input"].bytesize).to eq(4096)
     expect(lines[0]["input"]).to start_with("ls [0m z").and end_with("…")
     expect(lines[1]["input"]).to eq("ls")
     expect(lines[2]).not_to have_key("input")

@@ -267,7 +267,7 @@ RSpec.describe DemoCalculator2::Checks, type: :system do
 
   describe "#classify_possible" do
     let(:window) { {from: "2026-01-01T10:00:00Z", to: "2026-01-01T11:00:00Z"} }
-    let(:stat) { "git diff #{shas[:base]}..HEAD --stat" }
+    let(:stat) { "git diff #{shas[:lib]} HEAD --stat" }
     let(:near_miss) { "cd w && git diff #{shas[:base]}..HEAD -- demo/calculator2 > /tmp/g.diff" }
 
     def hook_file(*commands, at: "2026-01-01T10:05:00Z")
@@ -282,8 +282,8 @@ RSpec.describe DemoCalculator2::Checks, type: :system do
       path
     end
 
-    def classify(hooks: [], transcripts: [])
-      checks.classify_possible(hook_files: hooks, transcripts: transcripts, head: shas[:test], removal: shas[:removal], **window)
+    def classify(hooks: [], transcripts: [], head: shas[:test])
+      checks.classify_possible(hook_files: hooks, transcripts: transcripts, head: head, removal: shas[:removal], **window)
     end
 
     def classes(*commands)
@@ -294,6 +294,21 @@ RSpec.describe DemoCalculator2::Checks, type: :system do
       expect(classes(stat, "git log --oneline -1 --stat")).to include(stat_only: 2, false_positive: 0, near_miss: 0, unresolved: 0)
     end
 
+    it "checks the revisions before calling a stat call stat-only" do
+      expect(classes("git diff --stat #{shas[:base]}..HEAD")).to include(unresolved: 1, stat_only: 0)
+      expect(classes("git diff --stat #{shas[:base]}..HEAD > /tmp/s.txt")).to include(near_miss: 1, stat_only: 0)
+      expect(classes("git diff --stat #{shas[:lib]} HEAD", "git show #{shas[:lib]} #{shas[:test]} --stat")).to include(stat_only: 2, unresolved: 0)
+    end
+
+    it "sorts a stat call with a patch flag as any patch call" do
+      expect(classes("git log --stat -p #{shas[:removal]}..HEAD", "git log --stat --patch #{shas[:base]}..HEAD")).to include(false_positive: 1, unresolved: 1, stat_only: 0)
+    end
+
+    it "reads a stat call with no revision as the run's head, and leaves it unresolved when that head reaches acceptance" do
+      expect(classes("git log -1 --stat")).to include(stat_only: 1)
+      expect(classify(hooks: [hook_file("git log -1 --stat")], head: shas[:base])[:hook]).to include(unresolved: 1)
+      expect(classify(hooks: [hook_file("git log --stat -- foo")], head: shas[:test])[:hook]).to include(stat_only: 1)
+    end
     it "counts a range or revision that changes nothing under the acceptance directory as a false positive" do
       expect(classes("git show #{shas[:removal]}..HEAD", "git show #{shas[:lib]}:demo/calculator2/lib/calc.rb")).to include(false_positive: 2, stat_only: 0)
     end

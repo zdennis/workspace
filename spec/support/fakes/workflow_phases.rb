@@ -452,9 +452,10 @@ class RecordingWorkflowPanes
     @same
   end
 
-  def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:, role: nil, round: nil, relative_to: nil)
+  def bind(workspace:, pane:, run_id:, step:, attempt:, instructions:, artifacts:, role: nil, round: nil, relative_to: nil, direct: false)
     fields = {workspace: workspace, pane: pane, run_id: run_id, step: step, attempt: attempt, instructions: instructions, artifacts: artifacts}
     fields.merge!(role: role, round: round, relative_to: relative_to) if role
+    fields[:direct] = true if direct
     @calls << [:bind, fields]
     true
   end
@@ -530,7 +531,7 @@ class RecordingAttemptRecord
 
   def finish_round(run:, round:, step_id: nil)
     @calls << [:finish_round, Workspace::WorkflowRun.from_h(run).id, round["round"]]
-    {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => round["ended_at"] || "2026-11-10T12:00:00Z",
+    {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => round["ended_at"] || "2026-11-10T12:00:00.000Z",
      "session" => nil, "agent" => nil, "usage" => @round_usage}.tap do |record|
       next unless round["reviews"].is_a?(Array)
       record["reviews"] = round["reviews"].map { |row| row.merge("isolation" => "review_pane") }

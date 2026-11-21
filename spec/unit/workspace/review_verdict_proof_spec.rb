@@ -163,4 +163,77 @@ RSpec.describe Workspace::ReviewVerdictProof do
 
     expect(proof.proven?(round_dir: round_dir, path: File.join(@dir, "skeptic.md"), review_pane: "%9", workspace: "app")).to include(problem: "outside_checkout")
   end
+
+  describe "a direct round (direct: true)" do
+    def direct(target: path, flag: true) = proof.proven?(round_dir: round_dir, path: target, review_pane: "%9", workspace: "app", direct: flag)
+
+    it "proves a main-thread write of the review pane as main:<pane_id>, which a round with sub-agents refuses" do
+      sha = write_verdict
+      line(sha: sha, agent: nil)
+      line(tool: "Read", path: "plan.md", agent: nil)
+
+      expect(direct).to eq(ok: true, agent_id: "main:%9", sha256: sha, problem: nil)
+      expect(proven?).to include(ok: false, problem: "main_thread")
+    end
+
+    it "still proves a sub-agent's write by its own id" do
+      line(sha: write_verdict)
+
+      expect(direct).to include(ok: true, agent_id: "agent-1")
+    end
+
+    it "refuses an agent id that is there but empty, and a direct: other than true" do
+      line(sha: write_verdict, agent: "")
+
+      expect(direct).to include(ok: false, problem: "main_thread")
+
+      File.delete(log)
+      line(sha: write_verdict, agent: nil)
+
+      expect(direct(flag: "true")).to include(ok: false, problem: "main_thread")
+    end
+
+    it "refuses a main-thread write from a pane not among the round's (other_pane)" do
+      line(sha: write_verdict, agent: nil, pane: "%3")
+
+      expect(direct).to include(ok: false, problem: "other_pane")
+    end
+
+    it "refuses a main-thread write edited afterwards (hash_mismatch)" do
+      line(sha: write_verdict, agent: nil)
+      write_verdict("reviewer: skeptic\nverdict: reject\nrevision: r1\n")
+
+      expect(direct).to include(ok: false, agent_id: "main:%9", problem: "hash_mismatch")
+    end
+
+    it "refuses a main-thread write followed by a missing line (log_gap)" do
+      line(sha: write_verdict, agent: nil)
+      line(tool: "Read", path: "a.md", agent: nil, seq: @seq + 2)
+
+      expect(direct).to include(ok: false, problem: "log_gap")
+    end
+
+    it "refuses a main-thread write the hook did not hash, as it hashes none outside the round directory (no_hash)" do
+      write_verdict
+      line(agent: nil)
+
+      expect(direct).to include(ok: false, problem: "no_hash")
+    end
+
+    it "refuses a path outside the checkout, no write, no log and an unreadable file" do
+      sha = write_verdict
+      line(path: ".workflow/wr_1/reviews/plan.1.r1/supportive.md", sha: "0" * 64, agent: nil)
+
+      expect(direct).to include(ok: false, problem: "no_write")
+      expect(direct(target: File.join(@dir, "skeptic.md"))).to include(problem: "outside_checkout")
+      expect(described_class.new(hook_dir: File.join(@dir, "none"))
+        .proven?(round_dir: round_dir, path: path, review_pane: "%9", workspace: "app", direct: true)).to include(problem: "no_log")
+
+      line(sha: sha, agent: nil)
+      File.rename(path, "#{path}.real")
+      File.symlink("#{path}.real", path)
+
+      expect(direct).to include(ok: false, problem: "unreadable")
+    end
+  end
 end

@@ -55,7 +55,8 @@ module Workspace
     # @param fields [Hash{String=>Object}] `kind` and `id` (required), `attempt`, `packs`, `plays`
     #   (names of library packs the agent was sent; stored as `[]` when absent),
     #   `server_pid` (the tmux server's pid, recorded for a reviewer or reflection binding), `role` (one of {ROLES}; no role is the author) and `round` (a whole number of 1 or more, for a
-    #   reviewer), and any of {TEXT_FIELDS}; plus the `workspace`, tmux `session` and `pane_slot` it was made for
+    #   reviewer), `direct` (true for a reviewer of a direct round, {WorkflowDefinition.direct_review?}; stored only when
+    #   true), and any of {TEXT_FIELDS}; plus the `workspace`, tmux `session` and `pane_slot` it was made for
     # @return [Hash{String=>Object}] the stored entry
     # @raise [Workspace::UsageError] for an unknown kind, a missing or oversized id, an
     #   attempt below 1, or a field that is not one line of text
@@ -365,6 +366,12 @@ module Workspace
       unless round.nil?
         raise UsageError, "round must be a whole number of 1 or more." unless round.is_a?(Integer) && round >= 1
         entry["round"] = round
+      end
+      direct = fields["direct"]
+      unless direct.nil?
+        raise UsageError, "direct must be true or false." unless direct == true || direct == false
+        raise UsageError, "direct is only for a reviewer binding." if direct && entry["role"] != "reviewer"
+        entry["direct"] = true if direct
       end
       TEXT_FIELDS.each { |key| entry[key] = line!(key, fields[key]) unless fields[key].nil? }
       entry["packs"] = packs!(fields["packs"])

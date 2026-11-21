@@ -218,6 +218,13 @@ RSpec.describe Workspace::PaneBindings do
       expect { store.bind("%8", "kind" => "run", "id" => "wr_1", "round" => "1") }.to raise_error(Workspace::UsageError, /round/)
     end
 
+    it "stores direct only when true, and rejects a value that is not true or false" do
+      expect(store.bind("%5", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "round" => 1, "direct" => true)).to include("direct" => true)
+      expect(store.bind("%6", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "direct" => false)).not_to have_key("direct")
+      expect { store.bind("%7", "kind" => "run", "id" => "wr_1", "role" => "reviewer", "direct" => "true") }.to raise_error(Workspace::UsageError, /direct/)
+      expect { store.bind("%7", "kind" => "run", "id" => "wr_1", "direct" => true) }.to raise_error(Workspace::UsageError, /only for a reviewer/)
+    end
+
     it "finds the author by default and the reviewer by role, in either binding order" do
       [%w[%5 %6], %w[%6 %5]].each do |order|
         order.each { |pane| store.bind(pane, "kind" => "run", "id" => "wr_1", **((pane == "%6") ? {"role" => "reviewer", "round" => 1} : {})) }

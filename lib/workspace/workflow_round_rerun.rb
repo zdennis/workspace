@@ -128,7 +128,7 @@ module Workspace
         attempt = state["attempts"].last
         details = {"step" => work["current"], "attempt" => attempt["n"], "round" => round["round"]}
         event(work, "review_ended", details.merge("outcome" => "rerun"))
-        ended = round.merge("delivery" => nil, "ended_at" => now_iso, "reviews" => reviews)
+        ended = round.merge("delivery" => nil, "ended_at" => ended_iso, "reviews" => reviews)
         state["attempts"][-1] = with_round(work, attempt, ended, "rerun")
         reruns = round["reruns"].to_i + 1
         redeliveries = round["redeliveries"].to_i + 1
@@ -200,5 +200,7 @@ module Workspace
     def step_state(run) = run["steps"].fetch(run["current"])
 
     def now_iso = @clock.call.utc.iso8601
+
+    def ended_iso = @clock.call.utc.iso8601(3)
   end
 end
