@@ -13,7 +13,8 @@ RSpec.describe DemoCalculator2::Evaluation do
   let(:stubs) { File.join(tmp, "stubs") }
   let(:fixture) { JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/demo_calculator/runs/plain_pass.json"))) }
   let(:spans) do
-    [{"kind" => "attempt", "step" => "implement", "started_at" => "2026-11-21T05:01:00Z", "ended_at" => "2026-11-21T05:09:00Z"},
+    [{"kind" => "attempt", "step" => "implement", "started_at" => "2026-11-21T05:01:00Z", "ended_at" => "2026-11-21T05:09:00Z", "attempt" => 1, "tokens" => {"total" => 1000}},
+      {"kind" => "review_round", "step" => "implement", "attempt" => 1, "round" => 1, "started_at" => "2026-11-21T05:08:00Z", "ended_at" => "2026-11-21T05:08:30Z", "tokens" => {"total" => 300}},
       {"kind" => "attempt", "step" => "acceptance", "started_at" => "2026-11-21T05:09:00Z", "ended_at" => "2026-11-21T05:09:10Z"},
       {"kind" => "attempt", "step" => "acceptance", "started_at" => "2026-11-21T05:09:20Z", "ended_at" => "2026-11-21T05:09:30Z"}]
   end
@@ -99,8 +100,49 @@ RSpec.describe DemoCalculator2::Evaluation do
     expect(row[:step_wall]).to eq("implement" => 480.0, "acceptance" => 20.0)
     expect(row).to include(accept_first_pass: true, accept_first_recorded: false, accept_first_disagrees: true, accept_loops: 1, goal: "01-add-sub")
     expect(checks.acceptance_heads).to include("h0")
+    expect(row).to include(step_tokens: {"implement" => 700}, review_wall: 30.0, review_tokens: 300)
     expect(row).not_to have_key(:features)
     expect(result[:totals]).to include("first_pass" => 1, "first_disagreements" => 1, "accept_loops" => 1, "acceptance_passed" => 1, "acceptance_of" => 1)
+  end
+
+  it "shows a dash for the gap of the last item, as v1 does, and ? for a next item with no time" do
+    gap = described_class::HEADER.index("gap")
+    expect(described_class.ran_cells(result[:rows].first.merge(gap: nil, final: true))[gap]).to eq("–")
+    expect(described_class.ran_cells(result[:rows].first.merge(gap: nil, final: false))[gap]).to eq("?")
+  end
+
+  it "shows a dash, not zeros, in the review row of an item with no trace, and notes a round with no attempt" do
+    ran = {ran: true, goal: "01-add-sub", step_wall: {"plan" => 60.0}, step_tokens: {"plan" => 1000}, review_wall: nil, review_tokens: nil, review_unmatched: 0}
+    unmatched = ran.merge(goal: "02-mul-div", review_wall: 5.0, review_tokens: 50, review_unmatched: 1)
+    expect(described_class.step_table([ran]).lines.last).to match(/^review\s+–$/)
+    table = described_class.step_token_table([ran, unmatched])
+    expect(table).to match(/^review\s+–\s+50$/)
+    expect(table).to include("note: 02-mul-div has 1 review round(s) with no attempt of their own")
+  end
+
+  it "prices a review round's sub-agents at the model they ran on" do
+    pricing = DemoCalculator::Cost.load_pricing(File.join(PROJECT_ROOT, "demo", "pricing.yml"))
+    evaluation = described_class.new(root: PROJECT_ROOT, workspace: workspace, pricing_path: File.join(PROJECT_ROOT, "demo", "pricing.yml"), run_dir: run_dir, checks: checks, err: StringIO.new)
+    session = "d717cf1b-ab46-44bb-bdf9-60a2d9c17ddc"
+    transcript = File.join(tmp, "proj", "#{session}.jsonl")
+    FileUtils.mkdir_p(File.join(tmp, "proj", session, "subagents"))
+    line = {"type" => "assistant", "timestamp" => "2026-11-21T05:01:10Z", "message" => {"id" => "m1", "model" => "claude-sonnet-5-5", "usage" => {"cache_read_input_tokens" => 1_000_000}}}
+    File.write(File.join(tmp, "proj", session, "subagents", "agent-a.jsonl"), JSON.generate(line) + "\n")
+    File.write(transcript, "")
+    usage = {tokens: {}, cost_usd: 1.0, cost_partial: false, models: ["claude-opus-5-5"]}
+    round = {"started_at" => "2026-11-21T05:01:00Z", "ended_at" => "2026-11-21T05:02:00Z", "usage" => {}, "agent" => {"model" => "claude-opus-5-5"}, "session" => {"id" => session, "transcript" => transcript}}
+    run = {"steps" => {"plan" => {"attempts" => [{"n" => 1, "outcome" => "passed", "usage" => {}, "agent" => {"model" => "claude-opus-5-5"}, "rounds" => [round]}]}}}
+    priced = evaluation.reviewer_priced(usage, run, pricing)
+    expect(priced[:cost_usd]).to be_within(1e-9).of(1.0 + 0.30 - 0.50)
+    expect(priced[:models]).to eq(%w[claude-opus-5-5 claude-sonnet-5-5])
+    expect(priced[:cost_partial]).to be(false)
+    File.write(File.join(tmp, "proj", session, "subagents", "agent-b.jsonl"), "[1]\n\"x\"\n")
+    expect(evaluation.reviewer_priced(usage, run, pricing)[:cost_usd]).to be_within(1e-9).of(1.0 + 0.30 - 0.50)
+    round["session"]["transcript"] = nil
+    expect(evaluation.reviewer_priced(usage, run, pricing)).to include(cost_usd: 1.0, cost_partial: true)
+    round["session"]["transcript"] = transcript
+    File.delete(transcript)
+    expect(evaluation.reviewer_priced(usage, run, pricing)).to include(cost_usd: 1.0, cost_partial: true)
   end
 
   it "labels rows and checks acceptance by the record's goals when only some were queued" do
@@ -156,7 +198,7 @@ RSpec.describe DemoCalculator2::Evaluation do
 
   it "renders the table, the step table and the leak line, and writes eval.json" do
     text = described_class.render(result)
-    expect(text).to include("1st-pass", "a-loops", "step wall", "implement", "leak: hook 1", "0 acceptance paths touched, 1 copied line")
+    expect(text).to include("1st-pass", "a-loops", "step wall", "review", "step tokens", "implement", "leak: hook 1", "0 acceptance paths touched, 1 copied line")
     expect(text).to match(/^01-add-sub\s+done\s/)
     expect(text.lines.grep(/\A02-mul-div\s+not run/)).not_to be_empty
     expect(JSON.parse(File.read(File.join(run_dir, "eval.json"))).keys).to eq(%w[record header rows totals lint leak])
@@ -181,8 +223,8 @@ RSpec.describe DemoCalculator2::Evaluation do
       row = result[:rows].first
       expect(row).to include(machine_wait: 100.0, wall_ex_wait: 500.0, active_ex_wait: 440.0)
       text = described_class.render(result)
-      expect(text).to match(/stopped\s+wait_p\s+bg\s+redeliv\s+lockw\s+wall-lw\s+act-lw\s+gap/)
-      expect(text).to match(/^01-add-sub\s+done\s.*\b10m00s\s+9m00s\s+1m00s\s+\S+\s+\S+\s+\S+\s+1m40s\s+8m20s\s+7m20s\s/)
+      expect(text).to match(/stopped\s+wait_p\s+bg\s+redeliv\s+lockw\s+rv-wait\s+wall-wait\s+act-wait\s+gap/)
+      expect(text).to match(/^01-add-sub\s+done\s.*\b10m00s\s+9m00s\s+1m00s\s+\S+\s+\S+\s+\S+\s+1m40s\s+0s\s+8m20s\s+7m20s\s/)
     end
 
     it "sums the waits in the totals, with no partial mark when every ran row knows them" do
@@ -190,7 +232,7 @@ RSpec.describe DemoCalculator2::Evaluation do
       second_run("retry_backoff" => 30.0)
       expect(result[:totals]).to include("machine_wait" => 130.0, "wall_ex_wait" => 1070.0, "active_ex_wait" => 950.0)
       expect(result[:totals]["partial"]).not_to include("machine_wait")
-      expect(described_class.render(result)).to match(/^total\s.*\s2m10s\s+17m50s\s+15m50s\s/)
+      expect(described_class.render(result)).to match(/^total\s.*\s2m10s\s+0s\s+17m50s\s+15m50s\s/)
     end
 
     it "gives nil totals and a plain table when no row has waits" do

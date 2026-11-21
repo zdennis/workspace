@@ -10,6 +10,90 @@ module DemoCalculator2
     # Acceptance lines shorter than this are too common to show copying.
     MIN_LINE = 40
 
+    # Seconds and tokens the run's review rounds took, which {.step_wall} and {.step_tokens} leave out.
+    #
+    # @param trace [Hash, nil] `workflow trace --json`
+    # @return [Hash, nil] `wall` (Float seconds) and `tokens` (Integer, input + output + cache creation);
+    #   nil when there is no trace or it has no spans, so a missing trace is not shown as no review
+    def self.review(trace)
+      return nil if Array(trace && trace["spans"]).empty?
+      rounds = round_spans(trace)
+      wall = rounds.sum do |span|
+        started = time(span["started_at"])
+        ended = time(span["ended_at"])
+        (started && ended) ? ended - started : 0.0
+      end
+      counted = rounds.filter_map { |span| span.dig("tokens", "total") if span.dig("tokens", "total").is_a?(Numeric) }
+      {wall: wall, tokens: counted.empty? ? nil : counted.sum}
+    end
+
+    # Tokens each step's attempts used, without the review rounds the attempts' spans also count. An attempt
+    # span with no token count leaves its step out, as {.step_wall} does for a span with no end.
+    #
+    # @param trace [Hash, nil] `workflow trace --json`
+    # @return [Hash{String => Integer}] step id => tokens, in first-seen order
+    def self.step_tokens(trace)
+      rounds = round_spans(trace)
+      Array(trace && trace["spans"]).each_with_object({}) do |span, tokens|
+        next unless span["kind"] == "attempt" && span["step"]
+        own = span.dig("tokens", "total")
+        next unless own.is_a?(Numeric)
+        reviewed = rounds.select { |r| r["step"] == span["step"] && r["attempt"] == span["attempt"] }.filter_map { |r| r.dig("tokens", "total") if r.dig("tokens", "total").is_a?(Numeric) }.sum
+        tokens[span["step"]] = tokens.fetch(span["step"], 0) + own - reviewed
+      end
+    end
+
+    # How many review rounds have no attempt span of the same step and attempt to take their tokens out of: the
+    # review row then counts tokens no step row has, and the rows still sum to the item's.
+    #
+    # @param trace [Hash, nil] `workflow trace --json`
+    # @return [Integer]
+    def self.unmatched_rounds(trace)
+      attempts = Array(trace && trace["spans"]).select { |span| span["kind"] == "attempt" && span.dig("tokens", "total").is_a?(Numeric) }
+      round_spans(trace).count { |r| attempts.none? { |a| a["step"] == r["step"] && a["attempt"] == r["attempt"] } }
+    end
+
+    # Tokens of a review round's sub-agents by the model each message ran on, from the sub-agent transcripts' lines.
+    # A message written on several lines counts once, by its last line; only lines inside the window count.
+    #
+    # @param lines [Array<Hash>] parsed transcript lines
+    # @param from [Time, nil] window start
+    # @param to [Time, nil] window end
+    # @return [Hash{String => Hash}] model => `{input:, output:, cache_creation:, cache_read:}`
+    def self.usage_by_model(lines, from: nil, to: nil)
+      messages = {}
+      lines.each do |line|
+        message = line["message"]
+        next unless line["type"] == "assistant" && message.is_a?(Hash) && message["usage"].is_a?(Hash) && message["model"].is_a?(String)
+        at = time(line["timestamp"])
+        next if at && ((from && at < from) || (to && at > to))
+        messages[message["id"] || messages.size] = message
+      end
+      messages.values.each_with_object({}) do |message, models|
+        total = models[message["model"]] ||= DemoCalculator::Tokens::KINDS.keys.to_h { |kind| [kind, 0] }
+        DemoCalculator::Tokens::KINDS.each { |kind, key| total[kind] += message["usage"][key].to_i }
+      end
+    end
+
+    # Dollars to add to a run's cost for review sub-agents that ran on another model than the one their round was
+    # priced at, and the models seen.
+    #
+    # @param by_model [Hash] see {.usage_by_model}
+    # @param priced_model [String, nil] the model the round's tokens were priced at
+    # @param pricing [Hash] the parsed demo/pricing.yml
+    # @return [Hash] `dollars` (Float), `models` (Array) and `unpriced` (true when a model has no price)
+    def self.model_shift(by_model, priced_model, pricing)
+      shift = {dollars: 0.0, models: [], unpriced: false}
+      by_model.each do |model, tokens|
+        shift[:models] << model
+        next if model == priced_model
+        actual = DemoCalculator::Cost.dollars(tokens, model, pricing)
+        base = DemoCalculator::Cost.dollars(tokens, priced_model, pricing)
+        (actual && base) ? shift[:dollars] += actual - base : shift[:unpriced] = true
+      end
+      shift
+    end
+
     # Seconds each step's attempts took, from the trace's attempt spans (an unended span adds nothing).
     #
     # @param trace [Hash, nil] `workflow trace --json`
@@ -23,7 +107,8 @@ module DemoCalculator2
       end
     end
 
-    # Seconds the run spent in machine waits (a lock, a retry backoff), which `active` counts, and wall and active without them.
+    # Seconds the run spent in machine waits (a lock, a retry backoff), which `active` counts, and wall and active without them and without the review rounds' redelivery waits
+    # (which sit in `active` too; a dispatch redelivery is in `stopped`). `machine_wait` is the first part only; wall - machine_wait - review_deliver_wait = wall_ex_wait.
     #
     # @param row [Hash] has `wall` and `active`
     # @param totals [Hash, nil] `workflow trace --json` totals
@@ -34,7 +119,8 @@ module DemoCalculator2
       active = row[:active]
       wait = buckets.values.grep(Numeric).sum
       wait = [wait, active].min if active.is_a?(Numeric)
-      minus = ->(value) { value.is_a?(Numeric) ? [value - wait, 0].max : nil }
+      less = wait + row[:review_deliver_wait].to_f
+      minus = ->(value) { value.is_a?(Numeric) ? [value - less, 0].max : nil }
       {machine_wait: wait, wall_ex_wait: minus.call(row[:wall]), active_ex_wait: minus.call(row[:active])}
     end
 
@@ -123,6 +209,12 @@ module DemoCalculator2
       return "diff scan: #{DemoCalculator::Fmt::UNKNOWN}" unless diff
       "diff scan: #{diff[:paths].size} acceptance path#{"s" unless diff[:paths].size == 1} touched, #{diff[:copied].size} copied line#{"s" unless diff[:copied].size == 1}"
     end
+
+    def self.round_spans(trace)
+      Array(trace && trace["spans"]).select { |span| span["kind"] == "review_round" }
+    end
+
+    private_class_method :round_spans
 
     def self.time(text)
       text && Time.parse(text)

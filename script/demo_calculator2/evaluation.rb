@@ -34,15 +34,18 @@ module DemoCalculator2
         row[:state] = "run file missing" if loaded[index][:missing]
         row.delete(:features)
         unless row[:ran]
-          row.merge!(machine_wait: nil, wall_ex_wait: nil, active_ex_wait: nil, usage: nil, acceptance: nil, step_wall: nil, accept_first_pass: nil, accept_first_recorded: nil, accept_first_disagrees: nil, accept_loops: nil)
+          row.merge!(machine_wait: nil, review_wait: nil, wall_ex_wait: nil, active_ex_wait: nil, usage: nil, acceptance: nil, step_wall: nil, step_tokens: nil, review_unmatched: nil, review_wall: nil, review_tokens: nil, accept_first_pass: nil, accept_first_recorded: nil, accept_first_disagrees: nil, accept_loops: nil)
           next
         end
         row.merge!(Metrics.machine_wait(row, loaded[index][:totals]))
-        row[:usage] = DemoCalculator::EvalReport.usage(loaded[index][:run], pricing)
+        row[:review_wait] = row[:machine_wait] && row[:review_deliver_wait].to_f
+        row[:usage] = reviewer_priced(DemoCalculator::EvalReport.usage(loaded[index][:run], pricing), loaded[index][:run], pricing)
         row[:acceptance] = acceptance(record, row)
         accepted = Metrics.acceptance(loaded[index][:run])
         first = first_attempt(record, row, accepted[:first_head])
-        row.merge!(step_wall: Metrics.step_wall(loaded[index][:trace]), accept_first_pass: first, accept_first_recorded: accepted[:first_recorded],
+        review = Metrics.review(loaded[index][:trace]) || {}
+        row.merge!(step_wall: Metrics.step_wall(loaded[index][:trace]), step_tokens: Metrics.step_tokens(loaded[index][:trace]), review_unmatched: Metrics.unmatched_rounds(loaded[index][:trace]), review_wall: review[:wall],
+          review_tokens: review[:tokens], accept_first_pass: first, accept_first_recorded: accepted[:first_recorded],
           accept_first_disagrees: !first.nil? && !accepted[:first_recorded].nil? && first != accepted[:first_recorded], accept_loops: accepted[:loops])
       end
       last = rows.reverse.find { |row| row[:ran] }
@@ -70,6 +73,8 @@ module DemoCalculator2
         (result[:totals]["first_disagreements"].to_i > 0) ? "* 1st-pass is the runner's verdict; the first attempt's recorded outcome differs (#{result[:totals]["first_disagreements"]})" : "",
         step_table(result[:rows]),
         "",
+        step_token_table(result[:rows]),
+        "",
         "lint: #{DemoCalculator::Fmt.value(result[:lint][:offenses])} offenses in #{DEMO}#{" at #{result[:lint][:head][0, 12]}" if result[:lint][:head]}",
         leak_line(result[:leak]),
         "wrote #{File.join(result[:dir], "eval.json")}"
@@ -77,7 +82,7 @@ module DemoCalculator2
     end
 
     DEMO = DemoCalculator2::DEMO_DIR
-    HEADER = %w[goal state att retry rnd 1st-pass a-loops manual wall active stopped wait_p bg redeliv lockw wall-lw act-lw gap in out cache_w cache_r cost accept].freeze
+    HEADER = %w[goal state att retry rnd 1st-pass a-loops manual wall active stopped wait_p bg redeliv lockw rv-wait wall-wait act-wait gap in out cache_w cache_r cost accept].freeze
 
     # The per-item table and its totals row.
     def self.table(rows, totals)
@@ -90,7 +95,8 @@ module DemoCalculator2
         fmt.value(totals["manual"]), lower.call("wall", fmt.duration(totals["wall"])), lower.call("active", fmt.duration(totals["active"])),
         lower.call("stopped", fmt.duration(totals["stopped"])), lower.call("person_wait", fmt.duration(totals["person_wait"])),
         lower.call("background", fmt.duration(totals["background"])), lower.call("deliver_wait", fmt.duration(totals["deliver_wait"])),
-        lower.call("machine_wait", fmt.duration(totals["machine_wait"])), lower.call("machine_wait", fmt.duration(totals["wall_ex_wait"])),
+        lower.call("machine_wait", fmt.duration(totals["machine_wait"])), lower.call("machine_wait", fmt.duration(totals["review_wait"])),
+        lower.call("machine_wait", fmt.duration(totals["wall_ex_wait"])),
         lower.call("machine_wait", fmt.duration(totals["active_ex_wait"])), "",
         lower.call("input", fmt.count(totals["input"])), lower.call("output", fmt.count(totals["output"])),
         lower.call("cache_creation", fmt.count(totals["cache_creation"])), lower.call("cache_read", fmt.count(totals["cache_read"])),
@@ -105,7 +111,22 @@ module DemoCalculator2
       steps = ran.flat_map { |row| row[:step_wall].keys }.uniq
       return "step wall time: #{DemoCalculator::Fmt::UNKNOWN}" if steps.empty?
       body = steps.map { |step| [step, *ran.map { |row| row[:step_wall][step] ? DemoCalculator::Fmt.duration(row[:step_wall][step]) : DemoCalculator::EvalReport::DASH }] }
+      body << ["review", *ran.map { |row| row[:review_wall] ? DemoCalculator::Fmt.duration(row[:review_wall]) : DemoCalculator::EvalReport::DASH }]
       grid([["step wall", *ran.map { |row| row[:goal][0, 2] }], *body])
+    end
+
+    # Tokens of each step (input + output + cache creation), one column per item, and the review rounds' on their own row.
+    def self.step_token_table(rows)
+      ran = rows.select { |row| row[:ran] }
+      steps = ran.flat_map { |row| row[:step_tokens].keys }.uniq
+      return "step tokens: #{DemoCalculator::Fmt::UNKNOWN}" if steps.empty?
+      body = steps.map { |step| [step, *ran.map { |row| row[:step_tokens][step] ? DemoCalculator::Fmt.count(row[:step_tokens][step]) : DemoCalculator::EvalReport::DASH }] }
+      body << ["review", *ran.map { |row| row[:review_tokens] ? DemoCalculator::Fmt.count(row[:review_tokens]) : DemoCalculator::EvalReport::DASH }]
+      lines = [grid([["step tokens", *ran.map { |row| row[:goal][0, 2] }], *body])]
+      ran.select { |row| row[:review_unmatched].to_i > 0 }.each do |row|
+        lines << "note: #{row[:goal]} has #{row[:review_unmatched]} review round(s) with no attempt of their own; the review row counts them and no step row does"
+      end
+      lines.join("\n")
     end
 
     def self.ran_cells(row)
@@ -118,7 +139,7 @@ module DemoCalculator2
       accept = row[:acceptance]
       [row[:goal], row[:state], row[:attempts], row[:retries], row[:review_rounds], first_pass_cell(row[:accept_first_pass], row[:accept_first_disagrees]), row[:accept_loops],
         row[:manual], fmt.duration(row[:wall]), fmt.duration(row[:active]), fmt.duration(row[:stopped]), fmt.duration(row[:person_wait]), fmt.duration(row[:background]), fmt.duration(row[:deliver_wait]),
-        fmt.duration(row[:machine_wait]), fmt.duration(row[:wall_ex_wait]), fmt.duration(row[:active_ex_wait]), fmt.duration(row[:gap]), token.call(:input), token.call(:output), token.call(:cache_creation), token.call(:cache_read),
+        fmt.duration(row[:machine_wait]), fmt.duration(row[:review_wait]), fmt.duration(row[:wall_ex_wait]), fmt.duration(row[:active_ex_wait]), DemoCalculator::EvalReport.gap_cell(row), token.call(:input), token.call(:output), token.call(:cache_creation), token.call(:cache_read),
         fmt.total(fmt.dollars(row[:usage][:cost_usd]), row[:usage][:cost_partial]),
         if accept
           accept[:passed].empty? ? "FAIL" : "pass"
@@ -152,7 +173,60 @@ module DemoCalculator2
         *Metrics.possible_lines(leak[:possible_classes])].join("\n")
     end
 
+    # The run's usage with each review round's sub-agent tokens priced at the model they ran on (a round's own
+    # `agent.model` names only the review pane's), read from the sub-agent transcripts under the round's session.
+    # A round whose transcripts can't be read keeps its price, and the cost is marked partial.
+    #
+    # @param usage [Hash] see {DemoCalculator::EvalReport.usage}
+    # @param run [Hash] a stored run
+    # @param pricing [Hash] the parsed demo/pricing.yml
+    # @return [Hash] the usage with its cost, models and `cost_partial` corrected
+    def reviewer_priced(usage, run, pricing)
+      return usage unless usage[:cost_usd]
+      shift = 0.0
+      models = usage[:models].dup
+      partial = usage[:cost_partial]
+      DemoCalculator::EvalRows.attempts(run).each do |attempt|
+        Array(attempt["rounds"]).each do |round|
+          next if round["ended"] == "redelivered" || round["usage"].nil?
+          by_model = round_models(round)
+          if by_model.nil?
+            partial = true
+            next
+          end
+          result = Metrics.model_shift(by_model, round.dig("agent", "model") || attempt.dig("agent", "model"), pricing)
+          shift += result[:dollars]
+          models |= result[:models]
+          partial = true if result[:unpriced]
+        end
+      end
+      usage.merge(cost_usd: usage[:cost_usd] + shift, models: models.sort, cost_partial: partial)
+    end
+
     private
+
+    # @return [Hash, nil] {Metrics.usage_by_model} over the round's sub-agent transcripts; nil when they can't be read
+    def round_models(round)
+      path = round.dig("session", "transcript")
+      id = round.dig("session", "id")
+      return nil unless path.is_a?(String) && id.is_a?(String) && File.basename(path, ".jsonl") == id
+      return nil unless File.file?(path)
+      dir = File.join(File.dirname(path), id, "subagents")
+      return {} unless File.directory?(dir)
+      from = Time.parse(round["started_at"].to_s)
+      to = round["ended_at"] ? Time.parse(round["ended_at"].to_s) + 2 : nil
+      lines = Dir.children(dir).grep(/\Aagent-.*\.jsonl\z/).sort.flat_map do |name|
+        File.foreach(File.join(dir, name)).filter_map do |line|
+          parsed = JSON.parse(line)
+          parsed if parsed.is_a?(Hash)
+        rescue JSON::ParserError
+          nil
+        end
+      end
+      Metrics.usage_by_model(lines, from: from, to: to)
+    rescue SystemCallError, ArgumentError
+      nil
+    end
 
     # The goal of each queue item, in order: the record's `goals`, or all of GOALS for a record that predates it.
     def record_goals(record)
@@ -170,7 +244,7 @@ module DemoCalculator2
       totals = DemoCalculator::EvalReport.totals(rows, acceptance_passed: checked.count { |row| row[:acceptance][:failed].empty? },
         acceptance_of: checked.size, lint: lint[:offenses])
       known = ran.map { |row| row[:machine_wait] }.select { |v| v.is_a?(Numeric) }
-      %w[machine_wait wall_ex_wait active_ex_wait].each do |key|
+      %w[machine_wait review_wait wall_ex_wait active_ex_wait].each do |key|
         values = ran.map { |row| row[key.to_sym] }.select { |v| v.is_a?(Numeric) }
         totals[key] = values.empty? ? nil : values.sum
       end
