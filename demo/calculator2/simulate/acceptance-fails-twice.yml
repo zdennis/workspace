@@ -1,0 +1,11 @@
+# Acceptance fails twice: the one loop back to implement is spent, so the run stops for a person.
+inputs:
+  task: "Deliver the goal in goals/01.md"
+  goal: goals/01.md
+  acceptance: script/acceptance_runner
+steps:
+  plan:
+    - reviews: {supportive: approve, skeptical: approve, implementer: approve}
+  acceptance:
+    - {require: {exec: fail}}
+    - {require: {exec: fail}}

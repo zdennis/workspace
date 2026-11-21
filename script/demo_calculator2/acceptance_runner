@@ -1,0 +1,81 @@
+#!/usr/bin/env ruby
+# Runs the cumulative acceptance groups for one calculator2 goal against a checkout.
+# Usage: acceptance_runner [--root DIR] GOAL_PATH   (goal file named 0N-*.md runs groups 1..N)
+# Env: CALC2_ACCEPTANCE_REF (default refs/demo-calc2/acceptance-base)
+# Exit: 0 all pass, 1 a test failed, 2 usage or setup error.
+require "open3"
+require "optparse"
+require "rbconfig"
+require "tmpdir"
+
+def die(message)
+  warn message
+  exit 2
+end
+
+root = nil
+parser = OptionParser.new { |o| o.on("--root DIR") { |d| root = File.expand_path(d) } }
+begin
+  args = parser.parse(ARGV)
+rescue OptionParser::ParseError => e
+  die e.message
+end
+die "usage: acceptance_runner [--root DIR] GOAL_PATH" unless args.size == 1
+
+group = File.basename(args[0])[/\A0([1-7])-.*\.md\z/, 1]
+die "goal file name must look like 0N-name.md with N in 1..7: #{File.basename(args[0])}" unless group
+group = group.to_i
+if root.nil?
+  top, _, st = Open3.capture3("git", "-C", Dir.pwd, "rev-parse", "--show-toplevel")
+  die "not inside a git repository: #{Dir.pwd}" unless st.success?
+  root = top.strip
+end
+die "no such directory: #{root}" unless File.directory?(root)
+
+ref = ENV.fetch("CALC2_ACCEPTANCE_REF", "refs/demo-calc2/acceptance-base")
+_, _, check = Open3.capture3("git", "-C", root, "rev-parse", "--verify", "--quiet", "#{ref}^{commit}")
+die "acceptance ref is missing: #{ref} (in #{root})" unless check.success?
+
+dirty, _, st = Open3.capture3("git", "-C", root, "status", "--porcelain", "--untracked-files=normal")
+die "cannot read git status in #{root}" unless st.success?
+if dirty.lines.any? { |l| l.start_with?("?? ") }
+  puts "refused: untracked files present in #{root}; commit or remove them"
+  exit 1
+end
+
+Dir.mktmpdir("calc2-acceptance") do |tmp|
+  tar, err, st = Open3.capture3("git", "-C", root, "archive", ref, "demo/calculator2/acceptance", binmode: true)
+  die "git archive failed: #{err.lines.first&.strip}" unless st.success?
+  _, err, st = Open3.capture3("tar", "-x", "-C", tmp, stdin_data: tar, binmode: true)
+  die "tar extract failed: #{err.lines.first&.strip}" unless st.success?
+
+  env = {"CALC2_ROOT" => root, "RUBYOPT" => nil, "RUBYLIB" => nil, "BUNDLE_GEMFILE" => nil, "MT_NO_PLUGINS" => "1"}
+  failures = []
+  summary = (1..group).map do |n|
+    file = Dir.glob(File.join(tmp, "demo/calculator2/acceptance/group_#{n}_*_test.rb")).first
+    die "group #{n} test file missing in #{ref}" unless file
+    out, st = Open3.capture2e(env, RbConfig.ruby, file, "--seed", "0")
+    next "group #{n}: pass" if st.success?
+
+    found = out.scan(/^\s*\d+\) (?:Failure|Error):\n\S+#(\S+) \[[^\]]*\]:\n(.*?)(?=\n\n|\z)/m)
+    found = out.scan(/^\s*\d+\) (?:Failure|Error):\n\S+#(\S+):?\n(.*?)(?=\n\n|\z)/m) if found.empty?
+    if found.empty?
+      failures << ["group #{n}", nil]
+    else
+      found.each { |name, msg| failures << ["group #{n} #{name}", msg] }
+    end
+    "group #{n}: FAIL"
+  end
+
+  puts summary
+  failures.first(8).each do |name, msg|
+    if msg.nil?
+      puts "\n#{name} failed (no summary)"
+      next
+    end
+    puts "\nFAILED #{name}"
+    msg.lines.map(&:rstrip).reject { |l| l =~ /\.rb:\d+/ }.first(5).each { |l| puts "  #{l[0, 200]}" }
+  end
+  puts "\n(#{failures.size - 8} more failures not shown)" if failures.size > 8
+  exit(failures.empty? ? 0 : 1)
+end
