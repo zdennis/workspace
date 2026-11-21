@@ -100,14 +100,19 @@ module Workspace
         return Subject.new(:bash, nil, nil, nil, true) unless command.is_a?(String)
         raw = @command_pieces.raw_pieces(command)
         Subject.new(:bash, command, (@command_pieces.pieces(command) + raw + @command_pieces.unquoted_pieces(command)).uniq, raw,
-          @command_pieces.substitution?(command) || @command_pieces.redirect?(command) || @command_pieces.opaque?(command),
+          @command_pieces.substitution?(command) || @command_pieces.redirect?(command) || @command_pieces.opaque?(command) ||
+            @command_pieces.wrapper_writes?(command),
           nil, raw.map { |piece| [piece, @command_pieces.unwrapped(piece)].uniq })
       elsif PATH_TOOLS.include?(name)
         key = (name == "NotebookEdit") ? "notebook_path" : "file_path"
         path = input[key] || input[key.to_sym]
         return Subject.new(:path) unless path.is_a?(String) && !path.empty?
         base = cwd.is_a?(String) ? cwd : Dir.pwd
-        expanded = File.expand_path(literal_tilde(path), base)
+        begin
+          expanded = File.expand_path(literal_tilde(path), base)
+        rescue ArgumentError
+          return Subject.new(:path, nil, nil, nil, true)
+        end
         Subject.new(:path, nil, nil, nil, nil, [expanded, resolve(expanded, 0)])
       else
         Subject.new(:none)
@@ -124,7 +129,10 @@ module Workspace
         if action == "allow"
           !subject.unsafe && subject.grouped.flatten.any? { |piece| File.fnmatch(pattern, piece, File::FNM_DOTMATCH) }
         else
-          subject.pieces.any? { |piece| File.fnmatch(pattern, piece, File::FNM_DOTMATCH) }
+          subject.pieces.any? do |piece|
+            File.fnmatch(pattern, piece, File::FNM_DOTMATCH) ||
+              File.fnmatch(pattern, piece.sub(/\A\S+/, &:downcase), File::FNM_DOTMATCH)
+          end
         end
       when :path
         return false unless subject.forms
@@ -155,7 +163,7 @@ module Workspace
       layer_default = most_restrictive_default
       return {action: "ask", rule: "default"} unless layer_default
       action, label = layer_default
-      action = "ask" if action == "allow" && subject.kind == :bash && subject.unsafe
+      action = "ask" if action == "allow" && subject.unsafe
       {action: action, rule: label}
     end
 

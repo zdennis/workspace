@@ -160,6 +160,20 @@ RSpec.describe Workspace::BashCommandPieces do
     end
   end
 
+  describe "#wrapper_writes?" do
+    ["time -o F git status", "time --output=F git status", "time --output F git status", "time -a git status",
+      "time --append git status", "nice time -o F git status", "command time -ao F git status"].each do |command|
+      it "is true: #{command}" do
+        expect(splitter.wrapper_writes?(command)).to be true
+      end
+    end
+
+    it "is false for time without a file option" do
+      expect(splitter.wrapper_writes?("time git status")).to be false
+      expect(splitter.wrapper_writes?("time -p -f %e git status")).to be false
+    end
+  end
+
   describe "#opaque? for hidden commands" do
     [
       "env -S 'rm -rf /'", "env -Srm", "env --split-string=x", "-- rm -rf /", "trap 'rm x' EXIT", "alias x=rm",

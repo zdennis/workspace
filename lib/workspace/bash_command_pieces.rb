@@ -109,6 +109,14 @@ module Workspace
       false
     end
 
+    # Whether a `time` wrapper in a piece writes a file: `-o FILE`, `--output`, `-a` or `--append`, which the
+    # wrapper skipping would otherwise hide.
+    # @param command [String] a Bash command
+    # @return [Boolean]
+    def wrapper_writes?(command)
+      split(command.scrub).any? { |piece| leading(piece)&.at(4) }
+    end
+
     private
 
     KEYWORDS = %w(if then elif else fi do done while until for case esac function { } [[ !).freeze
@@ -122,6 +130,8 @@ module Workspace
     INTERPRETER_NAME = /\A(?:perl|python[\d.]*|ruby|node|osascript|script|su)\z/
     INLINE_FLAGS = {SHELL_NAME => COMBINED_C, INTERPRETER_NAME => COMBINED_INLINE}.freeze
     OPAQUE_WORD = /['"\\${*?]/
+    # `time` options that make it write a file (`-o FILE`, `--output`, `-a`/`--append`, alone or combined).
+    TIME_WRITES = /\A(?:--(?:output|append)\b|-[a-zA-Z]*[oa])/
 
     def opaque_piece?(piece)
       word, rest, name, flagged = leading(piece)
@@ -405,11 +415,12 @@ module Workspace
       wrapper = nil
       positionals = 0
       hidden = false
+      writes = false
       until text.empty?
         word, rest = take(text)
         name = program_name(word)
         if only && (ASSIGNMENT.match?(word) || (WRAPPERS.include?(name) && !only.include?(name)))
-          return [word, rest, name, hidden]
+          return [word, rest, name, hidden, writes]
         elsif ASSIGNMENT.match?(word)
           text = rest
         elsif WRAPPERS.include?(name)
@@ -421,15 +432,16 @@ module Workspace
           text = rest
           kind = wrapper_option(wrapper, word)
           hidden = true if kind == :unknown
+          writes = true if wrapper == "time" && TIME_WRITES.match?(word)
           text = take(rest).last if kind == :value
         elsif wrapper && positionals > 0
           positionals -= 1
           text = rest
         else
-          return [word, rest, name, hidden]
+          return [word, rest, name, hidden, writes]
         end
       end
-      hidden ? [nil, "", nil, true] : nil
+      hidden ? [nil, "", nil, true, writes] : nil
     end
 
     # @return [Symbol] `:value` when the option takes the next word, `:flag` when it stands alone (an attached

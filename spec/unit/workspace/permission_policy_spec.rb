@@ -341,6 +341,36 @@ RSpec.describe Workspace::PermissionPolicy do
       end
     end
 
+    describe "time wrappers that write a file" do
+      let(:allow_status) { [layer([rule("Bash", "allow", "git status*")], default: "ask")] }
+
+      [
+        "command time -o ~/.zshrc git status", "nice time -o /tmp/zz git status", "time -a -o F git status",
+        "time --output=F git status", "time --output F git status", "time -oF git status", "time --append git status"
+      ].each do |command|
+        it "does not allow #{command}" do
+          expect(bash(allow_status, command)[:action]).to eq("ask")
+        end
+      end
+
+      it "still allows a plain time" do
+        expect(bash(allow_status, "time git status")[:action]).to eq("allow")
+        expect(bash(allow_status, "time -p git status")[:action]).to eq("allow")
+      end
+    end
+
+    it "matches the command word of a deny or ask rule in any case, but allow only as written" do
+      expect(bash([layer([rule("Bash", "deny", "rm *")], default: "allow")], "RM -rf x")[:action]).to eq("deny")
+      expect(bash([layer([rule("Bash", "deny", "rm *")], default: "allow")], "nice Rm -rf x")[:action]).to eq("deny")
+      expect(bash([layer([rule("Bash", "ask", "git push*")], default: "allow")], "GIT push")[:action]).to eq("ask")
+      expect(bash([layer([rule("Bash", "allow", "git status*")], default: "ask")], "GIT status")[:action]).to eq("ask")
+    end
+
+    it "asks, not raises, for a file path holding a NUL byte" do
+      layers = [layer([rule("Write", "allow", "/work/**")], default: "allow")]
+      expect(decide(layers, "Write", {"file_path" => "/work/a\0b"})[:action]).to eq("ask")
+    end
+
     it "never allows a non-String command by pattern or default" do
       layers = [layer([rule("Bash", "deny", "rm *"), rule("Bash", "allow", "git*")], default: "allow")]
       expect(decide(layers, "Bash", {"command" => %w[rm -rf x]})[:action]).to eq("ask")
@@ -374,7 +404,7 @@ RSpec.describe Workspace::PermissionPolicy do
   end
 
   it "takes the pieces splitter as an injected keyword" do
-    pieces = instance_double(Workspace::BashCommandPieces, pieces: ["x"], raw_pieces: ["x"], unquoted_pieces: [], unwrapped: "x", substitution?: false, redirect?: false, opaque?: false)
+    pieces = instance_double(Workspace::BashCommandPieces, pieces: ["x"], raw_pieces: ["x"], unquoted_pieces: [], unwrapped: "x", substitution?: false, redirect?: false, opaque?: false, wrapper_writes?: false)
     policy = described_class.new(layers: [layer([rule("Bash", "allow", "x")])], command_pieces: pieces)
     expect(policy.decide(tool_name: "Bash", tool_input: {"command" => "anything"}, cwd: "/")[:action]).to eq("allow")
   end
