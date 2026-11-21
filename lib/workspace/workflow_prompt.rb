@@ -17,7 +17,7 @@ module Workspace
       "with the evidence that it is met (a test name, command output, or file:line). If one is not met, keep " \
       "working; if you cannot meet it, report stuck with what is missing (needs_input only for a question " \
       "a person must answer) instead of done. If a test this run wrote earlier has a plainly wrong expectation " \
-      "(arithmetic, a typo) that contradicts the brief, correct it, commit, and say so in your status detail; " \
+      "(arithmetic, a typo) that contradicts the brief, correct it (never loosen or delete an assertion to make it pass), commit, and say so in your status detail; " \
       "ask (needs_input) only when the brief itself is ambiguous."
     # @param composer [Workspace::InstructionComposer] builds a step's instructions from its packs
     # @param git [Workspace::Git] reads the checkout's branch for `{{branch}}`
