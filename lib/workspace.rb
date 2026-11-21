@@ -1103,9 +1103,11 @@ module Workspace
     # author pane is split through it.
     pane_dispatch = PaneDispatch.new(snapshot_client: agent_snapshot_client, sender: send_command, binder: binding_command, library: library,
       runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux, project_config: project_config, agent_commands: agent_commands)
+    agentd_config = AgentdConfig.new(config_resolver: config_resolver, project_config: project_config,
+      lineage: lineage, error_output: error_output)
     workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
       snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new, error_output: error_output,
-      spawner: pane_dispatch)
+      spawner: pane_dispatch, poll_interval_for: agentd_config.method(:poll_interval_for))
     workflow_gate_note = WorkflowGateNote.new(notes: notes_command)
     workflow_guard = WorkflowGuard.new(git_path: Which.path("git") || "git")
     workflow_checker = WorkflowCheck.new
@@ -1355,8 +1357,6 @@ module Workspace
       lock_holder: lock_holder)
 
     agent_recovery_config = AgentRecoveryConfig.new(config_resolver: config_resolver, project_config: project_config,
-      lineage: lineage, error_output: error_output)
-    agentd_config = AgentdConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
     ask_command = Commands::Ask.new(config: config, project_detector: project_detector, alert_config: alert_config,
       pane_sender: send_command, event_log: event_log, output: output, error_output: error_output)
