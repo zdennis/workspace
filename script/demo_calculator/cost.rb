@@ -42,12 +42,17 @@ module DemoCalculator
       YAML.safe_load_file(path)
     end
 
+    # The cost in dollars, or nil when the model is not in the pricing table.
+    def self.dollars(tokens, model, pricing)
+      rates = (pricing["models"] || {})[model]
+      return nil unless rates
+      Tokens::KINDS.keys.sum { |kind| tokens[kind].to_i * rates[kind.to_s].to_f } / 1_000_000.0
+    end
+
     # "≈$x.xx", or "?" when the model is not in the pricing table.
     def self.price(tokens, model, pricing)
-      rates = (pricing["models"] || {})[model]
-      return Fmt::UNKNOWN unless rates
-      dollars = Tokens::KINDS.keys.sum { |kind| tokens[kind].to_i * rates[kind.to_s].to_f } / 1_000_000.0
-      format("≈$%.2f", dollars)
+      dollars = dollars(tokens, model, pricing)
+      dollars ? format("≈$%.2f", dollars) : Fmt::UNKNOWN
     end
   end
 
@@ -67,6 +72,27 @@ module DemoCalculator
 
     def self.not_run
       NOT_RUN
+    end
+
+    # "1h02m", "4m05s" or "9s"; "?" for nil.
+    def self.duration(seconds)
+      return UNKNOWN if seconds.nil?
+      hours, rest = seconds.round.divmod(3600)
+      minutes, secs = rest.divmod(60)
+      if hours > 0 then format("%dh%02dm", hours, minutes)
+      elsif minutes > 0 then format("%dm%02ds", minutes, secs)
+      else format("%ds", secs)
+      end
+    end
+
+    # A number with thousands separators; "?" for nil.
+    def self.count(number)
+      number.nil? ? UNKNOWN : number.to_i.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
+    end
+
+    # "≈$x.xx"; "?" for nil.
+    def self.dollars(amount)
+      amount.nil? ? UNKNOWN : format("≈$%.2f", amount)
     end
   end
 end

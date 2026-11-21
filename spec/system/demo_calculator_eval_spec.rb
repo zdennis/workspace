@@ -1,0 +1,157 @@
+require "spec_helper"
+require "tmpdir"
+require "json"
+require "fileutils"
+require "stringio"
+
+load File.join(PROJECT_ROOT, "script", "demo-calculator")
+load File.join(PROJECT_ROOT, "script", "demo_calculator", "compare.rb")
+
+RSpec.describe DemoCalculator::Evaluation do
+  let(:tmp) { Dir.mktmpdir }
+  let(:state) { File.join(tmp, "state") }
+  let(:run_dir) { File.join(tmp, "rundir") }
+  let(:fixtures) { File.join(PROJECT_ROOT, "spec", "fixtures", "demo_calculator", "runs") }
+  let(:plain) { JSON.parse(File.read(File.join(fixtures, "plain_pass.json"))) }
+  let(:missing) { JSON.parse(File.read(File.join(fixtures, "missing_usage.json"))) }
+  let(:pricing_path) { File.join(PROJECT_ROOT, "demo", "pricing.yml") }
+  let(:stubs) { File.join(tmp, "stubs") }
+
+  after { FileUtils.rm_rf(tmp) }
+
+  def write_json(path, data)
+    FileUtils.mkdir_p(File.dirname(path))
+    File.write(path, JSON.generate(data))
+  end
+
+  def write_run(sub, fixture)
+    id = fixture["run"]["id"]
+    write_json(File.join(state, ".workflows", sub, "#{id}.json"), fixture["run"])
+    File.write(File.join(state, ".workflows", sub, "#{id}.events.jsonl"), fixture["events"].map { |e| JSON.generate(e) }.join("\n") + "\n")
+    write_json(File.join(stubs, "trace-#{id}.json"), {"totals" => fixture["totals"]})
+  end
+
+  let(:workspace) do
+    path = File.join(tmp, "fake-workspace")
+    File.write(path, <<~SH)
+      #!/bin/sh
+      if [ "$1" = "capabilities" ]; then cat #{stubs}/caps.json
+      elif [ "$1 $2 $3" = "work-queue history list" ]; then cat #{stubs}/history.json
+      elif [ "$1 $2" = "work-queue list" ]; then cat #{stubs}/queue.json
+      elif [ "$1 $2" = "workflow trace" ]; then cat #{stubs}/trace-$3.json
+      else echo "unexpected: $@" >&2; exit 1; fi
+    SH
+    File.chmod(0o755, path)
+    path
+  end
+
+  before do
+    FileUtils.mkdir_p(stubs)
+    write_json(File.join(stubs, "caps.json"), {"paths" => {"hook_events" => File.join(state, ".events")}})
+    write_run("archive", plain)
+    write_run("runs", missing)
+    write_json(File.join(stubs, "history.json"), {"entries" => [{"id" => "q1", "result" => {"run_id" => plain["run"]["id"]}}]})
+    write_json(File.join(stubs, "queue.json"), {"queues" => [{"workspace" => "ws", "items" => [{"id" => "q2", "run_id" => missing["run"]["id"]}]}]})
+    write_json(File.join(run_dir, "run.json"), {
+      "stamp" => "20261121T050000Z", "branch" => "calc-demo/20261121T050000Z", "base_sha" => "b" * 40,
+      "workspace" => {"sha" => "w" * 40, "version" => "1.0"},
+      "items" => [{"workflow" => "calc-01-add-sub", "id" => "q1"}, {"workflow" => "calc-02-mul-div", "id" => "q2"},
+        {"workflow" => "calc-03-div-zero", "id" => "q3"}],
+      "definitions" => {"calc-01-add-sub" => "x"}
+    })
+  end
+
+  let(:checks) do
+    Class.new do
+      attr_reader :acceptance_calls
+
+      def acceptance(base_sha:, head:, index:)
+        (@acceptance_calls ||= []) << [head, index]
+        raise DemoCalculator::EvalChecks::Error, "eval: no groups" if index == 2
+        {passed: (1..index).to_a, failed: [], regressions: []}
+      end
+
+      def lint(head:, gemfile:) = 4
+
+      def leak_check(hook_files:, transcripts:, from:, to: nil) = {hook: 0, transcript: {}}
+    end.new
+  end
+
+  def evaluation(**options)
+    described_class.new(root: PROJECT_ROOT, workspace: workspace, pricing_path: pricing_path, run_dir: run_dir,
+      checks: checks, err: StringIO.new, **options)
+  end
+
+  it "maps items to runs, shows not run after the stop and ? and >= where data is missing" do
+    result = evaluation.call
+    text = described_class.render(result)
+    lines = text.lines.map(&:chomp)
+    expect(lines.grep(/\Acalc-03-div-zero\s+not run/)).not_to be_empty
+    second = lines.find { |l| l.start_with?("calc-02-mul-div") }
+    expect(second).to include("?")
+    expect(lines.find { |l| l.start_with?("total") }).to include("≥")
+    expect(text).to include("lint: 4 offenses")
+    expect(result[:rows].map { |r| r[:ran] }).to eq([true, true, false])
+  end
+
+  it "writes eval.json with the keys Compare reads" do
+    evaluation.call
+    document = JSON.parse(File.read(File.join(run_dir, "eval.json")))
+    expect(document.keys).to eq(%w[record header rows totals lint leak])
+    expect(document["header"].keys).to eq(%w[model agent_version base_sha workspace_sha price_date])
+    totals = document["totals"]
+    expect(totals).to include("attempts", "retries", "review_rounds", "wall", "active", "stopped", "input", "output",
+      "cache_creation", "cache_read", "cost_usd", "acceptance_passed", "lint", "partial")
+    expect(totals["cost_usd"]).to be_a(Numeric)
+    expect(totals["partial"]).to include("cost_usd")
+    expect(totals["lint"]).to eq(4)
+    expect(totals["acceptance_passed"]).to be_nil
+    expect(document["rows"][2]["state"]).to eq("not run")
+    expect(DemoCalculator::Compare.select([document], last: 1)).to eq([document])
+  end
+
+  it "scores acceptance per item at its own ending head and shows ? when the check raises" do
+    result = evaluation.call
+    expect(checks.acceptance_calls.map(&:last)).to eq([1, 2])
+    expect(result[:rows][1][:acceptance]).to be_nil
+  end
+
+  it "finds the newest record when no run dir is given" do
+    newer = File.join(tmp, "root", "tmp", "demo-calculator", "runs", "20270101T000000Z")
+    FileUtils.mkdir_p(newer)
+    FileUtils.cp(File.join(run_dir, "run.json"), File.join(newer, "run.json"))
+    FileUtils.mkdir_p(File.join(tmp, "root", "tmp", "demo-calculator", "runs", "20260101T000000Z"))
+    File.write(File.join(tmp, "root", "tmp", "demo-calculator", "runs", "20260101T000000Z", "run.json"), "{}")
+    described_class.new(root: File.join(tmp, "root"), workspace: workspace, pricing_path: pricing_path, checks: checks, err: StringIO.new).call
+    expect(File.exist?(File.join(newer, "eval.json"))).to be(true)
+  end
+
+  it "refuses with a clear error when there is no record" do
+    expect { described_class.new(root: tmp, workspace: workspace, pricing_path: pricing_path, checks: checks).call }
+      .to raise_error(described_class::Error, /no run record/)
+  end
+
+  describe "the eval verb" do
+    it "prints one parseable document with --json" do
+      out = StringIO.new
+      ENV["WORKSPACE_BIN"] = workspace
+      status = DemoCalculator.main(["eval", "--run", run_dir, "--json"], out: out, err: StringIO.new)
+      expect(status).to eq(0)
+      document = JSON.parse(out.string)
+      expect(document["rows"].size).to eq(3)
+      expect(document["totals"]["acceptance_passed"]).to be_nil
+      expect(File.exist?(File.join(run_dir, "eval.json"))).to be(true)
+    ensure
+      ENV.delete("WORKSPACE_BIN")
+    end
+
+    it "prints the table by default" do
+      out = StringIO.new
+      ENV["WORKSPACE_BIN"] = workspace
+      DemoCalculator.main(["eval", "--run", run_dir], out: out, err: StringIO.new)
+      expect(out.string).to include("not run").and include("Eval of 20261121T050000Z")
+    ensure
+      ENV.delete("WORKSPACE_BIN")
+    end
+  end
+end

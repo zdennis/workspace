@@ -4,6 +4,7 @@
 # Runs the calculator demo again and again: `reset` puts demo/calculator back to its stub and clears the
 # demo workspace's work queue; `run` does that on a fresh calc-demo/<stamp> branch, installs the demo
 # workflows, queues all seven and writes a run record.
+# `eval` scores a recorded run: a table per workflow plus eval.json beside run.json.
 # See demo/calculator/README.md.
 
 require "fileutils"
@@ -11,6 +12,7 @@ require "json"
 require "open3"
 require "optparse"
 
+require_relative "demo_calculator/evaluation"
 require_relative "demo_calculator/run_record"
 require_relative "demo_calculator/wait"
 
@@ -326,14 +328,24 @@ module DemoCalculator
     raise OptionParser::InvalidArgument, e.message
   end
 
+  def self.evaluate(root, workspace, options, out, err)
+    result = Evaluation.new(root: root, workspace: workspace, name: options[:name], run_dir: options[:run_dir],
+      pricing_path: File.join(root, "demo", "pricing.yml"), err: err).call
+    out.puts(options[:json] ? JSON.pretty_generate(result[:document]) : Evaluation.render(result))
+    0
+  end
+
   def self.main(argv, out: $stdout, err: $stderr)
-    options = {dry_run: false, name: nil, base: nil, out_dir: nil, wait: false, held_limit: 1200, timeout: 14_400}
+    options = {run_dir: nil, json: false, dry_run: false, name: nil, base: nil, out_dir: nil, wait: false, held_limit: 1200, timeout: 14_400}
     parser = OptionParser.new do |o|
-      o.banner = "Usage: script/demo-calculator reset|run [--name WORKSPACE] [--base REF] [--out DIR] [--wait] [--held-limit DUR] [--timeout DUR] [--dry-run]\n" \
+      o.banner = "Usage: script/demo-calculator reset|run|eval [--name WORKSPACE] [--base REF] [--out DIR] [--wait] [--held-limit DUR] [--timeout DUR] [--dry-run]\n" \
+        "       eval [--run DIR] [--name WORKSPACE] [--json]\n" \
         "  reset  put demo/calculator back to its stub and empty the workspace's work queue\n" \
         "  run    on a new calc-demo/<stamp> branch: empty the queue, drop the acceptance tests, reset the stub,\n" \
         "         install the demo workflows (adds them to the global workflows.sources), queue all seven,\n" \
         "         start the first and write run.json; with --wait, watch the queue until it stops\n" \
+        "  eval   score a recorded run: a table per workflow with attempts, time, tokens, cost, acceptance and lint,\n" \
+        "         written to eval.json beside run.json (default: the newest record under tmp/demo-calculator/runs)\n" \
         "Run it from a clean worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
       o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory)") { |v| options[:name] = v }
       o.on("--base REF", "run: the ref to branch from (default HEAD; required on a calc-demo/* branch)") { |v| options[:base] = v }
@@ -341,20 +353,23 @@ module DemoCalculator
       o.on("--wait", "run: watch the queue until it is empty, paused, has a held item past the limit or times out") { options[:wait] = true }
       o.on("--held-limit DUR", "run --wait: stop when an item stays held this long, as Ns, Nm or Nh (default 20m)") { |v| options[:held_limit] = duration(v) }
       o.on("--timeout DUR", "run --wait: stop after this long in all, as Ns, Nm or Nh (default 4h)") { |v| options[:timeout] = duration(v) }
+      o.on("--run DIR", "eval: the directory holding run.json (default: the newest under tmp/demo-calculator/runs)") { |v| options[:run_dir] = v }
+      o.on("--json", "eval: print the eval.json document instead of the table") { options[:json] = true }
       o.on("--dry-run", "Print the commands that change something instead of running them") { options[:dry_run] = true }
     end
     verb = parser.parse(argv).first
-    unless %w[reset run].include?(verb)
+    unless %w[reset run eval].include?(verb)
       err.puts parser.help
       return 1
     end
     root = File.expand_path("..", __dir__)
     workspace = ENV["WORKSPACE_BIN"] || File.join(root, "bin", "workspace")
+    return evaluate(root, workspace, options, out, err) if verb == "eval"
     Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out,
       base: options[:base], out_dir: options[:out_dir], wait: options[:wait],
       held_limit: options[:held_limit], timeout: options[:timeout]).public_send(verb)
     0
-  rescue Refused, OptionParser::ParseError => e
+  rescue Refused, Evaluation::Error, OptionParser::ParseError => e
     err.puts "demo-calculator: #{e.message}"
     1
   end
