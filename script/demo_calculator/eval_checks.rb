@@ -17,6 +17,18 @@ module DemoCalculator
     # Groups use the ruby gems of the plain install, not the caller's bundle.
     CLEAN_RUBY_ENV = {"BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "RUBYLIB" => nil}.freeze
 
+    # What Bundler stores in BUNDLER_ORIG_* for a variable that was not set.
+    BUNDLER_UNSET = "BUNDLER_ENVIRONMENT_PRESERVER_INTENTIONALLY_NIL".freeze
+
+    # CLEAN_RUBY_ENV plus GEM_HOME and GEM_PATH put back to what they were before
+    # `bundle exec` pointed them at the bundle (which may lack minitest).
+    def self.clean_ruby_env(env = ENV)
+      CLEAN_RUBY_ENV.merge(%w[GEM_HOME GEM_PATH].to_h do |key|
+        orig = env.fetch("BUNDLER_ORIG_#{key}", env[key])
+        [key, (orig unless orig.to_s.empty? || orig == BUNDLER_UNSET)]
+      end)
+    end
+
     # The default runner: runs argv with env in chdir, returns [stdout, success?].
     # With timeout (seconds) the whole process group is killed when it runs
     # longer, and the result is failure.
@@ -73,7 +85,7 @@ module DemoCalculator
         failed = []
         (1..index).each do |n|
           file = Dir.glob(File.join(dir, ACCEPTANCE_DIR, "group_#{n}_*_test.rb")).first
-          ok = file && @runner.call([@ruby, file], env: CLEAN_RUBY_ENV.merge("CALC_ROOT" => File.join(dir, CALC_DIR)), chdir: dir,
+          ok = file && @runner.call([@ruby, file], env: self.class.clean_ruby_env.merge("CALC_ROOT" => File.join(dir, CALC_DIR)), chdir: dir,
             timeout: @group_timeout).last
           (ok ? passed : failed) << n
         end
