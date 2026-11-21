@@ -15,8 +15,9 @@ module DemoCalculator
     # Events a person causes after the start; the dispatches and review starts that follow them are not counted.
     MANUAL_TYPES = %w[run_resumed review_rounds_extended attempts_extended budget_extended time_extended run_cancelled gate_approved gate_rejected
       guard_overridden run_paused run_unpaused resume_parked].freeze
-    # Trace waiting codes that are the machine's (a stalled pane, daemon downtime), not a person's.
-    MACHINE_WAIT_CODES = %w[stalled downtime waiting_lock retry_backoff].freeze
+    # Trace waiting reasons that wait for a person: a question, a gate, a pause, a failed check or a review stop that needs
+    # a resume. Anything else (turn_ended_background, turn_ended_incomplete, a stalled pane, downtime, a lock) is the machine's.
+    PERSON_WAIT_CODES = %w[waiting_you waiting_agent_input gate paused failed_check review_rejected review_incomplete].freeze
     FEATURES = (SUCCESS_PATH + FAILURE_ONLY).freeze
 
     # Every attempt of the run, step order, each tagged with "step".
@@ -115,12 +116,12 @@ module DemoCalculator
       }
     end
 
-    # Seconds the run waited on a person: the trace's waiting buckets except the machine's own stalls and downtime,
+    # Seconds the run waited on a person: the trace's waiting buckets whose reason is in PERSON_WAIT_CODES,
     # never more than `stopped` (buckets can overlap). nil when the trace has no buckets.
     def self.person_wait(totals)
       buckets = totals["waiting_seconds"]
       return nil unless buckets.is_a?(Hash)
-      sum = buckets.except(*MACHINE_WAIT_CODES).values.grep(Numeric).sum
+      sum = buckets.slice(*PERSON_WAIT_CODES).values.grep(Numeric).sum
       stopped = totals["stopped_seconds"]
       stopped.is_a?(Numeric) ? [sum, stopped].min : sum
     end

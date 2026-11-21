@@ -230,6 +230,16 @@ RSpec.describe DemoCalculator::EvalRows do
       expect(row[:person_wait]).to eq(40.0)
     end
 
+    it "counts a turn_ended_background or turn_ended_incomplete wait as 0, since no person is waited on" do
+      totals = {"stopped_seconds" => 57.0, "waiting_seconds" => {"turn_ended_background" => 22.0, "turn_ended_incomplete" => 35.0}}
+      expect(described_class.row(workflow: "a", run: fixture("plain_pass")["run"], totals: totals)[:person_wait]).to eq(0)
+    end
+
+    it "counts gate, paused and review stops as a person wait" do
+      totals = {"stopped_seconds" => 100.0, "waiting_seconds" => {"gate" => 10.0, "paused" => 5.0, "review_rejected" => 3.0, "review_incomplete" => 2.0, "waiting_you" => 1.0}}
+      expect(described_class.row(workflow: "a", run: fixture("plain_pass")["run"], totals: totals)[:person_wait]).to eq(21.0)
+    end
+
     it "never exceeds stopped, and is nil without buckets" do
       totals = {"stopped_seconds" => 20.0, "waiting_seconds" => {"waiting_you" => 15.0, "waiting_agent_input" => 15.0}}
       expect(described_class.row(workflow: "a", run: fixture("plain_pass")["run"], totals: totals)[:person_wait]).to eq(20.0)
