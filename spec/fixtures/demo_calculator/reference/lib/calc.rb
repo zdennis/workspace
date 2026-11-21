@@ -34,10 +34,10 @@ module Calc
         r = unary
         raise DivisionByZero if op != "*" && r == 0
         v = case op
-            when "*" then v * r
-            when "/" then v / r.to_f
-            else v % r
-            end
+        when "*" then v * r
+        when "/" then v / r.to_f
+        else v % r
+        end
       end
       v
     end
