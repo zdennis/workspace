@@ -38,7 +38,7 @@ The first prints a line as each item starts and ends. The others show the queue,
 
 ## Run it again
 
-`script/demo-calculator run --name WORKSPACE` again starts a fresh run. Each run gets its own branch, `calc-demo/<stamp>`, made from `--base` (default `HEAD`). On a `calc-demo/*` branch `run` refuses unless you pass `--base`, so a second run does not stack on the first one's commits. The branch's first commit removes `demo/calculator-acceptance/`, so the agents cannot read the tests that score them; `eval` reads those tests from the base commit later. `run` then writes `run.json` (the branch, the base, the queued runs and a hash of each workflow definition) to `--out`, by default `tmp/demo-calculator/runs/<stamp>/`.
+`script/demo-calculator run --name WORKSPACE` again starts a fresh run. Each run gets its own branch, `calc-demo/<stamp>`, made from `--base` (default `HEAD`). On a `calc-demo/*` branch `run` refuses unless you pass `--base`, so a second run does not stack on the first one's commits. The branch's first commit removes `demo/calculator-acceptance/`, so the agents cannot read the tests that score them; `eval` reads those tests from the base commit later. `run` then writes `run.json` (the branch, the base, the queued runs and a hash of each workflow definition) to `--out`, by default `tmp/demo-calculator/runs/<stamp>/`. A record written to an `--out` outside `tmp/demo-calculator/runs/` is not found by `eval` without `--run`, nor by `eval --compare`. An `--out` inside the repository leaves untracked files, and the next `run` refuses on them until you remove them.
 
 ```
 script/demo-calculator run --name WORKSPACE --base main --out DIR

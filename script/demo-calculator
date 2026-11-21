@@ -37,6 +37,7 @@ module DemoCalculator
     # @param name [String, nil] the demo workspace's name; nil lets `workspace` detect it from the directory
     # @param dry_run [Boolean] print each mutating command instead of running it; reads are skipped
     # @param out [IO]
+    # @param err [IO] where a recovery hint goes when `run` fails after switching branch
     # @param base [String, nil] the ref `run` branches from; nil means HEAD, which a run branch refuses
     # @param out_dir [String, nil] where `run` writes run.json; nil means tmp/demo-calculator/runs/<stamp>
     # @param clock [#call] returns the current Time
@@ -45,13 +46,14 @@ module DemoCalculator
     # @param timeout [Numeric] seconds `wait` may run in all
     # @param poll [Numeric] seconds between polls
     # @param sleeper [#call] sleeps for the given seconds
-    def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout, base: nil, out_dir: nil, clock: -> { Time.now },
+    def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout, err: $stderr, base: nil, out_dir: nil, clock: -> { Time.now },
       wait: false, held_limit: 1200, timeout: 14_400, poll: 15, sleeper: ->(seconds) { sleep(seconds) })
       @root = File.expand_path(root)
       @workspace = workspace
       @name = name
       @dry_run = dry_run
       @out = out
+      @err = err
       @base = base
       @out_dir = out_dir
       @clock = clock
@@ -108,14 +110,19 @@ module DemoCalculator
       preflight(branch)
       base_sha = git("rev-parse", "#{base}^{commit}")
       clear_queue
-      workspace_sha = git("rev-parse", "HEAD")
       switch_to(branch, base)
-      remove_acceptance_tests
-      restore_files
-      configure
-      items = queue_items
-      self.class.starting(name_args: name_args).each { |argv| workspace(*argv) }
-      record = write_record(stamp, branch, base_sha, workspace_sha, items)
+      begin
+        workspace_sha = git("rev-parse", "HEAD")
+        remove_acceptance_tests
+        restore_files
+        configure
+        items = queue_items
+        record = write_record(stamp, branch, base_sha, workspace_sha, items)
+        self.class.starting(name_args: name_args).each { |argv| workspace(*argv) }
+      rescue Refused
+        @err.puts "demo-calculator: run stopped after switching to #{branch}; `git switch -` returns to the previous branch (#{branch} is left partial)" unless @dry_run
+        raise
+      end
       wait_for_queue(record) if @wait
       record
     end
@@ -135,14 +142,27 @@ module DemoCalculator
       started_at = @clock.call
       first_seen = {}
       loop do
-        row = read_queue_row
         now = @clock.call
+        begin
+          row = read_queue_row
+        rescue Refused
+          record_stop(record, {"reason" => "no_queue", "item" => nil}, now)
+          raise
+        end
         items = row["items"] || []
         items.each { |item| first_seen[item["id"]] ||= now if item["state"] == "held" }
-        held_since = Wait.held_since(events: read_events(event_log), items: items, first_seen: first_seen)
+        events = (items.any? { |item| item["state"] == "held" }) ? read_events(event_log) : []
+        held_since = Wait.held_since(events: events, items: items, first_seen: first_seen)
         stop = Wait.stop_reason(row, now: now, started_at: started_at, held_since: held_since, held_limit: @held_limit, timeout: @timeout)
         return record_stop(record, stop, now) if stop
-        workspace("work-queue", "advance", *name_args) if Wait.advance?(row, work_queue_feature: feature)
+        if Wait.advance?(row, work_queue_feature: feature)
+          begin
+            workspace("work-queue", "advance", *name_args)
+          rescue Refused => e
+            @err.puts "demo-calculator: #{e.message}"
+            return record_stop(record, {"reason" => "advance_failed", "item" => nil}, now)
+          end
+        end
         @sleeper.call(@poll)
       end
     end
@@ -155,7 +175,9 @@ module DemoCalculator
 
     def read_queue_row
       out = workspace_stdout("work-queue", "list", "--json", *name_args)
-      (JSON.parse(out)["queues"] || []).first || {}
+      row = (JSON.parse(out)["queues"] || []).first
+      raise Refused, "no work queue found for workspace #{@name || "(detected from the current directory)"}: check --name" unless row
+      row
     end
 
     def read_events(path)
@@ -197,7 +219,8 @@ module DemoCalculator
     end
 
     def remove_acceptance_tests
-      unless File.directory?(File.join(@root, ACCEPTANCE_DIR))
+      tracked = @dry_run ? File.directory?(File.join(@root, ACCEPTANCE_DIR)) : !git("ls-files", "--", ACCEPTANCE_DIR).empty?
+      unless tracked
         say "no #{ACCEPTANCE_DIR} to remove"
         return
       end
@@ -368,7 +391,10 @@ module DemoCalculator
       o.on("--timeout DUR", "run --wait: stop after this long in all, as Ns, Nm or Nh (default 4h)") { |v| options[:timeout] = duration(v) }
       o.on("--run DIR", "eval: the directory holding run.json (default: the newest under tmp/demo-calculator/runs)") { |v| options[:run_dir] = v }
       o.on("--compare", "eval: compare the last K runs of the same workflow definitions, from their eval.json files") { options[:compare] = true }
-      o.on("--last K", Integer, "eval --compare: how many runs to compare (default #{Compare::DEFAULT_LAST})") { |v| options[:last] = v }
+      o.on("--last K", Integer, "eval --compare: how many runs to compare (default #{Compare::DEFAULT_LAST})") { |v|
+        raise OptionParser::InvalidArgument, "#{v} (K must be 1 or more)" if v < 1
+        options[:last] = v
+      }
       o.on("--json", "eval: print the eval.json document instead of the table") { options[:json] = true }
       o.on("--dry-run", "Print the commands that change something instead of running them") { options[:dry_run] = true }
     end

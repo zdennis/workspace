@@ -106,6 +106,14 @@ RSpec.describe DemoCalculator::Demo do
     end
   end
 
+  describe ".main" do
+    it "rejects --last 0 as a usage error without a backtrace" do
+      err = StringIO.new
+      expect(DemoCalculator.main(%w[eval --compare --last 0], out: StringIO.new, err: err, root: tmp)).to eq(1)
+      expect(err.string).to match(/\Ademo-calculator: .*1 or more/)
+    end
+  end
+
   describe ".queue_clearing" do
     it "cancels the active item, skips the held one and removes the queued ones" do
       items = [{"id" => "a1", "state" => "active"}, {"id" => "b2", "state" => "queued"}, {"id" => "c3", "state" => "queued"}, {"id" => "d4", "state" => "held"}]
@@ -128,7 +136,7 @@ RSpec.describe DemoCalculator::Demo do
       expect(adds).to eq(DemoCalculator::WORKFLOW_IDS)
       expect(calls).to include("workflow install", "config set --scope workspace --name ws commands.test ruby")
       expect(calls.grep(/\Aconfig set workflows.sources /).first).to end_with("/demo/calculator/workflows")
-      expect(calls.last(3)).to eq(["work-queue enable --name ws", "work-queue advance --name ws", "capabilities --json"])
+      expect(calls.last(3)).to eq(["capabilities --json", "work-queue enable --name ws", "work-queue advance --name ws"])
     end
 
     it "leaves HEAD on calc-demo/<stamp>, with the acceptance removal as the first commit after the base" do
@@ -191,6 +199,33 @@ RSpec.describe DemoCalculator::Demo do
       git(work_dir, "switch", "-q", "-c", "calc-demo/older")
       expect { demo.run }.to raise_error(DemoCalculator::Refused, /--base.*abc123/)
       expect { demo(base: "main").run }.not_to raise_error
+    end
+
+    it "records the workspace commit of the branch it switched to, with --base" do
+      git(work_dir, "commit", "-q", "--allow-empty", "-m", "later")
+      first = git(work_dir, "rev-parse", "HEAD~1").strip
+      demo(base: first).run
+      expect(JSON.parse(File.read(record_path))["workspace"]["sha"]).to eq(first)
+    end
+
+    it "writes the record before it enables the queue, so a failed write leaves the queue off" do
+      File.write(File.join(tmp, "blocker"), "a file")
+      expect { demo(out_dir: File.join(tmp, "blocker", "sub")).run }.to raise_error(SystemCallError)
+      expect(File.read(log)).not_to include("work-queue enable")
+    end
+
+    it "skips the acceptance removal when the directory is not tracked" do
+      git(work_dir, "rm", "-r", "-q", "demo/calculator-acceptance")
+      git(work_dir, "commit", "-q", "-m", "drop acceptance")
+      expect { demo.run }.not_to raise_error
+      expect(out.string).to include("no demo/calculator-acceptance to remove")
+    end
+
+    it "prints a recovery hint when it fails after switching branch" do
+      err = StringIO.new
+      File.write(fake_workspace, "#!/bin/sh\n[ \"$1 $2\" = \"work-queue list\" ] && echo '{\"queues\":[]}'\n[ \"$1\" = \"workflow\" ] && exit 1\nexit 0\n")
+      expect { demo(err: err).run }.to raise_error(DemoCalculator::Refused)
+      expect(err.string).to include("calc-demo/20261121T040506Z", "git switch -")
     end
 
     it "changes nothing under --dry-run but says what it would do" do
@@ -298,6 +333,25 @@ RSpec.describe DemoCalculator::Demo do
         run_waiting(queue("off", ["a", "queued"]), timeout: 3600)
         expect(record["wait"]).to include("reason" => "disabled", "item" => nil)
         expect(calls.grep(/work-queue list/).size).to eq(2)
+      end
+
+      it "does not read the event log while nothing is held" do
+        expect(File).not_to receive(:foreach)
+        run_waiting(queue("on", ["a", "active"], daemon: true), queue("on", daemon: true))
+      end
+
+      it "stops with advance_failed when work-queue advance fails after the record is written" do
+        script = File.read(fake_workspace)
+        File.write(fake_workspace, script.sub("echo \"$@\" >> #{log}\n", "echo \"$@\" >> #{log}\nif [ \"$2\" = advance ]; then [ -f #{tmp}/advanced ] && exit 1; touch #{tmp}/advanced; fi\n"))
+        File.write(states, queue("on", ["a", "queued"]) + "\n")
+        wait_demo.run
+        expect(record["wait"]).to include("reason" => "advance_failed")
+      end
+
+      it "raises a clean error naming the workspace when the queue row is missing" do
+        File.write(states, %({"queues":[]}\n))
+        expect { wait_demo.run }.to raise_error(DemoCalculator::Refused, /no work queue found for workspace ws/)
+        expect(record["wait"]).to include("reason" => "no_queue")
       end
 
       it "stops on timeout" do
