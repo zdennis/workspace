@@ -483,8 +483,8 @@ class RecordingWorkflowPanes
     true
   end
 
-  def kick(workspace:, pane:, text:, fresh:, run_id: nil)
-    @calls << [:kick, {workspace: workspace, pane: pane, text: text, fresh: fresh, run_id: run_id}]
+  def kick(workspace:, pane:, text:, fresh:, run_id: nil, opened: false)
+    @calls << [:kick, {workspace: workspace, pane: pane, text: text, fresh: fresh, run_id: run_id, opened: opened}]
     @on_kick&.call(workspace: workspace, pane: pane, text: text, fresh: fresh, run_id: run_id)
     @kick
   end

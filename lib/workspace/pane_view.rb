@@ -73,6 +73,7 @@ module Workspace
         "state_changed_by" => changed_by,
         "activity_state" => PaneStates.state_of(pane, idle_for, idle_after),
         "main_turn_over_since" => PaneStates.main_turn_missing(pane) ? nil : pane[:main_stopped_at].utc.iso8601(3),
+        "user_prompt_at" => pane[:last_user_prompt_at]&.utc&.iso8601(3),
         "transcript_path" => pane[:transcript_path],
         "open_tools" => pane[:open_tools].to_h.values.map { |tool| tool[:tool] },
         "idle_seconds" => idle_for.round,
