@@ -87,6 +87,40 @@ replace:
       timeout: 30m
       context: fresh
 
+  # Only the prompt and the dropped review pack differ from the parent's verify; extends can
+  # replace a step only whole, so every other key restates the parent's. The review pack is
+  # left out: it sends the agent to spawn reviewer sub-agents, which defeats the token cut.
+  verify:
+    title: Verify
+    prompt: |
+      Judge the work against the workspace plan (`workspace plan path`) and {{inputs.goal}}.
+      When your turn ends, this step runs the project's test command and its lint command,
+      when it has one, for you and fails if either fails. Do not run the whole test suite or the linter yourself:
+      that would repeat those checks. Review the diff yourself; do not start sub-agents or
+      reviewers.
+      Read the branch's diff against the run base and decide whether it does what the goal asks,
+      and nothing beyond it. Run a targeted command only to confirm a suspicion, such as one
+      test file or one command that shows a behaviour you doubt. Fix any real defect you find,
+      with a new commit rather than an amend. After a fix, rerun only the tests you changed or
+      added, not the whole suite or the linter.
+      Write {{artifacts}}/verify.md: what you read, what you ran and why, your findings, and
+      what you fixed (or that nothing needed fixing).
+      If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
+      and end your turn.
+    produces: [verify.md]
+    uses: [test-db]
+    status:
+      command: test
+      timeout: 40m
+    require:
+      - command: lint
+        optional: true
+    timeout: 90m
+    on_fail:
+      goto: implement
+      max: 3
+      context: continue
+
 steps:
   acceptance:
     after: verify

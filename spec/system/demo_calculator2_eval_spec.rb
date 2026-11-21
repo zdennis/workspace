@@ -32,7 +32,7 @@ RSpec.describe DemoCalculator2::Evaluation do
       if [ "$1" = "capabilities" ]; then cat #{stubs}/caps.json
       elif [ "$1 $2 $3" = "work-queue history list" ]; then cat #{stubs}/history.json
       elif [ "$1 $2" = "work-queue list" ]; then cat #{stubs}/queue.json
-      elif [ "$1 $2" = "workflow trace" ]; then cat #{stubs}/trace.json
+      elif [ "$1 $2" = "workflow trace" ]; then f=#{stubs}/trace-$3.json; [ -f $f ] || f=#{stubs}/trace.json; cat $f
       else echo "unexpected: $@" >&2; exit 1; fi
     SH
     File.chmod(0o755, path)
@@ -44,6 +44,7 @@ RSpec.describe DemoCalculator2::Evaluation do
       attr_reader :diff_args
 
       attr_reader :acceptance_heads, :acceptance_goals, :leak_args
+      attr_accessor :possible_classes
 
       def acceptance(base_sha:, head:, goal:)
         (@acceptance_heads ||= []) << head
@@ -55,7 +56,7 @@ RSpec.describe DemoCalculator2::Evaluation do
 
       def leak_check(hook_files:, transcripts:, from:, to: nil, head: nil, removal: nil)
         @leak_args = {head: head, removal: removal}
-        {hook: 1, transcript: {}}
+        {hook: 1, transcript: {}, possible_classes: @possible_classes}.compact
       end
 
       def diff_scan(base_sha:, head:, since:)
@@ -159,5 +160,66 @@ RSpec.describe DemoCalculator2::Evaluation do
     expect(text).to match(/^01-add-sub\s+done\s/)
     expect(text.lines.grep(/\A02-mul-div\s+not run/)).not_to be_empty
     expect(JSON.parse(File.read(File.join(run_dir, "eval.json"))).keys).to eq(%w[record header rows totals lint leak])
+  end
+
+  describe "machine waits" do
+    def waits(run_id, buckets)
+      write_json(File.join(stubs, "trace-#{run_id}.json"), {"totals" => fixture["totals"].merge("machine_waiting_seconds" => buckets), "spans" => spans})
+    end
+
+    def second_run(buckets)
+      run = JSON.parse(File.read(File.join(state, ".workflows", "archive", "wr_plain.json")))
+      run["id"] = "wr_two"
+      write_json(File.join(state, ".workflows", "archive", "wr_two.json"), run)
+      File.write(File.join(state, ".workflows", "archive", "wr_two.events.jsonl"), "")
+      write_json(File.join(stubs, "history.json"), {"entries" => [{"id" => "q1", "result" => {"run_id" => "wr_plain"}}, {"id" => "q2", "result" => {"run_id" => "wr_two"}}]})
+      waits("wr_two", buckets) if buckets
+    end
+
+    it "takes the waits off each row's wall and active and shows them in the table" do
+      waits("wr_plain", {"waiting_lock" => 100.0})
+      row = result[:rows].first
+      expect(row).to include(machine_wait: 100.0, wall_ex_wait: 500.0, active_ex_wait: 440.0)
+      text = described_class.render(result)
+      expect(text).to match(/stopped\s+wait_p\s+lockw\s+wall-lw\s+act-lw\s+gap/)
+      expect(text).to match(/^01-add-sub\s+done\s.*\b10m00s\s+9m00s\s+1m00s\s+\S+\s+1m40s\s+8m20s\s+7m20s\s/)
+    end
+
+    it "sums the waits in the totals, with no partial mark when every ran row knows them" do
+      waits("wr_plain", {"waiting_lock" => 100.0})
+      second_run("retry_backoff" => 30.0)
+      expect(result[:totals]).to include("machine_wait" => 130.0, "wall_ex_wait" => 1070.0, "active_ex_wait" => 950.0)
+      expect(result[:totals]["partial"]).not_to include("machine_wait")
+      expect(described_class.render(result)).to match(/^total\s.*\s2m10s\s+17m50s\s+15m50s\s/)
+    end
+
+    it "gives nil totals and a plain table when no row has waits" do
+      expect(result[:rows].first).to include(machine_wait: nil, wall_ex_wait: nil, active_ex_wait: nil)
+      expect(result[:totals]).to include("machine_wait" => nil, "wall_ex_wait" => nil, "active_ex_wait" => nil)
+      expect(result[:totals]["partial"]).not_to include("machine_wait")
+    end
+
+    it "marks the waits partial when only some ran rows know them" do
+      waits("wr_plain", {"waiting_lock" => 100.0})
+      second_run(nil)
+      expect(result[:rows].map { |row| row[:machine_wait] }).to eq([100.0, nil])
+      expect(result[:totals]).to include("machine_wait" => 100.0)
+      expect(result[:totals]["partial"]).to include("machine_wait")
+    end
+
+    it "leaves the wait columns nil for a row that never ran, and dashes them in the table" do
+      waits("wr_plain", {"waiting_lock" => 100.0})
+      expect(result[:rows].last).to include(ran: false, machine_wait: nil, wall_ex_wait: nil, active_ex_wait: nil)
+      dash = Regexp.escape(DemoCalculator::EvalReport::DASH)
+      expect(described_class.render(result)).to match(/^02-mul-div\s+not run(\s+#{dash}){#{described_class::HEADER.size - 2}}$/)
+    end
+
+    it "prints the possible-hit lines under the leak line" do
+      counts = {false_positive: 1, stat_only: 2, near_miss: 1, unresolved: 0}
+      checks.possible_classes = {hook: counts, transcript: counts, near_misses: [{source: "hook", command: "git diff a..b > f"}]}
+      leak = described_class.render(result).lines.map(&:chomp).drop_while { |line| !line.start_with?("leak:") }
+      expect(leak[1..3]).to eq(["possible hits (hook): 1 false positive, 2 stat only, 1 near miss, 0 unresolved",
+        "possible hits (transcript): 1 false positive, 2 stat only, 1 near miss, 0 unresolved", "near-miss (hook): git diff a..b > f"])
+    end
   end
 end
