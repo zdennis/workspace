@@ -26,6 +26,8 @@ module DemoCalculator
   RESTORED = %w[bin lib test USAGE.md].freeze
   # Held back from a run branch, so the agents cannot read what scores them.
   ACCEPTANCE_DIR = "demo/calculator-acceptance"
+  # Also held back: it explains where eval finds the acceptance tests.
+  README_PATH = "demo/calculator/README.md"
   RUN_BRANCH_PREFIX = "calc-demo/"
 
   class Refused < StandardError; end
@@ -218,16 +220,18 @@ module DemoCalculator
       git("switch", "-c", branch, base) unless @dry_run
     end
 
+    # The first commit of a run branch removes what would let an agent read how it is scored: the acceptance
+    # tests, and this demo's README, which says where eval reads them from.
     def remove_acceptance_tests
-      tracked = @dry_run ? File.directory?(File.join(@root, ACCEPTANCE_DIR)) : !git("ls-files", "--", ACCEPTANCE_DIR).empty?
-      unless tracked
-        say "no #{ACCEPTANCE_DIR} to remove"
-        return
+      paths = [ACCEPTANCE_DIR, README_PATH].select do |path|
+        @dry_run ? File.exist?(File.join(@root, path)) : !git("ls-files", "--", path).empty?
       end
-      say "+ git rm -r #{ACCEPTANCE_DIR} and commit"
+      say "no #{ACCEPTANCE_DIR} to remove" unless paths.include?(ACCEPTANCE_DIR)
+      return if paths.empty?
+      say "+ git rm -r #{paths.join(" ")} and commit"
       return if @dry_run
-      git("rm", "-r", "-q", "--", ACCEPTANCE_DIR)
-      git("commit", "-q", "-m", "Remove the acceptance tests from the run branch", "--", ACCEPTANCE_DIR)
+      git("rm", "-r", "-q", "--", *paths)
+      git("commit", "-q", "-m", "Remove the acceptance tests from the run branch", "--", *paths)
     end
 
     def queue_items
@@ -390,7 +394,7 @@ module DemoCalculator
       o.on("--held-limit DUR", "run --wait: stop when an item stays held this long, as Ns, Nm or Nh (default 20m)") { |v| options[:held_limit] = duration(v) }
       o.on("--timeout DUR", "run --wait: stop after this long in all, as Ns, Nm or Nh (default 4h)") { |v| options[:timeout] = duration(v) }
       o.on("--run DIR", "eval: the directory holding run.json (default: the newest under tmp/demo-calculator/runs)") { |v| options[:run_dir] = v }
-      o.on("--compare", "eval: compare the last K runs of the same workflow definitions, from their eval.json files") { options[:compare] = true }
+      o.on("--compare", "eval: compare the last K (2 or more) runs of the same items, model and agent version, from their eval.json files") { options[:compare] = true }
       o.on("--last K", Integer, "eval --compare: how many runs to compare (default #{Compare::DEFAULT_LAST})") { |v|
         raise OptionParser::InvalidArgument, "#{v} (K must be 1 or more)" if v < 1
         options[:last] = v
