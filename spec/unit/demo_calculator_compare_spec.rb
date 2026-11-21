@@ -81,7 +81,7 @@ RSpec.describe DemoCalculator::Compare do
       expect(text).to include("Median [min–max] over 3 runs")
       expect(text).to match(/attempts\s+4 \[3–5\]\n/)
       expect(text).to match(/cost\s+≥≈\$2\.00 \[≈\$1\.00–≈\$3\.00\]/)
-      expect(text).to match(/wall\s+1m30s \[30s–1h02m\]/)
+      expect(text).to match(/wall\s+1m30s \[30s–1h01m\]/)
       expect(text).to match(/lint offenses\s+\?\n/)
       expect(text).to include("differing: none")
     end
