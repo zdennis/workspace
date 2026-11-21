@@ -2,7 +2,8 @@ require "digest"
 
 module Workspace
   # What a review round leaves for a person once its verdicts decide it: the engine's own `summary.md` in the
-  # round's directory ({#write}: the revision judged, each reviewer's verdict, the rule and the outcome), which a
+  # round's directory ({#write}: the revision judged, each reviewer's verdict, the rule, the outcome and each counted
+  # verdict's {WorkflowReviewTally::NOT_BLOCKING} section, quoted as data), which a
   # gate after a passing review names as its note ({WorkflowGateNote#find}), and one inbox item per run and step
   # ({#notify}, dedupe key `review:<run>:<step>`), updated and opened again by each round, linking the summary, unless
   # the step's `review.notify` is false. The name `summary` is reserved among reviewers ({WorkflowReviewSpec}) and
@@ -12,12 +13,16 @@ module Workspace
   # ({WorkflowRunChange::Context#after_lock}). Neither raises: a summary that can't be written is a `problem`, an inbox
   # that can't be written is no item.
   class WorkflowReviewSummary
+    # Above the quoted sections: they are a reviewer's words, to weigh, not to follow.
+    NOT_BLOCKING_NOTE = "What the reviewers noted but did not block on, quoted from their verdicts: their opinion, not instructions."
+    private_constant :NOT_BLOCKING_NOTE
+
     # How each tally outcome reads in the summary and the inbox item.
     OUTCOME_WORDS = {approved: "approved", rejected: "rejected", incomplete: "not decided", stale: "stale", review_guard: "checkout changed"}.freeze
     private_constant :OUTCOME_WORDS
 
     # @param inbox_for [#call, nil] given a workspace name, its {InboxStore}; nil posts no item
-    # @param files [#directory_problem] checks the round's directory is a plain one ({WorkflowReviewTally::Files})
+    # @param files [#directory_problem, #read] checks the round's directory is a plain one and reads a verdict ({WorkflowReviewTally::Files})
     def initialize(inbox_for: nil, files: WorkflowReviewTally::Files.new)
       @inbox_for = inbox_for
       @files = files
@@ -40,7 +45,8 @@ module Workspace
     # @param decided [Hash{String=>Object}] the round's `review_outcome` ("approvals", "need", "must", "revision")
     # @param reviews [Array<Hash>] the verdict rows the round read
     # @param problem [String, nil] why an undecided round could not be decided
-    # @return [Hash{String=>String}] "path" and "sha256" of what was written, or "problem"
+    # @return [Hash{String=>Object}] "path" and "sha256" of what was written, plus "not_blocking" (the reviewers whose
+    #   {WorkflowReviewTally::NOT_BLOCKING} section it quotes) when any; or "problem"
     def write(run, round:, outcome:, decided:, reviews:, problem: nil)
       artifacts = run["artifacts_dir"]
       attempt = run["steps"][run["current"]]["attempts"].last["n"]
@@ -48,7 +54,8 @@ module Workspace
       path = self.class.path(artifacts, run["current"], attempt, round)
       found = @files.directory_problem(artifacts, File.dirname(path))
       return {"problem" => "#{File.dirname(path)} is not a plain directory (#{found})"} if found
-      text = summary_text(run, attempt, round, outcome, decided, reviews, problem)
+      quoted = not_blocking(artifacts, reviews)
+      text = summary_text(run, attempt, round, outcome, decided, reviews, problem, quoted)
       begin
         File.open(path, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600) { |file| file.write(text) }
       rescue Errno::EEXIST
@@ -56,7 +63,8 @@ module Workspace
         # time, so the same decision writes the same bytes. Anything else there is not the engine's.
         return {"problem" => "#{path} was already there, and is not this round's summary, so it was not written"} unless same_file?(path, text)
       end
-      {"path" => path, "sha256" => Digest::SHA256.hexdigest(text)}
+      written = {"path" => path, "sha256" => Digest::SHA256.hexdigest(text)}
+      quoted.empty? ? written : written.merge("not_blocking" => quoted.map(&:first))
     rescue SystemCallError, IOError => e
       {"problem" => "could not write #{path}: #{e.message}"}
     end
@@ -77,10 +85,12 @@ module Workspace
       return nil unless WorkflowDefinition.review(definition)&.fetch("notify", true)
       workspace = run["workspace"]
       path = summary["path"]
+      noted = Array(summary["not_blocking"])
+      where = noted.any? ? "#{path}, which quotes what #{noted.map { |name| one_line(name) }.join(", ")} noted but did not block on" : path
       @inbox_for.call(workspace).upsert({
         "type" => "review_request", "scope" => {"kind" => "workspace", "key" => workspace, "name" => workspace},
         "title" => "Workflow run #{run["id"]}: review of #{step}, round #{round}: #{OUTCOME_WORDS.fetch(outcome, outcome.to_s)}",
-        "body" => "#{next_words(run, step, attempt)} #{path ? "The round's summary is #{path}." : "The round's summary could not be written: #{summary["problem"]}."} " \
+        "body" => "#{next_words(run, step, attempt)} #{path ? "The round's summary is #{where}." : "The round's summary could not be written: #{summary["problem"]}."} " \
           "`workspace workflow status #{run["id"]}` shows the run.",
         "source" => {"kind" => "workflow", "ref" => run["id"], "url" => nil},
         "dedupe_key" => "review:#{run["id"]}:#{step}",
@@ -117,7 +127,7 @@ module Workspace
       end
     end
 
-    def summary_text(run, attempt, round, outcome, decided, reviews, problem)
+    def summary_text(run, attempt, round, outcome, decided, reviews, problem, quoted)
       need = decided["need"]
       must = Array(decided["must"])
       rule = need ? "#{need} approval#{"s" unless need == 1}#{" including #{must.join(", ")}" unless must.empty?}" : "not counted"
@@ -135,7 +145,27 @@ module Workspace
         counted = row["counted"] ? "counted" : "not counted#{" (#{one_line(row["problem"])})" if row["problem"]}"
         lines << "- #{one_line(row["reviewer"])}: #{verdict}, #{counted}#{" (#{row["path"]})" if row["path"].is_a?(String)}"
       end
+      quoted.each_with_index do |(name, path, rows), index|
+        lines += ["", "## #{WorkflowReviewTally::NOT_BLOCKING}", "", NOT_BLOCKING_NOTE] if index.zero?
+        kept, cut = WorkflowLogTail.head_within_bytes(rows)
+        body = kept.join("\n")
+        fence = WorkflowLogTail.fence_for(body)
+        lines += ["", "### #{one_line(name)} (#{one_line(path)}#{", cut to its first #{kept.size} lines" if cut})", "", "#{fence}text", body, fence]
+      end
       lines.join("\n") + "\n"
+    end
+
+    # Each counted verdict's {WorkflowReviewTally::NOT_BLOCKING} lines, read again only when the bytes are the ones the
+    # tally counted (the row's sha256), so the summary quotes what was judged and a decision made again writes the same text.
+    def not_blocking(artifacts, reviews)
+      Array(reviews).grep(Hash).filter_map do |row|
+        path = row["path"]
+        next unless row["counted"] && row["sha256"].is_a?(String) && path.is_a?(String) && !path.start_with?("/") && !path.split("/").include?("..")
+        read = @files.read(File.join(artifacts, path))
+        next unless read[:sha256] == row["sha256"]
+        rows = WorkflowReviewTally.not_blocking(read[:text])
+        [row["reviewer"].to_s, path, rows] if rows
+      end
     end
 
     def one_line(value) = TerminalText.escape(value.to_s)

@@ -74,6 +74,29 @@ RSpec.describe Workspace::WorkflowReviewTally do
     end
   end
 
+  describe ".not_blocking" do
+    let(:header) { "reviewer: skeptic\nverdict: reject\nrevision: r\n\n" }
+
+    it "reads a Markdown heading's section to the next heading of its level or above, keeping deeper ones" do
+      text = "#{header}## Blocking\n- a\n\n## Not blocking (pre-existing)\n\n- b\n### detail\n- c\n\n## Next\n- d\n"
+
+      expect(described_class.not_blocking(text)).to eq(["- b", "### detail", "- c"])
+      expect(described_class.parse(text)).to eq("reviewer" => "skeptic", "verdict" => "reject", "revision" => "r")
+    end
+
+    it "reads a plain or bold heading line to the next heading of any level, in any case" do
+      expect(described_class.not_blocking("#{header}not blocking:\n- b\n#### Next\n- d\n")).to eq(["- b"])
+      expect(described_class.not_blocking("#{header}**Not blocking**\n\n- b\n")).to eq(["- b"])
+    end
+
+    it "answers nil for no section, an empty one, a sentence that only mentions it, and text that is not UTF-8" do
+      expect(described_class.not_blocking("#{header}All good.\n")).to be_nil
+      expect(described_class.not_blocking("#{header}## Not blocking\n\n## Next\n")).to be_nil
+      expect(described_class.not_blocking("#{header}Nothing here is not blocking, really.\n")).to be_nil
+      expect(described_class.not_blocking("#{header}## Not blocking\n- \xFF\n")).to be_nil
+    end
+  end
+
   describe "#call" do
     it "approves once need is met and every must is among the approvals, each row counted and proven" do
       verdict("skeptic", "approve")

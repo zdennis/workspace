@@ -68,7 +68,35 @@ module Workspace
       end
     end
 
-    def self.header_value?(value) = value.is_a?(String) && !value.strip.empty? && !value.match?(/[[:cntrl:]]/)
+    # The heading a reviewer lists what it does not block on under, in the free text after the header
+    # ({WorkflowPrompt::SCOPE_TEXT} asks for it). It is never read for the verdict.
+    NOT_BLOCKING = "Not blocking"
+
+    # The lines under a verdict's {NOT_BLOCKING} heading: a Markdown heading (`## Not blocking ...`) runs to the next
+    # heading of its level or above, a plain line (`Not blocking:`, `**Not blocking**`) to the next heading of any level.
+    #
+    # @param text [String] a verdict file's text
+    # @return [Array<String>, nil] the section's lines, blank lines at either end dropped; nil when there is none or it is empty
+    def self.not_blocking(text)
+      return nil unless text.is_a?(String) && text.valid_encoding?
+      lines = text.each_line.map(&:chomp)
+      start = lines.index { |line| not_blocking_heading(line) }
+      return nil unless start
+      level = not_blocking_heading(lines[start])
+      body = lines[(start + 1)..].take_while { |line| !(found = line.match(/\A[ \t]{0,3}(\#{1,6})[ \t]/)) || found[1].size > level }
+      body = body.drop_while { |line| line.strip.empty? }.reverse.drop_while { |line| line.strip.empty? }.reverse
+      body.empty? ? nil : body
+    end
+
+    # The heading's level (a plain line counts as 6, so any heading ends it), or nil for a line that is not the heading.
+    def self.not_blocking_heading(line)
+      heading = line.match(/\A[ \t]{0,3}(\#{1,6})[ \t]+(?:\*\*|__)?#{NOT_BLOCKING}\b/io)
+      return heading[1].size if heading
+      line.match?(/\A[ \t]*(?:\*\*|__)?#{NOT_BLOCKING}(?:\*\*|__)?:?(?:\*\*|__)?[ \t]*\z/io) ? 6 : nil
+    end
+    private_class_method :not_blocking_heading
+
+    def self.header_value?(value) =value.is_a?(String) && !value.strip.empty? && !value.match?(/[[:cntrl:]]/)
     private_class_method :header_value?
 
     # @param proof [#proven?] given `round_dir:`, `path:`, `review_pane:` (the round's panes, an Array) and `workspace:`, answers `{ok:, agent_id:, sha256:, problem:}`

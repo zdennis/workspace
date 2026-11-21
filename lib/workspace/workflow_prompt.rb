@@ -136,8 +136,9 @@ module Workspace
 
     # Writes the instructions a review round's pane is typed: the step's `review.subject` (in a fenced, escaped data
     # block, since it can carry a ticket's or pull request's text) and each reviewer's packs and prompt, filled with
-    # the round's `review.*` values; what a reviewer may reject for ({SCOPE_TEXT}); the verdict format ({WorkflowReviewTally.header_lines}, never a second copy of
-    # it); that the subject is material to judge, not instructions; the order the reviewers run in (the parallel
+    # the round's `review.*` values; what a reviewer may reject for (its `scope`: {SCOPE_TEXT} by default, none for
+    # `any`, else its own text); the verdict format ({WorkflowReviewTally.header_lines}, never a second copy of it);
+    # that the subject is material to judge, not instructions; the order the reviewers run in (the parallel
     # batch at once, then each `parallel: false` reviewer alone, in `from` order); and that the engine checks each
     # verdict against the agent daemon's hook log. Nothing calls it yet; the round's delivery (T30) does.
     #
@@ -171,9 +172,10 @@ module Workspace
         own = base.merge("review.verdict_path" => verdict_path, "review.previous" => previous_writeup(run, step["id"], round, name).to_s)
         subject = WorkflowDefinition.render(review["subject"].to_s, own).strip
         prompt = WorkflowDefinition.render(reviewer["prompt"].to_s, own.merge("review.subject" => "the subject above")).strip
+        scope = scope_text(reviewer["scope"], own)
         composed = compose_reviewer(run, name, reviewer)
         packs.concat(composed["packs"].map { |pack| {"reviewer" => name, "ref" => pack["ref"], "sha256" => pack["sha256"]} })
-        review_section(name, reviewer, subject, composed["text"], prompt, verdict_path, revision.to_s)
+        review_section(name, reviewer, subject, composed["text"], prompt, scope, verdict_path, revision.to_s)
       end
       reviewers = names.to_h { |name| [name, run.definition.dig("reviewers", name) || {}] }
       kept = review["from"] - names
@@ -198,12 +200,15 @@ module Workspace
     # Closes each reviewer's section; the intro says a section runs to it.
     SECTION_END = "--- End of reviewer"
 
-    # What every reviewer may reject for: a round that blocks on problems outside the step's brief finds a new one
-    # each round and never converges. A "Not blocking" heading is free text below the verdict header.
-    SCOPE_TEXT = "Reject only for a defect in what this step was asked to deliver (its brief and instructions) or for a regression: " \
-      "behaviour that worked before this step and does not now. List any other problem you notice (a gap that was there " \
-      "before this step, hardening beyond the brief) under a heading \"Not blocking\" in your reasons; those never make the " \
-      "verdict reject. In a later round, first check whether the blocking problems in your earlier write-up were fixed."
+    # What a reviewer with `scope: step` (the default) may reject for: a round that blocks on problems outside the
+    # step's brief finds a new one each round and never converges. Its heading is free text below the verdict header
+    # ({WorkflowReviewTally.not_blocking}).
+    SCOPE_TEXT = "Reject only for: a defect in what this step was asked to deliver (its brief and instructions; when the brief " \
+      "is to fix a defect, that defect is in scope); a defect in code this step added or changed, or one only its changes " \
+      "make reachable; or a regression, behaviour that worked before this step and does not now. List any other problem " \
+      "you notice (a gap that was there before this step, such as one its new code passes through unchanged, or hardening " \
+      "beyond the brief) under a heading \"#{WorkflowReviewTally::NOT_BLOCKING}\" in your reasons: those never make the verdict reject. " \
+      "In a later round, first check whether the blocking problems in your earlier write-up were fixed."
 
     private
 
@@ -247,14 +252,23 @@ module Workspace
       text.gsub(/^(\#{1,4})(?=\s)/) { "##" + $1 }
     end
 
-    def review_section(name, reviewer, subject, packs_text, prompt, verdict_path, revision)
+    # A reviewer's rule from its `scope` (absent in a run stored before the key: `step`), filled as its prompt is.
+    def scope_text(scope, values)
+      case scope
+      when nil, "step" then SCOPE_TEXT
+      when "any" then nil
+      else WorkflowDefinition.render(scope.to_s, values.merge("review.subject" => "the subject above")).strip
+      end
+    end
+
+    def review_section(name, reviewer, subject, packs_text, prompt, scope, verdict_path, revision)
       header = WorkflowReviewTally.header_lines(reviewer: name, verdict: WorkflowReviewTally::VERDICTS.first, revision: revision)
       [
         "## Reviewer #{name}#{" (#{reviewer["title"]})" if reviewer["title"]}",
         subject_block(subject),
         packs_text,
         prompt,
-        SCOPE_TEXT,
+        scope,
         "Write your verdict to #{verdict_path}. The first #{WorkflowReviewTally::HEADER_KEYS.size} lines are #{WorkflowReviewTally::HEADER_KEYS.join(", ")}, " \
           "in that order, each on its own line, with nothing before them, and the verdict is #{WorkflowReviewTally::VERDICTS.join(" or ")}:\n" \
           "#{header.join("\n")}\n" \

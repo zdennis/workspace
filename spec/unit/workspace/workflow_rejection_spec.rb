@@ -30,6 +30,14 @@ RSpec.describe Workspace::WorkflowRejection do
       expect(log_tail.calls).to eq([[:writeup, "/work/.workflow/wr_1/reviews/design.2.r2/skeptic.md"]])
     end
 
+    it "names the round's summary, which collects the Not blocking findings, when it was written" do
+      decided = {"need" => 2, "must" => ["skeptic"], "summary" => "/work/.workflow/wr_1/reviews/design.2.r2/summary.md"}
+      again = rejection.retry_for(run_hash, attempt: 2, round: 2, decided: decided, reviews: reviews, max_rounds: 6)
+
+      expect(again["text"]).to include("what a reviewer lists under \"Not blocking\" is optional, and the round's summary " \
+        "/work/.workflow/wr_1/reviews/design.2.r2/summary.md collects it.\n\n")
+    end
+
     it "falls back to the review's need and must when the tally counted none, and writes nothing" do
       before = run_hash
 

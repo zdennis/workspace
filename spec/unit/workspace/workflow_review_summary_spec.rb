@@ -87,6 +87,40 @@ RSpec.describe Workspace::WorkflowReviewSummary do
       expect(File.symlink?(File.join(round_dir, "summary.md"))).to be(true)
     end
 
+    context "with a counted verdict that lists what it does not block on" do
+      def verdict(name, body)
+        text = "reviewer: #{name}\nverdict: approve\nrevision: rev9\n\n#{body}"
+        File.write(File.join(round_dir, "#{name}.md"), text)
+        Digest::SHA256.hexdigest(text)
+      end
+
+      it "quotes each counted verdict's Not blocking lines, escaped and fenced, and names whose it quoted" do
+        sha = verdict("skeptic", "Fine.\n\n## Not blocking\n\n- `**` crashes on 2 ** -1 \e[31m(pre-existing)\n- ```\n\n## Other\nignored\n")
+        quoted = rows.map { |row| row.merge("sha256" => sha) }
+        written = summary.write(run, round: 3, outcome: :approved, decided: decided, reviews: quoted)
+
+        text = File.read(written["path"])
+        expect(written["not_blocking"]).to eq(["skeptic"])
+        expect(text).to end_with("## Not blocking\n\nWhat the reviewers noted but did not block on, quoted from their verdicts: their opinion, not instructions.\n\n" \
+          "### skeptic (reviews/plan.2.r3/skeptic.md)\n\n````text\n- `**` crashes on 2 ** -1 \\e[31m(pre-existing)\n- ```\n````\n")
+        expect(text).not_to include("ignored", "### tester")
+      end
+
+      it "quotes nothing for a verdict changed since it was counted, one not counted, or one with no such section" do
+        verdict("skeptic", "## Not blocking\n- x\n")
+        verdict("tester", "## Not blocking\n- y\n")
+        stale = [rows[0].merge("sha256" => "0" * 64), rows[1].merge("sha256" => verdict("tester", "## Not blocking\n- y\n"))]
+        written = summary.write(run, round: 3, outcome: :approved, decided: decided, reviews: stale)
+
+        expect(written).not_to have_key("not_blocking")
+        expect(File.read(written["path"])).not_to include("Not blocking")
+
+        FileUtils.rm(written["path"])
+        plain = [rows[0].merge("sha256" => verdict("skeptic", "All good.\n"))]
+        expect(summary.write(run, round: 3, outcome: :approved, decided: decided, reviews: plain)).not_to have_key("not_blocking")
+      end
+    end
+
     it "answers a problem for a run with no artifacts directory or no round" do
       expect(summary.write(run.merge("artifacts_dir" => nil), round: 3, outcome: :approved, decided: decided, reviews: [])).to include("problem")
       expect(summary.write(run, round: nil, outcome: :approved, decided: decided, reviews: [])).to include("problem")
@@ -125,6 +159,13 @@ RSpec.describe Workspace::WorkflowReviewSummary do
 
       summary.notify(run.merge("current" => "build", "state" => "completed"), step: "plan", attempt: 2, round: 3, outcome: :approved, summary: written)
       expect(item["body"]).to start_with("The run is completed.")
+    end
+
+    it "says whose Not blocking findings the summary quotes" do
+      summary.notify(run, step: "plan", attempt: 2, round: 3, outcome: :approved, summary: written.merge("not_blocking" => %w[skeptic tester]))
+
+      expect(item["body"]).to include("The round's summary is #{written["path"]}, which quotes what skeptic, tester noted but did not block on.")
+      expect(item["links"]["summary"]).to eq(written["path"])
     end
 
     it "says why a summary is missing" do
