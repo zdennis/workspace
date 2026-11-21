@@ -36,8 +36,9 @@ steps:
     title: Write the failing test first
     prompt: |
       Follow {{artifacts}}/plan.md. Write only the tests for the brief. Do not change lib/ or bin/.
-      The tests must fail now. Write one line of the failure text you expect to
-      {{artifacts}}/failure.txt. Commit the tests.
+      The tests must fail now. Commit the tests, then run them from the repository root and copy ONE line
+      verbatim from that real output (an error message line) into {{artifacts}}/failure.txt. Do not
+      write a line you expect or compose: it must appear exactly in the output.
     produces: [failure.txt]
     require:
       - commits: 1
