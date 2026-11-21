@@ -25,6 +25,16 @@ module Workspace
       entry && entry["id"]
     end
 
+    # Like {#run_id}, but a binding that can't be checked raises instead of counting as unbound, for a reader that
+    # must not act as if a run were absent when it could not tell.
+    #
+    # @return [String, nil] the run id, or nil when the pane is not bound to a run
+    # @raise [Workspace::Error, SystemCallError] when the binding can't be read or checked
+    def run_id_strict
+      entry = read_entry
+      entry && entry["id"]
+    end
+
     # The run only if the pane is the step's own agent's, not a review pane: a review
     # pane holds no locks and runs no dev environment, so `dev up`, `lock acquire` and
     # `promote` must not treat it as the run's author.
@@ -44,6 +54,12 @@ module Workspace
     private
 
     def live_entry
+      read_entry
+    rescue Workspace::Error, SystemCallError
+      nil
+    end
+
+    def read_entry
       pane = @env["TMUX_PANE"]
       return nil if pane.nil? || pane.empty?
       entry = @pane_bindings.binding_for(pane)
@@ -51,8 +67,6 @@ module Workspace
       return nil if @pane_bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane),
         server_pid: -> { @tmux.server_pid_for_pane(pane) })
       entry
-    rescue Workspace::Error, SystemCallError
-      nil
     end
   end
 end

@@ -173,6 +173,53 @@ RSpec.describe Workspace::HookEventLog do
       expect(written.select { |l| l["type"] == "permission_resolved" }.map { |l| l["agent_id"] }).to eq(%w[b c])
     end
 
+    %w[claude codex].each do |kind|
+      {"allow" => "approved", "deny" => "denied"}.each do |decision, outcome|
+        it "writes a #{kind} request the policy decided #{decision} for as a request and an instant #{outcome} resolution by policy" do
+          written = log.record(event("permission_request", agent_kind: kind, tool: "Bash", input: "ls", decision: decision, rule: "allow:Bash(ls)"))
+
+          expect(written.map { |l| l["type"] }).to eq(%w[permission_requested permission_resolved])
+          expect(lines[0]).to include("tool" => "Bash", "input" => "ls", "rule" => "allow:Bash(ls)")
+          expect(lines[1]).to include("tool" => "Bash", "outcome" => outcome, "by" => "policy", "rule" => "allow:Bash(ls)", "wait_ms" => 0)
+        end
+      end
+    end
+
+    it "does not write a second resolved line when a later event arrives for a decided request" do
+      log.record(event("permission_request", tool: "Bash", decision: "allow", rule: "r"))
+      log.record(event("tool_use", tool: "Bash", tool_use_id: "t1", ok: true))
+      log.record(event("stop"))
+
+      expect(lines.count { |l| l["type"] == "permission_resolved" }).to eq(1)
+    end
+
+    it "leaves an ask request pending on the inferred path, with its rule" do
+      log.record(event("permission_request", tool: "Bash", decision: "ask", rule: "ask:Bash(rm *)"))
+      expect(lines.map { |l| l["type"] }).to eq(%w[permission_requested])
+      expect(lines[0]).to include("rule" => "ask:Bash(rm *)")
+
+      log.record(event("tool_use", tool: "Bash", tool_use_id: "t1", ok: true))
+      expect(lines[1]).to include("type" => "permission_resolved", "outcome" => "approved", "by" => "tool_use", "rule" => "ask:Bash(rm *)")
+    end
+
+    it "keeps a Codex ask notification on the inferred path, with its tool and rule" do
+      log.record(event("notification", agent_kind: "codex", notification_type: "permission_request", tool: "Bash", input: "x", decision: "ask", rule: "ask:Bash(x)"))
+      log.record(event("stop", agent_kind: "codex"))
+
+      expect(lines.map { |l| l.values_at("type", "tool", "rule") }).to eq([["permission_requested", "Bash", "ask:Bash(x)"], ["permission_resolved", "Bash", "ask:Bash(x)"]])
+      expect(lines.last).to include("outcome" => "denied", "by" => "stop")
+    end
+
+    it "supersedes an earlier pending request when a decided one arrives" do
+      log.record(event("permission_request", tool: "Bash"))
+      log.record(event("permission_request", tool: "Edit", decision: "deny", rule: "deny:Edit"))
+
+      expect(lines.map { |l| l.values_at("type", "tool", "by") }).to eq([
+        ["permission_requested", "Bash", nil], ["permission_resolved", "Bash", "permission_request"],
+        ["permission_requested", "Edit", nil], ["permission_resolved", "Edit", "policy"]
+      ])
+    end
+
     it "writes Codex's approval prompt, which arrives as a notification, as a request that its tool's finish approves" do
       log.record(event("notification", agent_kind: "codex", notification_type: "permission_request", tool: "Bash", input: "cargo test",
         message: "Approval requested for Bash"))

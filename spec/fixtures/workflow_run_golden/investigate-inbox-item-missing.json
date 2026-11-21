@@ -41,6 +41,7 @@
       "gh pr review*",
       "gh run rerun*"
     ],
+    "permissions": [],
     "steps": [
       {
         "id": "reproduce",

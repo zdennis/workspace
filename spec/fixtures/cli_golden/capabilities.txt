@@ -47,11 +47,11 @@ features (0 = not available):
   name_suffix            1
   no_input               1
   action_json            1
-  sessions               5
+  sessions               6
   locks_json             2
   git_facts              1
   prune_safe             2
-  snapshot               6
+  snapshot               7
   waiting_detail         1
   events_follow          1
   events_tool_input      1
@@ -82,7 +82,7 @@ features (0 = not available):
   library_installed      1
   instructions           1
   restore                1
-  workflow               62
+  workflow               64
   workflow_trace         1
   workflow_events_follow 2
   window_state           1

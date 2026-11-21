@@ -31,6 +31,87 @@ RSpec.describe Workspace::ConfigReport do
     doc["keys"].find { |row| row["key"] == name && (scope.nil? || row["scope"] == scope) }
   end
 
+  describe "layers that combine" do
+    let(:global_path) { write(:global, "agent:\n  permissions:\n    default: deny\n    rules:\n      - {tool: Bash, pattern: \"rm *\", action: deny}\n") }
+
+    before do
+      global_path
+      write("api", "agent:\n  permissions:\n    default: ask\n    rules:\n      - {tool: Read, action: allow}\n")
+      write("api.worktree-fix", "agent:\n  permissions:\n    default: allow\n    rules:\n      - {tool: Edit, action: ask}\n")
+    end
+
+    let(:doc) { report.show("api.worktree-fix") }
+
+    it "shows the most restrictive default as effective, and only that layer active" do
+      row = key_row(doc, "agent.permissions.default")
+      expect(row["effective"]).to eq("deny")
+      expect(row["layers"].to_h { |l| [l["layer"], l["active"]] }).to eq("worktree" => false, "project" => false, "global" => true)
+    end
+
+    it "concatenates the rules of every layer, all active" do
+      row = key_row(doc, "agent.permissions.rules")
+      expect(row["effective"].map { |r| r["tool"] }).to eq(%w[Bash Read Edit])
+      expect(row["layers"].map { |l| l["active"] }).to eq([true, true, true])
+    end
+
+    it "leaves a layer with an invalid value out" do
+      write("api.worktree-fix", "agent:\n  permissions:\n    default: permit\n    rules: nope\n")
+      doc = report.show("api.worktree-fix")
+      expect(key_row(doc, "agent.permissions.default")["effective"]).to eq("deny")
+      rules = key_row(doc, "agent.permissions.rules")
+      expect(rules["effective"].map { |r| r["tool"] }).to eq(%w[Bash Read])
+      expect(rules["layers"].last).to include("layer" => "worktree", "active" => false)
+    end
+
+    it "falls back to the default when no layer sets the key" do
+      File.delete(global_path)
+      write("api", "{}\n")
+      write("api.worktree-fix", "{}\n")
+      expect(key_row(report.show("api.worktree-fix"), "agent.permissions.default")["effective"]).to eq("ask")
+    end
+  end
+
+  describe "permission problems" do
+    def codes(name = "api") = report.validate(name)["problems"].map { |p| [p["code"], p["key"], p["severity"]] }
+
+    it "names the rule index of a malformed rule" do
+      write("api", "agent:\n  permissions:\n    rules:\n      - {tool: Bash, action: deny}\n      - {tool: Bash, action: maybe}\n")
+      problem = report.validate("api")["problems"].find { |p| p["code"] == "invalid_value" }
+      expect(problem["message"]).to include("agent.permissions.rules[1].action")
+    end
+
+    it "warns on an unknown key under agent.permissions" do
+      write("api", "agent:\n  permissions:\n    defualt: allow\n    rule: []\n")
+      problems = report.validate("api")["problems"].select { |p| p["code"] == "unknown_key" }
+      expect(problems.map { |p| p["key"] }).to eq(%w[agent.permissions.defualt agent.permissions.rule])
+      expect(problems.first["severity"]).to eq("warning")
+    end
+
+    it "warns on a pattern for a tool glob that matches no tool with a subject" do
+      write("api", "agent:\n  permissions:\n    rules:\n      - {tool: Bash, pattern: \"ls*\", action: allow}\n      - {tool: \"mcp__*\", pattern: \"x\", action: deny}\n      - {tool: \"*\", pattern: \"y\", action: ask}\n")
+      problems = report.validate("api")["problems"].select { |p| p["code"] == "pattern_without_subject" }
+      expect(problems.size).to eq(1)
+      expect(problems.first["message"]).to include("agent.permissions.rules[1]")
+    end
+
+    it "warns once on default allow with no deny rule in any layer" do
+      write(:global, "agent:\n  permissions:\n    default: allow\n")
+      write("api", "agent:\n  permissions:\n    default: allow\n    rules:\n      - {tool: Read, action: allow}\n")
+      expect(codes.count { |code, _| code == "allow_without_deny" }).to eq(1)
+    end
+
+    it "does not warn on default allow when a deny rule exists in another layer" do
+      write(:global, "agent:\n  permissions:\n    rules:\n      - {tool: Bash, pattern: \"rm *\", action: deny}\n")
+      write("api", "agent:\n  permissions:\n    default: allow\n")
+      expect(codes.map(&:first)).not_to include("allow_without_deny")
+    end
+
+    it "shows [] as effective rules when no layer holds a valid list" do
+      write("api", "agent:\n  permissions:\n    default: ask\n")
+      expect(key_row(report.show("api"), "agent.permissions.rules")["effective"]).to eq([])
+    end
+  end
+
   describe "non-finite numbers" do
     it "reports .inf, -.inf and .nan as invalid_value problems and keeps every document JSON-safe" do
       path = write("api", "dev:\n  ready_timeout: .inf\n  kill_grace: -.inf\n  stop_timeout: .nan\n")

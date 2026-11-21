@@ -67,6 +67,24 @@ RSpec.describe Workspace::SessionWorkspace do
       expect(ambiguous).to eq([["shared", %w[a b]]])
     end
 
+    it "does not record the option for an ambiguous session, and reports it ambiguous" do
+      allow(project_config).to receive(:available_projects).and_return(%w[a b])
+      allow(tmux).to receive(:session_name_for).and_return("shared")
+
+      resolver.call("shared")
+
+      expect(tmux).not_to have_received(:set_session_option)
+      expect(resolver.ambiguous?("shared")).to be(true)
+      expect(ambiguous.size).to eq(1)
+    end
+
+    it "is not ambiguous for one match, no match or a recorded session" do
+      expect(resolver.ambiguous?("lab-wc")).to be(false)
+      expect(resolver.ambiguous?("stray")).to be(false)
+      allow(tmux).to receive(:session_option).and_return("a")
+      expect(resolver.ambiguous?("lab-wc")).to be(false)
+    end
+
     it "falls back to the session\x27s own name only when a daemon listens under it" do
       server = UNIXServer.new(config.agent_socket_path("stray"))
 

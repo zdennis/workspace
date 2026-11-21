@@ -210,6 +210,26 @@ RSpec.describe Workspace::WorkflowStatus do
     expect(current["reason"]["details"]).to include("kind" => "prompt")
   end
 
+  it "says waiting_you with kind permission when the pane waits on a permission request" do
+    create
+    snapshot["panes"].first.merge!("state" => "waiting", "waiting_since" => "2026-10-04T12:50:00Z", "waiting_message" => "Claude needs your permission to use Bash",
+      "waiting_reason" => "waiting_permission", "waiting_tool" => "Bash", "waiting_input" => "rm -rf x",
+      "waits" => [{"agent_id" => "a", "tool" => "Bash", "input" => "rm -rf x", "permission" => true, "since" => "2026-10-04T12:50:00Z"}])
+
+    expect(current["reason"]).to eq("code" => "waiting_you", "since" => "2026-10-04T12:50:00Z",
+      "details" => {"kind" => "permission", "reason" => "waiting_permission", "step" => "plan", "pane" => "%5",
+                    "message" => "Claude needs your permission to use Bash", "tool" => "Bash", "summary" => "rm -rf x"},
+      "actions" => [action("focus", "app", "--pane", "%5")])
+  end
+
+  it "falls back to the pane row's waiting_tool and waiting_input when its waits do not name the permission request" do
+    create
+    snapshot["panes"].first.merge!("state" => "waiting", "waiting_since" => "2026-10-04T12:50:00Z", "waiting_message" => "Allow?",
+      "waiting_reason" => "waiting_permission", "waiting_tool" => "Edit", "waiting_input" => "a.rb", "waits" => [])
+
+    expect(current["reason"]["details"]).to include("kind" => "permission", "tool" => "Edit", "summary" => "a.rb")
+  end
+
   it "says waiting_you when a question asked from the run's pane is open, with the answer as something the caller supplies" do
     create
     asks << {"id" => "a1b2c3", "question" => "Postgres or sqlite?", "asked_at" => "2026-10-04T12:45:00Z", "status" => "open", "pane" => "%5"}
@@ -1716,6 +1736,15 @@ RSpec.describe Workspace::WorkflowStatus do
       expect(shown["current"]["reason"]).to eq({"code" => "waiting_you", "since" => "2026-10-04T12:59:30Z",
         "details" => {"kind" => "prompt", "step" => "build", "pane" => "%9", "message" => "Run rm?", "role" => "reviewer"},
         "actions" => [action("focus", "simulation", "--pane", "%9")]})
+    end
+
+    it "reports a permission request in the review pane as kind permission for the reviewer" do
+      snapshot["panes"] = [{"pane_id" => "%9", "kind" => "claude", "state" => "waiting", "waiting_since" => "2026-10-04T12:59:30Z", "waiting_message" => "Run rm?",
+                            "waiting_reason" => "waiting_permission", "waits" => [{"agent_id" => "a", "tool" => "Bash", "input" => "rm x", "permission" => true, "since" => "2026-10-04T12:59:30Z"}]},
+        {"pane_id" => "%sim", "kind" => "claude", "state" => "working"}]
+      load_fixture
+
+      expect(review_status["current"]["reason"]["details"]).to include("kind" => "permission", "role" => "reviewer", "reason" => "waiting_permission", "tool" => "Bash", "summary" => "rm x", "pane" => "%9")
     end
 
     describe "a round whose delivery failed after its line may have been typed" do

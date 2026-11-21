@@ -62,6 +62,7 @@ RSpec.describe Workspace::WorkflowSweepActions do
 
   it "focuses the pane a prompt waits on, and the review pane while reviewing" do
     expect(call([row("prompt")])).to eq([{"action" => "focus", "args" => ["api.worktree-x", "--pane", "%7"], "needs" => [], "why" => "prompt"}])
+    expect(call([row("waiting_permission")]).first).to include("action" => "focus", "why" => "waiting_permission")
     reviewing = Workspace::WorkflowRun.from_h("id" => "wr_1", "workspace" => "api.worktree-x", "state" => "running", "current" => "plan", "steps" => {"plan" => {"state" => "reviewing"}})
     allow(store).to receive(:run).and_return(reviewing)
 

@@ -81,7 +81,7 @@ Never run `workflow approve` or `workflow reject` unless the person asked for th
 | Reason | Who acts |
 |---|---|
 | `waiting_lock` | Nobody; wait. |
-| `waiting_you` | The person for a gate or prompt; for an ask, see workspace-inbox. |
+| `waiting_you` | The person for a gate, prompt or permission dialog; for an ask, see workspace-inbox. |
 | `turn_ended_incomplete`, `failed_check` | `workflow resume RUN`. A guard stop (HEAD moved, hooks changed, and the like) can also be accepted with `resume RUN --accept-guard --note WHY [--retry]`: only when the person asked, never to get past your own change. It accepts the guard alone: the step's files, proofs and check still have to pass. Later guarded steps measure from the new base, so a cause still there (no commit, a rebase under way) stops them again. If `actions` lists only `cancel`, a resume can't get past it: tell the person. If `reason.recovery` is set, do that (or tell the person) before resuming. |
 | `review_rounds_spent`, `review_no_change`, `review_incomplete`, `review_stale`, `review_guard` | A review of a step's work stopped. Plain `workflow resume RUN` starts a fresh round (`review_no_change`: reviews the same round; `resume RUN --from plan` reruns the author). `review_rounds_spent` refuses a plain resume: it needs `--extra-rounds N`. |
 | `review_rejected` (`details.limit`) | `run` or `step`: `resume RUN --extra-attempts N`; `rounds`: `resume RUN --extra-rounds N`. `--extra-attempts` and `--extra-rounds` spend tokens and time: only when the person asked. |

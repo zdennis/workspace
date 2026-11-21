@@ -33,6 +33,20 @@ A Claude Code `StopFailure` (the turn ended on an API error) is forwarded as `tu
 
 Exits 2, with the deny message on stderr, when an edit is denied (by the edit lock or the review guard); a denied tool is not forwarded. Otherwise always exits 0, whether or not a daemon is listening, so a missing daemon never fails an agent's turn. Currently understands Claude Code's hook events (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `PreToolUse` for every tool — the `Task` tool marks a sub-agent starting; `Edit`/`Write`/`MultiEdit`/`NotebookEdit` are checked against the edit lock — `PermissionRequest`, `Notification`, which marks the pane `waiting` in [`workspace sessions`](README.sessions.md) and carries the agent's message (cut to 200 characters), `PostToolUse`, which ends that wait once a tool runs after a permission prompt, and `PostToolUseFailure`, which does the same for a tool that failed or was interrupted). `PermissionRequest` is forwarded as `permission_request` with the tool and an `input` summary, and opens no wait and ends none (see [Waiting detail](README.sessions.md#waiting-detail)). Every event it forwards, except `Notification`, `PermissionRequest` and a `PreToolUse` for a tool other than `Task`, ends a wait: tools can run side by side, so one starting says nothing about another's permission prompt.
 
+### PermissionRequest replies
+
+For a `PermissionRequest`, it first asks the [permission policy](README.config.md#permission-policy) (the `agent.permissions` config keys and the bound run's `permissions:`) what to do, reading config files and the run only, with no daemon call. For an `allow` or `deny` it prints one line on stdout, and nothing else is ever printed there on this path:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied by workspace permission policy (project:rules[2])"}}}
+```
+
+An `allow` reply has `"behavior":"allow"` and no message. The reply never carries `updatedInput`, `updatedPermissions` or `interrupt`. An `ask`, no policy and any error print nothing, so the agent shows its own dialog, and the exit code stays 0: a `PermissionRequest` never exits 2 and never fails, even when delivery to the daemon does (the failure goes to the debug log and, for a resolved workspace, the [delivery log](#delivery)). That is the safety floor: whatever goes wrong, the person still gets the dialog.
+
+The decision is forwarded with the event, as `decision` and `rule`. The daemon logs an allowed or denied request as a `permission_requested` followed at once by a `permission_resolved` with `by: "policy"` (see [`events`](README.events.md#permission-waits)), and opens no wait for it: the pane does not show `waiting`. For a request left to the person, the daemon [puts it in the inbox](README.inbox.md#permission-requests). The daemon also keeps a marker for a request the policy decided, so a `permission_prompt` notification that arrived after the decision wouldn't open a wait; whether Claude Code sends one has not been confirmed, and the marker is only a defensive guard.
+
+Codex supports the same replies, `allow` and `deny`, and needs its hooks installed and trusted (see [`sessions`](README.sessions.md#hook-mode)); until then Codex shows its own approval prompt and the policy is never consulted.
+
 ### Codex
 
 With `--agent codex` (how [`init`](README.init.md#agent-session-hooks) installs it into `~/.codex/hooks.json`), it reads Codex's hook events instead:

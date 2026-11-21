@@ -141,7 +141,10 @@ module Workspace
         return stall(run, round, pass, pane, "agent_gone", "review pane #{pane} of #{what} shows a shell: its agent has exited; " \
           "its verdicts are read now, and it stops for a person (review_incomplete) when they fall short")
       end
-      return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "review pane #{pane} waits for an answer") if shown["state"] == "waiting"
+      if shown["state"] == "waiting"
+        return WorkflowSweepRows.row(run, "nothing", reason: "waiting_permission", message: "review pane #{pane} waits for a permission answer") if shown["waiting_reason"] == "waiting_permission"
+        return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "review pane #{pane} waits for an answer")
+      end
       due = time_limits(run, round, now, pass[:stops])
       if turn_over?(shown, round, now)
         idle_for = shown["idle_seconds"].to_i

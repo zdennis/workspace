@@ -210,6 +210,105 @@ RSpec.describe Workspace::PaneEvents do
 
       expect(pane[:permission_requests]).to be_empty
     end
+
+    it "marks an ask request's permission wait with its tool and permission: true" do
+      apply("permission_request", "agent_id" => "a1", "tool" => "Bash", "decision" => "ask")
+      apply("notification", "notification_type" => "permission_prompt")
+
+      expect(pane[:waits]["a1"]).to include(tool: "Bash", permission: true)
+    end
+
+    it "marks a wait opened with two requests pending as permission, with no tool" do
+      apply("permission_request", "agent_id" => "a1", "tool" => "Bash")
+      apply("permission_request", "agent_id" => "a2", "tool" => "Edit")
+      apply("notification", "notification_type" => "permission_prompt")
+
+      expect(pane[:waits][nil]).to include(permission: true)
+      expect(pane[:waits][nil]).not_to include(:tool)
+    end
+
+    it "keeps no pending request for a decided one and opens no wait for the prompt that follows" do
+      apply("permission_request", "tool" => "Bash", "decision" => "allow", "rule" => "Bash(ls)")
+      apply("notification", {"notification_type" => "permission_prompt"}, now + 2)
+
+      expect(pane[:permission_requests]).to be_empty
+      expect(pane[:waits]).to be_empty
+    end
+
+    it "opens a wait for a permission prompt after the marker expires" do
+      apply("permission_request", "tool" => "Bash", "decision" => "deny")
+      apply("notification", {"notification_type" => "permission_prompt"}, now + 6)
+
+      expect(pane[:waits][nil]).to include(permission: true)
+    end
+
+    it "does not let a decided request hide another agent's wait" do
+      apply("permission_request", "agent_id" => "a1", "tool" => "Bash", "decision" => "allow")
+      apply("notification", {"notification_type" => "permission_prompt", "agent_id" => "a2"}, now + 1)
+
+      expect(pane[:waits].keys).to eq(["a2"])
+    end
+
+    it "does not hide a wait while another request is pending" do
+      apply("permission_request", "tool" => "Edit", "decision" => "ask")
+      apply("permission_request", "tool" => "Bash", "decision" => "allow")
+      apply("notification", {"notification_type" => "permission_prompt"}, now + 1)
+
+      expect(pane[:waits][nil]).to include(tool: "Edit", permission: true)
+    end
+
+    it "opens a permission wait for a Codex approval notification, with its tool and input" do
+      apply("notification", "notification_type" => "permission_request", "agent_id" => "a1", "tool" => "Bash", "input" => "ls")
+
+      expect(pane[:waits]["a1"]).to include(permission: true, tool: "Bash", input: "ls")
+      expect(pane[:waits]["a1"]).not_to include(:other_prompt)
+    end
+
+    it "uses the decided marker once: a second permission prompt opens a wait" do
+      apply("permission_request", "tool" => "Bash", "decision" => "allow")
+      apply("notification", {"notification_type" => "permission_prompt"}, now + 1)
+      apply("notification", {"notification_type" => "permission_prompt"}, now + 2)
+
+      expect(pane[:waits][nil]).to include(permission: true)
+    end
+
+    it "clears the decided marker on a turn event" do
+      apply("permission_request", "tool" => "Bash", "decision" => "allow")
+      apply("stop")
+      expect(pane).not_to include(:decided_request)
+    end
+
+    it "does not keep the marker fresh when the clock steps back" do
+      apply("permission_request", "tool" => "Bash", "decision" => "allow")
+      apply("notification", {"notification_type" => "permission_prompt"}, now - 1)
+
+      expect(pane[:waits][nil]).to include(permission: true)
+    end
+
+    it "leaves one kind flag when a wait is reused for the other kind" do
+      apply("notification", "notification_type" => "permission_prompt")
+      expect(pane[:waits][nil]).to include(permission: true)
+      expect(pane[:waits][nil]).not_to include(:other_prompt)
+
+      apply("notification", "message" => "Pick again")
+      expect(pane[:waits][nil]).to include(other_prompt: true)
+      expect(pane[:waits][nil]).not_to include(:permission)
+    end
+
+    it "keeps an elicitation wait an elicitation when a permission prompt meets it with nothing to bind" do
+      apply("notification", "message" => "Pick")
+      apply("notification", "notification_type" => "permission_prompt")
+
+      expect(pane[:waits][nil]).to include(other_prompt: true)
+      expect(pane[:waits][nil]).not_to include(:permission)
+    end
+
+    it "marks an elicitation notification other_prompt, not permission" do
+      apply("notification", "notification_type" => "elicitation_dialog")
+
+      expect(pane[:waits][nil]).to include(other_prompt: true)
+      expect(pane[:waits][nil]).not_to include(:permission)
+    end
   end
 
   describe "sub-agents" do

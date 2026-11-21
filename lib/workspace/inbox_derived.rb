@@ -68,8 +68,10 @@ module Workspace
 
     # @param workspaces [Array<String>] workspaces whose questions, panes, plans and workflow runs to read
     # @param projects [Array<Workspace::ProjectCatalog::Project>] projects whose locks to read
+    # @param open_keys [Array<String>] `dedupe_key`s of the open stored items; a pane with an open
+    #   `permission:<workspace>:<pane>:` item (open or snoozed) has no `pane_waiting` row, as that item says it waits
     # @return [Hash] `rows:` (derived items) and `warnings:` (`{"code", "message"}`, some with `"workspace"`)
-    def rows(workspaces:, projects:)
+    def rows(workspaces:, projects:, open_keys: [])
       workspaces = workspaces.uniq
       warnings = []
       sessions = running_sessions(warnings) unless workspaces.empty?
@@ -92,7 +94,7 @@ module Workspace
       panes = daemons.to_h do |workspace, thread|
         reply = thread.value
         if reply[:panes]
-          rows.concat(reply[:panes].select { |pane| pane["state"] == "waiting" && !pane["review"] }.map { |pane| pane_row(workspace, pane) })
+          rows.concat(reply[:panes].select { |pane| pane["state"] == "waiting" && !pane["review"] && !escalated?(open_keys, workspace, pane) }.map { |pane| pane_row(workspace, pane) })
         else
           warnings << {"code" => "daemons_unavailable", "workspace" => workspace,
                        "message" => "The agent daemon for '#{workspace}' did not answer (#{reply[:code]}), so its waiting panes are not shown."}
@@ -109,6 +111,11 @@ module Workspace
     end
 
     private
+
+    def escalated?(open_keys, workspace, pane)
+      prefix = "permission:#{workspace}:#{pane["pane_id"]}:"
+      open_keys.any? { |key| key.to_s.start_with?(prefix) }
+    end
 
     def running_sessions(warnings)
       @tmux.sessions(strict: true)
@@ -270,7 +277,7 @@ module Workspace
     # A review round that stopped (`review_incomplete`, `review_rejected`, ...) or whose pane waits on a permission
     # prompt: review panes are left out of the pane rows, so the run's own row is the one that says so.
     def review_stop?(reason)
-      WorkflowTransitions::REVIEW_STOPS.include?(reason["code"]) || (reason["code"] == "waiting_you" && reason.dig("details", "kind") == "prompt" && reason.dig("details", "role") == "reviewer")
+      WorkflowTransitions::REVIEW_STOPS.include?(reason["code"]) || (reason["code"] == "waiting_you" && %w[prompt permission].include?(reason.dig("details", "kind")) && reason.dig("details", "role") == "reviewer")
     end
 
     def review_stop_row(run, current, reason)

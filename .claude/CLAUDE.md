@@ -56,6 +56,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_gate_note.rb` — The one resolver for a gate's note file.
 - `lib/workspace/shell_safe_path.rb` — Lists characters a path can't hold inside steps' shell commands.
 - `lib/workspace/workflow_deny.rb` — PreToolUse tripwire that blocks Bash commands a run's `deny` list matches.
+- `lib/workspace/bash_command_pieces.rb` — Cuts a Bash command into the pieces a policy matches, and tells substitutions and file redirections.
 - `lib/workspace/review_write_guard.rb` — PreToolUse tripwire that keeps review panes from writing outside the round directory.
 - `lib/workspace/review_round_path.rb` — The one derivation of a reviewer's round directory and its link-safe walk.
 - `lib/workspace/reflection_write_guard.rb` — PreToolUse tripwire that keeps a reflection pane to writing its run's `reflection.md`.
@@ -133,6 +134,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/sentinel_poller.rb` — Background poller watching panes for the `WORKSPACE_DONE:` sentinel.
 - `lib/workspace/spine_watcher.rb` — The daemon's watch of a workspace's `spine/` for changes.
 - `lib/workspace/agent_recovery_desk.rb` — The daemon's recovery of a Claude Code agent whose turn ended on an API error.
+- `lib/workspace/permission_escalation_desk.rb` — The daemon's inbox item for a permission request the policy left to the person.
 - `lib/workspace/recovery_verdicts.rb` — Pure decisions for each stage of a recovery check.
 - `lib/workspace/recovery_facts.rb` — Each read a recovery check makes, one named method per read.
 - `lib/workspace/recovery_intake.rb` — Applies hook events to the recovery store's per-pane entries.
@@ -177,6 +179,8 @@ New per-file detail goes there, never here.
 - `lib/workspace/commands/daemon.rb` — Reads and controls a workspace's agent daemon from outside it: whether it is answering and which process it is, the tail of its log, and a restart that stops it and starts a fresh one detached.
 - `lib/workspace/commands/ensure_agent.rb` — Makes sure a workspace has an agent daemon (`agentd`) answering on its socket, starting one detached when it doesn't.
 - `lib/workspace/daemon_watch.rb` — One stream of a workspace's workflow decision lines and its runs' events, oldest first, with one cursor that resumes both.
+- `lib/workspace/permission_policy.rb` — Decides allow, ask or deny for an agent tool call from layered rules, deny first, matching each piece of a Bash command.
+- `lib/workspace/permission_policy_config.rb` — Builds the permission policy for a workspace from every config layer and its bound run, or nothing on any error.
 
 ### Templates (`docs/architecture/template.md`)
 
@@ -342,6 +346,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/core/` — The lowest layer: shared rules and tables that depend on nothing outside `core/`.
 - `lib/workspace/core/id_patterns.rb` — Name rules shared across sub-systems (library names, workflow ids).
 - `lib/workspace/core/config_schema.rb` — The one table of config keys: scope, default, parser, restart flag, docs.
+- `lib/workspace/core/permission_rules.rb` — Parses and checks a list of `{tool, pattern, action}` permission rules, with the pattern limits a workflow `deny:` list shares.
 - `lib/workspace/notes_dir.rb` — The one resolver for where a workspace's notes directory is.
 - `lib/workspace/config_schema_docs.rb` — Renders the config schema into the generated blocks of `docs/README.config.md`.
 - `lib/workspace/state.rb` — JSON-persisted session state.

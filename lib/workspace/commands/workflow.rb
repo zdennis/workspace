@@ -2459,6 +2459,10 @@ module Workspace
           case details["kind"]
           when "gate" then "step #{details["step"]} passed and waits for approval#{" (#{details["artifacts"].join(", ")})" if details["artifacts"].any?}"
           when "prompt" then "#{"review " if details["role"] == "reviewer"}pane #{details["pane"]} is waiting for an answer#{": #{details["message"]}" if details["message"]}"
+          when "permission"
+            asked = [details["tool"], details["summary"]].compact.reject { |each| each.to_s.empty? }.join(" ")
+            asked = details["message"].to_s if asked.empty?
+            "#{"review " if details["role"] == "reviewer"}pane #{details["pane"]} is waiting for a permission answer#{": #{TerminalText.escape(asked)}" unless asked.empty?}"
           when "ask" then "open question #{details["ask"]}: #{details["question"]}"
           when "delivery" then "step #{details["step"]}'s line was on its way to pane #{details["pane"]} when the process typing it stopped; the agent may not have it"
           else "step #{details["step"]} could not be started (#{details["error"]}): #{details["message"]}#{"; the pane showed #{refusal_facts(details)}" if details["seen"].is_a?(Hash) && refusal_facts(details)}"

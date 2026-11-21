@@ -27,7 +27,7 @@ RSpec.describe Workspace::Commands::Inbox, "gate links" do
   let(:derived) do
     rows = gate_rows
     Class.new do
-      define_method(:rows) { |workspaces:, projects:| {rows: rows, warnings: []} }
+      define_method(:rows) { |workspaces:, projects:, open_keys: []| {rows: rows, warnings: []} }
     end.new
   end
   let(:env) { {"TMUX_PANE" => "%3"} }

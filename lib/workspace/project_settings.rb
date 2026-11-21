@@ -36,6 +36,15 @@ module Workspace
       {}
     end
 
+    # Like {#load_global}, but a file that can't be read as a YAML mapping raises instead of
+    # reading as empty, for a reader that must not act on a config it could not read.
+    #
+    # @return [Hash] parsed global config, or empty hash if none exists
+    # @raise [Workspace::ConfigParseError] if the file exists but isn't a valid YAML mapping
+    def load_global_strict
+      read_strict(global_config_path)
+    end
+
     # Written to a temp file and renamed into place, so readers that don't
     # take the lock (every `statusline` render) never see a truncated file.
     #

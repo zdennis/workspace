@@ -41,6 +41,19 @@ module Workspace
       }
     end
 
+    # Why a pane waits: "waiting_permission" when any open wait was opened by a
+    # permission request (its tool may be unknown), "waiting_prompt" for any
+    # other wait, nil when nothing waits.
+    #
+    # @param pane [Hash]
+    # @return [String, nil]
+    def self.waiting_reason(pane)
+      waits = pane[:waits].values
+      return nil if waits.empty?
+
+      (waits.any? { |w| w[:permission] }) ? "waiting_permission" : "waiting_prompt"
+    end
+
     # One pane's row. A shell pane carries no context, tool status or hook
     # mode fields; +context+ nil leaves the context fields off too.
     #
@@ -82,8 +95,10 @@ module Workspace
         "waiting_message" => wait&.dig(:message),
         "waiting_tool" => wait&.dig(:tool),
         "waiting_input" => wait&.dig(:input),
+        "waiting_reason" => waiting_reason(pane),
+        "pending_permissions" => pane[:permission_requests].size,
         "waits" => pane[:waits].map { |agent_id, w|
-          {"agent_id" => agent_id, "tool" => w[:tool], "input" => w[:input], "since" => w[:since]&.utc&.iso8601}
+          {"agent_id" => agent_id, "tool" => w[:tool], "input" => w[:input], "permission" => w[:permission] ? true : false, "since" => w[:since]&.utc&.iso8601}
         },
         "stop_reason" => pane[:done]&.dig(:stop_reason),
         "turn_failed" => !pane[:turn_failed].nil?,

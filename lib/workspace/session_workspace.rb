@@ -28,23 +28,35 @@ module Workspace
       recorded = @tmux.session_option(session, OPTION)
       return WorkspaceName.normalize(recorded) if recorded
 
-      found = from_configs(session)
+      matches = config_matches(session)
+      @on_ambiguous&.call(session, matches) if matches.size > 1
+      found = matches.first && WorkspaceName.normalize(matches.first)
       # The first hook can beat the pane that records the option; record it so later hooks skip the scan.
-      return found.tap { |name| @tmux.set_session_option(session, OPTION, name) } if found
+      # An ambiguous session is not recorded, so it stays ambiguous for every hook rather than settling on the first config.
+      return found.tap { |name| @tmux.set_session_option(session, OPTION, name) if matches.size == 1 } if found
 
       session if File.socket?(@config.agent_socket_path(session))
+    end
+
+    # Whether more than one config claims the session, so {#call}'s answer is a guess at the first.
+    # A session that records its workspace is never ambiguous. Says nothing through `on_ambiguous`.
+    #
+    # @param session [String] a tmux session name
+    # @return [Boolean]
+    def ambiguous?(session)
+      return false if @tmux.session_option(session, OPTION)
+
+      config_matches(session).size > 1
     end
 
     private
 
     # Compares unquoted and ignoring case, as the session names in the configs
     # may be quoted and a config keeps the case it was written in.
-    def from_configs(session)
-      matches = @project_config.available_projects.select do |name|
+    def config_matches(session)
+      @project_config.available_projects.select do |name|
         unquote(@tmux.session_name_for(name)).casecmp?(session)
       end
-      @on_ambiguous&.call(session, matches) if matches.size > 1
-      matches.first && WorkspaceName.normalize(matches.first)
     end
 
     def unquote(value)

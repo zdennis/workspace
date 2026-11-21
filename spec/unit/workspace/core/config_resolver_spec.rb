@@ -90,4 +90,24 @@ RSpec.describe Workspace::ConfigResolver do
     view.raw("dev.ready")
     expect(settings.load_calls).to eq(1)
   end
+
+  describe "strict_global" do
+    it "raises for a global file that can't be parsed, where the default view reads it as empty" do
+      write(:global, "agent: [")
+      expect(resolver.view(workspace: "api").data_by_layer("agent.permissions.rules")).to eq("project" => {}, "global" => {})
+      expect { resolver.view(workspace: "api", strict_global: true).data_by_layer("agent.permissions.rules") }
+        .to raise_error(Workspace::ConfigParseError)
+    end
+  end
+
+  describe "#data_by_layer" do
+    it "returns each layer's whole file, highest first" do
+      write("api", "agent:\n  permissions:\n    default: allow\n")
+      write("api.worktree-x", "dev:\n  up: ./x\n")
+      data = resolver.view(workspace: "api.worktree-x").data_by_layer("agent.permissions.default")
+      expect(data.keys).to eq(%w[worktree project global])
+      expect(data["project"]).to eq("agent" => {"permissions" => {"default" => "allow"}})
+      expect(data["worktree"]).to eq("dev" => {"up" => "./x"})
+    end
+  end
 end

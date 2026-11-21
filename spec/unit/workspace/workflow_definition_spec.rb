@@ -112,6 +112,33 @@ RSpec.describe Workspace::WorkflowDefinition do
     end
   end
 
+  describe "permissions" do
+    let(:rule) { {"tool" => "Bash", "pattern" => "git push*", "action" => "ask"} }
+
+    it "is empty when absent and keeps valid rules in to_h" do
+      expect(parse(minimal).to_h["permissions"]).to eq([])
+      expect(parse("permissions:\n  - {tool: Bash, pattern: 'git push*', action: ask}\n  - {tool: Write, action: deny}\n#{minimal}").to_h["permissions"])
+        .to eq([rule, {"tool" => "Write", "action" => "deny"}])
+    end
+
+    it "reads from a stored definition, empty for a bad value" do
+      expect(described_class.permissions(nil)).to eq([])
+      expect(described_class.permissions({"permissions" => [rule]})).to eq([rule])
+      expect(described_class.permissions({"permissions" => [rule.merge("action" => "allow")]})).to eq([])
+      expect(described_class.permissions({"permissions" => "x"})).to eq([])
+    end
+
+    it "rejects allow, naming the index" do
+      expect(problems("permissions:\n  - {tool: Bash, action: deny}\n  - {tool: Bash, action: allow}\n#{minimal}"))
+        .to include(a_string_starting_with("permissions[1].action must be one of deny, ask"))
+    end
+
+    it "reports a bad shape" do
+      expect(problems("permissions: Bash\n#{minimal}")).to include(a_string_matching(/permissions must be a list of rules/))
+      expect(problems("permissions: [Bash]\n#{minimal}")).to include(a_string_matching(/permissions\[0\] must be a mapping/))
+    end
+  end
+
   describe "stall and on_timeout" do
     it "reads stall as seconds and on_timeout as a word, with warn and unset as defaults" do
       definition = parse("stall: 20m\nsteps:\n  a:\n    prompt: P\n    timeout: 2h\n    on_timeout: interrupt\n  b:\n    prompt: P\n")
@@ -381,7 +408,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(definition.sha256).to eq(Digest::SHA256.hexdigest(minimal))
     expect(definition.to_h).to eq(
       "id" => "demo", "title" => "demo", "description" => nil, "use_when" => nil, "applies_to" => [], "inputs" => {}, "include" => [], "instructions" => nil,
-      "max_attempts" => 6, "stall" => nil, "redeliver" => 10, "deny" => [],
+      "max_attempts" => 6, "stall" => nil, "redeliver" => 10, "deny" => [], "permissions" => [],
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
                    "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn", "max_attempts" => nil}]
     )
@@ -654,7 +681,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     YAML
 
     expect(found).to include(
-      "the workflow has unknown key colour (known: schema_version, id, title, description, version, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, timeout, timeout_action, deny, reviewers, steps)",
+      "the workflow has unknown key colour (known: schema_version, id, title, description, version, use_when, applies_to, extends, replace, inputs, include, instructions, max_attempts, stall, redeliver, budget, timeout, timeout_action, deny, permissions, reviewers, steps)",
       "schema_version must be one of 0.1, got 2",
       "id must be \"demo\", the name of its file, got \"other\"",
       "max_attempts must be a whole number of 1 or more, got 0",

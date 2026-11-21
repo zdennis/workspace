@@ -23,21 +23,24 @@ module Workspace
     # @param project [String, nil] the parent project; defaults to the part of a worktree name before
     #   ".worktree-", else the workspace itself
     # @param upto [String, nil] "global" or "project" to drop the layers above it; nil keeps all
+    # @param strict_global [Boolean] read the global file strictly, raising {ConfigParseError} for one that can't be
+    #   parsed, instead of reading it as empty
     # @return [View]
     # @raise [ArgumentError] if `upto` is anything else
-    def view(workspace:, project: nil, upto: nil)
+    def view(workspace:, project: nil, upto: nil, strict_global: false)
       ConfigLayering.check_upto(upto)
       project ||= WorkspaceName.project_of(workspace)
-      View.new(project_settings: @project_settings, workspace: workspace, project: project, upto: upto)
+      View.new(project_settings: @project_settings, workspace: workspace, project: project, upto: upto, strict_global: strict_global)
     end
 
     # One workspace's resolved config, with each layer file loaded at most once.
     class View
-      def initialize(project_settings:, workspace:, project:, upto:)
+      def initialize(project_settings:, workspace:, project:, upto:, strict_global: false)
         @project_settings = project_settings
         @workspace = workspace
         @project = project
         @upto = upto
+        @strict_global = strict_global
         @loaded = {}
       end
 
@@ -50,6 +53,15 @@ module Workspace
         data = layers.to_h { |layer| [layer, layer_data(layer)] }
         hits = ConfigLayering.hits(key, data, worktree: worktree?, upto: @upto)
         Resolution.new(key: key, winner: hits.first, hits: hits)
+      end
+
+      # @param name [String] a declared key
+      # @return [Hash{String => Hash}] each layer the key is read from, highest first, with that layer's whole parsed
+      #   file; for a reader that checks the raw data itself
+      # @raise [Workspace::ConfigParseError] if a file the key reads can't be parsed
+      def data_by_layer(name)
+        key = ConfigSchema.key(name) or raise KeyError, "undeclared config key #{name.inspect}"
+        ConfigLayering.read_order(key, worktree: worktree?, upto: @upto).to_h { |layer| [layer, layer_data(layer)] }
       end
 
       # @param name [String] a declared key
@@ -69,7 +81,7 @@ module Workspace
           @loaded[layer] = case layer
           when "worktree" then @project_settings.load(@workspace)
           when "project" then @project_settings.load(@project)
-          else @project_settings.load_global
+          else @strict_global ? @project_settings.load_global_strict : @project_settings.load_global
           end
         end
       end

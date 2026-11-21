@@ -49,7 +49,7 @@ module Workspace
       unless pane[:waits].empty?
         return pane[:waits].reject { |_, wait| wait[:alerted] }.map do |agent_id, wait|
           Due.new(key: [pane[:pane_id], agent_id], value: wait[:since],
-            env: env(pane, "waiting", now - wait[:since], wait[:message], session_name: session_name),
+            env: env(pane, "waiting", now - wait[:since], wait[:message], session_name: session_name, wait: wait),
             logged: waiting_data(pane, agent_id, wait))
         end
       end
@@ -129,8 +129,11 @@ module Workspace
     # @param message [String, nil] the wait's message
     # @param session_name [String]
     # @param followups [Integer, nil] follow-ups sent, for "handoff_stalled"
+    # @param wait [Hash, nil] the wait a "waiting" alert is for; adds
+    #   +WORKSPACE_ALERT_REASON+ (`waiting_permission` or `waiting_prompt`) and,
+    #   for a permission wait, +_TOOL+ and +_COMMAND+ when known
     # @return [Hash{String => String}]
-    def env(pane, alert, seconds, message, session_name:, followups: nil)
+    def env(pane, alert, seconds, message, session_name:, followups: nil, wait: nil)
       position = "#{pane[:window] || 0}.#{pane[:index]}"
       where = "#{session_name} pane #{position} (#{pane[:label]})"
       text = if alert == "waiting"
@@ -140,7 +143,7 @@ module Workspace
       else
         "#{where} has been idle for #{Duration.humanize(seconds)}"
       end
-      {
+      vars = {
         "WORKSPACE_ALERT" => alert,
         "WORKSPACE_ALERT_WORKSPACE" => session_name,
         "WORKSPACE_ALERT_PANE" => position,
@@ -149,7 +152,23 @@ module Workspace
         "WORKSPACE_ALERT_SECONDS" => seconds.round.to_s,
         "WORKSPACE_ALERT_MESSAGE" => message.to_s,
         "WORKSPACE_ALERT_TEXT" => text
-      }.transform_values { |value| value.delete("\0") }
+      }
+      vars.merge!(wait_vars(wait)) if wait
+      vars.transform_values { |value| value.delete("\0") }
+    end
+
+    # @param wait [Hash]
+    # @return [Hash{String => String}] the reason, and a permission wait's tool
+    #   and first line of its input, each one line and at most
+    #   {ToolInputSummary::MAX_BYTES} bytes
+    def wait_vars(wait)
+      return {"WORKSPACE_ALERT_REASON" => "waiting_prompt"} unless wait[:permission]
+      tool = ToolInputSummary.cap(wait[:tool].to_s.lines.first)
+      command = ToolInputSummary.cap(wait[:input].to_s.lines.first)
+      {"WORKSPACE_ALERT_REASON" => "waiting_permission"}.tap do |vars|
+        vars["WORKSPACE_ALERT_TOOL"] = tool if tool
+        vars["WORKSPACE_ALERT_COMMAND"] = command if command
+      end
     end
 
     # @param pane [Hash]

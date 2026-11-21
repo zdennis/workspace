@@ -24,6 +24,29 @@ RSpec.describe Workspace::PaneAlerts do
         "agent_id" => nil, "waiting_since" => "2026-09-26T11:59:30.000Z")
     end
 
+    it "gives a permission wait its reason, tool and first line of input" do
+      pane[:waits][nil] = {since: now - 5, permission: true, tool: "Bash", input: "git push\nrm -rf /\0" + "x" * 400}
+      env = due(pane).first.env
+      expect(env).to include("WORKSPACE_ALERT_REASON" => "waiting_permission", "WORKSPACE_ALERT_TOOL" => "Bash",
+        "WORKSPACE_ALERT_COMMAND" => "git push")
+    end
+
+    it "leaves tool and command out of a permission wait that has none, and of any other prompt" do
+      pane[:waits].merge!(nil => {since: now - 5, permission: true}, "a1" => {since: now - 5, other_prompt: true, tool: "Bash", input: "ls"})
+      envs = due(pane).to_h { |a| [a.key.last, a.env] }
+      expect(envs[nil]).to include("WORKSPACE_ALERT_REASON" => "waiting_permission")
+      expect(envs[nil].keys).not_to include("WORKSPACE_ALERT_TOOL", "WORKSPACE_ALERT_COMMAND")
+      expect(envs["a1"]).to include("WORKSPACE_ALERT_REASON" => "waiting_prompt")
+      expect(envs["a1"].keys).not_to include("WORKSPACE_ALERT_TOOL", "WORKSPACE_ALERT_COMMAND")
+    end
+
+    it "caps a long command and strips NUL" do
+      pane[:waits][nil] = {since: now - 5, permission: true, tool: "Bash", input: "a\0b" + "x" * 500}
+      command = due(pane).first.env["WORKSPACE_ALERT_COMMAND"]
+      expect(command.bytesize).to be <= 300
+      expect(command).not_to include("\0")
+    end
+
     it "has an idle alert past idle_alert_after, once per quiet stretch" do
       alerts = due(pane)
       expect(alerts.size).to eq(1)

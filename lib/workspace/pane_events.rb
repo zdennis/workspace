@@ -23,6 +23,11 @@ module Workspace
     TOOL_RESET_EVENTS = ["user_prompt", "stop", "session_start", "session_end", "turn_failed"].freeze
     private_constant :TOOL_RESET_EVENTS
 
+    # How long a decided request keeps a following Claude permission_prompt
+    # notification for the same agent from opening a wait.
+    DECIDED_MARKER_SECONDS = 5
+    private_constant :DECIDED_MARKER_SECONDS
+
     IDLE_INPUT_MESSAGE = "Claude is waiting for your input"
     private_constant :IDLE_INPUT_MESSAGE
 
@@ -132,19 +137,30 @@ module Workspace
         # can start while another waits on a permission prompt.
         return if event["event"] == "tool_start"
 
-        return note_permission_request(pane, event) if event["event"] == "permission_request"
+        return note_permission_request(pane, event, now) if event["event"] == "permission_request"
 
         # Claude Code says it is idle a minute after a Stop; nobody is asked.
         return if idle_input_notification?(pane, event)
+
+        return if decided_prompt_echo?(pane, event, now)
 
         if event["event"] == "notification"
           # A repeat notification during one wait keeps the original start, so
           # the wait is timed (and alerted) once. So does the first one after a
           # restart, for a wait the last daemon alerted for.
-          wait = permission_prompt?(event) ? bind_permission_wait(pane, event, now) : open_wait(pane, event["agent_id"], now, event["event"]).merge!(other_prompt: true)
+          wait = if permission_prompt?(event)
+            bind_permission_wait(pane, event, now)
+          elsif codex_approval?(event)
+            mark_wait(open_wait(pane, event["agent_id"], now, event["event"]), :permission).merge!(
+              tool: SessionMonitor.clean_message(event["tool"]), input: ToolInputSummary.cap(event["input"])
+            )
+          else
+            mark_wait(open_wait(pane, event["agent_id"], now, event["event"]), :other_prompt)
+          end
           wait[:message] = SessionMonitor.clean_message(event["message"])
         elsif TURN_EVENTS.include?(event["event"])
           clear_waiting(pane)
+          pane.delete(:decided_request)
           pane[:turn_ended] = (event["event"] != "user_prompt")
           update_turn_failed(pane, event, now)
         elsif event["event"] != "subagent_start"
@@ -285,22 +301,45 @@ module Workspace
         event["notification_type"] == "permission_prompt"
       end
 
-      def note_permission_request(pane, event)
+      def codex_approval?(event)
+        event["notification_type"] == "permission_request"
+      end
+
+      # A request the permission policy decided is answered without a dialog, so
+      # it is not kept as pending; it leaves a short marker instead.
+      def note_permission_request(pane, event, now)
         agent_id = event["agent_id"]
+        if %w[allow deny].include?(event["decision"])
+          pane[:decided_request] = {agent_id: agent_id, at: now}
+          return
+        end
         pane[:permission_requests].delete(agent_id)
         pane[:permission_requests][agent_id] = {
           tool: SessionMonitor.clean_message(event["tool"]), input: ToolInputSummary.cap(event["input"])
         }
       end
 
+      # True for a permission_prompt notification that only echoes a request the
+      # policy just decided: same agent, within the marker window, and no other
+      # request pending. The marker is spent either way once it is old or used.
+      def decided_prompt_echo?(pane, event, now)
+        marker = pane[:decided_request]
+        return false unless marker && event["event"] == "notification" && permission_prompt?(event)
+
+        fresh = (0..DECIDED_MARKER_SECONDS).cover?(now - marker[:at])
+        echo = fresh && marker[:agent_id] == event["agent_id"] && pane[:permission_requests].empty?
+        pane.delete(:decided_request) if echo || !fresh
+        echo
+      end
+
       def bind_permission_wait(pane, event, now)
         pane[:waits].each_value { |wait| wait.merge!(tool: nil, input: nil) }
         requests = pane[:permission_requests]
-        return open_wait(pane, event["agent_id"], now, event["event"]) unless requests.size == 1
+        return open_permission_wait(pane, event, now) unless requests.size == 1
 
         agent_id, request = requests.first
         pane[:waits][agent_id] ||= take_unbound_permission_wait(pane) || resumed_wait(pane, agent_id, now: now, by: event["event"])
-        pane[:waits][agent_id].merge!(request)
+        mark_wait(pane[:waits][agent_id].merge!(request), :permission)
       end
 
       # Only a permission wait moves: a main elicitation is still on screen and
@@ -319,6 +358,21 @@ module Workspace
           request = requests[event["agent_id"]]
           requests.delete(event["agent_id"]) if request && request[:tool] == SessionMonitor.clean_message(event["tool"])
         end
+      end
+
+      # A wait has exactly one kind: a permission dialog or another prompt.
+      def mark_wait(wait, kind)
+        wait.delete(:permission)
+        wait.delete(:other_prompt)
+        wait[kind] = true
+        wait
+      end
+
+      # An elicitation wait a permission prompt meets while none could bind stays
+      # an elicitation: it is still on screen and ends on a main event.
+      def open_permission_wait(pane, event, now)
+        wait = open_wait(pane, event["agent_id"], now, event["event"])
+        wait[:other_prompt] ? wait : mark_wait(wait, :permission)
       end
 
       def open_wait(pane, agent_id, now, by)

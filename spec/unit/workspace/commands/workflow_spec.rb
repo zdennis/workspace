@@ -1175,6 +1175,10 @@ RSpec.describe Workspace::Commands::Workflow do
           "retry_backoff: step verify failed; step build starts again at 2026-10-04T12:02:00Z (after 120 seconds), or sooner with a resume",
         reason("waiting_you", {"kind" => "prompt", "pane" => "%5", "message" => "Claude needs your permission"}) =>
           "waiting_you: pane %5 is waiting for an answer: Claude needs your permission",
+        reason("waiting_you", {"kind" => "permission", "pane" => "%5", "tool" => "Bash", "summary" => "rm -rf x\e[31m"}) =>
+          "waiting_you: pane %5 is waiting for a permission answer: Bash rm -rf x\\e[31m",
+        reason("waiting_you", {"kind" => "permission", "role" => "reviewer", "pane" => "%9", "message" => "needs permission"}) =>
+          "waiting_you: review pane %9 is waiting for a permission answer: needs permission",
         reason("waiting_you", {"kind" => "ask", "ask" => "a1", "question" => "Postgres or sqlite?"}) =>
           "waiting_you: open question a1: Postgres or sqlite?",
         reason("waiting_you", {"kind" => "dispatch", "step" => "plan", "error" => "pane_busy", "message" => "pane %5 did not go quiet"}) =>

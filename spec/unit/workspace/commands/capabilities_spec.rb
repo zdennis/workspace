@@ -38,8 +38,8 @@ RSpec.describe Workspace::Commands::Capabilities do
       features = document["features"]
       expect(features.values).to all(be_a(Integer))
       expect(features).to include("prune_safe" => 2)
-      expect(features).to include("envelope" => 1, "error_codes" => 1, "no_input" => 1, "name_scope" => 1, "name_suffix" => 1, "action_json" => 1, "sessions" => 5)
-      expect(features).to include("snapshot" => 6, "agent_send" => 1, "focus_pane" => 1, "focus_cycle" => 1, "focus_chain" => 1, "actions_manifest" => 0)
+      expect(features).to include("envelope" => 1, "error_codes" => 1, "no_input" => 1, "name_scope" => 1, "name_suffix" => 1, "action_json" => 1, "sessions" => 6)
+      expect(features).to include("snapshot" => 7, "agent_send" => 1, "focus_pane" => 1, "focus_cycle" => 1, "focus_chain" => 1, "actions_manifest" => 0)
       expect(features).to include("config_json" => 2, "config_scopes" => 2, "tmux_show" => 1, "state_done" => 1, "tasks" => 1, "event_emitters" => 2, "daemon_control" => 4, "ui_open" => 5, "ui_status" => 1, "pane_bindings" => 3, "library" => 5, "spine_init" => 2, "library_play" => 3, "library_recipes" => 2, "library_copy" => 4, "library_installed" => 1, "instructions" => 1, "start_packs" => 2, "handoff_auto" => 2, "handoff_codex" => 1, "handoff_wait" => 1, "inbox" => 6, "ask_withdraw" => 1, "ask_deliver" => 1, "review" => 1, "review_patch" => 1, "add_json" => 1, "start_agent" => 1, "start_plan" => 1, "plan_progress" => 1, "spine_events" => 2, "agent_status" => 1, "agent_queue" => 2, "agent_recovery" => 1, "agent_send_interrupt" => 1, "agent_hooks" => 1, "codex_waiting" => 1, "projects_multi" => 1, "json_envelope" => 1, "remove" => 1, "promote" => 1, "bookkeeping_excluded" => 1, "waiting_detail" => 1)
     end
 
@@ -71,7 +71,7 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports the workflow feature" do
       command.call(json: true)
 
-      expect(document["features"]).to include("workflow" => 62, "workflow_events_follow" => 2, "workflow_trace" => 1)
+      expect(document["features"]).to include("workflow" => 64, "workflow_events_follow" => 2, "workflow_trace" => 1)
     end
 
     it "reports the restore feature" do
@@ -353,7 +353,7 @@ RSpec.describe Workspace::Commands::Capabilities do
 
       expect(output.string).to include("workspace #{Workspace::VERSION}")
       expect(output.string).to match(/^  envelope +1$/)
-      expect(output.string).to match(/^  snapshot +6$/)
+      expect(output.string).to match(/^  snapshot +7$/)
       expect(output.string).to match(/^  events_permission_wait +1$/)
       expect(output.string).to match(/^  workflow_events_follow +2$/)
       expect(output.string).to include("  gh          #{File.join(bin_dir, "gh")}")

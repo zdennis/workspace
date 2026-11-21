@@ -146,6 +146,7 @@ require_relative "workspace/core/id_patterns"
 require_relative "workspace/core/template_variables"
 require_relative "workspace/core/logger"
 require_relative "workspace/config"
+require_relative "workspace/core/permission_rules"
 require_relative "workspace/core/config_schema"
 require_relative "workspace/config_schema_docs"
 require_relative "workspace/template_variables_docs"
@@ -376,6 +377,10 @@ require_relative "workspace/workflow_files"
 require_relative "workspace/workflow_project"
 require_relative "workspace/workflow_run"
 require_relative "workspace/workflow_run_store"
+require_relative "workspace/bash_command_pieces"
+require_relative "workspace/permission_policy"
+require_relative "workspace/permission_policy_config"
+require_relative "workspace/permission_escalation_desk"
 require_relative "workspace/workflow_deny"
 require_relative "workspace/review_write_guard"
 require_relative "workspace/reflection_write_guard"
@@ -718,6 +723,8 @@ module Workspace
   # @param workflow_store [Workspace::WorkflowRunStore, nil] the runs the work queue desk reads; nil builds one over the config's run dirs
   # @param work_queue_desk_factory [#call, nil] given +workspace:+, builds the {Workspace::WorkQueueDesk} that starts the
   #   work queue's pass; nil builds the real one
+  # @param permission_policy_config [Workspace::PermissionPolicyConfig, nil] lets each workspace's {Workspace::PermissionEscalationDesk}
+  #   know whether a policy is configured; nil builds no such desk
   # @param token_generator [#call] returns a fresh completion token for one stage dispatch
   # @param epoch_generator [#call] returns a fresh epoch for the pipeline desk's registration and each re-registration
   # @param clock [#call] returns the current Time, for stage deadlines and when a turn began
@@ -733,7 +740,7 @@ module Workspace
     plan_paused_for: nil, hook_event_log_factory: nil, plan_progress_watcher_factory: nil, spine_watcher_factory: nil,
     spine_owner_report_factory: nil, agent_recovery_desk_factory: nil, agent_status_desk_factory: nil, prompt_queue_desk_factory: nil,
     handoff_watcher_factory: nil, restart_runner_factory: nil, pipeline_state: nil, sentinel_poller_factory: nil, workflow_nudger: nil,
-    workflow_store: nil, work_queue_desk_factory: nil,
+    workflow_store: nil, work_queue_desk_factory: nil, permission_policy_config: nil,
     token_generator: -> { SecureRandom.hex(4) }, epoch_generator: -> { "wa-#{Commands::Agent.ulid}" }, clock: -> { Time.now }, retry_backoff: 0.5,
     logger: Workspace::Logger.new, error_output: $stderr)
     sentinel_poller_factory ||= ->(session_name:, pane:, token:, deadline:) do
@@ -828,8 +835,12 @@ module Workspace
         session_monitor: monitor, delivery_lock: delivery_lock, event_log: event_log,
         restarting: ->(pane_id) { restarting.call(pane_id) || recovering.call(pane_id) })
       work_queue_desk = work_queue_desk_factory.call(workspace: workspace)
+      escalation_desk = permission_policy_config && PermissionEscalationDesk.new(
+        inbox_store: InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output),
+        policy_config: permission_policy_config, workspace: workspace, project: nil, monitor: monitor, clock: clock, logger: logger
+      )
       hook_fanout = HookFanout.new(workspace: workspace, monitor: monitor, hook_log: hook_event_log, handoff_watcher: handoff_watcher,
-        nudger: workflow_nudger, owner_report: spine_owner_report, desks: [queue_desk, recovery_desk], work_queue_desk: work_queue_desk,
+        nudger: workflow_nudger, owner_report: spine_owner_report, desks: [queue_desk, recovery_desk, escalation_desk], work_queue_desk: work_queue_desk,
         clock: clock, logger: logger)
       AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner, restart_desk: restart_desk,
         plan_progress_watcher: plan_progress_watcher, spine_owner_report: spine_owner_report, spine_watcher: spine_watcher,
@@ -1047,17 +1058,18 @@ module Workspace
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
-    workflow_deny = WorkflowDeny.new(bound_run: bound_run, logger: logger, event_log: event_log,
+    workflow_deny = WorkflowDeny.new(bound_run: bound_run, command_pieces: BashCommandPieces.new, logger: logger, event_log: event_log,
       run_store: WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, event_errors_path: config.workflow_event_errors_path))
     review_write_guard = ReviewWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, env: env, event_log: event_log, logger: logger)
     reflection_write_guard = ReflectionWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, config: config, env: env, event_log: event_log, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     recovery_stop_marker = RecoveryStopMarker.new(state_dir: config.state_dir)
     delivery_log = DeliveryLog.new(path: File.join(config.state_dir, "session-event.log"))
+    permission_policy_config = PermissionPolicyConfig.new(config_resolver: config_resolver, bound_run: bound_run, run_store: workflow_store, logger: logger)
     workspace_for_session = SessionWorkspace.new(tmux: tmux, project_config: project_config, config: config,
       on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
-      workspace_for_session: workspace_for_session, delivery_log: delivery_log,
+      workspace_for_session: workspace_for_session, delivery_log: delivery_log, permission_policy_config: permission_policy_config, session_ambiguous: workspace_for_session.method(:ambiguous?),
       lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, review_write_guard: review_write_guard, reflection_write_guard: reflection_write_guard, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
       dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), recovery_marker: recovery_stop_marker, logger: logger))
     process_group_terminator = ProcessGroupTerminator.new
@@ -1317,7 +1329,7 @@ module Workspace
       backups: TmuxinatorBackupStore.new(config: config, writer: tmuxinator_config_writer), locks: name_migration,
       project_config: project_config, tmux: tmux, differ: TextDiff.new,
       retention: TmuxinatorBackupConfig.new(config_resolver: config_resolver, error_output: error_output))
-    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, library: library, template_validator: template_validator, template_status: template_status, template_apply: template_apply, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), review_orphans: workflow_review_orphans, tmux: tmux, sweep_schedule: sweep_schedule, sweep_last_path: config.workflow_sweep_last_path, sweep_log_path: config.sweep_log_path, output: output, env: env)
+    doctor = Doctor.new(config: config, state: state, command_probe: Doctor::CommandProbe.new, app_probe: Doctor::AppProbe.new, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, permission_policy_config: permission_policy_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, project_catalog: project_catalog, agent_commands: agent_commands, project_config: project_config, main_agent: main_agent, file_backup: file_backup, writer: tmuxinator_config_writer, event_log: event_log, skills: skills_command, library: library, template_validator: template_validator, template_status: template_status, template_apply: template_apply, run_health: WorkflowRunHealth.new(store: workflow_store, liveness: run_liveness, lock_dir: config.lock_dir), review_orphans: workflow_review_orphans, tmux: tmux, sweep_schedule: sweep_schedule, sweep_last_path: config.workflow_sweep_last_path, sweep_log_path: config.sweep_log_path, output: output, env: env)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
     )
@@ -1410,6 +1422,7 @@ module Workspace
       hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
       workflow_nudger: workflow_nudger,
       workflow_store: workflow_store,
+      permission_policy_config: permission_policy_config,
       logger: logger,
       error_output: error_output
     )

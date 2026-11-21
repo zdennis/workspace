@@ -85,7 +85,7 @@ module Workspace
           NextAction.build("workflow cancel", id, why: why)]
       when "workspace_stopped"
         (row["workspace"] && row["cause"] != "orphan_review_window") ? [NextAction.build("launch", row["workspace"], why: why)] : []
-      when "prompt"
+      when "prompt", "waiting_permission"
         pane = lookup { prompt_pane(id, row["step"]) }
         (row["workspace"] && pane) ? [NextAction.build("focus", row["workspace"], "--pane", pane, why: why)] : []
       else

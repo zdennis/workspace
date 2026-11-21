@@ -190,6 +190,15 @@ RSpec.describe Workspace::WorkflowNeedsMe do
       expect(needs_me.rows([reviewing("wr_1", reason: prompt)]).map { |row| row["kind"] }).to eq(["prompt"])
     end
 
+    it "lists a review pane waiting on a permission request, with its focus action" do
+      focus = {"action" => "focus", "args" => ["app", "--pane", "%9"], "needs" => []}
+      permission = reason("waiting_you", details: {"kind" => "permission", "role" => "reviewer", "pane" => "%9", "reason" => "waiting_permission"}, actions: [focus])
+
+      rows = needs_me.rows([reviewing("wr_1", reason: permission)])
+
+      expect(rows.map { |row| row.slice("kind", "next_action") }).to eq([{"kind" => "permission", "next_action" => focus}])
+    end
+
     it "leaves out a round that is running, which has no reason" do
       expect(needs_me.rows([reviewing("wr_1", reason: nil)])).to eq([])
     end

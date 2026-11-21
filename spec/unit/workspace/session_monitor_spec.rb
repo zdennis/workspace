@@ -1226,6 +1226,7 @@ RSpec.describe Workspace::SessionMonitor do
         "WORKSPACE_ALERT_KIND" => "claude",
         "WORKSPACE_ALERT_SECONDS" => "4",
         "WORKSPACE_ALERT_MESSAGE" => "Claude needs your permission to use Bash",
+        "WORKSPACE_ALERT_REASON" => "waiting_prompt",
         "WORKSPACE_ALERT_TEXT" => "proj pane 0.1 (Claude Code) is waiting: Claude needs your permission to use Bash"
       }])
       expect(notifier).to have_received(:notify).once
