@@ -540,7 +540,10 @@ module Workspace
         last_pass = sweep_last_pass_text
         add_row("workflow-sweep", "ok", "workflow sweep: installed#{" (launchctl could not say whether it is loaded)" if status["loaded"].nil?}#{last_pass[:text]}")
         add_row("workflow-sweep", "warn", last_pass[:warning], fix: last_pass[:fix]) if last_pass[:warning]
-        if status["up_to_date"] == false
+        if status["scheduled_flag"] == false
+          add_row("workflow-sweep", "warn", "the installed workflow sweep entry predates --scheduled, so it sweeps runs the agent daemon owns",
+            fix: "rewrite it: workspace workflow sweep --install", fix_command: "workspace workflow sweep --install")
+        elsif status["up_to_date"] == false
           add_row("workflow-sweep", "warn", "the installed workflow sweep entry is out of date with this version of workspace",
             fix: "rewrite it after upgrading workspace or moving Ruby: workspace workflow sweep --install", fix_command: "workspace workflow sweep --install")
         end
@@ -549,9 +552,24 @@ module Workspace
         add_row("workflow-sweep", "warn", "the workflow sweep is #{why}. This matters only for workflows that set a timeout: (on the run or on a step); without the scheduled sweep, it is enforced only while the workspace's agent daemon is running (the daemon sweeps its workspace every 5 minutes while a run is going)",
           fix: "only if you use workflow timeouts: workspace workflow sweep --install", fix_command: "workspace workflow sweep --install")
       end
+      warn_icloud_notes if status["installed"]
     rescue Workspace::Error => e
       add_row("workflow-sweep", "warn", "workflow sweep: could not read its schedule: #{TerminalText.escape(e.message)}",
         fix: "run 'workspace workflow sweep --installed' to see the error")
+    end
+
+    # Warns when a workspace's notes directory is in iCloud Drive: launchd jobs cannot read there, so a review
+    # revision command that reads notes there fails when the scheduled sweep runs it. Adds nothing when no plan
+    # can be read.
+    def warn_icloud_notes
+      return unless @plan
+      rows = @plan.rows(all: true).select { |row| row["path"] && SweepSchedule.icloud_path?(File.dirname(row["path"].to_s)) }
+      return if rows.empty?
+      names = rows.map { |row| "#{TerminalText.escape(row["workspace"].to_s)} (#{TerminalText.escape(File.dirname(row["path"].to_s))})" }.uniq
+      add_row("workflow-sweep", "warn", "the notes directory of #{names.join(", ")} is in iCloud Drive, which macOS privacy keeps launchd jobs out of: a review revision command that reads notes there fails when the scheduled sweep runs it; the agent daemon's sweep handles those runs while it is up",
+        fix: "move the notes directory out of ~/Library/Mobile Documents, or leave the run to the agent daemon")
+    rescue Workspace::Error, SystemCallError
+      nil
     end
 
     # The last full sweep pass, read from sweep-last.json, as text for the ok row and, when it is missing, older

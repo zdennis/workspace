@@ -313,4 +313,37 @@ RSpec.describe Workspace::SweepSchedule do
       expect(schedule.status).to include("up_to_date" => false)
     end
   end
+
+  describe ".icloud_path?" do
+    it "is true for iCloud Drive and below, false elsewhere, measured from the given home" do
+      home = File.join(@dir, "home")
+      icloud = File.join(home, "Library", "Mobile Documents")
+
+      expect(described_class.icloud_path?(icloud, home: home)).to be(true)
+      expect(described_class.icloud_path?(File.join(icloud, "iCloud~md~obsidian", "Notes"), home: home)).to be(true)
+      expect(described_class.icloud_path?(File.join(home, "Library", "Mobile Documents2"), home: home)).to be(false)
+      expect(described_class.icloud_path?(File.join(home, "Library", "LaunchAgents"), home: home)).to be(false)
+      expect(described_class.icloud_path?("~/Library/Mobile Documents/x", home: home)).to be(false)
+      expect(described_class.icloud_path?(nil, home: home)).to be(false)
+      expect(described_class.icloud_path?("", home: home)).to be(false)
+    end
+  end
+
+  describe "#status scheduled_flag" do
+    it "is true for a plist installed now, false for one without --scheduled, nil when nothing is installed" do
+      expect(schedule.status["scheduled_flag"]).to be_nil
+      schedule.install
+      expect(schedule.status["scheduled_flag"]).to be(true)
+
+      File.write(plist_path, File.read(plist_path).sub(%r{\s*<string>--scheduled</string>}, ""))
+      expect(schedule.status).to include("ours" => true, "scheduled_flag" => false, "up_to_date" => false)
+    end
+
+    it "is nil for a plist that is not ours" do
+      FileUtils.mkdir_p(agents_dir)
+      File.write(plist_path, "<plist/>")
+
+      expect(schedule.status["scheduled_flag"]).to be_nil
+    end
+  end
 end

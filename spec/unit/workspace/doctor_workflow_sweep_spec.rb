@@ -122,4 +122,40 @@ RSpec.describe Workspace::Doctor, "workflow sweep" do
       expect(rows(schedule, last_path: path, now: now)).to contain_exactly(include(status: "warn", message: a_string_including("not installed")))
     end
   end
+
+  describe "--scheduled and iCloud notes" do
+    let(:status) { {"installed" => true, "loaded" => true, "up_to_date" => false, "scheduled_flag" => false} }
+
+    def rows_with_plan(plan)
+      doctor = described_class.new(sweep_log_path: "/state/sweep.log", clock: -> { Time.utc(2026, 1, 1) }, config: Workspace::Config.new, state: CLITestHelpers::FakeState.new, hook_installer: hook_installer,
+        project_detector: double("project_detector", detect: nil), output: StringIO.new, project_settings: CLITestHelpers::FakeProjectSettings.new, plan: plan,
+        sweep_schedule: schedule, command_probe: ->(_name, _flag) {}, app_probe: ->(_id) { false }, which: ->(_exe) { true }, launch_mode: launch_mode)
+      doctor.report(fix: false)[:rows].select { |row| row[:id] == "workflow-sweep" }
+    end
+
+    it "warns that the entry predates --scheduled, instead of the generic out-of-date row" do
+      allow(schedule).to receive(:status).and_return(status)
+      warns = rows(schedule).select { |row| row[:status] == "warn" }
+
+      expect(warns).to contain_exactly(include(message: a_string_including("predates --scheduled"), fix_command: "workspace workflow sweep --install"))
+    end
+
+    it "warns naming a workspace whose notes dir is in iCloud, and not one elsewhere" do
+      allow(schedule).to receive(:status).and_return(status.merge("up_to_date" => true, "scheduled_flag" => true))
+      icloud = File.join(Dir.home, "Library", "Mobile Documents", "x", "Notes", "app")
+      plan = double("plan", rows: [{"workspace" => "app", "path" => File.join(icloud, "IMPLEMENTATION_PLAN.md")}, {"workspace" => "other", "path" => "/tmp/other/IMPLEMENTATION_PLAN.md"}])
+      warns = rows_with_plan(plan).select { |row| row[:status] == "warn" }
+
+      expect(warns).to contain_exactly(include(message: a_string_including("app (#{icloud})", "iCloud Drive")))
+      expect(warns.first[:message]).not_to include("other")
+    end
+
+    it "adds no warning when the plan cannot be read" do
+      allow(schedule).to receive(:status).and_return(status.merge("up_to_date" => true, "scheduled_flag" => true))
+      plan = double("plan")
+      allow(plan).to receive(:rows).and_raise(Workspace::Error.new("boom", code: "x"))
+
+      expect(rows_with_plan(plan).select { |row| row[:status] == "warn" }).to be_empty
+    end
+  end
 end

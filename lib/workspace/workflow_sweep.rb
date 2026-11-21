@@ -10,6 +10,12 @@ module Workspace
   # own workspace about every five minutes while a run is going
   # ({WorkflowNudger}).
   #
+  # A scheduled pass (`workflow sweep --scheduled`, the launchd entry) leaves every going run of a workspace whose
+  # agent daemon is running to that daemon, which sweeps its own workspace from tmux: a `nothing` row with reason
+  # `daemon_owns`, and no act. launchd runs without access to iCloud Drive (`~/Library/Mobile Documents`), so a
+  # step or review command that reads notes there would hang, and a redelivery it makes would be spent for nothing.
+  # A workspace whose daemon is down is swept as by any pass, starting the daemon.
+  #
   # A paused run ({WorkflowEngine#pause}) is left alone ahead of everything but its end: a `paused` row (outcome
   # `nothing`), no daemon started, no pane read and its file not written. A step's `timeout` and a review round's
   # clock leave out the time the run was paused on that step ({WorkflowTransitions.pause_spans}).
@@ -173,8 +179,10 @@ module Workspace
     #   has no such budget, or whose spent plus live tokens are under the allowance and that holds no `sent` budget
     #   interrupt gets no row at all and no pane read, so a row means the run was acted on or evaluated; no
     #   unreadable-run or orphan rows, and no record of the pass, so the full sweep's own record stays the last one
+    # @param scheduled [Boolean] the pass the launchd entry runs: a run whose workspace's daemon is running gets a
+    #   `daemon_owns` row and nothing else
     # @raise [Workspace::Error] code `unknown_run` for a +run+ that does not exist
-    def call(run: nil, workspace: nil, dry_run: false, allow: nil, budget_only: false)
+    def call(run: nil, workspace: nil, dry_run: false, allow: nil, budget_only: false, scheduled: false)
       beat
       trim_log
       going = run ? nil : @store.going
@@ -183,7 +191,7 @@ module Workspace
       runs = runs.select { |each| each.workspace == workspace } if workspace
       # Downtime is read once for the pass, after the beat has recorded any gap since the last one.
       pass = {dry_run: dry_run, allow: allow, down: {}, daemons: {}, sessions: {}, default_stall: @default_stall.call, turn_failed_after: @turn_failed_after.call,
-              stops: downtime_stops, budget_only: budget_only, infra_retry_max: budget_only ? 0 : @infra_retry_max.call.to_i}
+              stops: downtime_stops, budget_only: budget_only, scheduled: scheduled, infra_retry_max: budget_only ? 0 : @infra_retry_max.call.to_i}
       rows = runs.flat_map { |each| [sweep_run(each, pass)].flatten(1).compact }
       rows += unreadable_rows unless run || workspace || budget_only
       # Every session of the default tmux server unless a workspace or a run narrows the pass.
@@ -334,6 +342,7 @@ module Workspace
       return WorkflowSweepRows.row(run, "nothing", reason: "finished", message: "the run has ended") if WorkflowRunStore::TERMINAL_STATES.include?(run.state)
       held = WorkflowTransitions.held_reason(run.to_h)
       return paused_row(run) if held == "paused"
+      return daemon_owns_row(run) if pass[:scheduled] && !daemon_down?(run.workspace, pass)
       views = live_views(run)
       return sweep_step(run, pass, held) if views.size == 1
       # A fan_out group under way: a row for each sibling under way, the cursor's first (a finished or paused run has one).
@@ -407,6 +416,12 @@ module Workspace
       return false if WorkflowEngine.sweep_marks(run.to_h).dig(WorkflowTransitions::INTERRUPT_MARK_KEYS["budget_spent"], "state") == "sent"
       live = @live_usage&.reading(run, now: @clock.call)
       !(live.is_a?(Integer) && budget["used"] + live >= budget["allowance"])
+    end
+
+    # A scheduled pass leaves the run to its workspace's running daemon, whose own sweep can read what launchd cannot.
+    def daemon_owns_row(run)
+      WorkflowSweepRows.row(run, "nothing", reason: "daemon_owns",
+        message: "the agent daemon of #{run.workspace} is running and sweeps this run itself; the scheduled sweep leaves it alone")
     end
 
     # A person paused the run: nothing of it is looked at or changed until it is unpaused.

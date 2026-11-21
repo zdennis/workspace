@@ -33,9 +33,12 @@ module Workspace
 
     # @param guard [Workspace::WorkflowGuard] reads HEAD and the tracked tree's digest
     # @param checker [Workspace::WorkflowCheck] runs the `review.revision` command
-    def initialize(guard:, checker:)
+    # @param notes_dir [#call] a workspace name to its notes directory, or nil; a failing command whose run's notes
+    #   directory is in iCloud Drive gets that as its likely cause ({SweepSchedule.icloud_path?})
+    def initialize(guard:, checker:, notes_dir: ->(_workspace) {})
       @guard = guard
       @checker = checker
+      @notes_dir = notes_dir
     end
 
     # @param run [WorkflowRun, Hash{String=>Object}] the stored run, on the step whose round is judged
@@ -73,13 +76,24 @@ module Workspace
       log = log_path(run, step)
       err_log = log.sub(/\.log\z/, ".err")
       result = @checker.call(command: command, cwd: run.worktree.to_s, timeout: TIMEOUT, log: log, err_log: err_log, stop_when: stop_when, env: WorkflowCheck.env_for(run))
-      return {problem: "the review revision command ran past #{TIMEOUT} seconds (stderr #{err_log})"} if result[:timed_out]
-      return {problem: "the review revision command did not finish: #{result[:error]} (stderr #{err_log})"} if result[:error]
-      return {problem: "the review revision command exited #{result[:exit_code]} (stderr #{err_log})"} unless result[:exit_code] == 0
+      return {problem: "the review revision command ran past #{TIMEOUT} seconds (stderr #{err_log})#{icloud_hint(run)}"} if result[:timed_out]
+      return {problem: "the review revision command did not finish: #{result[:error]} (stderr #{err_log})#{icloud_hint(run)}"} if result[:error]
+      return {problem: "the review revision command exited #{result[:exit_code]} (stderr #{err_log})#{icloud_hint(run)}"} unless result[:exit_code] == 0
       content = WorkflowProduced.digest(log, max_bytes: MAX_BYTES)
       return {problem: "the review revision command's output is larger than #{MAX_BYTES} bytes (#{log})"} if content&.too_large
       return {problem: "the review revision command's output could not be read (#{log})"} unless content&.sha256
       {sha256: content.sha256}
+    end
+
+    # A sentence naming macOS privacy as the likely cause when the run's notes directory is in iCloud Drive; empty otherwise.
+    def icloud_hint(run)
+      dir = begin
+        @notes_dir.call(run.workspace)
+      rescue Workspace::Error, SystemCallError
+        nil
+      end
+      return "" unless SweepSchedule.icloud_path?(dir)
+      ". Likely cause: macOS privacy keeps launchd jobs (the scheduled sweep) out of ~/Library/Mobile Documents, where the notes directory #{dir} is; the agent daemon's own sweep can read it"
     end
 
     # `steps/<step>.<n>.r<round>.revision.log` (stdout; stderr in `.revision.err`), beside the step's check logs; the

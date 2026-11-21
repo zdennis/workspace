@@ -96,12 +96,13 @@ module Workspace
 
     # Reads whether the entry is there, ours and loaded. Changes nothing.
     #
-    # @return [Hash{String=>Object}] `outcome` is `installed` or `not_installed`, with `installed`, `ours`, `loaded`, `up_to_date`, `stale`, `interval`, `ruby`, `program`
+    # @return [Hash{String=>Object}] `outcome` is `installed` or `not_installed`, with `installed`, `ours`, `loaded`, `up_to_date`, `stale`, `interval`, `ruby`, `program`, `scheduled_flag` (true when the plist's arguments include `--scheduled`, false when it is ours and lacks it, nil otherwise)
     def status
       existing = read
       ours = existing.nil? ? nil : owned?(existing)
       recorded = (existing && ours) ? recorded_paths(existing) : {}
-      stale = recorded.values.compact.reject { |each| File.exist?(each) }
+      scheduled_flag = (existing && ours) ? recorded["args"].include?("--scheduled") : nil
+      stale = recorded.values_at("ruby", "program").compact.reject { |each| File.exist?(each) }
       up_to_date = begin
         (existing && ours) ? existing == plist : nil
       rescue Error
@@ -123,7 +124,20 @@ module Workspace
       end
       row((existing.nil? ? "not_installed" : "installed"), message,
         installed: !existing.nil?, ours: ours, loaded: loaded, up_to_date: up_to_date, stale: stale,
-        interval: (existing && ours) ? INTERVAL : nil, ruby: recorded["ruby"], program: recorded["program"])
+        interval: (existing && ours) ? INTERVAL : nil, ruby: recorded["ruby"], program: recorded["program"], scheduled_flag: scheduled_flag)
+    end
+
+    # Whether a path is in iCloud Drive (`~/Library/Mobile Documents` or below it), where macOS privacy keeps
+    # launchd jobs, so the scheduled sweep cannot read it. Pure text: nothing is read from disk.
+    #
+    # @param path [String, nil]
+    # @param home [String] the home directory to measure from
+    # @return [Boolean]
+    def self.icloud_path?(path, home: Dir.home)
+      return false if path.to_s.empty?
+      root = File.join(File.expand_path(home), "Library", "Mobile Documents")
+      full = File.expand_path(path.to_s, home)
+      full == root || full.start_with?("#{root}/")
     end
 
     # @return [String] where the plist lives
@@ -153,7 +167,7 @@ module Workspace
       block = text[%r{<key>ProgramArguments</key>\s*<array>(.*?)</array>}m, 1]
       return false unless block
       args = strings(block)
-      args.size == 4 && args[1].end_with?("/bin/workspace") && args[2..] == %w[workflow sweep]
+      args.size >= 4 && args[1].end_with?("/bin/workspace") && [%w[workflow sweep], %w[workflow sweep --scheduled]].include?(args[2..])
     end
 
     def strings(text)
@@ -241,7 +255,7 @@ module Workspace
       program = @source.executable
       entries = [
         ["Label", LABEL],
-        ["ProgramArguments", [ruby, program, "workflow", "sweep"]],
+        ["ProgramArguments", [ruby, program, "workflow", "sweep", "--scheduled"]],
         ["StartInterval", INTERVAL],
         ["RunAtLoad", false],
         ["ProcessType", "Background"],
@@ -279,7 +293,7 @@ module Workspace
 
     def recorded_paths(text)
       args = strings(text[%r{<key>ProgramArguments</key>\s*<array>(.*?)</array>}m, 1].to_s)
-      {"ruby" => args[0], "program" => args[1]}
+      {"ruby" => args[0], "program" => args[1], "args" => args}
     end
   end
 end

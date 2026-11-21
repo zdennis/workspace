@@ -159,6 +159,7 @@ module Workspace
           opts.on("--uninstall", "sweep: unload and remove that launchd entry") { options[:schedule_flags] << :uninstall }
           opts.on("--installed", "sweep: say whether that launchd entry is installed and loaded") { options[:schedule_flags] << :status }
           opts.on("--budget-only", "sweep: look only at token budgets with action: interrupt, and press only for one that is spent (the agent daemon runs this every minute for such runs; the full sweep runs every 5 minutes)") { options[:budget_only] = true }
+          opts.on("--scheduled", "sweep: the pass the launchd entry runs; leaves each run whose workspace's agent daemon is running to that daemon (reason daemon_owns)") { options[:scheduled] = true }
           opts.on("--yes", "remove, uninstall: do not ask before deleting") { options[:yes] = true }
           opts.on("--if-sha256 SHA", "update: the sha256 of the file's raw bytes you read; refuse with stale_workflow unless it still matches") { |v| options[:if_sha256] = v }
           opts.on("--prompt TEXT", "start: the task as free text (the workflow's task input, and the branch's name when there is no REF)") { |v| options[:prompt] = v }
@@ -251,6 +252,8 @@ module Workspace
         raise UsageError, "workflow sweep takes a RUN or --name WORKSPACE, not both." if subcommand == "sweep" && subject && options[:name]
         raise UsageError, "--budget-only is for `workflow sweep`." if options[:budget_only] && subcommand != "sweep"
         schedule = options[:schedule_flags].first
+        raise UsageError, "--scheduled is for `workflow sweep`." if options[:scheduled] && subcommand != "sweep"
+        raise UsageError, "--scheduled does not go with --install, --uninstall, --installed or --budget-only." if options[:scheduled] && (schedule || options[:budget_only])
         raise UsageError, "--budget-only does not go with --install, --uninstall or --installed." if options[:budget_only] && schedule
         raise UsageError, "--install, --uninstall and --installed are for `workflow sweep`." if schedule && subcommand != "sweep"
         raise UsageError, "workflow sweep takes one of --install, --uninstall and --installed, and no RUN or --name with it." if schedule && (options[:schedule_flags].size > 1 || subject || options[:name])
@@ -374,7 +377,7 @@ module Workspace
             workflow_action_rows(invocation, action, options) { @workflow_command.schedule(schedule, dry_run: options[:dry_run]) }
             return
           end
-          workflow_action_rows(invocation, "workflow sweep", options) { @workflow_command.sweep(run: subject, name: options[:name], dry_run: options[:dry_run], json: options[:json], caller_pane: ENV["TMUX_PANE"], budget_only: options[:budget_only] || false) }
+          workflow_action_rows(invocation, "workflow sweep", options) { @workflow_command.sweep(run: subject, name: options[:name], dry_run: options[:dry_run], json: options[:json], caller_pane: ENV["TMUX_PANE"], budget_only: options[:budget_only] || false, scheduled: options[:scheduled] || false) }
         when "recover"
           raise UsageError, "workflow recover takes no RUN; it looks at every run going." if subject
           raise UsageError, "workflow recover takes no --name; it looks at every run going." if options[:name]
