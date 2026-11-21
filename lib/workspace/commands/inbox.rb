@@ -859,6 +859,15 @@ module Workspace
         rows
       end
 
+      # The `dedupe_key`s of each workspace's unsettled `permission:` items, open or snoozed (a snooze that has passed
+      # reads open); an unreadable store gives none.
+      def open_permission_keys(workspaces)
+        workspaces.flat_map do |name|
+          store_for(workspace_scope(name), StringIO.new).list.select { |item| %w[open snoozed].include?(item["state"]) }
+            .map { |item| item["dedupe_key"].to_s }.select { |key| key.start_with?("permission:") }
+        end
+      end
+
       # Derived rows for the workspaces and projects the listed scopes stand for: a workspace scope's
       # workspace, a project scope's project, or with +all+ every one in the catalog. Global has none.
       def derived_rows(target, working_dir, all, with_project: false)
@@ -885,7 +894,7 @@ module Workspace
             projects << project if project
           end
         end
-        @derived.rows(workspaces: workspaces, projects: projects)
+        @derived.rows(workspaces: workspaces, projects: projects, open_keys: open_permission_keys(workspaces))
       end
 
       def detected_workspace(working_dir)

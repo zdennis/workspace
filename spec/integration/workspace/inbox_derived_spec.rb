@@ -216,6 +216,25 @@ RSpec.describe Workspace::InboxDerived do
       expect(read[:rows].select { |row| row["kind"] == "pane_waiting" }.map { |row| row["links"]["pane"] }).to eq(["%5"])
     end
 
+    it "leaves out the waiting row of a pane with an open permission item, and only that pane" do
+      keys = ["permission:api.worktree-a:%5:main", "permission:api.worktree-a:%50:main", "permission:other:%5:main"]
+      expect(read(open_keys: keys)[:rows].map { |row| row["kind"] }).not_to include("pane_waiting")
+      expect(read(open_keys: ["permission:api.worktree-a:%6:main"])[:rows].map { |row| row["kind"] }).to include("pane_waiting")
+    end
+
+    it "hides the row for the key PermissionEscalationDesk writes, so the two formats cannot drift" do
+      store = Workspace::InboxStore.new(path: File.join(tmpdir, "esc.json"), scope: "workspace:api.worktree-a", error_output: StringIO.new)
+      policy = instance_double(Workspace::PermissionPolicyConfig, configured?: true)
+      desk = Workspace::PermissionEscalationDesk.new(inbox_store: store, policy_config: policy, workspace: "api.worktree-a", project: "api",
+        monitor: nil, clock: -> { now })
+      desk.session_event({"event" => "permission_request", "pane_id" => "%5", "decision" => "ask", "tool" => "Bash", "input" => "ls"})
+      keys = store.list.map { |item| item["dedupe_key"] }
+      expect(keys).not_to be_empty
+
+      expect(read(open_keys: keys)[:rows].map { |row| row["kind"] }).not_to include("pane_waiting")
+      expect(read[:rows].map { |row| row["kind"] }).to include("pane_waiting")
+    end
+
     it "leaves out an ask once it is withdrawn" do
       ask_store_for.call("api").withdraw(ask["id"])
 

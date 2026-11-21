@@ -830,11 +830,14 @@ RSpec.describe Workspace::Commands::Inbox do
   describe "#list with include_derived" do
     # Mirrors InboxDerived#rows: `rows:` in the derived row shape and `warnings:` as {"code", "message"}.
     let(:derived_calls) { [] }
+    let(:keys_seen) { [] }
     let(:derived) do
       calls = derived_calls
+      keys_seen = self.keys_seen
       Class.new do
-        define_method(:rows) do |workspaces:, projects:|
+        define_method(:rows) do |workspaces:, projects:, open_keys: []|
           calls << [workspaces, projects]
+          keys_seen << open_keys
           {rows: [{"id" => "pane:waiting:api.fix:%5", "derived" => true, "kind" => "pane_waiting", "fingerprint" => "2026-10-16T11:50:00Z",
                    "type" => "alert", "state" => "open", "scope" => {"kind" => "workspace", "key" => "api.fix", "name" => "api.fix"},
                    "title" => "An agent is waiting in api.fix (%5)", "body" => "Allow Bash?",
@@ -871,6 +874,17 @@ RSpec.describe Workspace::Commands::Inbox do
       expect(doc["items"].map { |i| i["title"] }).to eq(["ws item", "An agent is waiting in api.fix (%5)"])
       expect(doc["items"].last).to include("derived" => true, "fingerprint" => "2026-10-16T11:50:00Z")
       expect(doc["warnings"].map { |w| w["code"] }).to eq(["daemons_unavailable"])
+    end
+
+    it "hands the derived source the keys of the workspace's open and snoozed permission items, not other ones" do
+      with_derived.add(title: "open", working_dir: "/app", dedupe_key: "permission:api.fix:p5:main")
+      snoozed = with_derived.add(title: "snoozed", working_dir: "/app", dedupe_key: "permission:api.fix:p6:main")[:results].first
+      with_derived.add(title: "other", working_dir: "/app", dedupe_key: "agent-recovery:s1")
+      with_derived.snooze([snoozed["id"]], for_duration: "2h", working_dir: "/app")
+
+      listed(include_derived: true)
+
+      expect(keys_seen.last).to contain_exactly("permission:api.fix:p5:main", "permission:api.fix:p6:main")
     end
 
     it "reads the detected workspace and its project by default" do
@@ -1701,7 +1715,7 @@ RSpec.describe Workspace::Commands::Inbox do
       prints = fingerprint
       noted = warnings
       Class.new do
-        define_method(:rows) do |workspaces:, projects:|
+        define_method(:rows) do |workspaces:, projects:, open_keys: []|
           calls << [workspaces, projects]
           scope = {"kind" => "workspace", "key" => "api.fix", "name" => "api.fix"}
           links = {"pane" => nil, "plan_task" => nil, "pr" => nil, "run_id" => nil}
