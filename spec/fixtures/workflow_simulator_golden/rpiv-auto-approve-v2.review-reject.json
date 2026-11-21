@@ -22,7 +22,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     },
@@ -34,6 +35,7 @@
           "n": 1,
           "outcome": "failed",
           "code": "review_rejected",
+          "fresh": true,
           "reviews": [
             {
               "reviewer": "supportive",
@@ -58,6 +60,7 @@
         {
           "n": 2,
           "outcome": "passed",
+          "fresh": true,
           "reviews": [
             {
               "reviewer": "supportive",
@@ -87,7 +90,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     },
@@ -97,7 +101,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     }

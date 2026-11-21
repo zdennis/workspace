@@ -22,7 +22,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     },
@@ -32,7 +33,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     },
@@ -72,7 +74,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     },
@@ -82,7 +85,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     },
@@ -92,7 +96,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     }

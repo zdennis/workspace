@@ -98,7 +98,7 @@ module Workspace
         review_tally: WorkflowReviewTally.new(proof: SimVerdictProof.new), review_revision: SimRevision.new(script), clock: clock)
       run = WorkflowRun.from_h(engine.start(definition: definition, workspace: WORKSPACE, worktree: checkout, inputs: inputs, pane: PANE, actor: "person"))
       actions, capped = drive(engine, store, run.id, definition.to_h, script, clock, records)
-      report(store, run.id, definition.to_h, clock, actions, capped)
+      report(store, run.id, definition.to_h, clock, actions, capped, panes)
     end
 
     # Stands in for a round's delivery ({WorkflowReviewRound}): the review window is a pane that is only a name, and the
@@ -275,7 +275,7 @@ module Workspace
       File.utime(clock.call, clock.call, path)
     end
 
-    def report(store, id, data, clock, actions, capped)
+    def report(store, id, data, clock, actions, capped, panes)
       run = store.run(id)
       events = store.events(id, limit: WorkflowRunStore::EVENTS_LIMIT)["events"]
       outcome = if capped then "capped"
@@ -285,14 +285,16 @@ module Workspace
       stopped = (outcome == "stopped") ? {"step" => run.current, "attempt" => run.step(run.current).last_attempt&.n, "reason" => run.reason_for(run.current)&.dig("code")} : nil
       {"workflow" => data["id"], "inputs" => run.inputs, "outcome" => outcome, "stopped" => stopped, "capped" => capped, "max_actions" => @max_actions, "actions" => actions,
        "run" => {"state" => run.state, "current" => run.current, "reason" => run.reason_for(run.current)&.dig("code"), "loops" => run.loops},
-       "steps" => data["steps"].map { |step| {"id" => step["id"], "state" => run.step(step["id"]).state, "attempts" => run.step(step["id"]).attempts.map { |each| attempt_row(each) }} },
+       "steps" => data["steps"].map { |step| {"id" => step["id"], "state" => run.step(step["id"]).state, "attempts" => run.step(step["id"]).attempts.map { |each| attempt_row(each, panes) }} },
        "budget" => WorkflowBudget.reading(run),
        "transitions" => events.map { |event| {"n" => event["n"], "at" => (Time.iso8601(event["ts"]) - START).round}.merge(event.except("n", "ts")) }}
     end
 
     # An attempt as the report shows it; a reviewed one lists what each reviewer's verdict came to.
-    def attempt_row(attempt)
+    def attempt_row(attempt, panes)
       row = attempt.to_h.slice("n", "outcome", "code")
+      fresh = panes.fresh_for(attempt.to_h["prompt_file"])
+      row["fresh"] = fresh unless fresh.nil?
       reviews = attempt.to_h["reviews"] || Array(attempt.to_h["rounds"]).last&.dig("reviews")
       row["reviews"] = reviews.map { |each| each.slice("reviewer", "verdict", "counted", "problem") } if reviews.is_a?(Array)
       row
@@ -426,7 +428,18 @@ module Workspace
         nil
       end
 
-      def kick(**)
+      # Every line typed into the author pane, in order, with the run, the text and whether it started a new conversation.
+      def kicks
+        @kicks ||= []
+      end
+
+      # Whether the last kick that delivered the prompt file started a new conversation; nil when none did.
+      def fresh_for(prompt_file)
+        kicks.reverse_each.find { |each| each[:text] == format(WorkflowDispatch::KICK, prompt_file) }&.fetch(:fresh)
+      end
+
+      def kick(run_id: nil, text: nil, fresh: false, **)
+        kicks << {run_id: run_id, text: text, fresh: fresh}
         {ok: true}
       end
     end

@@ -24,7 +24,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     },
@@ -34,11 +35,13 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": false
         },
         {
           "n": 2,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": false
         }
       ]
     },
@@ -48,7 +51,8 @@
       "attempts": [
         {
           "n": 1,
-          "outcome": "passed"
+          "outcome": "passed",
+          "fresh": true
         }
       ]
     }
