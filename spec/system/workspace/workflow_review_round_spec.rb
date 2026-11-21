@@ -23,8 +23,10 @@ RSpec.describe Workspace::WorkflowReviewRound, "against real tmux" do
   end
   let(:panes) do
     Workspace::WorkflowPanes.new(config: config, bindings: bindings, tmux: tmux, locator: locator, binder: binder, snapshot_client: snapshot_client,
-      agent_ensurer: ->(name:) { Workspace::Commands::EnsureAgent::Result.new(:running) }, error_output: StringIO.new)
+      agent_ensurer: ->(name:) { Workspace::Commands::EnsureAgent::Result.new(:running) }, error_output: StringIO.new,
+      clock: -> { Time.now + slept.sum }, sleeper: ->(seconds) { slept << seconds })
   end
+  let(:slept) { [] }
   let(:typed) { File.join(tmpdir, "typed.txt") }
   let(:agent) { File.join(tmpdir, "bin", "fake-claude") }
   let(:main_agent) { instance_double(Workspace::MainAgent, spawn_command: agent) }
@@ -77,12 +79,15 @@ RSpec.describe Workspace::WorkflowReviewRound, "against real tmux" do
 
   # The daemon as it sees every pane of the session right after the review window's agent started: the SessionStart
   # hook gave it a row, and the start-up screen still counts as working.
-  def daemon_rows(**row)
+  # +unnamed+ reads come first: the row the SessionStart hook made before a scan named the agent.
+  def daemon_rows(unnamed: 0, **row)
+    reads = 0
     allow(snapshot_client).to receive(:fetch) do
+      reads += 1
       ids = `#{shim} list-panes -s -t app -F "\#{pane_id}"`.split
       {"panes" => ids.map { |id|
         {"pane_id" => id, "kind" => "claude", "state" => "working", "state_changed_by" => "screen", "hook_mode" => "hooks",
-         "user_prompt_at" => nil, "main_turn_over_since" => nil, "open_tools" => [], "subagents" => []}.merge(row.transform_keys(&:to_s))
+         "user_prompt_at" => nil, "main_turn_over_since" => nil, "open_tools" => [], "subagents" => []}.merge((reads <= unnamed) ? {"kind" => "unknown", "hook_mode" => "none"} : row.transform_keys(&:to_s))
       }}
     end
   end
@@ -98,6 +103,29 @@ RSpec.describe Workspace::WorkflowReviewRound, "against real tmux" do
     expect(change.events.map { |event| event[1] }).to include("review_delivered")
     path = File.join(worktree, ".workflow", "wr_1", "steps", "plan.1.r1.review.md")
     expect(wait_for { File.exist?(typed) && File.read(typed).include?("Read #{path} and follow it.") }).to be(true)
+  end
+
+  it "waits for the daemon to name the agent in the window it opened, then types into it" do
+    add_run
+    daemon_rows(unnamed: 3)
+
+    runner.call("wr_1", {"step" => "plan", "attempt" => 1, "round" => 1})
+
+    expect(store.runs["wr_1"]["steps"]["plan"]["review"]).to include("delivery" => nil)
+    expect(change.events.map { |event| event[1] }).to include("review_delivered")
+    expect(slept).to eq([Workspace::WorkflowPanes::ROW_POLL] * 3)
+  end
+
+  it "fails the round pane_busy and closes the window when the daemon never names the agent in it" do
+    add_run
+    daemon_rows(unnamed: 1_000)
+
+    runner.call("wr_1", {"step" => "plan", "attempt" => 1, "round" => 1})
+
+    round = store.runs["wr_1"]["steps"]["plan"]["review"]
+    expect(round).to include("delivery" => "failed")
+    expect(round["failure"]).to include("code" => "pane_busy")
+    expect(windows.map { |window| window[1] }).not_to include("review-plan")
   end
 
   it "refuses the window it opened when the daemon saw a prompt submitted there with no Stop after it" do

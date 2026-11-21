@@ -35,13 +35,14 @@ RSpec.describe Workspace::WorkflowPanes do
   subject(:panes) do
     described_class.new(config: config, bindings: bindings, tmux: tmux, locator: locator, binder: binder,
       snapshot_client: snapshot_client, agent_ensurer: agent_ensurer, connector: connector, clock: -> { now[0] },
-      error_output: warnings,
+      error_output: warnings, poll_interval_for: ->(workspace) { poll_intervals[workspace] },
       sleeper: lambda { |seconds|
         sleeps << seconds
         now[0] += seconds
         on_sleep.call
       })
   end
+  let(:poll_intervals) { {} }
   let(:warnings) { StringIO.new }
   let(:now) { [Time.utc(2026, 10, 4, 12, 0, 30)] }
   let(:sleeps) { [] }
@@ -503,6 +504,79 @@ RSpec.describe Workspace::WorkflowPanes do
         shown.delete("user_prompt_at")
         expect(kick_opened).to include(ok: false, code: "pane_busy")
         expect(tmux).not_to have_received(:deliver)
+      end
+
+      context "when the daemon has not named the agent yet (its row is from the SessionStart hook, before a scan)" do
+        let(:unnamed) { {"pane_id" => "%5", "kind" => "unknown", "state" => "working", "hook_mode" => "none", "last_event_at" => "2026-10-04T12:00:29Z"} }
+        let(:named) { shown.dup }
+        let(:on_sleep) { -> { shown.replace(named) if sleeps.size == named_after } }
+        let(:named_after) { nil }
+
+        before do
+          named
+          shown.replace(unnamed)
+        end
+
+        it "refuses pane_busy when the row still names no agent after ROW_WAIT" do
+          result = kick_opened
+
+          expect(result).to include(ok: false, code: "pane_busy")
+          expect(result[:seen]).to include("kind" => "unknown", "state" => "working")
+          expect(sleeps).to eq([1.0] * 30)
+          expect(tmux).not_to have_received(:deliver)
+        end
+
+        it "waits two scans when agentd.poll_interval makes that longer than ROW_WAIT" do
+          poll_intervals["app"] = 25
+
+          expect(kick_opened).to include(ok: false, code: "pane_busy")
+          expect(sleeps).to eq([1.0] * 50)
+        end
+
+        it "refuses pane_busy when the daemon never shows a row for the pane" do
+          allow(snapshot_client).to receive(:fetch).with("app", timeout: 1.0).and_return("panes" => [])
+
+          result = kick_opened
+
+          expect(result).to include(ok: false, code: "pane_busy")
+          expect(result[:seen]).to include("kind" => "unknown", "state" => "unknown")
+          expect(sleeps).to eq([1.0] * 30)
+          expect(tmux).not_to have_received(:deliver)
+        end
+
+        it "types at once into a Claude Code without hooks whose screen is past its start-up" do
+          shown.replace(unnamed.merge("kind" => "claude", "state" => "idle"))
+
+          expect(kick_opened).to eq(ok: true)
+          expect(sleeps).to eq([])
+        end
+
+        context "when a scan names the agent after two reads" do
+          let(:named_after) { 2 }
+
+          it "reads the row again until it names the hooked agent, then types" do
+            expect(kick_opened).to eq(ok: true)
+            expect(sleeps).to eq([1.0, 1.0])
+            expect(tmux).to have_received(:deliver).with("app", "%5", "x")
+          end
+        end
+
+        context "when a scan names the agent after one read with a turn in flight" do
+          let(:named_after) { 1 }
+
+          before { named["user_prompt_at"] = "2026-10-04T12:00:29.500Z" }
+
+          it "refuses pane_busy" do
+            expect(kick_opened).to include(ok: false, code: "pane_busy")
+            expect(sleeps).to eq([1.0])
+          end
+        end
+      end
+
+      it "reads the row once in a pane it did not open" do
+        shown["kind"] = "unknown"
+        panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false)
+        expect(sleeps).to eq([])
       end
 
       it "still refuses the same screen-only working row in a pane it did not open" do

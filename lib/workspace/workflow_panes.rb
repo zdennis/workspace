@@ -35,6 +35,14 @@ module Workspace
     # Seconds between looks at a refused screen.
     SCREEN_POLL = 0.5
 
+    # Least seconds `type` waits, in a pane the caller just opened, for the daemon to name its agent: the SessionStart
+    # hook gives the pane a row at once, but its kind comes from the next scan. The wait is two scans
+    # (`agentd.poll_interval`, 10s by default) when that is longer.
+    ROW_WAIT = 30
+
+    # Seconds between reads of the daemon while waiting {ROW_WAIT}.
+    ROW_POLL = 1.0
+
     # Seconds a pane must have shown a shell before its agent counts as gone: a
     # recovery retyping the agent's command leaves a shell for a moment.
     AGENT_GONE_AFTER = 30
@@ -77,7 +85,8 @@ module Workspace
     #   author pane of each fan_out sibling after the first ({#spawn_author}); nil makes none
     def initialize(config:, bindings:, tmux:, locator:, binder:, snapshot_client:, agent_ensurer:, connector: ->(path) { UNIXSocket.open(path) },
       reply_timeout: REPLY_TIMEOUT, clock: -> { Time.now }, idle_check: IdlePromptCheck.new, transcript: TranscriptSummary.new,
-      sleeper: ->(seconds) { sleep(seconds) }, error_output: $stderr, spawner: nil)
+      sleeper: ->(seconds) { sleep(seconds) }, error_output: $stderr, spawner: nil, poll_interval_for: ->(_workspace) {})
+      @poll_interval_for = poll_interval_for
       @spawner = spawner
       @error_output = error_output
       @reply_timeout = reply_timeout
@@ -691,13 +700,35 @@ module Workspace
     # monitor counts as working for {AgentProvider::DEFAULT_IDLE_AFTER} seconds) is no turn: such a row is busy only
     # while the hooks show one under way, or can't say.
     def busy_row(workspace, pane, opened: false)
-      shown = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
+      shown = opened ? named_row(workspace, pane) : row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
+      return {"pane_id" => pane, "kind" => "unknown", "state" => "unknown"} if opened && shown.nil?
       return shown if shown && shown["turn_failed"] && shown["kind"] == "shell"
       return nil unless %w[working waiting].include?(shown && shown["state"])
       return nil if opened && shown["state"] == "working" && !hooked_turn?(shown)
       shown
     rescue Workspace::Error
       nil
+    end
+
+    # The daemon's row for a pane just opened once it names the agent, read every {ROW_POLL} seconds for up to
+    # {#row_wait}; the last row read (nil when there was none) when it never does.
+    def named_row(workspace, pane)
+      deadline = @clock.call + row_wait(workspace)
+      loop do
+        row = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
+        return row if row_named?(row) || @clock.call >= deadline
+        @sleeper.call(ROW_POLL)
+      end
+    end
+
+    def row_wait(workspace)
+      [ROW_WAIT, 2 * (@poll_interval_for.call(workspace) || 0)].max
+    end
+
+    # A kind, and for Claude Code its hooks or a screen past its start-up (a Claude Code without hooks has none to wait for).
+    def row_named?(row)
+      return false unless row && row["kind"] != "unknown"
+      row["kind"] != "claude" || row["hook_mode"] == "hooks" || row["state"] != "working"
     end
 
     # Whether the hooks show the main agent's turn under way, or can't say: a prompt with no Stop after it, a tool or a
