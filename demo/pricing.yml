@@ -1,0 +1,24 @@
+# USD per million tokens. Prices need the person's confirmation.
+# A model that is not listed here prices as "?".
+price_date: "2026-11-21"
+models:
+  claude-opus-5-5:
+    input: 5.00
+    output: 25.00
+    cache_creation: 6.25
+    cache_read: 0.50
+  claude-sonnet-5-5:
+    input: 3.00
+    output: 15.00
+    cache_creation: 3.75
+    cache_read: 0.30
+  claude-haiku-5-5:
+    input: 1.00
+    output: 5.00
+    cache_creation: 1.25
+    cache_read: 0.10
+  claude-fable-5-2:
+    input: 15.00
+    output: 75.00
+    cache_creation: 18.75
+    cache_read: 1.50
