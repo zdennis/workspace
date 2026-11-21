@@ -20,10 +20,12 @@ module Workspace
   # no match, the most restrictive layer `default` applies, and `ask` when none
   # is set.
   #
-  # A Bash `allow` by pattern counts only when every piece as written matches an
-  # allow rule, and never for a command with a substitution or a file
-  # redirection: that one gets `deny` when a deny rule matches or the default is
-  # `deny`, and `ask` otherwise, whatever the default says. An allow rule with no
+  # A Bash `allow` by pattern counts only when every piece, as written or without
+  # its harmless wrappers (`timeout 5`, `nice`), matches an allow rule, and never for a command with a substitution, a file redirection
+  # or an opaque command word (quoted, `eval`, `sh -c`, `if`, `{`...). That one
+  # gets `deny` when a deny rule matches or the default is `deny`, and `ask`
+  # otherwise, whatever the default says. `deny` and `ask` also match each
+  # piece with its quotes and escapes removed. An allow rule with no
   # pattern on Bash still allows the whole tool.
   class PermissionPolicy
     ACTIONS = %w[allow ask deny].freeze
@@ -33,7 +35,7 @@ module Workspace
     private_constant :ACTIONS, :PATH_TOOLS, :MAX_LINK_DEPTH
 
     # What the policy looks at in one tool call.
-    Subject = Struct.new(:kind, :command, :pieces, :raw_pieces, :unsafe, :forms)
+    Subject = Struct.new(:kind, :command, :pieces, :raw_pieces, :unsafe, :forms, :grouped)
     private_constant :Subject
 
     # @param layers [Array<Hash>] in order, each `{source:, rules:, default:}`; source is
@@ -92,8 +94,9 @@ module Workspace
         command = input["command"] || input[:command]
         return Subject.new(:bash, nil, nil, nil, true) unless command.is_a?(String)
         raw = @command_pieces.raw_pieces(command)
-        Subject.new(:bash, command, (@command_pieces.pieces(command) + raw).uniq, raw,
-          @command_pieces.substitution?(command) || @command_pieces.redirect?(command))
+        Subject.new(:bash, command, (@command_pieces.pieces(command) + raw + @command_pieces.unquoted_pieces(command)).uniq, raw,
+          @command_pieces.substitution?(command) || @command_pieces.redirect?(command) || @command_pieces.opaque?(command),
+          nil, raw.map { |piece| [piece, @command_pieces.unwrapped(piece)].uniq })
       elsif PATH_TOOLS.include?(name)
         key = (name == "NotebookEdit") ? "notebook_path" : "file_path"
         path = input[key] || input[key.to_sym]
@@ -114,7 +117,7 @@ module Workspace
       when :bash
         return false unless subject.command
         if action == "allow"
-          !subject.unsafe && subject.raw_pieces.any? { |piece| File.fnmatch(pattern, piece, File::FNM_DOTMATCH) }
+          !subject.unsafe && subject.grouped.flatten.any? { |piece| File.fnmatch(pattern, piece, File::FNM_DOTMATCH) }
         else
           subject.pieces.any? { |piece| File.fnmatch(pattern, piece, File::FNM_DOTMATCH) }
         end
@@ -139,7 +142,7 @@ module Workspace
       patterns = candidates.filter_map do |rule, _|
         rule_value(rule, :pattern).to_s if rule_value(rule, :action).to_s == "allow" && !rule_value(rule, :pattern).nil?
       end
-      subject.raw_pieces.all? { |piece| patterns.any? { |pattern| File.fnmatch(pattern, piece, File::FNM_DOTMATCH) } }
+      subject.grouped.all? { |forms| forms.any? { |piece| patterns.any? { |pattern| File.fnmatch(pattern, piece, File::FNM_DOTMATCH) } } }
     end
 
     def fallback(subject)

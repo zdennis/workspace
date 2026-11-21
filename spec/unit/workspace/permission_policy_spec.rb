@@ -229,6 +229,93 @@ RSpec.describe Workspace::PermissionPolicy do
       expect(bash(layers, "git status \\\n  --short")[:action]).to eq("allow")
     end
 
+    describe "quoting, eval, shells and groups" do
+      let(:layers) { [layer([rule("Bash", "deny", "rm *"), rule("Bash", "allow", "git status*")], default: "allow")] }
+
+      [
+        '"rm" -rf /', "r''m -rf /", '\rm -rf /', "eval rm -rf /", 'bash -c "rm -rf /"', "sh -lc 'rm -rf /'",
+        "{ rm -rf /; }", "if true; then rm -rf /; fi", "x=rm; $x -rf /", "source ./x", ". ./x", "r?m -rf /"
+      ].each do |command|
+        it "is never allowed: #{command}" do
+          expect(bash(layers, command)[:action]).not_to eq("allow")
+          expect(bash([layer([], default: "allow")], command)[:action]).to eq("ask")
+        end
+      end
+
+      it "denies the quoted and escaped forms by their unquoted text" do
+        ['"rm" -rf /', "r''m -rf /", '\rm -rf /', 'sudo "rm" -rf /'].each do |command|
+          expect(bash(layers, command)[:action]).to eq("deny")
+        end
+      end
+
+      it "still allows ordinary commands" do
+        ["git status", "git status --short", "git log --format='%h %s'", 'git commit -m "fix: x"'].each do |command|
+          allow_rule = [layer([rule("Bash", "allow", "git *")], default: "ask")]
+          expect(bash(allow_rule, command)[:action]).to eq("allow")
+        end
+        expect(bash(layers, "git status --short")[:action]).to eq("allow")
+      end
+
+      it "lets a tool-only allow still allow an opaque command" do
+        expect(bash([layer([rule("Bash", "allow")])], "eval x")[:action]).to eq("allow")
+      end
+    end
+
+    describe "wrappers and hidden commands under default allow" do
+      let(:layers) { [layer([rule("Bash", "deny", "rm *"), rule("Bash", "deny", "git push*")], default: "allow")] }
+
+      [
+        "builtin rm -rf /", "nice rm -rf /", "nice -n 5 rm -rf /", "ionice -c3 rm -rf /", "timeout 5 rm -rf /",
+        "timeout -s KILL 5 rm -rf /", "exec -a x rm -rf /", "xargs rm -rf", "echo / | xargs -I{} rm -rf {}",
+        "doas rm -rf /", "stdbuf -o0 rm -rf /", "chroot / rm -rf /", "caffeinate rm -rf /", "arch -arm64 rm -rf /",
+        "watch rm -rf /", "arch -d FOO rm -rf /", "watch -q 2 rm -rf /", "watch --equexit 2 rm -rf /", "env -S 'rm -rf /'", "nohup -- rm -rf /", "sudo -u root rm -rf /"
+      ].each do |command|
+        it "denies #{command}" do
+          expect(bash(layers, command)[:action]).to eq("deny")
+        end
+      end
+
+      [
+        "env -Srm", "-- rm -rf /", "trap 'rm -rf /' EXIT", "alias x=rm; x -rf /", "git -c alias.p=push p",
+        "git -calias.p='!rm -rf /' p", "git --config-env alias.p=V p", "perl -e 'system(\"x\")'", "python3 -c x",
+        "ruby -e x", "node -e x", "osascript -e x", "script -c x", "su -c x", "awk 'BEGIN{system(\"x\")}'",
+        "coproc rm -rf /"
+      ].each do |command|
+        it "does not allow #{command}" do
+          expect(bash(layers, command)[:action]).to eq("ask")
+        end
+      end
+
+      [
+        "/usr/bin/time -o x rm -rf /", "/usr/bin/time -f %e rm -rf /", "time -o x git push", "time --output x git push",
+        "stdbuf --output L rm -rf /"
+      ].each do |command|
+        it "denies #{command}" do
+          expect(bash(layers, command)[:action]).to eq("deny")
+        end
+      end
+
+      it "does not allow a wrapper option value read as the command" do
+        allow_git = [layer([rule("Bash", "allow", "git *")], default: "ask")]
+        expect(bash(allow_git, "time -o git rm -rf /")[:action]).to eq("ask")
+        expect(bash([layer([rule("Bash", "allow", "git *")], default: "allow")], "time --bogus git status")[:action]).to eq("ask")
+      end
+
+      it "never allows a command after an unknown wrapper option, and denies one a deny matches" do
+        expect(bash(layers, "time --bogus ls")[:action]).to eq("ask")
+        expect(bash(layers, "time --bogus rm -rf /")[:action]).to eq("deny")
+      end
+
+      it "allows a harmless wrapper around an allowed command, but not sudo or env" do
+        allow_status = [layer([rule("Bash", "allow", "git status*")])]
+        expect(bash(allow_status, "timeout 5 git status")[:action]).to eq("allow")
+        expect(bash(allow_status, "nice -n 5 git status --short")[:action]).to eq("allow")
+        expect(bash(allow_status, "timeout 5 git status && rm x")[:action]).to eq("ask")
+        expect(bash(allow_status, "sudo git status")[:action]).to eq("ask")
+        expect(bash(allow_status, "FOO=1 git status")[:action]).to eq("ask")
+      end
+    end
+
     it "never allows a non-String command by pattern or default" do
       layers = [layer([rule("Bash", "deny", "rm *"), rule("Bash", "allow", "git*")], default: "allow")]
       expect(decide(layers, "Bash", {"command" => %w[rm -rf x]})[:action]).to eq("ask")
@@ -262,7 +349,7 @@ RSpec.describe Workspace::PermissionPolicy do
   end
 
   it "takes the pieces splitter as an injected keyword" do
-    pieces = instance_double(Workspace::BashCommandPieces, pieces: ["x"], raw_pieces: ["x"], substitution?: false, redirect?: false)
+    pieces = instance_double(Workspace::BashCommandPieces, pieces: ["x"], raw_pieces: ["x"], unquoted_pieces: [], unwrapped: "x", substitution?: false, redirect?: false, opaque?: false)
     policy = described_class.new(layers: [layer([rule("Bash", "allow", "x")])], command_pieces: pieces)
     expect(policy.decide(tool_name: "Bash", tool_input: {"command" => "anything"}, cwd: "/")[:action]).to eq("allow")
   end

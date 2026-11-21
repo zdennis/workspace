@@ -17,7 +17,7 @@ module Workspace
   # (`git -C dir`, `gh -R repo`).
   class BashCommandPieces
     # Wrapper words skipped before the command proper.
-    WRAPPERS = %w[sudo command env exec nohup time].freeze
+    WRAPPERS = %w[sudo command env exec nohup time builtin nice ionice timeout stdbuf doas caffeinate chroot arch watch xargs].freeze
 
     # The longest piece that {#pieces} returns, so a huge command can't take long.
     MAX_PIECE = 4096
@@ -35,6 +35,30 @@ module Workspace
     # @return [Array<String>] the pieces of the command as written, trimmed, with no wrapper or assignment stripping
     def raw_pieces(command)
       split(command.scrub).map(&:strip).reject(&:empty?)
+    end
+
+    # @param piece [String] one piece as written
+    # @return [String] the piece without its leading harmless wrappers (`timeout 5`, `nice -n 5`, `nohup`, `time`,
+    #   `command`, `builtin`, `ionice`, `stdbuf`, `caffeinate`); assignments and other wrappers stay
+    def unwrapped(piece)
+      word, rest = leading(piece, only: HARMLESS_WRAPPERS)
+      word ? "#{word} #{rest}".strip : piece.strip
+    end
+
+    # @param command [String] a Bash command
+    # @return [Array<String>] each piece with its quotes removed and backslash escapes resolved, then stripped
+    #   like {#pieces}, so `"rm" -rf /` and `r''m -rf /` show as `rm -rf /`
+    def unquoted_pieces(command)
+      split(command.scrub).flat_map { |piece| strip_prefix(unquote(piece)) }.map { |text| text[0, MAX_PIECE] }.reject(&:empty?).uniq
+    end
+
+    # Whether what a piece runs can't be told from its text: its command word (after wrappers and assignments)
+    # holds a quote, backslash, `$`, `{` or glob character, is `eval`, `source` or `.`, is a shell given `-c`
+    # (also in combined flags such as `-lc`), or is a compound keyword or brace such as `if`, `then`, `{` or `!`.
+    # @param command [String] a Bash command
+    # @return [Boolean]
+    def opaque?(command)
+      split(command.scrub).any? { |piece| opaque_piece?(piece) }
     end
 
     # @param command [String] a Bash command
@@ -86,6 +110,74 @@ module Workspace
     end
 
     private
+
+    KEYWORDS = %w(if then elif else fi do done while until for case esac function { } [[ !).freeze
+    HARMLESS_WRAPPERS = %w[command builtin nohup time nice ionice timeout stdbuf caffeinate].freeze
+    OPAQUE_PROGRAMS = %w[eval source . trap alias coproc awk gawk nawk mawk].freeze
+    GIT_ALIAS_CONFIG = /(?:\A|\s)(?:-c|--config-env=?)\s*['"]?alias\./i
+    SPLIT_STRING = /\A(-S|--split-string)/
+    COMBINED_C = /\A-[a-zA-Z]*c[a-zA-Z]*\z/
+    COMBINED_INLINE = /\A-[a-zA-Z]*[ecEC][a-zA-Z]*\z|\A--(eval|print|command)\z/
+    SHELL_NAME = /\A(?:sh|bash|zsh|dash|ksh|fish)\z/
+    INTERPRETER_NAME = /\A(?:perl|python[\d.]*|ruby|node|osascript|script|su)\z/
+    INLINE_FLAGS = {SHELL_NAME => COMBINED_C, INTERPRETER_NAME => COMBINED_INLINE}.freeze
+    OPAQUE_WORD = /['"\\${*?]/
+
+    def opaque_piece?(piece)
+      word, rest, name, flagged = leading(piece)
+      flagged || (!word.nil? && opaque_word?(word, name, rest))
+    end
+
+    def opaque_word?(word, name, rest)
+      return true if word.match?(OPAQUE_WORD) || word.start_with?("-") || KEYWORDS.include?(word) || OPAQUE_PROGRAMS.include?(name)
+      return true if name == "git" && rest.match?(GIT_ALIAS_CONFIG)
+      options = rest.split(" ").select { |argument| argument.start_with?("-") }
+      INLINE_FLAGS.any? { |pattern, flags| pattern.match?(name) && options.any? { |option| option.match?(flags) } }
+    end
+
+    # Quotes removed and backslash escapes resolved, as the shell would hand the words to the program.
+    def unquote(text)
+      chars = text.chars
+      out = +""
+      quote = nil
+      index = 0
+      while index < chars.size
+        char = chars[index]
+        if quote == "'"
+          (char == "'") ? quote = nil : out << char
+        elsif quote == "$'"
+          if char == "\\"
+            index += 1
+            out << chars[index].to_s
+          elsif char == "'"
+            quote = nil
+          else
+            out << char
+          end
+        elsif quote == '"'
+          if char == "\\" && ["$", "`", '"', "\\"].include?(chars[index + 1])
+            index += 1
+            out << chars[index]
+          elsif char == '"'
+            quote = nil
+          else
+            out << char
+          end
+        elsif char == "\\"
+          index += 1
+          out << chars[index].to_s
+        elsif char == "$" && chars[index + 1] == "'"
+          quote = "$'"
+          index += 1
+        elsif char == "'" || char == '"'
+          quote = char
+        else
+          out << char
+        end
+        index += 1
+      end
+      out
+    end
 
     REDIRECT_END = [" ", "\t", "\n", ";", "&", "|", "<", ">", "(", ")", "`"].freeze
 
@@ -250,11 +342,41 @@ module Workspace
       index
     end
 
-    # option => takes a value, for the wrappers whose options matter
-    WRAPPER_VALUE_OPTIONS = {
-      "sudo" => %w[-u -g -h -p -C -D -R -T -U],
-      "env" => %w[-u -C -S]
+    # wrapper => the options it takes a value for and the flags it takes alone; any other option makes the piece opaque
+    WRAPPER_OPTIONS = {
+      "sudo" => {
+        values: %w[-u -g -h -p -C -D -R -T -U --user --group --host --prompt --close-from --chdir --chroot --role --type
+          --other-user --command-timeout],
+        flags: %w[-A -b -B -E -e -H -i -K -k -l -n -P -S -s -V -v --askpass --background --preserve-env --login
+          --non-interactive --stdin --shell --set-home --reset-timestamp --remove-timestamp --preserve-groups]
+      },
+      "env" => {values: %w[-u -C --unset --chdir], flags: %w[- -i -0 -v --ignore-environment --null --debug]},
+      "command" => {values: [], flags: %w[-p -v -V]},
+      "builtin" => {values: [], flags: []},
+      "exec" => {values: %w[-a], flags: %w[-c -l]},
+      "nohup" => {values: [], flags: []},
+      "time" => {values: %w[-o -f --output --format], flags: %w[-p -v -a -l -h -q -V --portability --verbose --append --quiet]},
+      "nice" => {values: %w[-n --adjustment], flags: []},
+      "ionice" => {values: %w[-c -n -p -P -u --class --classdata --pid --pgid --uid], flags: %w[-t --ignore]},
+      "timeout" => {values: %w[-s -k --signal --kill-after], flags: %w[-f -p -v --foreground --preserve-status --verbose]},
+      "stdbuf" => {values: %w[-i -o -e --input --output --error], flags: []},
+      "doas" => {values: %w[-u -C], flags: %w[-n -s -L]},
+      "caffeinate" => {values: %w[-t -w], flags: %w[-d -i -m -s -u]},
+      "chroot" => {values: %w[--userspec --groups], flags: %w[--skip-chdir]},
+      "arch" => {values: %w[-e -d], flags: %w[-arm64 -arm64e -x86_64 -x86_64h -i386 -ppc -ppc64 -32 -64 -c -h]},
+      "watch" => {
+        values: %w[-n -q --interval --equexit],
+        flags: %w[-b -c -d -e -g -p -t -x -w --beep --color --no-color --differences --errexit --chgexit --precise
+          --no-title --exec --no-wrap]
+      },
+      "xargs" => {
+        values: %w[-I -n -P -L -d -s -E -a --max-args --max-procs --max-lines --delimiter --max-chars --eof --arg-file],
+        flags: %w[-0 -o -p -r -t -x -i -l --null --open-tty --interactive --no-run-if-empty --verbose --exit
+          --show-limits]
+      }
     }.freeze
+    # wrapper => positional words to skip after its options
+    WRAPPER_POSITIONALS = {"timeout" => 1, "chroot" => 1}.freeze
     GIT_VALUE_OPTIONS = %w[-C -c --git-dir --work-tree --namespace --super-prefix --config-env --exec-path].freeze
     GH_VALUE_OPTIONS = %w[-R --repo].freeze
 
@@ -271,24 +393,59 @@ module Workspace
 
     # @return [Array<String>] the piece as it is matched: the program without its path and, when it had one, as written
     def strip_prefix(piece)
+      word, rest, name = leading(piece)
+      word ? commands(name, rest, word) : []
+    end
+
+    # Skips assignments, wrappers, their options and positional words (only the wrappers in `only` when given).
+    # @return [Array, nil] the command word, the rest, the program name and whether a wrapper option hides a command
+    #   (`env -S`); nil when nothing is left
+    def leading(piece, only: nil)
       text = piece.strip
       wrapper = nil
+      positionals = 0
+      hidden = false
       until text.empty?
         word, rest = take(text)
         name = program_name(word)
-        if ASSIGNMENT.match?(word)
+        if only && (ASSIGNMENT.match?(word) || (WRAPPERS.include?(name) && !only.include?(name)))
+          return [word, rest, name, hidden]
+        elsif ASSIGNMENT.match?(word)
           text = rest
         elsif WRAPPERS.include?(name)
           wrapper = name
+          positionals = WRAPPER_POSITIONALS.fetch(name, 0)
           text = rest
         elsif wrapper && word.start_with?("-")
+          hidden = true if wrapper == "env" && SPLIT_STRING.match?(word)
           text = rest
-          text = take(rest).last if WRAPPER_VALUE_OPTIONS.fetch(wrapper, []).include?(word)
+          kind = wrapper_option(wrapper, word)
+          hidden = true if kind == :unknown
+          text = take(rest).last if kind == :value
+        elsif wrapper && positionals > 0
+          positionals -= 1
+          text = rest
         else
-          return commands(name, rest, word)
+          return [word, rest, name, hidden]
         end
       end
-      []
+      hidden ? [nil, "", nil, true] : nil
+    end
+
+    # @return [Symbol] `:value` when the option takes the next word, `:flag` when it stands alone (an attached
+    #   value or `--opt=value` too), `:unknown` when the wrapper does not list it
+    def wrapper_option(wrapper, word)
+      options = WRAPPER_OPTIONS.fetch(wrapper)
+      return :flag if word == "--"
+      return :value if options[:values].include?(word)
+      return :flag if options[:flags].include?(word)
+      if word.start_with?("--")
+        name = word.split("=", 2).first
+        return (word.include?("=") && (options[:values] + options[:flags]).include?(name)) ? :flag : :unknown
+      end
+      return :flag if options[:values].include?(word[0, 2]) && word.length > 2
+      return :flag if wrapper == "nice" && word.match?(/\A-\d+\z/)
+      (word[1..].chars.all? { |char| options[:flags].include?("-#{char}") }) ? :flag : :unknown
     end
 
     def program_name(word)
