@@ -129,6 +129,29 @@ RSpec.describe Workspace::ProjectSettings do
     end
   end
 
+  describe "#load_global_strict" do
+    let(:path) { File.join(tmpdir, "config.yml") }
+
+    it "returns empty hash when no global config exists" do
+      expect(settings.load_global_strict).to eq({})
+    end
+
+    it "returns parsed global config" do
+      File.write(path, YAML.dump({"layouts" => {"a" => "b"}}))
+
+      expect(settings.load_global_strict).to eq({"layouts" => {"a" => "b"}})
+    end
+
+    {"corrupt YAML" => "---\n\t\tinvalid", "a date" => "when: 2026-01-01\n", "symbol keys" => ":agent: 1\n",
+     "an alias" => "a: &x 1\nb: *x\n", "a list at the top level" => "- a\n"}.each do |name, text|
+      it "raises ConfigParseError naming the file for #{name}" do
+        File.write(path, text)
+
+        expect { settings.load_global_strict }.to raise_error(Workspace::ConfigParseError, /config\.yml/)
+      end
+    end
+  end
+
   describe "#with_global_lock" do
     it "refuses a global config it cannot parse and leaves the file untouched" do
       path = File.join(tmpdir, "config.yml")

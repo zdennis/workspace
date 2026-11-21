@@ -86,6 +86,27 @@ RSpec.describe Workspace::BoundRun do
     expect(bound_run.run_id).to be_nil
   end
 
+  describe "#run_id_strict" do
+    it "names the run like #run_id" do
+      bind("%4")
+
+      expect(bound_run.run_id_strict).to eq("wr_1")
+    end
+
+    it "is nil for an unbound pane or no pane" do
+      expect(bound_run.run_id_strict).to be_nil
+      expect(described_class.new(pane_bindings: bindings, tmux: tmux, env: {}).run_id_strict).to be_nil
+    end
+
+    it "raises where #run_id reads nil, when tmux can't be asked" do
+      bind("%4")
+      allow(tmux).to receive(:session_name_for_pane).and_raise(Errno::ENOENT, "tmux")
+
+      expect(bound_run.run_id).to be_nil
+      expect { bound_run.run_id_strict }.to raise_error(Errno::ENOENT)
+    end
+  end
+
   it "is nil for a pane tmux no longer knows" do
     bind("%4")
     allow(tmux).to receive(:session_name_for_pane).with("%4").and_return(nil)
