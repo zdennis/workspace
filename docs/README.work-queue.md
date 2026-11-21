@@ -111,6 +111,14 @@ A `go` item runs `workspace go --here` in the workspace's checkout. `add go` ref
 
 `history list` shows finished items oldest first; `history show` prints one with its spec, and its next action is the `work-queue add` that queues it again. `history clear` takes exactly one of `--before DATE` and `--all`, asks first unless `--yes`, and under `--json`, `--no-input` or without a terminal fails with `confirmation_required` instead of asking.
 
+### Watching a queue
+
+- `workspace work-queue list` (`wq list`): the items and whether the queue is on, off or paused.
+- `workspace workflow status`: the run the active item waits on.
+- `workspace events --follow --types work_queue_item_started,work_queue_item_finished,work_queue_item_held,work_queue_paused,work_queue_resumed --name WS`: one line per transition as it happens: an item started (with its run id), finished (with its outcome), held for a person, and the queue paused or resumed. Each is written once, whichever pass made it. The fields are in [events](README.events.md#work-queue-lines).
+- `workspace daemon watch`: the workspace's workflow decision lines and its runs' events, for what the active item's run is doing.
+- `workspace work-queue history list` (`wq history list`): the finished items and their outcomes.
+
 ### JSON output
 
 See [README.json.md](README.json.md#work-queue). Action verbs (`add`, `rm`, `move`, `cancel`, `enable`, `disable`, `resume`, `skip`, `advance`, `history clear`) print an action document; the reading verbs print a document with their payload under `queues`, `item`, `entries` or `entry`.

@@ -60,6 +60,20 @@ Hook-rate activity (each tool start and finish, sub-agent start and stop, sessio
 
 An acquire that doesn't wait records nothing here; `locks.jsonl` in the lock store already audits every acquire and release.
 
+### Work queue
+
+A [work queue](README.work-queue.md#watching-a-queue) records each transition once, from the one place it happens, whichever pass made it: `work-queue advance` by hand or the agent daemon's. `project` and `data.workspace` are the queue's workspace.
+
+| Type | Written by | `data` |
+|------|-----------|--------|
+| `work_queue_item_started` | an item's run was recorded, or adopted after the pass that started it died | `id`, `kind`, `what` (what it runs, in one line: the item's workflow, ref and prompt or text, cut to 80 characters), `run_id` |
+| `work_queue_item_finished` | an item left the queue for its history | `id`, `outcome` (`succeeded`, `failed`, `cancelled`, `skipped`, `interrupted`, `launch_failed`), `reason`, `run_id` (`null` when no run was made) |
+| `work_queue_item_held` | an active item began to wait on a person | `id`, `reason` (`gate`, `parked`, `failed_check`, `budget_spent`, `run_timed_out`) |
+| `work_queue_paused` | the queue paused; not written again while it stays paused | `reason` (`failed`, `cancelled`, `launch_failed`, `claim_lost`, `interrupted`, `unknown_run`, `failed_check`, `budget_spent`, `run_timed_out`), `id` (the current item, `null` for none) |
+| `work_queue_resumed` | a paused queue was resumed (`resume`, `skip`, `cancel --and-continue`) | none |
+
+A held item that goes back to `active` writes no line. `what` is the one place these lines carry the item's own text (its prompt or text), cut to 80 characters.
+
 ### Agent recovery
 
 The agent daemon writes two lines when it recovers an agent from an API error (see [`agentd`](README.agentd.md#recovering-from-an-api-error)). Neither holds the error's text, only its kind.

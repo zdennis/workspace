@@ -56,6 +56,21 @@ module Workspace
     # the refusal's `reason` first appears or changes, not on every retry.
     PROMPT_REFUSED = "prompt_refused"
 
+    # Lifecycle event type for a work-queue item whose run was recorded: its data carries `id`, `kind`, `what` and `run_id`.
+    WORK_QUEUE_ITEM_STARTED = "work_queue_item_started"
+
+    # Lifecycle event type for a work-queue item leaving the queue for its history: `id`, `outcome`, `reason` and `run_id`.
+    WORK_QUEUE_ITEM_FINISHED = "work_queue_item_finished"
+
+    # Lifecycle event type for a work-queue item held for a person: `id` and `reason`.
+    WORK_QUEUE_ITEM_HELD = "work_queue_item_held"
+
+    # Lifecycle event type for a work queue that paused: `reason` and the current item's `id` (nil for none).
+    WORK_QUEUE_PAUSED = "work_queue_paused"
+
+    # Lifecycle event type for a paused work queue that was resumed.
+    WORK_QUEUE_RESUMED = "work_queue_resumed"
+
     # Lifecycle event type for a watch opening on a pane after a handoff prompt landed.
     HANDOFF_WATCH_STARTED = "handoff_watch_started"
 

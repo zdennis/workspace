@@ -390,6 +390,44 @@ RSpec.describe Workspace::WorkQueueAdvance do
     end
   end
 
+  describe "the daemon's pass and a person's advance racing" do
+    let(:event_log_class) do
+      Class.new do
+        attr_reader :types
+
+        def initialize
+          @types = []
+          @lock = Mutex.new
+        end
+
+        def record(type:, project:, data: {})
+          @lock.synchronize { @types << [type, data["id"]] }
+          true
+        end
+      end
+    end
+    let(:event_log) { event_log_class.new }
+    let(:path) { File.join(dir, "work-queue.json") }
+
+    # Each pass reads the queue through its own store, as two processes would.
+    def racer
+      own = Workspace::WorkQueueStore.new(path: path, history: history, clock: clock, workspace: "api-w", event_log: event_log)
+      described_class.new(store_factory: ->(_name) { own }, run_store: run_store, starters: starters, lock_holder: lock_holder, status: status, clock: clock)
+    end
+
+    it "records each transition once: the finished item, then the next one's start" do
+      allow(lock_holder).to receive(:holder_alive?).and_return(true)
+      first = started_item
+      with_run("run-1", state: "completed")
+      racers = [racer, racer]
+      threads = racers.map { |each| Thread.new { 5.times { each.call(workspace: "api-w", checkout: checkout) } } }
+      threads.each(&:join)
+
+      expect(event_log.types).to eq([["work_queue_item_finished", first], ["work_queue_item_started", "bbbb2222"]])
+      expect(started.size).to eq(2)
+    end
+  end
+
   describe "the item changing during the start" do
     it "writes nothing over a removed item, pauses with claim_lost and reports the run id" do
       first = enabled_queue.first

@@ -487,13 +487,7 @@ module Workspace
       end
 
       def what(item)
-        spec = item["spec"] || {}
-        text = case item["kind"]
-        when "workflow" then [spec["workflow"], spec["ref"], spec["prompt"]].compact.join(" ")
-        when "go" then [spec["argument"], spec["text"], spec["workflow"]].compact.join(" ")
-        else spec.to_s
-        end
-        text = text.gsub(/\s+/, " ")
+        text = WorkQueueStore.summary(item)
         TerminalText.escape((text.length > WHAT_LENGTH) ? "#{text[0, WHAT_LENGTH - 3]}..." : text)
       end
 

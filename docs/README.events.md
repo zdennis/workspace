@@ -26,7 +26,7 @@ Without `--json`, each line is `at  workspace  type  key=value ...`, like [`even
 
 The stream has two kinds of source:
 
-- **The event log**, `~/.workspace-events.jsonl` ([`event-log`](README.event-log.md)): state changes and lifecycle events such as `plan_changed`, `plan_progress` (a plan task changed state), `spine_changed` (a spine stage's status or note changed, or a stage file was added or removed), `inbox_changed`, `ask_created`, `agent_state`, `prompt_queued`, `prompt_refused` and `prompt_dequeued` (below). Its lines are printed as they are in the log (`timestamp`, `type`, `project`, `data`), with `source: "lifecycle"`, `at` (the `timestamp`) and `workspace` (`data.workspace`, else `project`) added.
+- **The event log**, `~/.workspace-events.jsonl` ([`event-log`](README.event-log.md)): state changes and lifecycle events such as `plan_changed`, `plan_progress` (a plan task changed state), `spine_changed` (a spine stage's status or note changed, or a stage file was added or removed), `inbox_changed`, `ask_created`, `agent_state`, `prompt_queued`, `prompt_refused` and `prompt_dequeued`, and the `work_queue_*` lines (below). Its lines are printed as they are in the log (`timestamp`, `type`, `project`, `data`), with `source: "lifecycle"`, `at` (the `timestamp`) and `workspace` (`data.workspace`, else `project`) added.
 - **Each agent daemon's hook event file**, `~/.local/state/workspace/.events/<workspace>.jsonl` (the `hook_events` path in [`capabilities --json`](README.capabilities.md)). [`agentd`](README.agentd.md) writes one line for each tool start and finish, sub-agent start and stop, session start and end, and user prompt that [`session-event`](README.session-event.md) forwards, and one for each [`agent status post`](README.agent.md#status). Other forwarded events, `permission_request` among them, write no line. Its lines are printed as they are in the file, with `source: "hook"` added.
 
 Every printed line also carries `cursor`. Lines from different sources come out in time order, and lines from one file always keep that file's order.
@@ -44,6 +44,20 @@ Every printed line also carries `cursor`. Lines from different sources come out 
 | `prompt_dequeued` | `id`, `pane_id`, `outcome` (`delivered`, `cancelled` by [`agent-run queue cancel`](README.agent-run.md#queue) or `dropped`), `reason` (with `dropped`), `submitted` (with `delivered`: `true`; with `dropped` for `not_submitted`: `false`) |
 
 `reason` is `pane_gone` (the pane closed or was replaced, or tmux restarted), `session_ended` (the agent exited or was restarted, or its session ended other than by `/clear`), `conversation_changed` (the pane started another conversation; a `--clear-first` prompt, and the prompts queued behind it once its own clear is confirmed, are kept), `not_submitted` (pasted, but Enter couldn't be confirmed; the text stays in the pane), `interrupted` (a delivery was cut off after its paste or its clear started), `clear_unconfirmed` (`--clear-first`: the clear was typed but no SessionStart with source `clear` came from the pane within 15s, or a prompt was submitted in between; the text was not typed) or `not_delivered` (`--clear-first`: the clear was confirmed but the text couldn't be typed; it is not tried again, so the pane is never cleared twice for one prompt). A prompt for a pane that is waiting on a person is kept, not dropped.
+
+### Work queue lines
+
+A [work queue](README.work-queue.md#watching-a-queue) writes one line per transition, whether a person's `work-queue advance` or the agent daemon's pass made it, and never one per pass, so a queue moving on its own reads as a short story: `workspace events --follow --types work_queue_item_started,work_queue_item_finished,work_queue_item_held,work_queue_paused,work_queue_resumed --name WS`.
+
+| `type` | `data` |
+|---|---|
+| `work_queue_item_started` | `id`, `kind`, `what` (what it runs, in one line: the item's workflow, ref and prompt or text, cut to 80 characters), `run_id`. Written once the item's run is recorded, or adopted after the pass that started it died |
+| `work_queue_item_finished` | `id`, `outcome` (`succeeded`, `failed`, `cancelled`, `skipped`, `interrupted` or `launch_failed`), `reason`, `run_id` (`null` when no run was made) |
+| `work_queue_item_held` | `id`, `reason` (`gate`, `parked`, `failed_check`, `budget_spent` or `run_timed_out`) |
+| `work_queue_paused` | `reason` (`failed`, `cancelled`, `launch_failed`, `claim_lost`, `interrupted`, `unknown_run`, `failed_check`, `budget_spent` or `run_timed_out`), `id` (the current item, `null` for none). Not written again while the queue stays paused |
+| `work_queue_resumed` | none |
+
+A held item that goes back to `active` (its run moved on) writes no line; the next line for it is `work_queue_item_held` again or `work_queue_item_finished`. Unlike the other lifecycle lines, `work_queue_item_started` carries some of the item's own text in `what`.
 
 ### Handoff follow-up lines
 

@@ -1491,7 +1491,9 @@ module Workspace
       status_scope: status_scope, project_detector: project_detector, launcher: launcher, common: common, names: names, working_dir: working_dir)
 
     work_queue_history_for = ->(workspace) { WorkQueueHistory.new(path: config.work_queue_history_path(workspace)) }
-    work_queue_store_for = ->(workspace) { WorkQueueStore.new(path: config.work_queue_path(workspace), history: work_queue_history_for.call(workspace)) }
+    work_queue_store_for = lambda do |workspace|
+      WorkQueueStore.new(path: config.work_queue_path(workspace), history: work_queue_history_for.call(workspace), workspace: workspace, event_log: event_log)
+    end
     work_queue_starters = WorkQueueStarters.new(workflow: workflow_command, workflow_start: workflow_start_command, go: go_command,
       workflow_project: workflow_project, catalog: workflow_catalog)
     work_queue_advance = WorkQueueAdvance.new(store_factory: work_queue_store_for, run_store: workflow_store, starters: work_queue_starters.to_h,

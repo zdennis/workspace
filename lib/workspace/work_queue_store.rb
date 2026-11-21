@@ -17,6 +17,10 @@ module Workspace
   #
   # A file that can't be read raises and changes nothing.
   #
+  # Each transition (a run recorded or adopted, an item held or finished, the queue
+  # paused or resumed) is recorded in the {EventLog} once, after the queue file is
+  # written and still under the lock, so two passes racing never record one twice.
+  #
   # Times are ISO 8601 UTC with milliseconds.
   class WorkQueueStore
     # Most items a queue may hold.
@@ -28,6 +32,9 @@ module Workspace
     # The states that make an item the queue's current one.
     CURRENT_STATES = %w[starting active held].freeze
 
+    # Characters of {.summary} a `work_queue_item_started` event carries, so a long prompt stays out of the log.
+    EVENT_WHAT_LENGTH = 80
+
     # One locked read-modify-write of the queue file. The advance pass, `skip`
     # and `cancel` change the queue through these methods, so each step of a
     # claim is one named change. Nothing is written when the block raises.
@@ -35,10 +42,12 @@ module Workspace
       # @param data [Hash] the parsed file, changed in place
       # @param store [WorkQueueStore] the owner, for its clock, ids and cap
       # @param pending [Array<Hash>] where {#finish} leaves history entries until the queue is written
-      def initialize(data, store, pending)
+      # @param events [Array<Array>] where each transition leaves `[type, data]` until the queue is written
+      def initialize(data, store, pending, events = [])
         @data = data
         @store = store
         @pending = pending
+        @events = events
       end
 
       # @return [Integer] the revision the file had when this transaction began
@@ -167,6 +176,7 @@ module Workspace
       def pause(reason)
         return false if paused
         @data["paused"] = {"reason" => reason, "at" => @store.now}
+        @events << [EventLog::WORK_QUEUE_PAUSED, {"reason" => reason, "id" => current&.dig("id")}]
         true
       end
 
@@ -174,6 +184,7 @@ module Workspace
       def resume
         was = !paused.nil?
         @data["paused"] = nil
+        @events << [EventLog::WORK_QUEUE_RESUMED, {}] if was
         was
       end
 
@@ -222,7 +233,9 @@ module Workspace
       # @return [Hash, nil] the item, or nil when it is gone or not `active`
       def hold(id, reason:)
         item = items.find { |i| i["id"] == id && i["state"] == "active" }
-        item&.merge!("state" => "held", "reason" => reason)
+        return nil unless item
+        @events << [EventLog::WORK_QUEUE_ITEM_HELD, {"id" => id, "reason" => reason}]
+        item.merge!("state" => "held", "reason" => reason)
       end
 
       # Puts a `held` item back to `active`. Any other state, or an unknown id, changes nothing.
@@ -254,6 +267,7 @@ module Workspace
           .merge(item.reject { |k, _| CLAIM_KEYS.include?(k) || k == "state" })
           .merge("result" => result, "outcome" => outcome, "reason" => reason)
         @pending << entry
+        @events << [EventLog::WORK_QUEUE_ITEM_FINISHED, {"id" => id, "outcome" => outcome, "reason" => reason, "run_id" => result["run_id"]}]
         entry
       end
 
@@ -263,6 +277,7 @@ module Workspace
         CLAIM_KEYS.each { |key| item.delete(key) }
         item["state"] = "active"
         item["result"] = (item["result"] || {}).merge("run_id" => run_id)
+        @events << [EventLog::WORK_QUEUE_ITEM_STARTED, {"id" => item["id"], "kind" => item["kind"], "what" => WorkQueueStore.summary(item)[0, EVENT_WHAT_LENGTH], "run_id" => run_id}]
       end
 
       def insertion_index(position)
@@ -287,8 +302,12 @@ module Workspace
     # @param clock [#now] time source
     # @param id_generator [#call] returns a new item id
     # @param max_items [Integer] most items the queue may hold
-    def initialize(path:, history:, clock: Time, id_generator: -> { SecureRandom.hex(4) }, max_items: MAX_ITEMS)
+    # @param workspace [String, nil] the queue's workspace, the `project` and `data.workspace` of its events
+    # @param event_log [Workspace::EventLog, nil] where transitions are recorded; nil records none
+    def initialize(path:, history:, clock: Time, id_generator: -> { SecureRandom.hex(4) }, max_items: MAX_ITEMS, workspace: nil, event_log: nil)
       @path = path
+      @workspace = workspace
+      @event_log = event_log
       @history = history
       @clock = clock
       @id_generator = id_generator
@@ -318,20 +337,37 @@ module Workspace
     # @raise [Workspace::Error] when the file can't be read; the block's own error leaves the file as it was
     def transaction
       pending = []
+      events = []
       changed = false
       after = lambda do |_|
         pending.each { |entry| @history.append_locked(entry) }
         @history.prune if changed
+        events.each { |type, data| @event_log&.record(type: type, project: @workspace, data: data.merge("workspace" => @workspace)) }
       end
       @file.exclusive(write: :if_changed, after: after) do |data|
         before = JSON.generate(data)
-        result = yield Transaction.new(data, self, pending)
+        result = yield Transaction.new(data, self, pending, events)
         if JSON.generate(data) != before
           data["revision"] += 1
           changed = true
         end
         result
       end
+    end
+
+    # What an item runs, in one line: a workflow item's workflow, ref and prompt, a go item's argument, text and workflow,
+    # with runs of whitespace and control characters made one space.
+    #
+    # @param item [Hash]
+    # @return [String]
+    def self.summary(item)
+      spec = item["spec"] || {}
+      text = case item["kind"]
+      when "workflow" then [spec["workflow"], spec["ref"], spec["prompt"]].compact.join(" ")
+      when "go" then [spec["argument"], spec["text"], spec["workflow"]].compact.join(" ")
+      else spec.to_s
+      end
+      text.gsub(/[[:space:][:cntrl:]]+/, " ")
     end
 
     # @return [Hash] `"revision"`, `"enabled"` (nil when never set), `"paused"` and `"items"`; an empty queue when there is no file
