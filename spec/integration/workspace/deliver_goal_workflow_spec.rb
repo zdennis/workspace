@@ -50,6 +50,33 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(prompt).not_to match(/accept|calc/i)
   end
 
+  it "reviews the plan with one skeptical reviewer, keeping the parent's rounds" do
+    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+    review = ->(d) { d["steps"].find { |each| each["id"] == "plan" }["review"] }
+    expect(review.call(definition.to_h)).to include("from" => ["skeptical"], "need" => 1, "must" => ["skeptical"])
+    expect(review.call(definition.to_h)["max_rounds"]).to eq(review.call(parent)["max_rounds"])
+  end
+
+  it "overrides only the prompt of implement, which tells it to start no sub-agents and finish before its status line" do
+    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+    implement = ->(d) { d["steps"].find { |each| each["id"] == "implement" } }
+    expect(implement.call(definition.to_h).except("prompt")).to eq(implement.call(parent).except("prompt"))
+    prompt = implement.call(definition.to_h)["prompt"].gsub(/\s+/, " ")
+    expect(prompt).to include("Do not start sub-agents; the verify step runs the checks after you.")
+    expect(prompt).to include("End your turn with your status line only after all of that work is finished, never while anything is still running.")
+    expect(prompt).not_to match(/accept|calc/i)
+  end
+
+  it "keeps the implement prompt equal to the parent's apart from its two added sentences" do
+    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+    implement = ->(d) { d["steps"].find { |each| each["id"] == "implement" }["prompt"].gsub(/\s+/, " ").strip }
+    stripped = implement.call(definition.to_h)
+      .sub("Do not start sub-agents; the verify step runs the checks after you.", "")
+      .sub("End your turn with your status line only after all of that work is finished, never while anything is still running.", "")
+      .gsub(/\s+/, " ").strip
+    expect(stripped).to eq(implement.call(parent))
+  end
+
   it "uses no project words outside the deny globs" do
     expect(File.read(path).gsub(%r{"\*(calculator2/acceptance/?\*?|refs/demo-calc2\*)"}, "")).not_to match(/calc|arithmetic/i)
   end

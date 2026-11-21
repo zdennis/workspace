@@ -5,7 +5,7 @@ inputs:
   acceptance: script/acceptance_runner
 steps:
   plan:
-    - reviews: {supportive: approve, skeptical: approve, implementer: approve}
+    - reviews: {skeptical: approve}
   acceptance:
     - {require: {exec: fail}, log: "goal not met: 2 of 5 checks failed"}
     - {}
