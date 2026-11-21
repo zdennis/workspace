@@ -354,6 +354,8 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(output.string).to include("workspace #{Workspace::VERSION}")
       expect(output.string).to match(/^  envelope +1$/)
       expect(output.string).to match(/^  snapshot +6$/)
+      expect(output.string).to match(/^  events_permission_wait +1$/)
+      expect(output.string).to match(/^  workflow_events_follow +2$/)
       expect(output.string).to include("  gh          #{File.join(bin_dir, "gh")}")
       expect(output.string).to include("  tmux        not found")
     end

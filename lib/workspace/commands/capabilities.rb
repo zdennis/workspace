@@ -184,7 +184,8 @@ module Workspace
         @output.puts "workspace #{Workspace::VERSION}"
         @output.puts
         @output.puts "features (0 = not available):"
-        FEATURES.each { |name, revision| @output.puts "  #{name.ljust(18)}#{revision}" }
+        width = FEATURES.keys.map(&:length).max + 1
+        FEATURES.each { |name, revision| @output.puts "  #{name.ljust(width)}#{revision}" }
         @output.puts
         @output.puts "dependencies:"
         dependencies.each { |name, path| @output.puts "  #{DEPENDENCIES.fetch(name).ljust(12)}#{path || "not found"}" }
