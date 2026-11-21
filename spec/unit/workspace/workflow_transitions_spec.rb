@@ -551,9 +551,24 @@ RSpec.describe Workspace::WorkflowTransitions do
         .tap { |each| each["definition"]["redeliver"] = 2 }
     end
 
-    it "waits out the first backoff, then is due" do
-      expect(described_class.redelivery(run, now)).to include(state: :waiting, wait: 60, retries: 0, limit: 2)
-      expect(described_class.redelivery(run, now + 60)).to include(state: :due)
+    it "waits out a short first backoff for a busy pane, then is due" do
+      expect(described_class.redelivery(run, now)).to include(state: :waiting, wait: 15, retries: 0, limit: 2)
+      expect(described_class.redelivery(run, now + 15)).to include(state: :due)
+    end
+
+    it "keeps the longer backoffs for a busy pane's later retries" do
+      run["steps"]["a"]["attempts"].last["redelivery"] = 1
+      expect(described_class.redelivery(run, now)).to include(state: :waiting, wait: 300, retries: 1)
+    end
+
+    it "keeps the first backoff for a code other than a busy pane" do
+      run["reason"]["details"]["error"] = "restart_in_progress"
+      expect(described_class.redelivery(run, now)).to include(state: :waiting, wait: 60, retries: 0)
+    end
+
+    it "wakes the tick once the retry is due, not while it waits" do
+      expect(described_class.wakeable?(run, now)).to be_nil
+      expect(described_class.wakeable?(run, now + 15)).to eq(:redeliver)
     end
 
     it "is nil for a code a retry could type twice" do

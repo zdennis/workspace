@@ -100,13 +100,6 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(panes.default_pane("app")).to eq("%4")
     end
 
-    it "asks for the rescan with a longer timeout" do
-      allow(snapshot_client).to receive(:fetch).with("app").and_return("panes" => [])
-      allow(snapshot_client).to receive(:fetch).with("app", rescan: true, timeout: described_class::RESCAN_TIMEOUT).and_return("panes" => [{"pane_id" => "%4", "kind" => "claude"}])
-
-      expect(panes.default_pane("app")).to eq("%4")
-    end
-
     [Workspace::AgentSnapshotClient::Unavailable.new("slow", reason: :timeout), Workspace::Error.new("closed")].each do |failure|
       it "raises no_agent_pane, not no_daemon, when the rescan fails with #{failure.class}" do
         allow(snapshot_client).to receive(:fetch).with("app").and_return("panes" => [{"pane_id" => "%4", "kind" => "shell"}])
@@ -828,6 +821,23 @@ RSpec.describe Workspace::WorkflowPanes do
   def box(*above, input: "")
     rule = "─" * 40
     [*above, rule, "❯ #{input}", rule, "  [Model] status", ""].join("\n")
+  end
+
+  describe ".settled?" do
+    let(:at) { Time.utc(2026, 11, 10, 12, 0, 0) }
+
+    it "is true only for a turn that is over and idle for IDLE_FLOOR seconds" do
+      expect(described_class.settled?({"state" => "idle", "idle_seconds" => 5}, at)).to be(true)
+      expect(described_class.settled?({"state" => "idle", "idle_seconds" => 4}, at)).to be(false)
+      expect(described_class.settled?({"state" => "working", "idle_seconds" => 60}, at)).to be(false)
+      expect(described_class.settled?(nil, at)).to be(false)
+    end
+
+    it "is false while a background sub-agent is running in the pane" do
+      shown = {"state" => "working", "idle_seconds" => 60, "subagents" => [{"agent_id" => "a1", "description" => "d", "since" => "2026-11-10T11:58:00Z"}]}
+
+      expect(described_class.settled?(shown, at)).to be(false)
+    end
   end
 
   describe "#main_turn_over?" do

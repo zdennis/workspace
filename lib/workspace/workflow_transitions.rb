@@ -9,8 +9,13 @@ module Workspace
     DELIVERY_WINDOW = WorkflowPanes::REPLY_TIMEOUT + 60
 
     # Seconds the sweep waits after an undelivered attempt ended before retrying it; retry n uses entry n
-    # (the last entry again past the end).
+    # (the last entry again past the end). The first entry stays 60 on purpose: PANE_BUSY_FIRST_BACKOFF covers the
+    # first `pane_busy` retry.
     REDELIVER_BACKOFF = [60, 300, 900].freeze
+
+    # Seconds the first retry of a step line refused `pane_busy` waits instead of {REDELIVER_BACKOFF}'s first entry: a
+    # busy pane is most often a turn that ends within seconds, and {WorkflowRecovery#tick} types the line once it is idle.
+    PANE_BUSY_FIRST_BACKOFF = 15
 
     # Delivery failures that prove the line never reached the pane, so typing it again cannot type it twice: the
     # pane was busy or the screen refused before anything was typed, a restart was already under way, or no daemon
@@ -799,7 +804,7 @@ module Workspace
     end
     private_class_method :round_backoff
 
-    # Where the sweep's retry of an undelivered line stands. The step must wait on a failed delivery (reason
+    # Where the retry of an undelivered line by the sweep or {WorkflowRecovery#tick} stands. The step must wait on a failed delivery (reason
     # `waiting_you`, kind `dispatch`, a code in {REDELIVER_CODES}), with no park, its last attempt ended
     # `not_delivered`, and the definition's `redeliver` above 0. Attempts the sweep already retried carry
     # `redelivered: true`, and do not count against `max_attempts`.
@@ -824,11 +829,19 @@ module Workspace
       retries = last["redelivery"].is_a?(Integer) ? last["redelivery"] : 0
       info = {retries: retries, limit: limit, code: details["error"]}
       return info.merge(state: :exhausted, wait: 0) if retries >= limit
-      wait = Time.iso8601(last["ended_at"].to_s) + REDELIVER_BACKOFF[[retries, REDELIVER_BACKOFF.size - 1].min] - now
+      wait = Time.iso8601(last["ended_at"].to_s) + redeliver_backoff(retries, details["error"]) - now
       (wait > 0) ? info.merge(state: :waiting, wait: wait.ceil) : info.merge(state: :due, wait: 0)
     rescue ArgumentError, TypeError, NoMethodError
       nil
     end
+
+    # Seconds an undelivered step line waits before retry +retries+ + 1: {PANE_BUSY_FIRST_BACKOFF} for the first
+    # retry of a `pane_busy` refusal, else {REDELIVER_BACKOFF}'s entry.
+    def self.redeliver_backoff(retries, code)
+      return PANE_BUSY_FIRST_BACKOFF if retries.zero? && code == "pane_busy"
+      REDELIVER_BACKOFF[[retries, REDELIVER_BACKOFF.size - 1].min]
+    end
+    private_class_method :redeliver_backoff
 
     # Where an `on_fail` retry's wait stands. A step that failed with `on_fail: {backoff: ...}` stores `backoff` on
     # the run (`until`, `to`, `text`, `context`) and reads `waiting` with the reason `retry_backoff`; nothing is
@@ -941,7 +954,7 @@ module Workspace
     # A fan_out sibling's deferred failure move whose wait is over, in a group at rest ({.join_due}), wakes as :join:
     # the tick runs the group's join, which applies the move; the tick itself never starts it.
     #
-    # @return [Symbol, nil] :parked, :continue, :continue_expired, :backoff (a retry's wait is over), :join, :infra_retry (a running step's infra retry is due or its claim is stale, {.infra_retry}), :lock, :background, :round, :unanswered, :review, :check, or nil
+    # @return [Symbol, nil] :parked, :continue, :continue_expired, :backoff (a retry's wait is over), :join, :infra_retry (a running step's infra retry is due or its claim is stale, {.infra_retry}), :lock, :background, :round, :unanswered, :review, :redeliver (an undelivered step line's retry is due, {.redelivery}), :check, or nil
     def self.wakeable?(run, now, alive: nil, stops: [])
       return nil if run["paused"]
       return :parked if run["parked"]
@@ -958,6 +971,7 @@ module Workspace
       return :round if lost_round?(run, now, stops: stops)
       return :unanswered if unanswered_round?(run, now, stops: stops)
       return :review if %i[due exhausted].include?(round_redelivery(run, now, alive: alive)&.fetch(:state))
+      return :redeliver if redelivery(run, now)&.fetch(:state) == :due
       :check if slot(run, "reason").nil? && lost_check?(run, now)
     end
 
