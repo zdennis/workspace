@@ -217,4 +217,16 @@ RSpec.describe DemoCalculator::EvalChecks do
       expect(result[:hook]).to eq(0)
     end
   end
+
+  describe "#possible_leak_check" do
+    it "counts history commands that could print the tests without naming them, not definite reads or the working tree" do
+      hook = File.join(tmp, "ws.jsonl")
+      line = ->(input) { JSON.generate("type" => "tool_started", "at" => "2026-01-01T10:05:00Z", "tool" => "Bash", "input" => input) + "\n" }
+      File.write(hook, ["git log -p", "git log --stat", "git log --all", "git show HEAD~2", "git diff 1a2b3c4 HEAD", "git archive refs/heads/main",
+        "git log --oneline", "git status", "git diff", "git show HEAD", "cat demo/calculator-acceptance/support.rb",
+        "git show HEAD~2:demo/calculator-acceptance/support.rb"].map(&line).join)
+      result = checks.possible_leak_check(hook_files: [hook], transcripts: [], from: "2026-01-01T10:00:00Z", to: "2026-01-01T11:00:00Z")
+      expect(result).to eq(hook: 6, transcript: {})
+    end
+  end
 end

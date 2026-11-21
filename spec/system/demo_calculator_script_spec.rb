@@ -303,7 +303,7 @@ RSpec.describe DemoCalculator::Demo do
       it "advances by hand without auto-advance, until the queue is empty, and records why it stopped" do
         run_waiting(queue("on", ["a", "queued"]), queue("on", ["a", "queued"]), queue("on", ["a", "active"]), queue("on"))
         expect(calls.count("work-queue advance --name ws")).to be > 1
-        expect(record["wait"]).to eq("reason" => "empty", "item" => nil, "stopped_at" => now.first.utc.iso8601)
+        expect(record["wait"]).to eq("reason" => "empty", "item" => nil, "stopped_at" => now.first.utc.iso8601, "failed_item" => nil)
       end
 
       it "does not advance when the daemon does" do

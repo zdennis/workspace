@@ -58,7 +58,13 @@ module DemoCalculator
     # @param ruby [String] the ruby that runs each acceptance group
     # @param runner [#call] `call(argv, env:, chdir:, timeout:)` returning `[stdout, success?]`
     # @param group_timeout [Numeric] seconds one acceptance group may run before it counts as failed
-    def initialize(repo:, ruby: "ruby", runner: DEFAULT_RUNNER, group_timeout: DEFAULT_GROUP_TIMEOUT)
+    # @param acceptance_name [String] regexp source for how a read names the acceptance directory
+    # @param acceptance_hint [String] plain text every line that names it contains, a cheap filter
+    def initialize(repo:, ruby: "ruby", runner: DEFAULT_RUNNER, group_timeout: DEFAULT_GROUP_TIMEOUT,
+      acceptance_name: Regexp.escape(ACCEPTANCE_NAME), acceptance_hint: ACCEPTANCE_NAME)
+      @read_command = /(?:\A|&&\s*|;\s*|\(\s*|\bdo\s+)(?:[A-Za-z_]\w*=\S*\s+)*(?:#{READ_PROGRAMS})\s[^|;&\n]*#{acceptance_name}/
+      @acceptance_name = acceptance_name
+      @acceptance_hint = acceptance_hint
       @repo = repo
       @group_timeout = group_timeout
       @ruby = ruby
@@ -122,18 +128,18 @@ module DemoCalculator
     #   nil for a transcript that can't be read. Hook lines outside from..to
     #   or without a readable `at` are not counted; transcripts are counted whole.
     def leak_check(hook_files:, transcripts:, from:, to: nil)
-      lo = from && Time.parse(from)
-      hi = to && Time.parse(to)
-      hook = hook_files.sum do |path|
-        count_lines(path) do |line|
-          next false unless line.include?(ACCEPTANCE_NAME)
-          event = parse_json(line)
-          at = event && parse_time(event["at"])
-          event && [nil, "tool_started"].include?(event["type"]) && reads_acceptance?(event["tool"] || "Bash", event["input"]) &&
-            at && (lo.nil? || at >= lo) && (hi.nil? || at <= hi)
-        end
-      end
-      {hook: hook, transcript: transcripts.uniq.to_h { |path| [path, transcript_count(path)] }}
+      scan(hook_files, transcripts, from, to, @acceptance_hint) { |tool, input| reads_acceptance?(tool, input) }
+    end
+
+    # Counts the agents' commands that could print the acceptance tests from the run branch's history without naming
+    # the directory: `git log` with -p, --patch, --stat or --all, and `git show`, `diff`, `cat-file` or `archive` naming a
+    # commit or ref other than HEAD or the working tree (a hash, `HEAD~N`, a branch, `A..B`, `rev:path`). A command that is
+    # a definite read (see {#leak_check}) is not counted here. These are possible leaks: the command may show nothing of
+    # the tests.
+    #
+    # @return [Hash] `{hook: Integer, transcript: {path => Integer or nil}}`, as {#leak_check}
+    def possible_leak_check(hook_files:, transcripts:, from:, to: nil)
+      scan(hook_files, transcripts, from, to, nil) { |tool, input| history_read?(tool, input) && !reads_acceptance?(tool, input) }
     end
 
     private
@@ -144,12 +150,26 @@ module DemoCalculator
     # a group file (`ruby`), or `git show`, `archive`, `cat-file` or `ls-tree` with or without git's own options.
     READ_PROGRAMS = "cat|head|tail|less|more|bat|nl|sed|awk|grep|rg|ls|tar|ruby|" \
       "git(?:\\s+(?:-C|-c|--git-dir|--work-tree)\\s+\\S+|\\s+--[a-z-]+)*\\s+(?:show|archive|cat-file|ls-tree)"
-    READ_COMMAND = /(?:\A|&&\s*|;\s*|\(\s*|\bdo\s+)(?:[A-Za-z_]\w*=\S*\s+)*(?:#{READ_PROGRAMS})\s[^|;&\n]*#{ACCEPTANCE_NAME}/
     FILE_TOOLS = %w[Read Grep NotebookRead Edit MultiEdit].freeze
 
-    def transcript_count(path)
+    def scan(hook_files, transcripts, from, to, hint, &matches)
+      lo = from && Time.parse(from)
+      hi = to && Time.parse(to)
+      hook = hook_files.sum do |path|
+        count_lines(path) do |line|
+          next false if hint && !line.include?(hint)
+          event = parse_json(line)
+          at = event && parse_time(event["at"])
+          event && [nil, "tool_started"].include?(event["type"]) && matches.call(event["tool"] || "Bash", event["input"]) &&
+            at && (lo.nil? || at >= lo) && (hi.nil? || at <= hi)
+        end
+      end
+      {hook: hook, transcript: transcripts.uniq.to_h { |path| [path, transcript_count(path, hint, &matches)] }}
+    end
+
+    def transcript_count(path, hint, &matches)
       return nil unless File.readable?(path)
-      ([path] + subagent_transcripts(path)).sum { |file| session_count(file) }
+      ([path] + subagent_transcripts(path)).sum { |file| session_count(file, hint, &matches) }
     end
 
     # Claude Code keeps a session's sub-agent transcripts in `<session id>/subagents/agent-*.jsonl` beside it.
@@ -157,25 +177,47 @@ module DemoCalculator
       Dir.glob(File.join(path.sub(/\.jsonl\z/, ""), "subagents", "agent-*.jsonl")).sort
     end
 
-    def session_count(path)
+    def session_count(path, hint, &matches)
       count = 0
       count_lines(path) do |line|
-        next false unless line.include?(ACCEPTANCE_NAME)
+        next false if hint && !line.include?(hint)
         blocks = parse_json(line)&.dig("message", "content")
         next false unless blocks.is_a?(Array)
-        count += blocks.count { |b| b.is_a?(Hash) && b["type"] == "tool_use" && reads_acceptance?(b["name"], b["input"]) }
+        count += blocks.count { |b| b.is_a?(Hash) && b["type"] == "tool_use" && matches.call(b["name"], b["input"]) }
         false
       end
       count
     end
 
+    GIT_OPTIONS = /(?:\s+(?:-C|-c|--git-dir|--work-tree)\s+\S+|\s+--[a-z-]+(?:=\S+)?)*/
+    GIT_HISTORY = /\Agit#{GIT_OPTIONS}\s+(?<verb>log|show|diff|cat-file|archive)\b(?<args>.*)/m
+    LOG_PRINTS_HISTORY = /(?:\A|\s)(?:-[a-zA-Z]*p[a-zA-Z0-9]*|--patch|--stat|--all|--cc|--full-diff)(?=\s|\z)/
+    # A hash, `HEAD~N` or `HEAD^`, a range, a `refs/` or remote ref, a default branch, or `rev:path` with such a rev.
+    FOREIGN_REV = %r{\A(?:[0-9a-f]{7,40}|\S*[~^]\d*\S*|\S*\.\.\.?\S*|refs/\S+|origin/\S+|main|master)\z}
+
+    # True for a Bash command that can print history content: see {#possible_leak_check}.
+    def history_read?(tool, input)
+      return false unless tool == "Bash"
+      command = input.is_a?(Hash) ? input["command"] : input
+      command.to_s.split(/&&|\|\||;|\||\n/).any? do |segment|
+        segment = segment.strip.sub(/\A(?:[A-Za-z_]\w*=\S*\s+)+/, "")
+        found = GIT_HISTORY.match(segment)
+        next false unless found
+        if found[:verb] == "log"
+          found[:args].match?(LOG_PRINTS_HISTORY)
+        else
+          found[:args].split.reject { |token| token.start_with?("-") }.any? { |token| FOREIGN_REV.match?(token.split(":", 2).first.to_s) }
+        end
+      end
+    end
+
     def reads_acceptance?(tool, input)
       if tool == "Bash"
         command = input.is_a?(Hash) ? input["command"] : input
-        command.to_s.strip.match?(READ_COMMAND)
+        command.to_s.strip.match?(@read_command)
       elsif FILE_TOOLS.include?(tool)
         values = input.is_a?(Hash) ? input.values_at("file_path", "path", "notebook_path") : [input]
-        values.any? { |value| value.to_s.include?(ACCEPTANCE_NAME) }
+        values.any? { |value| value.to_s.match?(/#{@acceptance_name}/) }
       else
         false
       end

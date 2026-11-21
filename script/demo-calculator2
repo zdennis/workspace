@@ -1,0 +1,71 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Runs the calculator2 demo: one `deliver-goal` workflow run per goal in demo/calculator2/goals, each ending in an
+# acceptance step the agents cannot read. `reset` puts demo/calculator2 back to its stub and clears the demo workspace's
+# queue; `run` does that on a fresh calc-demo/<stamp> branch, points refs/demo-calc2/acceptance-base at the run's base commit, installs
+# the workflow, queues the seven goals and writes a run record; `eval` scores a recorded run.
+# It shares its machinery with script/demo-calculator (script/demo_calculator/). See demo/calculator2/README.md.
+
+require "json"
+require "optparse"
+
+require_relative "demo_calculator/demo"
+require_relative "demo_calculator2/config"
+require_relative "demo_calculator2/evaluation"
+
+module DemoCalculator2
+  # 0 unless `run --wait` stopped for any reason but a drained queue; then 3, with the reason and the item on err.
+  def self.wait_exit(record, err)
+    wait = record["wait"] if record.is_a?(Hash)
+    return 0 if wait.nil? || wait["reason"] == "empty"
+    detail = %w[item failed_item].filter_map { |key| "#{key.tr("_", " ")} #{wait[key]}" if wait[key] }.join(", ")
+    err.puts "demo-calculator2: the queue did not drain: #{wait["reason"]}#{" (#{detail})" unless detail.empty?}"
+    3
+  end
+
+  def self.main(
+    argv, out: $stdout, err: $stderr, root: File.expand_path("..", __dir__)
+  )
+    options = {json: false, dry_run: false, name: nil, wait: false, run_dir: nil, base: nil, out_dir: nil}
+    parser = OptionParser.new do |o|
+      o.banner = "Usage: script/demo-calculator2 reset|run|eval [--name WORKSPACE] [--dry-run] [--wait]\n" \
+        "       run [--base REF] [--out DIR] [--wait]\n" \
+        "       eval [--run DIR] [--json]\n" \
+        "  reset  put demo/calculator2 back to its stub and empty the workspace's work queue\n" \
+        "  run    on a new calc-demo/<stamp> branch: point refs/demo-calc2/acceptance-base at the run's base commit, empty the queue,\n" \
+        "         drop the acceptance tests and README, install the workflow, set commands.test and commands.lint,\n" \
+        "         queue the seven goals, start the first and write run.json; with --wait, watch the queue until it stops\n" \
+        "  eval   score a recorded run: per goal attempts, review rounds, first-pass acceptance, acceptance loops,\n" \
+        "         time, tokens and cost, each step's wall time, lint and leaks; written to eval.json beside run.json\n" \
+        "Run it from a clean worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
+      o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory)") { |v| options[:name] = v }
+      o.on("--base REF", "run: the ref to branch from (default HEAD)") { |v| options[:base] = v }
+      o.on("--out DIR", "run: where to write run.json (default tmp/demo-calculator2/runs/<stamp>)") { |v| options[:out_dir] = v }
+      o.on("--wait", "run: watch the queue until it is empty, paused, disabled, has a held item past 20m or 4h pass") { options[:wait] = true }
+      o.on("--run DIR", "eval: the directory holding run.json (default: the newest under tmp/demo-calculator2/runs)") { |v| options[:run_dir] = v }
+      o.on("--json", "eval: print the eval.json document instead of the table") { options[:json] = true }
+      o.on("--dry-run", "Print the commands that change something instead of running them") { options[:dry_run] = true }
+    end
+    verb = parser.parse(argv).first
+    unless %w[reset run eval].include?(verb)
+      err.puts parser.help
+      return 1
+    end
+    workspace = ENV["WORKSPACE_BIN"] || File.join(root, "bin", "workspace")
+    if verb == "eval"
+      result = Evaluation.new(root: root, workspace: workspace, name: options[:name], run_dir: options[:run_dir],
+        pricing_path: File.join(root, "demo", "pricing.yml"), err: err).call
+      out.puts(options[:json] ? JSON.pretty_generate(result[:document]) : Evaluation.render(result))
+      return 0
+    end
+    record = DemoCalculator::Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out, err: err,
+      base: options[:base], out_dir: options[:out_dir], wait: options[:wait], config: config).public_send(verb)
+    wait_exit(record, err)
+  rescue DemoCalculator::Refused, DemoCalculator::Evaluation::Error, OptionParser::ParseError => e
+    err.puts "demo-calculator2: #{e.message}"
+    1
+  end
+end
+
+exit DemoCalculator2.main(ARGV) if $PROGRAM_NAME == __FILE__
