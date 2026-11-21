@@ -306,6 +306,17 @@ RSpec.describe DemoCalculator::EvalRows do
       expect(described_class.row(workflow: "w", run: run, events: events, totals: totals)).to include(deliver_wait: 66.0, stopped: 0.0)
     end
 
+    it "counts a round's redelivery wait from its first delivery, and reports the review part on its own" do
+      events = [{"type" => "review_started", "step" => "plan", "round" => 1, "ts" => "2026-11-21T20:28:43.423Z"},
+        {"type" => "review_delivery_failed", "step" => "plan", "round" => 1, "ts" => "2026-11-21T20:29:17.671Z"},
+        {"type" => "review_started", "step" => "plan", "round" => 1, "again" => true, "ts" => "2026-11-21T20:30:25.803Z"},
+        {"type" => "review_started", "step" => "plan", "round" => 2, "ts" => "2026-11-21T20:31:00.000Z"}]
+      totals = {"active_seconds" => 400.0, "stopped_seconds" => 0.0, "waiting_seconds" => {}}
+      row = described_class.row(workflow: "w", run: run, events: events, totals: totals)
+      expect(row[:deliver_wait]).to be_within(0.001).of(102.38)
+      expect(row[:review_deliver_wait]).to eq(row[:deliver_wait])
+    end
+
     it "leaves deliver_wait and background nil when the trace totals are unknown" do
       expect(described_class.row(workflow: "w", run: run, events: [stalled], totals: {})).to include(deliver_wait: nil, background: nil)
     end

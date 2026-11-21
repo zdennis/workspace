@@ -94,6 +94,7 @@ module DemoCalculator
         person_wait: person_wait(totals),
         background: totals["background_seconds"],
         deliver_wait: totals["deliver_wait_seconds"],
+        review_deliver_wait: totals["review_deliver_wait_seconds"],
         **manual,
         manual: manual.values.sum,
         gap: gap(run, next_run),
@@ -148,13 +149,13 @@ module DemoCalculator
         "stopped_seconds" => (stopped.is_a?(Numeric) && background) ? stopped - background : stopped,
         "active_seconds" => (active.is_a?(Numeric) && background) ? active + background : active,
         "undelivered_seconds" => [step_wait, buckets["waiting_you"].to_f].min,
-        "deliver_wait_seconds" => step_wait + review_wait)
+        "deliver_wait_seconds" => step_wait + review_wait, "review_deliver_wait_seconds" => review_wait)
     end
 
     # [seconds of step dispatches the pane refused until the sweep redelivered them, seconds of review rounds
     # whose delivery failed until the round started again], from events: a `step_stalled` with cause `undelivered`
-    # counts from the end of the attempt it names; a `review_delivery_failed` counts to the next `review_started`
-    # of the same step and round.
+    # counts from the end of the attempt it names; a round whose delivery failed counts from its first `review_started`
+    # (the first delivery's wait on the pane included) to the `review_started` that follows the last failure.
     def self.deliver_waits(run, events)
       step_wait = events.select { |e| e["type"] == "step_stalled" && e["cause"] == "undelivered" }.sum do |event|
         attempt = Array((run["steps"] || {}).dig(event["step"], "attempts")).find { |a| a["n"] == event["attempt"] }
@@ -162,11 +163,13 @@ module DemoCalculator
         to = parse(event["ts"])
         (from && to) ? [to - from, 0].max : 0
       end
-      review_wait = events.each_with_index.select { |e, _| e["type"] == "review_delivery_failed" }.sum do |event, index|
-        started = events[(index + 1)..].find { |e| e["type"] == "review_started" && e["step"] == event["step"] && e["round"] == event["round"] }
-        from = parse(event["ts"])
-        to = parse(started && started["ts"])
-        (from && to) ? [to - from, 0].max : 0
+      review_wait = events.select { |e| e["type"] == "review_delivery_failed" }.group_by { |e| [e["step"], e["round"]] }.sum do |(step, round), failures|
+        starts = events.select { |e| e["type"] == "review_started" && e["step"] == step && e["round"] == round }
+        last_failed = failures.filter_map { |e| parse(e["ts"]) }.max
+        first_start = starts.filter_map { |e| parse(e["ts"]) }.min
+        again = starts.filter_map { |e| parse(e["ts"]) }.select { |t| last_failed && t > last_failed }.min
+        from = [first_start, failures.filter_map { |e| parse(e["ts"]) }.min].compact.min
+        (from && again) ? [again - from, 0].max : 0
       end
       [step_wait, review_wait]
     end
