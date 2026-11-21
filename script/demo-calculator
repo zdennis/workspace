@@ -2,13 +2,20 @@
 # frozen_string_literal: true
 
 # Runs the calculator demo again and again: `reset` puts demo/calculator back to its stub and clears the
-# demo workspace's work queue; `run` does that, installs the demo workflows and queues all seven.
+# demo workspace's work queue; `run` does that on a fresh calc-demo/<stamp> branch, installs the demo
+# workflows, queues all seven and writes a run record.
+# `eval` scores a recorded run: a table per workflow plus eval.json beside run.json.
 # See demo/calculator/README.md.
 
 require "fileutils"
 require "json"
 require "open3"
 require "optparse"
+
+require_relative "demo_calculator/compare"
+require_relative "demo_calculator/evaluation"
+require_relative "demo_calculator/run_record"
+require_relative "demo_calculator/wait"
 
 module DemoCalculator
   WORKFLOW_IDS = %w[
@@ -17,6 +24,9 @@ module DemoCalculator
   ].freeze
   # What `reset` puts back: the pristine copies in demo/calculator/template/.
   RESTORED = %w[bin lib test USAGE.md].freeze
+  # Held back from a run branch, so the agents cannot read what scores them.
+  ACCEPTANCE_DIR = "demo/calculator-acceptance"
+  RUN_BRANCH_PREFIX = "calc-demo/"
 
   class Refused < StandardError; end
 
@@ -27,12 +37,31 @@ module DemoCalculator
     # @param name [String, nil] the demo workspace's name; nil lets `workspace` detect it from the directory
     # @param dry_run [Boolean] print each mutating command instead of running it; reads are skipped
     # @param out [IO]
-    def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout)
+    # @param err [IO] where a recovery hint goes when `run` fails after switching branch
+    # @param base [String, nil] the ref `run` branches from; nil means HEAD, which a run branch refuses
+    # @param out_dir [String, nil] where `run` writes run.json; nil means tmp/demo-calculator/runs/<stamp>
+    # @param clock [#call] returns the current Time
+    # @param wait [Boolean] after `run`, poll the queue until it stops (see Wait.stop_reason)
+    # @param held_limit [Numeric] seconds an item may stay held before `wait` stops
+    # @param timeout [Numeric] seconds `wait` may run in all
+    # @param poll [Numeric] seconds between polls
+    # @param sleeper [#call] sleeps for the given seconds
+    def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout, err: $stderr, base: nil, out_dir: nil, clock: -> { Time.now },
+      wait: false, held_limit: 1200, timeout: 14_400, poll: 15, sleeper: ->(seconds) { sleep(seconds) })
       @root = File.expand_path(root)
       @workspace = workspace
       @name = name
       @dry_run = dry_run
       @out = out
+      @err = err
+      @base = base
+      @out_dir = out_dir
+      @clock = clock
+      @wait = wait
+      @held_limit = held_limit
+      @timeout = timeout
+      @poll = poll
+      @sleeper = sleeper
     end
 
     # @return [Array<Array<String>>] the commands that empty a queue holding these items (rows of `wq list --json`):
@@ -52,10 +81,14 @@ module DemoCalculator
       commands << wq.call("resume")
     end
 
-    # @return [Array<Array<String>>] the commands that queue the seven workflows and start the first
+    # @return [Array<Array<String>>] the commands that queue the seven workflows, in order; each prints JSON
     def self.queueing(name_args: [])
-      adds = WORKFLOW_IDS.map { |id| ["work-queue", "add", "workflow", id, "--dedupe-key", "calculator-demo:#{id}", *name_args] }
-      adds + [["work-queue", "enable", *name_args], ["work-queue", "advance", *name_args]]
+      WORKFLOW_IDS.map { |id| ["work-queue", "add", "workflow", id, "--dedupe-key", "calculator-demo:#{id}", "--json", *name_args] }
+    end
+
+    # @return [Array<Array<String>>] the commands that turn the queue on and start the first item
+    def self.starting(name_args: [])
+      [["work-queue", "enable", *name_args], ["work-queue", "advance", *name_args]]
     end
 
     # Puts the stub back and empties the queue. Touches only demo/calculator and this workspace's queue.
@@ -65,16 +98,174 @@ module DemoCalculator
       restore_files
     end
 
-    # Resets, then installs the workflows, queues all seven and runs the first pass.
+    # Moves to a fresh calc-demo/<stamp> branch, empties the queue, drops the acceptance tests and resets the stub
+    # there, installs the workflows, queues all seven, runs the first pass and writes the run record.
+    #
+    # @return [Hash, nil] the record; nil under `dry_run`
     def run
-      reset
-      configure
-      self.class.queueing(name_args: name_args).each { |argv| workspace(*argv) }
+      guard!
+      stamp = @clock.call.utc.strftime("%Y%m%dT%H%M%SZ")
+      branch = "#{RUN_BRANCH_PREFIX}#{stamp}"
+      base = @base || "HEAD"
+      preflight(branch)
+      base_sha = git("rev-parse", "#{base}^{commit}")
+      clear_queue
+      switch_to(branch, base)
+      begin
+        workspace_sha = git("rev-parse", "HEAD")
+        remove_acceptance_tests
+        restore_files
+        configure
+        items = queue_items
+        record = write_record(stamp, branch, base_sha, workspace_sha, items)
+        self.class.starting(name_args: name_args).each { |argv| workspace(*argv) }
+      rescue Refused
+        @err.puts "demo-calculator: run stopped after switching to #{branch}; `git switch -` returns to the previous branch (#{branch} is left partial)" unless @dry_run
+        raise
+      end
+      wait_for_queue(record) if @wait
+      record
     end
 
     private
 
+    # Polls the queue until Wait.stop_reason says stop, calling `work-queue advance` when the queue cannot advance
+    # itself, then records why it stopped in run.json.
+    def wait_for_queue(record)
+      if @dry_run
+        say "would wait for the queue (held limit #{@held_limit}s, timeout #{@timeout}s)"
+        return
+      end
+      capabilities = JSON.parse(workspace_stdout("capabilities", "--json"))
+      feature = capabilities.dig("features", "work_queue")
+      event_log = capabilities.dig("paths", "event_log")
+      started_at = @clock.call
+      first_seen = {}
+      loop do
+        now = @clock.call
+        begin
+          row = read_queue_row
+        rescue Refused
+          record_stop(record, {"reason" => "no_queue", "item" => nil}, now)
+          raise
+        end
+        items = row["items"] || []
+        items.each { |item| first_seen[item["id"]] ||= now if item["state"] == "held" }
+        events = (items.any? { |item| item["state"] == "held" }) ? read_events(event_log) : []
+        held_since = Wait.held_since(events: events, items: items, first_seen: first_seen)
+        stop = Wait.stop_reason(row, now: now, started_at: started_at, held_since: held_since, held_limit: @held_limit, timeout: @timeout)
+        return record_stop(record, stop, now) if stop
+        if Wait.advance?(row, work_queue_feature: feature)
+          begin
+            workspace("work-queue", "advance", *name_args)
+          rescue Refused => e
+            @err.puts "demo-calculator: #{e.message}"
+            return record_stop(record, {"reason" => "advance_failed", "item" => nil}, now)
+          end
+        end
+        @sleeper.call(@poll)
+      end
+    end
+
+    def record_stop(record, stop, now)
+      record["wait"] = {"reason" => stop["reason"], "item" => stop["item"], "stopped_at" => now.utc.iso8601}
+      File.write(@record_path, JSON.pretty_generate(record) + "\n")
+      say "stopped waiting: #{stop["reason"]}#{" (item #{stop["item"]})" if stop["item"]}"
+    end
+
+    def read_queue_row
+      out = workspace_stdout("work-queue", "list", "--json", *name_args)
+      row = (JSON.parse(out)["queues"] || []).first
+      raise Refused, "no work queue found for workspace #{@name || "(detected from the current directory)"}: check --name" unless row
+      row
+    end
+
+    def read_events(path)
+      return [] unless path && File.file?(path)
+      File.foreach(path).filter_map do |line|
+        JSON.parse(line)
+      rescue JSON::ParserError
+        nil
+      end
+    rescue SystemCallError
+      []
+    end
+
     def name_args = @name ? ["--name", @name] : []
+
+    def preflight(branch)
+      raise Refused, "the working tree has uncommitted changes: commit or discard them first" unless git("status", "--porcelain").empty?
+      _, status = Open3.capture2("git", "-C", @root, "rev-parse", "--verify", "--quiet", "refs/heads/#{branch}")
+      raise Refused, "branch #{branch} already exists" if status.success?
+      current = git("rev-parse", "--abbrev-ref", "HEAD")
+      return unless @base.nil? && current.start_with?(RUN_BRANCH_PREFIX)
+      previous = previous_base_sha
+      hint = previous ? " (the previous record's base_sha is #{previous})" : ""
+      raise Refused, "HEAD is on #{current}, which holds a previous run's solutions: pass --base REF to say what to branch from#{hint}"
+    end
+
+    def previous_base_sha
+      newest = Dir.glob(File.join(runs_dir, "*", "run.json")).max
+      newest && JSON.parse(File.read(newest))["base_sha"]
+    rescue JSON::ParserError, SystemCallError
+      nil
+    end
+
+    def runs_dir = File.join(@root, "tmp", "demo-calculator", "runs")
+
+    def switch_to(branch, base)
+      say "+ git switch -c #{branch} #{base}"
+      git("switch", "-c", branch, base) unless @dry_run
+    end
+
+    def remove_acceptance_tests
+      tracked = @dry_run ? File.directory?(File.join(@root, ACCEPTANCE_DIR)) : !git("ls-files", "--", ACCEPTANCE_DIR).empty?
+      unless tracked
+        say "no #{ACCEPTANCE_DIR} to remove"
+        return
+      end
+      say "+ git rm -r #{ACCEPTANCE_DIR} and commit"
+      return if @dry_run
+      git("rm", "-r", "-q", "--", ACCEPTANCE_DIR)
+      git("commit", "-q", "-m", "Remove the acceptance tests from the run branch", "--", ACCEPTANCE_DIR)
+    end
+
+    def queue_items
+      self.class.queueing(name_args: name_args).each_with_index.map do |argv, index|
+        say "+ workspace #{argv.join(" ")}"
+        id = JSON.parse(workspace_stdout(*argv)).dig("results", 0, "id") unless @dry_run
+        {"workflow" => WORKFLOW_IDS[index], "id" => id}
+      end
+    end
+
+    def write_record(stamp, branch, base_sha, workspace_sha, items)
+      dir = @out_dir ? File.expand_path(@out_dir, @root) : File.join(runs_dir, stamp)
+      path = File.join(dir, "run.json")
+      if @dry_run
+        say "would write #{path}"
+        return
+      end
+      workflows = File.join(@root, "demo", "calculator", "workflows")
+      record = RunRecord.build(
+        stamp: stamp, base_sha: base_sha, branch: branch,
+        workspace_sha: workspace_sha,
+        workspace_version: JSON.parse(workspace_stdout("capabilities", "--json"))["version"],
+        items: items,
+        definitions: WORKFLOW_IDS.to_h { |id| [id, File.read(File.join(workflows, "#{id}.yml"))] }
+      )
+      @record_path = path
+      FileUtils.mkdir_p(dir)
+      File.write(path, JSON.pretty_generate(record) + "\n")
+      say "wrote #{path}"
+      record
+    end
+
+    def workspace_stdout(*argv)
+      out, err, status = Open3.capture3(@workspace, *argv, chdir: @root)
+      @out.print err
+      raise Refused, "workspace #{argv.first(2).join(" ")} failed (exit #{status.exitstatus})" unless status.success?
+      out
+    end
 
     def guard!
       branch = git("rev-parse", "--abbrev-ref", "HEAD")
@@ -155,27 +346,71 @@ module DemoCalculator
     end
   end
 
-  def self.main(argv, out: $stdout, err: $stderr)
-    options = {dry_run: false, name: nil}
+  def self.duration(text)
+    Wait.parse_duration(text)
+  rescue ArgumentError => e
+    raise OptionParser::InvalidArgument, e.message
+  end
+
+  def self.evaluate(root, workspace, options, out, err)
+    result = Evaluation.new(root: root, workspace: workspace, name: options[:name], run_dir: options[:run_dir],
+      pricing_path: File.join(root, "demo", "pricing.yml"), err: err).call
+    out.puts(options[:json] ? JSON.pretty_generate(result[:document]) : Evaluation.render(result))
+    0
+  end
+
+  # `eval --compare`: reads every eval.json under tmp/demo-calculator/runs, never a run file.
+  def self.compare(root, options, out)
+    docs = Dir.glob(File.join(root, "tmp", "demo-calculator", "runs", "*", "eval.json")).filter_map do |path|
+      JSON.parse(File.read(path))
+    rescue JSON::ParserError, SystemCallError
+      nil
+    end
+    out.print Compare.render(docs, last: options[:last])
+    0
+  end
+
+  def self.main(argv, out: $stdout, err: $stderr, root: File.expand_path("..", __dir__))
+    options = {compare: false, last: Compare::DEFAULT_LAST, run_dir: nil, json: false, dry_run: false, name: nil, base: nil, out_dir: nil, wait: false, held_limit: 1200, timeout: 14_400}
     parser = OptionParser.new do |o|
-      o.banner = "Usage: script/demo-calculator reset|run [--name WORKSPACE] [--dry-run]\n" \
+      o.banner = "Usage: script/demo-calculator reset|run|eval [--name WORKSPACE] [--base REF] [--out DIR] [--wait] [--held-limit DUR] [--timeout DUR] [--dry-run]\n" \
+        "       eval [--run DIR] [--name WORKSPACE] [--json]\n" \
+        "       eval --compare [--last K]\n" \
         "  reset  put demo/calculator back to its stub and empty the workspace's work queue\n" \
-        "  run    reset, install the demo workflows (adds them to the global workflows.sources), queue all\n" \
-        "         seven and start the first\n" \
-        "Run it from a worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
+        "  run    on a new calc-demo/<stamp> branch: empty the queue, drop the acceptance tests, reset the stub,\n" \
+        "         install the demo workflows (adds them to the global workflows.sources), queue all seven,\n" \
+        "         start the first and write run.json; with --wait, watch the queue until it stops\n" \
+        "  eval   score a recorded run: a table per workflow with attempts, time, tokens, cost, acceptance and lint,\n" \
+        "         written to eval.json beside run.json (default: the newest record under tmp/demo-calculator/runs)\n" \
+        "Run it from a clean worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
       o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory)") { |v| options[:name] = v }
+      o.on("--base REF", "run: the ref to branch from (default HEAD; required on a calc-demo/* branch)") { |v| options[:base] = v }
+      o.on("--out DIR", "run: where to write run.json (default tmp/demo-calculator/runs/<stamp>)") { |v| options[:out_dir] = v }
+      o.on("--wait", "run: watch the queue until it is empty, paused, disabled, has a held item past the limit or times out") { options[:wait] = true }
+      o.on("--held-limit DUR", "run --wait: stop when an item stays held this long, as Ns, Nm or Nh (default 20m)") { |v| options[:held_limit] = duration(v) }
+      o.on("--timeout DUR", "run --wait: stop after this long in all, as Ns, Nm or Nh (default 4h)") { |v| options[:timeout] = duration(v) }
+      o.on("--run DIR", "eval: the directory holding run.json (default: the newest under tmp/demo-calculator/runs)") { |v| options[:run_dir] = v }
+      o.on("--compare", "eval: compare the last K runs of the same workflow definitions, from their eval.json files") { options[:compare] = true }
+      o.on("--last K", Integer, "eval --compare: how many runs to compare (default #{Compare::DEFAULT_LAST})") { |v|
+        raise OptionParser::InvalidArgument, "#{v} (K must be 1 or more)" if v < 1
+        options[:last] = v
+      }
+      o.on("--json", "eval: print the eval.json document instead of the table") { options[:json] = true }
       o.on("--dry-run", "Print the commands that change something instead of running them") { options[:dry_run] = true }
     end
     verb = parser.parse(argv).first
-    unless %w[reset run].include?(verb)
+    unless %w[reset run eval].include?(verb)
       err.puts parser.help
       return 1
     end
-    root = File.expand_path("..", __dir__)
     workspace = ENV["WORKSPACE_BIN"] || File.join(root, "bin", "workspace")
-    Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out).public_send(verb)
+    return compare(root, options, out) if verb == "eval" && options[:compare]
+    return evaluate(root, workspace, options, out, err) if verb == "eval"
+    Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out,
+      base: options[:base], out_dir: options[:out_dir], wait: options[:wait],
+      held_limit: options[:held_limit], timeout: options[:timeout]).public_send(verb)
     0
-  rescue Refused, OptionParser::ParseError => e
+  rescue Refused, Evaluation::Error, OptionParser::ParseError => e
     err.puts "demo-calculator: #{e.message}"
     1
   end

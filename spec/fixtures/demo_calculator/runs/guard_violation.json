@@ -1,0 +1,97 @@
+{
+  "run": {
+    "id": "wr_guard",
+    "workflow": "calc-05",
+    "definition": {
+      "id": "calc-05",
+      "steps": [
+        {
+          "id": "verify",
+          "prompt": "x",
+          "produces": [],
+          "status": null,
+          "guard": "unchanged",
+          "require": [],
+          "on_fail": {
+            "goto": "verify",
+            "max": 3
+          }
+        }
+      ]
+    },
+    "state": "done",
+    "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "created_at": "2026-11-21T05:00:00Z",
+    "started_at": "2026-11-21T05:00:01Z",
+    "ended_at": "2026-11-21T05:10:00Z",
+    "steps": {
+      "verify": {
+        "state": "passed",
+        "attempts": [
+          {
+            "n": 1,
+            "started_at": "2026-11-21T05:01:00Z",
+            "ended_at": "2026-11-21T05:03:00Z",
+            "outcome": "failed",
+            "head": {
+              "before": "h1",
+              "after": "h2"
+            },
+            "agent": {
+              "kind": "claude",
+              "version": "2.1.330",
+              "model": "claude-opus-5-5"
+            },
+            "usage": {
+              "input_tokens": 100,
+              "output_tokens": 2000,
+              "cache_creation_input_tokens": 5000,
+              "cache_read_input_tokens": 90000
+            }
+          },
+          {
+            "n": 2,
+            "started_at": "2026-11-21T05:04:00Z",
+            "ended_at": "2026-11-21T05:06:00Z",
+            "outcome": "passed",
+            "head": {
+              "before": "h2",
+              "after": "h2"
+            },
+            "agent": {
+              "kind": "claude",
+              "version": "2.1.330",
+              "model": "claude-opus-5-5"
+            },
+            "usage": {
+              "input_tokens": 100,
+              "output_tokens": 2000,
+              "cache_creation_input_tokens": 5000,
+              "cache_read_input_tokens": 90000
+            }
+          }
+        ]
+      }
+    }
+  },
+  "events": [
+    {
+      "type": "step_failed",
+      "step": "verify",
+      "attempt": 1,
+      "cause": "guard"
+    },
+    {
+      "type": "step_looped",
+      "from": "verify",
+      "to": "verify",
+      "count": 1
+    }
+  ],
+  "totals": {
+    "wall_seconds": 600,
+    "clock_seconds": 600,
+    "active_seconds": 540,
+    "stopped_seconds": 60
+  }
+}
