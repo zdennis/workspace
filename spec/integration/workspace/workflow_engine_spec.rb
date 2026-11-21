@@ -656,6 +656,7 @@ RSpec.describe Workspace::WorkflowEngine do
         "Work on X-1 in app.worktree-x on feature/x.\n\n" \
         "Write #{worktree}/.workflow/wr_1/plan.md for run wr_1.\n\n" \
         "This step is finished when your turn ends and these files exist as non-empty regular files (not links), written during this attempt: #{worktree}/.workflow/wr_1/plan.md.\n\n" \
+        "#{Workspace::WorkflowPrompt::CHECKLIST_TEXT}\n\n" \
         "#{Workspace::WorkflowPrompt::STATUS_LINE_TEXT}\n\n" \
         "Note for this run: Keep it small.\n"
       )
