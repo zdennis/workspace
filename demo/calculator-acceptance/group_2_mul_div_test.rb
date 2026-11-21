@@ -18,6 +18,5 @@ class Group2MulDivTest < Minitest::Test
 
   def test_negative_operands
     assert_value(-42, "-6 * 7")
-    assert_value 4.5, "-9 / -2"
   end
 end

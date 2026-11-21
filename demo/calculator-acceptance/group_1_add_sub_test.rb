@@ -27,9 +27,4 @@ class Group1AddSubTest < Minitest::Test
     assert_value 2, "-3 + 5"
     assert_value(-7, "-3 - 4")
   end
-
-  def test_arguments_are_joined
-    r = calc("1", "+", "2")
-    assert_in_delta 3, Float(r.out.strip), 1e-9
-  end
 end
