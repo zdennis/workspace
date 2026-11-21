@@ -992,6 +992,34 @@ RSpec.describe Workspace::WorkflowEvaluation do
       end
     end
 
+    it "leaves the round undecided while the review pane's Stop lists background tasks, and decides it on the next Stop with none" do
+      stored(reviewing)
+      tasks = [{"id" => "a1", "type" => "subagent"}, {"id" => "a2", "type" => "subagent"}]
+
+      held = evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 31), background: tasks)
+
+      expect(tally.calls).to be_empty
+      expect(progress.calls).to be_empty
+      expect(held.step("plan").state).to eq("reviewing")
+      expect(held.reason).to be_nil
+      expect(change.events).to eq([["wr_1", "review_turn_held", {"step" => "plan", "attempt" => 1, "round" => 1, "tasks" => tasks}]])
+
+      evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 35), background: [])
+
+      expect(tally.calls).to eq([[:call, "wr_1", "plan", round]])
+      expect(store.runs["wr_1"]["steps"]["plan"]["state"]).to eq("passed")
+    end
+
+    it "decides a round the sweep interrupted for a time limit even when the Stop lists background tasks" do
+      stored(reviewing.tap { |hash| hash["steps"]["plan"]["review"] = round.merge("sweep" => {"interrupt" => {"state" => "sent", "at" => "2026-11-10T11:59:00Z"}}) })
+
+      evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%9", turn_started: Time.utc(2026, 11, 10, 11, 31), background: [{"id" => "a1", "type" => "subagent"}])
+
+      expect(tally.calls.size).to eq(1)
+      expect(progress.calls.map(&:first)).to eq([:decide_review])
+      expect(change.events.map { |each| each[1] }).not_to include("review_turn_held")
+    end
+
     it "ignores a turn's end in the author's pane, a turn begun before the round, and a stopped round" do
       stored(reviewing)
       evaluation(review_tally: tally).turn_ended("wr_1", actor: "agent", pane: "%3")
