@@ -129,6 +129,7 @@ RSpec.describe Workspace::HookEventLog do
       log.record(event("permission_request", tool: "Read", agent_id: "sub-1"))
       log.record(event("stop"))
       log.record(event("stop", agent_id: "sub-1"))
+      log.record(event("subagent_stop"))
       log.record(event("subagent_stop", agent_id: "sub-2"))
       log.record(event("subagent_stop", agent_id: "sub-1"))
 

@@ -495,6 +495,7 @@ RSpec.describe Workspace::Commands::SessionEvent do
         expect(event).to include("event" => "permission_request", "tool" => "Bash", "input" => "git push")
         expect(event).not_to have_key("path")
         expect(event).not_to have_key("tool_use_id")
+        expect(event).not_to have_key("notification_type")
       end
 
       it "prints nothing to stdout" do
