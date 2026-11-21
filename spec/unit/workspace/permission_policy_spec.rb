@@ -138,6 +138,24 @@ RSpec.describe Workspace::PermissionPolicy do
       expect(decide(deep, "Write", {"file_path" => "/work/src/sub/a.rb"})[:action]).to eq("allow")
     end
 
+    it "lets a trailing /** match the contents at any depth, but not the directory itself" do
+      deny = [layer([rule("Write", "deny", "~/.ssh/**")])]
+      ssh = File.expand_path("~/.ssh")
+      expect(decide(deny, "Write", {"file_path" => "#{ssh}/a/b/c"})[:action]).to eq("deny")
+      expect(decide(deny, "Write", {"file_path" => "#{ssh}/.hidden/x"})[:action]).to eq("deny")
+      expect(decide(deny, "Write", {"file_path" => ssh})[:action]).to eq("ask")
+      allow = [layer([rule("Write", "allow", "/work/src/**")])]
+      expect(decide(allow, "Write", {"file_path" => "/work/src/a/b.rb"})[:action]).to eq("allow")
+      expect(decide(allow, "Write", {"file_path" => "/work/srcx/a"})[:action]).to eq("ask")
+    end
+
+    it "matches **/migrate/** at any depth" do
+      layers = [layer([rule("Edit", "deny", "**/migrate/**")])]
+      expect(decide(layers, "Edit", {"file_path" => "/work/db/migrate/x/y"})[:action]).to eq("deny")
+      expect(decide(layers, "Edit", {"file_path" => "db/migrate/x/y"}, cwd: "/work")[:action]).to eq("deny")
+      expect(decide(layers, "Edit", {"file_path" => "/work/db/other/x"})[:action]).to eq("ask")
+    end
+
     it "matches a dotfile" do
       layers = [layer([rule("Read", "deny", "/work/*")])]
       expect(decide(layers, "Read", {"file_path" => "/work/.env"})[:action]).to eq("deny")
@@ -192,6 +210,13 @@ RSpec.describe Workspace::PermissionPolicy do
         expect(decide(allow_tree, "Write", {"file_path" => "#{@root}/allowed/link"})[:action]).to eq("ask")
         expect(decide(allow_tree, "Write", {"file_path" => "#{@root}/allowed/dirlink/new"})[:action]).to eq("ask")
         expect(decide(allow_tree, "Write", {"file_path" => "#{@root}/allowed/dangling"})[:action]).to eq("ask")
+      end
+
+      it "applies a trailing /** to the resolved form too" do
+        layers = allow_tree + [layer([rule("Write", "deny", "#{@root}/outside/**")])]
+        expect(decide(layers, "Write", {"file_path" => "#{@root}/allowed/dirlink/deep/new"})[:action]).to eq("deny")
+        deep_allow = [layer([rule("Write", "allow", "#{@root}/allowed/**")])]
+        expect(decide(deep_allow, "Write", {"file_path" => "#{@root}/allowed/dirlink/deep/new"})[:action]).to eq("ask")
       end
 
       it "denies a link to a denied file" do

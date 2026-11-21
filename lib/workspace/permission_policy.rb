@@ -12,7 +12,9 @@ module Workspace
   # - For Edit, Write, MultiEdit, NotebookEdit and Read the pattern is matched
   #   against the path (`notebook_path` for NotebookEdit, else `file_path`, expanded against the
   #   working directory) with `FNM_PATHNAME | FNM_DOTMATCH`; a pattern starting
-  #   with `~` is expanded first. `deny` and `ask` match when the path or its
+  #   with `~` is expanded first. A pattern ending in `/**` matches the directory's
+  #   contents at any depth, as `dir/**/*` does (not `dir` itself).
+  #   `deny` and `ask` match when the path or its
   #   symlink-resolved form matches; `allow` needs both to match.
   # - Any other tool has no subject, so a rule with a pattern never matches it.
   #
@@ -128,6 +130,7 @@ module Workspace
         return false unless subject.forms
         expanded, resolved = subject.forms
         pattern = File.expand_path(pattern) if pattern == "~" || pattern.start_with?("~/")
+        pattern = "#{pattern}/*" if pattern.end_with?("/**")
         flags = File::FNM_PATHNAME | File::FNM_DOTMATCH
         if action == "allow"
           !resolved.nil? && File.fnmatch(pattern, expanded, flags) && File.fnmatch(pattern, resolved, flags)
