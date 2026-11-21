@@ -25,6 +25,7 @@ module Workspace
         "waiting_detail" => 1,
         "events_follow" => 1,
         "events_tool_input" => 1,
+        "events_permission_wait" => 1,
         "actions_manifest" => 0,
         "agent_send" => 1,
         "agent_spawn" => 1,

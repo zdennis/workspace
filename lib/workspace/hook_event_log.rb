@@ -4,10 +4,13 @@ require "fileutils"
 
 module Workspace
   # One agent daemon's high-rate log of hook events: `<dir>/<workspace>.jsonl`,
-  # one typed JSON line per tool start and finish, sub-agent start and stop,
-  # session start and end, and prompt submitted, plus the `agent_status` lines
-  # agents post (`agent status post`). `workspace events` reads it,
-  # together with the lifecycle event log, which never sees these lines.
+  # one typed JSON line per tool start and finish, permission request, the end
+  # of each wait for a person's answer (`permission_resolved`, inferred from the
+  # next event, since Claude Code sends nothing on deny or Esc), notification
+  # (its type only, never its text), sub-agent start and stop, session start
+  # and end, and prompt submitted, plus the `agent_status` lines agents post
+  # (`agent status post`). `workspace events` reads it, together with the
+  # lifecycle event log, which never sees these lines.
   #
   # Each daemon has its own file, so the daemon is its only writer (two overlap
   # for a moment across a restart, with different boot ids) and a busy

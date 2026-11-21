@@ -79,6 +79,9 @@ Every line has `type`, `at` (ISO 8601, UTC, milliseconds), `workspace` (the name
 |---|---|
 | `tool_started` | `tool` (the tool's name), `tool_use_id`, `agent_id` (the sub-agent the tool ran in, `null` for the main agent), `path` (file tools only, below), `input` (a summary of the call, below; left out when the tool has none) |
 | `tool_finished` | the same, plus `ok` (`false` when the tool's response says it failed or was interrupted) and `duration_ms` (the payload's own, else the time since this daemon saw the matching `tool_started`; `null` when it saw none), and, for a review pane's write of a verdict file, `sha256` (the file's hash after the write, 64 hex characters; see [`session-event`](README.session-event.md)) |
+| `permission_requested` | `tool`, `agent_id` (`null` for the main agent), `input` (as for `tool_started`; left out when the tool has none). The agent is waiting for a person to allow the call. Written for Claude Code's permission request and for Codex's approval prompt |
+| `permission_resolved` | the same fields, plus `outcome`, `by` (the event that ended the wait: `tool_use`, `stop`, `turn_failed`, `subagent_stop`, `user_prompt`, `session_start`, `session_end` or `permission_request`) and `wait_ms` (milliseconds since the request). Written just before the line of the event that ended the wait, so its `seq` is lower. See [Permission waits](#permission-waits) |
+| `notification` | `notification_type` (for example `idle_prompt` or `permission_prompt`), `agent_id`. The message text is never written |
 | `subagent_started` | `tool_use_id` (of the `Agent` call, `Task` on older Claude Code), `description` (cut to 120 characters), `subagent_type` (cut to 64), `agent_id` (`null`: Claude Code names a sub-agent only once it runs). A `tool_started` for `Agent` comes just before it |
 | `subagent_stopped` | `agent_id` (the stopping sub-agent's, when Claude Code gives one) |
 | `session_started` | `kind` (`claude`), `source` (`startup`, `resume`, `clear` or `compact`) |
@@ -104,7 +107,25 @@ Control characters (newlines, ESC, tabs) are replaced with spaces. Past 300 byte
 
 `path` is the file an `Edit`, `Write`, `Read`, `MultiEdit`, `NotebookEdit` or `NotebookRead` works on, relative to the checkout (the nearest directory at or above the agent's working directory that holds `.git`). A file outside the checkout has no `path`.
 
-Beyond `input`, nothing that can hold a secret is written: no other command lines, tool input or output, prompt text, or notification message. Text fields have control characters replaced and are capped.
+Beyond `input`, nothing that can hold a secret is written: no other command lines, tool input or output, prompt text, or notification message (a `notification` line has its type only). Text fields have control characters replaced and are capped.
+
+### Permission waits
+
+`permission_resolved.outcome` says how a `permission_requested` ended:
+
+| `outcome` | Meaning |
+|---|---|
+| `approved` | the same agent ran the same tool (a `tool_finished` for it) |
+| `denied` | the main agent's turn ended (`stop` or `turn_failed`), or that sub-agent stopped. Codex's Interrupt arrives as a stop, so it reads as `denied` |
+| `interrupted` | a new prompt, session start or session end; each ends every pending request of the pane |
+| `superseded` | the same agent asked again, which replaced the earlier request |
+
+Pending requests are kept in memory, one per `pane_id` and `agent_id`; pair a `permission_resolved` with the `permission_requested` before it on those two fields. Limits:
+
+- Claude Code sends nothing on a deny or Esc, so `denied` and `interrupted` are inferred from the next event, and a deny's `wait_ms` runs until that event, not until the person answered.
+- A daemon restart can leave a `permission_requested` with no `permission_resolved`; a new `boot_id` shows it.
+- Two parallel requests for the same tool from one agent can't be told apart: the second supersedes the first.
+- A `permission_prompt` notification neither opens nor ends a wait.
 
 **`boot_id` and `seq`.** `boot_id` is new each time the daemon starts, and `seq` starts at 1 for each boot and goes up by 1 for each line that daemon writes. The same `boot_id` with a skipped `seq` means a line is missing (one the daemon couldn't write, or one rotated away). A new `boot_id` means the daemon restarted. A reader can de-duplicate on `boot_id` and `seq`.
 
