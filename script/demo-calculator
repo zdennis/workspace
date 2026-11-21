@@ -1,0 +1,182 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Runs the calculator demo again and again: `reset` puts demo/calculator back to its stub and clears the
+# demo workspace's work queue; `run` does that, installs the demo workflows and queues all seven.
+# See demo/calculator/README.md.
+
+require "fileutils"
+require "json"
+require "open3"
+require "optparse"
+
+module DemoCalculator
+  WORKFLOW_IDS = %w[
+    calc-01-add-sub calc-02-mul-div calc-03-div-zero calc-04-precedence
+    calc-05-mod-pow calc-06-json calc-07-repl
+  ].freeze
+  # What `reset` puts back: the pristine copies in demo/calculator/template/.
+  RESTORED = %w[bin lib test USAGE.md].freeze
+
+  class Refused < StandardError; end
+
+  # One demo workspace: the checkout this script sits in, and the commands that drive it.
+  class Demo
+    # @param root [String] the checkout the demo lives in
+    # @param workspace [String] the `workspace` program
+    # @param name [String, nil] the demo workspace's name; nil lets `workspace` detect it from the directory
+    # @param dry_run [Boolean] print each mutating command instead of running it; reads are skipped
+    # @param out [IO]
+    def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout)
+      @root = File.expand_path(root)
+      @workspace = workspace
+      @name = name
+      @dry_run = dry_run
+      @out = out
+    end
+
+    # @return [Array<Array<String>>] the commands that empty a queue holding these items (rows of `wq list --json`):
+    #   disable it, cancel the running item, skip a held one, remove the waiting ones, then clear the pause
+    #   a cancel leaves
+    def self.queue_clearing(items, name_args: [])
+      wq = ->(*args) { ["work-queue", *args, *name_args] }
+      commands = [wq.call("disable")]
+      items.each do |item|
+        case item["state"]
+        when "active", "starting" then commands << wq.call("cancel", item["id"])
+        when "held" then commands << wq.call("skip", item["id"])
+        end
+      end
+      queued = items.select { |item| item["state"] == "queued" }.map { |item| item["id"] }
+      commands << wq.call("rm", *queued) unless queued.empty?
+      commands << wq.call("resume")
+    end
+
+    # @return [Array<Array<String>>] the commands that queue the seven workflows and start the first
+    def self.queueing(name_args: [])
+      adds = WORKFLOW_IDS.map { |id| ["work-queue", "add", "workflow", id, "--dedupe-key", "calculator-demo:#{id}", *name_args] }
+      adds + [["work-queue", "enable", *name_args], ["work-queue", "advance", *name_args]]
+    end
+
+    # Puts the stub back and empties the queue. Touches only demo/calculator and this workspace's queue.
+    def reset
+      guard!
+      clear_queue
+      restore_files
+    end
+
+    # Resets, then installs the workflows, queues all seven and runs the first pass.
+    def run
+      reset
+      configure
+      self.class.queueing(name_args: name_args).each { |argv| workspace(*argv) }
+    end
+
+    private
+
+    def name_args = @name ? ["--name", @name] : []
+
+    def guard!
+      branch = git("rev-parse", "--abbrev-ref", "HEAD")
+      raise Refused, "refusing to run on #{branch}: use a demo branch in its own worktree" if %w[main master HEAD].include?(branch)
+      git_dir = File.expand_path(git("rev-parse", "--git-dir"), @root)
+      common = File.expand_path(git("rev-parse", "--git-common-dir"), @root)
+      raise Refused, "refusing to run in the main checkout: use a worktree on a demo branch" if git_dir == common
+    end
+
+    def git(*args)
+      out, status = Open3.capture2("git", "-C", @root, *args)
+      raise Refused, "git #{args.join(" ")} failed in #{@root}" unless status.success?
+      out.strip
+    end
+
+    def clear_queue
+      items = read_queue
+      self.class.queue_clearing(items, name_args: name_args).each { |argv| workspace(*argv) }
+    end
+
+    def read_queue
+      return [] if @dry_run
+      out, status = Open3.capture2(@workspace, "work-queue", "list", "--json", *name_args, chdir: @root)
+      raise Refused, "work-queue list failed" unless status.success?
+      (JSON.parse(out)["queues"] || []).flat_map { |queue| queue["items"] || [] }
+    end
+
+    def restore_files
+      demo = File.join(@root, "demo", "calculator")
+      template = File.join(demo, "template")
+      RESTORED.each do |entry|
+        say "restore demo/calculator/#{entry}"
+        next if @dry_run
+        FileUtils.rm_rf(File.join(demo, entry))
+        FileUtils.cp_r(File.join(template, entry), File.join(demo, entry))
+      end
+      commit_restore
+    end
+
+    def commit_restore
+      paths = RESTORED.map { |entry| "demo/calculator/#{entry}" }
+      if @dry_run
+        say "git commit the restored files if they differ from HEAD"
+        return
+      end
+      git("add", "--all", "--", *paths)
+      return if git("status", "--porcelain", "--", *paths).empty?
+      git("commit", "-m", "Reset the calculator demo to its stub", "--", *paths)
+      say "committed the reset"
+    end
+
+    def configure
+      source = File.join(@root, "demo", "calculator", "workflows")
+      current = @dry_run ? "" : capture(@workspace, "config", "get", "workflows.sources", chdir: @root)
+      listed = current.split(/[,\n]/).map(&:strip).reject(&:empty?)
+      workspace("config", "set", "workflows.sources", (listed | [source]).join(",")) unless listed.include?(source)
+      workspace("workflow", "install")
+      workspace("config", "set", "--scope", "workspace", *name_args, "commands.test", "ruby")
+    end
+
+    def capture(*argv, chdir:)
+      out, status = Open3.capture2(*argv, chdir: chdir)
+      status.success? ? out.strip : ""
+    end
+
+    def workspace(*argv)
+      say "+ workspace #{argv.join(" ")}"
+      return if @dry_run
+      out, status = Open3.capture2e(@workspace, *argv, chdir: @root)
+      @out.print out
+      raise Refused, "workspace #{argv.first(2).join(" ")} failed (exit #{status.exitstatus})" unless status.success?
+    end
+
+    def say(line)
+      @out.puts line
+    end
+  end
+
+  def self.main(argv, out: $stdout, err: $stderr)
+    options = {dry_run: false, name: nil}
+    parser = OptionParser.new do |o|
+      o.banner = "Usage: script/demo-calculator reset|run [--name WORKSPACE] [--dry-run]\n" \
+        "  reset  put demo/calculator back to its stub and empty the workspace's work queue\n" \
+        "  run    reset, install the demo workflows (adds them to the global workflows.sources), queue all\n" \
+        "         seven and start the first\n" \
+        "Run it from a worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
+      o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory)") { |v| options[:name] = v }
+      o.on("--dry-run", "Print the commands that change something instead of running them") { options[:dry_run] = true }
+    end
+    verb = parser.parse(argv).first
+    unless %w[reset run].include?(verb)
+      err.puts parser.help
+      return 1
+    end
+    root = File.expand_path("..", __dir__)
+    workspace = ENV["WORKSPACE_BIN"] || File.join(root, "bin", "workspace")
+    Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out).public_send(verb)
+    0
+  rescue Refused, OptionParser::ParseError => e
+    err.puts "demo-calculator: #{e.message}"
+    1
+  end
+end
+
+exit DemoCalculator.main(ARGV) if $PROGRAM_NAME == __FILE__
