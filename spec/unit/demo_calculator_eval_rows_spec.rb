@@ -103,7 +103,7 @@ RSpec.describe DemoCalculator::EvalRows do
 
   it "ignores skipped proofs" do
     data = fixture("plain_pass")
-    data["run"]["steps"]["implement"]["attempts"].first["proofs"] = [{"proof" => "command", "skipped" => "command_unset"}]
+    data["run"]["steps"]["implement"]["attempts"].first.merge!("outcome" => "failed", "proofs" => [{"proof" => "command", "skipped" => "command_unset"}])
     expect(described_class.features(data["run"], [])["require"]).to eq("missed")
   end
 
@@ -147,5 +147,59 @@ RSpec.describe DemoCalculator::EvalRows do
     expect(rows[0][:gap]).to eq(60)
     expect(rows[1][:gap]).to be_nil
     expect(rows[2][:wall]).to eq("not run")
+    expect(rows.first(2).map { |r| r[:final] }).to eq([false, true])
+  end
+
+  it "credits require from a passed attempt when the run file holds no proof for a commits entry" do
+    data = fixture("plain_pass")
+    data["run"]["definition"]["steps"].first["require"] = [{"commits" => 1}]
+    attempt = data["run"]["steps"]["implement"]["attempts"].first.merge("proofs" => [], "outcome" => "passed")
+    data["run"]["steps"]["implement"]["attempts"] = [attempt]
+    expect(described_class.features(data["run"], [])["require"]).to eq("fired")
+    data["run"]["steps"]["implement"]["attempts"] = [attempt.merge("outcome" => "failed")]
+    expect(described_class.features(data["run"], [])["require"]).to eq("missed")
+    failed = [{"type" => "step_failed", "cause" => "require", "step" => "implement"}]
+    expect(described_class.features(data["run"], failed)["require"]).to eq("fired")
+  end
+
+  it "does not credit require from a passed attempt when the step's only entry is an exec" do
+    data = fixture("plain_pass")
+    data["run"]["definition"]["steps"].first["require"] = [{"exec" => ["ruby", "-e", "1"]}]
+    data["run"]["steps"]["implement"]["attempts"].first.merge!("proofs" => [], "outcome" => "passed")
+    expect(described_class.features(data["run"], [])["require"]).to eq("missed")
+  end
+
+  it "credits a stored proof to expect_fail by its require index, with no command on the proof" do
+    data = fixture("plain_pass")
+    data["run"]["definition"]["steps"].first["require"] = [{"commits" => 1}, {"exec" => ["workspace", "step", "expect-fail", "--", "t.rb"]}]
+    data["run"]["steps"]["implement"]["attempts"].first.merge!("outcome" => "failed", "proofs" => [{"proof" => "exec", "program" => "workspace", "index" => 1, "exit_code" => 0}])
+    features = described_class.features(data["run"], [])
+    expect(features).to include("expect_fail" => "fired", "require" => "missed")
+    data["run"]["steps"]["implement"]["attempts"].first["proofs"] = [{"proof" => "commits", "index" => 0, "exit_code" => 0}]
+    expect(described_class.features(data["run"], [])).to include("expect_fail" => "missed", "require" => "fired")
+  end
+
+  it "counts the manual acts of a person, not the start or the dispatches that follow them" do
+    person = ->(type, cause = nil) { {"type" => type, "actor" => "person", "cause" => cause} }
+    events = [person.call("run_started", "start"), person.call("step_dispatching", "first"), person.call("run_resumed", "resume"),
+      person.call("step_dispatching", "resume"), person.call("review_rounds_extended"), person.call("gate_approved"),
+      {"type" => "run_resumed", "actor" => "daemon"}, {"type" => "run_cancelled", "actor" => "person"}]
+    row = described_class.row(workflow: "a", run: fixture("plain_pass")["run"], events: events)
+    expect(row[:manual]).to eq(4)
+    expect(described_class.row(workflow: "a", run: nil)[:manual]).to eq("not run")
+  end
+
+  it "counts a person's attempts, budget and time extensions as manual, and a guard_accepted event as nothing" do
+    events = %w[attempts_extended budget_extended time_extended guard_overridden guard_accepted].map { |type| {"type" => type, "actor" => "person"} }
+    expect(described_class.row(workflow: "a", run: fixture("plain_pass")["run"], events: events)[:manual]).to eq(4)
+  end
+
+  it "credits require from a step_failed event with cause require for that step only" do
+    data = fixture("plain_pass")
+    data["run"]["definition"]["steps"].first["require"] = [{"commits" => 1}]
+    data["run"]["steps"]["implement"]["attempts"].first.merge!("proofs" => [], "outcome" => "failed")
+    event = ->(step) { [{"type" => "step_failed", "cause" => "require", "step" => step}] }
+    expect(described_class.features(data["run"], event.call("implement"))["require"]).to eq("fired")
+    expect(described_class.features(data["run"], event.call("plan"))["require"]).to eq("missed")
   end
 end

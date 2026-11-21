@@ -46,6 +46,13 @@ RSpec.describe DemoCalculator::Compare do
       expect(described_class.stat(docs, "attempts")).to include(median: 6.0, min: 4, max: 8, known: 2, partial: true)
     end
 
+    it "reads distinct review rounds, falling back to the raw total in an older eval.json" do
+      docs = [doc("1", totals: {"review_rounds_distinct" => 2, "review_rounds" => 3}), doc("2", totals: {"review_rounds" => 4})]
+      expect(described_class.stat(docs, "review_rounds_distinct")).to include(median: 3.0, min: 2, max: 4, known: 2, partial: false)
+      expect(described_class::METRICS.map(&:first)).to include("review_rounds_distinct")
+      expect(described_class::METRICS.map(&:first)).not_to include("review_rounds")
+    end
+
     it "marks a lower-bound metric partial" do
       docs = [doc("1", totals: {"input" => 5, "partial" => ["input"]}), doc("2", totals: {"input" => 7})]
       expect(described_class.stat(docs, "input")[:partial]).to be true
