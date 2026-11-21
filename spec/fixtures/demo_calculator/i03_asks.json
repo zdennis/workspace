@@ -1,0 +1,66 @@
+[
+  {
+    "id": "ef76d0",
+    "question": "Should a decimal sum that comes out whole (calc \"1.5 + 2.5\") print 4 or 4.0?",
+    "default": "Prints 4: whole results print as integers, others as the shortest decimal (0.1 + 0.2 prints 0.3, via Rational)",
+    "context": null,
+    "pane": "%246",
+    "worktree": "/Users/zdennis/source/opensource_projects/workspace/.worktrees/calc-demo-i03",
+    "asked_at": "2026-11-21T08:51:04Z",
+    "status": "answered",
+    "answer": "Keep the current behaviour: a decimal sum that comes out whole prints as an integer (calc \"1.5 + 2.5\" prints 4), as the calculator already does. No change needed.",
+    "answered_at": "2026-11-21T09:10:15Z",
+    "tmux_server": "18614"
+  },
+  {
+    "id": "c6cfcb",
+    "question": "test_multiplication_and_division_bind_tighter_than_addition_and_subtraction expects Calc.evaluate('1 + 2 * 3 + 9 / 6') == 7.5, but 1 + 6 + 1.5 = 8.5. May I correct the expectation to 8.5 in demo/calculator/test/calc_test.rb:81?",
+    "default": "Left the test unchanged and the lib/calc.rb fix uncommitted; reported needs_input",
+    "context": null,
+    "pane": "%246",
+    "worktree": "/Users/zdennis/source/opensource_projects/workspace/.worktrees/calc-demo-i03",
+    "asked_at": "2026-11-21T08:54:48Z",
+    "status": "answered",
+    "answer": "Yes. 1 + 2 * 3 + 9 / 6 is 8.5; the 7.5 in calc_test.rb:81 is an error in this run's own test-first commit (aebe2a62), not a scored test. Change the expectation to 8.5, keep the fix correct, and carry on. In future, correct a plainly wrong expectation in a test this run wrote yourself and say so in your status; don't stop for it.",
+    "answered_at": "2026-11-21T09:10:15Z",
+    "tmux_server": "18614"
+  },
+  {
+    "id": "4d90a5",
+    "question": "calc_test.rb:81 expects 7.5 for \"1 + 2 * 3 + 9 / 6\", which is 8.5; may I change the expectation to 8.5 (ask c6cfcb)?",
+    "default": "workflow held; no default taken",
+    "context": null,
+    "pane": "%246",
+    "worktree": "/Users/zdennis/source/opensource_projects/workspace/.worktrees/calc-demo-i03",
+    "asked_at": "2026-11-21T08:54:56Z",
+    "status": "answered",
+    "answer": "Answered in c6cfcb: yes, 8.5 is correct; already applied (fix step passed 09:11:51Z).",
+    "answered_at": "2026-11-21T09:12:06Z"
+  },
+  {
+    "id": "bd5734",
+    "question": "Under --json, should unsupported input exit 1 (brief: 'an error ... exit status 1') or keep plain mode's exit 2?",
+    "default": "All --json errors, unsupported included, print JSON to stdout and exit 1",
+    "context": null,
+    "pane": "%246",
+    "worktree": "/Users/zdennis/source/opensource_projects/workspace/.worktrees/calc-demo-i03",
+    "asked_at": "2026-11-21T09:19:43Z",
+    "status": "open",
+    "answer": null,
+    "answered_at": null,
+    "tmux_server": "18614"
+  },
+  {
+    "id": "f63348",
+    "question": "Should 'calc --json' (no expression) start a JSON-mode REPL, or keep printing usage?",
+    "default": "Keep 'calc --json' printing usage (existing test test_cli_json_without_expression_prints_usage); --json is honored per line inside the REPL, e.g. '--json 1 + 2'",
+    "context": null,
+    "pane": "%246",
+    "worktree": "/Users/zdennis/source/opensource_projects/workspace/.worktrees/calc-demo-i03",
+    "asked_at": "2026-11-21T09:23:33Z",
+    "status": "open",
+    "answer": null,
+    "answered_at": null,
+    "tmux_server": "18614"
+  }
+]

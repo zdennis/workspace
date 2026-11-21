@@ -53,10 +53,17 @@ module DemoCalculator
       loaded.select { |doc| group_key(doc) == key }.last(last)
     end
 
-    # {item id => true when its definition hash is not the same in every one of docs}.
+    # {item id => true when its definition hash is not the same in every one of docs}. The hash is the run file's
+    # `definition_sha256` (the resolved definition that ran, so a changed parent via `extends:` shows), kept on the
+    # item's row; a document without one falls back to the hash of the definition file in the record.
     def self.definition_status(docs)
       ids = docs.flat_map { |doc| doc.dig("record", "definitions")&.keys.to_a }.uniq.sort
-      ids.to_h { |id| [id, docs.map { |doc| doc.dig("record", "definitions", id) }.uniq.size > 1] }
+      ids.to_h { |id| [id, docs.map { |doc| definition_hash(doc, id) }.uniq.size > 1] }
+    end
+
+    def self.definition_hash(doc, id)
+      row = Array(doc["rows"]).find { |r| r.is_a?(Hash) && r["workflow"] == id }
+      row&.dig("definition_sha256") || doc.dig("record", "definitions", id)
     end
 
     # How many runs a comparison needs: MIN_RUNS, or fewer when `last` asks for fewer, never below 2.
@@ -158,6 +165,6 @@ module DemoCalculator
       doc.dig("record", "stamp")
     end
 
-    private_class_method :group_key, :header_lines, :table, :cell, :format_value, :stamp
+    private_class_method :group_key, :definition_hash, :header_lines, :table, :cell, :format_value, :stamp
   end
 end

@@ -4,8 +4,8 @@ require_relative "eval_rows"
 module DemoCalculator
   # The numbers and text of `eval`, built from rows and run hashes. Pure: reads nothing, spawns nothing.
   module EvalReport
-    TIME_KEYS = %w[wall active stopped].freeze
-    COUNT_KEYS = %w[attempts retries review_rounds review_rounds_distinct manual].freeze
+    TIME_KEYS = %w[wall active stopped person_wait].freeze
+    COUNT_KEYS = %w[attempts retries review_rounds review_rounds_distinct manual manual_events manual_inputs manual_asks].freeze
     TOKEN_KEYS = Tokens::KINDS.keys.map(&:to_s).freeze
     DASH = "–".freeze
     SHARED = "shared".freeze
@@ -98,7 +98,7 @@ module DemoCalculator
     # @param rows [Array<Hash>] EvalRows rows merged with `usage`, `acceptance`, `item` (1-based) and `groups`
     # @return [String] the fixed-width table
     def self.table(rows, totals)
-      header = %w[item state feat att retry rnd manual wall active stopped gap in out cache_w cache_r cost accept]
+      header = %w[item state feat att retry rnd manual wall active stopped wait_p gap in out cache_w cache_r cost accept]
       body = rows.map { |row| row[:ran] ? ran_cells(row) : not_run_cells(row) }
       body << total_cells(totals)
       widths = header.each_index.map { |i| ([header[i]] + body.map { |cells| cells[i] }).map { |c| c.to_s.length }.max }
@@ -117,13 +117,13 @@ module DemoCalculator
       cost = Fmt.total(Fmt.dollars(row[:usage][:cost_usd]), row[:usage][:cost_partial])
       [row[:workflow], "#{row[:state]}#{"*" if completed_unmet?(row)}", features_cell(row[:features]), row[:attempts], row[:retries],
         row[:review_rounds_distinct], row[:manual],
-        Fmt.duration(row[:wall]), Fmt.duration(row[:active]), Fmt.duration(row[:stopped]), gap_cell(row),
+        Fmt.duration(row[:wall]), Fmt.duration(row[:active]), Fmt.duration(row[:stopped]), Fmt.duration(row[:person_wait]), gap_cell(row),
         token_cell.call(:input), token_cell.call(:output), token_cell.call(:cache_creation), token_cell.call(:cache_read),
         cost, acceptance_cell(row[:acceptance], row[:item])]
     end
 
     def self.not_run_cells(row)
-      [row[:workflow], row[:state].to_s.empty? ? Fmt::NOT_RUN : row[:state]] + [DASH] * 15
+      [row[:workflow], row[:state].to_s.empty? ? Fmt::NOT_RUN : row[:state]] + [DASH] * 16
     end
 
     def self.completed_unmet?(row)
@@ -149,7 +149,7 @@ module DemoCalculator
       ["total", states_text(totals), "", Fmt.value(totals["attempts"]), Fmt.value(totals["retries"]),
         Fmt.value(totals["review_rounds_distinct"]), Fmt.value(totals["manual"]),
         lower.call("wall", Fmt.duration(totals["wall"])), lower.call("active", Fmt.duration(totals["active"])),
-        lower.call("stopped", Fmt.duration(totals["stopped"])), "",
+        lower.call("stopped", Fmt.duration(totals["stopped"])), lower.call("person_wait", Fmt.duration(totals["person_wait"])), "",
         lower.call("input", Fmt.count(totals["input"])), lower.call("output", Fmt.count(totals["output"])),
         lower.call("cache_creation", Fmt.count(totals["cache_creation"])), lower.call("cache_read", Fmt.count(totals["cache_read"])),
         lower.call("cost_usd", Fmt.dollars(totals["cost_usd"])),

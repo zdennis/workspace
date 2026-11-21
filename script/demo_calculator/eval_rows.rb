@@ -15,6 +15,9 @@ module DemoCalculator
     # Events a person causes after the start; the dispatches and review starts that follow them are not counted.
     MANUAL_TYPES = %w[run_resumed review_rounds_extended attempts_extended budget_extended time_extended run_cancelled gate_approved gate_rejected
       guard_overridden run_paused run_unpaused resume_parked].freeze
+    # Trace waiting reasons that wait for a person: a question, a gate, a pause, a failed check or a review stop that needs
+    # a resume. Anything else (turn_ended_background, turn_ended_incomplete, a stalled pane, downtime, a lock) is the machine's.
+    PERSON_WAIT_CODES = %w[waiting_you waiting_agent_input gate paused failed_check review_rejected review_incomplete].freeze
     FEATURES = (SUCCESS_PATH + FAILURE_ONLY).freeze
 
     # Every attempt of the run, step order, each tagged with "step".
@@ -66,11 +69,13 @@ module DemoCalculator
     #   workflow: id; run: stored run hash or nil; events: its event hashes;
     #   totals: trace totals hash (wall_seconds, active_seconds, stopped_seconds);
     #   next_run: the following item's run hash, for the gap; final: true when no item follows.
-    def self.row(workflow:, run:, events: [], totals: nil, next_run: nil, final: false)
+    #   asks: the workspace's stored asks (string-key hashes); answered ones asked inside the run's window count as manual.
+    def self.row(workflow:, run:, events: [], totals: nil, next_run: nil, final: false, asks: [])
       return not_run(workflow) unless run
       attempts = attempts(run)
       rounds = attempts.flat_map { |attempt| Array(attempt["rounds"]) }
       totals ||= {}
+      manual = manual_counts(run, attempts, events, asks)
       {
         workflow: workflow,
         run_id: run["id"],
@@ -86,11 +91,39 @@ module DemoCalculator
         wall: totals["wall_seconds"],
         active: totals["active_seconds"],
         stopped: totals["stopped_seconds"],
-        manual: events.count { |e| e["actor"] == "person" && MANUAL_TYPES.include?(e["type"]) },
+        person_wait: person_wait(totals),
+        **manual,
+        manual: manual.values.sum,
         gap: gap(run, next_run),
         final: final,
+        definition_sha256: run["definition_sha256"],
         head: ending_head(attempts)
       }
+    end
+
+    # Person-caused counts: events a person made, attempts that asked for input, and answered asks
+    # put by their `asked_at` inside the run's window. An open ask (the agent took its default) is not counted.
+    def self.manual_counts(run, attempts, events, asks)
+      started = parse(run["started_at"])
+      ended = parse(run["ended_at"])
+      {
+        manual_events: events.count { |e| e["actor"] == "person" && MANUAL_TYPES.include?(e["type"]) },
+        manual_inputs: attempts.count { |a| a["asked_input"] == true || a.dig("status_report", "state") == "needs_input" },
+        manual_asks: Array(asks).count do |ask|
+          at = (ask["status"] == "answered") ? parse(ask["asked_at"]) : nil
+          at && started && at >= started && (ended.nil? || at <= ended)
+        end
+      }
+    end
+
+    # Seconds the run waited on a person: the trace's waiting buckets whose reason is in PERSON_WAIT_CODES,
+    # never more than `stopped` (buckets can overlap). nil when the trace has no buckets.
+    def self.person_wait(totals)
+      buckets = totals["waiting_seconds"]
+      return nil unless buckets.is_a?(Hash)
+      sum = buckets.slice(*PERSON_WAIT_CODES).values.grep(Numeric).sum
+      stopped = totals["stopped_seconds"]
+      stopped.is_a?(Numeric) ? [sum, stopped].min : sum
     end
 
     # Row for an item with no run (after the wait's stop point, or never started).
@@ -98,14 +131,14 @@ module DemoCalculator
       na = Fmt::NOT_RUN
       {workflow: workflow, run_id: nil, ran: false, state: na, features: {}, attempts: na, retries: na,
        review_rounds: na, review_rounds_distinct: na, guard_violations: na, denied: na, manual: na,
-       wall: na, active: na, stopped: na, gap: na, head: na}
+       manual_events: na, manual_inputs: na, manual_asks: na, definition_sha256: nil, wall: na, active: na, stopped: na, person_wait: na, gap: na, head: na}
     end
 
     # Rows for items in order. Each item: {workflow:, run:, events:, totals:}.
     # The gap runs to the next item's run only when that item has one; without one the row is `final`.
-    def self.rows(items)
+    def self.rows(items, asks: [])
       items.each_with_index.map do |item, index|
-        row(workflow: item[:workflow], run: item[:run], events: item[:events] || [],
+        row(workflow: item[:workflow], run: item[:run], events: item[:events] || [], asks: asks,
           totals: item[:totals], next_run: items[index + 1]&.dig(:run), final: items[index + 1]&.dig(:run).nil?)
       end
     end
@@ -200,7 +233,7 @@ module DemoCalculator
       text && Time.parse(text)
     end
 
-    private_class_method :step_state, :checked_without_proof?, :backoff_state, :run_level, :fan_out_state, :combine, :proofs,
+    private_class_method :manual_counts, :person_wait, :step_state, :checked_without_proof?, :backoff_state, :run_level, :fan_out_state, :combine, :proofs,
       :expect_fail_proof?, :expect_fail?, :review?, :present?, :parse
   end
 end

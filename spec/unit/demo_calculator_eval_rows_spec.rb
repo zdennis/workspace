@@ -194,6 +194,59 @@ RSpec.describe DemoCalculator::EvalRows do
     expect(described_class.row(workflow: "a", run: fixture("plain_pass")["run"], events: events)[:manual]).to eq(4)
   end
 
+  describe "manual from inputs and asks" do
+    let(:asks) { JSON.parse(File.read(File.join(PROJECT_ROOT, "spec/fixtures/demo_calculator/i03_asks.json"))) }
+    let(:run) { fixture("plain_pass")["run"].merge("started_at" => "2026-11-21T08:53:24Z", "ended_at" => "2026-11-21T09:12:03Z") }
+
+    it "counts attempts that asked for input or reported needs_input, once each" do
+      run["steps"]["implement"]["attempts"] = [{"asked_input" => true}, {"status_report" => {"state" => "needs_input"}},
+        {"asked_input" => true, "status_report" => {"state" => "needs_input"}}, {"status_report" => {"state" => "done"}}]
+      row = described_class.row(workflow: "a", run: run)
+      expect(row).to include(manual_inputs: 3, manual_events: 0, manual_asks: 0, manual: 3)
+    end
+
+    it "counts answered asks asked inside the window, not open ones or those from other items" do
+      row = described_class.row(workflow: "a", run: run, asks: asks)
+      expect(row).to include(manual_asks: 2, manual: 2)
+    end
+
+    it "attributes an ask by asked_at, even when it was answered after the item ended" do
+      first = run.merge("started_at" => "2026-11-21T08:50:19Z", "ended_at" => "2026-11-21T08:51:13Z")
+      expect(described_class.row(workflow: "a", run: first, asks: asks)[:manual_asks]).to eq(1)
+    end
+
+    it "gives manual as the sum of events, inputs and asks" do
+      events = [{"type" => "gate_approved", "actor" => "person"}]
+      run["steps"]["implement"]["attempts"] = [{"asked_input" => true}]
+      row = described_class.row(workflow: "a", run: run, events: events, asks: asks)
+      expect(row).to include(manual_events: 1, manual_inputs: 1, manual_asks: 2, manual: 4)
+    end
+  end
+
+  describe "person_wait" do
+    it "sums the person-caused waiting buckets and leaves out stalls, downtime and machine waits" do
+      totals = {"stopped_seconds" => 100.0, "waiting_seconds" => {"waiting_agent_input" => 30.0, "failed_check" => 10.0, "stalled" => 40.0, "downtime" => 5.0}}
+      row = described_class.row(workflow: "a", run: fixture("plain_pass")["run"], totals: totals)
+      expect(row[:person_wait]).to eq(40.0)
+    end
+
+    it "counts a turn_ended_background or turn_ended_incomplete wait as 0, since no person is waited on" do
+      totals = {"stopped_seconds" => 57.0, "waiting_seconds" => {"turn_ended_background" => 22.0, "turn_ended_incomplete" => 35.0}}
+      expect(described_class.row(workflow: "a", run: fixture("plain_pass")["run"], totals: totals)[:person_wait]).to eq(0)
+    end
+
+    it "counts gate, paused and review stops as a person wait" do
+      totals = {"stopped_seconds" => 100.0, "waiting_seconds" => {"gate" => 10.0, "paused" => 5.0, "review_rejected" => 3.0, "review_incomplete" => 2.0, "waiting_you" => 1.0}}
+      expect(described_class.row(workflow: "a", run: fixture("plain_pass")["run"], totals: totals)[:person_wait]).to eq(21.0)
+    end
+
+    it "never exceeds stopped, and is nil without buckets" do
+      totals = {"stopped_seconds" => 20.0, "waiting_seconds" => {"waiting_you" => 15.0, "waiting_agent_input" => 15.0}}
+      expect(described_class.row(workflow: "a", run: fixture("plain_pass")["run"], totals: totals)[:person_wait]).to eq(20.0)
+      expect(described_class.row(workflow: "a", run: fixture("plain_pass")["run"])[:person_wait]).to be_nil
+    end
+  end
+
   it "credits require from a step_failed event with cause require for that step only" do
     data = fixture("plain_pass")
     data["run"]["definition"]["steps"].first["require"] = [{"commits" => 1}]

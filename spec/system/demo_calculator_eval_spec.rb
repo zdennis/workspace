@@ -134,6 +134,22 @@ RSpec.describe DemoCalculator::Evaluation do
     expect(JSON.parse(File.read(File.join(run_dir, "eval.json")))["rows"][0]).to include("manual" => 0)
   end
 
+  it "reads the workspace asks store into the manual counts, and the person wait and run definition hash into eval.json" do
+    write_json(File.join(state, "ws", "asks.json"), [
+      {"id" => "a1", "status" => "answered", "asked_at" => "2026-11-21T05:05:00Z"},
+      {"id" => "a2", "status" => "open", "asked_at" => "2026-11-21T05:06:00Z"}
+    ])
+    evaluation.call
+    row = JSON.parse(File.read(File.join(run_dir, "eval.json")))["rows"][0]
+    expect(row).to include("manual_asks" => 1, "manual_inputs" => 0, "manual_events" => 0, "manual" => 1)
+    expect(row).to have_key("person_wait")
+    expect(row).to have_key("definition_sha256")
+  end
+
+  it "scores without an asks store" do
+    expect(evaluation.call[:rows][0]).to include(manual_asks: 0)
+  end
+
   it "finds the newest record when no run dir is given" do
     newer = File.join(tmp, "root", "tmp", "demo-calculator", "runs", "20270101T000000Z")
     FileUtils.mkdir_p(newer)

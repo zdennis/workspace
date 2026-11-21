@@ -81,6 +81,19 @@ RSpec.describe DemoCalculator::Compare do
       expect(text).to include("definition a: same", "definition b: differs")
     end
 
+    it "reads the resolved definition hash from the rows, so a changed parent shows as differs" do
+      with_row = ->(stamp, sha) { doc(stamp, defs: {"a" => "same-file"}).merge("rows" => [{"workflow" => "a", "definition_sha256" => sha}]) }
+      text = described_class.render([with_row.call("1", "x"), with_row.call("2", "y")], last: 2)
+      expect(text).to include("definition a: differs")
+      same = described_class.render([with_row.call("1", "x"), with_row.call("2", "x")], last: 2)
+      expect(same).to include("definition a: same")
+    end
+
+    it "falls back to the file hash for a document whose rows carry no definition hash" do
+      text = described_class.render([doc("1", defs: {"a" => "1"}), doc("2", defs: {"a" => "2"})], last: 2)
+      expect(text).to include("definition a: differs")
+    end
+
     it "still wants 3 runs by default" do
       expect(described_class.render([doc("1"), doc("2")], last: 3)).to include("need 3 for a comparison")
     end
