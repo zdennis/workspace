@@ -75,7 +75,7 @@ module Workspace
         "skills" => 1,
         "template" => 1,
         "goal" => 2,
-        "work_queue" => 1,
+        "work_queue" => 2,
         "spine" => 3,
         "spine_eval" => 3,
         "spine_set" => 3,

@@ -355,6 +355,79 @@ RSpec.describe Workspace::WorkQueueAdvance do
     end
   end
 
+  describe "an active item found by a pass after the daemon restarted" do
+    def restarted_advance
+      described_class.new(store_factory: ->(_name) { store }, run_store: run_store, starters: starters, lock_holder: lock_holder, status: status, clock: clock)
+    end
+
+    it "re-reads it from its run and never starts it again, nor the next" do
+      first = started_item
+      rows = restarted_advance.call(workspace: "api-w", checkout: checkout)
+
+      expect(rows).to eq([{"outcome" => "active", "id" => first, "kind" => "workflow", "reason" => nil, "run_id" => "run-1",
+                           "next_actions" => [{"action" => "workflow status", "args" => ["run-1"], "needs" => []}]}])
+      expect(started.size).to eq(1)
+      expect(item("bbbb2222")["state"]).to eq("queued")
+    end
+
+    it "keeps waiting on a run that is going but whose pane is gone, leaving it to workflow recover" do
+      first = started_item("waiting", reason: {"code" => "agent_gone"})
+      3.times { restarted_advance.call(workspace: "api-w", checkout: checkout) }
+
+      expect(item(first)).to include("state" => "active", "result" => include("run_id" => "run-1"))
+      expect(item("bbbb2222")["state"]).to eq("queued")
+      expect(started.size).to eq(1)
+      expect(store.snapshot["paused"]).to be_nil
+    end
+
+    it "finishes it from its run once that run ends, then starts the next" do
+      first = started_item
+      with_run("run-1", state: "completed")
+      rows = restarted_advance.call(workspace: "api-w", checkout: checkout)
+
+      expect(rows.map { |r| [r["outcome"], r["id"]] }).to eq([["succeeded", first], ["started", "bbbb2222"]])
+      expect(started.size).to eq(2)
+    end
+  end
+
+  describe "the daemon's pass and a person's advance racing" do
+    let(:event_log_class) do
+      Class.new do
+        attr_reader :types
+
+        def initialize
+          @types = []
+          @lock = Mutex.new
+        end
+
+        def record(type:, project:, data: {})
+          @lock.synchronize { @types << [type, data["id"]] }
+          true
+        end
+      end
+    end
+    let(:event_log) { event_log_class.new }
+    let(:path) { File.join(dir, "work-queue.json") }
+
+    # Each pass reads the queue through its own store, as two processes would.
+    def racer
+      own = Workspace::WorkQueueStore.new(path: path, history: history, clock: clock, workspace: "api-w", event_log: event_log)
+      described_class.new(store_factory: ->(_name) { own }, run_store: run_store, starters: starters, lock_holder: lock_holder, status: status, clock: clock)
+    end
+
+    it "records each transition once: the finished item, then the next one's start" do
+      allow(lock_holder).to receive(:holder_alive?).and_return(true)
+      first = started_item
+      with_run("run-1", state: "completed")
+      racers = [racer, racer]
+      threads = racers.map { |each| Thread.new { 5.times { each.call(workspace: "api-w", checkout: checkout) } } }
+      threads.each(&:join)
+
+      expect(event_log.types).to eq([["work_queue_item_finished", first], ["work_queue_item_started", "bbbb2222"]])
+      expect(started.size).to eq(2)
+    end
+  end
+
   describe "the item changing during the start" do
     it "writes nothing over a removed item, pauses with claim_lost and reports the run id" do
       first = enabled_queue.first

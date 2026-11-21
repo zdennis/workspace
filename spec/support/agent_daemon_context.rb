@@ -21,6 +21,10 @@ RSpec.shared_context "an agent daemon over a fake coordinator" do
     instance_double(Workspace::Config).tap do |c|
       allow(c).to receive(:agent_socket_path).with("myapp").and_return(agent_socket_path)
       allow(c).to receive(:prompt_queue_path) { |name| File.join(tmpdir, "#{name}-prompt-queue.json") }
+      allow(c).to receive(:work_queue_path) { |name| File.join(tmpdir, "#{name}-work-queue.json") }
+      allow(c).to receive(:work_queue_history_path) { |name| File.join(tmpdir, "#{name}-work-queue-history.jsonl") }
+      allow(c).to receive(:workflow_runs_dir).and_return(File.join(tmpdir, "workflow-runs"))
+      allow(c).to receive(:workflow_archive_dir).and_return(File.join(tmpdir, "workflow-archive"))
       allow(c).to receive(:work_coordinator_socket).and_return(wc_socket_path)
       allow(c).to receive(:work_coordinator_status_socket).and_return(wc_status_socket_path)
       allow(c).to receive(:project_config_path).with("myapp").and_return(project_config_path)

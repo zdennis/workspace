@@ -316,13 +316,14 @@ RSpec.describe Workspace::CLI::WorkQueue do
   end
 
   describe "help" do
-    it "mentions the wq alias, and nothing about a daemon moving the queue" do
+    it "mentions the wq alias, and that the agent daemon advances an enabled queue" do
       run
       run("advance", "--help")
       run("list", "--help")
 
       expect(out.string).to include("`wq` is another name")
-      expect(out.string).not_to match(/daemon/i)
+      expect(out.string).to include("The agent daemon runs this same pass")
+      expect(out.string).to include("whether the workspace's agent daemon is up")
     end
 
     it "keeps the overview paragraph out of the headings, so --help --json reads it as one description" do

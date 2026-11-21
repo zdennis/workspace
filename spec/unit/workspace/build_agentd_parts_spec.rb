@@ -49,7 +49,7 @@ RSpec.describe "Workspace.build_agentd_parts" do
     events.select { |type, _| type == Workspace::EventLog::HANDOFF_FOLLOWUP }.map { |_, data| data["outcome"] }
   end
 
-  it "returns a builder that makes a frozen AgentdParts with its thirteen members" do
+  it "returns a builder that makes a frozen AgentdParts with its fourteen members" do
     builder = Workspace.build_agentd_parts(**options)
     expect(builder).to respond_to(:call)
 
@@ -58,7 +58,7 @@ RSpec.describe "Workspace.build_agentd_parts" do
     expect(parts).to be_a(Workspace::AgentdParts)
     expect(parts).to be_frozen
     expect(parts.members).to eq(%i[hook_event_log monitor restart_runner restart_desk plan_progress_watcher spine_owner_report
-      spine_watcher status_desk queue_desk recovery_desk handoff_watcher pipeline_desk hook_fanout])
+      spine_watcher status_desk queue_desk recovery_desk handoff_watcher pipeline_desk work_queue_desk hook_fanout])
     expect(parts.monitor).to equal(monitor)
     expect(parts.restart_runner).to be_a(Workspace::RestartRunner)
     expect(parts.restart_desk).to be_a(Workspace::AgentdRestartDesk)
@@ -67,6 +67,7 @@ RSpec.describe "Workspace.build_agentd_parts" do
     expect(parts.handoff_watcher).to be_a(Workspace::HandoffWatcher)
     expect(parts.pipeline_desk).to be_a(Workspace::PipelineDesk)
     expect(parts.hook_fanout).to be_a(Workspace::HookFanout)
+    expect(parts.work_queue_desk).to be_a(Workspace::WorkQueueDesk)
     expect(parts.hook_event_log).to be_nil
     expect(parts.recovery_desk).to be_nil
   end
@@ -105,6 +106,21 @@ RSpec.describe "Workspace.build_agentd_parts" do
     expect(hook_log.calls.size).to eq(1)
     expect(nudger.calls).to eq([[:turn_ended, "ws", "%5", {turn_started: nil, background: nil, transcript_path: nil, hook_log: hook_log}]])
     expect(nudger.calls.first.last[:hook_log]).to equal(parts.hook_event_log)
+  end
+
+  it "puts the work queue desk its factory builds for the workspace in its member, and the fan-out asks it for passes" do
+    desk = RecordingWorkQueueDesk.new
+    seen = nil
+    allow(monitor).to receive(:record)
+    allow(monitor).to receive(:delivery_facts)
+    parts = build(work_queue_desk_factory: ->(**given) { (seen = given) && desk })
+
+    parts.hook_fanout.session_event({"type" => "session_event", "workspace" => "ws", "event" => "stop", "pane_id" => "%5"})
+    parts.hook_fanout.scan_desks
+
+    expect(seen).to eq(workspace: "ws")
+    expect(parts.work_queue_desk).to equal(desk)
+    expect(desk.calls).to eq(%i[turn_ended scan])
   end
 
   it "gives a replaced desk the keywords the builder passes" do

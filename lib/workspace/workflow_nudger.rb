@@ -61,8 +61,10 @@ module Workspace
     # @param background [Array<Hash>, nil] the tasks (`"id"`, `"type"`) the Stop listed as still going
     # @param transcript_path [String, nil] the Stop hook's transcript; passed on as `--transcript-path` when it is a non-empty String
     # @param hook_log [Workspace::HookEventLog, nil] the workspace's log, given by the caller that holds it; nil writes nothing
-    # @return [String, nil] the run that was woken; nil for a pane bound to none
-    def turn_ended(workspace, pane_id, turn_started: nil, background: nil, transcript_path: nil, hook_log: nil)
+    # @param on_exit [#call, nil] called with no arguments once the `workflow advance` this started has exited (at once
+    #   when the spawner gives no thread to wait on), so the caller reads what that advance left; not called when no run was woken
+    # @return [String, nil] the run that was woken; nil for a pane bound to none, or when the advance could not be started
+    def turn_ended(workspace, pane_id, turn_started: nil, background: nil, transcript_path: nil, hook_log: nil, on_exit: nil)
       # A review pane's turn ends its round, so a pane bound in any role wakes its run.
       run_id = @panes.bound_on(pane_id)&.fetch(:run_id)
       return nil unless run_id
@@ -80,7 +82,7 @@ module Workspace
       tasks = Array(background).flat_map { |task| ["--background-task", "#{task["type"]}:#{task["id"]}"] }
       transcript = (transcript_path.is_a?(String) && !transcript_path.empty?) ? ["--transcript-path", transcript_path] : []
       record(hook_log, "workflow_advance_started", pane_id, "run_id" => run_id, "cause" => "turn_ended")
-      advance(workspace, run_id, hook_log, "--turn-ended", "--pane", pane_id, *step, *started, "--stopped-at", @clock.call.utc.iso8601(3), *tasks, *transcript)
+      advance(workspace, run_id, hook_log, "--turn-ended", "--pane", pane_id, *step, *started, "--stopped-at", @clock.call.utc.iso8601(3), *tasks, *transcript, on_exit: on_exit)
       run_id
     rescue => e
       @logger.debug { "workflow: could not wake the run on #{pane_id} (#{e.class}: #{e.message})" }
@@ -162,7 +164,7 @@ module Workspace
       record(hook_log, "workflow_sweep_started", nil, "run_ids" => runs.map(&:id))
       started = @clock.call
       thread = @spawner.call([RbConfig.ruby, @executable, "workflow", "sweep", "--name", workspace], @log_path.call(workspace))
-      record_exit(thread, hook_log, started, "kind" => "sweep", "run_ids" => runs.map(&:id))
+      record_exit(thread, hook_log, started, {"kind" => "sweep", "run_ids" => runs.map(&:id)})
       true
     rescue => e
       @logger.debug { "workflow: could not start the sweep for #{workspace} (#{e.class}: #{e.message})" }
@@ -186,7 +188,7 @@ module Workspace
       record(hook_log, "workflow_sweep_started", nil, "run_ids" => ids)
       started = @clock.call
       thread = @spawner.call([RbConfig.ruby, @executable, "workflow", "sweep", "--name", workspace, "--budget-only"], @log_path.call(workspace))
-      record_exit(thread, hook_log, started, "kind" => "sweep", "run_ids" => ids)
+      record_exit(thread, hook_log, started, {"kind" => "sweep", "run_ids" => ids})
     rescue => e
       @logger.debug { "workflow: could not start the budget sweep for #{workspace} (#{e.class}: #{e.message})" }
     end
@@ -226,24 +228,36 @@ module Workspace
       @logger.debug { "workflow: could not log #{type} (#{e.class}: #{e.message})" }
     end
 
-    def advance(workspace, run_id, hook_log, *flags)
+    def advance(workspace, run_id, hook_log, *flags, on_exit: nil)
       started = @clock.call
       thread = @spawner.call([RbConfig.ruby, @executable, "workflow", "advance", run_id, *flags], @log_path.call(workspace))
-      record_exit(thread, hook_log, started, "kind" => "advance", "run_id" => run_id)
+      record_exit(thread, hook_log, started, {"kind" => "advance", "run_id" => run_id}, on_exit: on_exit)
     end
 
-    # Logs how a started process ended, to the log its decision line went to. No thread, no line;
-    # the thread is only read, never waited on with Process.wait.
-    def record_exit(thread, hook_log, started, fields)
-      return unless thread && hook_log
+    # Logs how a started process ended, to the log its decision line went to, then calls +on_exit+. No thread,
+    # no line, and +on_exit+ is called at once; the thread is only read, never waited on with Process.wait.
+    def record_exit(thread, hook_log, started, fields, on_exit: nil)
+      return exited(on_exit) unless thread
+      return unless hook_log || on_exit
       @waiter.call do
         status = thread.value
-        ended = {"pid" => thread.pid}
-        status.signaled? ? ended["signal"] = Signal.signame(status.termsig) : ended["exit_code"] = status.exitstatus
-        record(hook_log, "workflow_process_exited", nil, fields.merge(ended, "seconds" => (@clock.call - started).round(1)))
+        if hook_log
+          ended = {"pid" => thread.pid}
+          status.signaled? ? ended["signal"] = Signal.signame(status.termsig) : ended["exit_code"] = status.exitstatus
+          record(hook_log, "workflow_process_exited", nil, fields.merge(ended, "seconds" => (@clock.call - started).round(1)))
+        end
       rescue => e
         @logger.debug { "workflow: could not read how the process ended (#{e.class}: #{e.message})" }
+      ensure
+        exited(on_exit)
       end
+    end
+
+    # The caller's follow-up never stops the nudger.
+    def exited(on_exit)
+      on_exit&.call
+    rescue => e
+      @logger.debug { "workflow: the follow-up after an advance failed (#{e.class}: #{e.message})" }
     end
 
     def spawn_detached(argv, log)

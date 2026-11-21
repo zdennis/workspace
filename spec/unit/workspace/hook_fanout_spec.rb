@@ -80,6 +80,41 @@ RSpec.describe Workspace::HookFanout do
       expect(recovery_desk.calls).to be_empty
     end
 
+    describe "the work queue desk" do
+      let(:work_queue_desk) { RecordingWorkQueueDesk.new(order: order) }
+
+      it "asks for a pass only once the workflow advance a main agent's Stop woke has exited" do
+        nudger = RecordingNudger.new(order: order, woken: "wr_1")
+        fanout(nudger: nudger, work_queue_desk: work_queue_desk).session_event(event("stop"))
+        expect(work_queue_desk.calls).to be_empty
+
+        nudger.exits.each(&:call)
+
+        expect(work_queue_desk.calls).to eq([:turn_ended])
+      end
+
+      it "asks for a pass at once when the Stop woke no run" do
+        fanout(work_queue_desk: work_queue_desk).session_event(event("stop"))
+
+        expect(order).to eq([[:handoff_watcher, :session_event], [:monitor, :record], [:hook_log, :record],
+          [:nudger, :turn_ended], [:work_queue_desk, :turn_ended], [:queue_desk, :session_event], [:recovery_desk, :session_event]])
+      end
+
+      it "asks for a pass at once with no nudger" do
+        fanout(nudger: nil, work_queue_desk: work_queue_desk).session_event(event("stop"))
+
+        expect(work_queue_desk.calls).to eq([:turn_ended])
+      end
+
+      it "asks for none on a sub-agent's Stop or another event" do
+        subject = fanout(work_queue_desk: work_queue_desk)
+        subject.session_event(event("stop", "agent_id" => "a1"))
+        subject.session_event(event("user_prompt"))
+
+        expect(work_queue_desk.calls).to be_empty
+      end
+    end
+
     it "needs only the monitor: the optional parts left out are skipped" do
       described_class.new(workspace: "myapp", monitor: monitor, desks: [nil]).session_event(event("stop"))
 
@@ -92,6 +127,13 @@ RSpec.describe Workspace::HookFanout do
       fanout.scan_desks
 
       expect(order).to eq([[:queue_desk, :scan], [:recovery_desk, :scan]])
+    end
+
+    it "scans the work queue desk after the other desks, even when one of them raises" do
+      failing = RecordingHookDesk.new(order: order, label: :queue_desk, fail_with: RuntimeError.new("wedged"))
+      fanout(desks: [failing, recovery_desk], work_queue_desk: RecordingWorkQueueDesk.new(order: order)).scan_desks
+
+      expect(order).to eq([[:queue_desk, :scan], [:recovery_desk, :scan], [:work_queue_desk, :scan]])
     end
 
     it "scans the next desk when one raises, logging it" do

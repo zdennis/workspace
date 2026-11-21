@@ -101,6 +101,86 @@ RSpec.describe Workspace::WorkflowNudger do
     end
   end
 
+  describe "the follow-up once a turn's advance has exited" do
+    let(:status) { Struct.new(:signaled?, :termsig, :exitstatus) }
+    let(:order) { [] }
+    let(:follow_up) { -> { order << :follow_up } }
+
+    def nudger_with(thread, waiter: ->(&block) { block.call })
+      described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(w) { "/log/#{w}.log" },
+        spawner: ->(*) { thread.respond_to?(:call) ? thread.call : thread }, waiter: waiter, clock: -> { now }, error_output: error_output)
+    end
+
+    # A reaping thread whose +value+ (the process's exit) notes itself in +order+.
+    let(:exiting_thread_class) do
+      Class.new do
+        def initialize(order, result)
+          @order = order
+          @result = result
+        end
+
+        def pid = 7
+
+        def value
+          @order << :exited
+          @result
+        end
+      end
+    end
+
+    def exiting_thread = exiting_thread_class.new(order, status.new(false, nil, 0))
+
+    before { allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1"}) }
+
+    it "is called on the waiter only after the advance process has exited, after its exit line" do
+      waited = []
+      nudger_with(exiting_thread, waiter: ->(&block) { waited << block }).turn_ended("app", "%5", hook_log: hook_log, on_exit: follow_up)
+      expect(order).to eq([])
+
+      waited.first.call
+
+      expect(order).to eq(%i[exited follow_up])
+      expect(hook_log.lines.last.first).to eq("workflow_process_exited")
+    end
+
+    it "is called after the exit with no hook log to write to" do
+      nudger_with(exiting_thread).turn_ended("app", "%5", on_exit: follow_up)
+
+      expect(order).to eq(%i[exited follow_up])
+    end
+
+    it "is called at once when the spawner gives no thread to wait on" do
+      nudger_with(nil).turn_ended("app", "%5", on_exit: follow_up)
+
+      expect(order).to eq([:follow_up])
+    end
+
+    it "is still called when reading the thread raises" do
+      thread = Object.new
+      def thread.value = raise("gone")
+      nudger_with(thread).turn_ended("app", "%5", on_exit: follow_up)
+
+      expect(order).to eq([:follow_up])
+    end
+
+    it "is not called for a pane bound to no run, nor when the advance can't be started" do
+      allow(panes).to receive(:bound_on).with("%9").and_return(nil)
+      expect(nudger_with(exiting_thread).turn_ended("app", "%9", on_exit: follow_up)).to be_nil
+      expect(nudger_with(-> { raise Errno::ENOENT }).turn_ended("app", "%5", on_exit: follow_up)).to be_nil
+
+      expect(order).to eq([])
+    end
+
+    it "logs a follow-up that raises and leaves the nudger standing" do
+      logger_output = StringIO.new
+      nudger = described_class.new(store: store, panes: panes, executable: "/ws/bin/workspace", log_path: ->(w) { "/log/#{w}.log" },
+        spawner: ->(*) {}, clock: -> { now }, logger: Workspace::Logger.new(output: logger_output, enabled: true), error_output: error_output)
+
+      expect(nudger.turn_ended("app", "%5", on_exit: -> { raise "boom" })).to eq("wr_1")
+      expect(logger_output.string).to include("the follow-up after an advance failed (RuntimeError: boom)")
+    end
+  end
+
   describe "#turn_ended" do
     it "logs one workflow_advance_started line for the pane and run, to the log it is given" do
       allow(panes).to receive(:bound_on).with("%5").and_return({run_id: "wr_1", role: "author"})

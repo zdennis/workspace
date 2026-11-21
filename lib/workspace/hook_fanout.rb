@@ -10,10 +10,12 @@ module Workspace
     # @param nudger [Workspace::WorkflowNudger, nil] wakes a workflow run when a turn ends in its pane; nil wakes none
     # @param owner_report [Workspace::SpineOwnerReport, nil] reports a stage owner's finished turn; nil reports nothing
     # @param desks [Array<#session_event, #scan>] the queue desk then the recovery desk, nil ones left out
+    # @param work_queue_desk [Workspace::WorkQueueDesk, nil] runs a work-queue pass when a main agent's turn ends
+    #   (once the workflow advance the turn woke has exited) and scans after the desks; nil runs none
     # @param clock [#call] returns the current Time, for when a turn began
     # @param spawn [#call] runs the given block on its own thread (the owner report's)
     # @param logger [Workspace::Logger] debug logger
-    def initialize(workspace:, monitor:, hook_log: nil, handoff_watcher: nil, nudger: nil, owner_report: nil, desks: [],
+    def initialize(workspace:, monitor:, hook_log: nil, handoff_watcher: nil, nudger: nil, owner_report: nil, desks: [], work_queue_desk: nil,
       clock: -> { Time.now }, spawn: ->(&work) { Thread.new(&work) }, logger: Workspace::Logger.new)
       @workspace = workspace
       @monitor = monitor
@@ -22,6 +24,7 @@ module Workspace
       @nudger = nudger
       @owner_report = owner_report
       @desks = desks.compact
+      @work_queue_desk = work_queue_desk
       @clock = clock
       @spawn = spawn
       @logger = logger
@@ -31,6 +34,8 @@ module Workspace
 
     # Hands one hook event to the handoff watcher, the monitor, the hook log, the nudger and the owner report
     # (the last two for the main agent only), then each desk. A desk that raises stops the ones after it.
+    # A main agent's Stop also asks the work queue desk for a pass: after the workflow advance it woke has
+    # exited, since the run usually finishes there, or at once when it woke none.
     #
     # @param message [Hash] the `session_event` message
     # @return [void]
@@ -40,16 +45,17 @@ module Workspace
       notify_handoff_watcher(message)
       @monitor.record(message)
       @hook_log&.record(message)
-      nudge_workflow(message) if @nudger && message["agent_id"].nil?
+      nudge_workflow(message) if message["agent_id"].nil?
       report_owner_finished(message) if @owner_report && message["agent_id"].nil?
       @desks.each { |desk| desk.session_event(message) }
     end
 
-    # The session monitor's after-scan call: every desk scans, and one that raises does not stop the others.
+    # The session monitor's after-scan call: every desk scans, then the work queue desk, and one that raises
+    # does not stop the others.
     #
     # @return [void]
     def scan_desks
-      @desks.each do |desk|
+      [*@desks, @work_queue_desk].compact.each do |desk|
         desk.scan
       rescue => e
         @logger.debug { "agent: #{desk.class.name.split("::").last} scan failed (#{e.class}: #{e.message})" }
@@ -76,8 +82,16 @@ module Workspace
       when "user_prompt" then @turn_starts[pane_id] = @clock.call
       # A new conversation: a prompt this daemon then fails to see leaves no start, so its turn's end counts.
       when "session_start", "session_end" then @turn_starts.delete(pane_id)
-      when "stop" then @nudger.turn_ended(@workspace, pane_id, turn_started: @turn_starts[pane_id], background: message["background_tasks"], transcript_path: message["transcript_path"], hook_log: @hook_log)
+      when "stop" then turn_ended(pane_id, message)
       end
+    end
+
+    # The work queue's pass waits for the run's advance to exit, so it sees a run that finished there.
+    def turn_ended(pane_id, message)
+      follow_up = @work_queue_desk && -> { @work_queue_desk.turn_ended }
+      woken = @nudger&.turn_ended(@workspace, pane_id, turn_started: @turn_starts[pane_id], background: message["background_tasks"],
+        transcript_path: message["transcript_path"], hook_log: @hook_log, on_exit: follow_up)
+      follow_up.call if follow_up && woken.nil?
     end
 
     # The main agent's turn ended (the Stop hook): a stage the pane owns is reported as finished.

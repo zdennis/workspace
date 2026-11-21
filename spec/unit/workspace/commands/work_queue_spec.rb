@@ -35,12 +35,17 @@ RSpec.describe Workspace::Commands::WorkQueue do
   end
   let(:status_scope) { double("status_scope", resolve: Workspace::StatusScope::Scope.new(kind: :project, project: project)) }
   let(:input) { Workspace::PromptInput.new(StringIO.new("y\n")) }
+  let(:ensured) { [] }
+  let(:ensure_result) { Workspace::Commands::EnsureAgent::Result.new(:running) }
+  let(:agent_ensurer) { ->(name:) { (ensured << name) && ensure_result } }
+  let(:daemons_up) { {} }
+  let(:agent_running) { ->(workspace) { daemons_up.fetch(workspace, false) } }
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
   let(:command) do
     described_class.new(store_factory: ->(name) { stores[name] }, history_factory: ->(name) { histories[name] },
       advance: advance, decisions: decisions, run_store: run_store, checkout: checkout, go: go, status_scope: status_scope,
-      clock: clock, working_dir: "/repo/api-w", output: output, error_output: error_output, input: input)
+      agent_ensurer: agent_ensurer, agent_running: agent_running, clock: clock, working_dir: "/repo/api-w", output: output, error_output: error_output, input: input)
   end
 
   before do
@@ -149,6 +154,41 @@ RSpec.describe Workspace::Commands::WorkQueue do
       expect(store.snapshot["enabled"]).to eq(false)
     end
 
+    it "makes sure the workspace's agent daemon runs on enable and add, and not on disable" do
+      command.enable(name: "other")
+      command.disable(name: "other")
+      command.add(kind: "workflow", spec: {})
+
+      expect(ensured).to eq(%w[other api-w])
+    end
+
+    context "when the agent daemon can't be started" do
+      let(:ensure_result) { Workspace::Commands::EnsureAgent::Result.new(:failed, "no answer in 5s") }
+
+      it "keeps the change and warns on the row and the error stream" do
+        rows = command.enable
+        expect(rows.first["outcome"]).to eq("enabled")
+        expect(rows.first["warnings"]).to eq([{"code" => "daemon_not_started", "workspace" => "api-w",
+                                               "message" => "Could not start the agent daemon of 'api-w' (no answer in 5s); the queue moves only on `workspace work-queue advance` until `workspace agentd --ensure --name api-w` starts it."}])
+        expect(error_output.string).to include("Warning: Could not start the agent daemon of 'api-w' (no answer in 5s)")
+        expect(store.snapshot["enabled"]).to eq(true)
+      end
+
+      it "names an unusable pipeline config, and takes a raising ensurer as a warning too" do
+        invalid = described_class.new(store_factory: ->(name) { stores[name] }, history_factory: ->(name) { histories[name] },
+          advance: advance, decisions: decisions, run_store: run_store, checkout: checkout, go: go, status_scope: status_scope,
+          agent_ensurer: ->(name:) { Workspace::Commands::EnsureAgent::Result.new(:invalid_config) }, agent_running: agent_running,
+          clock: clock, working_dir: "/repo/api-w", output: output, error_output: error_output, input: input)
+        raising = described_class.new(store_factory: ->(name) { stores[name] }, history_factory: ->(name) { histories[name] },
+          advance: advance, decisions: decisions, run_store: run_store, checkout: checkout, go: go, status_scope: status_scope,
+          agent_ensurer: ->(name:) { raise Workspace::Error, "unknown workspace\nmore" }, agent_running: agent_running,
+          clock: clock, working_dir: "/repo/api-w", output: output, error_output: error_output, input: input)
+
+        expect(invalid.add(kind: "workflow", spec: {}).first["warnings"].first["message"]).to include("(its pipeline config can't be used)")
+        expect(raising.enable.first["warnings"].first["message"]).to include("(unknown workspace)")
+      end
+    end
+
     it "clears the pause and nothing else" do
       store.set_enabled(true)
       id = queue_item
@@ -167,7 +207,8 @@ RSpec.describe Workspace::Commands::WorkQueue do
       out = StringIO.new
       invocation = Workspace::CLI::Invocation.new(output: Workspace::OutputGate.new(out), error_output: err, exit_handler: FakeExitHandler, help_asked: false, quiet: true, env: {})
       gated = described_class.new(store_factory: ->(name) { stores[name] }, history_factory: ->(name) { histories[name] }, advance: advance, decisions: decisions,
-        run_store: run_store, checkout: checkout, go: go, status_scope: status_scope, clock: clock, working_dir: "/repo/api-w", output: invocation.output, error_output: err, input: input)
+        run_store: run_store, checkout: checkout, go: go, status_scope: status_scope, agent_ensurer: agent_ensurer, agent_running: agent_running,
+        clock: clock, working_dir: "/repo/api-w", output: invocation.output, error_output: err, input: input)
 
       Workspace::CLI::WorkQueue.new(work_queue_command: gated, common: Workspace::CLI::Common.new).call("work-queue", ["skip", "--json"], invocation)
 
@@ -360,11 +401,47 @@ RSpec.describe Workspace::Commands::WorkQueue do
       expect(output.string).to include("paused (failed_check)")
     end
 
-    it "says nothing about a daemon and warns of nothing" do
+    it "warns of nothing for an off queue, and says the daemon is down in the footer" do
       doc = command.list
       expect(doc["warnings"]).to eq([])
-      expect(doc["queues"].first).not_to have_key("daemon_running")
-      expect(output.string + error_output.string).not_to match(/daemon/i)
+      expect(doc["queues"].first).to include("daemon_running" => false)
+      expect(output.string).to include("api-w: off, daemon down")
+      expect(error_output.string).to eq("")
+    end
+
+    it "warns when an enabled queue's daemon isn't answering, and offers to start it or advance by hand" do
+      store.set_enabled(true)
+      doc = command.list
+      expect(doc["warnings"]).to eq([{"code" => "daemon_not_running", "workspace" => "api-w",
+                                      "message" => "The agent daemon of 'api-w' is not answering, so its queue moves only on `workspace work-queue advance`; `workspace agentd --ensure --name api-w` starts it."}])
+      expect(doc["queues"].first["next_actions"].map { |a| a["action"] }).to eq(["agentd --ensure", "work-queue advance"])
+      expect(error_output.string).to include("Warning: The agent daemon of 'api-w' is not answering")
+    end
+
+    it "warns of nothing and offers no advance when an enabled queue's daemon answers" do
+      store.set_enabled(true)
+      daemons_up["api-w"] = true
+      doc = command.status
+      expect(doc["warnings"]).to eq([])
+      expect(doc["queues"].first).to include("daemon_running" => true, "next_actions" => [])
+      expect(output.string).to include("daemon up")
+    end
+
+    it "takes a daemon whose socket can't be looked for as down" do
+      down = described_class.new(store_factory: ->(name) { stores[name] }, history_factory: ->(name) { histories[name] },
+        advance: advance, decisions: decisions, run_store: run_store, checkout: checkout, go: go, status_scope: status_scope,
+        agent_ensurer: agent_ensurer, agent_running: ->(_workspace) { raise Workspace::Error, "socket dir is too deep" },
+        clock: clock, working_dir: "/repo/api-w", output: output, error_output: error_output, input: input)
+
+      expect(down.list["queues"].first["daemon_running"]).to be(false)
+    end
+
+    it "warns once per enabled workspace of a project whose daemon is down" do
+      stores["other"].set_enabled(true)
+      store.set_enabled(true)
+      daemons_up["api-w"] = true
+      doc = command.status(project: true)
+      expect(doc["warnings"].map { |w| w["workspace"] }).to eq(["other"])
     end
 
     it "lists a project's workspaces without writing anything" do

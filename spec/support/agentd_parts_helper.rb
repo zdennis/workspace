@@ -7,7 +7,7 @@ module AgentdPartsHelper
     transcript_summary idle_prompt_check pane_bindings plan_paused_for hook_event_log_factory plan_progress_watcher_factory
     spine_watcher_factory spine_owner_report_factory agent_recovery_desk_factory agent_status_desk_factory
     prompt_queue_desk_factory handoff_watcher_factory restart_runner_factory work_coordinator_client pipeline_config
-    pipeline_state sentinel_poller_factory workflow_nudger token_generator epoch_generator clock retry_backoff logger
+    pipeline_state sentinel_poller_factory workflow_nudger workflow_store work_queue_desk_factory token_generator epoch_generator clock retry_backoff logger
     error_output].freeze
   SHARED_KEYWORDS = %i[tmux config pipeline_config workflow_nudger event_log logger error_output].freeze
 
