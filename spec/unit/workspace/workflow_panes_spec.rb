@@ -465,6 +465,52 @@ RSpec.describe Workspace::WorkflowPanes do
       expect(tmux).not_to have_received(:deliver)
     end
 
+    context "when the caller just opened the pane (a new review window)" do
+      let(:shown) do
+        {"pane_id" => "%5", "kind" => "claude", "state" => "working", "state_changed_by" => "screen", "hook_mode" => "hooks",
+         "user_prompt_at" => nil, "main_turn_over_since" => nil, "open_tools" => [], "subagents" => []}
+      end
+
+      def kick_opened = panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false, opened: true)
+
+      before { allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted, message: "ok")) }
+
+      it "types into a pane working by its screen alone, with no prompt submitted since its session started" do
+        expect(kick_opened).to eq(ok: true)
+        expect(tmux).to have_received(:deliver).with("app", "%5", "x")
+      end
+
+      it "refuses a pane whose submitted prompt has no Stop after it, a running tool or sub-agent, or a wait" do
+        [{"user_prompt_at" => "2026-10-04T12:00:28.000Z"}, {"open_tools" => ["Bash"]},
+          {"subagents" => [{"agent_id" => "a1", "description" => "d", "since" => "2026-10-04T12:00:28Z"}]},
+          {"state" => "waiting"}].each do |change|
+          shown.merge!(change)
+          expect(kick_opened).to include(ok: false, code: "pane_busy")
+          shown.merge!("user_prompt_at" => nil, "open_tools" => [], "subagents" => [], "state" => "working")
+        end
+        expect(tmux).not_to have_received(:deliver)
+      end
+
+      it "types into a pane whose prompt's turn the hooks saw end" do
+        shown.merge!("user_prompt_at" => "2026-10-04T12:00:20.000Z", "main_turn_over_since" => "2026-10-04T12:00:25.000Z")
+        expect(kick_opened).to eq(ok: true)
+      end
+
+      it "refuses a working row that can't say: no hooks, or from a daemon before user_prompt_at" do
+        shown["hook_mode"] = "scrape"
+        expect(kick_opened).to include(ok: false, code: "pane_busy")
+        shown["hook_mode"] = "hooks"
+        shown.delete("user_prompt_at")
+        expect(kick_opened).to include(ok: false, code: "pane_busy")
+        expect(tmux).not_to have_received(:deliver)
+      end
+
+      it "still refuses the same screen-only working row in a pane it did not open" do
+        expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false)).to include(ok: false, code: "pane_busy")
+        expect(tmux).not_to have_received(:deliver)
+      end
+    end
+
     it "returns what a mid-turn refusal saw" do
       shown.merge!("state" => "working", "state_since" => "2026-10-04T12:00:00Z", "state_changed_by" => "screen",
         "last_event_at" => "2026-10-04T12:00:10Z")
@@ -894,6 +940,15 @@ RSpec.describe Workspace::WorkflowPanes do
       screen[0] = box(input: "half a thought")
 
       expect(kick).to include(ok: false, code: "pane_busy", reason: "input_not_empty")
+      expect(tmux).not_to have_received(:deliver)
+    end
+
+    it "still refuses a draft in a pane the caller just opened, working by its screen alone" do
+      shown.merge!("state" => "working", "hook_mode" => "hooks", "user_prompt_at" => nil, "main_turn_over_since" => nil, "subagents" => [])
+      screen[0] = box(input: "half a thought")
+
+      expect(panes.kick(workspace: "app", pane: "%5", text: "x", fresh: false, opened: true))
+        .to include(ok: false, code: "pane_busy", reason: "input_not_empty")
       expect(tmux).not_to have_received(:deliver)
     end
 

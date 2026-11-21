@@ -30,7 +30,7 @@ RSpec.describe Workspace::PaneView do
   describe ".row" do
     it "builds the row in the order sessions prints it" do
       expect(row(agent, context: reading).keys).to eq(%w[pane_id window review index kind label title cwd state state_since state_changed_by
-        activity_state main_turn_over_since transcript_path open_tools idle_seconds waiting_since waiting_seconds
+        activity_state main_turn_over_since user_prompt_at transcript_path open_tools idle_seconds waiting_since waiting_seconds
         waiting_message waiting_tool waiting_input waits stop_reason turn_failed turn_failed_since turn_failed_kind session_id display_label agents
         context_pct context_error context_updated_at last_event_at current_tool current_tool_since subagents
         hook_mode hook_events])
@@ -151,6 +151,13 @@ RSpec.describe Workspace::PaneView do
       agent.merge!(hook_kind: "claude", main_stopped_at: now - 1.5)
 
       expect(row(agent)["main_turn_over_since"]).to eq("2026-09-26T11:59:58.500Z")
+    end
+
+    it "dates the last submitted prompt to the millisecond, and is nil before one" do
+      expect(row(agent)["user_prompt_at"]).to be_nil
+
+      agent[:last_user_prompt_at] = now - 2.25
+      expect(row(agent)["user_prompt_at"]).to eq("2026-09-26T11:59:57.750Z")
     end
   end
 

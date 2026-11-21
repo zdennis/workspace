@@ -765,7 +765,7 @@ RSpec.describe Workspace::WorkflowDispatch do
       kick = dispatch.type_continue("wr_1", mark, workspace: "app", text: "Continue step plan.", actor: "person", cause: "unpause")
 
       expect(kick).to eq(ok: true)
-      expect(panes.calls).to eq([[:kick, {workspace: "app", pane: "%3", text: "Continue step plan.", fresh: false, run_id: "wr_1"}]])
+      expect(panes.calls).to eq([[:kick, {workspace: "app", pane: "%3", text: "Continue step plan.", fresh: false, run_id: "wr_1", opened: false}]])
       expect(store.events).to eq([["wr_1", "step_continued", {"step" => "plan", "attempt" => 1, "pane" => "%3", "delivered" => true,
                                                               "actor" => "person", "cause" => "unpause", "from_state" => nil, "to_state" => nil}]])
       expect(change.calls).to be_empty
@@ -870,7 +870,7 @@ RSpec.describe Workspace::WorkflowDispatch do
 
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(run.step("plan").last_attempt.to_h).to eq("n" => 1, "context" => ["told"])
-      expect(panes.calls).to include([:kick, {workspace: "app", pane: "%3", text: "Read #{path} and follow it.", fresh: false, run_id: "wr_1"}])
+      expect(panes.calls).to include([:kick, {workspace: "app", pane: "%3", text: "Read #{path} and follow it.", fresh: false, run_id: "wr_1", opened: false}])
       expect(store.events).to eq([["wr_1", "step_dispatched", {"step" => "plan", "attempt" => 1, "pane" => "%3", "delivered" => true, "actor" => "engine", "cause" => "next_step", "from_state" => nil, "to_state" => nil}]])
     end
 

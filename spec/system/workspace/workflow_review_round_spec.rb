@@ -66,13 +66,55 @@ RSpec.describe Workspace::WorkflowReviewRound, "against real tmux" do
     yield
   end
 
-  it "opens a window marked for the round, binds its pane as the reviewer, types the prompt's line, and closes it by its mark" do
+  def add_run
     store.runs["wr_1"] = {"id" => "wr_1", "workflow" => "flow", "workspace" => "app", "project" => "app", "worktree" => worktree,
                           "artifacts_dir" => File.join(worktree, ".workflow", "wr_1"), "state" => "running", "current" => "plan", "reason" => nil,
                           "definition" => {"id" => "flow", "steps" => [{"id" => "plan", "produces" => [], "review" => {"from" => %w[skeptic], "need" => 1}}]},
                           "steps" => {"plan" => {"state" => "reviewing", "review_rounds" => 1,
                                                  "review" => {"round" => 1, "delivery" => "delivering", "started_at" => Time.now.utc.iso8601(3)},
                                                  "attempts" => [{"n" => 1, "outcome" => "checks_passed"}]}}}
+  end
+
+  # The daemon as it sees every pane of the session right after the review window's agent started: the SessionStart
+  # hook gave it a row, and the start-up screen still counts as working.
+  def daemon_rows(**row)
+    allow(snapshot_client).to receive(:fetch) do
+      ids = `#{shim} list-panes -s -t app -F "\#{pane_id}"`.split
+      {"panes" => ids.map { |id|
+        {"pane_id" => id, "kind" => "claude", "state" => "working", "state_changed_by" => "screen", "hook_mode" => "hooks",
+         "user_prompt_at" => nil, "main_turn_over_since" => nil, "open_tools" => [], "subagents" => []}.merge(row.transform_keys(&:to_s))
+      }}
+    end
+  end
+
+  it "types into the window it opened while the daemon calls the agent working from its start-up screen alone" do
+    add_run
+    daemon_rows
+
+    runner.call("wr_1", {"step" => "plan", "attempt" => 1, "round" => 1})
+
+    round = store.runs["wr_1"]["steps"]["plan"]["review"]
+    expect(round).to include("delivery" => nil)
+    expect(change.events.map { |event| event[1] }).to include("review_delivered")
+    path = File.join(worktree, ".workflow", "wr_1", "steps", "plan.1.r1.review.md")
+    expect(wait_for { File.exist?(typed) && File.read(typed).include?("Read #{path} and follow it.") }).to be(true)
+  end
+
+  it "refuses the window it opened when the daemon saw a prompt submitted there with no Stop after it" do
+    add_run
+    daemon_rows(user_prompt_at: Time.now.utc.iso8601(3))
+
+    runner.call("wr_1", {"step" => "plan", "attempt" => 1, "round" => 1})
+
+    round = store.runs["wr_1"]["steps"]["plan"]["review"]
+    expect(round).to include("delivery" => "failed")
+    expect(round["failure"]).to include("code" => "pane_busy")
+    expect(change.events.map { |event| event[1] }).to include("review_delivery_failed")
+    expect(windows.map { |window| window[1] }).not_to include("review-plan")
+  end
+
+  it "opens a window marked for the round, binds its pane as the reviewer, types the prompt's line, and closes it by its mark" do
+    add_run
 
     runner.call("wr_1", {"step" => "plan", "attempt" => 1, "round" => 1})
 

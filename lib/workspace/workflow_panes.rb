@@ -544,12 +544,14 @@ module Workspace
     #   more once the pane is no longer bound to it. It applies only to a fresh
     #   step: a `context: continue` line is typed without the daemon's restart,
     #   so this does not stop it
+    # @param opened [Boolean] the caller has just opened the pane for this line (a new review window): a `working`
+    #   row there is judged by the turn the hooks report, not by the screen the agent's start-up drew
     # @return [Hash] :ok, :warning when the daemon gave one, and for a fresh line :cleared_at (when the daemon confirmed
     #   the new conversation, ISO 8601, when it says); when false, :code
     #   (an error code) and :message, with :reason and :proof_missing when the daemon gave them
-    def kick(workspace:, pane:, text:, fresh:, run_id: nil)
+    def kick(workspace:, pane:, text:, fresh:, run_id: nil, opened: false)
       ensure_daemon!(workspace)
-      fresh ? restart(workspace, pane, text, run_id) : type(workspace, pane, text)
+      fresh ? restart(workspace, pane, text, run_id) : type(workspace, pane, text, opened: opened)
     rescue Workspace::Error => e
       {ok: false, code: e.code, message: e.message.lines.first.to_s.strip}
     end
@@ -684,12 +686,25 @@ module Workspace
 
     # The daemon's row for the pane when it shows the agent working or waiting at a prompt, or a
     # shell where an agent's turn failed (nothing to type a step's line to); nil when it isn't, or the daemon can't say.
-    def busy_row(workspace, pane)
+    #
+    # In a pane the caller just opened, `working` from the screen alone (the agent drawing its start-up, which the
+    # monitor counts as working for {AgentProvider::DEFAULT_IDLE_AFTER} seconds) is no turn: such a row is busy only
+    # while the hooks show one under way, or can't say.
+    def busy_row(workspace, pane, opened: false)
       shown = row_of(@snapshot_client.fetch(workspace, timeout: IDLE_TIMEOUT), pane)
       return shown if shown && shown["turn_failed"] && shown["kind"] == "shell"
-      shown if %w[working waiting].include?(shown && shown["state"])
+      return nil unless %w[working waiting].include?(shown && shown["state"])
+      return nil if opened && shown["state"] == "working" && !hooked_turn?(shown)
+      shown
     rescue Workspace::Error
       nil
+    end
+
+    # Whether the hooks show the main agent's turn under way, or can't say: a prompt with no Stop after it, a tool or a
+    # sub-agent running; a row without hooks, or from a daemon before `user_prompt_at`, can't say.
+    def hooked_turn?(row)
+      return true unless row["hook_mode"] == "hooks" && row.key?("user_prompt_at")
+      (row["user_prompt_at"] && row["main_turn_over_since"].nil?) || Array(row["open_tools"]).any? || Array(row["subagents"]).any?
     end
 
     # What a refusal saw, from the row it was read from.
@@ -710,7 +725,7 @@ module Workspace
       }.compact
     end
 
-    def type(workspace, pane, text)
+    def type(workspace, pane, text, opened: false)
       session = @tmux.session_name_for_pane(pane)
       unless session
         # The non-strict lookup can miss a pane tmux still lists, so the strict one decides.
@@ -719,7 +734,7 @@ module Workspace
       end
       # A line typed into a turn that is under way is queued into that turn, whose end would
       # then be taken for an earlier one's; so is one typed at a permission prompt.
-      busy = busy_row(workspace, pane)
+      busy = busy_row(workspace, pane, opened: opened)
       if busy
         changed_by = "turn_failed" if busy["turn_failed"] && busy["kind"] == "shell"
         return {ok: false, code: "pane_busy", message: "the agent in pane #{pane} is in the middle of a turn; resume the run when it is done",

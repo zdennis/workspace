@@ -72,7 +72,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
         [:require_daemon, "app"],
         [:bind, {workspace: "app", pane: "%100", run_id: "wr_1", step: "plan", attempt: 1, instructions: prompt_path,
                  artifacts: File.join(worktree, ".workflow", "wr_1"), role: "reviewer", round: 1, relative_to: worktree}],
-        [:kick, {workspace: "app", pane: "%100", text: "Read #{prompt_path} and follow it.", fresh: false, run_id: "wr_1"}]
+        [:kick, {workspace: "app", pane: "%100", text: "Read #{prompt_path} and follow it.", fresh: false, run_id: "wr_1", opened: true}]
       ])
       expect(readiness.calls).to eq([[:await_ready, "app", "%100", "claude", {window: "@100"}]])
       expect(round).to include("delivery" => nil, "pane" => "%100", "window" => "@100", "revision" => "rev1", "prompt" => prompt_path, "packs" => [],
@@ -109,6 +109,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
       expect(readiness.calls).to eq([[:await_ready, "app", "%70", "claude", {window: "@7", keep: true}]])
       expect(round).to include("pane" => "%70", "window" => "@7", "delivery" => nil)
       expect(change.events.last.last).to include("reused" => true)
+      expect(panes.calls.find { |call| call.first == :kick }.last).to include(fresh: false, opened: false)
     end
 
     describe "a later round" do
@@ -135,7 +136,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
         expect(panes.calls).to include(
           [:bind, {workspace: "app", pane: "%70", run_id: "wr_1", step: "plan", attempt: 2, instructions: later_prompt,
                    artifacts: File.join(worktree, ".workflow", "wr_1"), role: "reviewer", round: 2, relative_to: worktree}],
-          [:kick, {workspace: "app", pane: "%70", text: "Read #{later_prompt} and follow it.", fresh: true, run_id: "wr_1"}]
+          [:kick, {workspace: "app", pane: "%70", text: "Read #{later_prompt} and follow it.", fresh: true, run_id: "wr_1", opened: false}]
         )
         expect(round).to include("pane" => "%70", "window" => "@7", "delivery" => nil, "clear_from" => "2026-11-14T12:00:00.000Z")
         expect(store.runs["wr_1"]["steps"]["plan"]).not_to have_key("review_window")
@@ -179,7 +180,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
 
         runner.call("wr_1", pending)
 
-        expect(panes.calls.last).to eq([:kick, {workspace: "app", pane: "%70", text: "Read #{later_prompt} and follow it.", fresh: true, run_id: "wr_1"}])
+        expect(panes.calls.last).to eq([:kick, {workspace: "app", pane: "%70", text: "Read #{later_prompt} and follow it.", fresh: true, run_id: "wr_1", opened: false}])
         expect(round).not_to have_key("uncleared")
         expect(round).to include("clear_from" => "2026-11-14T12:00:00.000Z")
       end
@@ -255,7 +256,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
 
         expect(tmux.killed_windows).to eq(["@7"])
         expect(opened.size).to eq(1)
-        expect(panes.calls.last).to eq([:kick, {workspace: "app", pane: "%100", text: "Read #{later_prompt} and follow it.", fresh: false, run_id: "wr_1"}])
+        expect(panes.calls.last).to eq([:kick, {workspace: "app", pane: "%100", text: "Read #{later_prompt} and follow it.", fresh: false, run_id: "wr_1", opened: true}])
       end
     end
 

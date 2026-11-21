@@ -74,12 +74,13 @@ A coding-agent pane (any pane whose `kind` isn't `"shell"`) carries four fields 
 
 ### Turn-end fields
 
-A pane the monitor watches carries four more fields, which [`workflow`](README.workflow.md) reads to tell whether a turn is over before it types into the pane. They are held in the daemon's memory, like the tool fields, and a restarted daemon starts with them empty.
+A pane the monitor watches carries five more fields, which [`workflow`](README.workflow.md) reads to tell whether a turn is over before it types into the pane. They are held in the daemon's memory, like the tool fields, and a restarted daemon starts with them empty.
 
 | Field | Meaning |
 |-------|---------|
 | `activity_state` | `working`, `idle` or `waiting`, worked out from the pane's output and waits alone. Unlike `state` it is not replaced by `done`, so a pane whose turn ended and whose screen is still moving reads `working` here and `done` in `state` |
 | `main_turn_over_since` | ISO 8601 UTC time of the main agent's last `Stop`, when this daemon heard it and nothing since says the turn went on: no main-agent tool, sub-agent start, prompt or session event, no wait, no open tool and no failed turn (a stopped sub-agent or a redraw says nothing). `null` otherwise: a pane that is not Claude Code, has no hooks, or whose `Stop` this daemon never saw (a daemon restarted since reads `null` until the next `Stop`) |
+| `user_prompt_at` | ISO 8601 UTC time (milliseconds) of the last prompt submitted in the pane, as the hooks reported it (`UserPromptSubmit`), or `null` before one. With `main_turn_over_since` `null` it says a turn was asked for and no `Stop` ended it; a review window `workflow` has just opened is typed into while there is none, whatever the screen makes `state` (sessions revision 5) |
 | `transcript_path` | The agent's transcript file, as the hooks reported it, or `null`. A caller reads it to see whether the main agent wrote anything after `main_turn_over_since` |
 | `open_tools` | The names of the main agent's tools that have started and not ended, oldest first (`[]` between tools). Esc on an `AskUserQuestion` or `ExitPlanMode` sends no hook, so it stays here until the screen shows the empty input box unchanged for 8 seconds; see [`workflow`](README.workflow.md) |
 
