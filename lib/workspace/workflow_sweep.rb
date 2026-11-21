@@ -534,7 +534,10 @@ module Workspace
       if WorkflowPanes.agent_gone_row?(shown)
         return note(run, pass, "agent_gone", "pane #{pane} shows a shell: the agent has exited, so nothing will end this step. Resume the run to start it again.", {"pane" => pane}, infra: true)
       end
-      return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "pane #{pane} waits for an answer") if shown["state"] == "waiting"
+      if shown["state"] == "waiting"
+        return WorkflowSweepRows.row(run, "nothing", reason: "waiting_permission", message: "pane #{pane} waits for a permission answer") if shown["waiting_reason"] == "waiting_permission"
+        return WorkflowSweepRows.row(run, "nothing", reason: "prompt", message: "pane #{pane} waits for an answer")
+      end
       return turn_failed(run, attempt, pass, pane, shown, elapsed, timeout, timed_out && on_timeout == "fail") if shown["turn_failed"]
 
       defined_stall = WorkflowDefinition.stall(run.definition)

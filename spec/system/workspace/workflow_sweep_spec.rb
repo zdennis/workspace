@@ -267,6 +267,13 @@ RSpec.describe Workspace::WorkflowSweep do
       expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "prompt")
     end
 
+    it "says waiting_permission for a pane that waits on a permission dialog, however long it waits" do
+      pane_shows("waiting", idle_seconds: 2000)
+      panes.rows["%5"]["waiting_reason"] = "waiting_permission"
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "waiting_permission")
+    end
+
     it "reports and does not change anything with dry_run" do
       artifact
       before = [stored_run(store, "wr_1"), events]
@@ -1855,6 +1862,15 @@ RSpec.describe Workspace::WorkflowSweep do
       # No verdict reader is wired here, so the round reads incomplete.
       expect(stored_run(store, "wr_1")["reason"]).to include("code" => "review_incomplete")
       expect(events.find { |each| each["type"] == "step_stalled" }).to include("cause" => "idle_turn_over", "round" => 1, "idle_for" => 1500)
+    end
+
+    it "says waiting_permission for a review pane that waits on a permission dialog" do
+      review
+      advance(1500)
+      review_pane_shows("waiting", idle_seconds: 1500)
+      panes.rows["%9"]["waiting_reason"] = "waiting_permission"
+
+      expect(only_row(sweep.call)).to include("outcome" => "nothing", "reason" => "waiting_permission")
     end
 
     it "leaves a review pane that waits for an answer alone" do

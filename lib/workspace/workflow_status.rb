@@ -752,6 +752,7 @@ module Workspace
 
     def waiting_on_person(run, pane, shown, warnings)
       if shown && shown["state"] == "waiting"
+        return permission_wait(run, pane, shown) if shown["waiting_reason"] == "waiting_permission"
         return {"code" => "waiting_you", "since" => shown["waiting_since"],
                 "details" => {"kind" => "prompt", "step" => run.current, "pane" => pane, "message" => shown["waiting_message"]}}
       end
@@ -760,6 +761,16 @@ module Workspace
       return nil unless ask
       {"code" => "waiting_you", "since" => ask["asked_at"],
        "details" => {"kind" => "ask", "step" => run.current, "ask" => ask["id"], "question" => ask["question"]}}
+    end
+
+    # A wait a permission request opened: `kind` `permission`, with the tool and a one-line summary of the oldest such
+    # wait (the pane row's own `waiting_tool` and `waiting_input` when its `waits` do not name it).
+    def permission_wait(run, pane, shown)
+      wait = Array(shown["waits"]).select { |each| each["permission"] }.min_by { |each| each["since"].to_s }
+      {"code" => "waiting_you", "since" => shown["waiting_since"],
+       "details" => {"kind" => "permission", "reason" => "waiting_permission", "step" => run.current, "pane" => pane,
+                     "message" => shown["waiting_message"], "tool" => wait ? wait["tool"] : shown["waiting_tool"],
+                     "summary" => wait ? wait["input"] : shown["waiting_input"]}}
     end
 
     def pane_state(workspace, pane, warnings)
@@ -877,7 +888,7 @@ module Workspace
           at = ["--step", run.current, "--attempt", run.steps.fetch(run.current).last_attempt&.n.to_s]
           [NextAction.build("workflow approve", id, *at), NextAction.build("workflow reject", id, *at, needs: [NextAction.need("note", "--note")] + extra.call(run.current)), cancel]
         when "ask" then [NextAction.build("ask answer", reason.dig("details", "ask").to_s, "--name", run.workspace, needs: [NextAction.need("answer", nil)]), focus]
-        when "prompt" then [focus]
+        when "prompt", "permission" then [focus]
         # Resume decides the step as a turn's end would; --from types the line again.
         when "delivery" then [focus, resume, from.call(reason.dig("details", "step")), cancel]
         else [resume, cancel]

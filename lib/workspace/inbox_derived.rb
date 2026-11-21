@@ -270,7 +270,7 @@ module Workspace
     # A review round that stopped (`review_incomplete`, `review_rejected`, ...) or whose pane waits on a permission
     # prompt: review panes are left out of the pane rows, so the run's own row is the one that says so.
     def review_stop?(reason)
-      WorkflowTransitions::REVIEW_STOPS.include?(reason["code"]) || (reason["code"] == "waiting_you" && reason.dig("details", "kind") == "prompt" && reason.dig("details", "role") == "reviewer")
+      WorkflowTransitions::REVIEW_STOPS.include?(reason["code"]) || (reason["code"] == "waiting_you" && %w[prompt permission].include?(reason.dig("details", "kind")) && reason.dig("details", "role") == "reviewer")
     end
 
     def review_stop_row(run, current, reason)
