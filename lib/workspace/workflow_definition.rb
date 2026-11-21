@@ -490,6 +490,7 @@ module Workspace
       return [] unless first_commit
       committer = steps[first_commit]["id"]
       ids = steps.map { |step| step["id"] }
+      groups = @data["groups"] || {}
       steps.each_with_index.flat_map do |step, index|
         next [] unless step["guard"] == "unchanged"
         if index >= first_commit
@@ -500,16 +501,19 @@ module Workspace
           loopers = steps.each_with_index.filter_map do |later, later_index|
             next if later_index < first_commit
             on_fail = later["on_fail"]
+            group_on_fail = groups.dig(later["group"], "on_fail") if later["group"]
+            on_fail = group_on_fail if on_fail.nil? && group_on_fail.is_a?(Hash)
             target = if on_fail.is_a?(Hash)
               on_fail["goto"]
             elsif on_fail.nil?
               WorkflowTransitions.implicit_target(steps, later)
             end
-            later["id"] if target && ids.index(target).to_i <= index
+            target_index = ids.index(target) if target
+            later["id"] if target_index && target_index <= index
           end
           next [] if loopers.empty?
           [{"code" => "guard_unchanged_loop_back", "step" => step["id"],
-            "message" => "step #{step["id"]} sets guard: unchanged, but #{loopers.join(", ")} (a step that commits, or follows one) can send the run back to it when #{(loopers.size > 1) ? "they fail" : "it fails"} after a commit, through on_fail goto or the default one-step-back loop. The guard then sees the earlier commit and stops the run with head_moved instead of retrying. Use guard: config on #{step["id"]}, or set on_fail: stop (or a goto to a step that may change the checkout) on #{loopers.join(", ")}."}]
+            "message" => "step #{step["id"]} sets guard: unchanged, but #{loopers.join(", ")} (a step that commits, or follows one) can send the run back to it when #{(loopers.size > 1) ? "they fail" : "it fails"} once a commit has been made, through on_fail goto or the default one-step-back loop. The guard then sees the earlier commit and stops the run with head_moved instead of retrying. Use guard: config on #{step["id"]}, or set on_fail: stop (or a goto to a step that may change the checkout) on #{loopers.join(", ")}."}]
         end
       end
     end

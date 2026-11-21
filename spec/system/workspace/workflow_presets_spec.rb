@@ -144,7 +144,7 @@ RSpec.describe "the shipped workflow presets" do
     it "is listed by the catalog as a builtin and validates with no warnings" do
       expect(catalog.list.map { |row| [row["id"], row["source"]] }).to include(["rpiv-auto-approve-v2", "builtin"])
       expect(catalog.known?("rpiv-auto-approve-v2")).to be(true)
-      expect(definition.warnings.reject { |w| w["code"] == "guard_unchanged_loop_back" }).to eq([])
+      expect(definition.warnings.map { |w| [w["code"], w["step"]] }).to eq([["guard_unchanged_loop_back", "plan"]])
     end
 
     it "reviews the plan in place of the gate: skeptic plus one other, six rounds, caps from the design" do
@@ -240,7 +240,7 @@ RSpec.describe "the shipped workflow presets" do
       expect(data).not_to have_key("extends")
       expect(data["version"]).to eq(1)
       expect(data["use_when"]).to start_with("Experimental:").and include("commands.test_files").and include("step expect-fail")
-      expect(definition.warnings.reject { |w| w["code"] == "guard_unchanged_loop_back" }).to eq([])
+      expect(definition.warnings.map { |w| [w["code"], w["step"]] }).to eq([["guard_unchanged_loop_back", "reproduce"]])
     end
 
     it "proves the new test fails with failure.txt's text before the reproduce gate, with the checker timing out first" do
