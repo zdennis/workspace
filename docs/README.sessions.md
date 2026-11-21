@@ -215,6 +215,9 @@ The command runs through `/bin/sh -c`, in its own process group, with stdin and 
 | `WORKSPACE_ALERT_SECONDS` | Seconds the pane has been waiting or idle (for `handoff_stalled`, since the handoff watch began) |
 | `WORKSPACE_ALERT_MESSAGE` | The agent's notification message (empty for `idle`) |
 | `WORKSPACE_ALERT_TEXT` | One-line summary, e.g. `myapp pane 0.1 (Claude Code) is waiting: Claude needs your permission to use Bash` |
+| `WORKSPACE_ALERT_REASON` | For `waiting` only: `waiting_permission` for a permission dialog, `waiting_prompt` for any other prompt |
+| `WORKSPACE_ALERT_TOOL` | For a `waiting_permission` alert, the tool asking, when known |
+| `WORKSPACE_ALERT_COMMAND` | For a `waiting_permission` alert, the first line of the tool's input (a Bash command, a file path, a pattern, a URL), at most 300 bytes, when known |
 
 `workflow` is sent for a workflow run's events named in `alerts.workflow` (see [workflow alerts](README.workflow.md#alerts)); it has none of the pane variables below (no `PANE`, `PANE_ID`, `KIND`, `SECONDS` or `MESSAGE`), so a script must check `WORKSPACE_ALERT=workflow` before treating any other value as idle, and it sets `WORKSPACE_ALERT_EVENT`, `WORKSPACE_ALERT_RUN_ID`, `WORKSPACE_ALERT_STEP` and `WORKSPACE_ALERT_TEXT`, and no pane variables.
 
