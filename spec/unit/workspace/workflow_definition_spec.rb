@@ -1556,10 +1556,9 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(guard_codes(yaml)).to eq([["guard_unchanged_loop_back", "plan"]])
     end
 
-    it "skips a goto to an unknown step instead of reading it as the first step" do
-      bad = parse(steps(plan, implement)).to_h
-      bad["steps"][1]["on_fail"] = {"goto" => "missing", "max" => 1}
-      expect(described_class.allocate.tap { |d| d.instance_variable_set(:@data, bad) }.send(:guard_after_commit_warnings)).to eq([])
+    it "never reads an unknown goto target as the first step, since parsing refuses it" do
+      yaml = steps(plan, implement.sub("    require:", "    on_fail: {goto: missing, max: 1}\n    require:"))
+      expect(problems(yaml)).to eq(["step implement: on_fail goto must name an earlier step (plan), got \"missing\""])
     end
 
     it "warns for a step that is both guarded and committing" do
