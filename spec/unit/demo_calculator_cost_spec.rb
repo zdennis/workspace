@@ -28,6 +28,23 @@ RSpec.describe DemoCalculator do
       expect(sum[:partial]).to be true
     end
 
+    it "skips a redelivered round, which has no usage, without marking the sum partial" do
+      rounds = [{"ended" => "redelivered", "usage" => nil}, {"ended" => "approved", "usage" => usage}]
+      sum = described_class.sum([{"usage" => usage, "rounds" => rounds}])
+      expect(sum).to include(input: 200, partial: false)
+    end
+
+    it "does not mark shared a usage that points at a counted attempt" do
+      attempts = [{"step" => "tests", "n" => 1, "usage" => usage},
+        {"step" => "usage", "n" => 1, "usage" => nil, "usage_shared" => {"group" => "finish", "step" => "tests", "attempt" => 1}}]
+      expect(described_class.sum(attempts)).to include(input: 100, partial: false, shared: false)
+    end
+
+    it "marks shared a usage whose attempt is not among those counted" do
+      attempts = [{"step" => "usage", "n" => 1, "usage" => nil, "usage_shared" => {"group" => "finish", "step" => "tests", "attempt" => 1}}]
+      expect(described_class.sum(attempts)).to include(shared: true)
+    end
+
     it "counts shared usage as shared, not unknown" do
       sum = described_class.sum([{"usage" => nil, "usage_shared" => {"group" => "finish"}}])
       expect(sum).to include(input: 0, partial: false, shared: true)

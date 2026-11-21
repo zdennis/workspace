@@ -12,6 +12,9 @@ module DemoCalculator
 
     SUCCESS_PATH = %w[status require expect_fail produces guard review fan_out].freeze
     FAILURE_ONLY = %w[backoff deny budget timeout].freeze
+    # Events a person causes after the start; the dispatches and review starts that follow them are not counted.
+    MANUAL_TYPES = %w[run_resumed review_rounds_extended run_cancelled gate_approved gate_rejected guard_accepted
+      guard_overridden run_paused run_unpaused resume_parked].freeze
     FEATURES = (SUCCESS_PATH + FAILURE_ONLY).freeze
 
     # Every attempt of the run, step order, each tagged with "step".
@@ -53,7 +56,7 @@ module DemoCalculator
         elsif feature == "fan_out"
           step_ids.map { |group| fan_out_state(definition, group, by_step) }
         else
-          step_ids.map { |id| step_state(feature, id, by_step[id].to_a, events) }
+          step_ids.map { |id| step_state(feature, id, by_step[id].to_a, events, definition) }
         end
         [feature, combine(states)]
       end
@@ -62,8 +65,8 @@ module DemoCalculator
     # One row for a run, or a "not run" row when run is nil.
     #   workflow: id; run: stored run hash or nil; events: its event hashes;
     #   totals: trace totals hash (wall_seconds, active_seconds, stopped_seconds);
-    #   next_run: the following item's run hash, for the gap.
-    def self.row(workflow:, run:, events: [], totals: nil, next_run: nil)
+    #   next_run: the following item's run hash, for the gap; final: true when no item follows.
+    def self.row(workflow:, run:, events: [], totals: nil, next_run: nil, final: false)
       return not_run(workflow) unless run
       attempts = attempts(run)
       rounds = attempts.flat_map { |attempt| Array(attempt["rounds"]) }
@@ -83,7 +86,9 @@ module DemoCalculator
         wall: totals["wall_seconds"],
         active: totals["active_seconds"],
         stopped: totals["stopped_seconds"],
+        manual: events.count { |e| e["actor"] == "person" && MANUAL_TYPES.include?(e["type"]) },
         gap: gap(run, next_run),
+        final: final,
         head: ending_head(attempts)
       }
     end
@@ -92,16 +97,16 @@ module DemoCalculator
     def self.not_run(workflow)
       na = Fmt::NOT_RUN
       {workflow: workflow, run_id: nil, ran: false, state: na, features: {}, attempts: na, retries: na,
-       review_rounds: na, review_rounds_distinct: na, guard_violations: na, denied: na,
+       review_rounds: na, review_rounds_distinct: na, guard_violations: na, denied: na, manual: na,
        wall: na, active: na, stopped: na, gap: na, head: na}
     end
 
     # Rows for items in order. Each item: {workflow:, run:, events:, totals:}.
-    # The gap runs to the next item's run only when that item has one.
+    # The gap runs to the next item's run only when that item has one; without one the row is `final`.
     def self.rows(items)
       items.each_with_index.map do |item, index|
         row(workflow: item[:workflow], run: item[:run], events: item[:events] || [],
-          totals: item[:totals], next_run: items[index + 1]&.dig(:run))
+          totals: item[:totals], next_run: items[index + 1]&.dig(:run), final: items[index + 1]&.dig(:run).nil?)
       end
     end
 
@@ -118,13 +123,14 @@ module DemoCalculator
       last&.dig("head", "after")
     end
 
-    def self.step_state(feature, id, attempts, events)
+    def self.step_state(feature, id, attempts, events, definition)
       return UNKNOWN if attempts.empty?
       return backoff_state(id, events) if feature == "backoff"
+      entries = Array(Array(definition["steps"]).find { |s| s["id"] == id }&.dig("require"))
       evidence = case feature
       when "status" then attempts.any? { |a| a.dig("check", "exit_code") }
-      when "require" then attempts.any? { |a| proofs(a).any? { |p| !expect_fail_proof?(p) } }
-      when "expect_fail" then attempts.any? { |a| proofs(a).any? { |p| expect_fail_proof?(p) } }
+      when "require" then attempts.any? { |a| proofs(a).any? { |p| !expect_fail_proof?(p, entries) } }
+      when "expect_fail" then attempts.any? { |a| proofs(a).any? { |p| expect_fail_proof?(p, entries) } }
       when "produces" then attempts.any? { |a| Array(a["outputs"]).any? }
       when "guard"
         attempts.any? { |a| a["ended_at"] && a.dig("head", "before") && a.dig("head", "before") == a.dig("head", "after") } ||
@@ -163,8 +169,10 @@ module DemoCalculator
       Array(attempt["proofs"]).reject { |p| p["skipped"] }
     end
 
-    def self.expect_fail_proof?(proof)
-      proof["command"].to_s.include?("step expect-fail")
+    # A stored proof names its `require` entry by 0-based `index` and has no command; an older proof carries `command`.
+    def self.expect_fail_proof?(proof, entries)
+      entry = proof["index"].is_a?(Integer) ? entries[proof["index"]] : nil
+      entry ? expect_fail?(entry) : proof["command"].to_s.include?("step expect-fail")
     end
 
     def self.expect_fail?(entry)

@@ -63,7 +63,7 @@ RSpec.describe DemoCalculator::Evaluation do
 
   let(:checks) do
     Class.new do
-      attr_reader :acceptance_calls
+      attr_reader :acceptance_calls, :transcripts
 
       def acceptance(base_sha:, head:, index:)
         (@acceptance_calls ||= []) << [head, index]
@@ -73,7 +73,10 @@ RSpec.describe DemoCalculator::Evaluation do
 
       def lint(head:, gemfile:) = 4
 
-      def leak_check(hook_files:, transcripts:, from:, to: nil) = {hook: 0, transcript: {}}
+      def leak_check(hook_files:, transcripts:, from:, to: nil)
+        @transcripts = transcripts
+        {hook: 0, transcript: {}}
+      end
     end.new
   end
 
@@ -114,6 +117,21 @@ RSpec.describe DemoCalculator::Evaluation do
     result = evaluation.call
     expect(checks.acceptance_calls.map(&:last)).to eq([1, 2])
     expect(result[:rows][1][:acceptance]).to be_nil
+  end
+
+  it "scans the sessions of review rounds as well as of attempts for reads of the acceptance tests" do
+    attempt = plain["run"]["steps"]["implement"]["attempts"].first
+    attempt["session"] = {"transcript" => "/t/attempt.jsonl"}
+    attempt["rounds"] = [{"round" => 1, "session" => nil}, {"round" => 1, "session" => {"transcript" => "/t/round.jsonl"}}]
+    write_run("archive", plain)
+    evaluation.call
+    expect(checks.transcripts).to contain_exactly("/t/attempt.jsonl", "/t/round.jsonl")
+  end
+
+  it "reports acceptance over the groups checked in the total, and the manual count in each row" do
+    result = evaluation.call
+    expect(result[:totals]).to include("acceptance_of" => nil, "manual" => 0, "review_rounds_distinct" => 0)
+    expect(JSON.parse(File.read(File.join(run_dir, "eval.json")))["rows"][0]).to include("manual" => 0)
   end
 
   it "finds the newest record when no run dir is given" do

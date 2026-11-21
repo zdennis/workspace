@@ -10,21 +10,30 @@ module DemoCalculator
       cache_read: "cache_read_input_tokens"
     }.freeze
 
-    # Adds every attempt's usage and every round's usage.
+    # Adds every attempt's usage and every round's usage. A round that was delivered again has none and is skipped.
     # Returns the four totals plus :partial (some usage was nil) and :shared
-    # (some attempt's usage is counted under its fan-out group).
+    # (some attempt's usage is shared and the attempt it points to is not among the attempts, so it may be uncounted).
     def self.sum(attempts)
+      attempts = Array(attempts)
       total = KINDS.keys.to_h { |kind| [kind, 0] }.merge(partial: false, shared: false)
-      Array(attempts).each do |attempt|
+      attempts.each do |attempt|
         if attempt["usage_shared"]
-          total[:shared] = true
+          total[:shared] = true unless counted_elsewhere?(attempt["usage_shared"], attempts)
           next
         end
         add(total, attempt["usage"])
-        Array(attempt["rounds"]).each { |round| add(total, round["usage"]) }
+        Array(attempt["rounds"]).each { |round| add(total, round["usage"]) unless round["ended"] == "redelivered" }
       end
       total
     end
+
+    # True when the attempt a `usage_shared` points to (step and attempt number) is in the list and has usage of its own.
+    def self.counted_elsewhere?(ref, attempts)
+      attempts.any? do |other|
+        other["step"] == ref["step"] && other["n"] == ref["attempt"] && !other["usage_shared"] && !other["usage"].nil?
+      end
+    end
+    private_class_method :counted_elsewhere?
 
     def self.add(total, usage)
       if usage.nil?

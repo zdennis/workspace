@@ -15,7 +15,7 @@ module DemoCalculator
     class Error < StandardError; end
 
     # Groups use the ruby gems of the plain install, not the caller's bundle.
-    CLEAN_RUBY_ENV = {"BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "RUBYLIB" => nil}.freeze
+    CLEAN_RUBY_ENV = {"BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "RUBYLIB" => nil, "RUBYGEMS_GEMDEPS" => nil}.freeze
 
     # What Bundler stores in BUNDLER_ORIG_* for a variable that was not set.
     BUNDLER_UNSET = "BUNDLER_ENVIRONMENT_PRESERVER_INTENTIONALLY_NIL".freeze
@@ -108,10 +108,12 @@ module DemoCalculator
       end
     end
 
-    # Counts lines naming the acceptance directory that the agents read.
+    # Counts the agents' reads of acceptance test content: a file tool on a path in the acceptance
+    # directory, or a Bash command that cats, pages, greps, edits or `git show`s such a path. Text that
+    # only mentions the directory (a `git log --stat`, a README line, a tool's output) is not a read.
     #
     # @param hook_files [Array<String>] the hook log and its `.1` rotation
-    # @param transcripts [Array<String>] attempt `session.transcript` paths
+    # @param transcripts [Array<String>] session `transcript` paths of attempts and review rounds
     # @param from [String, nil] the run's `created_at`
     # @param to [String, nil] the run's `ended_at` (nil: no upper bound)
     # @return [Hash] `{hook: Integer, transcript: {path => Integer or nil}}`;
@@ -122,9 +124,11 @@ module DemoCalculator
       hi = to && Time.parse(to)
       hook = hook_files.sum do |path|
         count_lines(path) do |line|
-          next false unless line.include?(ACCEPTANCE_DIR.split("/").last)
-          at = hook_time(line)
-          at && (lo.nil? || at >= lo) && (hi.nil? || at <= hi)
+          next false unless line.include?(ACCEPTANCE_NAME)
+          event = parse_json(line)
+          at = event && parse_time(event["at"])
+          event && [nil, "tool_started"].include?(event["type"]) && reads_acceptance?(event["tool"] || "Bash", event["input"]) &&
+            at && (lo.nil? || at >= lo) && (hi.nil? || at <= hi)
         end
       end
       {hook: hook, transcript: transcripts.uniq.to_h { |path| [path, transcript_count(path)] }}
@@ -132,9 +136,40 @@ module DemoCalculator
 
     private
 
+    ACCEPTANCE_NAME = ACCEPTANCE_DIR.split("/").last
+    # A reading program that starts a command (not one fed by a pipe) and names the acceptance directory in its arguments.
+    READ_COMMAND = /(?:\A|&&\s*|;\s*|\(\s*|\bdo\s+)(?:cat|head|tail|less|more|bat|nl|sed|awk|grep|rg|git\s+show)\s[^|;&\n]*#{ACCEPTANCE_NAME}/
+    FILE_TOOLS = %w[Read Grep NotebookRead Edit MultiEdit].freeze
+
     def transcript_count(path)
       return nil unless File.readable?(path)
-      count_lines(path) { |line| line.include?("calculator-acceptance") }
+      count = 0
+      count_lines(path) do |line|
+        next false unless line.include?(ACCEPTANCE_NAME)
+        blocks = parse_json(line)&.dig("message", "content")
+        next false unless blocks.is_a?(Array)
+        count += blocks.count { |b| b.is_a?(Hash) && b["type"] == "tool_use" && reads_acceptance?(b["name"], b["input"]) }
+        false
+      end
+      count
+    end
+
+    def reads_acceptance?(tool, input)
+      if tool == "Bash"
+        command = input.is_a?(Hash) ? input["command"] : input
+        command.to_s.strip.match?(READ_COMMAND)
+      elsif FILE_TOOLS.include?(tool)
+        values = input.is_a?(Hash) ? input.values_at("file_path", "path", "notebook_path") : [input]
+        values.any? { |value| value.to_s.include?(ACCEPTANCE_NAME) }
+      else
+        false
+      end
+    end
+
+    def parse_json(line)
+      JSON.parse(line)
+    rescue JSON::ParserError
+      nil
     end
 
     def count_lines(path, &block)
@@ -143,9 +178,9 @@ module DemoCalculator
       0
     end
 
-    def hook_time(line)
-      Time.parse(JSON.parse(line)["at"].to_s)
-    rescue JSON::ParserError, ArgumentError
+    def parse_time(text)
+      Time.parse(text.to_s)
+    rescue ArgumentError
       nil
     end
 

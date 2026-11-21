@@ -5,7 +5,7 @@ module DemoCalculator
   # The numbers and text of `eval`, built from rows and run hashes. Pure: reads nothing, spawns nothing.
   module EvalReport
     TIME_KEYS = %w[wall active stopped].freeze
-    COUNT_KEYS = %w[attempts retries review_rounds].freeze
+    COUNT_KEYS = %w[attempts retries review_rounds review_rounds_distinct manual].freeze
     TOKEN_KEYS = Tokens::KINDS.keys.map(&:to_s).freeze
     DASH = "–".freeze
     SHARED = "shared".freeze
@@ -42,12 +42,15 @@ module DemoCalculator
     #
     # @param rows [Array<Hash>] EvalRows rows, each merged with its `usage` (see {usage})
     # @param acceptance_passed [Integer, nil] passing groups at the last run item
+    # @param acceptance_of [Integer, nil] how many groups that check ran (the last run item's number)
     # @param lint [Integer, nil] offenses at the last run item
-    def self.totals(rows, acceptance_passed:, lint:)
+    def self.totals(rows, acceptance_passed:, lint:, acceptance_of: nil)
       ran = rows.select { |row| row[:ran] }
       totals = {"items" => rows.size, "items_run" => ran.size}
+      totals["states"] = ran.map { |row| row[:state].to_s }.tally
+      totals["completed_unmet"] = ran.count { |row| unmet?(row) && row[:state] == "completed" }
       partial = []
-      COUNT_KEYS.each { |key| totals[key] = ran.empty? ? nil : ran.sum { |row| row[key.to_sym] } }
+      COUNT_KEYS.each { |key| totals[key] = ran.empty? ? nil : ran.sum { |row| row[key.to_sym].to_i } }
       TIME_KEYS.each do |key|
         values = ran.map { |row| row[key.to_sym] }
         known = values.select { |v| v.is_a?(Numeric) }
@@ -63,9 +66,31 @@ module DemoCalculator
       totals["cost_usd"] = costs.empty? ? nil : costs.sum
       partial << "cost_usd" if !costs.empty? && usages.any? { |u| u[:cost_partial] || u[:cost_usd].nil? }
       totals["acceptance_passed"] = acceptance_passed
+      totals["acceptance_of"] = acceptance_of
       totals["lint"] = lint
       totals["partial"] = partial
       totals
+    end
+
+    # Sets each row's `acceptance[:regressions]`: a failing group below the row's item that passed at an
+    # earlier item's head. A group that never passed is failing, not a regression.
+    #
+    # @param rows [Array<Hash>] rows in item order, each with `item` and `acceptance` (a hash or nil)
+    def self.mark_regressions(rows)
+      seen = []
+      rows.each do |row|
+        acceptance = row[:acceptance]
+        next unless acceptance
+        row[:acceptance] = acceptance.merge(regressions: acceptance[:failed].select { |n| n < row[:item] && seen.include?(n) })
+        seen |= acceptance[:passed]
+      end
+      rows
+    end
+
+    # True when the row's own acceptance group fails at its head.
+    def self.unmet?(row)
+      acceptance = row[:acceptance]
+      !!(acceptance && acceptance[:failed].include?(row[:item]))
     end
 
     # Per-row cells of the table, plus a totals row.
@@ -73,12 +98,13 @@ module DemoCalculator
     # @param rows [Array<Hash>] EvalRows rows merged with `usage`, `acceptance`, `item` (1-based) and `groups`
     # @return [String] the fixed-width table
     def self.table(rows, totals)
-      header = %w[item state feat att retry rnd wall active stopped gap in out cache_w cache_r cost accept]
+      header = %w[item state feat att retry rnd manual wall active stopped gap in out cache_w cache_r cost accept]
       body = rows.map { |row| row[:ran] ? ran_cells(row) : not_run_cells(row) }
       body << total_cells(totals)
       widths = header.each_index.map { |i| ([header[i]] + body.map { |cells| cells[i] }).map { |c| c.to_s.length }.max }
       lines = [header, *body].map { |cells| cells.each_with_index.map { |c, i| c.to_s.ljust(widths[i]) }.join("  ").rstrip }
       lines.insert(1, widths.map { |w| "-" * w }.join("  "))
+      lines << "* completed while its own acceptance group fails" if rows.any? { |row| completed_unmet?(row) }
       lines.join("\n")
     end
 
@@ -89,27 +115,45 @@ module DemoCalculator
         tokens[:known] ? Fmt.total(Fmt.count(tokens[kind]), tokens[:partial] || tokens[:shared]) : Fmt::UNKNOWN
       end
       cost = Fmt.total(Fmt.dollars(row[:usage][:cost_usd]), row[:usage][:cost_partial])
-      [row[:workflow], row[:state], features_cell(row[:features]), row[:attempts], row[:retries], row[:review_rounds],
-        Fmt.duration(row[:wall]), Fmt.duration(row[:active]), Fmt.duration(row[:stopped]), Fmt.duration(row[:gap]),
+      [row[:workflow], "#{row[:state]}#{"*" if completed_unmet?(row)}", features_cell(row[:features]), row[:attempts], row[:retries],
+        row[:review_rounds_distinct], row[:manual],
+        Fmt.duration(row[:wall]), Fmt.duration(row[:active]), Fmt.duration(row[:stopped]), gap_cell(row),
         token_cell.call(:input), token_cell.call(:output), token_cell.call(:cache_creation), token_cell.call(:cache_read),
         cost, acceptance_cell(row[:acceptance], row[:item])]
     end
 
     def self.not_run_cells(row)
-      [row[:workflow], row[:state].to_s.empty? ? Fmt::NOT_RUN : row[:state]] + [DASH] * 14
+      [row[:workflow], row[:state].to_s.empty? ? Fmt::NOT_RUN : row[:state]] + [DASH] * 15
+    end
+
+    def self.completed_unmet?(row)
+      row[:ran] && row[:state] == "completed" && unmet?(row)
+    end
+
+    # The gap to the next item; a dash when no item follows.
+    def self.gap_cell(row)
+      (row[:gap].nil? && row[:final]) ? DASH : Fmt.duration(row[:gap])
+    end
+
+    # "6/7 completed, 1 cancelled": completed items of all items, then each other state and the items not run.
+    def self.states_text(totals)
+      states = totals["states"] || {}
+      others = states.except("completed").map { |name, count| "#{count} #{name}" }
+      others << "#{totals["items"] - totals["items_run"]} not run" if totals["items_run"] < totals["items"]
+      ["#{states.fetch("completed", 0)}/#{totals["items"]} completed", *others].join(", ")
     end
 
     def self.total_cells(totals)
       partial = totals["partial"]
       lower = ->(key, text) { Fmt.total(text, partial.include?(key)) }
-      ["total", "#{totals["items_run"]}/#{totals["items"]} run", "", Fmt.value(totals["attempts"]), Fmt.value(totals["retries"]),
-        Fmt.value(totals["review_rounds"]),
+      ["total", states_text(totals), "", Fmt.value(totals["attempts"]), Fmt.value(totals["retries"]),
+        Fmt.value(totals["review_rounds_distinct"]), Fmt.value(totals["manual"]),
         lower.call("wall", Fmt.duration(totals["wall"])), lower.call("active", Fmt.duration(totals["active"])),
         lower.call("stopped", Fmt.duration(totals["stopped"])), "",
         lower.call("input", Fmt.count(totals["input"])), lower.call("output", Fmt.count(totals["output"])),
         lower.call("cache_creation", Fmt.count(totals["cache_creation"])), lower.call("cache_read", Fmt.count(totals["cache_read"])),
         lower.call("cost_usd", Fmt.dollars(totals["cost_usd"])),
-        totals["acceptance_passed"].nil? ? Fmt::UNKNOWN : totals["acceptance_passed"].to_s]
+        totals["acceptance_passed"].nil? ? Fmt::UNKNOWN : "#{totals["acceptance_passed"]}/#{totals["acceptance_of"] || Fmt::UNKNOWN}"]
     end
 
     def self.features_cell(features)
@@ -141,6 +185,7 @@ module DemoCalculator
       "leak: hook #{leak[:hook]}, transcript #{counts.empty? ? Fmt::UNKNOWN : known}" \
         "#{" (#{unreadable} of #{counts.size} unreadable)" if unreadable > 0}"
     end
-    private_class_method :ran_cells, :not_run_cells, :total_cells, :features_cell, :acceptance_cell
+    private_class_method :ran_cells, :not_run_cells, :total_cells, :features_cell, :acceptance_cell,
+      :completed_unmet?, :gap_cell, :states_text
   end
 end

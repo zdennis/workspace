@@ -6,7 +6,7 @@ RSpec.describe DemoCalculator::EvalChecks, ".clean_ruby_env" do
     env = {"GEM_HOME" => "/app/vendor/bundle", "GEM_PATH" => "/app/vendor/bundle",
            "BUNDLER_ORIG_GEM_HOME" => "/home/me/.gem", "BUNDLER_ORIG_GEM_PATH" => "BUNDLER_ENVIRONMENT_PRESERVER_INTENTIONALLY_NIL"}
     expect(described_class.clean_ruby_env(env)).to include(
-      "BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "RUBYLIB" => nil,
+      "BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "RUBYLIB" => nil, "RUBYGEMS_GEMDEPS" => nil,
       "GEM_HOME" => "/home/me/.gem", "GEM_PATH" => nil
     )
   end

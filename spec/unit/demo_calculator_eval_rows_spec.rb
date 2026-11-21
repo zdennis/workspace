@@ -147,5 +147,26 @@ RSpec.describe DemoCalculator::EvalRows do
     expect(rows[0][:gap]).to eq(60)
     expect(rows[1][:gap]).to be_nil
     expect(rows[2][:wall]).to eq("not run")
+    expect(rows.first(2).map { |r| r[:final] }).to eq([false, true])
+  end
+
+  it "credits a stored proof to expect_fail by its require index, with no command on the proof" do
+    data = fixture("plain_pass")
+    data["run"]["definition"]["steps"].first["require"] = [{"commits" => 1}, {"exec" => ["workspace", "step", "expect-fail", "--", "t.rb"]}]
+    data["run"]["steps"]["implement"]["attempts"].first["proofs"] = [{"proof" => "exec", "program" => "workspace", "index" => 1, "exit_code" => 0}]
+    features = described_class.features(data["run"], [])
+    expect(features).to include("expect_fail" => "fired", "require" => "missed")
+    data["run"]["steps"]["implement"]["attempts"].first["proofs"] = [{"proof" => "commits", "index" => 0, "exit_code" => 0}]
+    expect(described_class.features(data["run"], [])).to include("expect_fail" => "missed", "require" => "fired")
+  end
+
+  it "counts the manual acts of a person, not the start or the dispatches that follow them" do
+    person = ->(type, cause = nil) { {"type" => type, "actor" => "person", "cause" => cause} }
+    events = [person.call("run_started", "start"), person.call("step_dispatching", "first"), person.call("run_resumed", "resume"),
+      person.call("step_dispatching", "resume"), person.call("review_rounds_extended"), person.call("gate_approved"),
+      {"type" => "run_resumed", "actor" => "daemon"}, {"type" => "run_cancelled", "actor" => "person"}]
+    row = described_class.row(workflow: "a", run: fixture("plain_pass")["run"], events: events)
+    expect(row[:manual]).to eq(4)
+    expect(described_class.row(workflow: "a", run: nil)[:manual]).to eq("not run")
   end
 end

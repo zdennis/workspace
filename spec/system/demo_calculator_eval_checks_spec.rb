@@ -150,22 +150,39 @@ RSpec.describe DemoCalculator::EvalChecks do
   end
 
   describe "#leak_check" do
-    it "counts hook lines in the window and each transcript" do
+    def use(name, input)
+      JSON.generate("type" => "assistant", "message" => {"content" => [{"type" => "tool_use", "name" => name, "input" => input}]}) + "\n"
+    end
+
+    it "counts reads of acceptance content in the window and in each transcript, not mentions" do
       hook = File.join(tmp, "ws.jsonl")
       rotated = "#{hook}.1"
-      line = ->(at, input) { JSON.generate("type" => "tool_started", "at" => at, "input" => input) + "\n" }
+      line = ->(at, input, tool = "Bash") { JSON.generate("type" => "tool_started", "at" => at, "tool" => tool, "input" => input) + "\n" }
       File.write(hook, line.call("2026-01-01T10:05:00Z", "cat demo/calculator-acceptance/support.rb") + line.call("2026-01-01T12:00:00Z", "cat demo/calculator-acceptance/x") + line.call("2026-01-01T10:06:00Z", "ls"))
-      File.write(rotated, line.call("2026-01-01T10:01:00Z", "ruby demo/calculator-acceptance/group_1_add_sub_test.rb"))
+      File.write(rotated, line.call("2026-01-01T10:01:00Z", "git log --stat -- demo/calculator-acceptance") +
+        line.call("2026-01-01T10:02:00Z", "/w/demo/calculator-acceptance/group_1_add_sub_test.rb", "Read"))
       transcript = File.join(tmp, "t.jsonl")
-      File.write(transcript, "a calculator-acceptance b\nnothing\ncalculator-acceptance\n")
+      File.write(transcript, use("Bash", "command" => "cat demo/calculator-acceptance/group_1_add_sub_test.rb") +
+        use("Bash", "command" => "git log --stat | grep calculator-acceptance") +
+        use("Read", "file_path" => "/w/demo/calculator-acceptance/support.rb") +
+        use("Bash", "command" => "git show abc:demo/calculator-acceptance/group_2_mul_div_test.rb") +
+        JSON.generate("type" => "user", "message" => {"content" => [{"type" => "tool_result", "content" => "calculator-acceptance"}]}) + "\n")
       result = checks.leak_check(hook_files: [hook, rotated], transcripts: [transcript, File.join(tmp, "missing")],
         from: "2026-01-01T10:00:00Z", to: "2026-01-01T11:00:00Z")
-      expect(result).to eq(hook: 2, transcript: {transcript => 2, File.join(tmp, "missing") => nil})
+      expect(result).to eq(hook: 2, transcript: {transcript => 3, File.join(tmp, "missing") => nil})
+    end
+
+    it "does not count a listing, a run of the groups, an echo or a line that is not JSON" do
+      transcript = File.join(tmp, "t.jsonl")
+      File.write(transcript, use("Bash", "command" => "ruby demo/calculator-acceptance/group_1_add_sub_test.rb") +
+        use("Bash", "command" => "ls demo/calculator-acceptance") + use("Bash", "command" => "echo calculator-acceptance > notes") +
+        "not json calculator-acceptance\n")
+      expect(checks.leak_check(hook_files: [], transcripts: [transcript], from: nil)[:transcript]).to eq(transcript => 0)
     end
 
     it "counts hook lines at or after from when the window is open" do
       hook = File.join(tmp, "ws.jsonl")
-      line = ->(at) { JSON.generate("at" => at, "input" => "cat demo/calculator-acceptance/x") + "\n" }
+      line = ->(at) { JSON.generate("at" => at, "tool" => "Bash", "input" => "cat demo/calculator-acceptance/x") + "\n" }
       File.write(hook, line.call("2026-01-01T09:00:00Z") + line.call("2026-01-01T10:30:00Z") + line.call("2030-01-01T00:00:00Z"))
       result = checks.leak_check(hook_files: [hook], transcripts: [], from: "2026-01-01T10:00:00Z", to: nil)
       expect(result).to eq(hook: 2, transcript: {})
@@ -173,7 +190,7 @@ RSpec.describe DemoCalculator::EvalChecks do
 
     it "ignores matching lines outside the window" do
       hook = File.join(tmp, "ws.jsonl")
-      line = ->(at) { JSON.generate("at" => at, "input" => "cat demo/calculator-acceptance/x") + "\n" }
+      line = ->(at) { JSON.generate("at" => at, "tool" => "Bash", "input" => "cat demo/calculator-acceptance/x") + "\n" }
       File.write(hook, line.call("2026-01-01T09:59:59Z") + line.call("2026-01-01T11:00:01Z") + "not json calculator-acceptance\n")
       result = checks.leak_check(hook_files: [hook], transcripts: [], from: "2026-01-01T10:00:00Z", to: "2026-01-01T11:00:00Z")
       expect(result[:hook]).to eq(0)

@@ -51,10 +51,12 @@ module DemoCalculator
         row[:usage] = EvalReport.usage(loaded[index][:run], pricing)
         row[:acceptance] = acceptance(record, row)
       end
+      EvalReport.mark_regressions(rows)
       last = rows.reverse.find { |row| row[:ran] }
       lint = {head: last && real_head(last), offenses: nil}
       lint[:offenses] = lint(lint[:head]) if lint[:head]
-      totals = EvalReport.totals(rows, acceptance_passed: last&.dig(:acceptance)&.fetch(:passed)&.size, lint: lint[:offenses])
+      totals = EvalReport.totals(rows, acceptance_passed: last&.dig(:acceptance)&.fetch(:passed)&.size,
+        acceptance_of: last&.dig(:acceptance) && last[:item], lint: lint[:offenses])
       leak = leak(caps, queue, loaded)
       document = build_document(record, pricing, rows, totals, lint, leak)
       File.write(File.join(dir, "eval.json"), JSON.pretty_generate(document) + "\n")
@@ -161,7 +163,9 @@ module DemoCalculator
       dir = caps.dig("paths", "hook_events")
       workspace = @name || queue["workspace"]
       hook_files = (dir && workspace) ? ["#{workspace}.jsonl", "#{workspace}.jsonl.1"].map { |f| File.join(dir, f) } : []
-      transcripts = runs.flat_map { |run| EvalRows.attempts(run) }.filter_map { |a| a.dig("session", "transcript") }
+      attempts = runs.flat_map { |run| EvalRows.attempts(run) }
+      sessions = attempts.map { |a| a["session"] } + attempts.flat_map { |a| Array(a["rounds"]).map { |round| round["session"] } }
+      transcripts = sessions.filter_map { |session| session&.dig("transcript") }
       ended = runs.map { |run| run["ended_at"] }
       @checks.leak_check(hook_files: hook_files, transcripts: transcripts, from: runs.first["created_at"],
         to: ended.all? ? ended.max_by { |t| Time.parse(t) } : nil)
