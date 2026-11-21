@@ -1033,6 +1033,7 @@ RSpec.describe "a workflow run from start to completed" do
     end
 
     it "runs only the builder again while redeliver lasts, stops review_incomplete when it never writes, and a resume starts round 2 that both approve" do
+      @definition = Workspace::WorkflowDefinition.parse(File.read(fixture).sub("max_attempts: 20\n", "max_attempts: 20\nredeliver: 3\n"), id: "e2e", source: "global", path: fixture)
       to_review
       verdict("skeptic", "approve", seq: 1)
 

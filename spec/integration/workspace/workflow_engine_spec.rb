@@ -2336,13 +2336,27 @@ RSpec.describe Workspace::WorkflowEngine do
         expect(stored_run(store, "wr_1")["reason"]).to include("code" => "turn_ended_background", "since" => "2026-10-04T13:33:00Z")
       end
 
-      it "passes the step when its files exist, whatever is listed" do
+      it "holds a step whose files exist while tasks are listed, and passes it on the next Stop that lists none" do
         artifact("plan.md")
         now[0] += 60
         run = engine.turn_ended("wr_1", actor: "agent", pane: "%5", background: tasks)
 
+        expect(run["steps"]["plan"]["state"]).to eq("running")
+        expect(stored_run(store, "wr_1")["reason"]).to include("code" => "turn_ended_background")
+
+        now[0] += 60
+        run = engine.turn_ended("wr_1", actor: "agent", pane: "%5", background: [])
+
         expect(run["steps"]["plan"]["state"]).to eq("passed")
-        expect(run["reason"]).not_to include("code" => "turn_ended_background")
+      end
+
+      it "stops a step whose files exist on turn_ended_incomplete once the hold expires" do
+        artifact("plan.md")
+        now[0] += 60
+        engine.turn_ended("wr_1", actor: "agent", pane: "%5", background: tasks)
+        now[0] += 91 * 60
+
+        expect(engine.tick("wr_1", actor: "daemon")["reason"]["code"]).to eq("turn_ended_incomplete")
       end
 
       it "fails the step on a reported fail, whatever is listed" do

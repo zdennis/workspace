@@ -448,15 +448,18 @@ module Workspace
       # A file an earlier attempt left does not count: the step has to write it again.
       started = Time.iso8601(attempt["started_at"])
       stale = files.select { |file| found[file].exists && found[file].rule.nil? && found[file].mtime < started }
-      if missing.any? || invalid.any? || stale.any?
+      held = background.any? || stated_running?(attempt, status_report)
+      if held || missing.any? || invalid.any? || stale.any?
         state["state"] = "running"
         run["state"] = "waiting"
         details = {"step" => step["id"], "attempt" => attempt["n"], "missing" => missing, "stale" => stale}
         details["invalid"] = invalid if invalid.any?
         slots = WorkflowRun.slots(run, step["id"])
-        slots["reason"] = if background.any? || stated_running?(attempt, status_report)
-          # Every notification starts a new turn and a hold is hidden, so its `since` stays. A turn that says it is
-          # still running, with no task listed, waits the same way: the next turn or the sweep decides it.
+        slots["reason"] = if held
+          # Work the turn left going (a background sub-agent, say) can still change what the proofs and the check
+          # read, so the step is not judged while it runs, whether its files are written or not. Every notification
+          # starts a new turn and a hold is hidden, so its `since` stays. A turn that says it is still running, with
+          # no task listed, waits the same way: the next turn decides it, or the tick once BACKGROUND_HOLD passes.
           stop_reason(slots["reason"], nil, "turn_ended_background", details.merge("tasks" => background)).merge("seen_at" => now_iso)
         else
           stop_reason(slots["reason"], turn_started, "turn_ended_incomplete", details)

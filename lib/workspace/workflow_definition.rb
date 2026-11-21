@@ -86,7 +86,7 @@ module Workspace
     DEFAULT_MAX_ATTEMPTS = 6
 
     # Times `workflow sweep` retries a step's undelivered line when the definition says nothing.
-    DEFAULT_REDELIVER = 3
+    DEFAULT_REDELIVER = 10
 
     # The most `redeliver` may be.
     MAX_REDELIVER = 10

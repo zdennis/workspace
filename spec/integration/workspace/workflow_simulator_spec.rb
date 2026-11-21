@@ -581,10 +581,10 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
     end
 
     it "stops review_incomplete once the reruns the definition's redeliver allows leave a reviewer missing" do
-      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve}, reruns: [{}, {}, {}]}]\n")
+      result = play(reviewed, "steps:\n  design: [{reviews: {skeptic: approve}, reruns: #{Array.new(10) { {} }.to_json}}]\n")
 
       expect(result["stopped"]).to include("reason" => "review_incomplete")
-      expect(types(result).count("review_rerun")).to eq(3)
+      expect(types(result).count("review_rerun")).to eq(10)
     end
 
     it "stops review_no_change when the retry after a rejection changed nothing the review reads, spending no round" do

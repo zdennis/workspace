@@ -66,6 +66,7 @@ RSpec.describe Workspace::WorkflowSweep do
       #{"stall: #{stall}" if stall}
       #{"timeout: #{run_timeout}" if run_timeout}
       #{"timeout_action: #{run_action}" if run_action}
+      redeliver: 3
       steps:
         build:
           prompt: Build it.
@@ -1223,6 +1224,7 @@ RSpec.describe Workspace::WorkflowSweep do
       let(:lock_busy) { [false] }
       let(:locked) do
         Workspace::WorkflowDefinition.parse(<<~YAML, id: "locked", source: "global", path: "/defs/locked.yml")
+          redeliver: 3
           steps:
             build:
               prompt: Build it.
