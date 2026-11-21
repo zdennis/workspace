@@ -12,6 +12,7 @@ require "json"
 require "open3"
 require "optparse"
 
+require_relative "demo_calculator/compare"
 require_relative "demo_calculator/evaluation"
 require_relative "demo_calculator/run_record"
 require_relative "demo_calculator/wait"
@@ -335,11 +336,23 @@ module DemoCalculator
     0
   end
 
-  def self.main(argv, out: $stdout, err: $stderr)
-    options = {run_dir: nil, json: false, dry_run: false, name: nil, base: nil, out_dir: nil, wait: false, held_limit: 1200, timeout: 14_400}
+  # `eval --compare`: reads every eval.json under tmp/demo-calculator/runs, never a run file.
+  def self.compare(root, options, out)
+    docs = Dir.glob(File.join(root, "tmp", "demo-calculator", "runs", "*", "eval.json")).filter_map do |path|
+      JSON.parse(File.read(path))
+    rescue JSON::ParserError, SystemCallError
+      nil
+    end
+    out.print Compare.render(docs, last: options[:last])
+    0
+  end
+
+  def self.main(argv, out: $stdout, err: $stderr, root: File.expand_path("..", __dir__))
+    options = {compare: false, last: Compare::DEFAULT_LAST, run_dir: nil, json: false, dry_run: false, name: nil, base: nil, out_dir: nil, wait: false, held_limit: 1200, timeout: 14_400}
     parser = OptionParser.new do |o|
       o.banner = "Usage: script/demo-calculator reset|run|eval [--name WORKSPACE] [--base REF] [--out DIR] [--wait] [--held-limit DUR] [--timeout DUR] [--dry-run]\n" \
         "       eval [--run DIR] [--name WORKSPACE] [--json]\n" \
+        "       eval --compare [--last K]\n" \
         "  reset  put demo/calculator back to its stub and empty the workspace's work queue\n" \
         "  run    on a new calc-demo/<stamp> branch: empty the queue, drop the acceptance tests, reset the stub,\n" \
         "         install the demo workflows (adds them to the global workflows.sources), queue all seven,\n" \
@@ -354,6 +367,8 @@ module DemoCalculator
       o.on("--held-limit DUR", "run --wait: stop when an item stays held this long, as Ns, Nm or Nh (default 20m)") { |v| options[:held_limit] = duration(v) }
       o.on("--timeout DUR", "run --wait: stop after this long in all, as Ns, Nm or Nh (default 4h)") { |v| options[:timeout] = duration(v) }
       o.on("--run DIR", "eval: the directory holding run.json (default: the newest under tmp/demo-calculator/runs)") { |v| options[:run_dir] = v }
+      o.on("--compare", "eval: compare the last K runs of the same workflow definitions, from their eval.json files") { options[:compare] = true }
+      o.on("--last K", Integer, "eval --compare: how many runs to compare (default #{Compare::DEFAULT_LAST})") { |v| options[:last] = v }
       o.on("--json", "eval: print the eval.json document instead of the table") { options[:json] = true }
       o.on("--dry-run", "Print the commands that change something instead of running them") { options[:dry_run] = true }
     end
@@ -362,8 +377,8 @@ module DemoCalculator
       err.puts parser.help
       return 1
     end
-    root = File.expand_path("..", __dir__)
     workspace = ENV["WORKSPACE_BIN"] || File.join(root, "bin", "workspace")
+    return compare(root, options, out) if verb == "eval" && options[:compare]
     return evaluate(root, workspace, options, out, err) if verb == "eval"
     Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out,
       base: options[:base], out_dir: options[:out_dir], wait: options[:wait],

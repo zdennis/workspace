@@ -154,4 +154,42 @@ RSpec.describe DemoCalculator::Evaluation do
       ENV.delete("WORKSPACE_BIN")
     end
   end
+  describe "eval --compare" do
+    let(:root) { File.join(tmp, "croot") }
+
+    def write_eval(stamp, definitions: {"calc-01" => "d"}, attempts: 2)
+      write_json(File.join(root, "tmp", "demo-calculator", "runs", stamp, "eval.json"), {
+        "record" => {"stamp" => stamp, "branch" => "calc-demo/#{stamp}", "definitions" => definitions},
+        "header" => {"model" => "m", "agent_version" => "1", "base_sha" => "b", "workspace_sha" => "w", "price_date" => "2026-11-01"},
+        "totals" => {"attempts" => attempts, "partial" => []}
+      })
+    end
+
+    def compare(*extra)
+      out = StringIO.new
+      status = DemoCalculator.main(["eval", "--compare", *extra], out: out, err: StringIO.new, root: root)
+      [status, out.string]
+    end
+
+    it "prints one median table over three eval.json files and ignores run.json" do
+      write_eval("20261121T010000Z", attempts: 1)
+      write_eval("20261121T020000Z", attempts: 5)
+      write_eval("20261121T030000Z", attempts: 3)
+      write_json(File.join(root, "tmp", "demo-calculator", "runs", "20261121T040000Z", "run.json"), {"stamp" => "20261121T040000Z"})
+      status, text = compare
+      expect(status).to eq(0)
+      expect(text).to include("Median [min–max] over 3 runs").and match(/attempts\s+3 \[1–5\]/)
+    end
+
+    it "lists the runs only with fewer than three matching, and --last limits the set" do
+      write_eval("20261121T010000Z", definitions: {"calc-01" => "old"})
+      write_eval("20261121T020000Z")
+      write_eval("20261121T030000Z")
+      _, text = compare
+      expect(text).to include("Only 2 matching runs").and include("20261121T030000Z")
+      expect(text).not_to include("20261121T010000Z")
+      _, text = compare("--last", "1")
+      expect(text).to include("Only 1 matching run ")
+    end
+  end
 end
