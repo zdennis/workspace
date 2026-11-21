@@ -78,20 +78,34 @@ RSpec.describe DemoCalculator::Compare do
       docs = [doc("1", defs: {"a" => "1", "b" => "1"}, totals: {"attempts" => 2}), doc("2", defs: {"a" => "1", "b" => "2"}, totals: {"attempts" => 4})]
       text = described_class.render(docs, last: 2)
       expect(text).to include("Median [min–max] over 2 runs")
-      expect(text).to include("definition a: same", "definition b: differs")
+      expect(text).to include("definition a: same (file)", "definition b: differs (file)")
     end
 
     it "reads the resolved definition hash from the rows, so a changed parent shows as differs" do
       with_row = ->(stamp, sha) { doc(stamp, defs: {"a" => "same-file"}).merge("rows" => [{"workflow" => "a", "definition_sha256" => sha}]) }
       text = described_class.render([with_row.call("1", "x"), with_row.call("2", "y")], last: 2)
-      expect(text).to include("definition a: differs")
+      expect(text).to include("definition a: differs (resolved)")
       same = described_class.render([with_row.call("1", "x"), with_row.call("2", "x")], last: 2)
-      expect(same).to include("definition a: same")
+      expect(same).to include("definition a: same (resolved)")
     end
 
-    it "falls back to the file hash for a document whose rows carry no definition hash" do
+    it "compares file hashes when only some documents carry a resolved hash" do
+      old = doc("1", defs: {"a" => "same-file"})
+      new = doc("2", defs: {"a" => "same-file"}).merge("rows" => [{"workflow" => "a", "definition_sha256" => "resolved"}])
+      expect(described_class.render([old, new], last: 2)).to include("definition a: same (file)")
+      changed = doc("2", defs: {"a" => "other-file"}).merge("rows" => [{"workflow" => "a", "definition_sha256" => "resolved"}])
+      expect(described_class.render([old, changed], last: 2)).to include("definition a: differs (file)")
+    end
+
+    it "uses the file hash for documents whose rows carry no definition hash" do
       text = described_class.render([doc("1", defs: {"a" => "1"}), doc("2", defs: {"a" => "2"})], last: 2)
-      expect(text).to include("definition a: differs")
+      expect(text).to include("definition a: differs (file)")
+    end
+
+    it "says unknown when neither hash is on every document" do
+      old = doc("1", defs: {"a" => "1"})
+      new = doc("2", defs: {"b" => "1"}).merge("rows" => [{"workflow" => "a", "definition_sha256" => "r"}])
+      expect(described_class.definition_status([old, new])["a"]).to eq("unknown")
     end
 
     it "still wants 3 runs by default" do

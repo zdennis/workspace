@@ -53,17 +53,28 @@ module DemoCalculator
       loaded.select { |doc| group_key(doc) == key }.last(last)
     end
 
-    # {item id => true when its definition hash is not the same in every one of docs}. The hash is the run file's
-    # `definition_sha256` (the resolved definition that ran, so a changed parent via `extends:` shows), kept on the
-    # item's row; a document without one falls back to the hash of the definition file in the record.
+    # {item id => "same (resolved)", "differs (file)", ... or "unknown"}. Documents are compared like with like: by
+    # the run file's `definition_sha256` (the resolved definition that ran, so a changed parent via `extends:`
+    # shows; kept on the item's row) when every document has one, else by the hash of the definition file in the
+    # record when every document has one, else "unknown".
     def self.definition_status(docs)
       ids = docs.flat_map { |doc| doc.dig("record", "definitions")&.keys.to_a }.uniq.sort
-      ids.to_h { |id| [id, docs.map { |doc| definition_hash(doc, id) }.uniq.size > 1] }
+      ids.to_h { |id| [id, definition_verdict(docs, id)] }
     end
 
-    def self.definition_hash(doc, id)
+    def self.definition_verdict(docs, id)
+      readers = {"resolved" => ->(doc) { resolved_hash(doc, id) }, "file" => ->(doc) { doc.dig("record", "definitions", id) }}
+      readers.each do |kind, read|
+        hashes = docs.map(&read)
+        next if hashes.any?(&:nil?)
+        return "#{(hashes.uniq.size > 1) ? "differs" : "same"} (#{kind})"
+      end
+      "unknown"
+    end
+
+    def self.resolved_hash(doc, id)
       row = Array(doc["rows"]).find { |r| r.is_a?(Hash) && r["workflow"] == id }
-      row&.dig("definition_sha256") || doc.dig("record", "definitions", id)
+      row&.dig("definition_sha256")
     end
 
     # How many runs a comparison needs: MIN_RUNS, or fewer when `last` asks for fewer, never below 2.
@@ -132,8 +143,8 @@ module DemoCalculator
         lines << "  #{field}: #{text}"
       end
       lines << "  differing: #{differing.empty? ? "none" : differing.join(", ")}"
-      definition_status(docs).each do |id, changed|
-        lines << "  definition #{id}: #{changed ? "differs" : "same"}"
+      definition_status(docs).each do |id, verdict|
+        lines << "  definition #{id}: #{verdict}"
       end
       lines
     end
@@ -165,6 +176,6 @@ module DemoCalculator
       doc.dig("record", "stamp")
     end
 
-    private_class_method :group_key, :definition_hash, :header_lines, :table, :cell, :format_value, :stamp
+    private_class_method :group_key, :definition_verdict, :resolved_hash, :header_lines, :table, :cell, :format_value, :stamp
   end
 end
