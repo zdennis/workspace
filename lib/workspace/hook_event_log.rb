@@ -119,7 +119,11 @@ module Workspace
 
       @lock.synchronize do
         resolved = resolve_permissions(event).filter_map { |fields| write_line("permission_resolved", pane_id, fields) }
-        resolved + types.filter_map { |type| write_line(type, pane_id, fields_for(type, event)) }
+        written = types.flat_map do |type|
+          line = write_line(type, pane_id, fields_for(type, event))
+          [line, (write_policy_resolution(pane_id, event) if line && type == "permission_requested")]
+        end
+        resolved + written.compact
       end
     rescue => e
       @logger.debug { "hook_event_log: could not record (#{e.class}: #{e.message})" }
@@ -157,7 +161,7 @@ module Workspace
       when "tool_finished"
         tool_fields(event).merge("ok" => event["ok"] != false, "duration_ms" => duration(event))
       when "permission_requested"
-        note_permission(event)
+        note_permission(event) unless policy_decided?(event)
         permission_fields(event)
       when "subagent_started"
         {"agent_id" => text(event["subagent_id"], MAX_ID), "tool_use_id" => text(event["tool_use_id"], MAX_ID),
@@ -208,7 +212,23 @@ module Workspace
       fields = {"tool" => text(event["tool"], MAX_NAME), "agent_id" => text(event["agent_id"], MAX_ID)}
       input = ToolInputSummary.cap(event["input"])
       fields["input"] = input if input
+      rule = text(event["rule"], MAX_ID)
+      fields["rule"] = rule if rule
       fields
+    end
+
+    # A request the permission policy answered with allow or deny: no dialog
+    # shows, so nothing is pending and nothing later can resolve it.
+    def policy_decided?(event)
+      %w[allow deny].include?(event["decision"])
+    end
+
+    def write_policy_resolution(pane_id, event)
+      return nil unless policy_decided?(event)
+
+      write_line("permission_resolved", pane_id, permission_fields(event).merge(
+        "outcome" => (event["decision"] == "allow") ? "approved" : "denied", "by" => "policy", "wait_ms" => 0
+      ))
     end
 
     def note_permission(event)
