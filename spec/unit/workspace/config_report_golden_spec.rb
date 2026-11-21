@@ -55,7 +55,7 @@ RSpec.describe Workspace::ConfigReport, "golden documents" do
         since_v1 = %w[alerts.workflow start.copy_files commands.test_files launch.restore_window_position launch.window_width_percent events.rotate_size spine.template spine.auto codex.hooks.install
           library.install.skills_dir library.install.agents_dir library.install.user_skills_dir library.install.user_agents_dir
           tmuxinator.template tmuxinator.worktree_template tmuxinator.backups.keep tmuxinator.backups.max_age
-          agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi
+          agent.kind agent.recovery.enabled agent.permissions.default agent.permissions.rules agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi
           handoff.followup_interval handoff.followup_max handoff.followup_prompt focus.chain
           workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt
           workflows.sources workflows.default_stall workflows.turn_failed_after workflows.downtime_after workflows.infra_retry.max workflows.recover.max_per_run

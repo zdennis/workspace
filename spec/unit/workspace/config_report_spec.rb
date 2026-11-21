@@ -31,6 +31,46 @@ RSpec.describe Workspace::ConfigReport do
     doc["keys"].find { |row| row["key"] == name && (scope.nil? || row["scope"] == scope) }
   end
 
+  describe "layers that combine" do
+    let(:global_path) { write(:global, "agent:\n  permissions:\n    default: deny\n    rules:\n      - {tool: Bash, pattern: \"rm *\", action: deny}\n") }
+
+    before do
+      global_path
+      write("api", "agent:\n  permissions:\n    default: ask\n    rules:\n      - {tool: Read, action: allow}\n")
+      write("api.worktree-fix", "agent:\n  permissions:\n    default: allow\n    rules:\n      - {tool: Edit, action: ask}\n")
+    end
+
+    let(:doc) { report.show("api.worktree-fix") }
+
+    it "shows the most restrictive default as effective, and only that layer active" do
+      row = key_row(doc, "agent.permissions.default")
+      expect(row["effective"]).to eq("deny")
+      expect(row["layers"].to_h { |l| [l["layer"], l["active"]] }).to eq("worktree" => false, "project" => false, "global" => true)
+    end
+
+    it "concatenates the rules of every layer, all active" do
+      row = key_row(doc, "agent.permissions.rules")
+      expect(row["effective"].map { |r| r["tool"] }).to eq(%w[Bash Read Edit])
+      expect(row["layers"].map { |l| l["active"] }).to eq([true, true, true])
+    end
+
+    it "leaves a layer with an invalid value out" do
+      write("api.worktree-fix", "agent:\n  permissions:\n    default: permit\n    rules: nope\n")
+      doc = report.show("api.worktree-fix")
+      expect(key_row(doc, "agent.permissions.default")["effective"]).to eq("deny")
+      rules = key_row(doc, "agent.permissions.rules")
+      expect(rules["effective"].map { |r| r["tool"] }).to eq(%w[Bash Read])
+      expect(rules["layers"].last).to include("layer" => "worktree", "active" => false)
+    end
+
+    it "falls back to the default when no layer sets the key" do
+      File.delete(global_path)
+      write("api", "{}\n")
+      write("api.worktree-fix", "{}\n")
+      expect(key_row(report.show("api.worktree-fix"), "agent.permissions.default")["effective"]).to eq("ask")
+    end
+  end
+
   describe "non-finite numbers" do
     it "reports .inf, -.inf and .nan as invalid_value problems and keeps every document JSON-safe" do
       path = write("api", "dev:\n  ready_timeout: .inf\n  kill_grace: -.inf\n  stop_timeout: .nan\n")

@@ -111,8 +111,8 @@ module Workspace
 
     # Limits on a `deny:` list: patterns, their length, and `*` or `?` in one (a long run of wildcards makes a glob slow).
     MAX_DENY = 50
-    MAX_DENY_LENGTH = 200
-    MAX_DENY_WILDCARDS = 8
+    MAX_DENY_LENGTH = PermissionRules::MAX_PATTERN_LENGTH
+    MAX_DENY_WILDCARDS = PermissionRules::MAX_PATTERN_WILDCARDS
 
     # Seconds a `status:` check may run when it names no timeout.
     DEFAULT_CHECK_TIMEOUT = 20 * 60

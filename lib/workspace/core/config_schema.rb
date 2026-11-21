@@ -1,5 +1,6 @@
 require "shellwords"
 require_relative "agent_provider"
+require_relative "permission_rules"
 
 module Workspace
   # The one table of config keys: where each lives (project or global file),
@@ -25,6 +26,9 @@ module Workspace
 
     # Values the `context.source` key accepts.
     CONTEXT_SOURCES = %w[statusline scrape].freeze
+
+    # Values the `agent.permissions.default` key accepts.
+    PERMISSION_ACTIONS = %w[ask allow deny].freeze
 
     # Colors window-tool accepts for `highlight --color`, in the order `focus --color` lists them.
     WINDOW_TOOL_COLORS = %w[red green blue yellow orange purple white cyan magenta random].freeze
@@ -65,7 +69,7 @@ module Workspace
     # @!attribute applies [Symbol] when a change takes effect: :next_call, :next_event or :daemon_restart.
     #   Defaults to :daemon_restart for a restart key, else :next_call.
     # @!attribute sensitive [Boolean] true when the value is a command or other text `config show --json` must not print
-    # @!attribute type [Symbol] :command, :duration, :percent, :integer, :text, :path, :enum, :regex, :boolean or :mapping.
+    # @!attribute type [Symbol] :command, :duration, :percent, :integer, :text, :path, :enum, :regex, :boolean, :rules or :mapping.
     #   A :path value is a file system location a person may have typed with shell escapes, which `config validate` checks for.
     # @!attribute overridable_in [Array<Symbol>] the layers (:global, :project, :worktree) that may hold the key, lowest
     #   precedence first. Defaults from `resolve` to what the readers consult today: :global is [:global], :parent is
@@ -76,10 +80,13 @@ module Workspace
     # @!attribute min [Numeric, nil] smallest accepted value, in `unit`
     # @!attribute max [Numeric, nil] largest accepted value, in `unit`
     # @!attribute unit [String, nil] "seconds" for every :duration key
+    # @!attribute combine [Symbol, nil] how a :layered key reads when more than one layer sets it: :concat (the lists of
+    #   every layer are joined) or :most_restrictive (the strictest value wins, see {PermissionRules.most_restrictive});
+    #   nil (the default) means the first layer that sets it wins
     # @!attribute examples [Array<String>] sample values for `config keys` and the docs, for a key whose value format
     #   isn't obvious; empty by default (see {Key#example_values})
     Key = Struct.new(:name, :scope, :doc, :default, :restart, :settable, :parser, :resolve, :applies, :sensitive, :type,
-      :overridable_in, :choices, :min, :max, :unit, :examples, keyword_init: true) do
+      :overridable_in, :choices, :min, :max, :unit, :examples, :combine, keyword_init: true) do
       def initialize(scope:, restart: nil, resolve: nil, applies: nil, sensitive: false, type: :text,
         overridable_in: nil, choices: nil, unit: nil, examples: nil, **rest)
         resolve ||= (scope == :global) ? :global : :parent
@@ -324,6 +331,17 @@ module Workspace
       value
     end
     private_constant :AGENT_KIND
+
+    PERMISSION_DEFAULT = lambda do |value|
+      raise ArgumentError, "must be ask, allow or deny" unless PERMISSION_ACTIONS.include?(value)
+      value
+    end
+    private_constant :PERMISSION_DEFAULT
+
+    PERMISSION_RULES = lambda do |value|
+      PermissionRules.parse(value, label: "agent.permissions.rules")
+    end
+    private_constant :PERMISSION_RULES
 
     CONTEXT_SOURCE = lambda do |value|
       raise ArgumentError, "must be \"statusline\" or \"scrape\"" unless CONTEXT_SOURCES.include?(value)
@@ -617,6 +635,10 @@ module Workspace
         doc: "Which coding agent a new workspace's main agent pane runs: #{AgentProvider.all.map { |p| "`#{p.key}`" }.join(", ")} (default `claude`)"),
       Key.new(name: "agent.recovery.enabled", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: true, restart: true, parser: BOOLEAN,
         doc: "`true` or `false`: whether the agent daemon recovers a Claude Code agent whose turn ended on an API error (`server_error`, `overloaded`, `rate_limit` or `unknown`): it types a message to continue at the live prompt first, then restarts and resumes the conversation if that fails, on a schedule of up to 12 attempts; any other error kind gets one inbox item (default `true`; ignored when `agent.kind` isn't `claude`)"),
+      Key.new(name: "agent.permissions.default", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :enum, combine: :most_restrictive, settable: true, default: "ask", choices: PERMISSION_ACTIONS, parser: PERMISSION_DEFAULT,
+        doc: "What the permission policy does with a coding agent's tool call that no `agent.permissions.rules` entry matches: `ask` (default, the agent's own dialog), `allow` or `deny`. Of the layers that set it, the most restrictive value wins"),
+      Key.new(name: "agent.permissions.rules", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :rules, combine: :concat, settable: false, parser: PERMISSION_RULES,
+        doc: "Edited in the file by hand: a list of `{tool, pattern, action}` rules (`tool` a glob over the tool name, optional `pattern`, `action` one of `allow`, `ask`, `deny`) the permission policy matches a tool call against. Unlike other keys, the lists of the global, project and worktree files are joined, not replaced; `deny` beats `ask` beats `allow`"),
       *AgentProvider.all.map do |provider|
         Key.new(name: "agent.commands.#{provider.key}", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :command, sensitive: true, settable: true, restart: true, default: provider.executable, examples: ["#{provider.executable}-dev"], parser: COMMAND,
           doc: "Command to run for #{provider.label}; a wrapper must pass its arguments through (e.g. `#{provider.executable}-dev`, default `#{provider.executable}`). See [Agent commands](README.config.md#agent-commands)")

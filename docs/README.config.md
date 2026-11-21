@@ -92,6 +92,7 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `go.branch_namer.command` | global, project | Command that names the branch instead of the default agent's headless call (unset: the default agent is used). It is split into arguments with no shell, the description is appended as one last argument, stdin stays closed, and its stdout is the name | `my-namer --short` |
 | `agent.kind` | global, project, worktree | Which coding agent a new workspace's main agent pane runs: `claude`, `codex`, `opencode`, `pi` (default `claude`) | `claude`, `codex`, `opencode`, `pi` |
 | `agent.recovery.enabled` | global, project, worktree | `true` or `false`: whether the agent daemon recovers a Claude Code agent whose turn ended on an API error (`server_error`, `overloaded`, `rate_limit` or `unknown`): it types a message to continue at the live prompt first, then restarts and resumes the conversation if that fails, on a schedule of up to 12 attempts; any other error kind gets one inbox item (default `true`; ignored when `agent.kind` isn't `claude`) | `true`, `false` |
+| `agent.permissions.default` | global, project, worktree | What the permission policy does with a coding agent's tool call that no `agent.permissions.rules` entry matches: `ask` (default, the agent's own dialog), `allow` or `deny`. Of the layers that set it, the most restrictive value wins | `ask`, `allow`, `deny` |
 | `agent.commands.claude` | global, project, worktree | Command to run for Claude Code; a wrapper must pass its arguments through (e.g. `claude-dev`, default `claude`). See [Agent commands](README.config.md#agent-commands) | `claude-dev` |
 | `agent.commands.codex` | global, project, worktree | Command to run for Codex; a wrapper must pass its arguments through (e.g. `codex-dev`, default `codex`). See [Agent commands](README.config.md#agent-commands) | `codex-dev` |
 | `agent.commands.opencode` | global, project, worktree | Command to run for OpenCode; a wrapper must pass its arguments through (e.g. `opencode-dev`, default `opencode`). See [Agent commands](README.config.md#agent-commands) | `opencode-dev` |
@@ -402,6 +403,7 @@ New codes may be added; treat an unknown one by its `severity`.
 <!-- BEGIN GENERATED: project-settings -->
 | Setting | Description |
 |---------|-------------|
+| `agent.permissions.rules` | Edited in the file by hand: a list of `{tool, pattern, action}` rules (`tool` a glob over the tool name, optional `pattern`, `action` one of `allow`, `ask`, `deny`) the permission policy matches a tool call against. Unlike other keys, the lists of the global, project and worktree files are joined, not replaced; `deny` beats `ask` beats `allow` |
 | `dev.configured` | Read-only, shown by `config show --json` only: `effective` is `true` when the project's `dev.up` is set, which is what makes `start` and `launch` send the `dev` pack. Not a key to write |
 | `hooks` | Project-specific hooks run around workspace commands (e.g., `post_launch`, `pre_dev_up`, `post_dev_up`) |
 | `layouts` | Project-specific tmux pane layouts |

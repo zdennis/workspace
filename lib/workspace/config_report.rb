@@ -178,14 +178,16 @@ module Workspace
       hit ? [hit.layer, hit.value] : [nil, nil]
     end
 
-    # The `layers` of a row: every layer that holds a value, lowest to highest precedence, with the winner `active`.
+    # The `layers` of a row: every layer that holds a value, lowest to highest precedence, with the hits that count toward the value a reader uses `active` (see {#active_hits}).
     # A sensitive key's value is nil and `masked` true, so no layer leaks it.
-    def layer_rows(key, scan)
-      hits(key, scan).each_with_index.map do |hit, index|
+    def layer_rows(key, scan, problems = [])
+      all = hits(key, scan)
+      active = active_hits(key, all, problems)
+      all.map do |hit|
         file = scan.file(hit.layer)
         line, column = file.locations[key.name]
         {"layer" => hit.layer, "value" => key.sensitive ? nil : ConfigFile.json_safe(hit.value), "masked" => key.sensitive,
-         "file" => file.path, "line" => line, "column" => column, "active" => index.zero?}
+         "file" => file.path, "line" => line, "column" => column, "active" => active.any? { |a| a.equal?(hit) }}
       end.reverse
     end
 
@@ -226,7 +228,7 @@ module Workspace
         "value" => masked ? nil : ConfigFile.json_safe(stored),
         "masked" => masked,
         "default" => key.default,
-        "effective" => effective(key, win_stored, source, own_problems),
+        "effective" => effective(key, win_stored, source, own_problems, scan),
         "source" => source,
         "source_file" => shown ? file.path : nil,
         "line" => shown ? line : nil,
@@ -238,7 +240,7 @@ module Workspace
         "settable" => key.settable?,
         "sensitive" => key.sensitive,
         "overridable_in" => key.overridable_in.map(&:to_s),
-        "layers" => layer_rows(key, scan),
+        "layers" => layer_rows(key, scan, problems),
         "doc" => key.doc,
         "problems" => own_problems.map { |p| p.slice("severity", "code", "message", "line", "column") }
       }
@@ -308,10 +310,29 @@ module Workspace
 
     # What a reader uses: the stored value as the reader parses it, else the default.
     # Nil for a sensitive key, so its value can't leak through a parsed form.
-    def effective(key, stored, source, own_problems)
+    # A key that combines its layers reads the valid hits together (see {#active_hits}).
+    def effective(key, stored, source, own_problems, scan)
       return nil if key.sensitive || source == "unreadable"
+      return combined_effective(key, scan, own_problems) if key.combine
       return key.default if stored.nil? || own_problems.any? { |p| p["severity"] == ERROR }
       key.parse(stored)
+    end
+
+    # The hits that count toward the value a reader uses: the first for most keys; every valid one for a `:concat` key;
+    # the most restrictive valid one for a `:most_restrictive` key. A layer with an error problem does not count.
+    def active_hits(key, all, problems)
+      return all.first(1) unless key.combine
+      valid = all.reject { |hit| problems.any? { |p| p["key"] == key.name && p["layer"] == hit.layer && p["severity"] == ERROR } }
+      return valid if key.combine == :concat
+      best = PermissionRules.most_restrictive(valid.map(&:value))
+      valid.select { |hit| hit.value == best }.first(1)
+    end
+
+    def combined_effective(key, scan, own_problems)
+      active = active_hits(key, hits(key, scan), own_problems)
+      return key.default if active.empty?
+      return PermissionRules.most_restrictive(active.map(&:value)) if key.combine == :most_restrictive
+      active.reverse.flat_map { |hit| key.parse(hit.value) }
     end
 
     # The workspaces that read the file a change to this key lands in: every workspace for the global file, the

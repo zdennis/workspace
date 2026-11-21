@@ -4,7 +4,7 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { PROJECT_ROOT }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto tmuxinator.template tmuxinator.worktree_template plan.stall_seconds go.branch_namer.enabled go.branch_namer.timeout go.branch_namer.command agent.kind agent.recovery.enabled agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.workflow alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto handoff.followup_interval handoff.followup_max handoff.followup_prompt commands.test commands.lint commands.test_files start.copy_files notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto tmuxinator.template tmuxinator.worktree_template plan.stall_seconds go.branch_namer.enabled go.branch_namer.timeout go.branch_namer.command agent.kind agent.recovery.enabled agent.permissions.default agent.commands.claude agent.commands.codex agent.commands.opencode agent.commands.pi])
     expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position launch.window_width_percent focus.chain workflows.defaults.include workflows.sources workflows.default workflows.by_ref.jira workflows.by_ref.github_pr workflows.by_ref.github_issue workflows.by_ref.branch workflows.by_ref.prompt workflows.default_stall workflows.turn_failed_after workflows.downtime_after workflows.infra_retry.max workflows.recover.max_per_run events.rotate_size codex.hooks.install tmuxinator.backups.keep tmuxinator.backups.max_age])
   end
 
@@ -306,7 +306,7 @@ RSpec.describe Workspace::ConfigSchema do
     end
 
     it "gives every key a type" do
-      expect(described_class.all.map(&:type).uniq - %i[command duration percent integer text path enum regex boolean mapping size]).to eq([])
+      expect(described_class.all.map(&:type).uniq - %i[command duration percent integer text path enum regex boolean mapping size rules]).to eq([])
       expect(described_class.key("dev.stop_timeout").type).to eq(:duration)
     end
   end
@@ -537,5 +537,24 @@ RSpec.describe Workspace::ConfigSchema, "layers and limits" do
         key.example_values.each { |value| expect { key.parse(value) }.not_to raise_error, "#{key.name}: #{value}" }
       end
     end
+  end
+end
+
+RSpec.describe Workspace::ConfigSchema, "agent.permissions" do
+  let(:default_key) { described_class.key("agent.permissions.default") }
+  let(:rules_key) { described_class.key("agent.permissions.rules") }
+
+  it "declares default as a settable layered enum defaulting to ask" do
+    expect(default_key).to have_attributes(settable?: true, default: "ask", resolve: :layered, overridable_in: [:global, :project, :worktree], choices: %w[ask allow deny])
+    expect(%w[ask allow deny].map { |v| default_key.parse(v) }).to eq(%w[ask allow deny])
+    expect { default_key.parse("permit") }.to raise_error(ArgumentError)
+  end
+
+  it "declares rules as a layered key that config set refuses" do
+    expect(rules_key).to have_attributes(settable?: false, resolve: :layered, overridable_in: [:global, :project, :worktree])
+    expect(rules_key.parse(nil)).to eq([])
+    expect(rules_key.parse([{"tool" => "Bash", "action" => "deny"}])).to eq([{"tool" => "Bash", "action" => "deny"}])
+    expect { rules_key.parse("x") }.to raise_error(ArgumentError, /agent.permissions.rules must be a list/)
+    expect { rules_key.parse([{"tool" => "", "action" => "deny"}]) }.to raise_error(ArgumentError, /agent.permissions.rules\[0\]/)
   end
 end

@@ -29,6 +29,16 @@ RSpec.describe Workspace::Commands::Config do
     end
   end
 
+  describe "agent.permissions.default" do
+    it "stores allow, refuses a value outside ask, allow and deny, and refuses to set the rules key" do
+      command, project_settings = build_command
+      command.set("agent.permissions.default", "allow", project: "app", cwd: Dir.pwd)
+      expect(File.read(project_settings.project_config_path("app"))).to match(/permissions:\s+default: allow/)
+      expect { command.set("agent.permissions.default", "permit", project: "app", cwd: Dir.pwd) }.to raise_error(Workspace::UsageError, /Invalid agent.permissions.default/)
+      expect { command.set("agent.permissions.rules", "x", project: "app", cwd: Dir.pwd) }.to raise_error(Workspace::Error, /Unknown config key/)
+    end
+  end
+
   describe "unparseable config" do
     def corrupt_project(project_settings, name)
       path = project_settings.project_config_path(name)

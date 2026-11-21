@@ -1423,6 +1423,71 @@
       ]
     },
     {
+      "key": "agent.permissions.default",
+      "scope": "project",
+      "type": "enum",
+      "value": null,
+      "masked": false,
+      "default": "ask",
+      "effective": "ask",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "What the permission policy does with a coding agent's tool call that no `agent.permissions.rules` entry matches: `ask` (default, the agent's own dialog), `allow` or `deny`. Of the layers that set it, the most restrictive value wins",
+      "problems": [],
+      "choices": [
+        "ask",
+        "allow",
+        "deny"
+      ]
+    },
+    {
+      "key": "agent.permissions.rules",
+      "scope": "project",
+      "type": "rules",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": null,
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": false,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Edited in the file by hand: a list of `{tool, pattern, action}` rules (`tool` a glob over the tool name, optional `pattern`, `action` one of `allow`, `ask`, `deny`) the permission policy matches a tool call against. Unlike other keys, the lists of the global, project and worktree files are joined, not replaced; `deny` beats `ask` beats `allow`",
+      "problems": []
+    },
+    {
       "key": "agent.commands.claude",
       "scope": "project",
       "type": "command",

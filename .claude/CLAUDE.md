@@ -344,6 +344,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/core/` — The lowest layer: shared rules and tables that depend on nothing outside `core/`.
 - `lib/workspace/core/id_patterns.rb` — Name rules shared across sub-systems (library names, workflow ids).
 - `lib/workspace/core/config_schema.rb` — The one table of config keys: scope, default, parser, restart flag, docs.
+- `lib/workspace/core/permission_rules.rb` — Parses and checks a list of `{tool, pattern, action}` permission rules, with the pattern limits a workflow `deny:` list shares.
 - `lib/workspace/notes_dir.rb` — The one resolver for where a workspace's notes directory is.
 - `lib/workspace/config_schema_docs.rb` — Renders the config schema into the generated blocks of `docs/README.config.md`.
 - `lib/workspace/state.rb` — JSON-persisted session state.
