@@ -3,6 +3,9 @@
 # It extends rpiv-auto-approve-v2; it replaces `plan` (a plan left by an earlier goal must go first, and one
 # skeptical reviewer checks it), `implement` and `verify` (only the prompt and the dropped review pack differ;
 # the parent's check, proofs and loop are restated), and adds `acceptance` after `verify`.
+# The plan step has one reviewer, skeptical, and it names `model: sonnet`, so the plan review is a direct round: the
+# review pane starts on Sonnet and writes the verdict itself, and the Opus pane no longer sits over a Sonnet
+# sub-agent for it.
 schema_version: 0.1
 id: deliver-goal
 title: Deliver a goal, checked by the project's acceptance program
@@ -41,6 +44,19 @@ deny:
   - "*calculator2/acceptance/*"
   - "*calculator2/acceptance"
   - "*refs/demo-calc2*"
+
+# A reviewer replaces the parent's whole entry, so the parent's skeptical prompt is restated; only `model` is new.
+reviewers:
+  skeptical:
+    title: Skeptical review
+    model: sonnet
+    prompt: |
+      You review {{review.subject}}. No person will look at it. Assume it is wrong and try
+      to prove it: missing cases, wrong order, steps that can't be undone, requirements of
+      the task it doesn't meet. Approve only if you can't find a blocking problem. Do not edit
+      the plan.
+      If {{review.previous}} is set, read your earlier write-up there first and say whether
+      each objection in it was answered.
 
 replace:
   plan:

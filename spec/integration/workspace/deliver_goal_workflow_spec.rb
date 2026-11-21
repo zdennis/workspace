@@ -57,6 +57,15 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(review.call(definition.to_h)["max_rounds"]).to eq(review.call(parent)["max_rounds"])
   end
 
+  it "runs the plan review on sonnet as a direct round, with the parent's skeptical prompt unchanged" do
+    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+    skeptical = definition.to_h["reviewers"]["skeptical"]
+    expect(skeptical["model"]).to eq("sonnet")
+    expect(skeptical.except("model")).to eq(parent["reviewers"]["skeptical"])
+    plan = definition.to_h["steps"].find { |each| each["id"] == "plan" }
+    expect(Workspace::WorkflowDefinition.direct_review?(definition.to_h, plan)).to be(true)
+  end
+
   def fresh(result, id) = result["steps"].find { |each| each["id"] == id }["attempts"].map { |each| each["fresh"] }
 
   it "overrides only the prompt of implement, which tells it to start no sub-agents and finish before its status line" do
@@ -107,6 +116,7 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     result = play("happy")
     expect(fresh(result, "implement")).to eq([false])
     expect(result["outcome"]).to eq("completed")
+    expect(outcomes(result, "plan")).to eq(%w[passed])
     expect(outcomes(result, "acceptance")).to eq(%w[passed])
   end
 
