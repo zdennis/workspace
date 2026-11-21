@@ -88,6 +88,29 @@ RSpec.describe Workspace::WorkflowStarter do
       expect(dirty.details).to eq("path" => worktree, "guard" => "tracked_changed", "files" => ["a.txt"])
     end
 
+    describe "commands set at workspace scope" do
+      let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app", worktree: "app.wt", git_common_dir: File.join(@dir, ".git"))) }
+
+      before do
+        allow(commands_config).to receive(:for_project).with("app.wt").and_return({test: "rake wt"})
+        allow(commands_config).to receive(:for_project).with("app").and_return({})
+      end
+
+      it "passes when only the workspace has the command" do
+        checked = starter.preflight(definition: definition, workspace: "app.wt", worktree: worktree, inputs: {"task" => "x"})
+        expect(checked).to include("workspace" => "app.wt", "project" => "app")
+      end
+
+      it "refuses naming the workspace when it has none, though the lineage's project could" do
+        allow(commands_config).to receive(:for_project).with("app.other").and_return({})
+        known << "app"
+        error = refusal { starter.preflight(definition: definition, workspace: "app.other", worktree: worktree, inputs: {"task" => "x"}) }
+        expect(error.code).to eq("workflow_command_unset")
+        expect(error.message).to include("app.other has none", "--name app.other", "once for the whole project", "--name app")
+        expect(error.details).to include("project" => "app", "workspace" => "app.other")
+      end
+    end
+
     describe "subagents execution mode" do
       let(:fan_yaml) do
         "steps:\n  checks:\n    execution_mode: subagents\n" \
@@ -164,6 +187,24 @@ RSpec.describe Workspace::WorkflowStarter do
       error = refusal { starter.check_plan(definition: definition, step: "build", worktree: worktree) }
       expect(error.code).to eq("workflow_command_unset")
       expect(error.message).to include("workspace config set commands.test \"<test command>\" --name app")
+    end
+  end
+
+  describe "#check_plan with a worktree" do
+    let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app", worktree: "app.wt", git_common_dir: File.join(@dir, ".git"))) }
+
+    it "reads the command of the worktree's workspace, which may be set only there" do
+      allow(commands_config).to receive(:for_project).with("app.wt").and_return({test: "rake wt"})
+      expect(starter.check_plan(definition: definition, step: "build", worktree: worktree)["command"]).to eq("rake wt")
+    end
+
+    it "names the workspace in the refusal and the --name hint when it has none" do
+      allow(commands_config).to receive(:for_project).with("app.wt").and_return({})
+      known.push("app.wt", "app")
+      error = refusal { starter.check_plan(definition: definition, step: "build", worktree: worktree) }
+      expect(error.code).to eq("workflow_command_unset")
+      expect(error.message).to include("app.wt has none", "--name app.wt", "once for the whole project", "--name app")
+      expect(error.details).to include("project" => "app", "workspace" => "app.wt")
     end
   end
 

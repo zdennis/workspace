@@ -14,11 +14,11 @@ module Workspace
     # @param prompt [Workspace::WorkflowPrompt] composes a step's instructions
     # @param dispatch [Workspace::WorkflowDispatch] starts the run's first step, and refuses a pane another run holds
     # @param lineage [Workspace::WorkspaceLineage] names a checkout's parent project
-    # @param commands_config [Workspace::CommandsConfig] the project's `commands.test`/`commands.lint`
+    # @param commands_config [Workspace::CommandsConfig] a workspace's `commands.test`/`commands.lint` (its own, else its project's)
     # @param guard [Workspace::WorkflowGuard] records a run's base commit and checks a checkout is clean
     # @param gate_note [Workspace::WorkflowGateNote] names a workspace's notes directory
     # @param task_store [Workspace::TaskStore, nil] names the workspace's task in the run
-    # @param workspace_known [#call, nil] given a project name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
+    # @param workspace_known [#call, nil] given a workspace name, true when a workspace of that name exists (for `workflow check`'s `--name` hint); nil means none does
     # @param exec_program [#problem] judges argument 1 of each `exec` proof, as {WorkflowExecProgram} does (default); `workflow simulate` gives one that accepts every program
     # @param main_agent [Workspace::MainAgent, nil] reads the project's main agent kind; nil (a builder that
     #   does not wire one) skips the `subagents` refusal
@@ -56,7 +56,7 @@ module Workspace
     #   step), "pane", "inputs" and "packs" (the refs the first step's instructions use)
     # @raise [Workspace::Error] code `input_required` for a missing input, `usage` for an
     #   unknown one, `workflow_command_unset` when a step's check names a command the
-    #   project has not set, `workflow_test_files_unset` for `{{changed.tests}}` with no `commands.test_files`, `workflow_program_missing` for an `exec` program that can't run (a relative one is judged in +tree+, not at all when it is nil), `dirty_worktree` when +tree+ is not clean for a guarded step, `pane_has_run` when the pane already runs a workflow, and
+    #   workspace has not set, `workflow_test_files_unset` for `{{changed.tests}}` with no `commands.test_files`, `workflow_program_missing` for an `exec` program that can't run (a relative one is judged in +tree+, not at all when it is nil), `dirty_worktree` when +tree+ is not clean for a guarded step, `pane_has_run` when the pane already runs a workflow, and
     #   the composer's errors for a pack that can't be read
     def preflight(definition:, workspace:, worktree:, inputs:, pane: nil, tree: worktree, checkout: nil)
       data = definition.to_h
@@ -66,7 +66,7 @@ module Workspace
       check_tree(data, tree)
       project = @lineage.resolve(cwd: worktree).name
       check_execution_mode(data, project)
-      check_commands(data, project)
+      check_commands(data, workspace, project)
       check_test_files(data, workspace)
       check_exec_programs(data, tree)
       @dispatch.check_pane(pane)
@@ -110,16 +110,16 @@ module Workspace
     end
 
     # What `workflow check` runs for a step, found as a run finds it: the step's `status:` command
-    # (the project's `commands.test`/`lint` for the `command:` form), its time limit, and the checkout's HEAD
+    # (the workspace's `commands.test`/`lint` for the `command:` form), its time limit, and the checkout's HEAD
     # for `WORKSPACE_RUN_BASE_SHA`. A `status:` command is never rendered, so inputs play no part. Writes nothing.
     #
     # @param definition [Workspace::WorkflowDefinition]
     # @param step [String] a step id
-    # @param worktree [String] the checkout the check runs in and the project's commands are read from
+    # @param worktree [String] the checkout the check runs in; its workspace's commands are read
     # @return [Hash{String=>Object}] "workflow", "step", "command", "timeout" (whole seconds as an Integer), "base_sha"
     #   (empty when HEAD can't be read), "run" ({PREVIEW_RUN_ID}) and "in_checkout"
     # @raise [Workspace::Error] code `unknown_step`, `step_without_status` (the step has no `status:`) or
-    #   `workflow_command_unset` (the project command it names is not set; `details.steps` as for `start`)
+    #   `workflow_command_unset` (the workspace command it names is not set; `details.steps` as for `start`)
     def check_plan(definition:, step:, worktree:)
       data = definition.to_h
       found = step_of(data, step)
@@ -129,11 +129,12 @@ module Workspace
           code: "step_without_status", details: {"workflow" => data["id"], "step" => found["id"]})
       end
       lineage = @lineage.resolve(cwd: worktree)
-      command = status["run"] || @commands_config.for_project(lineage.name)[status["command"].to_sym]
+      workspace = lineage.worktree || lineage.name
+      command = status["run"] || @commands_config.for_project(workspace)[status["command"].to_sym]
       unless command
-        raise Workspace::Error.new("Step #{found["id"]} of workflow #{data["id"]} checks with the project's #{status["command"]} command, and #{lineage.name || "this directory"} has none. " +
-          (@workspace_known&.call(lineage.name) ? "Set it: workspace config set commands.#{status["command"]} \"<#{status["command"]} command>\" --name #{lineage.name}" : "Set commands.#{status["command"]} in this project's workspace."),
-          code: "workflow_command_unset", details: {"workflow" => data["id"], "project" => lineage.name, "commands" => [status["command"]],
+        raise Workspace::Error.new("Step #{found["id"]} of workflow #{data["id"]} checks with the #{status["command"]} command, and #{workspace || "this directory"} has none. " +
+          (@workspace_known&.call(workspace) ? "Set it: workspace config set commands.#{status["command"]} \"<#{status["command"]} command>\" --name #{workspace}#{project_hint(workspace, lineage.name, status["command"])}" : "Set commands.#{status["command"]} in this project's workspace."),
+          code: "workflow_command_unset", details: {"workflow" => data["id"], "project" => lineage.name, "workspace" => workspace, "commands" => [status["command"]],
                                                     "steps" => [{"step" => found["id"], "command" => status["command"], "via" => "status"}]})
       end
       timeout = status["timeout"] || WorkflowDefinition::DEFAULT_CHECK_TIMEOUT
@@ -242,18 +243,26 @@ module Workspace
       )
     end
 
+    def project_hint(workspace, project, role)
+      return "" if workspace == project
+      command = CommandsConfig.project_scope_command(role, project, workspace: workspace, known: @workspace_known&.call(project))
+      command ? "; or once for the whole project: #{command}" : ""
+    end
+
     # Every step's `status: command:` and every `require: command:` that isn't optional, each unset one listed.
-    def check_commands(data, project)
+    def check_commands(data, workspace, project)
       wanted = WorkflowDefinition.command_needs(data)
       return if wanted.empty?
-      set = @commands_config.for_project(project)
+      set = @commands_config.for_project(workspace)
       unset = wanted.reject { |each| set[each["command"].to_sym] }
       return if unset.empty?
       roles = unset.map { |each| each["command"] }.uniq
-      lines = unset.map { |each| "step #{each["step"]} (#{each["via"]}: command: #{each["command"]}): workspace config set commands.#{each["command"]} \"COMMAND\" --name #{project}" }
+      lines = unset.map { |each| "step #{each["step"]} (#{each["via"]}: command: #{each["command"]}): workspace config set commands.#{each["command"]} \"COMMAND\" --name #{workspace}" }
+      scoped = (workspace == project) ? [] : roles.filter_map { |role| CommandsConfig.project_scope_command(role, project, workspace: workspace, known: @workspace_known&.call(project)) }
+      lines += ["Or, once for the whole project:"] + scoped.map { |command| "  #{command}" } if scoped.any?
       raise Workspace::Error.new(
-        "Workflow #{data["id"]} checks steps with the project's #{roles.join(" and ")} command, and #{project} has none. Set each:\n  #{lines.join("\n  ")}",
-        code: "workflow_command_unset", details: {"workflow" => data["id"], "project" => project, "commands" => roles, "steps" => unset}
+        "Workflow #{data["id"]} checks steps with the #{roles.join(" and ")} command, and #{workspace} has none. Set each:\n  #{lines.join("\n  ")}",
+        code: "workflow_command_unset", details: {"workflow" => data["id"], "project" => project, "workspace" => workspace, "commands" => roles, "steps" => unset}
       )
     end
 

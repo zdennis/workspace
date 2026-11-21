@@ -9,6 +9,19 @@ module Workspace
     # The roles a project can give a command for.
     ROLES = %w[test lint].freeze
 
+    # The command that sets a role's command once for a whole project, which the "command unset" hints offer
+    # beside the workspace's own. Only offered for a worktree whose project is a workspace `--name` can name.
+    #
+    # @param role [String] `test` or `lint`
+    # @param project [String] the project's name
+    # @param workspace [String] the workspace that has no command
+    # @param known [Boolean] whether the project is a workspace
+    # @return [String, nil] nil when the workspace is the project or the project is not a workspace
+    def self.project_scope_command(role, project, workspace:, known:)
+      return nil if workspace == project || !known
+      "workspace config set commands.#{role} \"COMMAND\" --name #{project}"
+    end
+
     # @param config_resolver [Workspace::ConfigResolver]
     def initialize(config_resolver:)
       @config_resolver = config_resolver

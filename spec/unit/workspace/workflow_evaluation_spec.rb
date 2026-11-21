@@ -435,6 +435,13 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(checker.calls).to be_empty
     end
 
+    it "reads the status command through the run's workspace, not its project" do
+      stored(run_hash(:definition_step => step("status" => {"command" => "test", "timeout" => 60}), "workspace" => "app.wt-feature"))
+      produce
+      evaluation.turn_ended("wr_1", actor: "agent")
+      expect(commands.calls).to eq([[:for_project, "app.wt-feature"]])
+    end
+
     it "runs the status check outside the lock and passes the step when it exits 0" do
       stored(run_hash(definition_step: step("status" => {"command" => "test", "timeout" => 60})))
       produce
@@ -478,14 +485,14 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(progress.calls.last[2]).to include("code" => "check_failed", "code_source" => "engine")
     end
 
-    it "fails the step without running anything when the project's command is not set" do
+    it "fails the step without running anything when the workspace's command is not set" do
       stored(run_hash(definition_step: step("status" => {"command" => "lint"})))
       produce
 
       evaluation(commands_config: RecordingCommandsConfig.new).turn_ended("wr_1", actor: "agent")
 
       expect(checker.calls).to be_empty
-      expect(progress.calls).to eq([[:fail_step, "plan", {"cause" => "check", "timed_out" => false, "error" => "the project's lint command is not set",
+      expect(progress.calls).to eq([[:fail_step, "plan", {"cause" => "check", "timed_out" => false, "error" => "the workspace's lint command is not set",
                                                           "log" => File.join(artifacts, "steps", "plan.1.check.log"), "code" => "check_error", "code_source" => "engine"}]])
     end
   end
