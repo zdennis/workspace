@@ -39,6 +39,17 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(definition.to_h["max_attempts"]).to eq(25)
   end
 
+  it "overrides only the prompt and include of verify, keeping the parent's check, proofs, lock and loop" do
+    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+    verify = ->(d) { d["steps"].find { |each| each["id"] == "verify" } }
+    expect(verify.call(definition.to_h).except("prompt", "include")).to eq(verify.call(parent).except("prompt", "include"))
+    expect(verify.call(definition.to_h)["include"]).to be_nil.or be_empty
+    prompt = verify.call(definition.to_h)["prompt"]
+    expect(prompt).to include("Do not run the whole test suite or the linter yourself")
+    expect(prompt).to include("do not start sub-agents")
+    expect(prompt).not_to match(/accept|calc/i)
+  end
+
   it "uses no project words outside the deny globs" do
     expect(File.read(path).gsub(%r{"\*(calculator2/acceptance/?\*?|refs/demo-calc2\*)"}, "")).not_to match(/calc|arithmetic/i)
   end
