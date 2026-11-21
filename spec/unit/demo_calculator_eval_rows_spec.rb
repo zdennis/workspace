@@ -188,4 +188,18 @@ RSpec.describe DemoCalculator::EvalRows do
     expect(row[:manual]).to eq(4)
     expect(described_class.row(workflow: "a", run: nil)[:manual]).to eq("not run")
   end
+
+  it "counts a person's attempts, budget and time extensions as manual, and a guard_accepted event as nothing" do
+    events = %w[attempts_extended budget_extended time_extended guard_overridden guard_accepted].map { |type| {"type" => type, "actor" => "person"} }
+    expect(described_class.row(workflow: "a", run: fixture("plain_pass")["run"], events: events)[:manual]).to eq(4)
+  end
+
+  it "credits require from a step_failed event with cause require for that step only" do
+    data = fixture("plain_pass")
+    data["run"]["definition"]["steps"].first["require"] = [{"commits" => 1}]
+    data["run"]["steps"]["implement"]["attempts"].first.merge!("proofs" => [], "outcome" => "failed")
+    event = ->(step) { [{"type" => "step_failed", "cause" => "require", "step" => step}] }
+    expect(described_class.features(data["run"], event.call("implement"))["require"]).to eq("fired")
+    expect(described_class.features(data["run"], event.call("plan"))["require"]).to eq("missed")
+  end
 end

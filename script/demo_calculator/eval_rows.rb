@@ -13,7 +13,7 @@ module DemoCalculator
     SUCCESS_PATH = %w[status require expect_fail produces guard review fan_out].freeze
     FAILURE_ONLY = %w[backoff deny budget timeout].freeze
     # Events a person causes after the start; the dispatches and review starts that follow them are not counted.
-    MANUAL_TYPES = %w[run_resumed review_rounds_extended run_cancelled gate_approved gate_rejected guard_accepted
+    MANUAL_TYPES = %w[run_resumed review_rounds_extended attempts_extended budget_extended time_extended run_cancelled gate_approved gate_rejected
       guard_overridden run_paused run_unpaused resume_parked].freeze
     FEATURES = (SUCCESS_PATH + FAILURE_ONLY).freeze
 
