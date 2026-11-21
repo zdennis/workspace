@@ -264,6 +264,7 @@ module DemoCalculator
         definitions: @config.definition_ids.to_h { |id| [id, File.read(File.join(workflows, "#{id}.yml"))] }
       )
       record["acceptance_ref"] = {"name" => @config.acceptance_ref, "sha" => acceptance_sha, "removal_sha" => removal_sha} if @config.acceptance_ref
+      record.merge!(@config.record_extras) if @config.record_extras
       @record_path = path
       FileUtils.mkdir_p(dir)
       File.write(path, JSON.pretty_generate(record) + "\n")

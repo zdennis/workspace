@@ -12,17 +12,18 @@ module DemoCalculator2
       @root = root
     end
 
-    # Runs the acceptance runner for item `index` against the checkout at head.
+    # Runs the acceptance runner for `goal` against the checkout at head.
     #
     # @param base_sha [String] the ref that holds the acceptance tests (the record's acceptance sha)
-    # @return [Hash] `{passed: [index] | [], failed: [] | [index], regressions: []}`
-    def acceptance(base_sha:, head:, index:)
+    # @param goal [String] one of GOALS, such as `03-div-zero`
+    # @return [Hash] `{passed: [goal] | [], failed: [] | [goal], regressions: []}`
+    def acceptance(base_sha:, head:, goal:)
       check_rev!(base_sha)
-      goal = "#{DemoCalculator2::GOALS.fetch(index - 1)}.md"
+      position = DemoCalculator2::GOALS.index(goal) || raise(Error, "unknown goal #{goal}")
       with_worktree(head) do |dir|
-        _, ok = @runner.call([@ruby, File.join(@root, DemoCalculator2::ACCEPTANCE_RUNNER), "--root", dir, "#{DEMO_DIR}/goals/#{goal}"],
-          env: self.class.clean_ruby_env.merge("CALC2_ACCEPTANCE_REF" => base_sha), chdir: dir, timeout: @group_timeout * index)
-        {passed: ok ? [index] : [], failed: ok ? [] : [index], regressions: []}
+        _, ok = @runner.call([@ruby, File.join(@root, DemoCalculator2::ACCEPTANCE_RUNNER), "--root", dir, "#{DEMO_DIR}/goals/#{goal}.md"],
+          env: self.class.clean_ruby_env.merge("CALC2_ACCEPTANCE_REF" => base_sha), chdir: dir, timeout: @group_timeout * (position + 1))
+        {passed: ok ? [goal] : [], failed: ok ? [] : [goal], regressions: []}
       end
     end
 

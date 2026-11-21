@@ -90,7 +90,7 @@ module DemoCalculator
     # True when the row's own acceptance group fails at its head.
     def self.unmet?(row)
       acceptance = row[:acceptance]
-      !!(acceptance && acceptance[:failed].include?(row[:item]))
+      !!(acceptance && acceptance[:failed].include?(row[:goal] || row[:item]))
     end
 
     # Per-row cells of the table, plus a totals row.

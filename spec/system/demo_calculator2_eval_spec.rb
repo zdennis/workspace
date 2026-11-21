@@ -43,11 +43,12 @@ RSpec.describe DemoCalculator2::Evaluation do
     Class.new do
       attr_reader :diff_args
 
-      attr_reader :acceptance_heads
+      attr_reader :acceptance_heads, :acceptance_goals
 
-      def acceptance(base_sha:, head:, index:)
+      def acceptance(base_sha:, head:, goal:)
         (@acceptance_heads ||= []) << head
-        (head == "dirty-head") ? {passed: [], failed: [index], regressions: []} : {passed: [index], failed: [], regressions: []}
+        (@acceptance_goals ||= []) << goal
+        (head == "dirty-head") ? {passed: [], failed: [goal], regressions: []} : {passed: [goal], failed: [], regressions: []}
       end
 
       def lint(head:, gemfile:) = 0
@@ -96,6 +97,35 @@ RSpec.describe DemoCalculator2::Evaluation do
     expect(checks.acceptance_heads).to include("h0")
     expect(row).not_to have_key(:features)
     expect(result[:totals]).to include("first_pass" => 1, "first_disagreements" => 1, "accept_loops" => 1, "acceptance_passed" => 1, "acceptance_of" => 1)
+  end
+
+  it "labels rows and checks acceptance by the record's goals when only some were queued" do
+    record = JSON.parse(File.read(File.join(run_dir, "run.json")))
+    write_json(File.join(run_dir, "run.json"), record.merge("goals" => %w[03-div-zero 05-mod-pow]))
+    expect(result[:rows].map { |row| row[:goal] }).to eq(%w[03-div-zero 05-mod-pow])
+    expect(checks.acceptance_goals.uniq).to eq(["03-div-zero"])
+    expect(described_class.render(result)).to match(/^05-mod-pow\s+not run/)
+  end
+
+  it "counts a completed goal that fails its own acceptance as unmet in a subset record" do
+    record = JSON.parse(File.read(File.join(run_dir, "run.json")))
+    write_json(File.join(run_dir, "run.json"), record.merge("goals" => %w[03-div-zero 05-mod-pow]))
+    archived = Dir.glob(File.join(state, ".workflows", "archive", "*.json")).first
+    write_json(archived, JSON.parse(File.read(archived)).merge("state" => "completed"))
+    allow(checks).to receive(:acceptance) { |goal:, **| {passed: [], failed: [goal], regressions: []} }
+    expect(result[:rows].first).to include(goal: "03-div-zero", state: "completed")
+    expect(result[:totals]["completed_unmet"]).to eq(1)
+  end
+
+  it "labels rows by all of GOALS for a record without goals" do
+    expect(result[:rows].map { |row| row[:goal] }).to eq(%w[01-add-sub 02-mul-div])
+    expect(checks.acceptance_goals.uniq).to eq(["01-add-sub"])
+  end
+
+  it "refuses a record whose goals do not match its items" do
+    record = JSON.parse(File.read(File.join(run_dir, "run.json")))
+    write_json(File.join(run_dir, "run.json"), record.merge("goals" => %w[03-div-zero]))
+    expect { result }.to raise_error(DemoCalculator::Evaluation::Error, /1 goals for 2 items/)
   end
 
   it "reports review rounds per row and in the totals" do

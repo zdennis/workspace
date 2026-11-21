@@ -23,6 +23,20 @@ RSpec.describe DemoCalculator2 do
       lint_command: "bundle exec standardrb demo/calculator2", acceptance_ref: "refs/demo-calc2/acceptance-base", stub_ref: "main")
   end
 
+  it "takes a stub ref and a goal list, and records both for run.json" do
+    picked = described_class.config(stub_ref: "wip", goals: %w[02-mul-div 05-mod-pow])
+    expect(picked.queue_items.call([]).size).to eq(2)
+    expect(picked).to have_attributes(stub_ref: "wip", record_extras: {"stub_ref" => "wip", "goals" => %w[02-mul-div 05-mod-pow]})
+  end
+
+  it "picks goals by number or name, in goal order, and refuses an unknown one" do
+    expect(described_class.pick_goals("03, 01-add-sub")).to eq(%w[01-add-sub 03-div-zero])
+    expect { described_class.pick_goals("09") }.to raise_error(DemoCalculator::Refused, /no goal 09/)
+    expect { described_class.pick_goals(",") }.to raise_error(DemoCalculator::Refused, /names no goal/)
+    expect { described_class.pick_goals("") }.to raise_error(DemoCalculator::Refused, /names no goal/)
+    expect { described_class.pick_goals("01,01-add-sub") }.to raise_error(DemoCalculator::Refused, /01-add-sub more than once/)
+  end
+
   it "keeps v1's paths as the default config" do
     expect(DemoCalculator::Config.v1).to have_attributes(demo_dir: "demo/calculator", workflows_suffix: "/demo/calculator/workflows",
       runs_dir: "tmp/demo-calculator/runs", acceptance_ref: nil, lint_command: nil)

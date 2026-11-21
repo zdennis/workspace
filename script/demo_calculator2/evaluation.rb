@@ -25,11 +25,12 @@ module DemoCalculator2
       state_dir = File.dirname(caps.dig("paths", "hook_events").to_s)
       queue = (workspace_json("work-queue", "list", "--json", *name_args)["queues"] || []).first || {}
       run_ids = run_ids(record, queue)
+      goals = record_goals(record)
       loaded = record["items"].map { |item| load_run(run_ids[item["id"]], File.join(state_dir, ".workflows"), item["workflow"]) }
       rows = DemoCalculator::EvalRows.rows(loaded.map { |l| l.slice(:workflow, :run, :events, :totals) }, asks: read_asks(state_dir, @name || queue["workspace"]))
       rows.each_with_index do |row, index|
         row[:item] = index + 1
-        row[:goal] = DemoCalculator2::GOALS[index]
+        row[:goal] = goals[index]
         row[:state] = "run file missing" if loaded[index][:missing]
         row.delete(:features)
         unless row[:ran]
@@ -148,6 +149,16 @@ module DemoCalculator2
 
     private
 
+    # The goal of each queue item, in order: the record's `goals`, or all of GOALS for a record that predates it.
+    def record_goals(record)
+      goals = record["goals"]
+      goals = DemoCalculator2::GOALS unless goals.is_a?(Array)
+      known = goals.all? { |goal| DemoCalculator2::GOALS.include?(goal) }
+      fits = record["goals"].is_a?(Array) ? goals.size == record["items"].size : goals.size >= record["items"].size
+      raise Error, "run record lists #{goals.size} goals for #{record["items"].size} items" unless known && fits
+      goals
+    end
+
     def totals(rows, lint)
       ran = rows.select { |row| row[:ran] }
       checked = ran.select { |row| row[:acceptance] }
@@ -165,7 +176,7 @@ module DemoCalculator2
     # @return [Boolean, nil] nil when there is no such checkout or the check could not run
     def first_attempt(record, row, head)
       return nil unless head
-      result = @checks.acceptance(base_sha: record.dig("acceptance_ref", "sha") || record["base_sha"], head: head, index: row[:item])
+      result = @checks.acceptance(base_sha: record.dig("acceptance_ref", "sha") || record["base_sha"], head: head, goal: row[:goal])
       result[:failed].empty? && !result[:passed].empty?
     rescue DemoCalculator::EvalChecks::Error => e
       @err.puts e.message
@@ -176,7 +187,7 @@ module DemoCalculator2
     def acceptance(record, row)
       head = real_head(row)
       return nil unless head
-      @checks.acceptance(base_sha: record.dig("acceptance_ref", "sha") || record["base_sha"], head: head, index: row[:item])
+      @checks.acceptance(base_sha: record.dig("acceptance_ref", "sha") || record["base_sha"], head: head, goal: row[:goal])
     rescue DemoCalculator::EvalChecks::Error => e
       @err.puts e.message
       nil

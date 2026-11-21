@@ -24,13 +24,20 @@ module DemoCalculator2
     3
   end
 
+  def self.build_config(options)
+    args = {}
+    args[:stub_ref] = options[:stub_ref] if options[:stub_ref]
+    args[:goals] = pick_goals(options[:goals]) if options[:goals]
+    config(**args)
+  end
+
   def self.main(
     argv, out: $stdout, err: $stderr, root: File.expand_path("..", __dir__)
   )
-    options = {json: false, dry_run: false, name: nil, wait: false, run_dir: nil, base: nil, out_dir: nil}
+    options = {json: false, dry_run: false, name: nil, wait: false, run_dir: nil, base: nil, out_dir: nil, stub_ref: nil, goals: nil}
     parser = OptionParser.new do |o|
       o.banner = "Usage: script/demo-calculator2 reset|run|eval [--name WORKSPACE] [--dry-run] [--wait]\n" \
-        "       run [--base REF] [--out DIR] [--wait]\n" \
+        "       run [--base REF] [--stub-ref REF] [--goals 01,02] [--out DIR] [--wait]\n" \
         "       eval [--run DIR] [--json]\n" \
         "  reset  put demo/calculator2 back to its stub and empty the workspace's work queue\n" \
         "  run    on a new calc-demo/<stamp> branch: point refs/demo-calc2/acceptance-base at the run's base commit, empty the queue,\n" \
@@ -41,6 +48,11 @@ module DemoCalculator2
         "Run it from a clean worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
       o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory)") { |v| options[:name] = v }
       o.on("--base REF", "run: the ref to branch from (default HEAD)") { |v| options[:base] = v }
+      o.on("--stub-ref REF", "run, reset: the ref that holds the stub (default main)") { |v|
+        raise OptionParser::InvalidArgument, "needs a ref, not #{v}" if v.start_with?("-")
+        options[:stub_ref] = v
+      }
+      o.on("--goals LIST", "run: queue only these goals, such as 01,03 (default all seven)") { |v| options[:goals] = v }
       o.on("--out DIR", "run: where to write run.json (default tmp/demo-calculator2/runs/<stamp>)") { |v| options[:out_dir] = v }
       o.on("--wait", "run: watch the queue until it is empty, paused, disabled, has a held item past 20m or 4h pass") { options[:wait] = true }
       o.on("--run DIR", "eval: the directory holding run.json (default: the newest under tmp/demo-calculator2/runs)") { |v| options[:run_dir] = v }
@@ -60,7 +72,7 @@ module DemoCalculator2
       return 0
     end
     record = DemoCalculator::Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out, err: err,
-      base: options[:base], out_dir: options[:out_dir], wait: options[:wait], config: config).public_send(verb)
+      base: options[:base], out_dir: options[:out_dir], wait: options[:wait], config: build_config(options)).public_send(verb)
     wait_exit(record, err)
   rescue DemoCalculator::Refused, DemoCalculator::Evaluation::Error, OptionParser::ParseError => e
     err.puts "demo-calculator2: #{e.message}"

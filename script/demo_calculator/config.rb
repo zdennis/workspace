@@ -30,8 +30,9 @@ module DemoCalculator
   # @!attribute lint_command [String, nil] workspace-scoped commands.lint
   # @!attribute acceptance_ref [String, nil] a git ref `run` points at the main branch's sha, or nil
   # @!attribute program [String] the script's name in messages
+  # @!attribute record_extras [Hash, nil] extra keys `run` writes into run.json, such as the options the run was given
   Config = Struct.new(:demo_dir, :workflows_dir, :definition_ids, :queue_items, :restored, :template_dir, :stub_ref,
-    :acceptance_dir, :readme_path, :runs_dir, :test_command, :lint_command, :acceptance_ref, :program, keyword_init: true) do
+    :acceptance_dir, :readme_path, :runs_dir, :test_command, :lint_command, :acceptance_ref, :program, :record_extras, keyword_init: true) do
     # @return [String] the path suffix that marks a stale `workflows.sources` entry of this demo
     def workflows_suffix = "/#{workflows_dir}"
 

@@ -92,6 +92,14 @@ RSpec.describe "script/demo-calculator2" do
       expect(record["items"].size).to eq(7)
     end
 
+    it "queues only the chosen goals and records them and the stub ref in run.json" do
+      picked = DemoCalculator2.config(stub_ref: "demo-branch", goals: DemoCalculator2.pick_goals("01"))
+      record = DemoCalculator::Demo.new(root: work_dir, workspace: fake_workspace, name: "ws", out: out, err: err, clock: clock, config: picked).run
+      expect(record["items"].size).to eq(1)
+      expect(record).to include("stub_ref" => "demo-branch", "goals" => ["01-add-sub"])
+      expect(File.read(log).scan("work-queue add").size).to eq(1)
+    end
+
     it "changes nothing under --dry-run but says what it would do" do
       demo(dry_run: true).run
       expect(File.exist?(log)).to be(false)
@@ -213,6 +221,19 @@ RSpec.describe "script/demo-calculator2" do
     it "says plainly when eval has no run record" do
       expect(DemoCalculator2.main(%w[eval], out: out, err: err, root: work_dir)).to eq(1)
       expect(err.string).to include("no run record under tmp/demo-calculator2/runs")
+    end
+
+    it "refuses --stub-ref without a value instead of taking the next flag as the ref" do
+      expect(DemoCalculator2.main(%w[run --stub-ref --goals 01], out: out, err: err, root: work_dir)).to eq(1)
+      expect(err.string).to include("demo-calculator2:", "--stub-ref")
+    end
+
+    it "refuses a repeated or empty --goals before touching anything" do
+      expect(DemoCalculator2.main(%w[run --dry-run --goals 01,01], out: out, err: err, root: work_dir)).to eq(1)
+      expect(err.string).to include("more than once")
+      err.truncate(0)
+      expect(DemoCalculator2.main(["run", "--dry-run", "--goals", ""], out: out, err: err, root: work_dir)).to eq(1)
+      expect(err.string).to include("names no goal")
     end
   end
 end
