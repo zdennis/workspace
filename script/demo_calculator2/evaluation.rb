@@ -48,7 +48,7 @@ module DemoCalculator2
       lint = {head: last && real_head(last), offenses: nil}
       lint[:offenses] = lint(lint[:head]) if lint[:head]
       totals = totals(rows, lint)
-      leak = leak(caps, queue, loaded)
+      leak = leak(caps, queue, loaded, lint[:head], record.dig("acceptance_ref", "removal_sha"))
       leak &&= leak.merge(diff: diff_scan(record, lint[:head]))
       document = build_document(record, pricing, rows, totals, lint, leak)
       File.write(File.join(dir, "eval.json"), JSON.pretty_generate(document) + "\n")

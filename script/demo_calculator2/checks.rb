@@ -8,7 +8,7 @@ module DemoCalculator2
   class Checks < DemoCalculator::EvalChecks
     # @param root [String] the checkout that holds script/demo_calculator2/acceptance_runner
     def initialize(repo:, root: repo, **options)
-      super(repo: repo, acceptance_name: "calculator2/acceptance\\b", acceptance_hint: "calculator2/acceptance", **options)
+      super(repo: repo, acceptance_name: "calculator2/acceptance\\b", acceptance_hint: "calculator2/acceptance", acceptance_dir: ACCEPTANCE, **options)
       @root = root
     end
 
@@ -39,8 +39,8 @@ module DemoCalculator2
 
     # The definite reads of {DemoCalculator::EvalChecks#leak_check}, plus `possible`: the commands that could print the
     # tests from the branch's history (see {DemoCalculator::EvalChecks#possible_leak_check}).
-    def leak_check(hook_files:, transcripts:, from:, to: nil)
-      super.merge(possible: possible_leak_check(hook_files: hook_files, transcripts: transcripts, from: from, to: to))
+    def leak_check(hook_files:, transcripts:, from:, to: nil, head: nil, removal: nil)
+      super.merge(possible: possible_leak_check(hook_files: hook_files, transcripts: transcripts, from: from, to: to, head: head, removal: removal))
     end
 
     # Looks at what the run branch changed: any path under the acceptance directory that was added or changed after

@@ -60,7 +60,7 @@ module DemoCalculator
       lint[:offenses] = lint(lint[:head]) if lint[:head]
       totals = EvalReport.totals(rows, acceptance_passed: last&.dig(:acceptance)&.fetch(:passed)&.size,
         acceptance_of: last&.dig(:acceptance) && last[:item], lint: lint[:offenses])
-      leak = leak(caps, queue, loaded)
+      leak = leak(caps, queue, loaded, lint[:head], record.dig("acceptance_ref", "removal_sha"))
       document = build_document(record, pricing, rows, totals, lint, leak)
       File.write(File.join(dir, "eval.json"), JSON.pretty_generate(document) + "\n")
       {document: document, rows: rows, totals: totals, lint: lint, leak: leak, dir: dir}
@@ -171,7 +171,7 @@ module DemoCalculator
       nil
     end
 
-    def leak(caps, queue, loaded)
+    def leak(caps, queue, loaded, head, removal)
       runs = loaded.filter_map { |l| l[:run] }
       return nil if runs.empty?
       dir = caps.dig("paths", "hook_events")
@@ -182,7 +182,7 @@ module DemoCalculator
       transcripts = sessions.filter_map { |session| session&.dig("transcript") }
       ended = runs.map { |run| run["ended_at"] }
       @checks.leak_check(hook_files: hook_files, transcripts: transcripts, from: runs.first["created_at"],
-        to: ended.all? ? ended.max_by { |t| Time.parse(t) } : nil)
+        to: ended.all? ? ended.max_by { |t| Time.parse(t) } : nil, head: head, removal: removal)
     end
 
     def build_document(record, pricing, rows, totals, lint, leak)

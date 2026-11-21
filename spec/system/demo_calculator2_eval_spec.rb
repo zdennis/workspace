@@ -43,7 +43,7 @@ RSpec.describe DemoCalculator2::Evaluation do
     Class.new do
       attr_reader :diff_args
 
-      attr_reader :acceptance_heads, :acceptance_goals
+      attr_reader :acceptance_heads, :acceptance_goals, :leak_args
 
       def acceptance(base_sha:, head:, goal:)
         (@acceptance_heads ||= []) << head
@@ -53,7 +53,10 @@ RSpec.describe DemoCalculator2::Evaluation do
 
       def lint(head:, gemfile:) = 0
 
-      def leak_check(hook_files:, transcripts:, from:, to: nil) = {hook: 1, transcript: {}}
+      def leak_check(hook_files:, transcripts:, from:, to: nil, head: nil, removal: nil)
+        @leak_args = {head: head, removal: removal}
+        {hook: 1, transcript: {}}
+      end
 
       def diff_scan(base_sha:, head:, since:)
         @diff_args = [base_sha, head, since]
@@ -146,6 +149,8 @@ RSpec.describe DemoCalculator2::Evaluation do
  from the acceptance ref's sha and adds it to the leak" do
     expect(result[:leak]).to include(hook: 1, diff: {paths: [], copied: ["x"]})
     expect(checks.diff_args).to eq(["a" * 40, result[:lint][:head], "r" * 40])
+    expect(result[:lint][:head]).to be_a(String)
+    expect(checks.leak_args).to eq(head: result[:lint][:head], removal: "r" * 40)
   end
 
   it "renders the table, the step table and the leak line, and writes eval.json" do

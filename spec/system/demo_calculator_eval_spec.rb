@@ -63,7 +63,7 @@ RSpec.describe DemoCalculator::Evaluation do
 
   let(:checks) do
     Class.new do
-      attr_reader :acceptance_calls, :transcripts
+      attr_reader :acceptance_calls, :transcripts, :leak_args
 
       def acceptance(base_sha:, head:, index:)
         (@acceptance_calls ||= []) << [head, index]
@@ -73,8 +73,9 @@ RSpec.describe DemoCalculator::Evaluation do
 
       def lint(head:, gemfile:) = 4
 
-      def leak_check(hook_files:, transcripts:, from:, to: nil)
+      def leak_check(hook_files:, transcripts:, from:, to: nil, head: nil, removal: nil)
         @transcripts = transcripts
+        @leak_args = {head: head, removal: removal}
         {hook: 0, transcript: {}}
       end
     end.new
@@ -126,6 +127,12 @@ RSpec.describe DemoCalculator::Evaluation do
     write_run("archive", plain)
     evaluation.call
     expect(checks.transcripts).to contain_exactly("/t/attempt.jsonl", "/t/round.jsonl")
+  end
+
+  it "gives the leak check the last item's head and no removal commit, which a v1 record lacks" do
+    result = evaluation.call
+    expect(result[:lint][:head]).to be_a(String)
+    expect(checks.leak_args).to eq(head: result[:lint][:head], removal: nil)
   end
 
   it "reports acceptance over the groups checked in the total, and the manual count in each row" do

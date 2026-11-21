@@ -222,11 +222,26 @@ RSpec.describe DemoCalculator::EvalChecks do
     it "counts history commands that could print the tests without naming them, not definite reads or the working tree" do
       hook = File.join(tmp, "ws.jsonl")
       line = ->(input) { JSON.generate("type" => "tool_started", "at" => "2026-01-01T10:05:00Z", "tool" => "Bash", "input" => input) + "\n" }
-      File.write(hook, ["git log -p", "git log --stat", "git log --all", "git show HEAD~2", "git diff 1a2b3c4 HEAD", "git archive refs/heads/main",
+      File.write(hook, ["git log -p", "git log --stat", "git log --all", "git show HEAD~2", "git diff 1a2b3c4 HEAD", "git archive #{shas[:base]}",
         "git log --oneline", "git status", "git diff", "git show HEAD", "cat demo/calculator-acceptance/support.rb",
         "git show HEAD~2:demo/calculator-acceptance/support.rb"].map(&line).join)
       result = checks.possible_leak_check(hook_files: [hook], transcripts: [], from: "2026-01-01T10:00:00Z", to: "2026-01-01T11:00:00Z")
       expect(result).to eq(hook: 6, transcript: {})
+    end
+
+    it "clears a show or range only when given the removal commit and git proves it is after it and leaves the tests alone" do
+      hook = File.join(tmp, "confirm.jsonl")
+      line = ->(input) { JSON.generate("type" => "tool_started", "at" => "2026-01-01T10:05:00Z", "tool" => "Bash", "input" => input) + "\n" }
+      count = ->(command, removal) do
+        File.write(hook, line.call(command))
+        checks.possible_leak_check(hook_files: [hook], transcripts: [], from: "2026-01-01T10:00:00Z", head: shas[:broken], removal: removal)[:hook]
+      end
+      expect(count.call("git show #{shas[:broken]}", shas[:good])).to eq(0)
+      expect(count.call("git show #{shas[:broken]}", nil)).to eq(1)
+      expect(count.call("git diff --stat #{shas[:good]}..HEAD", shas[:good])).to eq(0)
+      expect(count.call("git diff --stat #{shas[:base]}..HEAD", shas[:good])).to eq(1)
+      expect(count.call("git show #{shas[:good]}", shas[:good])).to eq(1)
+      expect(count.call("git show #{shas[:base]}", shas[:good])).to eq(1)
     end
   end
 end
