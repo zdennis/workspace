@@ -22,6 +22,8 @@ module DemoCalculator
     calc-01-add-sub calc-02-mul-div calc-03-div-zero calc-04-precedence
     calc-05-mod-pow calc-06-json calc-07-repl
   ].freeze
+  # What `workspace config` sets as commands.test: runs the calculator tests.
+  TEST_COMMAND = "ruby demo/calculator/test/calc_test.rb"
   # What `reset` puts back: the pristine copies in demo/calculator/template/.
   RESTORED = %w[bin lib test USAGE.md].freeze
   # Held back from a run branch, so the agents cannot read what scores them.
@@ -329,7 +331,7 @@ module DemoCalculator
       merged = listed.map { |entry| entry.sub(%r{/+\z}, "") }.reject { |entry| entry != source && entry.end_with?(suffix) } | [source]
       workspace("config", "set", "workflows.sources", merged.join(",")) unless merged == listed
       workspace("workflow", "install")
-      workspace("config", "set", "--scope", "workspace", *name_args, "commands.test", "ruby")
+      workspace("config", "set", "--scope", "workspace", *name_args, "commands.test", TEST_COMMAND)
     end
 
     def capture(*argv, chdir:)
