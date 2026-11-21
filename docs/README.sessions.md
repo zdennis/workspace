@@ -93,7 +93,8 @@ During a Claude Code permission wait, each `--json` pane (and each [`snapshot`](
 Limits:
 
 - Both fields are `null`, not absent, on every pane, and always on a pane that isn't Claude Code or isn't waiting.
-- `sessions --json` panes also list every open wait as `waits` (`agent_id`, `tool`, `input`, `since`; the main agent is `null`), where `waiting_tool` and `waiting_input` speak for the oldest one. `input` is as sensitive as `waiting_input`. `snapshot` panes leave `waits` out.
+- `sessions --json` panes also list every open wait as `waits` (`agent_id`, `tool`, `input`, `permission`, `since`; the main agent is `null`), where `waiting_tool` and `waiting_input` speak for the oldest one. `input` is as sensitive as `waiting_input`. `snapshot` panes leave `waits` out.
+- `waiting_reason` (capability `sessions` revision 6) is `waiting_permission` when a wait was opened by a permission request, even one whose tool is unknown, `waiting_prompt` for any other wait, and `null` when the pane isn't waiting. With several waits, any permission wait makes it `waiting_permission`. The table shows a permission wait as `waiting (permission: Bash)` under the pane, naming the tool of the oldest permission wait. `snapshot` panes carry it too (capability `snapshot` revision 7). It is unrelated to the `waiting_reason` of `agent-run queue list`, which has its own values.
 - `waiting_input` is `null` for a tool the summary has no rule for, MCP tools included. `waiting_tool` is still set.
 - Both are `null` while several requests are pending, or none is. A `Notification` doesn't say whose dialog it is, so the daemon names a tool only when one request is pending. The wait is then filed under the main agent, and it can end while one of those dialogs is still open.
 - A lost main request can leave a sub-agent's only request labelling a main dialog. So can one the daemon dropped: a main tool of the same name finishing beside the dialog clears it.
@@ -214,10 +215,10 @@ The command runs through `/bin/sh -c`, in its own process group, with stdin and 
 | `WORKSPACE_ALERT_KIND` | Agent kind, e.g. `claude` |
 | `WORKSPACE_ALERT_SECONDS` | Seconds the pane has been waiting or idle (for `handoff_stalled`, since the handoff watch began) |
 | `WORKSPACE_ALERT_MESSAGE` | The agent's notification message (empty for `idle`) |
-| `WORKSPACE_ALERT_TEXT` | One-line summary, e.g. `myapp pane 0.1 (Claude Code) is waiting: Claude needs your permission to use Bash` |
 | `WORKSPACE_ALERT_REASON` | For `waiting` only: `waiting_permission` for a permission dialog, `waiting_prompt` for any other prompt |
 | `WORKSPACE_ALERT_TOOL` | For a `waiting_permission` alert, the tool asking, when known |
 | `WORKSPACE_ALERT_COMMAND` | For a `waiting_permission` alert, the first line of the tool's input (a Bash command, a file path, a pattern, a URL), at most 300 bytes, when known |
+| `WORKSPACE_ALERT_TEXT` | One-line summary, e.g. `myapp pane 0.1 (Claude Code) is waiting: Claude needs your permission to use Bash` |
 
 `workflow` is sent for a workflow run's events named in `alerts.workflow` (see [workflow alerts](README.workflow.md#alerts)); it has none of the pane variables below (no `PANE`, `PANE_ID`, `KIND`, `SECONDS` or `MESSAGE`), so a script must check `WORKSPACE_ALERT=workflow` before treating any other value as idle, and it sets `WORKSPACE_ALERT_EVENT`, `WORKSPACE_ALERT_RUN_ID`, `WORKSPACE_ALERT_STEP` and `WORKSPACE_ALERT_TEXT`, and no pane variables.
 

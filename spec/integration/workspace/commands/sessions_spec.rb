@@ -142,6 +142,38 @@ RSpec.describe Workspace::Commands::Sessions do
       expect(JSON.parse(output.string)["panes"].first["waiting_message"]).to eq("needs your [31mpermission")
     end
 
+    it "shows the permission reason, with or without a tool, and nothing extra for another prompt" do
+      pane = ->(id, reason, tool, message) {
+        {"pane_id" => id, "index" => 0, "kind" => "claude", "state" => "waiting", "waiting_reason" => reason,
+         "waiting_tool" => tool, "waiting_message" => message, "agents" => []}
+      }
+      waiting = {"workspace" => "proj", "panes" => [
+        pane.call("%1", "waiting_permission", "Bash", "needs you"),
+        pane.call("%2", "waiting_permission", nil, nil),
+        pane.call("%3", "waiting_prompt", nil, "pick one")
+      ]}
+      with_daemon(reply: waiting) { command.call(name: "proj") }
+
+      expect(output.string).to include("└─ waiting (permission: Bash): needs you")
+      expect(output.string).to include("└─ waiting (permission)\n")
+      expect(output.string).to include("└─ pick one")
+      expect(output.string).not_to include("waiting (permission): pick")
+    end
+
+    it "names the tool of the oldest permission wait, not of an older prompt wait" do
+      waiting = {"workspace" => "proj", "panes" => [
+        {"pane_id" => "%1", "index" => 0, "kind" => "claude", "state" => "waiting", "waiting_reason" => "waiting_permission",
+         "waiting_tool" => "Read", "agents" => [], "waits" => [
+           {"agent_id" => "a1", "tool" => "Read", "permission" => false, "since" => "2026-09-26T12:00:00Z"},
+           {"agent_id" => nil, "tool" => "Bash", "permission" => true, "since" => "2026-09-26T12:00:05Z"}
+         ]}
+      ]}
+      with_daemon(reply: waiting) { command.call(name: "proj") }
+
+      expect(output.string).to include("└─ waiting (permission: Bash)")
+      expect(output.string).not_to include("permission: Read")
+    end
+
     it "passes waiting_tool and waiting_input through in --json" do
       waiting = {"workspace" => "proj", "panes" => [
         {"pane_id" => "%1", "index" => 0, "state" => "waiting", "waiting_tool" => "Bash", "waiting_input" => "rm -rf build", "agents" => []},

@@ -31,7 +31,7 @@ RSpec.describe Workspace::PaneView do
     it "builds the row in the order sessions prints it" do
       expect(row(agent, context: reading).keys).to eq(%w[pane_id window review index kind label title cwd state state_since state_changed_by
         activity_state main_turn_over_since user_prompt_at transcript_path open_tools idle_seconds waiting_since waiting_seconds
-        waiting_message waiting_tool waiting_input waits stop_reason turn_failed turn_failed_since turn_failed_kind session_id display_label agents
+        waiting_message waiting_tool waiting_input waiting_reason waits stop_reason turn_failed turn_failed_since turn_failed_kind session_id display_label agents
         context_pct context_error context_updated_at last_event_at current_tool current_tool_since subagents
         hook_mode hook_events])
     end
@@ -87,9 +87,22 @@ RSpec.describe Workspace::PaneView do
 
       expect(row(agent)).to include("state" => "waiting", "waiting_since" => (now - 9).iso8601, "waiting_seconds" => 9,
         "waiting_message" => "needs you", "waits" => [
-          {"agent_id" => "a1", "tool" => "Bash", "input" => nil, "since" => (now - 5).iso8601},
-          {"agent_id" => nil, "tool" => nil, "input" => nil, "since" => (now - 9).iso8601}
+          {"agent_id" => "a1", "tool" => "Bash", "input" => nil, "permission" => false, "since" => (now - 5).iso8601},
+          {"agent_id" => nil, "tool" => nil, "input" => nil, "permission" => false, "since" => (now - 9).iso8601}
         ])
+    end
+
+    it "names the waiting reason by what opened the wait" do
+      expect(row(agent)).to include("waiting_reason" => nil)
+      agent[:waits]["a1"] = {since: now - 5, other_prompt: true}
+      expect(row(agent)).to include("waiting_reason" => "waiting_prompt")
+      agent[:waits][nil] = {since: now - 2, permission: true}
+      expect(row(agent)).to include("waiting_reason" => "waiting_permission", "waiting_tool" => nil)
+    end
+
+    it "calls a Codex permission wait a permission wait" do
+      agent[:waits][nil] = {since: now - 2, permission: true, tool: "Bash", input: "ls"}
+      expect(row(agent)).to include("waiting_reason" => "waiting_permission", "waiting_tool" => "Bash")
     end
 
     it "keeps the logged state's start while the state is the one logged" do

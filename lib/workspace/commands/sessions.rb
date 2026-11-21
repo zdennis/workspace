@@ -252,14 +252,25 @@ module Workspace
           pane["lock"],
           pane["open_questions"].to_i.positive? ? "#{pane["open_questions"]} asked" : ""
         )
-        render_waiting(pane["waiting_message"]) if pane["state"] == "waiting" && pane["waiting_message"]
+        render_waiting(pane) if pane["state"] == "waiting"
         Array(pane["agents"]).each { |agent| render_agent(agent) }
       end
 
       # Indented like a sub-agent row, so the reason reads as belonging to the
       # pane above it.
-      def render_waiting(message)
-        @output.puts "#{" " * 16}└─ #{truncate(message, 60)}"
+      # The tool of the oldest wait a permission request opened; `waiting_tool`
+      # speaks for the oldest wait of any kind. A row without `waits` falls
+      # back to `waiting_tool`.
+      def permission_tool(pane)
+        return pane["waiting_tool"] unless pane["waits"]
+
+        Array(pane["waits"]).select { |w| w["permission"] }.min_by { |w| w["since"].to_s }&.dig("tool")
+      end
+
+      def render_waiting(pane)
+        reason = (pane["waiting_reason"] == "waiting_permission") ? ["waiting (permission#{": #{permission_tool(pane)}" if permission_tool(pane)})"] : []
+        text = (reason + [pane["waiting_message"]].compact).join(": ")
+        @output.puts "#{" " * 16}└─ #{truncate(text, 60)}" unless text.empty?
       end
 
       # Loads every lock in the project's namespace once per render — never
