@@ -16,7 +16,7 @@ instructions: |
 
   This run's feature: expressions with several operators follow precedence and parentheses, so
   `calc "2 + 3 * 4"` prints 14 and `calc "(2 + 3) * 4"` prints 20. Operators of the same precedence go left to right
-  (`calc "10 - 3 - 2"` prints 5) and parentheses may nest. Keep the division-by-zero error.
+  (`calc "9 - 4 - 1"` prints 4) and parentheses may nest. Keep the division-by-zero error.
 
 max_attempts: 16
 

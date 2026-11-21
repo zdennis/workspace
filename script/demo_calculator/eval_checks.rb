@@ -109,8 +109,10 @@ module DemoCalculator
     end
 
     # Counts the agents' reads of acceptance test content: a file tool on a path in the acceptance
-    # directory, or a Bash command that cats, pages, greps, edits or `git show`s such a path. Text that
-    # only mentions the directory (a `git log --stat`, a README line, a tool's output) is not a read.
+    # directory, or a Bash command that starts with a reader, a lister, `tar`, `ruby` (a run of a group
+    # file) or `git show|archive|cat-file|ls-tree` and names the directory. Text that only mentions the
+    # directory (a `git log --stat`, a README line, a tool's output) is not a read. A session's sub-agent
+    # transcripts (`<session>/subagents/agent-*.jsonl`) count toward its transcript.
     #
     # @param hook_files [Array<String>] the hook log and its `.1` rotation
     # @param transcripts [Array<String>] session `transcript` paths of attempts and review rounds
