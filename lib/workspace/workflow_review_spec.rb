@@ -10,7 +10,10 @@ module Workspace
   # Every problem is handed to the `report` callable, so {WorkflowDefinition} collects them with its own.
   class WorkflowReviewSpec
     # What a top-level `reviewers:` entry may hold, and what a step's `review:` mapping may hold.
-    REVIEWER_KEYS = %w[title prompt prompt_file include parallel].freeze
+    REVIEWER_KEYS = %w[title prompt prompt_file include parallel scope].freeze
+    # A reviewer's `scope:` words: `step` (the default) gives it {WorkflowPrompt::SCOPE_TEXT}, `any` no scope rule;
+    # any other text is the rule itself.
+    SCOPES = %w[step any].freeze
     REVIEW_KEYS = %w[from need must subject revision max_rounds timeout uses context notify].freeze
     # Reviewer names whose verdict file is the engine's own: `summary.md` in the round directory ({ReviewRoundPath::SUMMARY}).
     RESERVED_NAMES = [File.basename(ReviewRoundPath::SUMMARY, ".md")].freeze
@@ -47,11 +50,12 @@ module Workspace
       @duration = duration
     end
 
-    # A `reviewers:` mapping: each entry is a prompt (inline or from a file), packs and whether it runs in the parallel batch.
+    # A `reviewers:` mapping: each entry is a prompt (inline or from a file), packs, whether it runs in the parallel batch
+    # and its `scope` (what it may reject for: `step`, `any` or the rule as text).
     #
     # @param raw [Object] the `reviewers:` value
     # @param inputs [Hash] the definition's inputs
-    # @return [Hash{String=>Hash}] name to "title", "prompt", "include" and "parallel"
+    # @return [Hash{String=>Hash}] name to "title", "prompt", "include", "parallel" and "scope"
     def reviewers(raw, inputs)
       return {} if raw.nil?
       return problem("reviewers must be a mapping of reviewer name to its prompt") || {} unless raw.is_a?(Hash)
@@ -70,11 +74,13 @@ module Workspace
         @placeholders.call(prompt, inputs, "#{where}: prompt", extra: VARIABLES)
         parallel = spec.fetch("parallel", true)
         problem "#{where}: parallel must be true or false, got #{shown(parallel)}" unless [true, false].include?(parallel)
+        scope = scope(spec, where, inputs)
         reviewers[name] = {
           "title" => @text.call(spec["title"], "#{where}: title") || name,
           "prompt" => prompt,
           "include" => @names.call(spec["include"], "#{where}: include"),
-          "parallel" => parallel != false
+          "parallel" => parallel != false,
+          "scope" => scope
         }
       end
     end
@@ -219,6 +225,18 @@ module Workspace
     def problem(message)
       @report.call(message)
       nil
+    end
+
+    # `step` when absent; a null, blank or non-text value is a problem. Custom text may use the prompt's placeholders.
+    def scope(spec, where, inputs)
+      value = spec.fetch("scope", "step")
+      unless value.is_a?(String) && !value.strip.empty?
+        problem "#{where}: scope must be #{SCOPES.join(" or ")}, or the rule as text, got #{shown(value)}"
+        return "step"
+      end
+      value = value.strip
+      @placeholders.call(value, inputs, "#{where}: scope", extra: VARIABLES) unless SCOPES.include?(value)
+      value
     end
 
     def shown(value, limit = 40)

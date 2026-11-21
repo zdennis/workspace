@@ -60,7 +60,9 @@ module Workspace
         "#{name} #{row ? row["verdict"] : "no counted verdict"}"
       end
       line = "Review round #{round} of #{max_rounds} rejected the #{run["current"]} step: need #{need} of #{from.size}" \
-        "#{" with #{must.join(" and ")}" if must.any?}; got #{got.join(", ")}. Address every reviewer's concern and say how."
+        "#{" with #{must.join(" and ")}" if must.any?}; got #{got.join(", ")}. Address every reviewer's blocking concern and say how; " \
+        "what a reviewer lists under \"#{WorkflowReviewTally::NOT_BLOCKING}\" is optional" \
+        "#{", and the round's summary #{TerminalText.escape(decided["summary"])} collects it" if decided["summary"].is_a?(String)}."
       writeups = counted.filter_map do |row|
         next unless row["path"].is_a?(String) && !row["path"].empty?
         @log_tail.writeup(File.expand_path(row["path"], run["artifacts_dir"]))

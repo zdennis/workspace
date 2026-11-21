@@ -271,6 +271,44 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(text.scan("Write it with a file tool (Write or Edit), not a shell command: a verdict written by cat, tee or a redirect is not counted.").size).to eq(reviewers.size)
     end
 
+    def section(text, name)
+      text[/^## Reviewer #{name}\b.*?^--- End of reviewer #{name}$/m]
+    end
+
+    it "gives each reviewer with no scope (a stored run) the step rule, after its own prompt and before its verdict file" do
+      text = text_for(1)
+      {"skeptical" => "Before: [", "builder" => "Build it.", "fair" => "Be fair."}.each do |name, prompt_text|
+        own = section(text, name)
+        expect(own.scan(described_class::SCOPE_TEXT).size).to eq(1), name
+        expect(own.index(prompt_text)).to be < own.index(described_class::SCOPE_TEXT)
+        expect(own.index(described_class::SCOPE_TEXT)).to be < own.index("Write your verdict to #{artifacts}/reviews/plan.1.r1/#{name}.md")
+      end
+      expect(described_class::SCOPE_TEXT).to include("Reject only for: a defect in what this step was asked to deliver", "when the brief is to fix a defect, that defect is in scope",
+        "one only its changes make reachable", "regression", "\"Not blocking\"", "never make the verdict reject", "earlier write-up were fixed")
+    end
+
+    it "gives scope: step the rule, scope: any none, and scope text that text, filled as the prompt is" do
+      scoped = reviewers.merge("skeptical" => reviewers["skeptical"].merge("scope" => "step"), "builder" => reviewers["builder"].merge("scope" => "any"),
+        "fair" => reviewers["fair"].merge("scope" => "Block on anything about {{review.subject}} at {{review.revision}}."))
+      text = text_for(1, run: Workspace::WorkflowRun.from_h(reviewed_run.to_h.merge("definition" => reviewed_run.definition.merge("reviewers" => scoped))))
+
+      expect(section(text, "skeptical")).to include(described_class::SCOPE_TEXT)
+      expect(section(text, "builder")).not_to include("Reject only for", "Not blocking")
+      expect(section(text, "fair")).to include("Be fair.\n\nBlock on anything about the subject above at abc123.\n\nWrite your verdict")
+      expect(section(text, "fair")).not_to include(described_class::SCOPE_TEXT)
+    end
+
+    it "composes a shipped preset's reviewer with the step rule" do
+      preset = PresetSimulation.definition("rpiv-auto-approve-v2").to_h
+      plan = preset["steps"].find { |each| each["review"] }
+      preset_run = Workspace::WorkflowRun.from_h(run.to_h.merge("definition" => preset, "steps" => {plan["id"] => {"state" => "reviewing", "attempts" => []}}))
+      text = prompt.review_text(preset_run, plan, 1, 1, "abc123")["text"]
+      skeptical = section(text, "skeptical")
+
+      expect(skeptical).to include("Assume it is wrong and try\nto prove it", described_class::SCOPE_TEXT)
+      expect(skeptical.index("Assume it is wrong")).to be < skeptical.index(described_class::SCOPE_TEXT)
+    end
+
     it "orders an all-parallel round as one batch and an all-serial one without a batch" do
       parallel = reviewers.transform_values { |each| each.merge("parallel" => true) }
       serial = reviewers.transform_values { |each| each.merge("parallel" => false) }

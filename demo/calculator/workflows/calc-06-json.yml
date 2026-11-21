@@ -30,9 +30,10 @@ reviewers:
   skeptic:
     title: Skeptical review
     prompt: |
-      You review {{review.subject}}. Assume it is wrong and try to prove it: precedence of
-      `-` and `/` (left to right), nested parentheses, unbalanced ones, and tests that pass
-      without checking anything. Approve only if you find no blocking problem. Do not edit any file.
+      You review {{review.subject}}. Assume it is wrong and try to prove it: `--json` output that
+      is not valid JSON or lacks the expression, a result or error not printed as the brief says,
+      an error that does not exit with status 1, plain output (without `--json`) that changed, and
+      tests that pass without checking anything. Approve only if you find no blocking problem. Do not edit any file.
       If {{review.previous}} is set, read your earlier write-up there first.
 
 steps:

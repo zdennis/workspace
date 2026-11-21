@@ -21,6 +21,15 @@ instructions: |
 
 max_attempts: 16
 
+reviewers:
+  skeptic:
+    prompt: |
+      You review {{review.subject}}. Assume it is wrong and try to prove it: `%` not at the
+      precedence of `*`, `**` not binding tighter than `*` or not associating to the right
+      (`2 ** 3 ** 2` is 512), modulo by zero not giving the division-by-zero error, and tests that
+      pass without checking anything. Approve only if you find no blocking problem. Do not edit any file.
+      If {{review.previous}} is set, read your earlier write-up there first.
+
 replace:
   implement:
     title: Plan (read-only)

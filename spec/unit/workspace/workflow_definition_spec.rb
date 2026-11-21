@@ -981,8 +981,8 @@ RSpec.describe Workspace::WorkflowDefinition do
     it "parses reviewers with their defaults and a bare list as from" do
       definition = parse(with_review("    review: [skeptic, fan]\n"))
       expect(definition.to_h["reviewers"]).to eq(
-        "skeptic" => {"title" => "skeptic", "prompt" => "Doubt {{review.subject}} at {{review.revision}}.", "include" => [], "parallel" => true},
-        "fan" => {"title" => "Fan", "prompt" => "Like it.", "include" => ["plan-review"], "parallel" => false}
+        "skeptic" => {"title" => "skeptic", "prompt" => "Doubt {{review.subject}} at {{review.revision}}.", "include" => [], "parallel" => true, "scope" => "step"},
+        "fan" => {"title" => "Fan", "prompt" => "Like it.", "include" => ["plan-review"], "parallel" => false, "scope" => "step"}
       )
       expect(definition.steps[0]["review"]).to eq(
         "from" => %w[skeptic fan], "need" => 2, "must" => [], "subject" => nil, "revision" => nil, "max_rounds" => 6,
@@ -1060,6 +1060,17 @@ RSpec.describe Workspace::WorkflowDefinition do
       review = parse(with_review("    review: {from: [skeptic], subject: ~, revision: ~}\n")).steps[0]["review"]
       expect(review).to include("subject" => nil, "revision" => nil)
       expect(problems("reviewers:\n  a: {prompt: x, parallel: ~}\n#{minimal}")).to include(a_string_matching(/parallel must be true or false, got nothing/))
+    end
+
+    it "reads a reviewer's scope: step, any, or the rule as text, its placeholders checked as the prompt's" do
+      scoped = ->(value) { parse("reviewers:\n  a: {prompt: x, scope: #{value}}\n#{minimal}").to_h["reviewers"]["a"]["scope"] }
+      expect(scoped.call("step")).to eq("step")
+      expect(scoped.call("any")).to eq("any")
+      expect(scoped.call("\"  Block only on injection at {{review.revision}}.  \"")).to eq("Block only on injection at {{review.revision}}.")
+      expect(problems("reviewers:\n  a: {prompt: x, scope: \"{{inputs.nope}}\"}\n#{minimal}")).to include(a_string_matching(/reviewer a: scope.*inputs\.nope/))
+      expect(problems("reviewers:\n  a: {prompt: x, scope: ~}\n#{minimal}")).to include("reviewer a: scope must be step or any, or the rule as text, got nothing")
+      expect(problems("reviewers:\n  a: {prompt: x, scope: 1}\n#{minimal}")).to include(a_string_matching(/reviewer a: scope must be step or any.*got 1/))
+      expect(problems("reviewers:\n  a: {prompt: x, scope: \" \"}\n#{minimal}")).to include(a_string_matching(/reviewer a: scope must be/))
     end
 
     it "refuses the reviewer name summary, which would be the engine's summary.md" do
