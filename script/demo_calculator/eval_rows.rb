@@ -129,7 +129,9 @@ module DemoCalculator
       entries = Array(Array(definition["steps"]).find { |s| s["id"] == id }&.dig("require"))
       evidence = case feature
       when "status" then attempts.any? { |a| a.dig("check", "exit_code") }
-      when "require" then attempts.any? { |a| proofs(a).any? { |p| !expect_fail_proof?(p, entries) } }
+      when "require" then attempts.any? { |a| proofs(a).any? { |p| !expect_fail_proof?(p, entries) } } ||
+        checked_without_proof?(entries, attempts) ||
+        events.any? { |e| e["type"] == "step_failed" && e["cause"] == "require" && e["step"] == id }
       when "expect_fail" then attempts.any? { |a| proofs(a).any? { |p| expect_fail_proof?(p, entries) } }
       when "produces" then attempts.any? { |a| Array(a["outputs"]).any? }
       when "guard"
@@ -140,6 +142,13 @@ module DemoCalculator
           events.any? { |e| e["type"] == "review_started" && e["step"] == id }
       end
       evidence ? FIRED : MISSED
+    end
+
+    # The run file keeps a proof only for `exec` entries, so a passed attempt is the evidence that the
+    # step's other (`commits`...) entries were checked.
+    def self.checked_without_proof?(entries, attempts)
+      entries.any? { |entry| !expect_fail?(entry) && !(entry.is_a?(Hash) && entry.key?("exec")) } &&
+        attempts.any? { |a| a["outcome"] == "passed" }
     end
 
     def self.backoff_state(id, events)
@@ -191,7 +200,7 @@ module DemoCalculator
       text && Time.parse(text)
     end
 
-    private_class_method :step_state, :backoff_state, :run_level, :fan_out_state, :combine, :proofs,
+    private_class_method :step_state, :checked_without_proof?, :backoff_state, :run_level, :fan_out_state, :combine, :proofs,
       :expect_fail_proof?, :expect_fail?, :review?, :present?, :parse
   end
 end

@@ -6,7 +6,7 @@ module DemoCalculator
   # reads nothing, spawns nothing.
   #
   # Each document's `totals` hash holds numbers, or nil when unknown:
-  # attempts, retries, review_rounds, wall, active, stopped (seconds),
+  # attempts, retries, review_rounds_distinct (review_rounds in older files), wall, active, stopped (seconds),
   # input, output, cache_creation, cache_read, cost_usd (dollars),
   # acceptance_passed, lint (offenses). `totals["partial"]` may list metric
   # keys whose number is only a lower bound. Anything that is not a number
@@ -19,7 +19,7 @@ module DemoCalculator
     METRICS = [
       ["attempts", "attempts", :count],
       ["retries", "retries", :count],
-      ["review_rounds", "rounds", :count],
+      ["review_rounds_distinct", "rounds", :count],
       ["wall", "wall", :seconds],
       ["active", "active", :seconds],
       ["stopped", "stopped", :seconds],
@@ -59,7 +59,7 @@ module DemoCalculator
     # {median:, min:, max:, known:, partial:} for one totals key across docs.
     # partial is true when any run lacks the value or marks it a lower bound.
     def self.stat(docs, key)
-      values = docs.map { |doc| doc.dig("totals", key) }
+      values = docs.map { |doc| doc.dig("totals", key) || (doc.dig("totals", "review_rounds") if key == "review_rounds_distinct") }
       known = values.select { |v| v.is_a?(Numeric) }
       lower_bound = docs.any? { |doc| Array(doc.dig("totals", "partial")).include?(key) }
       {median: median(known), min: known.min, max: known.max, known: known.size,

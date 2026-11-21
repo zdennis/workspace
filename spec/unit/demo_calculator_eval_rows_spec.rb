@@ -103,7 +103,7 @@ RSpec.describe DemoCalculator::EvalRows do
 
   it "ignores skipped proofs" do
     data = fixture("plain_pass")
-    data["run"]["steps"]["implement"]["attempts"].first["proofs"] = [{"proof" => "command", "skipped" => "command_unset"}]
+    data["run"]["steps"]["implement"]["attempts"].first.merge!("outcome" => "failed", "proofs" => [{"proof" => "command", "skipped" => "command_unset"}])
     expect(described_class.features(data["run"], [])["require"]).to eq("missed")
   end
 
@@ -150,10 +150,29 @@ RSpec.describe DemoCalculator::EvalRows do
     expect(rows.first(2).map { |r| r[:final] }).to eq([false, true])
   end
 
+  it "credits require from a passed attempt when the run file holds no proof for a commits entry" do
+    data = fixture("plain_pass")
+    data["run"]["definition"]["steps"].first["require"] = [{"commits" => 1}]
+    attempt = data["run"]["steps"]["implement"]["attempts"].first.merge("proofs" => [], "outcome" => "passed")
+    data["run"]["steps"]["implement"]["attempts"] = [attempt]
+    expect(described_class.features(data["run"], [])["require"]).to eq("fired")
+    data["run"]["steps"]["implement"]["attempts"] = [attempt.merge("outcome" => "failed")]
+    expect(described_class.features(data["run"], [])["require"]).to eq("missed")
+    failed = [{"type" => "step_failed", "cause" => "require", "step" => "implement"}]
+    expect(described_class.features(data["run"], failed)["require"]).to eq("fired")
+  end
+
+  it "does not credit require from a passed attempt when the step's only entry is an exec" do
+    data = fixture("plain_pass")
+    data["run"]["definition"]["steps"].first["require"] = [{"exec" => ["ruby", "-e", "1"]}]
+    data["run"]["steps"]["implement"]["attempts"].first.merge!("proofs" => [], "outcome" => "passed")
+    expect(described_class.features(data["run"], [])["require"]).to eq("missed")
+  end
+
   it "credits a stored proof to expect_fail by its require index, with no command on the proof" do
     data = fixture("plain_pass")
     data["run"]["definition"]["steps"].first["require"] = [{"commits" => 1}, {"exec" => ["workspace", "step", "expect-fail", "--", "t.rb"]}]
-    data["run"]["steps"]["implement"]["attempts"].first["proofs"] = [{"proof" => "exec", "program" => "workspace", "index" => 1, "exit_code" => 0}]
+    data["run"]["steps"]["implement"]["attempts"].first.merge!("outcome" => "failed", "proofs" => [{"proof" => "exec", "program" => "workspace", "index" => 1, "exit_code" => 0}])
     features = described_class.features(data["run"], [])
     expect(features).to include("expect_fail" => "fired", "require" => "missed")
     data["run"]["steps"]["implement"]["attempts"].first["proofs"] = [{"proof" => "commits", "index" => 0, "exit_code" => 0}]
