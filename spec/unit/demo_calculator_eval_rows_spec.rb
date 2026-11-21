@@ -36,6 +36,22 @@ RSpec.describe DemoCalculator::EvalRows do
     expect(row).to include(review_rounds: 2, review_rounds_distinct: 2, attempts: 2, retries: 1)
   end
 
+  it "does not count a redelivered round" do
+    data = fixture("review_rejected_then_approved")
+    step = data["run"]["steps"].values.find { |st| Array(st["attempts"]).any? { |a| Array(a["rounds"]).any? } }
+    step["attempts"].first["rounds"] << {"round" => 1, "ended" => "redelivered"}
+    row = described_class.row(workflow: "w", run: data["run"], events: [])
+    expect(row).to include(review_rounds: 2, review_rounds_distinct: 2, attempts: 2, retries: 1)
+  end
+
+  it "counts a round with no ended key" do
+    data = fixture("review_rejected_then_approved")
+    step = data["run"]["steps"].values.find { |st| Array(st["attempts"]).any? { |a| Array(a["rounds"]).any? } }
+    step["attempts"].first["rounds"] << {"round" => 3}
+    row = described_class.row(workflow: "w", run: data["run"], events: [])
+    expect(row[:review_rounds]).to eq(3)
+  end
+
   it "marks review missed when the step ran with no rounds or events" do
     data = fixture("review_rejected_then_approved")
     data["run"]["steps"]["fix"]["attempts"].each { |a| a.delete("rounds") }

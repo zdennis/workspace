@@ -23,6 +23,35 @@ module DemoCalculator2
       end
     end
 
+    # Seconds the run spent in machine waits (a lock, a retry backoff), which `active` counts, and wall and active without them.
+    #
+    # @param row [Hash] has `wall` and `active`
+    # @param totals [Hash, nil] `workflow trace --json` totals
+    # @return [Hash] `machine_wait`, `wall_ex_wait`, `active_ex_wait`; nil where unknown
+    def self.machine_wait(row, totals)
+      buckets = totals && totals["machine_waiting_seconds"]
+      return {machine_wait: nil, wall_ex_wait: nil, active_ex_wait: nil} unless buckets.is_a?(Hash)
+      active = row[:active]
+      wait = buckets.values.grep(Numeric).sum
+      wait = [wait, active].min if active.is_a?(Numeric)
+      minus = ->(value) { value.is_a?(Numeric) ? [value - wait, 0].max : nil }
+      {machine_wait: wait, wall_ex_wait: minus.call(row[:wall]), active_ex_wait: minus.call(row[:active])}
+    end
+
+    # The lines under the leak line that say what the possible hits were.
+    #
+    # @param classes [Hash, nil] see {DemoCalculator2::Checks#classify_possible}
+    # @return [Array<String>]
+    def self.possible_lines(classes)
+      return [] unless classes
+      lines = %i[hook transcript].map do |source|
+        counts = classes[source]
+        "possible hits (#{source}): " + Checks::CLASSES.map { |name| "#{counts[name]} #{name.to_s.tr("_", " ")}" }.join(", ")
+      end
+      classes[:near_misses].each { |miss| lines << "near-miss (#{miss[:source]}): #{miss[:command]}" }
+      lines
+    end
+
     LOOP_STEP = "implement".freeze
 
     # How the acceptance step went in one run, from its stored attempts.

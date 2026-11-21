@@ -73,7 +73,7 @@ module DemoCalculator
     def self.row(workflow:, run:, events: [], totals: nil, next_run: nil, final: false, asks: [])
       return not_run(workflow) unless run
       attempts = attempts(run)
-      rounds = attempts.flat_map { |attempt| Array(attempt["rounds"]) }
+      rounds = attempts.flat_map { |attempt| Array(attempt["rounds"]) }.reject { |round| round["ended"] == "redelivered" }
       totals ||= {}
       manual = manual_counts(run, attempts, events, asks)
       {

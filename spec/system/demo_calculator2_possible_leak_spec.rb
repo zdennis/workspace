@@ -264,4 +264,119 @@ RSpec.describe DemoCalculator2::Checks, type: :system do
       expect(calls.count { |argv| argv.include?("diff") }).to eq(1)
     end
   end
+
+  describe "#classify_possible" do
+    let(:window) { {from: "2026-01-01T10:00:00Z", to: "2026-01-01T11:00:00Z"} }
+    let(:stat) { "git diff #{shas[:base]}..HEAD --stat" }
+    let(:near_miss) { "cd w && git diff #{shas[:base]}..HEAD -- demo/calculator2 > /tmp/g.diff" }
+
+    def hook_file(*commands, at: "2026-01-01T10:05:00Z")
+      path = File.join(tmp, "classes-#{commands.hash}.jsonl")
+      File.write(path, commands.map { |c| JSON.generate("type" => "tool_started", "at" => at, "tool" => "Bash", "input" => c) + "\n" }.join)
+      path
+    end
+
+    def transcript_file(*commands)
+      path = File.join(tmp, "session-#{commands.hash}.jsonl")
+      File.write(path, commands.map { |c| JSON.generate("message" => {"content" => [{"type" => "tool_use", "name" => "Bash", "input" => {"command" => c}}]}) + "\n" }.join)
+      path
+    end
+
+    def classify(hooks: [], transcripts: [])
+      checks.classify_possible(hook_files: hooks, transcripts: transcripts, head: shas[:test], removal: shas[:removal], **window)
+    end
+
+    def classes(*commands)
+      classify(hooks: [hook_file(*commands)])[:hook]
+    end
+
+    it "counts a stat-only command" do
+      expect(classes(stat, "git log --oneline -1 --stat")).to include(stat_only: 2, false_positive: 0, near_miss: 0, unresolved: 0)
+    end
+
+    it "counts a range or revision that changes nothing under the acceptance directory as a false positive" do
+      expect(classes("git show #{shas[:removal]}..HEAD", "git show #{shas[:lib]}:demo/calculator2/lib/calc.rb")).to include(false_positive: 2, stat_only: 0)
+    end
+
+    it "counts a patch that touches acceptance and went to a file as a near-miss, naming its hook source" do
+      result = classify(hooks: [hook_file(near_miss)])
+      expect(result[:hook]).to include(near_miss: 1)
+      expect(result[:transcript]).to eq(false_positive: 0, stat_only: 0, near_miss: 0, unresolved: 0)
+      expect(result[:near_misses]).to eq([{source: "hook", command: "git diff #{shas[:base]}..HEAD -- demo/calculator2 > /tmp/g.diff"}])
+    end
+
+    it "counts one that goes to the screen as unresolved" do
+      expect(classes("git diff #{shas[:base]}..HEAD")).to include(unresolved: 1, near_miss: 0)
+    end
+
+    it "reads the transcripts source apart from the hook source" do
+      result = classify(transcripts: [transcript_file(stat, near_miss)])
+      expect(result[:transcript]).to include(stat_only: 1, near_miss: 1)
+      expect(result[:hook].values).to all(eq(0))
+      expect(result[:near_misses]).to eq([{source: "transcript", command: "git diff #{shas[:base]}..HEAD -- demo/calculator2 > /tmp/g.diff"}])
+    end
+
+    it "keeps one near-miss entry per source and command" do
+      result = classify(hooks: [hook_file(near_miss, near_miss)], transcripts: [transcript_file(near_miss)])
+      expect(result[:near_misses].map { |miss| miss[:source] }).to eq(%w[hook transcript])
+    end
+
+    it "counts only hook lines inside the window, as possible_leak_check does" do
+      inside = hook_file(stat)
+      outside = hook_file(stat, "git diff #{shas[:base]}..HEAD", at: "2026-01-01T09:00:00Z")
+      expect(classify(hooks: [inside, outside])[:hook].values.sum).to eq(1)
+      expect(checks.possible_leak_check(hook_files: [inside, outside], transcripts: [], head: shas[:test], removal: shas[:removal], **window)[:hook]).to eq(1)
+    end
+
+    it "does not count a command that is no history read" do
+      expect(classify(hooks: [hook_file("git status", "ls")])[:hook].values).to all(eq(0))
+    end
+
+    it "counts a command it cannot sort as unresolved when git fails under it" do
+      failing = described_class.new(repo: repo, runner: ->(*, **) { raise "boom" })
+      result = failing.classify_possible(hook_files: [hook_file(stat)], transcripts: [], head: shas[:test], removal: shas[:removal], **window)
+      expect(result[:hook]).to include(unresolved: 1, stat_only: 0)
+    end
+
+    it "returns nil and warns when the transcripts cannot be read as a list" do
+      result = :unset
+      expect { result = classify(hooks: [hook_file(stat)], transcripts: 42) }.to output(/possible hits left unclassified after NoMethodError/).to_stderr
+      expect(result).to be_nil
+    end
+
+    describe "calls it will not vouch for" do
+      it "leaves an aliased git unresolved" do
+        expect(classes("git -c alias.s=show s #{shas[:removal]}..HEAD")).to include(unresolved: 1, false_positive: 0)
+      end
+
+      it "leaves another repository unresolved" do
+        expect(classes("git -C /elsewhere show #{shas[:lib]}")).to include(unresolved: 1, false_positive: 0)
+        expect(classes("GIT_DIR=/elsewhere/.git git show #{shas[:lib]}")).to include(unresolved: 1, false_positive: 0)
+      end
+
+      it "leaves a git that is fed by a pipe unresolved" do
+        expect(classes("echo #{shas[:lib]} | git show --stdin")).to include(unresolved: 1, false_positive: 0)
+      end
+
+      it "leaves a revision built by the shell unresolved" do
+        expect(classes("git show $REV", "git show `cat rev`")).to include(unresolved: 2, false_positive: 0)
+      end
+    end
+
+    describe "through leak_check" do
+      def leak(hooks, transcripts)
+        checks.leak_check(hook_files: hooks, transcripts: transcripts, head: shas[:test], removal: shas[:removal], **window)
+      end
+
+      it "adds possible_classes and leaves the flag counts as possible_leak_check gives them" do
+        hooks = [hook_file(stat, near_miss)]
+        transcripts = [transcript_file(near_miss)]
+        result = leak(hooks, transcripts)
+        expect(result[:possible]).to eq(checks.possible_leak_check(hook_files: hooks, transcripts: transcripts, head: shas[:test], removal: shas[:removal], **window))
+        expect(result[:possible]).to include(hook: 2)
+        expect(result[:possible_classes]).to eq(classify(hooks: hooks, transcripts: transcripts))
+        expect(result[:possible_classes][:hook].values.sum).to eq(result[:possible][:hook])
+      end
+    end
+  end
 end
