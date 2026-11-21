@@ -74,6 +74,26 @@ RSpec.describe DemoCalculator::EvalChecks do
     expect(worktree_count).to eq(1)
   end
 
+  it "raises an Error naming the sha when the base has no acceptance directory" do
+    expect { checks.acceptance(base_sha: "0" * 40, head: shas[:good], index: 1) }
+      .to raise_error(described_class::Error, /#{"0" * 40}/)
+    expect(worktree_count).to eq(1)
+  end
+
+  it "raises an Error when the worktree cannot be added" do
+    expect { checks.acceptance(base_sha: shas[:base], head: "0" * 40, index: 1) }
+      .to raise_error(described_class::Error, /worktree add failed/)
+  end
+
+  it "refuses a head or base_sha that starts with a dash" do
+    expect { checks.acceptance(base_sha: shas[:base], head: "--force", index: 1) }
+      .to raise_error(described_class::Error, /refusing/)
+    expect { checks.acceptance(base_sha: "-x", head: shas[:good], index: 1) }
+      .to raise_error(described_class::Error, /refusing/)
+    expect { checks.lint(head: "--force", gemfile: "g") }.to raise_error(described_class::Error, /refusing/)
+    expect(worktree_count).to eq(1)
+  end
+
   describe "#lint" do
     it "counts offenses from the injected runner's JSON" do
       seen = nil

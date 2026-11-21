@@ -10,6 +10,9 @@ module DemoCalculator
   class EvalChecks
     ACCEPTANCE_DIR = "demo/calculator-acceptance".freeze
     CALC_DIR = "demo/calculator".freeze
+    # Raised when a git step the checks depend on fails, or a revision is not a plain one.
+    class Error < StandardError; end
+
     # Groups use the ruby gems of the plain install, not the caller's bundle.
     CLEAN_RUBY_ENV = {"BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "RUBYLIB" => nil}.freeze
 
@@ -40,10 +43,12 @@ module DemoCalculator
     # @return [Hash] `{passed: [Integer], failed: [Integer], regressions: [Integer]}`
     #   (regressions are failed groups below index)
     def acceptance(base_sha:, head:, index:)
+      check_rev!(base_sha)
       with_worktree(head) do |dir|
         archive = File.join(dir, ".acceptance.tar")
-        git("archive", "--format=tar", "-o", archive, base_sha, ACCEPTANCE_DIR)
-        @runner.call(["tar", "-x", "-C", dir, "-f", archive], env: {}, chdir: nil)
+        archived = git("archive", "--format=tar", "-o", archive, base_sha, "--", ACCEPTANCE_DIR).last
+        extracted = archived && @runner.call(["tar", "-x", "-C", dir, "-f", archive], env: {}, chdir: nil).last
+        raise Error, "eval: could not read #{ACCEPTANCE_DIR} at #{base_sha}" unless extracted
         File.delete(archive) if File.exist?(archive)
         passed = []
         failed = []
@@ -116,10 +121,15 @@ module DemoCalculator
       @runner.call(["git", "-C", @repo, *args], env: {}, chdir: nil)
     end
 
+    def check_rev!(rev)
+      raise Error, "eval: refusing revision #{rev.inspect}" if rev.to_s.empty? || rev.to_s.start_with?("-")
+    end
+
     def with_worktree(head)
+      check_rev!(head)
       dir = Dir.mktmpdir("calc-eval-")
       added = git("worktree", "add", "--detach", dir, head).last
-      raise "eval: git worktree add failed for #{head}" unless added
+      raise Error, "eval: git worktree add failed for #{head}" unless added
       yield dir
     ensure
       if dir

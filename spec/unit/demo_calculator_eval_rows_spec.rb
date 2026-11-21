@@ -123,6 +123,14 @@ RSpec.describe DemoCalculator::EvalRows do
     expect(row_for("backoff_loop")[:head]).to eq("h3")
   end
 
+  it "has no ending head when the last-ended attempt recorded none" do
+    attempts = [
+      {"ended_at" => "2026-11-21T05:00:00Z", "head" => {"after" => "old"}},
+      {"ended_at" => "2026-11-21T05:10:00Z"}
+    ]
+    expect(described_class.ending_head(attempts)).to be_nil
+  end
+
   it "gives a not run row for an item with no run" do
     row = described_class.row(workflow: "calc-05", run: nil)
     expect(row).to include(workflow: "calc-05", ran: false, attempts: "not run", gap: "not run", features: {})

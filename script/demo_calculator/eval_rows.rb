@@ -112,9 +112,9 @@ module DemoCalculator
       (ended && started) ? started - ended : nil
     end
 
-    # head.after of the attempt that ended last across steps; nil when none ended with a head.
+    # head.after of the attempt that ended last across steps; nil when that attempt has none.
     def self.ending_head(attempts)
-      last = attempts.select { |a| parse(a["ended_at"]) && a.dig("head", "after") }.max_by { |a| parse(a["ended_at"]) }
+      last = attempts.select { |a| parse(a["ended_at"]) }.max_by { |a| parse(a["ended_at"]) }
       last&.dig("head", "after")
     end
 
