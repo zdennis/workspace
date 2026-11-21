@@ -597,14 +597,50 @@ RSpec.describe Workspace::WorkflowSimulator, "against the engine's own rules" do
     end
   end
 
+  # calc-05's shape: a read-only plan under guard: unchanged, then two committing steps with no on_fail. A fix that
+  # edited but did not commit used to loop to reproduce (nothing new to commit, so it failed too) and on to the
+  # guarded plan, which then stops head_moved.
+  describe "a committing step's first require failure" do
+    let(:cascade) do
+      definition("schema_version: 1\nid: demo\ntitle: D\nmax_attempts: 10\nsteps:\n" \
+        "  plan:\n    prompt: p\n    produces: [plan.md]\n    guard: unchanged\n" \
+        "  reproduce:\n    prompt: p\n    require:\n      - commits: 1\n" \
+        "  fix:\n    prompt: p\n    require:\n      - commits: 1\n")
+    end
+
+    def attempts_by_step(result)
+      result["steps"].to_h { |step| [step["id"], step["attempts"].size] }
+    end
+
+    it "retries the step itself, never reaching the steps before" do
+      result = play(cascade, "steps:\n  fix: [{require: {commits: fail}}, {}]\n")
+
+      expect(result).to include("outcome" => "completed")
+      expect(attempts_by_step(result)).to eq("plan" => 1, "reproduce" => 1, "fix" => 2)
+      expect(result["run"]["loops"]).to eq("fix->fix" => 1)
+    end
+
+    it "goes back one step only when the retry fails its require too" do
+      result = play(cascade, "steps:\n  fix: [{require: {commits: fail}}, {require: {commits: fail}}, {}]\n")
+
+      expect(result).to include("outcome" => "completed")
+      expect(attempts_by_step(result)).to eq("plan" => 1, "reproduce" => 2, "fix" => 3)
+      expect(result["run"]["loops"]).to eq("fix->fix" => 1, "fix->reproduce" => 1)
+    end
+  end
+
   it "simulates a step whose exec proof uses {{changed.tests}} and a program that is not installed" do
     exec_definition = definition("schema_version: 1\nid: demo\ntitle: D\nmax_attempts: 10\nsteps:\n  build:\n    prompt: p\n    produces: [b.md]\n    require:\n      - exec: \"nosuchprog_zz -- {{changed.tests}}\"\n")
 
     result = play(exec_definition, "steps: {}\n")
     expect(result["outcome"]).to eq("completed")
 
-    failed = play(exec_definition, "steps:\n  build: [{require: {exec: fail}}, {}]\n")
-    expect(failed["steps"].first["attempts"].first).to include("code" => "require_exec")
+    retried = play(exec_definition, "steps:\n  build: [{require: {exec: fail}}, {}]\n")
+    expect(retried["steps"].first["attempts"].first).to include("code" => "require_exec")
+    expect(retried).to include("outcome" => "completed")
+
+    failed = play(exec_definition, "steps:\n  build: [{require: {exec: fail}}, {require: {exec: fail}}]\n")
+    expect(failed["steps"].first["attempts"].map { |each| each["code"] }).to eq(%w[require_exec require_exec])
     expect(failed).to include("outcome" => "stopped")
   end
 end

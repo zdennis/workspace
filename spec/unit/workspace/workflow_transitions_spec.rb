@@ -796,6 +796,54 @@ RSpec.describe Workspace::WorkflowTransitions do
 
       expect(described_class.after_failure(run, failure)).to eq(kind: :stop)
     end
+
+    context "when the step's own require proof fails" do
+      let(:unmet) { {"cause" => "require", "require" => "commits", "code" => "require_commits"} }
+
+      it "runs the step itself again on its first require failure" do
+        expect(described_class.after_failure(implicit_run, unmet)).to eq(kind: :loop, edge: "implement->implement", to: "implement", count: 1, wait: nil)
+      end
+
+      it "retries the first step too, which has no step before" do
+        expect(described_class.after_failure(implicit_run(first: true), unmet)).to include(kind: :loop, to: "implement")
+      end
+
+      it "goes back to the step before on a repeated require failure" do
+        run = implicit_run(loops: {"implement->implement" => 1})
+
+        expect(described_class.after_failure(run, unmet)).to eq(kind: :loop, edge: "implement->plan", to: "plan", count: 1, wait: nil)
+      end
+
+      it "stops on a repeated require failure of the first step" do
+        expect(described_class.after_failure(implicit_run(first: true).merge("loops" => {"implement->implement" => 1}), unmet)).to eq(kind: :stop)
+      end
+
+      it "keeps the step's own cap and the run's attempts" do
+        capped = implicit_run
+        capped["definition"]["steps"][1]["max_attempts"] = 1
+
+        expect(described_class.after_failure(capped, unmet)).to eq(kind: :stop, limit: :step, step: "implement")
+        expect(described_class.after_failure(implicit_run(attempts: 3), unmet)).to eq(kind: :stop)
+      end
+
+      it "leaves every other failure going back one step, even after a self retry" do
+        run = implicit_run(loops: {"implement->implement" => 1})
+
+        expect(described_class.after_failure(implicit_run, failure)).to include(kind: :loop, to: "plan")
+        expect(described_class.after_failure(run, failure)).to include(kind: :loop, to: "plan")
+        expect(described_class.after_failure(implicit_run, {"cause" => "reported", "code" => "reported"})).to include(kind: :loop, to: "plan")
+      end
+
+      it "leaves an explicit on_fail as it is" do
+        goto = implicit_run
+        goto["definition"]["steps"][1]["on_fail"] = {"goto" => "plan", "max" => 2}
+        stop = implicit_run
+        stop["definition"]["steps"][1]["on_fail"] = "stop"
+
+        expect(described_class.after_failure(goto, unmet)).to include(kind: :loop, edge: "implement->plan", to: "plan")
+        expect(described_class.after_failure(stop, unmet)).to eq(kind: :stop)
+      end
+    end
   end
 
   describe "a fan_out group's failures and join" do
