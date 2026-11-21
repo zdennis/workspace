@@ -88,7 +88,7 @@ A pane the monitor watches carries five more fields, which [`workflow`](README.w
 
 ### Waiting detail
 
-During a Claude Code permission wait, each `--json` pane (and each [`snapshot`](README.snapshot.md) pane) also carries `waiting_tool` and `waiting_input` (capability `waiting_detail`): the tool the dialog asks about and a one-line summary of the call, at most 300 bytes, built like the events stream's [`input`](README.events.md#hook-event-lines). Unlike `current_tool`, `waiting_input` can hold the start of a command or a file path, so treat it as sensitive. Both come from Claude's `PermissionRequest` hook, which `session-event` forwards but which opens no wait and changes no `state`; the `Notification` still opens the wait.
+During a Claude Code permission wait, each `--json` pane (and each [`snapshot`](README.snapshot.md) pane) also carries `waiting_tool` and `waiting_input` (capability `waiting_detail`): the tool the dialog asks about and a one-line summary of the call, at most 4096 bytes, built like the events stream's [`input`](README.events.md#hook-event-lines). Unlike `current_tool`, `waiting_input` can hold the start of a command or a file path, so treat it as sensitive. Both come from Claude's `PermissionRequest` hook, which `session-event` forwards but which opens no wait and changes no `state`; the `Notification` still opens the wait.
 
 Limits:
 

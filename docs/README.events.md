@@ -93,7 +93,7 @@ Every line has `type`, `at` (ISO 8601, UTC, milliseconds), `workspace` (the name
 | `workflow_sweep_started` | `run_ids` (the going runs of the workspace). Written when the daemon starts `workflow sweep`, at most every 300 seconds. `pane_id` is `null` |
 | `workflow_process_exited` | How a process the daemon started ended: `kind` (`advance` or `sweep`), `run_id` (`run_ids` for a sweep) as on the start line, `pid`, `exit_code` or `signal` (name), `seconds`; best effort, lost if the daemon stops first. A start line with no exit line means the process could not be started (the reason is in the daemon log at `--debug`) or the daemon stopped before it ended |
 
-`input` says what the call did, in one line of at most 300 bytes (the `events_tool_input` capability). It is a summary, never the whole input:
+`input` says what the call did, in one line of at most 4096 bytes (the `events_tool_input` capability). It is a summary, never the whole input:
 
 | Tool | `input` |
 |---|---|
@@ -103,7 +103,7 @@ Every line has `type`, `at` (ISO 8601, UTC, milliseconds), `workspace` (the name
 | `WebFetch` | `url` |
 | any other tool | no `input` |
 
-Control characters (newlines, ESC, tabs) are replaced with spaces. Past 300 bytes the text is cut on a UTF-8 character boundary and ends with `…`, which counts toward the 300; there is no separate truncated flag, so an `input` ending in `…` was cut. Values that look like secrets are replaced with `[redacted]` (`NAME=value` where the name contains token, secret, key, pass, auth or credential; `Bearer` and `Basic` tokens; the password in `user:pass@`). That is best effort: a command's first line can still hold a secret, so treat `input` as sensitive; a file tool's path is as the tool was given it, so it can be absolute; render it as text, never as HTML.
+Control characters (newlines, ESC, tabs) are replaced with spaces. Past 4096 bytes the text is cut on a UTF-8 character boundary and ends with `…`, which counts toward the 4096; there is no separate truncated flag, so an `input` ending in `…` was cut. Values that look like secrets are replaced with `[redacted]` (`NAME=value` where the name contains token, secret, key, pass, auth or credential; `Bearer` and `Basic` tokens; the password in `user:pass@`). That is best effort: a command's first line can still hold a secret, so treat `input` as sensitive; a file tool's path is as the tool was given it, so it can be absolute; render it as text, never as HTML.
 
 `path` is the file an `Edit`, `Write`, `Read`, `MultiEdit`, `NotebookEdit` or `NotebookRead` works on, relative to the checkout (the nearest directory at or above the agent's working directory that holds `.git`). A file outside the checkout has no `path`.
 

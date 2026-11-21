@@ -9,7 +9,7 @@ module Workspace
   # {ELLIPSIS}, which counts toward the limit.
   module ToolInputSummary
     # Longest summary, in bytes.
-    MAX_BYTES = 300
+    MAX_BYTES = 4096
 
     # What ends a summary that was cut.
     ELLIPSIS = "…"

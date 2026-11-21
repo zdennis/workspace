@@ -507,11 +507,11 @@ RSpec.describe Workspace::Commands::SessionEvent do
           .to include("agent_id" => "sub-1")
       end
 
-      it "cuts a multi-byte command past the limit to 300 bytes of valid UTF-8" do
+      it "cuts a multi-byte command past the limit to 4096 bytes of valid UTF-8" do
         event = deliver("hook_event_name" => "PermissionRequest", "tool_name" => "Bash",
-          "tool_input" => {"command" => "echo " + "é" * 400})
+          "tool_input" => {"command" => "echo " + "é" * 5000})
 
-        expect(event["input"].bytesize).to be <= 300
+        expect(event["input"].bytesize).to be <= 4096
         expect(event["input"]).to be_valid_encoding
       end
     end
