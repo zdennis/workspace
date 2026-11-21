@@ -3,10 +3,11 @@
 # A session monitor that starts and stops nothing. +record+ keeps the event names it is told of, and
 # +scan_now+ runs the callable given to +on_scan=+, so a spec drives a scan by hand.
 class QuietSessionMonitor
-  attr_reader :events
+  attr_reader :events, :calls
 
   def initialize(events: [])
     @events = events
+    @calls = []
     @on_scan = nil
   end
 
@@ -14,6 +15,15 @@ class QuietSessionMonitor
   end
 
   def stop
+  end
+
+  def rescan_unclassified
+    @calls << :rescan_unclassified
+  end
+
+  def snapshot
+    @calls << :snapshot
+    {"workspace" => "myapp", "panes" => []}
   end
 
   def record(message)

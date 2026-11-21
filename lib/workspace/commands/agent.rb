@@ -234,7 +234,8 @@ module Workspace
           AgentProtocol::PROMPT_SEND => ->(message, client) { handle_prompt_send(message, client) },
           AgentProtocol::PROMPT_INTERRUPT_SEND => ->(message, client) { handle_prompt_send(message, client, :interrupt_send) },
           AgentProtocol::STATUS_POST => ->(message, client) { @router.reply(client, @agent_status_desk.post(message)) },
-          AgentProtocol::SESSIONS => ->(_message, client) do
+          AgentProtocol::SESSIONS => ->(message, client) do
+            @session_monitor&.rescan_unclassified if message["rescan"] == true
             @router.reply(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
           end,
           AgentProtocol::VERSION_REQUEST => ->(_message, client) { @router.reply(client, AgentProtocol.ok(version: Workspace::VERSION)) }

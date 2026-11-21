@@ -41,11 +41,13 @@ module Workspace
 
     # @param name [String] workspace name
     # @param timeout [Numeric, nil] seconds to wait for the reply; nil uses the default
+    # @param rescan [Boolean] ask the daemon to re-read the panes it has not named an agent in first, so a pane whose
+    #   agent started since the last scan is listed as it (a daemon from before this asks nothing and answers as usual)
     # @return [Hash] the daemon's parsed snapshot
     # @raise [Unavailable] if no daemon is listening or it doesn't answer in time
     # @raise [Workspace::Error] if the daemon closes the connection or sends a malformed reply
-    def fetch(name, timeout: nil)
-      snapshot = exchange(name, AgentProtocol.sessions, timeout || @timeout)
+    def fetch(name, timeout: nil, rescan: false)
+      snapshot = exchange(name, AgentProtocol.sessions(rescan: rescan), timeout || @timeout)
       raise Workspace::Error, "Malformed reply from session monitor for '#{name}'." unless snapshot.is_a?(Hash)
       snapshot
     end

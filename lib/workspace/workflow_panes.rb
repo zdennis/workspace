@@ -16,6 +16,9 @@ module Workspace
     # over the two minutes the daemon itself waits for a busy pane.
     REPLY_TIMEOUT = AgentProtocol::RESTART_REPLY_TIMEOUT
 
+    # Seconds to wait for the daemon's answer to a snapshot that asks it to rescan its unnamed panes.
+    RESCAN_TIMEOUT = 15
+
     # Seconds to wait for the daemon when asking whether a pane is idle.
     IDLE_TIMEOUT = 1.0
 
@@ -118,8 +121,8 @@ module Workspace
     def default_pane(workspace, start_daemon: true)
       return nil unless start_daemon || @config.agent_running?(workspace)
       ensure_daemon!(workspace)
-      snapshot = @snapshot_client.fetch(workspace)
-      pane = Array(snapshot["panes"]).find { |each| each["kind"] == "claude" && !review_pane?(each) }
+      pane = claude_pane_row(@snapshot_client.fetch(workspace))
+      pane ||= rescanned_claude_pane_row(workspace)
       return pane["pane_id"] if pane
       raise Workspace::Error.new("No pane of '#{workspace}' is running Claude Code. Start it, or name the pane with --pane.",
         code: "no_agent_pane", details: {"workspace" => workspace})
@@ -572,6 +575,18 @@ module Workspace
       return path if path.nil? || path.length <= PaneBindings::MAX_FIELD_LENGTH || root.nil?
       prefix = "#{root.to_s.chomp("/")}/"
       path.start_with?(prefix) ? path.delete_prefix(prefix) : path
+    end
+
+    # A pane whose agent started since the daemon's last scan has no kind yet, and that scan may be waiting for a
+    # slot: the daemon reads the unnamed panes again. A rescan that fails leaves the first read's answer standing.
+    def rescanned_claude_pane_row(workspace)
+      claude_pane_row(@snapshot_client.fetch(workspace, rescan: true, timeout: RESCAN_TIMEOUT))
+    rescue AgentSnapshotClient::Unavailable, Workspace::Error
+      nil
+    end
+
+    def claude_pane_row(snapshot)
+      Array(snapshot["panes"]).find { |each| each["kind"] == "claude" && !review_pane?(each) }
     end
 
     def review_pane?(row)

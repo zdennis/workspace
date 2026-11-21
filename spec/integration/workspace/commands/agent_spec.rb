@@ -1065,6 +1065,29 @@ RSpec.describe Workspace::Commands::Agent do
   describe "waking workflow runs" do
     include_context "waking workflow runs"
 
+    def ask_sessions(**extra)
+      UNIXSocket.open(agent_socket_path) do |socket|
+        socket.puts({"type" => "sessions", "workspace" => "myapp"}.merge(extra).to_json)
+        JSON.parse(socket.gets)
+      end
+    end
+
+    it "rescans the monitor's unnamed panes before it answers a sessions message that asks for a rescan" do
+      run_agent do
+        expect(ask_sessions("rescan" => true)).to include("panes" => [])
+
+        expect(monitor.calls).to eq(%i[rescan_unclassified snapshot])
+      end
+    end
+
+    it "does not rescan for a plain sessions message" do
+      run_agent do
+        ask_sessions
+
+        expect(monitor.calls).to eq(%i[snapshot])
+      end
+    end
+
     it "tells the nudger when the main agent's turn ends in a pane, after the monitor has the event" do
       run_agent do
         expect(send_event("stop")).to eq("ok" => true)
