@@ -36,7 +36,7 @@ module Workspace
     # Input names, as written in `{{inputs.NAME}}`.
     INPUT_PATTERN = /\A[a-z][a-z0-9_]*\z/
 
-    TOP_KEYS = %w[schema_version id title description version use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny reviewers steps].freeze
+    TOP_KEYS = %w[schema_version id title description version use_when applies_to extends replace inputs include instructions max_attempts stall redeliver budget timeout timeout_action deny permissions reviewers steps].freeze
     STEP_KEYS = %w[title prompt prompt_file include produces status gate guard require uses on_fail context timeout on_timeout max_attempts review after execution_mode].freeze
 
     # What a `fan_out` group step may hold. A group has no body of its own: its `fan_out:` is a mapping of sibling
@@ -109,6 +109,8 @@ module Workspace
     # The most characters a `use_when:` line may hold.
     MAX_USE_WHEN = 200
 
+    # The actions a workflow's `permissions:` rule may name: a definition only narrows, so never `allow`.
+    PERMISSION_ACTIONS = %w[deny ask].freeze
     # Limits on a `deny:` list: patterns, their length, and `*` or `?` in one (a long run of wildcards makes a glob slow).
     MAX_DENY = 50
     MAX_DENY_LENGTH = PermissionRules::MAX_PATTERN_LENGTH
@@ -351,6 +353,17 @@ module Workspace
       value = definition.is_a?(Hash) ? definition["deny"] : nil
       return [] unless value.is_a?(Array) && value.size <= MAX_DENY
       (value.all? { |pattern| pattern.is_a?(String) && !pattern.strip.empty? }) ? value : []
+    end
+
+    # The `permissions` of a definition hash: rules that only narrow what a run's agent may do (`deny` or `ask`, never `allow`).
+    #
+    # @param definition [Hash] {#to_h}, or a stored run's definition
+    # @return [Array<Hash>] rules as {PermissionRules.parse} returns them; empty in a definition stored before the key existed or holding a bad value
+    def self.permissions(definition)
+      value = definition.is_a?(Hash) ? definition["permissions"] : nil
+      PermissionRules.parse(value, label: "permissions", actions: PERMISSION_ACTIONS)
+    rescue ArgumentError
+      []
     end
 
     # The `budget` of a definition hash: the tokens a run may use before the next attempt is held.
@@ -698,6 +711,7 @@ module Workspace
         "stall" => duration_from(raw["stall"], "stall"),
         "redeliver" => redeliver,
         "deny" => deny_from(raw["deny"]),
+        "permissions" => permissions_from(raw["permissions"]),
         "steps" => steps
       }.merge(version ? {"version" => version} : {})
         .merge(budget ? {"budget" => budget} : {})
@@ -776,6 +790,13 @@ module Workspace
           pattern
         end
       end
+    end
+
+    def permissions_from(value)
+      PermissionRules.parse(value, label: "permissions", actions: PERMISSION_ACTIONS)
+    rescue ArgumentError => e
+      problem e.message
+      []
     end
 
     def text_or_nil(value, where)

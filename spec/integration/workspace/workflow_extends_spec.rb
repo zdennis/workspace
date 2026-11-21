@@ -228,6 +228,25 @@ RSpec.describe "workflow extends" do
     end
   end
 
+  describe "permissions" do
+    it "joins the parent's rules and the child's, so a child only adds" do
+      write(global_dir, "base", "permissions:\n  - {tool: Bash, pattern: 'git push*', action: deny}\nsteps:\n  one: {prompt: P, produces: [o.md]}\n")
+      write(global_dir, "kid", "extends: base\npermissions:\n  - {tool: Write, action: ask}\n")
+
+      expect(catalog.find("kid").to_h["permissions"]).to eq([
+        {"tool" => "Bash", "pattern" => "git push*", "action" => "deny"},
+        {"tool" => "Write", "action" => "ask"}
+      ])
+    end
+
+    it "keeps the parent's rules when the child sets none" do
+      write(global_dir, "base", "permissions:\n  - {tool: Bash, action: deny}\nsteps:\n  one: {prompt: P, produces: [o.md]}\n")
+      write(global_dir, "kid", "extends: base\n")
+
+      expect(catalog.find("kid").to_h["permissions"]).to eq([{"tool" => "Bash", "action" => "deny"}])
+    end
+  end
+
   it "has no lookup to resolve a parent when none is given" do
     expect { Workspace::WorkflowDefinition.parse("extends: base\n", id: "x", source: "file", path: nil) }
       .to raise_error(Workspace::Error) { |e| expect(e.details["problems"].first).to match(/can't be checked here/) }

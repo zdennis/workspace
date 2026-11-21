@@ -16,6 +16,7 @@
     "stall": 1200.0,
     "redeliver": 10,
     "deny": [],
+    "permissions": [],
     "steps": [
       {
         "id": "build",
