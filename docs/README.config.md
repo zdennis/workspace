@@ -215,6 +215,48 @@ exec env FOO=1 claude --model sonnet "$@"
 
 The command is used by every config written from then on, and at once by what workspace types itself: `restore`, `reactivate` and `--spawn`. A pane whose program is the configured command counts as that agent for `sessions`, `handoff` and the rest. A tmuxinator template's Claude Code pane is recognised by its program (`claude`), not by one flag, so a hand-edited tmuxinator template still renders with the configured command in each half (an agent pane line is a shell chain such as `claude --continue || claude`: the first half runs, and the second runs if the first exits with an error); your tmuxinator templates are not changed. Configs written earlier keep the pane they have, including one where only the fallback half still runs `claude`; `workspace doctor` lists them and `workspace doctor --fix` rewrites the pane line (see [`doctor`](README.doctor.md#agent-pane-commands)). After upgrading, `workspace doctor` also reports configs whose fallback half still runs the old program; `workspace doctor --fix` rewrites them, keeping a backup beside each file, and a running session needs a relaunch. Or do nothing: `launch` fixes a stopped project when it next starts it. `launch` rewrites it, but only just before it starts a session that is not running (see [`launch`](README.launch.md#agent-pane-refresh)). The `agent.commands.*` keys only take effect in an agent daemon the next time it starts, and the value can carry `VAR=value` words, so `config show --json` masks it. Quote a program path that has a space (`"/Users/me/my bin/claude-dev" --model x`); the command is still typed as written.
 
+### Permission policy
+
+`agent.permissions` lets configuration answer a coding agent's permission dialogs, so a request you have already decided on never waits for you. It has two keys, edited by hand in the config file of the layer you want (`config set` doesn't write a list): `~/.config/workspace/config.yml` (global), `~/.config/workspace/projects/<project>.yml` (project) or `~/.config/workspace/projects/<project>.worktree-<name>.yml` (one worktree); see [Layers](#layers) for which file a workspace reads.
+
+```yaml
+agent:
+  permissions:
+    default: ask            # allow, ask or deny: what no rule matches gets (default ask)
+    rules:
+      - {tool: Bash, pattern: "git status*", action: allow}
+      - {tool: Bash, pattern: "bundle exec rspec*", action: allow}
+      - {tool: Bash, pattern: "git push*", action: deny}
+      - {tool: Edit, pattern: "~/.ssh/**", action: deny}
+      - {tool: Write, pattern: "**/migrate/**", action: ask}
+      - {tool: Read, action: allow}
+```
+
+A rule is `{tool, pattern, action}`. `tool` is a glob over the tool name (`Bash`, `Edit`, `mcp__*`). `pattern` is optional; a rule without one matches every call of the tool. `action` is `allow`, `ask` or `deny`. A pattern is at most 200 characters with at most 8 `*` or `?`. A bad value, an unknown key, or a `permissions` node holding anything but `rules` and `default` makes the policy decide nothing, so the agent's own dialog shows; [`config validate` and `doctor`](#config-validate) name the problem.
+
+**When it runs.** The policy is consulted from the agent's `PermissionRequest` hook, so only for a call Claude Code or Codex was about to ask a person about. A call the agent's own settings already allow or deny never reaches it, so Claude's own deny rules still win. An agent started with `--dangerously-skip-permissions` (the stock worktree template does) never asks, so the policy never runs for it. It needs the hooks installed (`workspace init --install-hooks`); see [`session-event`](README.session-event.md#permissionrequest-replies).
+
+**Layers.** Unlike other keys, `rules` of the global, project and worktree files are joined, not replaced, and the `permissions:` rules of the workflow run the pane is bound to join them too (see [Definitions](README.workflow.md#definitions)). A global `deny` therefore holds in every project. Any matching `deny` wins, then any matching `ask`, then any matching `allow`; the order of rules and layers doesn't matter. With no match, `default` applies, and it is the most restrictive value any layer sets (`deny` over `ask` over `allow`), so a project can tighten it but not loosen it. With no `default` set, no match means `ask`.
+
+**Bash patterns.** A pattern is a `File.fnmatch` glob with `FNM_DOTMATCH`, so `*` matches anything, `/` and spaces included. It is matched against each piece of the command, not the line: `cd x && git push` is the pieces `cd x` and `git push`. `;`, `&&`, `||`, `|`, `&`, newlines, parentheses and backticks cut a command. Each piece is matched without its leading `NAME=value` words, `sudo`, `env`, `exec`, a program path (`/usr/bin/git`) and git's and gh's global options (`git -C dir`). The actions combine the pieces differently:
+
+- `deny` and `ask` apply when any piece matches, as written or with its quotes and escapes removed (`"rm" -rf /` and `r''m -rf /` both read as `rm -rf /`).
+- `allow` applies only when every piece matches some allow pattern, as written or without its harmless wrappers (`timeout 5`, `nice -n 5`, `nohup`, `time`, `command`, `builtin`, `ionice`, `stdbuf`, `caffeinate`). It never looks through `sudo`, `env` or `xargs`: `sudo rm x` needs an allow that matches `sudo rm x`.
+- A command with a substitution (`$(...)`, `${...}`, backticks, `<(...)`), a file redirection, a Bash `tool_input.command` that isn't a string, or a piece whose program can't be known from its text is never allowed by a pattern and never by `default: allow`. It gets `deny` when a deny rule matches or the default is `deny`, and `ask` otherwise. The pieces whose program can't be known are: a command word holding a quote, backslash, `$` or glob character; `eval`, `source`, `.`, `trap`, `alias`, `coproc` and `awk` and its variants (`gawk`, `nawk`, `mawk`); a shell given `-c` (`sh -c`, `bash -lc`); an inline interpreter (`perl`, `python`, `ruby`, `node`, `osascript` with `-e` or `-c`, `script -c`, `su -c`); `env -S`; a wrapper with an option the policy doesn't know; `git -c alias.x=...`; and brace groups and compound keywords (`{`, `if`, `then`, `do`, `while`, `for`, `case`, `!`).
+- A rule with `tool: Bash` and no `pattern` and `action: allow` allows every Bash call that no `deny` or `ask` rule matches, opaque ones included. Write a pattern.
+
+**Path patterns.** For `Edit`, `Write`, `MultiEdit`, `NotebookEdit` (its `notebook_path`) and `Read`, the pattern matches the file's absolute path. A relative path is expanded against the agent's working directory; a pattern or path starting with `~/` is expanded against your home. The flags are `FNM_PATHNAME | FNM_DOTMATCH`: `*` stays within one directory, `**/` crosses directories (`/repo/**/*.rb`), `dir/**` matches everything under `dir` at any depth, and dotfiles match. Symlinks are followed: `deny` and `ask` match when the path or the place it really points matches, and `allow` needs both to match, so a link inside an allowed directory that points out of it isn't allowed. A path that can't be resolved (a link loop) is never allowed by a pattern. Any other tool (`WebFetch`, `mcp__*`) has no subject, so a rule with a pattern never matches it; match those by `tool` alone.
+
+**Deny under `default: allow` is best effort.** The policy reads the text of a command; it doesn't run or expand it, and a `deny` rule names one spelling of a program:
+
+- `rm *` doesn't see `find . -exec rm {} +`, `find . -delete` or `unlink x`, and `gh pr merge*` doesn't see the same merge made through `gh api`. Each way to the same effect needs its own rule; `git push*` doesn't see `git send-pack` either.
+- Code in a file or in config the policy can't read isn't seen: `sh x.sh`, `make`, `npm run clean`, a git alias already in `~/.gitconfig`.
+- `rm *` doesn't match a bare `rm`; deny both `rm` and `rm *`.
+
+For a boundary you rely on, set `default: ask` and list what is safe with `allow` rules. Allow by pattern isn't affected by those gaps, since every piece must match an allow.
+
+**Answers.** `allow` and `deny` are answered to the agent at once, with no dialog, for Claude Code and Codex alike; a denied call carries `Denied by workspace permission policy (<rule>)`, the rule being `project:rules[2]`, `global:default` or `run:permissions[0]`. `ask`, no decision and any error leave the dialog to you. When some layer sets an `agent.permissions` key, that request also goes into the [inbox](README.inbox.md#permission-requests) until it is answered. Each decision is written as a [`permission_resolved`](README.events.md#permission-waits) line with `by: "policy"` and the `rule`. The policy runs in review, reflection and sub-agent panes too; an escalated request in a review pane gets the inbox item but never runs `alerts.notify`, as for any review pane (see [Alerts](README.sessions.md#alerts)).
+
 ### Scopes
 
 `--scope` names the layer a command works on, with the names a person sees: `global` (`~/.config/workspace/config.yml`), `project` (the main checkout's file) and `workspace` (the workspace's own file). The `layer` values in JSON are `global`, `project` and `worktree`; `workspace` is the `worktree` layer, and `worktree` is accepted as another spelling of `--scope workspace`. In a main checkout there is no file besides the project's, so `--scope workspace` means the project file there, and the result reports `scope: "project"`, `layer: "project"`. Naming a workspace that isn't known fails with `unknown_workspace` (for a project-file write through a worktree name, the project must be known), and with no name outside any workspace a project or workspace scope fails with `not_in_workspace` (`details.path`).

@@ -80,7 +80,7 @@ Every line has `type`, `at` (ISO 8601, UTC, milliseconds), `workspace` (the name
 | `tool_started` | `tool` (the tool's name), `tool_use_id`, `agent_id` (the sub-agent the tool ran in, `null` for the main agent), `path` (file tools only, below), `input` (a summary of the call, below; left out when the tool has none) |
 | `tool_finished` | the same, plus `ok` (`false` when the tool's response says it failed or was interrupted) and `duration_ms` (the payload's own, else the time since this daemon saw the matching `tool_started`; `null` when it saw none), and, for a review pane's write of a verdict file, `sha256` (the file's hash after the write, 64 hex characters; see [`session-event`](README.session-event.md)) |
 | `permission_requested` | `tool`, `agent_id` (`null` for the main agent), `input` (as for `tool_started`; left out when the tool has none). The agent is waiting for a person to allow the call. Written for Claude Code's permission request and for Codex's approval prompt |
-| `permission_resolved` | the same fields, plus `outcome`, `by` (the event that ended the wait: `tool_use`, `stop`, `turn_failed`, `subagent_stop`, `user_prompt`, `session_start`, `session_end` or `permission_request`) and `wait_ms` (milliseconds since the request). Written just before the line of the event that ended the wait, so its `seq` is lower. See [Permission waits](#permission-waits) |
+| `permission_resolved` | the same fields, plus `outcome`, `by` (the event that ended the wait: `tool_use`, `stop`, `turn_failed`, `subagent_stop`, `user_prompt`, `session_start`, `session_end` or `permission_request`; `policy` when the [permission policy](README.config.md#permission-policy) answered the request, which also adds `rule`, such as `project:rules[2]`) and `wait_ms` (milliseconds since the request). Written just before the line of the event that ended the wait, so its `seq` is lower. See [Permission waits](#permission-waits) |
 | `notification` | `notification_type` (for example `idle_prompt` or `permission_prompt`), `agent_id`. The message text is never written |
 | `subagent_started` | `tool_use_id` (of the `Agent` call, `Task` on older Claude Code), `description` (cut to 120 characters), `subagent_type` (cut to 64), `agent_id` (`null`: Claude Code names a sub-agent only once it runs). A `tool_started` for `Agent` comes just before it |
 | `subagent_stopped` | `agent_id` (the stopping sub-agent's, when Claude Code gives one) |
@@ -119,6 +119,8 @@ Beyond `input`, nothing that can hold a secret is written: no other command line
 | `denied` | the main agent's turn ended (`stop` or `turn_failed`), or that sub-agent stopped. Codex's Interrupt arrives as a stop, so it reads as `denied` |
 | `interrupted` | a new prompt, session start or session end; each ends every pending request of the pane |
 | `superseded` | the same agent asked again, which replaced the earlier request |
+
+A request the policy decided has no dialog, so it is not pending: its `permission_resolved` follows its `permission_requested` at once, with `by: "policy"`, `rule`, `wait_ms: 0` and `outcome` `approved` (for `allow`) or `denied` (for `deny`). A request the policy left to the person (`ask`, or no decision) is logged like any other.
 
 Pending requests are kept in memory, one per `pane_id` and `agent_id`; pair a `permission_resolved` with the `permission_requested` before it on those two fields. Limits:
 
