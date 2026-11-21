@@ -495,6 +495,7 @@ RSpec.describe Workspace::Commands::SessionEvent do
         expect(event).to include("event" => "permission_request", "tool" => "Bash", "input" => "git push")
         expect(event).not_to have_key("path")
         expect(event).not_to have_key("tool_use_id")
+        expect(event).not_to have_key("notification_type")
       end
 
       it "prints nothing to stdout" do
@@ -1230,12 +1231,18 @@ RSpec.describe Workspace::Commands::SessionEvent do
       %w[PreCompact PostCompact Notification].each { |hook| invoke({"hook_event_name" => hook}, agent: "codex") }
     end
 
-    it "says a PermissionRequest is waiting on approval by tool name only, never the command" do
+    it "says a PermissionRequest is waiting on approval by tool name only, and forwards the command's first line alone" do
       event = codex("hook_event_name" => "PermissionRequest", "tool_name" => "Bash",
-        "tool_input" => {"command" => "rm -rf /secret", "description" => "delete the secret"})
+        "tool_input" => {"command" => "rm -rf build\ncat /secret", "description" => "delete the secret"})
 
       expect(event["message"]).to eq("Approval requested for Bash")
+      expect(event).to include("event" => "notification", "notification_type" => "permission_request", "tool" => "Bash", "input" => "rm -rf build")
       expect(JSON.generate(event)).not_to include("secret")
+    end
+
+    it "marks only a PermissionRequest as a permission_request notification" do
+      expect(codex("hook_event_name" => "Stop")["notification_type"]).to be_nil
+      expect(codex("hook_event_name" => "PreToolUse", "tool_name" => "Bash")["notification_type"]).to be_nil
     end
 
     it "never forwards the prompt, tool input, tool response or last assistant message" do

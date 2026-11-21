@@ -4,10 +4,13 @@ require "fileutils"
 
 module Workspace
   # One agent daemon's high-rate log of hook events: `<dir>/<workspace>.jsonl`,
-  # one typed JSON line per tool start and finish, sub-agent start and stop,
-  # session start and end, and prompt submitted, plus the `agent_status` lines
-  # agents post (`agent status post`). `workspace events` reads it,
-  # together with the lifecycle event log, which never sees these lines.
+  # one typed JSON line per tool start and finish, permission request, the end
+  # of each wait for a person's answer (`permission_resolved`, inferred from the
+  # next event, since Claude Code sends nothing on deny or Esc), notification
+  # (its type only, never its text), sub-agent start and stop, session start
+  # and end, and prompt submitted, plus the `agent_status` lines agents post
+  # (`agent status post`). `workspace events` reads it, together with the
+  # lifecycle event log, which never sees these lines.
   #
   # Each daemon has its own file, so the daemon is its only writer (two overlap
   # for a moment across a restart, with different boot ids) and a busy
@@ -30,13 +33,15 @@ module Workspace
     DEFAULT_ROTATE_THRESHOLD = 5 * 1_048_576
 
     # The line types this log writes.
-    TYPES = %w[tool_started tool_finished subagent_started subagent_stopped session_started session_ended prompt_submitted agent_status workflow_advance_started workflow_run_skipped workflow_sweep_started workflow_process_exited].freeze
+    TYPES = %w[tool_started tool_finished permission_requested permission_resolved notification subagent_started subagent_stopped session_started session_ended prompt_submitted agent_status workflow_advance_started workflow_run_skipped workflow_sweep_started workflow_process_exited].freeze
 
     # The lines each forwarded session event becomes.
     LINES = {
       "tool_start" => %w[tool_started],
       "subagent_start" => %w[tool_started subagent_started],
       "tool_use" => %w[tool_finished],
+      "permission_request" => %w[permission_requested],
+      "notification" => %w[notification],
       "subagent_stop" => %w[subagent_stopped],
       "session_start" => %w[session_started],
       "session_end" => %w[session_ended],
@@ -45,6 +50,12 @@ module Workspace
 
     # Tool starts remembered for a finish's duration; the oldest go first.
     MAX_OPEN_TOOLS = 512
+
+    # Permission requests waiting for an answer; the oldest go first.
+    MAX_PENDING_PERMISSIONS = 512
+
+    # The events that end every pending permission request of a pane.
+    INTERRUPTING = %w[user_prompt session_start session_end].freeze
 
     # Longest value written for a name or id, a path, and a description.
     MAX_NAME = 64
@@ -66,9 +77,11 @@ module Workspace
     # @param monotonic [#call] seconds on a monotonic clock, for durations
     # @param rotate_threshold [Integer] size in bytes past which an append rotates
     # @param max_open_tools [Integer] tool starts remembered for a finish's duration
+    # @param max_pending_permissions [Integer] permission requests remembered until they end
     # @param logger [Workspace::Logger] debug logger
     def initialize(dir:, workspace:, boot_id:, clock: Time, monotonic: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
-      rotate_threshold: DEFAULT_ROTATE_THRESHOLD, max_open_tools: MAX_OPEN_TOOLS, logger: Workspace::Logger.new)
+      rotate_threshold: DEFAULT_ROTATE_THRESHOLD, max_open_tools: MAX_OPEN_TOOLS,
+      max_pending_permissions: MAX_PENDING_PERMISSIONS, logger: Workspace::Logger.new)
       @dir = dir
       @workspace = workspace
       @boot_id = boot_id
@@ -76,11 +89,13 @@ module Workspace
       @monotonic = monotonic
       @rotate_threshold = rotate_threshold
       @max_open_tools = max_open_tools
+      @max_pending_permissions = max_pending_permissions
       @logger = logger
       # A name that would leave the directory writes nothing.
       @path = (File.basename(workspace) == workspace && !workspace.start_with?(".")) ? self.class.path_for(dir, workspace) : nil
       @seq = 0
       @open_tools = {}
+      @pending_permissions = {}
       @lock = Mutex.new
     end
 
@@ -95,14 +110,16 @@ module Workspace
     # @param event [Hash] a "session_event" message, as `session-event` sends it
     # @return [Array<Hash>] the lines written
     def record(event)
-      types = LINES[event["event"]]
       pane_id = event["pane_id"]
-      return [] unless types && pane_id.is_a?(String)
+      return [] unless pane_id.is_a?(String)
+      event = event.merge("event" => "permission_request") if approval_notification?(event)
+      types = LINES[event["event"]] || []
       # A sub-agent the agent names itself (Codex) started with no tool call.
       types -= ["tool_started"] if event["event"] == "subagent_start" && event["subagent_id"]
 
       @lock.synchronize do
-        types.filter_map { |type| write_line(type, pane_id, fields_for(type, event)) }
+        resolved = resolve_permissions(event).filter_map { |fields| write_line("permission_resolved", pane_id, fields) }
+        resolved + types.filter_map { |type| write_line(type, pane_id, fields_for(type, event)) }
       end
     rescue => e
       @logger.debug { "hook_event_log: could not record (#{e.class}: #{e.message})" }
@@ -139,10 +156,14 @@ module Workspace
         tool_fields(event)
       when "tool_finished"
         tool_fields(event).merge("ok" => event["ok"] != false, "duration_ms" => duration(event))
+      when "permission_requested"
+        note_permission(event)
+        permission_fields(event)
       when "subagent_started"
         {"agent_id" => text(event["subagent_id"], MAX_ID), "tool_use_id" => text(event["tool_use_id"], MAX_ID),
          "description" => text(event["description"], MAX_DESCRIPTION), "subagent_type" => text(event["subagent_type"], MAX_NAME)}
       when "subagent_stopped" then {"agent_id" => text(event["agent_id"], MAX_ID)}
+      when "notification" then {"notification_type" => text(event["notification_type"], MAX_NAME), "agent_id" => text(event["agent_id"], MAX_ID)}
       when "session_started" then {"kind" => text(event["kind"], MAX_NAME), "source" => text(event["source"], MAX_NAME)}
       when "session_ended" then {"kind" => text(event["kind"], MAX_NAME), "reason" => text(event["reason"], MAX_NAME)}
       else {}
@@ -175,6 +196,48 @@ module Workspace
       given = event["duration_ms"]
       return given.round if given.is_a?(Numeric) && given >= 0
       ((@monotonic.call - started) * 1000).round if started
+    end
+
+    # Codex's approval prompt reaches the daemon as a notification, so the
+    # session monitor opens its wait; `session-event` marks it with this type.
+    def approval_notification?(event)
+      event["event"] == "notification" && event["notification_type"] == "permission_request"
+    end
+
+    def permission_fields(event)
+      fields = {"tool" => text(event["tool"], MAX_NAME), "agent_id" => text(event["agent_id"], MAX_ID)}
+      input = ToolInputSummary.cap(event["input"])
+      fields["input"] = input if input
+      fields
+    end
+
+    def note_permission(event)
+      @pending_permissions.delete(@pending_permissions.keys.first) while @pending_permissions.size >= @max_pending_permissions
+      @pending_permissions[[event["pane_id"], text(event["agent_id"], MAX_ID)]] = {fields: permission_fields(event), started: @monotonic.call}
+    end
+
+    # The pending requests this event ends, as `permission_resolved` fields,
+    # by the rule {PaneEvents} clears its own requests by. Claude Code sends
+    # nothing for a deny or an Esc, so `denied` and `interrupted` are read from
+    # the event that came next, which `by` names.
+    def resolve_permissions(event)
+      pane_id = event["pane_id"]
+      agent_id = text(event["agent_id"], MAX_ID)
+      ended = case event["event"]
+      when *INTERRUPTING then @pending_permissions.keys.select { |key| key[0] == pane_id }.map { |key| [key, "interrupted"] }
+      when "stop", "turn_failed" then agent_id ? [] : [[[pane_id, nil], "denied"]]
+      when "subagent_stop" then agent_id ? [[[pane_id, agent_id], "denied"]] : []
+      when "tool_use"
+        pending = @pending_permissions[[pane_id, agent_id]]
+        (pending && pending[:fields]["tool"] == text(event["tool"], MAX_NAME)) ? [[[pane_id, agent_id], "approved"]] : []
+      when "permission_request" then [[[pane_id, agent_id], "superseded"]]
+      else []
+      end
+      ended.filter_map do |key, outcome|
+        pending = @pending_permissions.delete(key)
+        next unless pending
+        pending[:fields].merge("outcome" => outcome, "by" => event["event"], "wait_ms" => ((@monotonic.call - pending[:started]) * 1000).round)
+      end
     end
 
     def text(value, limit)

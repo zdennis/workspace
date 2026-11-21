@@ -2545,6 +2545,20 @@ RSpec.describe Workspace::SessionMonitor do
         "waiting_message" => "Approval requested for Bash")
     end
 
+    it "opens a wait for a Codex approval that names its notification_type, and after a stop does not take it for an idle notice" do
+      run_codex_in_pane
+      monitor.scan
+      approval = {"event" => "notification", "pane_id" => "%2", "agent_kind" => "codex", "notification_type" => "permission_request",
+                  "tool" => "Bash", "input" => "cargo test", "message" => "Approval requested for Bash"}
+      monitor.record(approval)
+      expect(pane("%2")).to include("state" => "waiting", "waiting_message" => "Approval requested for Bash")
+
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_kind" => "codex", "tool" => "Bash")
+      monitor.record("event" => "stop", "pane_id" => "%2", "agent_kind" => "codex")
+      monitor.record(approval)
+      expect(pane("%2")).to include("activity_state" => "waiting", "waiting_message" => "Approval requested for Bash")
+    end
+
     it "goes back to scrape when another kind of agent takes the pane over" do
       monitor.scan
       monitor.record("event" => "session_start", "pane_id" => "%2", "agent_kind" => "claude")
