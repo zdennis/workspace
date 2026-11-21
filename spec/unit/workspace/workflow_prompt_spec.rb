@@ -65,6 +65,11 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(described_class::CHECKLIST_TEXT.lines.size).to eq(1)
     end
 
+    it "tells the agent to correct a plainly wrong expectation in a test its own run wrote, not to wait for a person" do
+      expect(described_class::CHECKLIST_TEXT).to include("a test this run wrote earlier has a plainly wrong expectation",
+        "correct it (never loosen or delete an assertion to make it pass), commit, and say so in your status detail", "ask (needs_input) only when the brief itself is ambiguous")
+    end
+
     it "keeps the status line last when the attempt carries retry context" do
       prompt.compose(run, step, ["## For this attempt", "Fix it."])
 

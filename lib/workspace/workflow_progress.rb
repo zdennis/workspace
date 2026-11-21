@@ -670,7 +670,7 @@ module Workspace
       return defer_failure(run, step, failure, next_move, ctx) if grouped?(run, step["id"])
       if next_move[:kind] == :loop
         run["loops"][next_move[:edge]] = next_move[:count]
-        text = loop_context(run, step, on_fail, failure, next_move[:count])
+        text = loop_context(run, step, on_fail, failure, next_move[:count], to: next_move[:to])
         wait = next_move[:wait]
         event(run, "step_looped", {"from" => step["id"], "to" => next_move[:to], "count" => next_move[:count]}.merge(wait ? {"backoff" => wait} : {}))
         return wait_to_retry(run, step, on_fail, text, wait, attempt) if wait
@@ -1030,8 +1030,11 @@ module Workspace
     # The id of the fan_out group +step_id+ is a sibling of.
     def group_id(run, step_id) = run["definition"]["steps"].find { |step| step["id"] == step_id }["group"]
 
-    def loop_context(run, step, on_fail, failure, count)
-      text = "The #{step["id"]} step failed and sent the run back to this step (#{loop_time(on_fail, count)}): #{WorkflowTransitions.failure_text(failure)}. " \
+    # The implicit loop to the failed step itself (its first `require:` failure) says this step runs again, not that one
+    # sent it back.
+    def loop_context(run, step, on_fail, failure, count, to: nil)
+      lead = (on_fail.nil? && to == step["id"]) ? "This step's last attempt failed and it runs again" : "The #{step["id"]} step failed and sent the run back to this step"
+      text = "#{lead} (#{loop_time(on_fail, count)}): #{WorkflowTransitions.failure_text(failure)}. " \
         "Its files are in #{run["artifacts_dir"]}. Fix what it found."
       with_log_tails(text, on_fail, [failure])
     end

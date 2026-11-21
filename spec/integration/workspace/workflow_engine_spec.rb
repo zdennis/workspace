@@ -2442,6 +2442,23 @@ RSpec.describe Workspace::WorkflowEngine do
       stored_run(store, "wr_1")["steps"]["build"]["attempts"].last
     end
 
+    # Spends the step's one retry of its own require failure, so the next one stops the run with its failed_check.
+    def self_retry_spent
+      edit_run(store, "wr_1") { |run| run["loops"]["build->build"] = 1 }
+    end
+
+    it "retries the step itself on its first failed proof, telling it what failed" do
+      start(flow, inputs: {})
+      check_results << {exit_code: 3, timed_out: false}
+      run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
+
+      expect(run["state"]).to eq("running")
+      expect(run["loops"]).to eq("build->build" => 1)
+      attempts = stored_run(store, "wr_1")["steps"]["build"]["attempts"]
+      expect(attempts.map { |each| each.values_at("n", "outcome", "code") }).to eq([[1, "failed", "require_command"], [2, nil, nil]])
+      expect(File.read(attempts.last["prompt_file"])).to include("This step's last attempt failed and it runs again (time 1): a required proof failed (command)")
+    end
+
     it "takes the baseline with the lock given up, before the line is typed" do
       held = nil
       allow(guard).to receive(:remote_head) do
@@ -2528,6 +2545,7 @@ RSpec.describe Workspace::WorkflowEngine do
       it "fails a set optional command that exits non-zero" do
         commands[:lint] = "standardrb"
         start(flow, inputs: {})
+        self_retry_spent
         check_results << {exit_code: 1, timed_out: false}
         run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
@@ -2565,6 +2583,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
     it "stores a failed command's exit code and log in failed_check, and goes no further" do
       start(flow, inputs: {})
+      self_retry_spent
       check_results << {exit_code: 3, timed_out: false}
       run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       expect(run["reason"]).to include("code" => "failed_check")
@@ -2577,6 +2596,7 @@ RSpec.describe Workspace::WorkflowEngine do
     it "stores a moved remote's before and after in failed_check" do
       readings.replace([baseline, baseline.merge("sha" => "b" * 40)])
       start(flow, inputs: {})
+      self_retry_spent
       run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
       expect(run["reason"]["details"]).to include("code" => "require_remote_unchanged", "before" => "a" * 40, "after" => "b" * 40)
       expect(check_calls.size).to eq(1)
@@ -2712,6 +2732,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       it "fails the step with require_exec and the program" do
         start(flow, inputs: {})
+        self_retry_spent
         check_results << {exit_code: 2, timed_out: false}
         run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 

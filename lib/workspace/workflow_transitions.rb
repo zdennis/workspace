@@ -1284,6 +1284,9 @@ module Workspace
       failure["cause"] == "guard" || failure["unproven"] == true || %w[check_error step_timed_out].include?(failure["code"])
     end
 
+    # A step's first decided `require:` failure in the run ({.own_require_retry?}) runs the step itself again, told
+    # why: its work is likely done but unproven (edited, not committed), and the step before has nothing new to give
+    # it. A repeated require failure, and every other failure, goes back to the step before.
     # The step before is scoped by fan_out groups ({.implicit_target}): a sibling goes back only to the sibling before it
     # (the group's first sibling stops), and a step outside any group skips a group's siblings to the nearest step
     # before it that is in no group (none, for a group at the start, stops), so no implicit move crosses into or out of
@@ -1295,6 +1298,12 @@ module Workspace
     # @return [Hash{Symbol=>Object}] `{kind: :loop, edge:, to:, count:, wait: nil}` or `{kind: :stop}`
     def self.implicit_failure_move(run, step, failure)
       return {kind: :stop} if implicit_loop_stops?(failure)
+      self_edge = "#{step["id"]}->#{step["id"]}"
+      if own_require_retry?(run, step, failure, self_edge)
+        return {kind: :stop} if attempts_made(run) >= attempt_allowance(run)
+        return {kind: :stop, limit: :step, step: step["id"]} if step_attempts_spent?(run, step["id"])
+        return {kind: :loop, edge: self_edge, to: step["id"], count: 1, wait: nil}
+      end
       prev = implicit_target(run["definition"]["steps"], step)
       return {kind: :stop} unless prev
       return {kind: :stop} if attempts_made(run) >= attempt_allowance(run)
@@ -1305,6 +1314,19 @@ module Workspace
       edge = "#{step["id"]}->#{prev}"
       {kind: :loop, edge: edge, to: prev, count: run["loops"].fetch(edge, 0) + 1, wait: nil}
     end
+
+    # Whether an implicit failure retries the failing step itself: a decided (never `unproven`) `require:` failure of a
+    # step in no fan_out group, while its self edge (`ID->ID`) has no loop yet in the run.
+    #
+    # @param run [Hash{String=>Object}] a stored run at the failed step
+    # @param step [Hash{String=>Object}] the failing step's definition
+    # @param failure [Hash{String=>Object}] its "cause" and "code"
+    # @param edge [String] the step's self edge
+    # @return [Boolean]
+    def self.own_require_retry?(run, step, failure, edge)
+      failure["cause"] == "require" && !grouped?(step) && run["loops"].fetch(edge, 0).zero?
+    end
+    private_class_method :own_require_retry?
 
     # The step a failed step's implicit move goes back to: for a fan_out sibling, the sibling just before it (nil for
     # the group's first); for any other step, the nearest step before it that is in no group (nil when there is none).
