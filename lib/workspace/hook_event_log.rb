@@ -109,6 +109,7 @@ module Workspace
     def record(event)
       pane_id = event["pane_id"]
       return [] unless pane_id.is_a?(String)
+      event = event.merge("event" => "permission_request") if approval_notification?(event)
       types = LINES[event["event"]] || []
       # A sub-agent the agent names itself (Codex) started with no tool call.
       types -= ["tool_started"] if event["event"] == "subagent_start" && event["subagent_id"]
@@ -192,6 +193,12 @@ module Workspace
       given = event["duration_ms"]
       return given.round if given.is_a?(Numeric) && given >= 0
       ((@monotonic.call - started) * 1000).round if started
+    end
+
+    # Codex's approval prompt reaches the daemon as a notification, so the
+    # session monitor opens its wait; `session-event` marks it with this type.
+    def approval_notification?(event)
+      event["event"] == "notification" && event["notification_type"] == "permission_request"
     end
 
     def permission_fields(event)

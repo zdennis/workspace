@@ -384,7 +384,7 @@ module Workspace
       # are read here and never forwarded.
       def tool_fields(payload)
         hook = payload["hook_event_name"]
-        return permission_fields(payload) if claude? && hook == "PermissionRequest"
+        return permission_fields(payload) if hook == "PermissionRequest"
         return {} unless hook == "PreToolUse" || hook == "PostToolUse" || hook == "PostToolUseFailure"
 
         fields = {
@@ -496,8 +496,12 @@ module Workspace
         message[0, MAX_MESSAGE_LENGTH]
       end
 
-      # Claude Code's kind of notification (`idle_prompt`, `permission_prompt`, ...).
+      # Claude Code's kind of notification (`idle_prompt`, `permission_prompt`, ...),
+      # and `permission_request` for Codex's PermissionRequest, which reaches the
+      # daemon as a notification so the monitor opens its wait, and which the
+      # hook event log writes as `permission_requested`.
       def notification_type_for(payload)
+        return "permission_request" if codex? && payload["hook_event_name"] == "PermissionRequest"
         return nil unless claude? && payload["hook_event_name"] == "Notification"
 
         name_field(payload, "notification_type")

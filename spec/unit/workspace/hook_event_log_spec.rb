@@ -172,6 +172,27 @@ RSpec.describe Workspace::HookEventLog do
       expect(written.select { |l| l["type"] == "permission_resolved" }.map { |l| l["agent_id"] }).to eq(%w[b c])
     end
 
+    it "writes Codex's approval prompt, which arrives as a notification, as a request that its tool's finish approves" do
+      log.record(event("notification", agent_kind: "codex", notification_type: "permission_request", tool: "Bash", input: "cargo test",
+        message: "Approval requested for Bash"))
+      seconds[0] = 102.0
+      log.record(event("tool_use", agent_kind: "codex", tool: "Bash", tool_use_id: "c1", ok: true))
+
+      expect(lines.map { |l| l.except("at", "workspace", "boot_id", "pane_id") }).to eq([
+        {"type" => "permission_requested", "seq" => 1, "tool" => "Bash", "agent_id" => nil, "input" => "cargo test"},
+        {"type" => "permission_resolved", "seq" => 2, "tool" => "Bash", "agent_id" => nil, "input" => "cargo test",
+         "outcome" => "approved", "by" => "tool_use", "wait_ms" => 2000},
+        {"type" => "tool_finished", "seq" => 3, "tool" => "Bash", "tool_use_id" => "c1", "agent_id" => nil, "ok" => true, "duration_ms" => nil}
+      ])
+    end
+
+    it "ends Codex's approval prompt as denied on an Interrupt, which arrives as a stop" do
+      log.record(event("notification", agent_kind: "codex", notification_type: "permission_request", tool: "Bash"))
+      log.record(event("stop", agent_kind: "codex"))
+
+      expect(lines.last).to include("type" => "permission_resolved", "outcome" => "denied", "by" => "stop")
+    end
+
     it "caps a request's input and writes only the fields it knows" do
       log.record(event("permission_request", tool: "Bash", input: "ls " + "z" * 400, tool_input: {"command" => "secret"}, message: "secret"))
 
