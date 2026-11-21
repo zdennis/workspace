@@ -90,7 +90,7 @@ module DemoCalculator
     # True when the row's own acceptance group fails at its head.
     def self.unmet?(row)
       acceptance = row[:acceptance]
-      !!(acceptance && acceptance[:failed].include?(row[:item]))
+      !!(acceptance && acceptance[:failed].include?(row[:goal] || row[:item]))
     end
 
     # Per-row cells of the table, plus a totals row.
@@ -186,6 +186,6 @@ module DemoCalculator
         "#{" (#{unreadable} of #{counts.size} unreadable)" if unreadable > 0}"
     end
     private_class_method :ran_cells, :not_run_cells, :total_cells, :features_cell, :acceptance_cell,
-      :completed_unmet?, :gap_cell, :states_text
+      :completed_unmet?, :gap_cell
   end
 end

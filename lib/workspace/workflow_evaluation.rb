@@ -42,7 +42,7 @@ module Workspace
     # @param checker [Workspace::WorkflowCheck] runs a step's `status:` command
     # @param require_check [Workspace::WorkflowRequire] checks a step's `require:` proofs
     # @param guard [Workspace::WorkflowGuard] checks a guarded step against the run's base and reads config changes
-    # @param commands_config [Workspace::CommandsConfig] the project's `commands.test`/`commands.lint`
+    # @param commands_config [Workspace::CommandsConfig] the workspace's `commands.test`/`commands.lint`, else its project's
     # @param inbox_for [#call, nil] given a workspace name, its inbox store, for a guard's warning (default: no item)
     # @param review_round [#call, nil] given the run id and the review round a change registered, runs it with the lock given up and answers the run afterwards (default: nothing runs)
     # @param review_tally [#call, nil] given `run:`, `step:` and `round:`, the round's outcome and the reviews it read ({WorkflowReviewTally};
@@ -528,7 +528,7 @@ module Workspace
         return
       end
 
-      command = step["status"]["run"] || @commands_config.for_project(run["project"])[step["status"]["command"].to_sym]
+      command = step["status"]["run"] || @commands_config.for_project(run["workspace"])[step["status"]["command"].to_sym]
       log = File.join(run["artifacts_dir"], "steps", "#{step["id"]}.#{attempt["n"]}.check.log")
       attempt["check"] = {"started_at" => now_iso, "log" => log}
       attempt["check"]["command"] = command if command
@@ -553,7 +553,7 @@ module Workspace
     def run_check(run_id, check)
       stop_when = -> { !wanted?(run_id, check) }
       return @require_check.run_outside(check["proof"], cwd: check["cwd"], env: check_env(run_id), stop_when: stop_when) if check["proof"]
-      return {exit_code: nil, timed_out: false, error: "the project's #{check["role"]} command is not set"} unless check["command"]
+      return {exit_code: nil, timed_out: false, error: "the workspace's #{check["role"]} command is not set"} unless check["command"]
       @checker.call(command: check["command"], cwd: check["cwd"], timeout: check["timeout"], log: check["log"], stop_when: stop_when, env: check_env(run_id))
     end
 

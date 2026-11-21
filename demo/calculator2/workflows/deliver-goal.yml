@@ -1,0 +1,102 @@
+# Delivers one goal document end to end with no person: research, a fresh plan, implement, verify,
+# then a final step whose only job is to run the project's own acceptance program over the result.
+# It extends rpiv-auto-approve-v2, so the three built-in plan reviewers and the test-backed verify
+# loop are inherited; it replaces `plan` (a plan left by an earlier goal must go first) and adds
+# `acceptance` after `verify`.
+schema_version: 0.1
+id: deliver-goal
+title: Deliver a goal, checked by the project's acceptance program
+description: Researches, plans, builds and verifies one goal document, then runs an acceptance program on the result and loops back to implement once if it fails.
+extends: rpiv-auto-approve-v2
+
+use_when: A goal written in a document in the checkout, with an acceptance program the agents cannot read, to deliver with no person.
+
+inputs:
+  goal:
+    description: Path, inside the checkout, to the document that states the goal to deliver.
+    required: true
+  acceptance:
+    description: Path to the project's acceptance program, an executable that takes the goal path and exits 0 when the goal is met.
+    required: true
+
+instructions: |
+  You are delivering a goal in workspace {{workspace}}, branch {{branch}}: {{inputs.task}}
+  The goal is written in {{inputs.goal}}. Read that document first and treat it as the brief:
+  build what it asks and nothing beyond it. Do not read, run, or look for the program that
+  accepts the work; it is not yours to see.
+  Shell commands that mention a hidden or denied path, even one you only saw in a log or error,
+  inside quotes or an inline script, are blocked and reported; keep such paths out of shell
+  command lines.
+  Spec (may be empty): {{inputs.spec}}
+  Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
+  inputs; read them before you start.
+
+# Parent's 21 attempts plus up to 4 for the acceptance step and the second pass through
+# implement and verify that its one loop back can cause.
+max_attempts: 25
+# The parent's 8h plus the acceptance step's 15 minutes and a second pass of implement.
+timeout: 9h
+# Keeps the agents off the acceptance program (a tripwire, see docs/README.workflow.md).
+deny:
+  - "*calculator2/acceptance/*"
+  - "*calculator2/acceptance"
+  - "*refs/demo-calc2*"
+
+replace:
+  plan:
+    title: Plan
+    include: [notes, implementation-plan]
+    prompt: |
+      The goal is in {{inputs.goal}}; read it, and {{artifacts}}/research.md.
+      This workspace may still hold a plan from an earlier goal. Run `workspace plan show`. If a
+      plan exists and it is not this goal's own plan (it is done, or it is for another goal), run
+      `workspace plan delete --yes`, then `workspace plan init --title "<title>"`, and write a fresh plan
+      for this goal. `plan init` refuses to overwrite an existing plan, so the delete comes first.
+      If reviewers turned the last plan down, read every reviewer's reasons, including the ones
+      that approved. Don't just patch each objection: rethink what it takes, and change the
+      design if the current one can't meet them all. Edit the plan you wrote earlier in this
+      run; do not delete it again.
+      Write the plan as the workspace plan: the IMPLEMENTATION_PLAN.md that `workspace plan path`
+      names, in the syntax the implementation-plan instructions give, so `workspace plan status`
+      shows it.
+      One task per commit, in order, with the files touched, tests to add and how you'll
+      know it works under that task in Task details. Call out anything that needs the
+      dev environment or the test database. Set `status: active` and leave every task `[ ]`.
+      You only write the plan here; do not start any task, and do not set `status: done`.
+      Then write {{artifacts}}/plan.md: the approach, the risks, and
+      the path of the plan file. Do not copy the task list into it. The step is not
+      finished until plan.md exists.
+      Say in plan.md how each reviewer objection, if any, was answered.
+      Don't change code.
+    produces: [plan.md]
+    guard: unchanged
+    # Done only when the workspace plan exists, has at least one task and is not already done
+    # (a done plan is one left over from an earlier goal).
+    status:
+      run: |
+        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit(plan && plan["exists"] && plan["counts"]["total"].to_i > 0 && plan["state"] != "done" && plan["status"] != "done" ? 0 : 1)'
+    timeout: 45m
+    max_attempts: 8
+    review:
+      from: [supportive, skeptical, implementer]
+      need: 2
+      must: [skeptical]
+      subject: the workspace plan (`workspace plan path`), against {{inputs.goal}} and {{artifacts}}/research.md
+      revision: workspace plan status --json | ruby -rjson -e 'data = JSON.parse($stdin.read); abort "no plans" unless data.key?("plans"); puts data["plans"].to_a.first&.dig("revision")'
+      max_rounds: 6
+      timeout: 30m
+      context: fresh
+
+steps:
+  acceptance:
+    after: verify
+    title: Acceptance
+    prompt: "Change nothing; end your turn."
+    guard: config
+    require:
+      - exec: "/usr/bin/env git diff --quiet HEAD"
+      - exec: "/usr/bin/env {{inputs.acceptance}} {{inputs.goal}}"
+        timeout: 15m
+    timeout: 20m
+    max_attempts: 3
+    on_fail: {goto: implement, max: 1, log_tail: 40}

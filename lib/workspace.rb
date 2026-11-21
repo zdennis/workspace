@@ -570,7 +570,7 @@ module Workspace
   # @param composer [Workspace::InstructionComposer] builds a step's instructions
   # @param panes [Workspace::WorkflowPanes] binds, finds and types into the run's pane
   # @param checker [Workspace::WorkflowCheck] runs a step's `status:` command
-  # @param commands_config [Workspace::CommandsConfig] the project's `commands.test`/`commands.lint`
+  # @param commands_config [Workspace::CommandsConfig] a workspace's `commands.test`/`commands.lint` (its own, else its project's)
   # @param lineage [Workspace::WorkspaceLineage] names a checkout's parent project
   # @param git [Workspace::Git] reads the checkout's branch
   # @param guard [Workspace::WorkflowGuard] records a run's base commit and checks a guarded step against it

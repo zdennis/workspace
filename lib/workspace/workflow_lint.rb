@@ -83,19 +83,22 @@ module Workspace
                         "message" => "the steps use the project's #{roles} command, which was not checked because the current directory is not in a git checkout. Run validate from the project to check it."}
         return
       end
-      set = @commands_config.for_project(project.name)
-      workspace = @project_config.existing_name(project.name)
+      named = project.worktree || project.name
+      set = @commands_config.for_project(named)
+      workspace = @project_config.existing_name(named)
+      project_known = @project_config.existing_name(project.name)
       needs.reject { |each| set[each["command"].to_sym] }.each do |each|
+        project_scope = CommandsConfig.project_scope_command(each["command"], project.name, workspace: named, known: !!project_known)
         hint = if workspace
-          "workspace config set commands.#{each["command"]} \"COMMAND\" --name #{workspace}"
+          "workspace config set commands.#{each["command"]} \"COMMAND\" --name #{workspace}#{"; or once for the whole project: #{project_scope}" if project_scope}"
         else
-          "#{project.name} is not a workspace yet: run `workspace add .` in it, then `workspace config set commands.#{each["command"]} \"COMMAND\"`"
+          "#{named} is not a workspace yet: run `workspace add .` in it, then `workspace config set commands.#{each["command"]} \"COMMAND\"`"
         end
         warnings << {"code" => "command_unset", "step" => each["step"],
-                     "message" => "step #{each["step"]} uses the project's #{each["command"]} command (#{each["via"]}: command: #{each["command"]}), and #{project.name} has none, so `start` there would refuse it. Set it: #{hint}"}
+                     "message" => "step #{each["step"]} uses the #{each["command"]} command (#{each["via"]}: command: #{each["command"]}), and #{named} has none, so `start` there would refuse it. Set it: #{hint}"}
       end
     rescue Workspace::ConfigParseError => e
-      not_checked << {"code" => "commands_not_checked", "step" => nil, "message" => "the project's commands could not be read: #{e.message.lines.first.strip}"}
+      not_checked << {"code" => "commands_not_checked", "step" => nil, "message" => "the commands could not be read: #{e.message.lines.first.strip}"}
     end
 
     # The `require: exec:` entries: the program (argument 1) by the rule `preflight` refuses by, a
@@ -127,20 +130,21 @@ module Workspace
       return unless tests_step
       unless project
         not_checked << {"code" => "test_files_not_checked", "step" => tests_step,
-                        "message" => "step #{tests_step} uses {{changed.tests}}, which needs the project's commands.test_files, not checked because the current directory is not in a git checkout. Run validate from the project to check it."}
+                        "message" => "step #{tests_step} uses {{changed.tests}}, which needs the workspace's commands.test_files, not checked because the current directory is not in a git checkout. Run validate from the project to check it."}
         return
       end
-      return unless @commands_config.test_files(project.name).empty?
-      workspace = @project_config.existing_name(project.name)
+      named = project.worktree || project.name
+      return unless @commands_config.test_files(named).empty?
+      workspace = @project_config.existing_name(named)
       hint = if workspace
         "workspace config set commands.test_files \"GLOB ...\" --name #{workspace}"
       else
-        "#{project.name} is not a workspace yet: run `workspace add .` in it, then `workspace config set commands.test_files \"GLOB ...\"`"
+        "#{named} is not a workspace yet: run `workspace add .` in it, then `workspace config set commands.test_files \"GLOB ...\"`"
       end
       warnings << {"code" => "test_files_unset", "step" => tests_step,
-                   "message" => "step #{tests_step} uses {{changed.tests}}, and #{project.name} has no commands.test_files, so `start` there would refuse it. Set it: #{hint}"}
+                   "message" => "step #{tests_step} uses {{changed.tests}}, and #{named} has no commands.test_files, so `start` there would refuse it. Set it: #{hint}"}
     rescue Workspace::ConfigParseError => e
-      not_checked << {"code" => "test_files_not_checked", "step" => nil, "message" => "the project's commands.test_files could not be read: #{e.message.lines.first.strip}"}
+      not_checked << {"code" => "test_files_not_checked", "step" => nil, "message" => "the workspace's commands.test_files could not be read: #{e.message.lines.first.strip}"}
     end
   end
 end

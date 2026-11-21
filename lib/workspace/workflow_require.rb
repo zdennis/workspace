@@ -17,7 +17,7 @@ module Workspace
   # `assume-unchanged`/`skip-worktree` files are not seen). Git runs through {WorkflowGuard}, so it ignores
   # the user's and the system's config and every inherited `GIT_*` variable.
   #
-  # Three more: `command` (the project's `commands.test` or `commands.lint` exits 0, run like a `status:` command
+  # Three more: `command` (the workspace's `commands.test` or `commands.lint` exits 0, run like a `status:` command
   # through {WorkflowCheck} in the checkout, 5 minutes at most), `inbox_item` (the workspace's own inbox holds an
   # item with the rendered dedupe key, in any state, updated since the attempt began) and `remote_unchanged` (the
   # branch on its remote is as it was when the attempt began, `attempt.remote`, which the engine reads after
@@ -75,7 +75,7 @@ module Workspace
 
     # @param guard [Workspace::WorkflowGuard] reads the checkout through hardened git calls
     # @param notes_dir_of [#call] given a workspace name, its notes directory, or nil when it can't be found
-    # @param commands_config [Workspace::CommandsConfig, nil] the project's `commands.test` and `commands.lint` (`command` is unproven without it)
+    # @param commands_config [Workspace::CommandsConfig, nil] the workspace's `commands.test` and `commands.lint` (`command` is unproven without it)
     # @param checker [Workspace::WorkflowCheck, nil] runs the `command` proof
     # @param inbox_for [#call, nil] given a workspace name, its inbox store (`inbox_item` is unproven without it)
     # @param tmpdir [#call] as `Dir.mktmpdir`: given a prefix, yields a new directory only this user can open and
@@ -223,9 +223,9 @@ module Workspace
     end
 
     def command(role, run, attempt, optional = false)
-      configured = @commands_config&.for_project(run.project)&.[](role.to_s.to_sym)
+      configured = @commands_config&.for_project(run.workspace)&.[](role.to_s.to_sym)
       return {"skipped" => {"proof" => "command", "role" => role, "skipped" => "command_unset", "optional" => true}} if optional && !configured
-      return unproven("required the project's #{role} command to exit 0, but #{@checker ? "it is not set" : "no checker is available"}") unless configured && @checker
+      return unproven("required the workspace's #{role} command to exit 0, but #{@checker ? "it is not set" : "no checker is available"}") unless configured && @checker
       token = SecureRandom.hex(4)
       log = File.join(run.artifacts_dir.to_s, "steps", "#{run.current}.#{attempt.n}.require-#{role}.#{token}.log")
       {"outside" => {"proof" => "command", "token" => token, "role" => role, "command" => configured, "log" => log, "timeout" => COMMAND_TIMEOUT}}
@@ -236,9 +236,9 @@ module Workspace
       result = @checker.call(command: pending["command"], cwd: cwd, timeout: pending["timeout"], log: log, env: env, stop_when: stop_when)
       record = {"exit_code" => result[:exit_code], "timed_out" => result[:timed_out], "error" => result[:error]}.compact
       return [record, nil] if result[:exit_code] == 0
-      return [record, unproven("required the project's #{role} command to exit 0, but it ran past #{pending["timeout"]} seconds and was stopped (log #{log})").merge("log" => log)] if result[:timed_out]
-      return [record, unproven("required the project's #{role} command to exit 0, but it #{result[:error] || "did not finish"}")] unless result[:exit_code]
-      [record, {"detail" => "required the project's #{role} command to exit 0, found exit #{result[:exit_code]} (log #{log})", "exit_code" => result[:exit_code], "log" => log}]
+      return [record, unproven("required the workspace's #{role} command to exit 0, but it ran past #{pending["timeout"]} seconds and was stopped (log #{log})").merge("log" => log)] if result[:timed_out]
+      return [record, unproven("required the workspace's #{role} command to exit 0, but it #{result[:error] || "did not finish"}")] unless result[:exit_code]
+      [record, {"detail" => "required the workspace's #{role} command to exit 0, found exit #{result[:exit_code]} (log #{log})", "exit_code" => result[:exit_code], "log" => log}]
     end
 
     # Under the lock: what can be refused before anything runs (no checker, a list whose starting commit is not

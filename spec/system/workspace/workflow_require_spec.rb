@@ -300,6 +300,12 @@ RSpec.describe Workspace::WorkflowRequire do
         log: %r{/steps/build\.2\.require-test\.\h{8}\.log\z}, env: {"X" => "1"}, stop_when: stop_when)
     end
 
+    it "reads the command through the run's workspace, so a worktree's own commands apply" do
+      run["workspace"] = "app.wt-feature"
+      proven({"command" => "test"}, attempt: {"n" => 1})
+      expect(commands).to have_received(:for_project).with("app.wt-feature")
+    end
+
     it "fails with the exit code and the log" do
       allow(checker).to receive(:call).and_return({exit_code: 3, timed_out: false})
       expect(proven({"command" => "test"}, attempt: {"n" => 1})).to include("proof" => "command", "code" => "require_command", "exit_code" => 3,

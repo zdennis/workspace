@@ -441,7 +441,7 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(slow.turn_ended("wr_1", actor: "agent", pane: "%5")).to include("state" => "cancelled")
     end
 
-    it "fails a step whose project lost its check command after the run started" do
+    it "fails a step whose workspace lost its check command after the run started" do
       to_verify
       commands[:test] = nil
 
@@ -449,7 +449,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       expect(check_calls).to eq([])
       expect(run["current"]).to eq("build")
-      expect(run["steps"]["build"]["attempts"].last["context"].first).to include("its check could not be run (the project's test command is not set)")
+      expect(run["steps"]["build"]["attempts"].last["context"].first).to include("its check could not be run (the workspace's test command is not set)")
     end
 
     it "drops a check's result when the run moved on while it ran" do

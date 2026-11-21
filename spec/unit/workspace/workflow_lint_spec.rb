@@ -74,6 +74,27 @@ RSpec.describe Workspace::WorkflowLint do
     expect(message).to include("config set commands.test \"COMMAND\" --name proj")
   end
 
+  context "in a worktree" do
+    before do
+      allow(lineage).to receive(:resolve).and_return(Workspace::WorkspaceLineage::Lineage.new(name: "proj", path: "/repo", git_common_dir: git_common_dir, is_worktree: true, worktree: "proj.wt"))
+      allow(workflow_config).to receive(:default_packs).and_return(%w[commits])
+      allow(project_config).to receive(:existing_name).with("proj.wt").and_return("proj.wt")
+      allow(project_config).to receive(:existing_name).with("proj").and_return("proj")
+    end
+
+    it "warns nothing about commands set only at the worktree's workspace scope" do
+      allow(commands_config).to receive(:for_project).with("proj.wt").and_return({test: "rake wt", lint: "rubocop"})
+      found = lint.call(definition("steps:\n  a:\n    prompt: P\n    status: {command: test}\n"), cwd: "/repo/.worktrees/wt")
+      expect(found["warnings"]).to eq([])
+    end
+
+    it "names the worktree's workspace in the warning and the --name hint when it has none" do
+      allow(commands_config).to receive(:for_project).with("proj.wt").and_return({test: nil, lint: nil})
+      message = lint.call(definition("steps:\n  a:\n    prompt: P\n    status: {command: test}\n"), cwd: "/repo/.worktrees/wt")["warnings"].find { |w| w["code"] == "command_unset" }["message"]
+      expect(message).to include("proj.wt has none", "--name proj.wt", "once for the whole project", "--name proj")
+    end
+  end
+
   it "raises nothing for a definition that uses no pack and no command" do
     found = lint.call(definition("steps:\n  a:\n    prompt: P\n    gate: approve\n"), cwd: "/repo")
     expect(found).to eq({"warnings" => [], "not_checked" => []})
@@ -144,6 +165,25 @@ RSpec.describe Workspace::WorkflowLint do
       expect(found["warnings"]).to match([include("code" => "test_files_unset", "message" => /--name proj/)])
       allow(commands_config).to receive(:test_files).with("proj").and_return(["a"])
       expect(lint.call(exec_def("ls -- {{changed.tests}}"), cwd: "/repo")["warnings"]).to eq([])
+    end
+
+    context "in a worktree" do
+      before do
+        allow(lineage).to receive(:resolve).and_return(Workspace::WorkspaceLineage::Lineage.new(name: "proj", path: "/repo", git_common_dir: git_common_dir, is_worktree: true, worktree: "proj.wt"))
+        allow(project_config).to receive(:existing_name).with("proj.wt").and_return("proj.wt")
+        allow(commands_config).to receive(:test_files).with("proj").and_return([])
+      end
+
+      it "reads test_files for the worktree's workspace, so a value set only there (or inherited from the parent) clears the warning" do
+        allow(commands_config).to receive(:test_files).with("proj.wt").and_return(["spec/**/*_spec.rb"])
+        expect(lint.call(exec_def("ls -- {{changed.tests}}"), cwd: "/repo/.worktrees/wt")["warnings"]).to eq([])
+      end
+
+      it "names the worktree's workspace when neither it nor its parent sets test_files" do
+        allow(commands_config).to receive(:test_files).with("proj.wt").and_return([])
+        found = lint.call(exec_def("ls -- {{changed.tests}}"), cwd: "/repo/.worktrees/wt")
+        expect(found["warnings"]).to match([include("code" => "test_files_unset", "message" => /proj\.wt has no commands\.test_files.*--name proj\.wt/)])
+      end
     end
 
     it "does not read test_files when no step uses {{changed.tests}}" do

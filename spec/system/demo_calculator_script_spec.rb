@@ -134,7 +134,7 @@ RSpec.describe DemoCalculator::Demo do
       calls = File.read(log).lines.map(&:strip)
       adds = calls.grep(/\Awork-queue add workflow /).map { |line| line[/calc-\d\d-[a-z-]+/] }
       expect(adds).to eq(DemoCalculator::WORKFLOW_IDS)
-      expect(calls).to include("workflow install", "config set --scope workspace --name ws commands.test ruby")
+      expect(calls).to include("workflow install", "config set --scope workspace --name ws commands.test ruby demo/calculator/test/calc_test.rb")
       expect(calls.grep(/\Aconfig set workflows.sources /).first).to end_with("/demo/calculator/workflows")
       expect(calls.last(3)).to eq(["capabilities --json", "work-queue enable --name ws", "work-queue advance --name ws"])
     end
@@ -303,7 +303,7 @@ RSpec.describe DemoCalculator::Demo do
       it "advances by hand without auto-advance, until the queue is empty, and records why it stopped" do
         run_waiting(queue("on", ["a", "queued"]), queue("on", ["a", "queued"]), queue("on", ["a", "active"]), queue("on"))
         expect(calls.count("work-queue advance --name ws")).to be > 1
-        expect(record["wait"]).to eq("reason" => "empty", "item" => nil, "stopped_at" => now.first.utc.iso8601)
+        expect(record["wait"]).to eq("reason" => "empty", "item" => nil, "stopped_at" => now.first.utc.iso8601, "failed_item" => nil)
       end
 
       it "does not advance when the daemon does" do

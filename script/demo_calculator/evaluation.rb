@@ -1,6 +1,7 @@
 require "json"
 require "open3"
 require "time"
+require_relative "config"
 require_relative "cost"
 require_relative "eval_checks"
 require_relative "eval_report"
@@ -19,7 +20,9 @@ module DemoCalculator
     # @param pricing_path [String] demo/pricing.yml
     # @param checks [#acceptance, #lint, #leak_check] the git-backed checks
     # @param err [IO] where warnings go
-    def initialize(root:, workspace:, pricing_path:, name: nil, run_dir: nil, checks: nil, err: $stderr)
+    # @param config [Config] which demo's run records to read
+    def initialize(root:, workspace:, pricing_path:, name: nil, run_dir: nil, checks: nil, err: $stderr, config: Config.v1)
+      @config = config
       @root = File.expand_path(root)
       @workspace = workspace
       @name = name
@@ -57,7 +60,7 @@ module DemoCalculator
       lint[:offenses] = lint(lint[:head]) if lint[:head]
       totals = EvalReport.totals(rows, acceptance_passed: last&.dig(:acceptance)&.fetch(:passed)&.size,
         acceptance_of: last&.dig(:acceptance) && last[:item], lint: lint[:offenses])
-      leak = leak(caps, queue, loaded)
+      leak = leak(caps, queue, loaded, lint[:head], record.dig("acceptance_ref", "removal_sha"))
       document = build_document(record, pricing, rows, totals, lint, leak)
       File.write(File.join(dir, "eval.json"), JSON.pretty_generate(document) + "\n")
       {document: document, rows: rows, totals: totals, lint: lint, leak: leak, dir: dir}
@@ -85,8 +88,8 @@ module DemoCalculator
 
     def run_dir
       return @run_dir if @run_dir
-      newest = Dir.glob(File.join(@root, "tmp", "demo-calculator", "runs", "*", "run.json")).max
-      raise Error, "no run record under tmp/demo-calculator/runs: run `run` first or pass --run DIR" unless newest
+      newest = Dir.glob(File.join(@root, @config.runs_dir, "*", "run.json")).max
+      raise Error, "no run record under #{@config.runs_dir}: run `run` first or pass --run DIR" unless newest
       File.dirname(newest)
     end
 
@@ -125,7 +128,7 @@ module DemoCalculator
         return empty.merge(missing: true)
       end
       trace = workspace_json("workflow", "trace", run_id, "--json")
-      {workflow: workflow, run: read_json(path), events: read_events(path.sub(/\.json\z/, ".events.jsonl")), totals: trace["totals"]}
+      {workflow: workflow, run: read_json(path), events: read_events(path.sub(/\.json\z/, ".events.jsonl")), totals: trace["totals"], trace: trace}
     end
 
     # The workspace's asks (`<state dir>/<workspace>/asks.json`); empty when the file or the name is missing or unreadable.
@@ -168,7 +171,7 @@ module DemoCalculator
       nil
     end
 
-    def leak(caps, queue, loaded)
+    def leak(caps, queue, loaded, head, removal)
       runs = loaded.filter_map { |l| l[:run] }
       return nil if runs.empty?
       dir = caps.dig("paths", "hook_events")
@@ -179,7 +182,7 @@ module DemoCalculator
       transcripts = sessions.filter_map { |session| session&.dig("transcript") }
       ended = runs.map { |run| run["ended_at"] }
       @checks.leak_check(hook_files: hook_files, transcripts: transcripts, from: runs.first["created_at"],
-        to: ended.all? ? ended.max_by { |t| Time.parse(t) } : nil)
+        to: ended.all? ? ended.max_by { |t| Time.parse(t) } : nil, head: head, removal: removal)
     end
 
     def build_document(record, pricing, rows, totals, lint, leak)

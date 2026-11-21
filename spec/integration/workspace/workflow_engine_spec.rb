@@ -864,12 +864,12 @@ RSpec.describe Workspace::WorkflowEngine do
         .to raise_error(Workspace::UsageError, 'Workflow flow has no input "colour" (inputs: task).')
     end
 
-    it "refuses a workflow whose check names a command the project has not set" do
+    it "refuses a workflow whose check names a command the workspace has not set" do
       commands[:test] = nil
 
-      expect { start }.to raise_error(Workspace::Error, /checks steps with the project's test command, and app has none\..*workspace config set commands\.test "COMMAND" --name app/m) { |error|
+      expect { start }.to raise_error(Workspace::Error, /checks steps with the test command, and app.worktree-x has none\..*workspace config set commands\.test "COMMAND" --name app.worktree-x/m) { |error|
         expect(error.code).to eq("workflow_command_unset")
-        expect(error.details).to eq("workflow" => "flow", "project" => "app", "commands" => ["test"],
+        expect(error.details).to eq("workflow" => "flow", "project" => "app", "workspace" => "app.worktree-x", "commands" => ["test"],
           "steps" => [{"step" => "verify", "command" => "test", "via" => "status"}])
       }
       expect(going_runs(store)).to eq([])
@@ -1467,7 +1467,8 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(plan_for("a", flow: flow)).to include("command" => "test -f x", "timeout" => Workspace::WorkflowDefinition::DEFAULT_CHECK_TIMEOUT)
     end
 
-    it "reads the command for the project the lineage names, as a run does, not for the workspace given" do
+    it "reads the command for the workspace the checkout is, as a run does" do
+      allow(lineage).to receive(:resolve).and_return(Workspace::WorkspaceLineage::Lineage.new(name: "app", worktree: "app.worktree-x"))
       asked = []
       allow(commands_config).to receive(:for_project) { |name| asked << name && commands }
       flow = definition("steps:\n  a:\n    prompt: P\n    produces: [a.md]\n    status: {command: test}\n")
@@ -1476,7 +1477,7 @@ RSpec.describe Workspace::WorkflowEngine do
       asked.clear
       start(flow, inputs: {})
 
-      expect(checked).to eq(["app"])
+      expect(checked).to eq(["app.worktree-x"])
       expect(asked.uniq).to eq(checked)
     end
 
