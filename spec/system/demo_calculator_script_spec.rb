@@ -18,12 +18,14 @@ RSpec.describe DemoCalculator::Demo do
   let(:work_dir) { File.join(tmp, "work") }
   let(:log) { File.join(tmp, "calls.log") }
   let(:queue_json) { '{"queues":[]}' }
+  let(:sources) { "" }
   let(:fake_workspace) do
     path = File.join(tmp, "fake-workspace")
     File.write(path, <<~SH)
       #!/bin/sh
       echo "$@" >> #{log}
       if [ "$1 $2" = "work-queue list" ]; then echo '#{queue_json}'; fi
+      if [ "$1 $2 $3" = "config get workflows.sources" ]; then echo '#{sources}'; fi
     SH
     File.chmod(0o755, path)
     path
@@ -111,6 +113,47 @@ RSpec.describe DemoCalculator::Demo do
       expect(calls).to include("workflow install", "config set --scope workspace --name ws commands.test ruby")
       expect(calls.grep(/\Aconfig set workflows.sources /).first).to end_with("/demo/calculator/workflows")
       expect(calls.last(2)).to eq(["work-queue enable --name ws", "work-queue advance --name ws"])
+    end
+    context "with workflows.sources already set" do
+      let(:own) { File.join(work_dir, "demo/calculator/workflows") }
+      let(:stale) { "/gone/other-demo/demo/calculator/workflows" }
+      let(:sets) { File.read(log).lines.map(&:strip).grep(/\Aconfig set workflows.sources /) }
+
+      context "with another checkout's entry among unrelated ones" do
+        let(:sources) { "/a/team,#{stale},/b/mine" }
+
+        it "replaces the stale entry with its own and keeps the rest in order" do
+          demo.run
+          expect(sets).to eq(["config set workflows.sources /a/team,/b/mine,#{own}"])
+        end
+      end
+
+      context "with its own entry after a stale one" do
+        let(:sources) { "#{stale},/a/team,#{own}" }
+
+        it "drops the stale entry and writes the remaining list" do
+          demo.run
+          expect(sets).to eq(["config set workflows.sources /a/team,#{own}"])
+        end
+      end
+
+      context "with a trailing slash and a near-miss path" do
+        let(:sources) { "/a/other-demo/calculator/workflows,#{stale}/" }
+
+        it "replaces only the real demo entry" do
+          demo.run
+          expect(sets).to eq(["config set workflows.sources /a/other-demo/calculator/workflows,#{own}"])
+        end
+      end
+
+      context "when the list is already right" do
+        let(:sources) { "/a/team,#{own}" }
+
+        it "does not write it again" do
+          demo.run
+          expect(sets).to be_empty
+        end
+      end
     end
   end
 end
