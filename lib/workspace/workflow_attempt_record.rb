@@ -196,7 +196,7 @@ module Workspace
       return value if attempt.nil? || attempt.ended_at
       step = value.definition["steps"].find { |each| each["id"] == step_id }
       # One clock read stamps the end and bounds the usage window ({#agent_facts} reads `ended_at`).
-      ended = attempt.thawed.merge("ended_at" => @clock.call.utc.iso8601, "outcome" => outcome)
+      ended = attempt.thawed.merge("ended_at" => @clock.call.utc.iso8601(3), "outcome" => outcome)
       value.with_attempt(step_id, finish(run: value, step: step, attempt: ended))
     rescue
       WorkflowRun.from_h(run)
@@ -220,7 +220,7 @@ module Workspace
     #   round read verdicts, also "reviews" and "evidence" (the copies; empty with no evidence collaborator); when its
     #   delivery recorded them, "packs" (one `{"reviewer", "ref", "sha256"}` per reviewer pack composed in)
     def finish_round(run:, round:, step_id: nil)
-      ended_at = round["ended_at"] || @clock.call.utc.iso8601
+      ended_at = round["ended_at"] || @clock.call.utc.iso8601(3)
       record = {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => ended_at,
                 "session" => nil, "agent" => nil, "usage" => nil}
       # The reviewer packs its delivery composed in, as an attempt keeps its own `packs`.

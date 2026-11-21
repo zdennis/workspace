@@ -530,7 +530,7 @@ class RecordingAttemptRecord
 
   def finish_round(run:, round:, step_id: nil)
     @calls << [:finish_round, Workspace::WorkflowRun.from_h(run).id, round["round"]]
-    {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => round["ended_at"] || "2026-11-10T12:00:00Z",
+    {"round" => round["round"], "pane" => round["pane"], "started_at" => round["started_at"], "ended_at" => round["ended_at"] || "2026-11-10T12:00:00.000Z",
      "session" => nil, "agent" => nil, "usage" => @round_usage}.tap do |record|
       next unless round["reviews"].is_a?(Array)
       record["reviews"] = round["reviews"].map { |row| row.merge("isolation" => "review_pane") }

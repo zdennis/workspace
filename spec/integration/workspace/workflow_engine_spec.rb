@@ -4788,7 +4788,7 @@ steps:
       run = restart(note: "carry on")
 
       first, second = attempts(run)
-      expect(first).to include("n" => 1, "outcome" => "interrupted", "ended_at" => "2026-10-04T12:01:00Z", "usage" => {"input_tokens" => 120, "output_tokens" => 7},
+      expect(first).to include("n" => 1, "outcome" => "interrupted", "ended_at" => "2026-10-04T12:01:00.000Z", "usage" => {"input_tokens" => 120, "output_tokens" => 7},
         "head" => {"before" => "1" * 40, "after" => "2" * 40})
       expect(second).to include("n" => 2, "retry_of" => 1)
       expect(second).not_to have_key("ended_at")
@@ -5337,7 +5337,7 @@ steps:
 
       run = engine.cancel("wr_1", actor: "person")
 
-      expect(run).to include("state" => "cancelled", "cancelled_by" => "cancel", "reason" => nil, "ended_at" => "2026-10-04T12:00:00Z")
+      expect(run).to include("state" => "cancelled", "cancelled_by" => "cancel", "reason" => nil, "ended_at" => "2026-10-04T12:00:00.000Z")
       expect(lock_holder("test-db")).to be_nil
       expect(panes.bound).to eq({})
       expect(history.last).to eq("run_cancelled")

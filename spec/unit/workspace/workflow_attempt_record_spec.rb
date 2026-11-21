@@ -95,7 +95,7 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
         [{"reviewer" => "skeptic", "path" => "reviews/plan.1.r2/skeptic.md", "verdict" => "approve", "sha256" => Digest::SHA256.hexdigest(verdict), "counted" => true},
           {"reviewer" => "tester", "path" => "reviews/plan.1.r2/tester.md", "verdict" => nil, "sha256" => nil, "counted" => false, "problem" => "missing"}]
       end
-      let(:round) { {"round" => 2, "started_at" => "2026-10-04T12:00:00Z", "ended_at" => "2026-10-04T12:05:00Z", "reviews" => rows} }
+      let(:round) { {"round" => 2, "started_at" => "2026-10-04T12:00:00Z", "ended_at" => "2026-10-04T12:05:00.000Z", "reviews" => rows} }
 
       before do
         FileUtils.mkdir_p(File.join(run["artifacts_dir"], "reviews", "plan.1.r2"))
@@ -275,7 +275,13 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
       closed = record.abandon(run).current_step.last_attempt.to_h
 
       expect(closed).to include("outputs" => [include("bytes" => 1)], "head" => {"before" => nil, "after" => "a" * 40})
-      expect(closed).to include("outcome" => "cancelled", "ended_at" => "2026-10-04T12:30:00Z")
+      expect(closed).to include("outcome" => "cancelled", "ended_at" => "2026-10-04T12:30:00.000Z")
+    end
+
+    it "stamps ended_at with the milliseconds of the clock" do
+      timed = described_class.new(guard: guard, clock: -> { Time.utc(2026, 10, 4, 12, 30, 5, 123_000) })
+
+      expect(timed.abandon(run).current_step.last_attempt.to_h["ended_at"]).to eq("2026-10-04T12:30:05.123Z")
     end
 
     it "leaves no open attempt, and a reason history attaches nothing new to it" do
@@ -358,7 +364,7 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
 
       closed = record.abandon(run, outcome: "interrupted", step_id: "test")
 
-      expect(closed.step("test").last_attempt.to_h).to include("outcome" => "interrupted", "ended_at" => "2026-10-04T12:00:00Z")
+      expect(closed.step("test").last_attempt.to_h).to include("outcome" => "interrupted", "ended_at" => "2026-10-04T12:00:00.000Z")
       expect(closed.step("lint").last_attempt.to_h).not_to have_key("ended_at")
     end
   end
@@ -511,7 +517,7 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
         session_names: ->(workspace) { [workspace, "tmux-#{workspace}"] }, server_for: ->(_pane) { server.first },
         max_transcript_bytes: max_transcript_bytes)
     end
-    let(:attempt) { {"n" => 2, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00Z"} }
+    let(:attempt) { {"n" => 2, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00.000Z"} }
 
     def ledger_line(entry) = File.open(ledger_path, "a") { |f| f.puts(JSON.generate({"workspace" => "tmux-w", "tmux_server" => "99"}.merge(entry))) }
 
@@ -554,8 +560,8 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
     end
 
     it "counts two consecutive attempts in one session separately (T3)" do
-      first = {"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:01:30Z"}
-      second = {"n" => 2, "started_at" => "2026-10-04T12:01:40.000Z", "ended_at" => "2026-10-04T12:05:00Z"}
+      first = {"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:01:30.000Z"}
+      second = {"n" => 2, "started_at" => "2026-10-04T12:01:40.000Z", "ended_at" => "2026-10-04T12:05:00.000Z"}
       first.replace(record.finish(run: run, step: step, attempt: first).thawed)
       second.replace(record.finish(run: run, step: step, attempt: second).thawed)
 
@@ -572,8 +578,8 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
          ]},
          "steps" => {"lint" => {"state" => "running", "attempts" => []}, "test" => {"state" => "running", "attempts" => []}}}
       end
-      let(:lint) { {"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00Z"} }
-      let(:test) { {"n" => 1, "started_at" => "2026-10-04T12:00:30.000Z", "ended_at" => "2026-10-04T12:06:00Z"} }
+      let(:lint) { {"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00.000Z"} }
+      let(:test) { {"n" => 1, "started_at" => "2026-10-04T12:00:30.000Z", "ended_at" => "2026-10-04T12:06:00.000Z"} }
       let(:lint_step) { group_run["definition"]["steps"][0] }
       let(:test_step) { group_run["definition"]["steps"][1] }
 
@@ -597,7 +603,7 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
         finish_lint
         test.replace(record.finish(run: group_run, step: test_step, attempt: test).thawed)
 
-        second = {"n" => 2, "started_at" => "2026-10-04T12:07:00.000Z", "ended_at" => "2026-10-04T12:09:30Z"}
+        second = {"n" => 2, "started_at" => "2026-10-04T12:07:00.000Z", "ended_at" => "2026-10-04T12:09:30.000Z"}
         second.replace(record.finish(run: group_run, step: test_step, attempt: second).thawed)
 
         expect(second["usage"]).to eq("input_tokens" => 5000, "output_tokens" => 500)
@@ -958,7 +964,7 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
         run["steps"]["plan"]["attempts"] = [open]
         closed = record.abandon(run).current_step.last_attempt.to_h
 
-        expect(closed).to include("outcome" => "cancelled", "ended_at" => "2026-10-04T12:10:00Z")
+        expect(closed).to include("outcome" => "cancelled", "ended_at" => "2026-10-04T12:10:00.000Z")
         expect(closed["session"]).to include("id" => "s1")
         expect(closed["agent"]).to include("kind" => "claude")
         expect(closed["usage"]).to eq("input_tokens" => 5030, "output_tokens" => 512)
@@ -970,7 +976,7 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
         before_run = Marshal.load(Marshal.dump(run))
         closed = record.abandon(run, outcome: "interrupted").current_step.last_attempt.to_h
 
-        expect(closed).to include("outcome" => "interrupted", "ended_at" => "2026-10-04T12:10:00Z")
+        expect(closed).to include("outcome" => "interrupted", "ended_at" => "2026-10-04T12:10:00.000Z")
         expect(closed["usage"]).to eq("input_tokens" => 5030, "output_tokens" => 512)
         expect(run).to eq(before_run)
       end
@@ -980,30 +986,30 @@ RSpec.describe Workspace::WorkflowAttemptRecord do
         run["steps"]["plan"]["attempts"] = [{"n" => 2, "started_at" => "2026-10-04T12:00:00.000Z"}]
         closed = record.abandon(run, outcome: "interrupted").current_step.last_attempt.to_h
 
-        expect(closed).to include("outcome" => "interrupted", "ended_at" => "2026-10-04T12:10:00Z", "usage" => nil)
+        expect(closed).to include("outcome" => "interrupted", "ended_at" => "2026-10-04T12:10:00.000Z", "usage" => nil)
       end
     end
 
     describe "#finish_round" do
-      let(:round) { {"round" => 2, "pane" => "%5", "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00Z", "pending" => []} }
+      let(:round) { {"round" => 2, "pane" => "%5", "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00.000Z", "pending" => []} }
 
       it "reads the review pane's session and its usage over the round's own window, not the run's pane" do
         run["pane"] = "%3"
 
         found = record.finish_round(run: run, round: round)
 
-        expect(found).to eq("round" => 2, "pane" => "%5", "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00Z",
+        expect(found).to eq("round" => 2, "pane" => "%5", "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:05:00.000Z",
           "session" => {"id" => "s1", "transcript" => transcript}, "agent" => {"kind" => "claude", "version" => "2.4.1", "model" => "claude-opus-5-5"},
           "usage" => {"input_tokens" => 30, "output_tokens" => 12})
       end
 
       it "ends a round still running now, and records no session for a round that never recorded a pane" do
-        expect(record.finish_round(run: run, round: round.except("ended_at"))["ended_at"]).to eq("2026-10-04T12:10:00Z")
+        expect(record.finish_round(run: run, round: round.except("ended_at"))["ended_at"]).to eq("2026-10-04T12:10:00.000Z")
         expect(record.finish_round(run: run, round: round.except("pane"))).to include("pane" => nil, "session" => nil, "agent" => nil, "usage" => nil)
       end
 
       it "is not an attempt: a reviewed step's ended attempt is left as it is by #abandon" do
-        run["steps"]["plan"]["attempts"] = [{"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:01:00Z", "outcome" => "checks_passed"}]
+        run["steps"]["plan"]["attempts"] = [{"n" => 1, "started_at" => "2026-10-04T12:00:00.000Z", "ended_at" => "2026-10-04T12:01:00.000Z", "outcome" => "checks_passed"}]
 
         expect(record.abandon(run).to_h).to eq(run)
       end

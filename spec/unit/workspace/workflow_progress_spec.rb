@@ -41,7 +41,7 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run).to be_a(Workspace::WorkflowRun)
       expect(given).to eq(before)
       expect(run.step("plan").state).to eq("passed")
-      expect(run.step("plan").last_attempt.to_h).to eq("n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T12:00:00Z",
+      expect(run.step("plan").last_attempt.to_h).to eq("n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T12:00:00.000Z",
         "outcome" => "passed", "outputs" => [])
       expect(run.current).to eq("build")
       expect(context.delivery).to eq("step" => "build")
@@ -81,7 +81,7 @@ RSpec.describe Workspace::WorkflowProgress do
     def guard_stopped(definition_steps: steps)
       run = run_hash(:definition_steps => definition_steps, "state" => "waiting",
         "reason" => {"code" => "failed_check", "since" => "2026-11-10T11:55:00Z", "details" => {"cause" => "guard", "guard" => "head_moved"}})
-      run["steps"]["plan"] = {"state" => "failed", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T11:55:00Z", "outcome" => "failed", "code" => "head_moved"}]}
+      run["steps"]["plan"] = {"state" => "failed", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T11:55:00.000Z", "outcome" => "failed", "code" => "head_moved"}]}
       run
     end
 
@@ -91,7 +91,7 @@ RSpec.describe Workspace::WorkflowProgress do
       run = progress.pass_overridden(guard_stopped, ctx: context)
 
       expect(run.step("plan").state).to eq("passed")
-      expect(run.step("plan").last_attempt.to_h).to eq("n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T11:55:00Z",
+      expect(run.step("plan").last_attempt.to_h).to eq("n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T11:55:00.000Z",
         "outcome" => "overridden", "code" => "head_moved")
       expect(attempt_record.calls).to be_empty
       expect(run.current).to eq("build")
@@ -117,7 +117,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
     def accepted(definition_steps: steps)
       run_hash(definition_steps: definition_steps).tap do |hash|
-        hash["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:55:00Z", "outcome" => "failed", "code" => "head_moved", "guard_accepted" => "head_moved")
+        hash["steps"]["plan"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:55:00.000Z", "outcome" => "failed", "code" => "head_moved", "guard_accepted" => "head_moved")
       end
     end
 
@@ -148,7 +148,7 @@ RSpec.describe Workspace::WorkflowProgress do
       run = progress.fail_step(accepted, {"cause" => "check", "exit_code" => 1, "code" => "check_failed"}, ctx: ctx)
 
       expect(run.step("plan").state).to eq("failed")
-      expect(run.step("plan").last_attempt.to_h).to include("ended_at" => "2026-11-10T11:55:00Z", "outcome" => "failed", "code" => "check_failed")
+      expect(run.step("plan").last_attempt.to_h).to include("ended_at" => "2026-11-10T11:55:00.000Z", "outcome" => "failed", "code" => "check_failed")
       expect(attempt_record.calls).to be_empty
       expect(run.reason).to include("code" => "failed_check")
     end
@@ -167,7 +167,7 @@ RSpec.describe Workspace::WorkflowProgress do
       run = progress.advance(run_hash("current" => "build"), ctx: ctx)
 
       expect(run.state).to eq("completed")
-      expect(run.to_h["ended_at"]).to eq("2026-11-10T12:00:00Z")
+      expect(run.to_h["ended_at"]).to eq("2026-11-10T12:00:00.000Z")
       expect(change.events).to eq([["wr_1", "run_completed", {}]])
     end
   end
@@ -177,7 +177,7 @@ RSpec.describe Workspace::WorkflowProgress do
       run = progress.finish(run_hash("parked" => {"id" => "p1"}, "backoff" => {"to" => "plan"}, "budget_hold" => {}, "timeout_hold" => {}, "reason" => {"code" => "waiting_you"}), "cancelled")
 
       expect(run.to_h).not_to include("parked", "backoff", "budget_hold", "timeout_hold")
-      expect(run.to_h).to include("state" => "cancelled", "reason" => nil, "ended_at" => "2026-11-10T12:00:00Z")
+      expect(run.to_h).to include("state" => "cancelled", "reason" => nil, "ended_at" => "2026-11-10T12:00:00.000Z")
       expect(dispatch.calls).to eq([[:drop_park, "wr_1", "ended", {}], [:release, "wr_1"]])
       expect(panes.calls).to eq([[:unbind, "wr_1"]])
     end
@@ -198,7 +198,7 @@ RSpec.describe Workspace::WorkflowProgress do
       run = progress.fail_step(run_hash, failure, ctx: ctx)
 
       expect(run.step("plan").state).to eq("failed")
-      expect(run.step("plan").last_attempt.to_h).to include("ended_at" => "2026-11-10T12:00:00Z", "outcome" => "failed", "code" => "check_failed", "outputs" => [])
+      expect(run.step("plan").last_attempt.to_h).to include("ended_at" => "2026-11-10T12:00:00.000Z", "outcome" => "failed", "code" => "check_failed", "outputs" => [])
       expect(run.state).to eq("waiting")
       expect(run.reason).to eq("code" => "failed_check", "since" => "2026-11-10T12:00:00Z",
         "details" => {"step" => "plan", "attempt" => 1, "loops" => {}, "attempts" => 1, "max_attempts" => 5}.merge(failure))
@@ -242,7 +242,7 @@ RSpec.describe Workspace::WorkflowProgress do
     it "stops with details.limit step when the loop's target step has spent its own cap" do
       definition = [{"id" => "plan", "max_attempts" => 1, "produces" => []}, {"id" => "build", "produces" => [], "on_fail" => {"goto" => "plan", "max" => 3}}]
       run = run_hash(:definition_steps => definition, "current" => "build")
-      run["steps"]["plan"]["attempts"] = [{"n" => 1, "ended_at" => "2026-11-10T11:00:00Z"}]
+      run["steps"]["plan"]["attempts"] = [{"n" => 1, "ended_at" => "2026-11-10T11:00:00.000Z"}]
       run["steps"]["build"] = {"state" => "checking", "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:30:00.000Z"}]}
 
       run = progress.fail_step(run, failure, ctx: ctx)
@@ -419,7 +419,7 @@ RSpec.describe Workspace::WorkflowProgress do
       run = grouped_run
       run["steps"]["lint"].merge!("state" => "failed", "pending_move" => {"until" => "2026-11-10T11:59:00Z", "to" => "test", "text" => "lint failed"},
         "reason" => {"code" => "retry_backoff"})
-      run["steps"]["lint"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:30:00Z", "outcome" => "failed", "move" => {"to" => "test", "count" => 1})
+      run["steps"]["lint"]["attempts"][0].merge!("ended_at" => "2026-11-10T11:30:00.000Z", "outcome" => "failed", "move" => {"to" => "test", "count" => 1})
       run["steps"]["test"]["state"] = "passed"
 
       joined = progress.join(run, ctx: ctx)
@@ -668,7 +668,7 @@ RSpec.describe Workspace::WorkflowProgress do
       run_hash(:definition_steps => steps("review" => review), "state" => "running").tap do |hash|
         hash["steps"]["plan"] = {"state" => "reviewing", "review_rounds" => 1,
                                  "review" => {"round" => 1, "delivery" => nil, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "pending" => %w[skeptic tester], "redeliveries" => 0},
-                                 "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T11:20:00Z", "outcome" => "checks_passed", "outputs" => []}]}
+                                 "attempts" => [{"n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T11:20:00.000Z", "outcome" => "checks_passed", "outputs" => []}]}
       end.merge(overrides)
     end
 
@@ -682,7 +682,7 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run.state).to eq("running")
       expect(run.reason).to be_nil
       expect(state.state).to eq("reviewing")
-      expect(state.last_attempt.to_h).to eq("n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T12:00:00Z",
+      expect(state.last_attempt.to_h).to eq("n" => 1, "started_at" => "2026-11-10T11:00:00.000Z", "ended_at" => "2026-11-10T12:00:00.000Z",
         "outcome" => "checks_passed", "outputs" => [])
       expect(state.review_rounds).to eq(1)
       expect(state.review).to eq("round" => 1, "delivery" => "delivering", "started_at" => "2026-11-10T12:00:00.000Z", "pending" => %w[skeptic tester], "redeliveries" => 0)
@@ -798,7 +798,7 @@ RSpec.describe Workspace::WorkflowProgress do
         expect(run.reason).to include("code" => "review_tampered", "details" => {"step" => "plan", "attempt" => 1, "round" => 1, "problem" => "it was there"})
         expect(state.state).to eq("reviewing")
         expect(state.review_rounds).to eq(1)
-        expect(state.review).to include("round" => 1, "delivery" => nil, "recorded" => true, "ended_at" => "2026-11-10T12:00:00Z")
+        expect(state.review).to include("round" => 1, "delivery" => nil, "recorded" => true, "ended_at" => "2026-11-10T12:00:00.000Z")
         expect(state.last_attempt.to_h["rounds"].map { |each| each.slice("round", "ended") }).to eq([{"round" => 1, "ended" => "review_tampered"}])
         expect(change.events.last).to eq(["wr_1", "review_ended", {"step" => "plan", "attempt" => 1, "round" => 1, "outcome" => "review_tampered"}])
 
@@ -884,9 +884,9 @@ RSpec.describe Workspace::WorkflowProgress do
       expect(run.step("plan").state).to eq("passed")
       expect(run.step("plan").review).to be_nil
       expect(run.step("plan").review_rounds).to eq(1)
-      expect(run.step("plan").last_attempt.to_h).to include("outcome" => "passed", "reviews" => recorded, "ended_at" => "2026-11-10T11:20:00Z",
+      expect(run.step("plan").last_attempt.to_h).to include("outcome" => "passed", "reviews" => recorded, "ended_at" => "2026-11-10T11:20:00.000Z",
         "review_outcome" => {"round" => 1, "approvals" => 2, "need" => 2, "must" => [], "passed" => true})
-      expect(run.step("plan").last_attempt.to_h["rounds"]).to eq([{"round" => 1, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "ended_at" => "2026-11-10T12:00:00Z",
+      expect(run.step("plan").last_attempt.to_h["rounds"]).to eq([{"round" => 1, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "ended_at" => "2026-11-10T12:00:00.000Z",
                                                                    "session" => nil, "agent" => nil, "usage" => nil, "ended" => "approved", "reviews" => recorded}])
       # The round is recorded; the attempt is not finished a second time.
       expect(attempt_record.calls).to eq([[:finish_round, "wr_1", 1]])
@@ -1011,7 +1011,7 @@ RSpec.describe Workspace::WorkflowProgress do
       state = run.step("plan")
       expect(state.state).to eq("reviewing")
       expect(state.last_attempt.outcome).to eq("checks_passed")
-      expect(state.review).to include("round" => 1, "delivery" => nil, "ended_at" => "2026-11-10T12:00:00Z", "reviews" => [], "recorded" => true)
+      expect(state.review).to include("round" => 1, "delivery" => nil, "ended_at" => "2026-11-10T12:00:00.000Z", "reviews" => [], "recorded" => true)
       expect(state.last_attempt.to_h["rounds"].map { |each| each.slice("round", "ended", "reviews") }).to eq([{"round" => 1, "ended" => "incomplete", "reviews" => []}])
       expect(run.state).to eq("waiting")
       expect(run.reason).to eq("code" => "review_incomplete", "since" => "2026-11-10T12:00:00Z",
@@ -1283,7 +1283,7 @@ RSpec.describe Workspace::WorkflowProgress do
         expect(state.state).to eq("reviewing")
         expect(state.review_rounds).to eq(1)
         expect(state.last_attempt.outcome).to eq("checks_passed")
-        expect(state.last_attempt.to_h["rounds"]).to eq([{"round" => 1, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "ended_at" => "2026-11-10T12:00:00Z",
+        expect(state.last_attempt.to_h["rounds"]).to eq([{"round" => 1, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "ended_at" => "2026-11-10T12:00:00.000Z",
                                                           "session" => nil, "agent" => nil, "usage" => {"input_tokens" => 40, "output_tokens" => 2}, "ended" => "cancelled"}])
         expect(attempt_record.calls).to eq([[:finish_round, "wr_1", 1]])
         expect(panes.calls).to eq([[:unbind, "wr_1", {role: "reviewer"}]])
@@ -1293,7 +1293,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
       it "copies the verdict rows an ended round read, and writes no second review_ended for it" do
         given = reviewing_hash
-        given["steps"]["plan"]["review"].merge!("ended_at" => "2026-11-10T11:40:00Z", "reviews" => [{"reviewer" => "skeptic", "verdict" => "approve"}])
+        given["steps"]["plan"]["review"].merge!("ended_at" => "2026-11-10T11:40:00.000Z", "reviews" => [{"reviewer" => "skeptic", "verdict" => "approve"}])
 
         run = progress.end_round(given, how: "resumed", ctx: ctx, close: false)
 
@@ -1373,7 +1373,7 @@ RSpec.describe Workspace::WorkflowProgress do
         expect(state.review_rounds).to eq(1)
         expect(state.review).to eq("round" => 1, "delivery" => "delivering", "pane" => "%9", "started_at" => "2026-11-10T12:00:00.000Z",
           "pending" => %w[skeptic tester], "redeliveries" => 0)
-        expect(state.last_attempt.to_h["rounds"]).to eq([{"round" => 1, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "ended_at" => "2026-11-10T12:00:00Z",
+        expect(state.last_attempt.to_h["rounds"]).to eq([{"round" => 1, "pane" => "%9", "started_at" => "2026-11-10T11:30:00.000Z", "ended_at" => "2026-11-10T12:00:00.000Z",
                                                           "session" => nil, "agent" => nil, "usage" => nil, "ended" => "redelivered"}])
         expect(context.review).to eq("step" => "plan", "attempt" => 1, "round" => 1)
         expect(change.events).to eq([["wr_1", "review_started", {"step" => "plan", "attempt" => 1, "round" => 1, "again" => true}]])

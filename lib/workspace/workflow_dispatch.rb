@@ -700,7 +700,7 @@ module Workspace
     # +step_id+ is the step that was not started: the cursor's, or a fan_out sibling's whose line was typed after another's.
     def not_delivered(run, state, attempt, kick, step_id = run["current"])
       attempt&.delete("delivery")
-      attempt&.merge!("ended_at" => now_iso, "outcome" => "not_delivered")
+      attempt&.merge!("ended_at" => ended_iso, "outcome" => "not_delivered")
       refusal = self.class.refusal(kick)
       attempt["refusal"] = refusal if attempt && refusal
       attempt["code"] = kick[:code].to_s if attempt && kick[:code]
@@ -961,6 +961,10 @@ module Workspace
 
     def now_iso
       @clock.call.utc.iso8601
+    end
+
+    def ended_iso
+      @clock.call.utc.iso8601(3)
     end
 
     def downtime_stops

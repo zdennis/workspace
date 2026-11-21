@@ -237,7 +237,7 @@ RSpec.describe Workspace::WorkflowEngine do
 
       run = engine.turn_ended("wr_1", actor: "agent", pane: "%5")
 
-      expect(run).to include("state" => "completed", "reason" => nil, "ended_at" => "2026-10-04T12:00:00Z")
+      expect(run).to include("state" => "completed", "reason" => nil, "ended_at" => "2026-10-04T12:00:00.000Z")
       expect(lock_holder("test-db")).to be_nil
       expect(panes.bound).to eq({})
       expect(Dir.children(runs_dir)).to eq([])

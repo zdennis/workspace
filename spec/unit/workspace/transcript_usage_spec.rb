@@ -65,6 +65,17 @@ RSpec.describe Workspace::TranscriptUsage do
     end
   end
 
+  describe "a window that ends at a millisecond stamp" do
+    def line(id, at) = JSON.generate({"type" => "assistant", "timestamp" => at, "message" => {"id" => id, "usage" => {"input_tokens" => 1, "output_tokens" => 2}}})
+
+    it "keeps a message inside the last second and drops one after the end" do
+      window = described_class::Scan.new(from: Time.utc(2026, 11, 17, 12, 0, 0), to: Time.iso8601("2026-11-17T12:00:05.100Z"), floor: Time.utc(2026, 11, 17, 12, 0, 0), sidechain: false)
+      window.feed([line("in", "2026-11-17T12:00:05.050Z"), line("out", "2026-11-17T12:00:05.500Z")])
+
+      expect(window.counted.size).to eq(1)
+    end
+  end
+
   describe ".read_line" do
     it "reads an assistant line's time, id, usage, model and version" do
       read = described_class.read_line(assistant("a", 1, {"version" => "2.1.0"}))

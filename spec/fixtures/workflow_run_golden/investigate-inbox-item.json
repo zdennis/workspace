@@ -175,7 +175,7 @@
               "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             }
           ],
-          "ended_at": "2026-10-04T12:01:00Z",
+          "ended_at": "2026-10-04T12:01:00.000Z",
           "outcome": "passed",
           "outputs": [
             {
@@ -214,7 +214,7 @@
               "sha256": "845e91831319e89c4d656bdb80c278ac09a7230d61e5dfd2e1b1fbb436ac8917"
             }
           ],
-          "ended_at": "2026-10-04T12:03:00Z",
+          "ended_at": "2026-10-04T12:03:00.000Z",
           "outcome": "passed",
           "outputs": [
             {
