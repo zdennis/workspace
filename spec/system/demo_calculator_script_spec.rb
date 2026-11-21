@@ -1,6 +1,7 @@
 require "spec_helper"
 require "tmpdir"
 require "open3"
+require "digest"
 require "stringio"
 
 load File.join(PROJECT_ROOT, "script", "demo-calculator")
@@ -26,6 +27,8 @@ RSpec.describe DemoCalculator::Demo do
       echo "$@" >> #{log}
       if [ "$1 $2" = "work-queue list" ]; then echo '#{queue_json}'; fi
       if [ "$1 $2 $3" = "config get workflows.sources" ]; then echo '#{sources}'; fi
+      if [ "$1 $2" = "work-queue add" ]; then echo '{"results":[{"id":"item-'"$4"'","outcome":"added"}]}'; fi
+      if [ "$1" = "capabilities" ]; then echo '{"version":"9.9.9"}'; fi
     SH
     File.chmod(0o755, path)
     path
@@ -45,8 +48,10 @@ RSpec.describe DemoCalculator::Demo do
 
   after { FileUtils.rm_rf(tmp) }
 
-  def demo(root: work_dir, dry_run: false)
-    described_class.new(root: root, workspace: fake_workspace, name: "ws", dry_run: dry_run, out: out)
+  let(:clock) { -> { Time.utc(2026, 11, 21, 4, 5, 6) } }
+
+  def demo(root: work_dir, dry_run: false, base: nil, out_dir: nil)
+    described_class.new(root: root, workspace: fake_workspace, name: "ws", dry_run: dry_run, out: out, base: base, out_dir: out_dir, clock: clock)
   end
 
   it "keeps the live files and the template in step, so a fresh checkout is already reset" do
@@ -105,6 +110,9 @@ RSpec.describe DemoCalculator::Demo do
   end
 
   describe "#run" do
+    let(:record_path) { File.join(work_dir, "tmp/demo-calculator/runs/20261121T040506Z/run.json") }
+    let(:head_sha) { git(work_dir, "rev-parse", "HEAD").strip }
+
     it "installs the source, queues the seven workflows in order, enables the queue and advances once" do
       demo.run
       calls = File.read(log).lines.map(&:strip)
@@ -112,7 +120,72 @@ RSpec.describe DemoCalculator::Demo do
       expect(adds).to eq(DemoCalculator::WORKFLOW_IDS)
       expect(calls).to include("workflow install", "config set --scope workspace --name ws commands.test ruby")
       expect(calls.grep(/\Aconfig set workflows.sources /).first).to end_with("/demo/calculator/workflows")
-      expect(calls.last(2)).to eq(["work-queue enable --name ws", "work-queue advance --name ws"])
+      expect(calls.last(3)).to eq(["work-queue enable --name ws", "work-queue advance --name ws", "capabilities --json"])
+    end
+
+    it "leaves HEAD on calc-demo/<stamp>, with the acceptance removal as the first commit after the base" do
+      base = head_sha
+      demo.run
+      expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("calc-demo/20261121T040506Z")
+      subjects = git(work_dir, "log", "--format=%s", "#{base}..HEAD").lines.map(&:strip).reverse
+      expect(subjects.first).to eq("Remove the acceptance tests from the run branch")
+      expect(File.exist?(File.join(work_dir, "demo/calculator-acceptance"))).to be(false)
+      first = git(work_dir, "rev-list", "--reverse", "#{base}..HEAD").lines.first.strip
+      expect(git(work_dir, "show", "--name-status", "--format=", first).lines.map { |l| l.split.first }.uniq).to eq(["D"])
+    end
+
+    it "writes a run record with the base, items, workspace and definition hashes" do
+      base = head_sha
+      demo.run
+      record = JSON.parse(File.read(record_path))
+      expect(record).to include("stamp" => "20261121T040506Z", "base_sha" => base, "branch" => "calc-demo/20261121T040506Z", "wait" => nil)
+      expect(record["workspace"]).to eq("sha" => head_sha, "version" => "9.9.9")
+      expect(record["items"].map { |i| i["workflow"] }).to eq(DemoCalculator::WORKFLOW_IDS)
+      expect(record["items"].first["id"]).to eq("item-calc-01-add-sub")
+      expect(record["definitions"].keys).to eq(DemoCalculator::WORKFLOW_IDS)
+      expect(record["definitions"]["calc-01-add-sub"]).to eq(Digest::SHA256.file(File.join(work_dir, "demo/calculator/workflows/calc-01-add-sub.yml")).hexdigest)
+    end
+
+    it "writes the record to --out" do
+      demo(out_dir: File.join(tmp, "elsewhere")).run
+      expect(File.exist?(File.join(tmp, "elsewhere", "run.json"))).to be(true)
+    end
+
+    it "branches from --base" do
+      git(work_dir, "commit", "-q", "--allow-empty", "-m", "later")
+      first = git(work_dir, "rev-parse", "HEAD~1").strip
+      demo(base: first).run
+      expect(git(work_dir, "log", "--format=%s").lines.map(&:strip)).not_to include("later")
+    end
+
+    it "refuses a dirty tree" do
+      File.write(File.join(work_dir, "demo/calculator/USAGE.md"), "edited\n")
+      expect { demo.run }.to raise_error(DemoCalculator::Refused, /uncommitted/)
+      expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("demo-branch")
+    end
+
+    it "refuses a branch that already exists" do
+      git(work_dir, "branch", "calc-demo/20261121T040506Z")
+      expect { demo.run }.to raise_error(DemoCalculator::Refused, /already exists/)
+    end
+
+    it "refuses a calc-demo/* HEAD without --base, naming --base and the previous record's base_sha" do
+      FileUtils.mkdir_p(File.dirname(record_path))
+      File.write(record_path, JSON.generate("base_sha" => "abc123"))
+      git(work_dir, "add", "-f", "tmp")
+      git(work_dir, "commit", "-q", "-m", "record")
+      git(work_dir, "switch", "-q", "-c", "calc-demo/older")
+      expect { demo.run }.to raise_error(DemoCalculator::Refused, /--base.*abc123/)
+      expect { demo(base: "main").run }.not_to raise_error
+    end
+
+    it "changes nothing under --dry-run but says what it would do" do
+      demo(dry_run: true).run
+      expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("demo-branch")
+      expect(File.exist?(File.join(work_dir, "demo/calculator-acceptance"))).to be(true)
+      expect(File.exist?(record_path)).to be(false)
+      expect(File.exist?(log)).to be(false)
+      expect(out.string).to include("git switch -c calc-demo/20261121T040506Z HEAD", "git rm -r demo/calculator-acceptance", "would write #{record_path}")
     end
     context "with workflows.sources already set" do
       let(:own) { File.join(work_dir, "demo/calculator/workflows") }

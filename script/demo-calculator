@@ -2,13 +2,16 @@
 # frozen_string_literal: true
 
 # Runs the calculator demo again and again: `reset` puts demo/calculator back to its stub and clears the
-# demo workspace's work queue; `run` does that, installs the demo workflows and queues all seven.
+# demo workspace's work queue; `run` does that on a fresh calc-demo/<stamp> branch, installs the demo
+# workflows, queues all seven and writes a run record.
 # See demo/calculator/README.md.
 
 require "fileutils"
 require "json"
 require "open3"
 require "optparse"
+
+require_relative "demo_calculator/run_record"
 
 module DemoCalculator
   WORKFLOW_IDS = %w[
@@ -17,6 +20,9 @@ module DemoCalculator
   ].freeze
   # What `reset` puts back: the pristine copies in demo/calculator/template/.
   RESTORED = %w[bin lib test USAGE.md].freeze
+  # Held back from a run branch, so the agents cannot read what scores them.
+  ACCEPTANCE_DIR = "demo/calculator-acceptance"
+  RUN_BRANCH_PREFIX = "calc-demo/"
 
   class Refused < StandardError; end
 
@@ -27,12 +33,18 @@ module DemoCalculator
     # @param name [String, nil] the demo workspace's name; nil lets `workspace` detect it from the directory
     # @param dry_run [Boolean] print each mutating command instead of running it; reads are skipped
     # @param out [IO]
-    def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout)
+    # @param base [String, nil] the ref `run` branches from; nil means HEAD, which a run branch refuses
+    # @param out_dir [String, nil] where `run` writes run.json; nil means tmp/demo-calculator/runs/<stamp>
+    # @param clock [#call] returns the current Time
+    def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout, base: nil, out_dir: nil, clock: -> { Time.now })
       @root = File.expand_path(root)
       @workspace = workspace
       @name = name
       @dry_run = dry_run
       @out = out
+      @base = base
+      @out_dir = out_dir
+      @clock = clock
     end
 
     # @return [Array<Array<String>>] the commands that empty a queue holding these items (rows of `wq list --json`):
@@ -52,10 +64,14 @@ module DemoCalculator
       commands << wq.call("resume")
     end
 
-    # @return [Array<Array<String>>] the commands that queue the seven workflows and start the first
+    # @return [Array<Array<String>>] the commands that queue the seven workflows, in order; each prints JSON
     def self.queueing(name_args: [])
-      adds = WORKFLOW_IDS.map { |id| ["work-queue", "add", "workflow", id, "--dedupe-key", "calculator-demo:#{id}", *name_args] }
-      adds + [["work-queue", "enable", *name_args], ["work-queue", "advance", *name_args]]
+      WORKFLOW_IDS.map { |id| ["work-queue", "add", "workflow", id, "--dedupe-key", "calculator-demo:#{id}", "--json", *name_args] }
+    end
+
+    # @return [Array<Array<String>>] the commands that turn the queue on and start the first item
+    def self.starting(name_args: [])
+      [["work-queue", "enable", *name_args], ["work-queue", "advance", *name_args]]
     end
 
     # Puts the stub back and empties the queue. Touches only demo/calculator and this workspace's queue.
@@ -65,16 +81,103 @@ module DemoCalculator
       restore_files
     end
 
-    # Resets, then installs the workflows, queues all seven and runs the first pass.
+    # Moves to a fresh calc-demo/<stamp> branch, empties the queue, drops the acceptance tests and resets the stub
+    # there, installs the workflows, queues all seven, runs the first pass and writes the run record.
+    #
+    # @return [Hash, nil] the record; nil under `dry_run`
     def run
-      reset
+      guard!
+      stamp = @clock.call.utc.strftime("%Y%m%dT%H%M%SZ")
+      branch = "#{RUN_BRANCH_PREFIX}#{stamp}"
+      base = @base || "HEAD"
+      preflight(branch)
+      clear_queue
+      base_sha = git("rev-parse", "#{base}^{commit}")
+      workspace_sha = git("rev-parse", "HEAD")
+      switch_to(branch, base)
+      remove_acceptance_tests
+      restore_files
       configure
-      self.class.queueing(name_args: name_args).each { |argv| workspace(*argv) }
+      items = queue_items
+      self.class.starting(name_args: name_args).each { |argv| workspace(*argv) }
+      write_record(stamp, branch, base_sha, workspace_sha, items)
     end
 
     private
 
     def name_args = @name ? ["--name", @name] : []
+
+    def preflight(branch)
+      raise Refused, "the working tree has uncommitted changes: commit or discard them first" unless git("status", "--porcelain").empty?
+      _, status = Open3.capture2("git", "-C", @root, "rev-parse", "--verify", "--quiet", "refs/heads/#{branch}")
+      raise Refused, "branch #{branch} already exists" if status.success?
+      current = git("rev-parse", "--abbrev-ref", "HEAD")
+      return unless @base.nil? && current.start_with?(RUN_BRANCH_PREFIX)
+      previous = previous_base_sha
+      hint = previous ? " (the previous record's base_sha is #{previous})" : ""
+      raise Refused, "HEAD is on #{current}, which holds a previous run's solutions: pass --base REF to say what to branch from#{hint}"
+    end
+
+    def previous_base_sha
+      newest = Dir.glob(File.join(runs_dir, "*", "run.json")).max
+      newest && JSON.parse(File.read(newest))["base_sha"]
+    rescue JSON::ParserError, SystemCallError
+      nil
+    end
+
+    def runs_dir = File.join(@root, "tmp", "demo-calculator", "runs")
+
+    def switch_to(branch, base)
+      say "+ git switch -c #{branch} #{base}"
+      git("switch", "-c", branch, base) unless @dry_run
+    end
+
+    def remove_acceptance_tests
+      unless File.directory?(File.join(@root, ACCEPTANCE_DIR))
+        say "no #{ACCEPTANCE_DIR} to remove"
+        return
+      end
+      say "+ git rm -r #{ACCEPTANCE_DIR} and commit"
+      return if @dry_run
+      git("rm", "-r", "-q", "--", ACCEPTANCE_DIR)
+      git("commit", "-q", "-m", "Remove the acceptance tests from the run branch", "--", ACCEPTANCE_DIR)
+    end
+
+    def queue_items
+      self.class.queueing(name_args: name_args).each_with_index.map do |argv, index|
+        say "+ workspace #{argv.join(" ")}"
+        id = JSON.parse(workspace_stdout(*argv)).dig("results", 0, "id") unless @dry_run
+        {"workflow" => WORKFLOW_IDS[index], "id" => id}
+      end
+    end
+
+    def write_record(stamp, branch, base_sha, workspace_sha, items)
+      dir = @out_dir ? File.expand_path(@out_dir, @root) : File.join(runs_dir, stamp)
+      path = File.join(dir, "run.json")
+      if @dry_run
+        say "would write #{path}"
+        return
+      end
+      workflows = File.join(@root, "demo", "calculator", "workflows")
+      record = RunRecord.build(
+        stamp: stamp, base_sha: base_sha, branch: branch,
+        workspace_sha: workspace_sha,
+        workspace_version: JSON.parse(workspace_stdout("capabilities", "--json"))["version"],
+        items: items,
+        definitions: WORKFLOW_IDS.to_h { |id| [id, File.read(File.join(workflows, "#{id}.yml"))] }
+      )
+      FileUtils.mkdir_p(dir)
+      File.write(path, JSON.pretty_generate(record) + "\n")
+      say "wrote #{path}"
+      record
+    end
+
+    def workspace_stdout(*argv)
+      out, err, status = Open3.capture3(@workspace, *argv, chdir: @root)
+      @out.print err
+      raise Refused, "workspace #{argv.first(2).join(" ")} failed (exit #{status.exitstatus})" unless status.success?
+      out
+    end
 
     def guard!
       branch = git("rev-parse", "--abbrev-ref", "HEAD")
@@ -156,14 +259,17 @@ module DemoCalculator
   end
 
   def self.main(argv, out: $stdout, err: $stderr)
-    options = {dry_run: false, name: nil}
+    options = {dry_run: false, name: nil, base: nil, out_dir: nil}
     parser = OptionParser.new do |o|
-      o.banner = "Usage: script/demo-calculator reset|run [--name WORKSPACE] [--dry-run]\n" \
+      o.banner = "Usage: script/demo-calculator reset|run [--name WORKSPACE] [--base REF] [--out DIR] [--dry-run]\n" \
         "  reset  put demo/calculator back to its stub and empty the workspace's work queue\n" \
-        "  run    reset, install the demo workflows (adds them to the global workflows.sources), queue all\n" \
-        "         seven and start the first\n" \
-        "Run it from a worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
+        "  run    on a new calc-demo/<stamp> branch: empty the queue, drop the acceptance tests, reset the stub,\n" \
+        "         install the demo workflows (adds them to the global workflows.sources), queue all seven,\n" \
+        "         start the first and write run.json\n" \
+        "Run it from a clean worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
       o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory)") { |v| options[:name] = v }
+      o.on("--base REF", "run: the ref to branch from (default HEAD; required on a calc-demo/* branch)") { |v| options[:base] = v }
+      o.on("--out DIR", "run: where to write run.json (default tmp/demo-calculator/runs/<stamp>)") { |v| options[:out_dir] = v }
       o.on("--dry-run", "Print the commands that change something instead of running them") { options[:dry_run] = true }
     end
     verb = parser.parse(argv).first
@@ -173,7 +279,8 @@ module DemoCalculator
     end
     root = File.expand_path("..", __dir__)
     workspace = ENV["WORKSPACE_BIN"] || File.join(root, "bin", "workspace")
-    Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out).public_send(verb)
+    Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out,
+      base: options[:base], out_dir: options[:out_dir]).public_send(verb)
     0
   rescue Refused, OptionParser::ParseError => e
     err.puts "demo-calculator: #{e.message}"
