@@ -36,6 +36,7 @@ module DemoCalculator
     def call
       dir = run_dir
       record = read_json(File.join(dir, "run.json"))
+      raise Error, "run record in #{dir} has no items" unless record.is_a?(Hash) && record["items"].is_a?(Array)
       pricing = Cost.load_pricing(@pricing_path)
       caps = workspace_json("capabilities", "--json")
       state_dir = File.dirname(caps.dig("paths", "hook_events").to_s)
@@ -175,7 +176,7 @@ module DemoCalculator
         "workspace_sha" => record.dig("workspace", "sha"),
         "price_date" => pricing["price_date"]
       }
-      {"record" => record, "header" => header, "rows" => rows.map { |row| row.except(:run) }, "totals" => totals,
+      {"record" => record, "header" => header, "rows" => rows, "totals" => totals,
        "lint" => lint, "leak" => leak}
     end
 

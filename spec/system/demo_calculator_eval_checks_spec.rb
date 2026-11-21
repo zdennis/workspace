@@ -63,8 +63,25 @@ RSpec.describe DemoCalculator::EvalChecks do
     expect(result[:regressions]).not_to include(3)
   end
 
+  it "counts a group as failed when it is missing at the base" do
+    result = checks.acceptance(base_sha: shas[:base], head: shas[:good], index: 8)
+    expect(result[:passed]).to eq((1..7).to_a)
+    expect(result[:failed]).to eq([8])
+  end
+
+  it "kills a group that outlives the timeout and counts it as failed" do
+    calc = File.join(repo, "demo", "calculator", "lib", "calc.rb")
+    File.write(calc, "sleep 30\n" + File.read(calc))
+    hanging = commit("hanging")
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result = described_class.new(repo: repo, group_timeout: 2).acceptance(base_sha: shas[:base], head: hanging, index: 1)
+    expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 20
+    expect(result).to eq(passed: [], failed: [1], regressions: [])
+    expect(worktree_count).to eq(1)
+  end
+
   it "leaves no worktree behind, even when the run raises" do
-    runner = lambda do |argv, env: {}, chdir: nil|
+    runner = lambda do |argv, env: {}, chdir: nil, timeout: nil|
       raise "boom" if argv.first == "tar"
       described_class::DEFAULT_RUNNER.call(argv, env: env, chdir: chdir)
     end
@@ -97,7 +114,7 @@ RSpec.describe DemoCalculator::EvalChecks do
   describe "#lint" do
     it "counts offenses from the injected runner's JSON" do
       seen = nil
-      runner = lambda do |argv, env: {}, chdir: nil|
+      runner = lambda do |argv, env: {}, chdir: nil, timeout: nil|
         if argv.include?("standardrb")
           seen = [argv, env]
           [JSON.generate("summary" => {"offense_count" => 4}), false]
@@ -113,7 +130,7 @@ RSpec.describe DemoCalculator::EvalChecks do
     end
 
     it "is nil when standardrb prints no JSON" do
-      runner = lambda do |argv, env: {}, chdir: nil|
+      runner = lambda do |argv, env: {}, chdir: nil, timeout: nil|
         argv.include?("standardrb") ? ["oops", false] : described_class::DEFAULT_RUNNER.call(argv, env: env, chdir: chdir)
       end
       expect(described_class.new(repo: repo, runner: runner).lint(head: shas[:good], gemfile: "g")).to be_nil
@@ -144,6 +161,22 @@ RSpec.describe DemoCalculator::EvalChecks do
       result = checks.leak_check(hook_files: [hook, rotated], transcripts: [transcript, File.join(tmp, "missing")],
         from: "2026-01-01T10:00:00Z", to: "2026-01-01T11:00:00Z")
       expect(result).to eq(hook: 2, transcript: {transcript => 2, File.join(tmp, "missing") => nil})
+    end
+
+    it "counts hook lines at or after from when the window is open" do
+      hook = File.join(tmp, "ws.jsonl")
+      line = ->(at) { JSON.generate("at" => at, "input" => "cat demo/calculator-acceptance/x") + "\n" }
+      File.write(hook, line.call("2026-01-01T09:00:00Z") + line.call("2026-01-01T10:30:00Z") + line.call("2030-01-01T00:00:00Z"))
+      result = checks.leak_check(hook_files: [hook], transcripts: [], from: "2026-01-01T10:00:00Z", to: nil)
+      expect(result).to eq(hook: 2, transcript: {})
+    end
+
+    it "ignores matching lines outside the window" do
+      hook = File.join(tmp, "ws.jsonl")
+      line = ->(at) { JSON.generate("at" => at, "input" => "cat demo/calculator-acceptance/x") + "\n" }
+      File.write(hook, line.call("2026-01-01T09:59:59Z") + line.call("2026-01-01T11:00:01Z") + "not json calculator-acceptance\n")
+      result = checks.leak_check(hook_files: [hook], transcripts: [], from: "2026-01-01T10:00:00Z", to: "2026-01-01T11:00:00Z")
+      expect(result[:hook]).to eq(0)
     end
   end
 end

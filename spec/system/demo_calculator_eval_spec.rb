@@ -126,6 +126,11 @@ RSpec.describe DemoCalculator::Evaluation do
     expect(File.exist?(File.join(newer, "eval.json"))).to be(true)
   end
 
+  it "refuses with a clear error when run.json has no items" do
+    File.write(File.join(run_dir, "run.json"), JSON.generate("stamp" => "x"))
+    expect { evaluation.call }.to raise_error(described_class::Error, /no items/)
+  end
+
   it "refuses with a clear error when there is no record" do
     expect { described_class.new(root: tmp, workspace: workspace, pricing_path: pricing_path, checks: checks).call }
       .to raise_error(described_class::Error, /no run record/)

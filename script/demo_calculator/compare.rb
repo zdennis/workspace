@@ -129,19 +129,9 @@ module DemoCalculator
 
     def self.format_value(number, kind)
       case kind
-      when :dollars then format("≈$%.2f", number)
-      when :seconds then duration(number)
+      when :dollars then Fmt.dollars(number)
+      when :seconds then Fmt.duration(number)
       else (number == number.to_i) ? number.to_i.to_s : format("%.1f", number)
-      end
-    end
-
-    def self.duration(seconds)
-      total = seconds.round
-      hours, rest = total.divmod(3600)
-      minutes, secs = rest.divmod(60)
-      if hours > 0 then format("%dh%02dm", hours, minutes)
-      elsif minutes > 0 then format("%dm%02ds", minutes, secs)
-      else format("%ds", secs)
       end
     end
 
@@ -149,6 +139,6 @@ module DemoCalculator
       doc.dig("record", "stamp")
     end
 
-    private_class_method :header_lines, :table, :cell, :format_value, :duration, :stamp
+    private_class_method :header_lines, :table, :cell, :format_value, :stamp
   end
 end

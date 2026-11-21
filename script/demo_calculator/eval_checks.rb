@@ -10,6 +10,7 @@ module DemoCalculator
   class EvalChecks
     ACCEPTANCE_DIR = "demo/calculator-acceptance".freeze
     CALC_DIR = "demo/calculator".freeze
+    DEFAULT_GROUP_TIMEOUT = 60
     # Raised when a git step the checks depend on fails, or a revision is not a plain one.
     class Error < StandardError; end
 
@@ -17,19 +18,37 @@ module DemoCalculator
     CLEAN_RUBY_ENV = {"BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil, "RUBYLIB" => nil}.freeze
 
     # The default runner: runs argv with env in chdir, returns [stdout, success?].
-    DEFAULT_RUNNER = lambda do |argv, env: {}, chdir: nil|
+    # With timeout (seconds) the whole process group is killed when it runs
+    # longer, and the result is failure.
+    DEFAULT_RUNNER = lambda do |argv, env: {}, chdir: nil, timeout: nil|
       opts = chdir ? {chdir: chdir} : {}
-      out, _err, status = Open3.capture3(env, *argv, **opts)
-      [out, status.success?]
+      Open3.popen3(env, *argv, pgroup: true, **opts) do |stdin, stdout, stderr, waiter|
+        stdin.close
+        out_reader = Thread.new { stdout.read }
+        err_reader = Thread.new { stderr.read }
+        finished = waiter.join(timeout)
+        unless finished
+          begin
+            Process.kill("KILL", -waiter.pid)
+          rescue SystemCallError
+            nil
+          end
+          waiter.join
+        end
+        err_reader.join
+        [out_reader.value, !!finished && waiter.value.success?]
+      end
     rescue SystemCallError => e
       ["", false].tap { warn "eval: #{e.message}" }
     end
 
     # @param repo [String] a git checkout that holds the run's commits
     # @param ruby [String] the ruby that runs each acceptance group
-    # @param runner [#call] `call(argv, env:, chdir:)` returning `[stdout, success?]`
-    def initialize(repo:, ruby: "ruby", runner: DEFAULT_RUNNER)
+    # @param runner [#call] `call(argv, env:, chdir:, timeout:)` returning `[stdout, success?]`
+    # @param group_timeout [Numeric] seconds one acceptance group may run before it counts as failed
+    def initialize(repo:, ruby: "ruby", runner: DEFAULT_RUNNER, group_timeout: DEFAULT_GROUP_TIMEOUT)
       @repo = repo
+      @group_timeout = group_timeout
       @ruby = ruby
       @runner = runner
     end
@@ -54,7 +73,8 @@ module DemoCalculator
         failed = []
         (1..index).each do |n|
           file = Dir.glob(File.join(dir, ACCEPTANCE_DIR, "group_#{n}_*_test.rb")).first
-          ok = file && @runner.call([@ruby, file], env: CLEAN_RUBY_ENV.merge("CALC_ROOT" => File.join(dir, CALC_DIR)), chdir: dir).last
+          ok = file && @runner.call([@ruby, file], env: CLEAN_RUBY_ENV.merge("CALC_ROOT" => File.join(dir, CALC_DIR)), chdir: dir,
+            timeout: @group_timeout).last
           (ok ? passed : failed) << n
         end
         {passed: passed, failed: failed, regressions: failed.select { |n| n < index }}
@@ -89,7 +109,7 @@ module DemoCalculator
       lo = from && Time.parse(from)
       hi = to && Time.parse(to)
       hook = hook_files.sum do |path|
-        lines(path).count do |line|
+        count_lines(path) do |line|
           next false unless line.include?(ACCEPTANCE_DIR.split("/").last)
           at = hook_time(line)
           at && (lo.nil? || at >= lo) && (hi.nil? || at <= hi)
@@ -102,13 +122,13 @@ module DemoCalculator
 
     def transcript_count(path)
       return nil unless File.readable?(path)
-      lines(path).count { |line| line.include?("calculator-acceptance") }
+      count_lines(path) { |line| line.include?("calculator-acceptance") }
     end
 
-    def lines(path)
-      File.readable?(path) ? File.readlines(path, chomp: true) : []
+    def count_lines(path, &block)
+      File.readable?(path) ? File.foreach(path, chomp: true).count(&block) : 0
     rescue SystemCallError
-      []
+      0
     end
 
     def hook_time(line)
