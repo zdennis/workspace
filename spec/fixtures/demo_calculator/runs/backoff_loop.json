@@ -1,0 +1,180 @@
+{
+  "run": {
+    "id": "wr_backoff",
+    "workflow": "calc-03",
+    "definition": {
+      "id": "calc-03",
+      "steps": [
+        {
+          "id": "fix",
+          "prompt": "x",
+          "produces": [],
+          "status": null,
+          "guard": null,
+          "require": [
+            {
+              "commits": 1
+            }
+          ],
+          "on_fail": null
+        },
+        {
+          "id": "verify",
+          "prompt": "x",
+          "produces": [],
+          "status": {
+            "run": "ruby t"
+          },
+          "guard": null,
+          "require": [],
+          "on_fail": {
+            "goto": "fix",
+            "max": 3,
+            "backoff": 30
+          }
+        }
+      ]
+    },
+    "state": "done",
+    "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "created_at": "2026-11-21T05:00:00Z",
+    "started_at": "2026-11-21T05:00:01Z",
+    "ended_at": "2026-11-21T05:10:00Z",
+    "steps": {
+      "fix": {
+        "state": "passed",
+        "attempts": [
+          {
+            "n": 1,
+            "started_at": "2026-11-21T05:01:00Z",
+            "ended_at": "2026-11-21T05:03:00Z",
+            "outcome": "passed",
+            "head": {
+              "before": "h1",
+              "after": "h2"
+            },
+            "agent": {
+              "kind": "claude",
+              "version": "2.1.330",
+              "model": "claude-opus-5-5"
+            },
+            "usage": {
+              "input_tokens": 100,
+              "output_tokens": 2000,
+              "cache_creation_input_tokens": 5000,
+              "cache_read_input_tokens": 90000
+            },
+            "proofs": [
+              {
+                "proof": "commits",
+                "exit_code": 0
+              }
+            ]
+          },
+          {
+            "n": 2,
+            "started_at": "2026-11-21T05:05:00Z",
+            "ended_at": "2026-11-21T05:06:00Z",
+            "outcome": "passed",
+            "head": {
+              "before": "h2",
+              "after": "h3"
+            },
+            "agent": {
+              "kind": "claude",
+              "version": "2.1.330",
+              "model": "claude-opus-5-5"
+            },
+            "usage": {
+              "input_tokens": 100,
+              "output_tokens": 2000,
+              "cache_creation_input_tokens": 5000,
+              "cache_read_input_tokens": 90000
+            },
+            "proofs": [
+              {
+                "proof": "commits",
+                "exit_code": 0
+              }
+            ]
+          }
+        ]
+      },
+      "verify": {
+        "state": "passed",
+        "attempts": [
+          {
+            "n": 1,
+            "started_at": "2026-11-21T05:03:00Z",
+            "ended_at": "2026-11-21T05:04:00Z",
+            "outcome": "failed",
+            "head": {
+              "before": "h2",
+              "after": "h2"
+            },
+            "agent": {
+              "kind": "claude",
+              "version": "2.1.330",
+              "model": "claude-opus-5-5"
+            },
+            "usage": {
+              "input_tokens": 100,
+              "output_tokens": 2000,
+              "cache_creation_input_tokens": 5000,
+              "cache_read_input_tokens": 90000
+            },
+            "check": {
+              "exit_code": 1
+            }
+          },
+          {
+            "n": 2,
+            "started_at": "2026-11-21T05:06:00Z",
+            "ended_at": "2026-11-21T05:09:00Z",
+            "outcome": "passed",
+            "head": {
+              "before": "h3",
+              "after": "h3"
+            },
+            "agent": {
+              "kind": "claude",
+              "version": "2.1.330",
+              "model": "claude-opus-5-5"
+            },
+            "usage": {
+              "input_tokens": 100,
+              "output_tokens": 2000,
+              "cache_creation_input_tokens": 5000,
+              "cache_read_input_tokens": 90000
+            },
+            "check": {
+              "exit_code": 0,
+              "timed_out": false
+            }
+          }
+        ]
+      }
+    }
+  },
+  "events": [
+    {
+      "type": "step_failed",
+      "step": "verify",
+      "attempt": 1,
+      "cause": "check"
+    },
+    {
+      "type": "step_looped",
+      "from": "verify",
+      "to": "fix",
+      "count": 1,
+      "backoff": 30
+    }
+  ],
+  "totals": {
+    "wall_seconds": 600,
+    "clock_seconds": 600,
+    "active_seconds": 540,
+    "stopped_seconds": 60
+  }
+}

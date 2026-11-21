@@ -1,0 +1,111 @@
+{
+  "run": {
+    "id": "wr_fan",
+    "workflow": "calc-06",
+    "definition": {
+      "id": "calc-06",
+      "steps": [
+        {
+          "id": "finish_tests",
+          "prompt": "x",
+          "produces": [
+            "t.md"
+          ],
+          "status": null,
+          "guard": null,
+          "require": [],
+          "on_fail": null,
+          "group": "finish"
+        },
+        {
+          "id": "finish_usage",
+          "prompt": "x",
+          "produces": [
+            "u.md"
+          ],
+          "status": null,
+          "guard": null,
+          "require": [],
+          "on_fail": null,
+          "group": "finish"
+        }
+      ]
+    },
+    "state": "done",
+    "base_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "created_at": "2026-11-21T05:00:00Z",
+    "started_at": "2026-11-21T05:00:01Z",
+    "ended_at": "2026-11-21T05:10:00Z",
+    "steps": {
+      "finish_tests": {
+        "state": "passed",
+        "attempts": [
+          {
+            "n": 1,
+            "started_at": "2026-11-21T05:01:00Z",
+            "ended_at": "2026-11-21T05:05:00Z",
+            "outcome": "passed",
+            "head": {
+              "before": "h1",
+              "after": "h2"
+            },
+            "agent": {
+              "kind": "claude",
+              "version": "2.1.330",
+              "model": "claude-opus-5-5"
+            },
+            "usage": {
+              "input_tokens": 100,
+              "output_tokens": 2000,
+              "cache_creation_input_tokens": 5000,
+              "cache_read_input_tokens": 90000
+            },
+            "outputs": [
+              {
+                "file": "t.md"
+              }
+            ]
+          }
+        ]
+      },
+      "finish_usage": {
+        "state": "passed",
+        "attempts": [
+          {
+            "n": 1,
+            "started_at": "2026-11-21T05:01:00Z",
+            "ended_at": "2026-11-21T05:05:00Z",
+            "outcome": "passed",
+            "head": {
+              "before": "h1",
+              "after": "h2"
+            },
+            "agent": {
+              "kind": "claude",
+              "version": "2.1.330",
+              "model": "claude-opus-5-5"
+            },
+            "usage": null,
+            "usage_shared": {
+              "group": "finish",
+              "step": "finish_tests",
+              "attempt": 1
+            },
+            "outputs": [
+              {
+                "file": "u.md"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "events": [],
+  "totals": {
+    "wall_seconds": 600,
+    "clock_seconds": 600,
+    "active_seconds": 540,
+    "stopped_seconds": 60
+  }
+}
