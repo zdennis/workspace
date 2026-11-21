@@ -1,0 +1,45 @@
+# Demonstrates: a read-only planning step first. `implement` becomes `plan`: `guard: unchanged`
+# makes the engine check that the agent left the checkout alone, and `produces: [plan.md]`
+# requires the plan file. The test-first step moves to the new id `reproduce`, after it. The id
+# `implement` is reused for the plan because `extends:` can only add steps after an existing one.
+extends: calc-04-precedence
+id: calc-05-mod-pow
+title: Calculator 5, modulo and exponent
+description: Teaches demo/calculator `%` and `**`, after a read-only plan.
+
+instructions: |
+  You are building a small command-line calculator in demo/calculator/ of workspace {{workspace}}:
+  Ruby, standard library only, `bin/calc "EXPR"`, `lib/calc.rb`, and minitest in `test/calc_test.rb`.
+  Work only inside demo/calculator/. Change nothing else in the repository, except where a step
+  says to write a file under {{artifacts}}. When the step's work is done, commit it with git (do not
+  push). Run the tests from the repository root with `ruby demo/calculator/test/calc_test.rb`.
+  Build only this run's feature, nothing beyond it.
+
+  This run's feature: `%` (modulo, same precedence as `*`) and `**` (exponent, binds tighter than
+  `*` and associates to the right), so `calc "2 ** 3 ** 2"` prints 512 and `calc "7 % 3"` prints 1.
+  Modulo by zero reports the same division-by-zero error.
+
+max_attempts: 16
+
+replace:
+  implement:
+    title: Plan (read-only)
+    prompt: |
+      Read demo/calculator/ and write a short plan for the brief to {{artifacts}}/plan.md: the
+      parser change, the tests to add, and the risks. Do not change or commit anything in the checkout.
+    produces: [plan.md]
+    guard: unchanged
+
+steps:
+  reproduce:
+    after: implement
+    title: Write the failing test first
+    prompt: |
+      Follow {{artifacts}}/plan.md. Write only the tests for the brief. Do not change lib/ or bin/.
+      The tests must fail now. Write one line of the failure text you expect to
+      {{artifacts}}/failure.txt. Commit the tests.
+    produces: [failure.txt]
+    require:
+      - commits: 1
+      - exec: "workspace step expect-fail --match-file {{artifacts}}/failure.txt --timeout 240 -- demo/calculator/test/calc_test.rb"
+        timeout: 5m

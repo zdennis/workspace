@@ -1,0 +1,32 @@
+# Demonstrates: the smallest workflow. One `implement` step, and a `status:` check that runs the
+# calculator's own tests when the agent's turn ends; a failing check fails the step.
+#
+# The demo's calc-01 .. calc-07 each extend the one before (06 and 07 are written out in full, see
+# calc-06) and add one engine feature, so `diff calc-0N-*.yml calc-0M-*.yml` shows only that feature.
+schema_version: 0.1
+id: calc-01-add-sub
+title: Calculator 1, addition and subtraction
+description: Teaches demo/calculator to evaluate `+` and `-`, checked by the calculator's own tests.
+
+instructions: |
+  You are building a small command-line calculator in demo/calculator/ of workspace {{workspace}}:
+  Ruby, standard library only, `bin/calc "EXPR"`, `lib/calc.rb`, and minitest in `test/calc_test.rb`.
+  Work only inside demo/calculator/. Change nothing else in the repository. When the step's work is
+  done, commit it with git (do not push). Run the tests from the repository root with
+  `ruby demo/calculator/test/calc_test.rb`. Build only this run's feature, nothing beyond it.
+
+  This run's feature: `calc "1 + 2"` prints 3 and `calc "10 - 4"` prints 6. Support `+` and `-`
+  between two numbers (integers and decimals, spaces optional, a leading minus sign allowed).
+  Anything else still reports "unsupported". Add tests for each.
+
+max_attempts: 4
+
+steps:
+  implement:
+    title: Implement addition and subtraction
+    prompt: |
+      Build the feature in the brief, with its tests, and commit.
+    # The check runs in the checkout, with the repository root as its directory.
+    status:
+      run: ruby demo/calculator/test/calc_test.rb
+      timeout: 5m

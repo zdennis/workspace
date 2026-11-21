@@ -1,0 +1,9 @@
+steps:
+  implement:
+    - {}
+  reproduce:
+    - {}
+  fix:
+    - {reviews: {skeptic: approve}}
+  verify:
+    - {}

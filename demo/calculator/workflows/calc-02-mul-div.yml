@@ -1,0 +1,27 @@
+# Demonstrates: `require:` proofs. The step is not done until the agent made at least one commit
+# of its own (`commits: 1`) and a program of our own, the calculator's tests, exits 0 (`exec`,
+# which runs the program directly, with no shell). The proofs run before any `status:` check.
+extends: calc-01-add-sub
+id: calc-02-mul-div
+title: Calculator 2, multiplication and division
+description: Teaches demo/calculator to evaluate `*` and `/`, proved by a commit and a passing test run.
+
+instructions: |
+  You are building a small command-line calculator in demo/calculator/ of workspace {{workspace}}:
+  Ruby, standard library only, `bin/calc "EXPR"`, `lib/calc.rb`, and minitest in `test/calc_test.rb`.
+  Work only inside demo/calculator/. Change nothing else in the repository. When the step's work is
+  done, commit it with git (do not push). Run the tests from the repository root with
+  `ruby demo/calculator/test/calc_test.rb`. Build only this run's feature, nothing beyond it.
+
+  This run's feature: `calc "6 * 7"` prints 42 and `calc "9 / 2"` prints 4.5. Support `*` and `/`
+  between two numbers, as `+` and `-` already are. Do not handle division by zero yet. Add tests.
+
+replace:
+  implement:
+    title: Implement multiplication and division
+    prompt: |
+      Build the feature in the brief, with its tests, and commit.
+    require:
+      - commits: 1
+      - exec: "ruby demo/calculator/test/calc_test.rb"
+        timeout: 5m

@@ -1,0 +1,9 @@
+steps:
+  implement:
+    - {}
+  fix:
+    - {}
+    - {}
+  verify:
+    - {check: fail, log: "1 runs, 1 failures"}
+    - {}

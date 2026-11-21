@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+require_relative "../lib/calc"
+
+if ARGV.empty?
+  warn "usage: calc \"EXPR\""
+  exit 1
+end
+
+begin
+  puts Calc.evaluate(ARGV.join(" "))
+rescue Calc::Unsupported => e
+  warn e.message
+  exit 2
+end
