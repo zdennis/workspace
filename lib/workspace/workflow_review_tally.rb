@@ -96,7 +96,7 @@ module Workspace
     end
     private_class_method :not_blocking_heading
 
-    def self.header_value?(value) =value.is_a?(String) && !value.strip.empty? && !value.match?(/[[:cntrl:]]/)
+    def self.header_value?(value) = value.is_a?(String) && !value.strip.empty? && !value.match?(/[[:cntrl:]]/)
     private_class_method :header_value?
 
     # @param proof [#proven?] given `round_dir:`, `path:`, `review_pane:` (the round's panes, an Array) and `workspace:`, answers `{ok:, agent_id:, sha256:, problem:}`

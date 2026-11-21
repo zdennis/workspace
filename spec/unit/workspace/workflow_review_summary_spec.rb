@@ -116,6 +116,15 @@ RSpec.describe Workspace::WorkflowReviewSummary do
         expect(File.read(written["path"])).not_to include("Not blocking")
 
         FileUtils.rm(written["path"])
+        outside = File.join(@dir, "outside.md")
+        File.write(outside, "reviewer: skeptic\nverdict: approve\nrevision: rev9\n\n## Not blocking\n- planted\n")
+        sha = Digest::SHA256.file(outside).hexdigest
+        escaping = [rows[0].merge("path" => outside, "sha256" => sha), rows[0].merge("path" => "reviews/../../outside.md", "sha256" => sha)]
+        written = summary.write(run, round: 3, outcome: :approved, decided: decided, reviews: escaping)
+        expect(written).not_to have_key("not_blocking")
+        expect(File.read(written["path"])).not_to include("planted")
+
+        FileUtils.rm(written["path"])
         plain = [rows[0].merge("sha256" => verdict("skeptic", "All good.\n"))]
         expect(summary.write(run, round: 3, outcome: :approved, decided: decided, reviews: plain)).not_to have_key("not_blocking")
       end

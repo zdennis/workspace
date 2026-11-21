@@ -92,6 +92,8 @@ RSpec.describe Workspace::WorkflowReviewTally do
     it "answers nil for no section, an empty one, a sentence that only mentions it, and text that is not UTF-8" do
       expect(described_class.not_blocking("#{header}All good.\n")).to be_nil
       expect(described_class.not_blocking("#{header}## Not blocking\n\n## Next\n")).to be_nil
+      expect(described_class.not_blocking("#{header}## Not blocking")).to be_nil
+      expect(described_class.not_blocking("#{header}Not blocking:\n")).to be_nil
       expect(described_class.not_blocking("#{header}Nothing here is not blocking, really.\n")).to be_nil
       expect(described_class.not_blocking("#{header}## Not blocking\n- \xFF\n")).to be_nil
     end
