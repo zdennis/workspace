@@ -118,8 +118,9 @@ module Workspace
         round = run.steps[pending["step"]]&.review || {}
         rerun = round["rerun"].is_a?(Array) ? {only: round["rerun"], rerun: round["reruns"]} : {}
         written = @prompt.review_text(run, step, pending["attempt"], pending["round"], answer[:revision], **rerun)
-        agent = @main_agent.spawn_command(workspace, AGENT_KIND)
-        window = review_window(run, pending, agent)
+        model = round_model(run, step)
+        agent = with_model(@main_agent.spawn_command(workspace, AGENT_KIND), model)
+        window = review_window(run, pending, agent, model)
         return current(run) if window == :left
         return failed(run, pending, nil, "window_not_opened", "tmux could not open the review window") unless window
         # A window an earlier round left is cleared (`/clear`, as a `context: fresh` step is) as the line is typed.
@@ -129,7 +130,7 @@ module Workspace
         # The pane's binding is replaced, whichever round of the run it held.
         @panes.bind(workspace: workspace, pane: window[:pane], run_id: run.id, step: pending["step"], attempt: pending["attempt"],
           instructions: written["path"], artifacts: run.artifacts_dir, role: "reviewer", round: pending["round"], relative_to: run.worktree)
-        recorded = record_pane(run, pending, window, answer[:revision], written)
+        recorded = record_pane(run, pending, window, answer[:revision], written, model)
         return recorded[:run] unless recorded[:wanted]
         # The reviewers start fresh, each told of its own earlier write-up by `review.previous`.
         kicked = true
@@ -152,6 +153,20 @@ module Workspace
       rescue SignalException => e
         interrupted(run, pending, window, e, typed: kicked)
       end
+    end
+
+    # The one model the round's reviewers name: every reviewer of the step's `review:` names the same `model:`; nil when
+    # any names none or they differ, which keeps the review window on its own model.
+    def round_model(run, step)
+      reviewers = WorkflowDefinition.reviewers(run.definition)
+      models = Array(WorkflowDefinition.review(step)&.dig("from")).map { |name| reviewers.dig(name, "model") }.uniq
+      (models.size == 1) ? models.first : nil
+    end
+
+    # The agent command with `--model MODEL` in place of any `--model` it already has; unchanged for no model.
+    def with_model(agent, model)
+      return agent unless model
+      "#{agent.gsub(/\s--model(?:=|\s+)\S+/, "")} --model #{Shellwords.escape(model)}"
     end
 
     # A signal (an interrupt, a TERM) stops the delivery: the round is marked failed, so a resume or the sweep can
@@ -211,7 +226,7 @@ module Workspace
     # owns the round: one taken over meanwhile answers :left and touches nothing.
     #
     # @return [Hash, Symbol, nil] :pane, :window, :reused and :carried; :left; nil when tmux opened nothing
-    def review_window(run, pending, agent)
+    def review_window(run, pending, agent, model = nil)
       session = @tmux.session_name_for(run.workspace)
       mark = WorkflowPanes.review_mark(run.id, pending["step"], pending["round"])
       kept = nil
@@ -222,6 +237,8 @@ module Workspace
       end
       return :left if others.any? && !still_wanted?(run.id, pending)
       carried = kept ? nil : earlier_window(others, pending)
+      # A window started on another model is not carried over: the round's reviewers must run the model it names.
+      carried = nil if carried && run.steps[pending["step"]]&.to_h&.dig("review_model") != model
       # One that can't be marked for this round is closed with the rest.
       carried = nil if carried && !@tmux.mark_review_window(carried[:window], mark)
       others.delete(carried) if carried
@@ -255,7 +272,7 @@ module Workspace
     # the round's pane whenever it comes. A run that left the round meanwhile gets what was made taken back.
     #
     # @return [Hash] :wanted and :run (the run afterwards)
-    def record_pane(run, pending, window, revision, written)
+    def record_pane(run, pending, window, revision, written, model = nil)
       moved = false
       wanted = false
       # Read before the lock is taken: no tmux call is made under the run's lock.
@@ -284,6 +301,8 @@ module Workspace
           round["clear_from"] ||= @clock.call.utc.iso8601(3)
           round["uncleared"] = true
         end
+        model ? round["model"] = model : round.delete("model")
+        model ? state["review_model"] = model : state.delete("review_model")
         # The round records its window now; a window an earlier round kept is this one or gone.
         state.delete("review_window")
         WorkflowRun.from_h(hash)

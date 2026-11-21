@@ -10,7 +10,10 @@ module Workspace
   # Every problem is handed to the `report` callable, so {WorkflowDefinition} collects them with its own.
   class WorkflowReviewSpec
     # What a top-level `reviewers:` entry may hold, and what a step's `review:` mapping may hold.
-    REVIEWER_KEYS = %w[title prompt prompt_file include parallel scope].freeze
+    REVIEWER_KEYS = %w[title prompt prompt_file include parallel scope model].freeze
+    # What a reviewer's `model:` may be: a model id such as `claude-opus-5-5` or `opus`. Letters, digits and `. _ : / [ ] -`,
+    # starting with a letter or digit, so it never reads as an option and the review window's command is built from it safely.
+    MODEL = %r{\A[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,99}\z}
     # A reviewer's `scope:` words: `step` (the default) gives it {WorkflowPrompt::SCOPE_TEXT}, `any` no scope rule;
     # any other text is the rule itself.
     SCOPES = %w[step any].freeze
@@ -55,7 +58,7 @@ module Workspace
     #
     # @param raw [Object] the `reviewers:` value
     # @param inputs [Hash] the definition's inputs
-    # @return [Hash{String=>Hash}] name to "title", "prompt", "include", "parallel" and "scope"
+    # @return [Hash{String=>Hash}] name to "title", "prompt", "include", "parallel", "scope" and, when given, "model"
     def reviewers(raw, inputs)
       return {} if raw.nil?
       return problem("reviewers must be a mapping of reviewer name to its prompt") || {} unless raw.is_a?(Hash)
@@ -75,13 +78,14 @@ module Workspace
         parallel = spec.fetch("parallel", true)
         problem "#{where}: parallel must be true or false, got #{shown(parallel)}" unless [true, false].include?(parallel)
         scope = scope(spec, where, inputs)
+        model = model(spec, where)
         reviewers[name] = {
           "title" => @text.call(spec["title"], "#{where}: title") || name,
           "prompt" => prompt,
           "include" => @names.call(spec["include"], "#{where}: include"),
           "parallel" => parallel != false,
           "scope" => scope
-        }
+        }.merge(model ? {"model" => model} : {})
       end
     end
 
@@ -225,6 +229,14 @@ module Workspace
     def problem(message)
       @report.call(message)
       nil
+    end
+
+    # Nil when absent (the review window's own model); a null or a value that is not a model id is a problem.
+    def model(spec, where)
+      return nil unless spec.key?("model")
+      value = spec["model"]
+      return value if value.is_a?(String) && MODEL.match?(value)
+      problem "#{where}: model must be a model id (letters, digits and . _ : / [ ] -, starting with a letter or digit, up to 100 characters), got #{shown(value)}"
     end
 
     # `step` when absent; a null, blank or non-text value is a problem. Custom text may use the prompt's placeholders.

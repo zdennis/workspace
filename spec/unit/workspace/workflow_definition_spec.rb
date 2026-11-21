@@ -1089,6 +1089,16 @@ RSpec.describe Workspace::WorkflowDefinition do
       expect(problems("reviewers:\n  a: {prompt: x, parallel: ~}\n#{minimal}")).to include(a_string_matching(/parallel must be true or false, got nothing/))
     end
 
+    it "reads a reviewer's optional model, left out of the stored entry when absent, and refuses a value that is no model id" do
+      model = ->(value) { parse("reviewers:\n  a: {prompt: x, model: #{value}}\n#{minimal}").to_h["reviewers"]["a"] }
+      expect(model.call("claude-opus-5-5")["model"]).to eq("claude-opus-5-5")
+      expect(model.call("\"claude-opus-5-5[1m]\"")["model"]).to eq("claude-opus-5-5[1m]")
+      expect(parse("reviewers:\n  a: {prompt: x}\n#{minimal}").to_h["reviewers"]["a"]).not_to have_key("model")
+      ["~", "1", "\"\"", "\"--model\"", "\"opus; rm -rf x\"", "\"op us\"", "\"$(id)\"", "\"-x\"", "\"#{"a" * 101}\""].each do |bad|
+        expect(problems("reviewers:\n  a: {prompt: x, model: #{bad}}\n#{minimal}")).to include(a_string_matching(/reviewer a: model must be a model id/))
+      end
+    end
+
     it "reads a reviewer's scope: step, any, or the rule as text, its placeholders checked as the prompt's" do
       scoped = ->(value) { parse("reviewers:\n  a: {prompt: x, scope: #{value}}\n#{minimal}").to_h["reviewers"]["a"]["scope"] }
       expect(scoped.call("step")).to eq("step")

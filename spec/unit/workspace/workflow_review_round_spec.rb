@@ -112,6 +112,93 @@ RSpec.describe Workspace::WorkflowReviewRound do
       expect(panes.calls.find { |call| call.first == :kick }.last).to include(fresh: false, opened: false)
     end
 
+    describe "a reviewer that names a model" do
+      def with_model(model, **extra)
+        hash = run_hash
+        hash["definition"]["reviewers"] = {"skeptic" => {"title" => "Skeptic", "prompt" => "p", "model" => model}.compact}
+        hash["steps"]["plan"].merge!(extra)
+        store.runs["wr_1"] = hash
+      end
+
+      it "starts the window with that model and records it on the round and the step" do
+        with_model("claude-opus-5-5")
+
+        runner.call("wr_1", pending)
+
+        expect(opened.first[:command]).to eq(["/bin/zsh", "-lc", "claude --model claude-opus-5-5"])
+        expect(round["model"]).to eq("claude-opus-5-5")
+        expect(store.runs["wr_1"]["steps"]["plan"]["review_model"]).to eq("claude-opus-5-5")
+      end
+
+      it "starts the window as it always did when no reviewer names a model" do
+        runner.call("wr_1", pending)
+
+        expect(opened.first[:command]).to eq(["/bin/zsh", "-lc", "claude"])
+        expect(round).not_to have_key("model")
+      end
+
+      {"--model opus" => "separate", "--model=opus" => "joined"}.each do |flag, spelling|
+        it "replaces a --model the agent command already carries (#{spelling} spelling)" do
+          with_model("sonnet")
+          allow(main_agent).to receive(:spawn_command).and_return("claude #{flag} --verbose")
+
+          runner.call("wr_1", pending)
+
+          expect(opened.first[:command].last).to eq("claude --verbose --model sonnet")
+        end
+      end
+
+      it "keeps the window's own model when the step's reviewers do not all name the same one" do
+        hash = run_hash
+        hash["definition"]["steps"][0]["review"]["from"] = %w[skeptic other]
+        hash["definition"]["reviewers"] = {"skeptic" => {"model" => "opus"}, "other" => {}}
+        store.runs["wr_1"] = hash
+
+        runner.call("wr_1", pending)
+
+        expect(opened.first[:command]).to eq(["/bin/zsh", "-lc", "claude"])
+      end
+
+      describe "a later round" do
+        let(:pending) { {"step" => "plan", "attempt" => 2, "round" => 2} }
+
+        def later(model:, window_model:)
+          with_model(model, "review_rounds" => 2, "review_model" => window_model,
+            "attempts" => [{"n" => 1, "outcome" => "failed"}, {"n" => 2, "outcome" => "checks_passed"}])
+          store.runs["wr_1"]["steps"]["plan"]["review"]["round"] = 2
+          store.runs["wr_1"]["steps"]["plan"].delete("review_model") unless window_model
+          tmux.review_window_list = [{window: "@7", name: "review-plan", review: "wr_1:plan:1", pane: "%70", pid: 70}]
+        end
+
+        it "carries the earlier window over when it ran the same model" do
+          later(model: "opus", window_model: "opus")
+
+          runner.call("wr_1", pending)
+
+          expect(opened).to be_empty
+          expect(tmux.marked_windows).to eq([["@7", "wr_1:plan:2"]])
+        end
+
+        it "closes the earlier window and opens a fresh one when it ran another model" do
+          later(model: "opus", window_model: "sonnet")
+
+          runner.call("wr_1", pending)
+
+          expect(tmux.killed_windows).to eq(["@7"])
+          expect(opened.first[:command]).to eq(["/bin/zsh", "-lc", "claude --model opus"])
+        end
+
+        it "closes an earlier window that ran no named model when the round now names one" do
+          later(model: "opus", window_model: nil)
+
+          runner.call("wr_1", pending)
+
+          expect(tmux.killed_windows).to eq(["@7"])
+          expect(opened.size).to eq(1)
+        end
+      end
+    end
+
     describe "a later round" do
       let(:pending) { {"step" => "plan", "attempt" => 2, "round" => 2} }
       let(:later_prompt) { File.join(worktree, ".workflow", "wr_1", "steps", "plan.2.r2.review.md") }
