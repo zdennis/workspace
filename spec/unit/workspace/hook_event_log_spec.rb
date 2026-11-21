@@ -77,6 +77,110 @@ RSpec.describe Workspace::HookEventLog do
     expect(lines.last(2).map { |l| l["duration_ms"] }).to eq([nil, 0])
   end
 
+  describe "permission requests" do
+    def summary(rows = lines)
+      rows.map { |l| l.slice("type", "seq", "tool", "agent_id", "outcome", "by", "wait_ms") }
+    end
+
+    it "writes a request, then its approval before the tool's finish, timed from the request" do
+      log.record(event("tool_start", tool: "Bash", tool_use_id: "toolu_1", input: "rm -rf build"))
+      log.record(event("permission_request", tool: "Bash", input: "rm -rf build"))
+      seconds[0] = 104.2504
+      log.record(event("tool_use", tool: "Bash", tool_use_id: "toolu_1", ok: true))
+
+      expect(lines.map { |l| l["type"] }).to eq(%w[tool_started permission_requested permission_resolved tool_finished])
+      expect(lines[1].except("at", "workspace", "boot_id")).to eq({"type" => "permission_requested", "pane_id" => "%2", "seq" => 2,
+                                                                   "tool" => "Bash", "agent_id" => nil, "input" => "rm -rf build"})
+      expect(lines[2].except("at", "workspace", "boot_id")).to eq({"type" => "permission_resolved", "pane_id" => "%2", "seq" => 3,
+                                                                   "tool" => "Bash", "agent_id" => nil, "input" => "rm -rf build",
+                                                                   "outcome" => "approved", "by" => "tool_use", "wait_ms" => 4250})
+    end
+
+    it "returns the resolved line along with the event's own lines" do
+      log.record(event("permission_request", tool: "Bash"))
+
+      expect(log.record(event("tool_use", tool: "Bash")).map { |l| l["type"] }).to eq(%w[permission_resolved tool_finished])
+    end
+
+    it "ends the main agent's request as denied on its stop or failed turn, and writes no line for the stop itself" do
+      log.record(event("permission_request", tool: "Bash"))
+      log.record(event("stop"))
+      log.record(event("permission_request", tool: "Edit"))
+      log.record(event("turn_failed"))
+
+      expect(summary.map { |l| l.values_at("type", "tool", "outcome", "by") }).to eq([
+        ["permission_requested", "Bash", nil, nil], ["permission_resolved", "Bash", "denied", "stop"],
+        ["permission_requested", "Edit", nil, nil], ["permission_resolved", "Edit", "denied", "turn_failed"]
+      ])
+    end
+
+    it "ends every pending request of the pane as interrupted on a prompt, a session start or a session end" do
+      %w[user_prompt session_start session_end].each do |name|
+        log.record(event("permission_request", tool: "Bash"))
+        log.record(event("permission_request", tool: "Read", agent_id: "sub-1"))
+        written = log.record(event(name))
+
+        resolved = written.select { |l| l["type"] == "permission_resolved" }
+        expect(resolved.map { |l| l.values_at("agent_id", "outcome", "by") }).to eq([[nil, "interrupted", name], ["sub-1", "interrupted", name]])
+      end
+    end
+
+    it "ends a sub-agent's request on that sub-agent's stop, not on the main agent's or another sub-agent's" do
+      log.record(event("permission_request", tool: "Read", agent_id: "sub-1"))
+      log.record(event("stop"))
+      log.record(event("stop", agent_id: "sub-1"))
+      log.record(event("subagent_stop", agent_id: "sub-2"))
+      log.record(event("subagent_stop", agent_id: "sub-1"))
+
+      resolved = lines.select { |l| l["type"] == "permission_resolved" }
+      expect(resolved.map { |l| l.values_at("agent_id", "outcome", "by") }).to eq([["sub-1", "denied", "subagent_stop"]])
+    end
+
+    it "approves only on the same agent's finish of the same tool" do
+      log.record(event("permission_request", tool: "Bash"))
+      log.record(event("tool_use", tool: "Read"))
+      log.record(event("tool_use", tool: "Bash", agent_id: "sub-1"))
+
+      expect(lines.map { |l| l["type"] }).to eq(%w[permission_requested tool_finished tool_finished])
+      log.record(event("tool_use", tool: "Bash"))
+      expect(lines.last(2).map { |l| l.values_at("type", "outcome") }).to eq([["permission_resolved", "approved"], ["tool_finished", nil]])
+    end
+
+    it "ends a pending request as superseded when the same agent asks again" do
+      log.record(event("permission_request", tool: "Bash"))
+      seconds[0] = 101.0
+      log.record(event("permission_request", tool: "Edit"))
+
+      expect(summary.map { |l| l.values_at("type", "tool", "outcome", "wait_ms") }).to eq([
+        ["permission_requested", "Bash", nil, nil], ["permission_resolved", "Bash", "superseded", 1000], ["permission_requested", "Edit", nil, nil]
+      ])
+    end
+
+    it "leaves another pane's request pending" do
+      log.record(event("permission_request", tool: "Bash"))
+      log.record(event("user_prompt", pane_id: "%3"))
+      log.record(event("tool_use", tool: "Bash", pane_id: "%3"))
+
+      expect(lines.map { |l| l["type"] }).to eq(%w[permission_requested prompt_submitted tool_finished])
+    end
+
+    it "forgets the oldest pending requests past its limit" do
+      log = described_class.new(dir: dir, workspace: "Proj", boot_id: "BOOT1", clock: clock, monotonic: monotonic, max_pending_permissions: 2)
+      %w[a b c].each { |id| log.record(event("permission_request", tool: "Bash", agent_id: id)) }
+      written = log.record(event("user_prompt"))
+
+      expect(written.select { |l| l["type"] == "permission_resolved" }.map { |l| l["agent_id"] }).to eq(%w[b c])
+    end
+
+    it "caps a request's input and writes only the fields it knows" do
+      log.record(event("permission_request", tool: "Bash", input: "ls " + "z" * 400, tool_input: {"command" => "secret"}, message: "secret"))
+
+      expect(lines.last["input"].bytesize).to eq(300)
+      expect(lines.last.keys).to eq(%w[type at workspace pane_id boot_id seq tool agent_id input])
+      expect(File.read(log.path)).not_to include("secret")
+    end
+  end
+
   it "writes a Task start as a tool start and a sub-agent start" do
     log.record(event("subagent_start", tool: "Task", tool_use_id: "toolu_9", description: "Review the diff", subagent_type: "reviewer",
       agent: {"name" => "reviewer"}))
