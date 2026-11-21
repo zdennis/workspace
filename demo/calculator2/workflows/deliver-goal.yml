@@ -45,6 +45,8 @@ deny:
 replace:
   plan:
     title: Plan
+    # Resumes the research step's session, so the agent keeps what it read.
+    context: continue
     include: [notes, implementation-plan]
     prompt: |
       The goal is in {{inputs.goal}}; read it, and {{artifacts}}/research.md.
@@ -148,6 +150,8 @@ steps:
   acceptance:
     after: verify
     title: Acceptance
+    # Resumes verify's session instead of opening a fresh one for a step that changes nothing.
+    context: continue
     prompt: "Change nothing; end your turn."
     guard: config
     require:
