@@ -106,8 +106,8 @@ module DemoCalculator
       branch = "#{RUN_BRANCH_PREFIX}#{stamp}"
       base = @base || "HEAD"
       preflight(branch)
-      clear_queue
       base_sha = git("rev-parse", "#{base}^{commit}")
+      clear_queue
       workspace_sha = git("rev-parse", "HEAD")
       switch_to(branch, base)
       remove_acceptance_tests
@@ -363,7 +363,7 @@ module DemoCalculator
       o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory)") { |v| options[:name] = v }
       o.on("--base REF", "run: the ref to branch from (default HEAD; required on a calc-demo/* branch)") { |v| options[:base] = v }
       o.on("--out DIR", "run: where to write run.json (default tmp/demo-calculator/runs/<stamp>)") { |v| options[:out_dir] = v }
-      o.on("--wait", "run: watch the queue until it is empty, paused, has a held item past the limit or times out") { options[:wait] = true }
+      o.on("--wait", "run: watch the queue until it is empty, paused, disabled, has a held item past the limit or times out") { options[:wait] = true }
       o.on("--held-limit DUR", "run --wait: stop when an item stays held this long, as Ns, Nm or Nh (default 20m)") { |v| options[:held_limit] = duration(v) }
       o.on("--timeout DUR", "run --wait: stop after this long in all, as Ns, Nm or Nh (default 4h)") { |v| options[:timeout] = duration(v) }
       o.on("--run DIR", "eval: the directory holding run.json (default: the newest under tmp/demo-calculator/runs)") { |v| options[:run_dir] = v }

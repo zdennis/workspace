@@ -177,6 +177,12 @@ RSpec.describe DemoCalculator::Demo do
       expect { demo.run }.to raise_error(DemoCalculator::Refused, /already exists/)
     end
 
+    it "refuses an unknown --base with the queue untouched" do
+      expect { demo(base: "no-such-ref").run }.to raise_error(DemoCalculator::Refused, /rev-parse/)
+      expect(File.exist?(log)).to be(false)
+      expect(git(work_dir, "rev-parse", "--abbrev-ref", "HEAD").strip).to eq("demo-branch")
+    end
+
     it "refuses a calc-demo/* HEAD without --base, naming --base and the previous record's base_sha" do
       FileUtils.mkdir_p(File.dirname(record_path))
       File.write(record_path, JSON.generate("base_sha" => "abc123"))
@@ -286,6 +292,12 @@ RSpec.describe DemoCalculator::Demo do
         run_waiting(queue("on", ["a", "held"], daemon: true), held_limit: 60)
         expect(record["wait"]).to include("reason" => "held", "item" => "a")
         expect(calls.grep(/work-queue list/).size).to be > 2
+      end
+
+      it "stops when the queue is disabled with items left, instead of polling until timeout" do
+        run_waiting(queue("off", ["a", "queued"]), timeout: 3600)
+        expect(record["wait"]).to include("reason" => "disabled", "item" => nil)
+        expect(calls.grep(/work-queue list/).size).to eq(2)
       end
 
       it "stops on timeout" do

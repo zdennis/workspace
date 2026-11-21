@@ -50,7 +50,14 @@ RSpec.describe DemoCalculator::Wait do
       expect(stop({"state" => "on", "items" => [item("a", "active")]}, now: t0 + 14_400)).to eq("reason" => "timeout", "item" => nil)
     end
 
-    it "prefers timeout, then paused, then held, then empty" do
+    it "stops disabled when the queue is off with items left, but empty when nothing is left" do
+      expect(stop({"state" => "off", "items" => [item("a", "queued")]})).to eq("reason" => "disabled", "item" => nil)
+      expect(stop({"state" => "off", "items" => []})["reason"]).to eq("empty")
+    end
+
+    it "prefers timeout, then paused, then disabled, then held, then empty" do
+      off_held = {"state" => "off", "items" => [item("a", "held")]}
+      expect(stop(off_held, now: t0 + 5000, held_since: {"a" => t0})["reason"]).to eq("disabled")
       held = {"state" => "paused", "items" => [item("a", "held")]}
       both = {now: t0 + 5000, held_since: {"a" => t0}}
       expect(stop(held, **both, timeout: 100)["reason"]).to eq("timeout")

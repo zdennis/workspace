@@ -13,7 +13,7 @@ module DemoCalculator
       match[1].to_i * {"s" => 1, "m" => 60, "h" => 3600}.fetch(match[2])
     end
 
-    # Why the loop should stop, checked in this order: timeout, paused, held, empty.
+    # Why the loop should stop, checked in this order: timeout, paused, disabled, held, empty.
     #
     # @param queue_row [Hash] one queue of `work-queue list --json`
     # @param now [Time]
@@ -21,12 +21,13 @@ module DemoCalculator
     # @param held_since [Hash{String => Time}] item id => when it was held
     # @param held_limit [Numeric] seconds an item may stay held
     # @param timeout [Numeric] seconds the loop may run
-    # @return [Hash, nil] `{"reason" => "empty|paused|held|timeout", "item" => id or nil}`; nil to keep waiting
+    # @return [Hash, nil] `{"reason" => "empty|paused|disabled|held|timeout", "item" => id or nil}`; nil to keep waiting
     def self.stop_reason(queue_row, now:, started_at:, held_since:, held_limit:, timeout:)
       items = queue_row["items"] || []
       held = items.select { |item| item["state"] == "held" }
       return {"reason" => "timeout", "item" => nil} if now - started_at >= timeout
       return {"reason" => "paused", "item" => held.first&.fetch("id")} if queue_row["state"] == "paused"
+      return {"reason" => "disabled", "item" => nil} if queue_row["state"] == "off" && !items.empty?
       over = held.find { |item| held_since[item["id"]] && now - held_since[item["id"]] >= held_limit }
       return {"reason" => "held", "item" => over["id"]} if over
       return {"reason" => "empty", "item" => nil} if items.empty?
