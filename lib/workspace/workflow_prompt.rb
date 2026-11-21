@@ -15,7 +15,8 @@ module Workspace
     # Asked of every step agent, never of a review round: a clause of the brief can be skipped and nothing notices.
     CHECKLIST_TEXT = "Before reporting done, re-read this step's brief and instructions and list each requirement " \
       "with the evidence that it is met (a test name, command output, or file:line). If one is not met, keep " \
-      "working or report it (needs_input or stuck) instead of done."
+      "working; if you cannot meet it, report stuck with what is missing (needs_input only for a question " \
+      "a person must answer) instead of done."
     # @param composer [Workspace::InstructionComposer] builds a step's instructions from its packs
     # @param git [Workspace::Git] reads the checkout's branch for `{{branch}}`
     # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`

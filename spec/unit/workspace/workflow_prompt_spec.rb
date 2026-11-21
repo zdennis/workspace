@@ -60,7 +60,7 @@ RSpec.describe Workspace::WorkflowPrompt do
       prompt.compose(run, {"id" => "plan", "prompt" => "Plan.", "produces" => []}, [])
 
       text = composed_with[:step]["text"]
-      expect(described_class::CHECKLIST_TEXT).to include("re-read this step's brief and instructions", "each requirement", "evidence", "file:line", "instead of done")
+      expect(described_class::CHECKLIST_TEXT).to include("re-read this step's brief and instructions", "each requirement", "evidence", "file:line", "report stuck with what is missing", "needs_input only for a question", "instead of done")
       expect(text).to include("#{described_class::CHECKLIST_TEXT}\n\n#{described_class::STATUS_LINE_TEXT}")
       expect(described_class::CHECKLIST_TEXT.lines.size).to eq(1)
     end
