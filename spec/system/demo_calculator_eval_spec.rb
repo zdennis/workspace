@@ -205,7 +205,7 @@ RSpec.describe DemoCalculator::Evaluation do
     end
 
     it "lists the runs only with fewer than three matching, and --last limits the set" do
-      write_eval("20261121T010000Z", definitions: {"calc-01" => "old"})
+      write_eval("20261121T010000Z", definitions: {"calc-other" => "old"})
       write_eval("20261121T020000Z")
       write_eval("20261121T030000Z")
       _, text = compare
@@ -213,6 +213,15 @@ RSpec.describe DemoCalculator::Evaluation do
       expect(text).not_to include("20261121T010000Z")
       _, text = compare("--last", "1")
       expect(text).to include("Only 1 matching run ")
+      _, text = compare("--last", "2")
+      expect(text).to include("Median [min–max] over 2 runs")
+    end
+
+    it "compares runs whose definitions were edited between them and says which item differs" do
+      write_eval("20261121T010000Z", definitions: {"calc-01" => "old"})
+      write_eval("20261121T020000Z", definitions: {"calc-01" => "new"})
+      _, text = compare("--last", "2")
+      expect(text).to include("Median [min–max] over 2 runs", "definition calc-01: differs")
     end
   end
 end

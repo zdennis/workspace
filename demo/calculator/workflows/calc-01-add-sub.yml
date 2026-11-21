@@ -16,10 +16,15 @@ instructions: |
   `ruby demo/calculator/test/calc_test.rb`. Build only this run's feature, nothing beyond it.
 
   This run's feature: `calc "1 + 2"` prints 3 and `calc "10 - 4"` prints 6. Support `+` and `-`
-  between two numbers (integers and decimals, spaces optional, a leading minus sign allowed).
+  between two numbers (integers and decimals, spaces optional). A number may have a leading minus
+  sign, so `calc "-2 + 6"` prints 4, and a lone number such as `calc "-8"` prints itself (-8).
   Anything else still reports "unsupported". Add tests for each.
 
 max_attempts: 4
+# Keeps the agents off the acceptance tests that score the run (a tripwire, see docs/README.workflow.md).
+# 02 to 05 inherit it through `extends:`; 06 and 07 repeat it.
+deny:
+  - "*acceptance*"
 
 steps:
   implement:

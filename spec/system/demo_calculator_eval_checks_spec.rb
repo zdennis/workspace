@@ -172,12 +172,33 @@ RSpec.describe DemoCalculator::EvalChecks do
       expect(result).to eq(hook: 2, transcript: {transcript => 3, File.join(tmp, "missing") => nil})
     end
 
-    it "does not count a listing, a run of the groups, an echo or a line that is not JSON" do
+    it "does not count an echo or a line that is not JSON" do
       transcript = File.join(tmp, "t.jsonl")
-      File.write(transcript, use("Bash", "command" => "ruby demo/calculator-acceptance/group_1_add_sub_test.rb") +
-        use("Bash", "command" => "ls demo/calculator-acceptance") + use("Bash", "command" => "echo calculator-acceptance > notes") +
+      File.write(transcript, use("Bash", "command" => "echo calculator-acceptance > notes") +
         "not json calculator-acceptance\n")
       expect(checks.leak_check(hook_files: [], transcripts: [transcript], from: nil)[:transcript]).to eq(transcript => 0)
+    end
+
+    it "counts a run of a group file, a listing, git archive, git -C show, tar and an assignment before the program" do
+      transcript = File.join(tmp, "t.jsonl")
+      commands = ["ruby demo/calculator-acceptance/group_1_add_sub_test.rb",
+        "CALC_ROOT=$PWD/demo/calculator ruby demo/calculator-acceptance/group_1_add_sub_test.rb",
+        "ls demo/calculator-acceptance",
+        "git archive main demo/calculator-acceptance | tar -x",
+        "git -C /w show main:demo/calculator-acceptance/support.rb",
+        "git --no-pager cat-file -p main:demo/calculator-acceptance/support.rb",
+        "tar -xf a.tar demo/calculator-acceptance"]
+      File.write(transcript, commands.map { |c| use("Bash", "command" => c) }.join)
+      expect(checks.leak_check(hook_files: [], transcripts: [transcript], from: nil)[:transcript]).to eq(transcript => commands.size)
+    end
+
+    it "adds the session's sub-agent transcripts to its count" do
+      transcript = File.join(tmp, "abc.jsonl")
+      File.write(transcript, use("Bash", "command" => "ls"))
+      FileUtils.mkdir_p(File.join(tmp, "abc", "subagents"))
+      File.write(File.join(tmp, "abc", "subagents", "agent-1.jsonl"), use("Bash", "command" => "cat demo/calculator-acceptance/support.rb"))
+      File.write(File.join(tmp, "abc", "subagents", "agent-2.jsonl"), use("Bash", "command" => "git archive main demo/calculator-acceptance | tar -x"))
+      expect(checks.leak_check(hook_files: [], transcripts: [transcript], from: nil)[:transcript]).to eq(transcript => 2)
     end
 
     it "counts hook lines at or after from when the window is open" do

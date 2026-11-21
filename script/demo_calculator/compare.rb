@@ -39,13 +39,29 @@ module DemoCalculator
       Array(docs).select { |doc| doc.is_a?(Hash) && stamp(doc) }.sort_by { |doc| stamp(doc) }
     end
 
-    # The last `last` documents whose record.definitions equal the newest's,
-    # oldest first.
+    # What makes two runs comparable: the same items, model and agent version. A definition edit does
+    # not split a group; {definition_status} says where one happened.
+    def self.group_key(doc)
+      [doc.dig("record", "definitions")&.keys&.sort, doc.dig("header", "model"), doc.dig("header", "agent_version")]
+    end
+
+    # The last `last` documents that share the newest's group_key, oldest first.
     def self.select(docs, last: DEFAULT_LAST)
       loaded = load(docs)
       return [] if loaded.empty?
-      definitions = loaded.last.dig("record", "definitions")
-      loaded.select { |doc| doc.dig("record", "definitions") == definitions }.last(last)
+      key = group_key(loaded.last)
+      loaded.select { |doc| group_key(doc) == key }.last(last)
+    end
+
+    # {item id => true when its definition hash is not the same in every one of docs}.
+    def self.definition_status(docs)
+      ids = docs.flat_map { |doc| doc.dig("record", "definitions")&.keys.to_a }.uniq.sort
+      ids.to_h { |id| [id, docs.map { |doc| doc.dig("record", "definitions", id) }.uniq.size > 1] }
+    end
+
+    # How many runs a comparison needs: MIN_RUNS, or fewer when `last` asks for fewer, never below 2.
+    def self.needed(last)
+      last.clamp(2, MIN_RUNS)
     end
 
     # Median of numbers; the mean of the two middle ones for an even count; nil for none.
@@ -85,8 +101,8 @@ module DemoCalculator
       chosen = select(docs, last: last)
       return "No eval runs to compare.\n" if chosen.empty?
       lines = header_lines(chosen) + [""]
-      if chosen.size < MIN_RUNS
-        lines << "Only #{chosen.size} matching run#{"s" unless chosen.size == 1} (need #{MIN_RUNS} for a comparison). Runs:"
+      if chosen.size < needed(last)
+        lines << "Only #{chosen.size} matching run#{"s" unless chosen.size == 1} (need #{needed(last)} for a comparison). Runs:"
         chosen.each { |doc| lines << "  #{stamp(doc)}  #{doc.dig("record", "branch") || Fmt::UNKNOWN}" }
       else
         lines << "Median [min–max] over #{chosen.size} runs (#{chosen.map { |d| stamp(d) }.join(", ")}):"
@@ -109,6 +125,9 @@ module DemoCalculator
         lines << "  #{field}: #{text}"
       end
       lines << "  differing: #{differing.empty? ? "none" : differing.join(", ")}"
+      definition_status(docs).each do |id, changed|
+        lines << "  definition #{id}: #{changed ? "differs" : "same"}"
+      end
       lines
     end
 
@@ -139,6 +158,6 @@ module DemoCalculator
       doc.dig("record", "stamp")
     end
 
-    private_class_method :header_lines, :table, :cell, :format_value, :stamp
+    private_class_method :group_key, :header_lines, :table, :cell, :format_value, :stamp
   end
 end

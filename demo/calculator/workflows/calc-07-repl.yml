@@ -15,7 +15,8 @@ instructions: |
   Build only this run's feature, nothing beyond it.
 
   This run's feature: `calc` with no arguments starts a REPL that prints `> `, evaluates each line it
-  reads with the same rules and flags as the command line (`--json` included) and exits on `exit`,
+  reads with the same rules and flags as the command line (`--json` included), printing each result
+  exactly as the command line does (`1 + 2` prints 3), and exits on `exit`,
   `quit` or end of input. A bad line prints its error and the loop goes on.
 
 max_attempts: 16
@@ -25,6 +26,7 @@ budget:
 deny:
   - "git push*"
   - "gh pr*"
+  - "*acceptance*"
 
 reviewers:
   skeptic:

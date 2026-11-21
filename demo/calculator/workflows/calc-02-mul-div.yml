@@ -14,7 +14,8 @@ instructions: |
   `ruby demo/calculator/test/calc_test.rb`. Build only this run's feature, nothing beyond it.
 
   This run's feature: `calc "6 * 7"` prints 42 and `calc "9 / 2"` prints 4.5. Support `*` and `/`
-  between two numbers, as `+` and `-` already are. Do not handle division by zero yet. Add tests.
+  between two numbers, as `+` and `-` already are (a leading minus sign works on either operand, so
+  `calc "-4 * 5"` prints -20). Do not handle division by zero yet. Add tests.
 
 replace:
   implement:

@@ -25,6 +25,8 @@ instructions: |
   `--json` the output is as before.
 
 max_attempts: 16
+deny:
+  - "*acceptance*"
 
 reviewers:
   skeptic:

@@ -24,14 +24,14 @@ RSpec.describe DemoCalculator::Compare do
   end
 
   describe ".select" do
-    it "keeps docs with the newest's definitions and takes the last K by stamp" do
-      docs = [doc("4"), doc("2"), doc("3", defs: {"a" => "2"}), doc("1"), doc("5")]
-      expect(described_class.select(docs, last: 2).map { |d| d["record"]["stamp"] }).to eq(%w[4 5])
+    it "groups across definition edits and takes the last K by stamp" do
+      docs = [doc("4"), doc("2"), doc("3", defs: {"a" => "2"}), doc("1"), doc("5", defs: {"a" => "9"})]
+      expect(described_class.select(docs, last: 3).map { |d| d["record"]["stamp"] }).to eq(%w[3 4 5])
     end
 
-    it "uses the newest doc's definitions even when older ones differ" do
-      docs = [doc("1"), doc("2"), doc("3", defs: {"a" => "9"})]
-      expect(described_class.select(docs).map { |d| d["record"]["stamp"] }).to eq(%w[3])
+    it "does not group runs of other items, another model or another agent version" do
+      docs = [doc("1", defs: {"b" => "1"}), doc("2", header: {"model" => "n"}), doc("3", header: {"agent_version" => "2"}), doc("4")]
+      expect(described_class.select(docs).map { |d| d["record"]["stamp"] }).to eq(%w[4])
     end
 
     it "skips docs without a stamp" do
@@ -74,6 +74,17 @@ RSpec.describe DemoCalculator::Compare do
   end
 
   describe ".render" do
+    it "compares two runs when asked for the last 2, and says which definitions differ" do
+      docs = [doc("1", defs: {"a" => "1", "b" => "1"}, totals: {"attempts" => 2}), doc("2", defs: {"a" => "1", "b" => "2"}, totals: {"attempts" => 4})]
+      text = described_class.render(docs, last: 2)
+      expect(text).to include("Median [min–max] over 2 runs")
+      expect(text).to include("definition a: same", "definition b: differs")
+    end
+
+    it "still wants 3 runs by default" do
+      expect(described_class.render([doc("1"), doc("2")], last: 3)).to include("need 3 for a comparison")
+    end
+
     it "lists runs only with fewer than 3 matching runs" do
       text = described_class.render([doc("1"), doc("2")])
       expect(text).to include("Only 2 matching runs", "calc-demo/1", "calc-demo/2")
@@ -94,8 +105,8 @@ RSpec.describe DemoCalculator::Compare do
     end
 
     it "names the header fields that differ" do
-      docs = [doc("1"), doc("2", header: {"agent_version" => "2"}), doc("3", header: {"price_date" => "x"})]
-      expect(described_class.render(docs)).to include("differing: agent_version, price_date")
+      docs = [doc("1"), doc("2", header: {"base_sha" => "c"}), doc("3", header: {"price_date" => "x"})]
+      expect(described_class.render(docs)).to include("differing: base_sha, price_date")
     end
 
     it "says so with no runs" do

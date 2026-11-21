@@ -146,6 +146,7 @@ RSpec.describe DemoCalculator::Demo do
       subjects = git(work_dir, "log", "--format=%s", "#{base}..HEAD").lines.map(&:strip).reverse
       expect(subjects.first).to eq("Remove the acceptance tests from the run branch")
       expect(File.exist?(File.join(work_dir, "demo/calculator-acceptance"))).to be(false)
+      expect(File.exist?(File.join(work_dir, "demo/calculator/README.md"))).to be(false)
       first = git(work_dir, "rev-list", "--reverse", "#{base}..HEAD").lines.first.strip
       expect(git(work_dir, "show", "--name-status", "--format=", first).lines.map { |l| l.split.first }.uniq).to eq(["D"])
     end

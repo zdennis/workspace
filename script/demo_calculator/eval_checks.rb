@@ -109,8 +109,10 @@ module DemoCalculator
     end
 
     # Counts the agents' reads of acceptance test content: a file tool on a path in the acceptance
-    # directory, or a Bash command that cats, pages, greps, edits or `git show`s such a path. Text that
-    # only mentions the directory (a `git log --stat`, a README line, a tool's output) is not a read.
+    # directory, or a Bash command that starts with a reader, a lister, `tar`, `ruby` (a run of a group
+    # file) or `git show|archive|cat-file|ls-tree` and names the directory. Text that only mentions the
+    # directory (a `git log --stat`, a README line, a tool's output) is not a read. A session's sub-agent
+    # transcripts (`<session>/subagents/agent-*.jsonl`) count toward its transcript.
     #
     # @param hook_files [Array<String>] the hook log and its `.1` rotation
     # @param transcripts [Array<String>] session `transcript` paths of attempts and review rounds
@@ -137,12 +139,25 @@ module DemoCalculator
     private
 
     ACCEPTANCE_NAME = ACCEPTANCE_DIR.split("/").last
-    # A reading program that starts a command (not one fed by a pipe) and names the acceptance directory in its arguments.
-    READ_COMMAND = /(?:\A|&&\s*|;\s*|\(\s*|\bdo\s+)(?:cat|head|tail|less|more|bat|nl|sed|awk|grep|rg|git\s+show)\s[^|;&\n]*#{ACCEPTANCE_NAME}/
+    # A program that reads or fetches files and starts a command (not one fed by a pipe), after any leading
+    # NAME=value assignments, with the acceptance directory in its arguments: a reader, a lister, `tar`, a run of
+    # a group file (`ruby`), or `git show`, `archive`, `cat-file` or `ls-tree` with or without git's own options.
+    READ_PROGRAMS = "cat|head|tail|less|more|bat|nl|sed|awk|grep|rg|ls|tar|ruby|" \
+      "git(?:\\s+(?:-C|-c|--git-dir|--work-tree)\\s+\\S+|\\s+--[a-z-]+)*\\s+(?:show|archive|cat-file|ls-tree)"
+    READ_COMMAND = /(?:\A|&&\s*|;\s*|\(\s*|\bdo\s+)(?:[A-Za-z_]\w*=\S*\s+)*(?:#{READ_PROGRAMS})\s[^|;&\n]*#{ACCEPTANCE_NAME}/
     FILE_TOOLS = %w[Read Grep NotebookRead Edit MultiEdit].freeze
 
     def transcript_count(path)
       return nil unless File.readable?(path)
+      ([path] + subagent_transcripts(path)).sum { |file| session_count(file) }
+    end
+
+    # Claude Code keeps a session's sub-agent transcripts in `<session id>/subagents/agent-*.jsonl` beside it.
+    def subagent_transcripts(path)
+      Dir.glob(File.join(path.sub(/\.jsonl\z/, ""), "subagents", "agent-*.jsonl")).sort
+    end
+
+    def session_count(path)
       count = 0
       count_lines(path) do |line|
         next false unless line.include?(ACCEPTANCE_NAME)
