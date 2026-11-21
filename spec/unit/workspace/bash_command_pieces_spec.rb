@@ -10,6 +10,33 @@ RSpec.describe Workspace::BashCommandPieces do
       )
     end
 
+    it "does not cut at the & of a redirection" do
+      expect(splitter.pieces("git status 2>&1")).to eq(["git status 2>&1"])
+      expect(splitter.pieces("git status &> /dev/null; ls")).to eq(["git status &> /dev/null", "ls"])
+      expect(splitter.pieces("a && b & c")).to eq(%w[a b c])
+    end
+
+    it "cuts at the & after an escaped redirection character" do
+      expect(splitter.pieces("git status \\>&rm -rf ~")).to eq(["git status \\>", "rm -rf ~"])
+      expect(splitter.pieces("git status \\<&rm -rf ~")).to eq(["git status \\<", "rm -rf ~"])
+      expect(splitter.pieces("a &&>b")).to eq(["a", ">b"])
+    end
+
+    it "does not start a comment after an escaped blank" do
+      expect(splitter.pieces("git status \\ #;rm -rf ~")).to eq(["git status \\ #", "rm -rf ~"])
+      expect(splitter.pieces("git status \\\t#;rm x")).to eq(["git status \\\t#", "rm x"])
+      expect(splitter.pieces("git status # ;rm x")).to eq(["git status"])
+    end
+
+    it "drops a line continuation and starts a comment from the character before it" do
+      expect(splitter.pieces("git status \\\n#\\\nrm -rf ~")).to eq(["git status", "rm -rf ~"])
+      expect(splitter.pieces("git status \\\n#x\\\nrm x")).to eq(["git status", "rm x"])
+      expect(splitter.pieces("git status\\\n#x;rm x")).to eq(["git status#x", "rm x"])
+      expect(splitter.pieces("git status \\\n  --short")).to eq(["git status --short"])
+      expect(splitter.pieces("echo \"a\\\nb\"")).to eq(['echo "ab"'])
+      expect(splitter.pieces("echo 'a\\\nb'")).to eq(["echo 'a\\\nb'"])
+    end
+
     it "keeps a quoted separator inside its piece" do
       expect(splitter.pieces('git commit -m "a; git push"')).to eq(['git commit -m "a; git push"'])
     end
@@ -76,6 +103,18 @@ RSpec.describe Workspace::BashCommandPieces do
       it "is true for #{command}" do
         expect(splitter.redirect?(command)).to be true
       end
+    end
+
+    ["git status \\ # > ~/.zshrc", "git status \\\t# > x"].each do |command|
+      it "is true for an escaped blank before # in #{command.inspect}" do
+        expect(splitter.redirect?(command)).to be true
+      end
+    end
+
+    it "sees a redirect after a comment-looking # that a continuation hides" do
+      expect(splitter.redirect?("git status\\\n# > x")).to be true
+      expect(splitter.redirect?("git status \\\n# > x")).to be false
+      expect(splitter.redirect?("git status \\\n#\\\n> x")).to be true
     end
 
     [

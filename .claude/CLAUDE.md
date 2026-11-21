@@ -178,6 +178,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/commands/daemon.rb` — Reads and controls a workspace's agent daemon from outside it: whether it is answering and which process it is, the tail of its log, and a restart that stops it and starts a fresh one detached.
 - `lib/workspace/commands/ensure_agent.rb` — Makes sure a workspace has an agent daemon (`agentd`) answering on its socket, starting one detached when it doesn't.
 - `lib/workspace/daemon_watch.rb` — One stream of a workspace's workflow decision lines and its runs' events, oldest first, with one cursor that resumes both.
+- `lib/workspace/permission_policy.rb` — Decides allow, ask or deny for an agent tool call from layered rules, deny first, matching each piece of a Bash command.
 
 ### Templates (`docs/architecture/template.md`)
 

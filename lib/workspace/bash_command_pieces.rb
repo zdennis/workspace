@@ -49,6 +49,8 @@ module Workspace
     def redirect?(command)
       chars = command.scrub.chars
       quote = nil
+      escaped_at = -2
+      continued = []
       index = 0
       while index < chars.size
         char = chars[index]
@@ -58,14 +60,19 @@ module Workspace
           elsif char == quote.delete_prefix("$")
             quote = nil
           end
+        elsif char == "\\" && chars[index + 1] == "\n"
+          continued << index + 1
+          index += 2
+          next
         elsif char == "\\"
+          escaped_at = index + 1
           index += 1
         elsif char == "$" && chars[index + 1] == "'"
           quote = "$'"
           index += 1
         elsif char == "'" || char == '"'
           quote = char
-        elsif char == "#" && (index.zero? || [" ", "\t", "\n"].include?(chars[index - 1]))
+        elsif char == "#" && comment_start?(chars, index, escaped_at, continued)
           index += 1 until index >= chars.size || chars[index] == "\n"
           next
         elsif char == ">" || char == "<"
@@ -96,6 +103,14 @@ module Workspace
       position += 1 if following == "|" || (char == ">" && following == ">") || (char == "<" && following == ">")
       word, position = redirect_word(chars, position)
       [word != File::NULL, position]
+    end
+
+    # Whether a `#` at the index starts a comment: it follows an unescaped blank or newline, or the start,
+    # looking back past line continuations.
+    def comment_start?(chars, index, escaped_at, continued)
+      before = index - 1
+      before -= 2 while continued.include?(before)
+      before < 0 || ([" ", "\t", "\n"].include?(chars[before]) && escaped_at != before)
     end
 
     def redirect_word(chars, position)
@@ -131,11 +146,16 @@ module Workspace
       quote = nil
       heredocs = []
       arithmetic = 0
+      operator_at = -2
+      blank_at = -2
       chars = command.chars
       index = 0
       while index < chars.size
         char = chars[index]
-        if quote
+        if quote && char == "\\" && quote == '"' && chars[index + 1] == "\n"
+          index += 2
+          next
+        elsif quote
           current << char
           if char == "\\" && quote != "'" && index + 1 < chars.size
             index += 1
@@ -143,6 +163,10 @@ module Workspace
           elsif char == quote.delete_prefix("$")
             quote = nil
           end
+        elsif char == "\\" && chars[index + 1] == "\n"
+          blank_at = index + 1 if blank_at == index - 1
+          index += 2
+          next
         elsif char == "\\" && index + 1 < chars.size
           current << char << chars[index + 1]
           index += 1
@@ -154,7 +178,7 @@ module Workspace
         elsif char == "'" || char == '"'
           quote = char
           current << char
-        elsif char == "#" && (current.empty? || current.end_with?(" "))
+        elsif char == "#" && (current.empty? || blank_at == index - 1)
           index += 1 until index >= chars.size || chars[index] == "\n"
           next
         elsif char == "$" && chars[index + 1] == "(" && chars[index + 2] == "("
@@ -167,6 +191,8 @@ module Workspace
           current << raw
           heredocs << delimiter if delimiter
           next
+        elsif char == "&" && (operator_at == index - 1 || (chars[index + 1] == ">" && chars[index - 1] != "&"))
+          current << char
         elsif SEPARATORS.include?(char)
           arithmetic += 1 if char == "(" && arithmetic > 0
           arithmetic -= 1 if char == ")" && arithmetic > 0
@@ -174,8 +200,10 @@ module Workspace
           current = +""
           index = skip_heredocs(chars, index, heredocs) if char == "\n" && heredocs.any?
         elsif char == " " || char == "\t"
+          blank_at = index
           current << " " unless current.end_with?(" ")
         else
+          operator_at = index if char == ">" || char == "<"
           current << char
         end
         index += 1
