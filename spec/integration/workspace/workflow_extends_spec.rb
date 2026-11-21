@@ -402,7 +402,7 @@ RSpec.describe "workflow extends" do
       expect(data).to include("max_attempts" => 21, "timeout" => 28_800.0, "timeout_action" => "hold", "budget" => {"action" => "stop", "tokens" => 40_000_000})
       expect(data["inputs"]).to eq(rpiv.to_h["inputs"])
       expect(data["reviewers"].keys).to eq(%w[supportive skeptical implementer])
-      expect(v2.warnings).to eq([])
+      expect(v2.warnings.map { |w| [w["code"], w["step"]] }).to eq([["guard_unchanged_loop_back", "plan"]])
     end
 
     it "resolves its sha over rpiv's text, and leaves the old preset's pin alone" do

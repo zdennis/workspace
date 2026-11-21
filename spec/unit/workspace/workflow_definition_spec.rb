@@ -303,8 +303,17 @@ RSpec.describe Workspace::WorkflowDefinition do
     it "warns for no shipped preset" do
       presets = File.join(PROJECT_ROOT, "lib", "workflows")
       lookup = ->(id, below: nil) { {"text" => File.read(File.join(presets, "#{id}.yml")), "path" => File.join(presets, "#{id}.yml"), "source" => "builtin"} }
+      # Known hits: a guarded step before the committing step that a later step's failure loops back into. Shrinks as presets are fixed.
+      known = {
+        "bugfix" => [["guard_unchanged_loop_back", "reproduce"]],
+        "rpiv" => [["guard_unchanged_loop_back", "plan"]],
+        "rpiv-auto-approve" => [["guard_unchanged_loop_back", "plan_review"]],
+        "rpiv-auto-approve-v2" => [["guard_unchanged_loop_back", "plan"]]
+      }
       Dir[File.join(presets, "*.yml")].each do |file|
-        expect(described_class.parse(File.read(file), id: File.basename(file, ".yml"), source: "builtin", path: file, parent_lookup: lookup).warnings).to eq([])
+        id = File.basename(file, ".yml")
+        found = described_class.parse(File.read(file), id: id, source: "builtin", path: file, parent_lookup: lookup).warnings
+        expect(found.map { |w| [w["code"], w["step"]] }).to eq(known.fetch(id, []))
       end
     end
   end
@@ -1500,6 +1509,62 @@ RSpec.describe Workspace::WorkflowDefinition do
         yaml = worked(9, siblings: [["r1", "        max_attempts: 1\n        on_fail: stop\n"], ["r2"], ["r3"]])
         expect(found(yaml, "on_fail_exceeds_step_attempts")).to eq([])
       end
+    end
+  end
+  describe "guard: unchanged after a commit" do
+    def guard_codes(yaml)
+      parse(yaml).warnings.select { |w| w["code"].start_with?("guard_unchanged") }.map { |w| [w["code"], w["step"]] }
+    end
+
+    def steps(*blocks) = "steps:\n#{blocks.join}"
+
+    let(:plan) { "  plan:\n    prompt: P\n    produces: [plan.md]\n    guard: unchanged\n" }
+    let(:implement) { "  implement:\n    prompt: P\n    require:\n      - commits: 1\n" }
+    let(:verify) { "  verify:\n    prompt: P\n    status: {run: \"true\"}\n    on_fail:\n      goto: implement\n" }
+
+    it "warns when the committing step has no on_fail and so loops back into the guarded step" do
+      yaml = steps(plan, implement)
+      expect(guard_codes(yaml)).to eq([["guard_unchanged_loop_back", "plan"]])
+      message = parse(yaml).warnings.first["message"]
+      expect(message).to include("head_moved", "guard: config on plan", "on_fail: stop")
+    end
+
+    it "warns when a later step goes back to the guarded step through on_fail goto" do
+      verify_to_plan = "  verify:\n    prompt: P\n    status: {run: \"true\"}\n    on_fail:\n      goto: plan\n"
+      expect(guard_codes(steps(plan, implement, verify_to_plan))).to include(["guard_unchanged_loop_back", "plan"])
+    end
+
+    it "does not warn when every step after the commit stops or goes back to an unguarded step" do
+      implement_stop = "  implement:\n    prompt: P\n    on_fail: stop\n    require:\n      - commits: 1\n"
+      expect(guard_codes(steps(plan, implement_stop, verify))).to eq([])
+    end
+
+    it "does not warn when no step commits or when the guard is config" do
+      expect(guard_codes(steps(plan, "  build:\n    prompt: P\n    produces: [b.md]\n"))).to eq([])
+      expect(guard_codes(steps(plan.sub("unchanged", "config"), implement))).to eq([])
+    end
+
+    it "warns that a guarded step after a committing step can never pass" do
+      verify_guarded = "  verify:\n    prompt: P\n    guard: unchanged\n    status: {run: \"true\"}\n"
+      yaml = steps(implement, verify_guarded)
+      expect(guard_codes(yaml)).to eq([["guard_unchanged_after_commit", "verify"]])
+      expect(parse(yaml).warnings.first["message"]).to include("always fails with head_moved", "guard: config")
+    end
+
+    it "counts a fan_out sibling's inherited group on_fail goto" do
+      yaml = "steps:\n#{plan}  checks:\n    title: Checks\n    on_fail: {goto: plan, max: 2}\n    fan_out:\n      lint:\n        prompt: P\n        produces: [l.md]\n        require:\n          - commits: 1\n"
+      expect(guard_codes(yaml)).to eq([["guard_unchanged_loop_back", "plan"]])
+    end
+
+    it "skips a goto to an unknown step instead of reading it as the first step" do
+      bad = parse(steps(plan, implement)).to_h
+      bad["steps"][1]["on_fail"] = {"goto" => "missing", "max" => 1}
+      expect(described_class.allocate.tap { |d| d.instance_variable_set(:@data, bad) }.send(:guard_after_commit_warnings)).to eq([])
+    end
+
+    it "warns for a step that is both guarded and committing" do
+      both = "  implement:\n    prompt: P\n    guard: unchanged\n    require:\n      - commits: 1\n"
+      expect(guard_codes(steps(both))).to eq([["guard_unchanged_after_commit", "implement"]])
     end
   end
 end
