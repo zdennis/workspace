@@ -74,7 +74,10 @@ module Workspace
     # the pane proves idle (read before the lock is taken): the mark is dropped under the lock and the line typed
     # after it ({WorkflowDispatch#type_continue}, which puts the mark back when the line is refused); a pane whose
     # process is no longer the one marked drops the mark with nothing typed, and so does a mark older than
-    # {WorkflowTransitions::PARK_SECONDS} (`how: "expired"`). Does nothing while another process is changing the run.
+    # {WorkflowTransitions::PARK_SECONDS} (`how: "expired"`). A step whose undelivered line's retry is due
+    # ({WorkflowTransitions.redelivery}) has it typed again as the sweep's {#redeliver} does, once its pane reads settled
+    # before the lock ({WorkflowPanes.settled?}); a pane not settled yet waits for a later tick, spending no retry.
+    # Does nothing while another process is changing the run.
     #
     # @param run_id [String]
     # @param actor [String] who makes the change, one of {WorkflowRunChange::ACTORS}
@@ -108,6 +111,8 @@ module Workspace
       # Read before the lock is taken: no tmux or daemon call is made under it.
       typed = typed_pane_over(run_id, alive)
       ready = continue_ready(run_id, skip)
+      undelivered = skip.empty? ? undelivered_ready(run_id) : nil
+      redelivering = nil
       stops = @downtime&.spans(@clock.call) || []
       continuing = nil
       run = @change.call(run_id, actor: actor, cause: "tick", nonblocking: true) do |read, ctx|
@@ -154,6 +159,13 @@ module Workspace
           decide_unanswered(stored, ctx)
         when :review
           acted = redeliver_round(stored, ctx, alive, typed, stops) == :acted
+        when :redeliver
+          # Only the step and attempt whose pane read settled before the lock; a pane not idle yet waits for a later tick.
+          if undelivered&.first == stored["current"] && sweep_target?(stored, *undelivered, false) && (started = start_redelivery(stored, ctx, "tick"))
+            acted = true
+            redelivering = undelivered
+            adopt(stored, started)
+          end
         when :check
           acted = true
           evaluate(stored, ctx)
@@ -164,6 +176,7 @@ module Workspace
         WorkflowRun.from_h(stored)
       end
       return nil unless run && acted
+      redelivered(run_id, run, *redelivering, actor, "tick") if redelivering
       if continuing
         @dispatch.type_continue(run_id, continuing, workspace: run.workspace, text: WorkflowTransitions.continue_line(WorkflowTransitions.at_step(run.to_h, step)), actor: actor, cause: "tick")
         return [run, step]
@@ -370,22 +383,13 @@ module Workspace
       run = @change.call(run_id, actor: actor, cause: "redelivery", nonblocking: true) do |read, ctx|
         next unless sweep_target?(read.to_h, step, attempt, false)
         stored = on_step(read.thawed, step)
-        info = WorkflowTransitions.redelivery(stored, @clock.call)
-        next unless info && info[:state] == :due
-        mark_stall(stored, "undelivered", {"code" => info[:code], "retry" => info[:retries] + 1, "of" => info[:limit]})
-        step_state(stored)["attempts"].last["redelivered"] = true
-        # Stamped on the next attempt by {WorkflowDispatch#dispatch}, which may be one `tick` starts after a lock wait.
-        step_state(stored)["redelivery_pending"] = info[:retries] + 1
-        outcome = :started
-        @dispatch.dispatch(stored, ctx: ctx, cause: "redelivery", budgeted: false)
+        started = start_redelivery(stored, ctx, "redelivery")
+        outcome = :started if started
+        started
       end
       return :busy unless run
       return outcome unless outcome == :started
-      # The line has been typed (or refused) by now: say what became of it.
-      return :waiting_lock if run.reason_for(step)&.dig("code") == "waiting_lock"
-      return :not_delivered if run.step(step).last_attempt.outcome == "not_delivered"
-      @store.record_event(run_id, "step_recovered", "step" => step, "attempt" => attempt, "action" => "redelivered", "actor" => actor, "cause" => "redelivery", "from_state" => nil, "to_state" => nil)
-      :redelivered
+      redelivered(run_id, run, step, attempt, actor, "redelivery")
     end
 
     # Acts on a review round the sweep found stalled in its review pane, as the sweep's act. Does nothing unless the
@@ -659,6 +663,44 @@ module Workspace
       return :busy unless run
       @evaluation.finish_follow_ups(run_id, follow, run)
       outcome
+    end
+
+    # Under the lock: when {WorkflowTransitions.redelivery} says the retry of the undelivered line is due, marks the
+    # failed attempt `redelivered`, records `undelivered` once for it and starts the next attempt outside the budget;
+    # the line is typed once the lock is given up. The one body of the sweep's {#redeliver} and the tick's
+    # `:redeliver`: a second caller under the same lock finds the last attempt already `redelivered` and does nothing.
+    # @return [WorkflowRun, nil] the run after the dispatch; nil when no retry was due
+    def start_redelivery(stored, ctx, cause)
+      info = WorkflowTransitions.redelivery(stored, @clock.call)
+      return nil unless info && info[:state] == :due
+      mark_stall(stored, "undelivered", {"code" => info[:code], "retry" => info[:retries] + 1, "of" => info[:limit]})
+      step_state(stored)["attempts"].last["redelivered"] = true
+      # Stamped on the next attempt by {WorkflowDispatch#dispatch}, which may be one `tick` starts after a lock wait.
+      step_state(stored)["redelivery_pending"] = info[:retries] + 1
+      @dispatch.dispatch(stored, ctx: ctx, cause: cause, budgeted: false)
+    end
+
+    # After {#start_redelivery}'s change, the line typed (or refused) by now: what became of it, with `step_recovered`
+    # written for a line delivered.
+    def redelivered(run_id, run, step, attempt, actor, cause)
+      return :waiting_lock if run.reason_for(step)&.dig("code") == "waiting_lock"
+      return :not_delivered if run.step(step).last_attempt.outcome == "not_delivered"
+      @store.record_event(run_id, "step_recovered", "step" => step, "attempt" => attempt, "action" => "redelivered", "actor" => actor, "cause" => cause, "from_state" => nil, "to_state" => nil)
+      :redelivered
+    end
+
+    # Before the lock: the step and failed attempt whose undelivered line may be typed again now, because its retry is
+    # due ({WorkflowTransitions.redelivery}) and its pane is settled ({WorkflowPanes.settled?}, the sweep's own test).
+    # Nil otherwise, or when the daemon does not answer: the sweep then handles a gone pane or a stopped daemon.
+    def undelivered_ready(run_id)
+      return nil unless @panes
+      run = @store.run(run_id)
+      return nil unless WorkflowTransitions.redelivery(run.to_h, @clock.call)&.fetch(:state) == :due
+      pane = WorkflowRun.step_scoped?(run.to_h, run.current) ? run.pane_for(run.current) : run.pane
+      return nil unless pane && WorkflowPanes.settled?(@panes.pane_row(run.workspace, pane), @clock.call)
+      [run.current, run.step(run.current).last_attempt&.n]
+    rescue Workspace::Error, SystemCallError
+      nil
     end
 
     def sweep_target?(run, step, attempt, running) = WorkflowTransitions.sweep_target?(run, step, attempt, running, @clock.call)

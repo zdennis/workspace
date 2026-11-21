@@ -1,8 +1,8 @@
 # Delivers one goal document end to end with no person: research, a fresh plan, implement, verify,
 # then a final step whose only job is to run the project's own acceptance program over the result.
-# It extends rpiv-auto-approve-v2, so the three built-in plan reviewers and the test-backed verify
-# loop are inherited; it replaces `plan` (a plan left by an earlier goal must go first) and adds
-# `acceptance` after `verify`.
+# It extends rpiv-auto-approve-v2; it replaces `plan` (a plan left by an earlier goal must go first, and one
+# skeptical reviewer checks it), `implement` and `verify` (only the prompt and the dropped review pack differ;
+# the parent's check, proofs and loop are restated), and adds `acceptance` after `verify`.
 schema_version: 0.1
 id: deliver-goal
 title: Deliver a goal, checked by the project's acceptance program
@@ -52,8 +52,8 @@ replace:
       plan exists and it is not this goal's own plan (it is done, or it is for another goal), run
       `workspace plan delete --yes`, then `workspace plan init --title "<title>"`, and write a fresh plan
       for this goal. `plan init` refuses to overwrite an existing plan, so the delete comes first.
-      If reviewers turned the last plan down, read every reviewer's reasons, including the ones
-      that approved. Don't just patch each objection: rethink what it takes, and change the
+      If the reviewer turned the last plan down, read the reviewer's reasons in full. Don't just
+      patch each objection: rethink what it takes, and change the
       design if the current one can't meet them all. Edit the plan you wrote earlier in this
       run; do not delete it again.
       Write the plan as the workspace plan: the IMPLEMENTATION_PLAN.md that `workspace plan path`
@@ -66,7 +66,7 @@ replace:
       Then write {{artifacts}}/plan.md: the approach, the risks, and
       the path of the plan file. Do not copy the task list into it. The step is not
       finished until plan.md exists.
-      Say in plan.md how each reviewer objection, if any, was answered.
+      Say in plan.md how each of the reviewer's objections, if any, was answered.
       Don't change code.
     produces: [plan.md]
     guard: unchanged
@@ -78,14 +78,37 @@ replace:
     timeout: 45m
     max_attempts: 8
     review:
-      from: [supportive, skeptical, implementer]
-      need: 2
+      from: [skeptical]
+      need: 1
       must: [skeptical]
       subject: the workspace plan (`workspace plan path`), against {{inputs.goal}} and {{artifacts}}/research.md
       revision: workspace plan status --json | ruby -rjson -e 'data = JSON.parse($stdin.read); abort "no plans" unless data.key?("plans"); puts data["plans"].to_a.first&.dig("revision")'
       max_rounds: 6
       timeout: 30m
       context: fresh
+
+  # Only the prompt differs from the parent's implement; extends can replace a step only whole,
+  # so every other key restates the parent's.
+  implement:
+    title: Implement
+    include: [notes, implementation-plan]
+    prompt: |
+      Implement the workspace plan (`workspace plan path`) one task at a time, marking
+      each task as the instructions say. Run the relevant tests before each commit. If the
+      plan turns out wrong, update the plan file and say why in {{artifacts}}/implement.md.
+      Do not start sub-agents; the verify step runs the checks after you.
+      Write {{artifacts}}/implement.md listing the commits you made, then set the plan's
+      `status: done`; the run is waiting on that file and on that status. Make at least one commit.
+      End your turn with your status line only after all of that work is finished, never while
+      anything is still running.
+      On a rerun (after a failed verify, or a resume), make a new commit for the fix and never
+      amend or rebase, which the run's commit check can't follow. If no code change is needed,
+      run `git commit --allow-empty -m '<why>'`.
+    produces: [implement.md]
+    require:
+      - commits: 1
+      - plan_status: done
+    timeout: 3h
 
   # Only the prompt and the dropped review pack differ from the parent's verify; extends can
   # replace a step only whole, so every other key restates the parent's. The review pack is

@@ -181,8 +181,8 @@ RSpec.describe DemoCalculator2::Evaluation do
       row = result[:rows].first
       expect(row).to include(machine_wait: 100.0, wall_ex_wait: 500.0, active_ex_wait: 440.0)
       text = described_class.render(result)
-      expect(text).to match(/stopped\s+wait_p\s+lockw\s+wall-lw\s+act-lw\s+gap/)
-      expect(text).to match(/^01-add-sub\s+done\s.*\b10m00s\s+9m00s\s+1m00s\s+\S+\s+1m40s\s+8m20s\s+7m20s\s/)
+      expect(text).to match(/stopped\s+wait_p\s+bg\s+redeliv\s+lockw\s+wall-lw\s+act-lw\s+gap/)
+      expect(text).to match(/^01-add-sub\s+done\s.*\b10m00s\s+9m00s\s+1m00s\s+\S+\s+\S+\s+\S+\s+1m40s\s+8m20s\s+7m20s\s/)
     end
 
     it "sums the waits in the totals, with no partial mark when every ran row knows them" do

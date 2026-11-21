@@ -23,6 +23,11 @@ RSpec.describe DemoCalculator do
       expect(sum).to include(input: 100, partial: true)
     end
 
+    it "skips a not_delivered attempt, whose usage is nil because no turn ran, without marking the sum partial" do
+      sum = described_class.sum([{"usage" => usage}, {"outcome" => "not_delivered", "usage" => nil}])
+      expect(sum).to include(input: 100, partial: false)
+    end
+
     it "marks a nil round usage partial" do
       sum = described_class.sum([{"usage" => usage, "rounds" => [{"usage" => nil}]}])
       expect(sum[:partial]).to be true

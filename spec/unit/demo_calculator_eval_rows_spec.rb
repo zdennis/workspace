@@ -271,4 +271,47 @@ RSpec.describe DemoCalculator::EvalRows do
     expect(described_class.features(data["run"], event.call("implement"))["require"]).to eq("fired")
     expect(described_class.features(data["run"], event.call("plan"))["require"]).to eq("missed")
   end
+  describe "waits the trace mislabels" do
+    let(:run) do
+      {"id" => "r", "steps" => {"implement" => {"attempts" => [
+        {"n" => 1, "outcome" => "failed", "ended_at" => "2026-11-21T18:37:51Z"},
+        {"n" => 2, "outcome" => "not_delivered", "code" => "pane_busy", "ended_at" => "2026-11-21T18:38:03Z"},
+        {"n" => 3, "outcome" => "passed", "redelivery" => 1, "ended_at" => "2026-11-21T18:44:13Z"}
+      ]}}}
+    end
+    let(:stalled) { {"type" => "step_stalled", "step" => "implement", "attempt" => 2, "cause" => "undelivered", "ts" => "2026-11-21T18:43:19.000Z"} }
+
+    it "does not count an undelivered dispatch's waiting_you as a person wait, and shows it as redelivery wait" do
+      totals = {"wall_seconds" => 711.0, "active_seconds" => 394.0, "stopped_seconds" => 316.0, "waiting_seconds" => {"waiting_you" => 316.0}}
+      row = described_class.row(workflow: "w", run: run, events: [stalled], totals: totals)
+      expect(row).to include(person_wait: 0, stopped: 316.0, deliver_wait: 316.0)
+    end
+
+    it "keeps a person's waiting_you beside an undelivered one" do
+      totals = {"stopped_seconds" => 400.0, "waiting_seconds" => {"waiting_you" => 400.0}}
+      row = described_class.row(workflow: "w", run: run, events: [stalled], totals: totals)
+      expect(row[:person_wait]).to eq(84.0)
+    end
+
+    it "counts turn_ended_background as active, not stopped" do
+      totals = {"active_seconds" => 300.0, "stopped_seconds" => 30.0, "waiting_seconds" => {"turn_ended_background" => 30.0}}
+      row = described_class.row(workflow: "w", run: run, totals: totals)
+      expect(row).to include(stopped: 0.0, active: 330.0, background: 30.0, person_wait: 0)
+    end
+
+    it "reads a review round's redelivery wait from its events" do
+      events = [{"type" => "review_delivery_failed", "step" => "plan", "round" => 1, "ts" => "2026-11-21T18:47:28.083Z"},
+        {"type" => "review_started", "step" => "plan", "round" => 1, "again" => true, "ts" => "2026-11-21T18:48:34.083Z"}]
+      totals = {"active_seconds" => 100.0, "stopped_seconds" => 0.0, "waiting_seconds" => {}}
+      expect(described_class.row(workflow: "w", run: run, events: events, totals: totals)).to include(deliver_wait: 66.0, stopped: 0.0)
+    end
+
+    it "leaves deliver_wait and background nil when the trace totals are unknown" do
+      expect(described_class.row(workflow: "w", run: run, events: [stalled], totals: {})).to include(deliver_wait: nil, background: nil)
+    end
+
+    it "does not count a not_delivered attempt as a retry" do
+      expect(described_class.row(workflow: "w", run: run)).to include(attempts: 3, retries: 1)
+    end
+  end
 end

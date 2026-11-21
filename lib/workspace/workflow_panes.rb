@@ -70,6 +70,19 @@ module Workspace
       false
     end
 
+    # Seconds a pane must have been idle before its turn is taken as over for a stall or a line typed again.
+    IDLE_FLOOR = 5
+
+    # Whether a pane's row shows its turn over ({.turn_over?}) and idle for at least {IDLE_FLOOR} seconds: the one
+    # test before an undelivered step line is typed again, by the sweep or the tick.
+    #
+    # @param shown [Hash{String=>Object}, nil] the pane's entry in the snapshot
+    # @param now [Time]
+    # @return [Boolean]
+    def self.settled?(shown, now)
+      turn_over?(shown, now) && shown["idle_seconds"].to_i >= IDLE_FLOOR
+    end
+
     # @param config [Workspace::Config] the daemon's socket path
     # @param bindings [Workspace::PaneBindings]
     # @param tmux [Workspace::Tmux]

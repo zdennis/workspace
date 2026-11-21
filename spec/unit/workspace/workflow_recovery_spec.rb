@@ -812,6 +812,56 @@ RSpec.describe Workspace::WorkflowRecovery do
     end
   end
 
+  describe "#tick on a step's undelivered line" do
+    let(:dispatch) { RecordingDispatch.new(appends: true) }
+
+    def with_panes(panes)
+      described_class.new(change: change, store: store, dispatch: dispatch, progress: progress, evaluation: evaluation, panes: panes, clock: -> { clock_at.first })
+    end
+
+    def pane(state, idle_seconds) = RecordingWorkflowPanes.new(rows: {"%3" => {"kind" => "claude", "state" => state, "idle_seconds" => idle_seconds}})
+
+    it "types the line again once its retry is due and the pane is settled, as the sweep's redelivery does" do
+      stored(undelivered)
+
+      expect(with_panes(pane("idle", 10)).tick("wr_1", actor: "daemon")).to be_a(Workspace::WorkflowRun)
+
+      build = store.runs["wr_1"]["steps"]["build"]
+      expect(build["attempts"].first).to include("redelivered" => true)
+      expect(build["redelivery_pending"]).to eq(1)
+      expect(dispatch.calls).to eq([[:dispatch, "wr_1", {cause: "tick", context: nil, budgeted: false, retry_of: nil}]])
+      expect(event_types).to eq([["step_stalled", {"step" => "build", "attempt" => 1, "cause" => "undelivered", "code" => "pane_busy", "retry" => 1, "of" => 2}]])
+      expect(store.events).to eq([["wr_1", "step_recovered", {"step" => "build", "attempt" => 1, "action" => "redelivered", "actor" => "daemon", "cause" => "tick", "from_state" => nil, "to_state" => nil}]])
+    end
+
+    it "leaves nothing for a sweep that comes after it to type again" do
+      stored(undelivered)
+      with_panes(pane("idle", 10)).tick("wr_1", actor: "daemon")
+
+      expect(recovery.redeliver("wr_1", actor: "sweep", step: "build", attempt: 1)).to eq(:moved_on)
+      expect(dispatch.calls.size).to eq(1)
+    end
+
+    it "types nothing and spends no retry while the pane is at work or idle only a moment" do
+      stored(undelivered)
+
+      expect(with_panes(pane("working", 30)).tick("wr_1", actor: "daemon")).to be_nil
+      expect(with_panes(pane("idle", 2)).tick("wr_1", actor: "daemon")).to be_nil
+      expect(dispatch.calls).to be_empty
+      expect(store.runs["wr_1"]["steps"]["build"]["attempts"].first).not_to have_key("redelivered")
+    end
+
+    it "types nothing before the retry is due or with no reader of the pane" do
+      stored(undelivered)
+
+      clock_at.replace([Time.utc(2026, 11, 10, 11, 0, 15)])
+      expect(with_panes(pane("idle", 10)).tick("wr_1", actor: "daemon")).to be_nil
+      clock_at.replace([now])
+      expect(recovery.tick("wr_1", actor: "daemon")).to be_nil
+      expect(dispatch.calls).to be_empty
+    end
+  end
+
   describe "#redeliver" do
     let(:dispatch) { RecordingDispatch.new(appends: true) }
 
@@ -840,7 +890,7 @@ RSpec.describe Workspace::WorkflowRecovery do
     end
 
     it "does nothing before the retry is due" do
-      clock_at.replace([Time.utc(2026, 11, 10, 11, 0, 30)])
+      clock_at.replace([Time.utc(2026, 11, 10, 11, 0, 15)])
       stored(undelivered)
 
       expect(recovery.redeliver("wr_1", actor: "sweep", step: "build", attempt: 1)).to eq(:moved_on)

@@ -1068,7 +1068,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "backs off longer after each failed retry and stops after the definition's limit" do
-      [60, 300, 900].each_with_index do |wait, index|
+      [15, 300, 900].each_with_index do |wait, index|
         advance(wait - 1)
         expect(only_row(sweep.call)).to include("reason" => "backoff")
         advance(1)
@@ -1203,7 +1203,7 @@ RSpec.describe Workspace::WorkflowSweep do
     end
 
     it "counts again from zero after a person's resume whose line is also not delivered" do
-      [60, 300, 900].each do |wait|
+      [15, 300, 900].each do |wait|
         advance(wait)
         expect(only_row(sweep.call)).to include("reason" => "not_delivered")
       end
@@ -1213,7 +1213,7 @@ RSpec.describe Workspace::WorkflowSweep do
       engine.resume("wr_1", actor: "person")
       expect(stored_run(store, "wr_1")["reason"]["code"]).to eq("waiting_you")
       expect(attempts.last["redelivery"]).to be_nil
-      advance(59)
+      advance(14)
       expect(only_row(sweep.call)).to include("reason" => "backoff")
       advance(2)
       expect(only_row(sweep.call)).to include("reason" => "not_delivered", "action" => "redeliver")

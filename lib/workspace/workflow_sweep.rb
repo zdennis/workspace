@@ -484,7 +484,7 @@ module Workspace
       return respawn(run, pass) if daemon_down?(run.workspace, pass)
       shown = pane && @panes.pane_row(run.workspace, pane)
       return WorkflowSweepRows.row(run, "nothing", reason: "unknown", cause: "undelivered", message: "#{what}; the agent daemon did not say what pane #{pane} shows") unless shown
-      unless WorkflowPanes.turn_over?(shown, @clock.call) && shown["idle_seconds"].to_i >= WorkflowSweepRows::IDLE_FLOOR
+      unless WorkflowPanes.settled?(shown, @clock.call)
         return WorkflowSweepRows.row(run, "nothing", reason: "pane_busy", cause: "undelivered", message: "#{what}; pane #{pane} is not idle, so nothing is typed. The next pass looks again")
       end
       message = "#{what}; typing it again (retry #{info[:retries] + 1} of #{info[:limit]})"
@@ -698,7 +698,7 @@ module Workspace
       return WorkflowSweepRows.row(run, "nothing", reason: "refused", message: refusal, cause: cause) if refusal
       # The proof is read again just before the change, so it is as fresh as the lock allows.
       fresh = @panes.pane_row(run.workspace, pane)
-      unless fresh && fresh["kind"] == shown["kind"] && WorkflowPanes.turn_over?(fresh, @clock.call) && fresh["idle_seconds"].to_i >= WorkflowSweepRows::IDLE_FLOOR
+      unless fresh && fresh["kind"] == shown["kind"] && WorkflowPanes.settled?(fresh, @clock.call)
         return WorkflowSweepRows.row(run, "nothing", reason: "pane_changed", message: "pane #{pane} no longer shows the agent's turn over; the next pass looks again", cause: cause)
       end
       outcome = @engine.recover(run.id, actor: "sweep", turn_over: {"step" => run.current, "attempt" => attempt.n}, cause: cause,

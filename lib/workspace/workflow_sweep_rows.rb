@@ -7,7 +7,7 @@ module Workspace
     IDLE_GRACE = WorkflowStatus::IDLE_GRACE
 
     # Seconds a pane must have been idle before the sweep treats its turn as over, on every branch.
-    IDLE_FLOOR = 5
+    IDLE_FLOOR = WorkflowPanes::IDLE_FLOOR
 
     module_function
 
