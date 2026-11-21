@@ -30,7 +30,7 @@ module Workspace
     DEFAULT_ROTATE_THRESHOLD = 5 * 1_048_576
 
     # The line types this log writes.
-    TYPES = %w[tool_started tool_finished permission_requested permission_resolved subagent_started subagent_stopped session_started session_ended prompt_submitted agent_status workflow_advance_started workflow_run_skipped workflow_sweep_started workflow_process_exited].freeze
+    TYPES = %w[tool_started tool_finished permission_requested permission_resolved notification subagent_started subagent_stopped session_started session_ended prompt_submitted agent_status workflow_advance_started workflow_run_skipped workflow_sweep_started workflow_process_exited].freeze
 
     # The lines each forwarded session event becomes.
     LINES = {
@@ -38,6 +38,7 @@ module Workspace
       "subagent_start" => %w[tool_started subagent_started],
       "tool_use" => %w[tool_finished],
       "permission_request" => %w[permission_requested],
+      "notification" => %w[notification],
       "subagent_stop" => %w[subagent_stopped],
       "session_start" => %w[session_started],
       "session_end" => %w[session_ended],
@@ -158,6 +159,7 @@ module Workspace
         {"agent_id" => text(event["subagent_id"], MAX_ID), "tool_use_id" => text(event["tool_use_id"], MAX_ID),
          "description" => text(event["description"], MAX_DESCRIPTION), "subagent_type" => text(event["subagent_type"], MAX_NAME)}
       when "subagent_stopped" then {"agent_id" => text(event["agent_id"], MAX_ID)}
+      when "notification" then {"notification_type" => text(event["notification_type"], MAX_NAME), "agent_id" => text(event["agent_id"], MAX_ID)}
       when "session_started" then {"kind" => text(event["kind"], MAX_NAME), "source" => text(event["source"], MAX_NAME)}
       when "session_ended" then {"kind" => text(event["kind"], MAX_NAME), "reason" => text(event["reason"], MAX_NAME)}
       else {}

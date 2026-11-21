@@ -213,9 +213,27 @@ RSpec.describe Workspace::HookEventLog do
 
   it "writes nothing for events the stream doesn't carry, or without a pane" do
     expect(log.record(event("stop"))).to eq([])
-    expect(log.record(event("notification", message: "needs permission"))).to eq([])
     expect(log.record(event("tool_start").merge("pane_id" => nil))).to eq([])
     expect(File.exist?(log.path)).to be(false)
+  end
+
+  it "writes a notification with its type and agent, and never its message" do
+    written = log.record(event("notification", notification_type: "idle_prompt", message: "Claude is waiting for your secret input"))
+
+    expect(written.map { |l| l.except("at", "workspace", "boot_id") }).to eq([
+      {"type" => "notification", "pane_id" => "%2", "seq" => 1, "notification_type" => "idle_prompt", "agent_id" => nil}
+    ])
+    expect(File.read(log.path)).not_to include("secret")
+  end
+
+  it "leaves a pending permission request pending through a permission_prompt notification" do
+    log.record(event("permission_request", tool: "Bash"))
+    log.record(event("notification", notification_type: "permission_prompt", message: "Claude needs your permission to use Bash"))
+    log.record(event("tool_use", tool: "Bash"))
+
+    expect(lines.map { |l| l.values_at("type", "outcome") }).to eq([
+      ["permission_requested", nil], ["notification", nil], ["permission_resolved", "approved"], ["tool_finished", nil]
+    ])
   end
 
   it "writes only the fields it knows, cleaned and cut, whatever a sender adds" do
