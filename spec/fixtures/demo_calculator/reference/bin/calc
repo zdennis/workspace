@@ -1,0 +1,3 @@
+#!/usr/bin/env ruby
+require_relative "../lib/calc"
+exit Calc::CLI.run(ARGV, $stdin, $stdout, $stderr)
