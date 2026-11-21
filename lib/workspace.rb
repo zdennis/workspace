@@ -380,6 +380,7 @@ require_relative "workspace/workflow_run_store"
 require_relative "workspace/bash_command_pieces"
 require_relative "workspace/permission_policy"
 require_relative "workspace/permission_policy_config"
+require_relative "workspace/permission_escalation_desk"
 require_relative "workspace/workflow_deny"
 require_relative "workspace/review_write_guard"
 require_relative "workspace/reflection_write_guard"
@@ -722,6 +723,8 @@ module Workspace
   # @param workflow_store [Workspace::WorkflowRunStore, nil] the runs the work queue desk reads; nil builds one over the config's run dirs
   # @param work_queue_desk_factory [#call, nil] given +workspace:+, builds the {Workspace::WorkQueueDesk} that starts the
   #   work queue's pass; nil builds the real one
+  # @param permission_policy_config [Workspace::PermissionPolicyConfig, nil] lets each workspace's {Workspace::PermissionEscalationDesk}
+  #   know whether a policy is configured; nil builds no such desk
   # @param token_generator [#call] returns a fresh completion token for one stage dispatch
   # @param epoch_generator [#call] returns a fresh epoch for the pipeline desk's registration and each re-registration
   # @param clock [#call] returns the current Time, for stage deadlines and when a turn began
@@ -737,7 +740,7 @@ module Workspace
     plan_paused_for: nil, hook_event_log_factory: nil, plan_progress_watcher_factory: nil, spine_watcher_factory: nil,
     spine_owner_report_factory: nil, agent_recovery_desk_factory: nil, agent_status_desk_factory: nil, prompt_queue_desk_factory: nil,
     handoff_watcher_factory: nil, restart_runner_factory: nil, pipeline_state: nil, sentinel_poller_factory: nil, workflow_nudger: nil,
-    workflow_store: nil, work_queue_desk_factory: nil,
+    workflow_store: nil, work_queue_desk_factory: nil, permission_policy_config: nil,
     token_generator: -> { SecureRandom.hex(4) }, epoch_generator: -> { "wa-#{Commands::Agent.ulid}" }, clock: -> { Time.now }, retry_backoff: 0.5,
     logger: Workspace::Logger.new, error_output: $stderr)
     sentinel_poller_factory ||= ->(session_name:, pane:, token:, deadline:) do
@@ -832,8 +835,12 @@ module Workspace
         session_monitor: monitor, delivery_lock: delivery_lock, event_log: event_log,
         restarting: ->(pane_id) { restarting.call(pane_id) || recovering.call(pane_id) })
       work_queue_desk = work_queue_desk_factory.call(workspace: workspace)
+      escalation_desk = permission_policy_config && PermissionEscalationDesk.new(
+        inbox_store: InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output),
+        policy_config: permission_policy_config, workspace: workspace, project: nil, monitor: monitor, clock: clock, logger: logger
+      )
       hook_fanout = HookFanout.new(workspace: workspace, monitor: monitor, hook_log: hook_event_log, handoff_watcher: handoff_watcher,
-        nudger: workflow_nudger, owner_report: spine_owner_report, desks: [queue_desk, recovery_desk], work_queue_desk: work_queue_desk,
+        nudger: workflow_nudger, owner_report: spine_owner_report, desks: [queue_desk, recovery_desk, escalation_desk], work_queue_desk: work_queue_desk,
         clock: clock, logger: logger)
       AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner, restart_desk: restart_desk,
         plan_progress_watcher: plan_progress_watcher, spine_owner_report: spine_owner_report, spine_watcher: spine_watcher,
@@ -1415,6 +1422,7 @@ module Workspace
       hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
       workflow_nudger: workflow_nudger,
       workflow_store: workflow_store,
+      permission_policy_config: permission_policy_config,
       logger: logger,
       error_output: error_output
     )

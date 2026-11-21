@@ -134,6 +134,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/sentinel_poller.rb` — Background poller watching panes for the `WORKSPACE_DONE:` sentinel.
 - `lib/workspace/spine_watcher.rb` — The daemon's watch of a workspace's `spine/` for changes.
 - `lib/workspace/agent_recovery_desk.rb` — The daemon's recovery of a Claude Code agent whose turn ended on an API error.
+- `lib/workspace/permission_escalation_desk.rb` — The daemon's inbox item for a permission request the policy left to the person.
 - `lib/workspace/recovery_verdicts.rb` — Pure decisions for each stage of a recovery check.
 - `lib/workspace/recovery_facts.rb` — Each read a recovery check makes, one named method per read.
 - `lib/workspace/recovery_intake.rb` — Applies hook events to the recovery store's per-pane entries.

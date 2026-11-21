@@ -72,6 +72,22 @@ RSpec.describe "Workspace.build_agentd_parts" do
     expect(parts.recovery_desk).to be_nil
   end
 
+  it "opens an inbox item for an escalated permission request only when given a permission policy config" do
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "ws.json")
+      config = Workspace::Config.new
+      allow(config).to receive(:inbox_path).with("workspace", "ws").and_return(path)
+      allow(monitor).to receive(:record)
+      request = {"event" => "permission_request", "pane_id" => "%5", "tool" => "Bash", "input" => "ls", "decision" => "ask"}
+
+      build(config: config).hook_fanout.session_event(request)
+      expect(File.exist?(path)).to be(false)
+
+      build(config: config, permission_policy_config: double("policy_config", configured?: true)).hook_fanout.session_event(request)
+      expect(JSON.parse(File.read(path)).first).to include("dedupe_key" => "permission:ws:%5:main")
+    end
+  end
+
   it "builds the pipeline desk alone with pipeline_only, and puts a desk it is given in its member" do
     built = []
     only = Workspace.build_agentd_parts(**options, session_monitor_factory: ->(_workspace) { built << :monitor })

@@ -96,6 +96,7 @@ module Workspace
         "waiting_tool" => wait&.dig(:tool),
         "waiting_input" => wait&.dig(:input),
         "waiting_reason" => waiting_reason(pane),
+        "pending_permissions" => pane[:permission_requests].size,
         "waits" => pane[:waits].map { |agent_id, w|
           {"agent_id" => agent_id, "tool" => w[:tool], "input" => w[:input], "permission" => w[:permission] ? true : false, "since" => w[:since]&.utc&.iso8601}
         },
