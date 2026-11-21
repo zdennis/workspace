@@ -85,9 +85,42 @@ RSpec.describe Workspace::WorkflowPanes do
       allow(snapshot_client).to receive(:fetch).with("app").and_return("panes" => [
         {"pane_id" => "%4", "kind" => "claude", "window" => 1, "review" => "r:plan:1"}
       ])
+      allow(snapshot_client).to receive(:fetch).with("app", rescan: true, timeout: described_class::RESCAN_TIMEOUT).and_return("panes" => [
+        {"pane_id" => "%4", "kind" => "claude", "window" => 1, "review" => "r:plan:1"}
+      ])
       allow(bindings).to receive(:binding_for).and_return(nil)
 
       expect { panes.default_pane("app") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("no_agent_pane") }
+    end
+
+    it "finds a pane the daemon had not named yet by asking it to rescan before it refuses" do
+      allow(snapshot_client).to receive(:fetch).with("app").and_return("panes" => [{"pane_id" => "%4"}])
+      allow(snapshot_client).to receive(:fetch).with("app", rescan: true, timeout: described_class::RESCAN_TIMEOUT).and_return("panes" => [{"pane_id" => "%4", "kind" => "claude"}])
+
+      expect(panes.default_pane("app")).to eq("%4")
+    end
+
+    it "asks for the rescan with a longer timeout" do
+      allow(snapshot_client).to receive(:fetch).with("app").and_return("panes" => [])
+      allow(snapshot_client).to receive(:fetch).with("app", rescan: true, timeout: described_class::RESCAN_TIMEOUT).and_return("panes" => [{"pane_id" => "%4", "kind" => "claude"}])
+
+      expect(panes.default_pane("app")).to eq("%4")
+    end
+
+    [Workspace::AgentSnapshotClient::Unavailable.new("slow", reason: :timeout), Workspace::Error.new("closed")].each do |failure|
+      it "raises no_agent_pane, not no_daemon, when the rescan fails with #{failure.class}" do
+        allow(snapshot_client).to receive(:fetch).with("app").and_return("panes" => [{"pane_id" => "%4", "kind" => "shell"}])
+        allow(snapshot_client).to receive(:fetch).with("app", rescan: true, timeout: described_class::RESCAN_TIMEOUT).and_raise(failure)
+
+        expect { panes.default_pane("app") }.to raise_error(Workspace::Error) { |error| expect(error.code).to eq("no_agent_pane") }
+      end
+    end
+
+    it "does not rescan when the first read has a Claude Code pane" do
+      allow(snapshot_client).to receive(:fetch).with("app").and_return("panes" => [{"pane_id" => "%5", "kind" => "claude"}])
+
+      expect(panes.default_pane("app")).to eq("%5")
+      expect(snapshot_client).not_to have_received(:fetch).with("app", rescan: true, timeout: described_class::RESCAN_TIMEOUT)
     end
 
     it "raises no_agent_pane when no pane runs Claude Code" do

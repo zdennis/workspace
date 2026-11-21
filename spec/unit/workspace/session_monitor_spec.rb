@@ -1483,6 +1483,36 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#rescan_unclassified" do
+    it "names a pane's agent that started since the last scan, in one pass and under no scan slot" do
+      allow(snapshot).to receive(:find_descendant).and_return(nil)
+      monitor.scan
+      expect(monitor.pane_kind("%2")).to eq("shell")
+
+      allow(snapshot).to receive(:find_descendant)
+        .with(200, ["claude"], hash_including(include_root: true))
+        .and_return({pid: 250, command: "claude", args: "claude"})
+      monitor.rescan_unclassified
+
+      expect(monitor.pane_kind("%2")).to eq("claude")
+      expect(monitor.pane_kind("%1")).to eq("shell")
+    end
+
+    it "leaves a pane already named Claude Code alone, and one that is no longer one is not read again" do
+      monitor.scan
+      expect(snapshot).not_to receive(:find_descendant).with(200, anything, anything)
+      monitor.rescan_unclassified
+      expect(monitor.pane_kind("%2")).to eq("claude")
+    end
+
+    it "leaves the cache as it was when the process table can't be read" do
+      monitor.scan
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps failed")
+      expect { monitor.rescan_unclassified }.not_to raise_error
+      expect(monitor.pane_kind("%2")).to eq("claude")
+    end
+  end
+
   describe "Codex screens that wait on a person" do
     let(:panes) { [{id: "%3", index: 0, pid: 300, command: "node", cwd: "/project", title: "Codex"}] }
     let(:fixtures) { File.join(PROJECT_ROOT, "spec", "fixtures", "codex_screens") }

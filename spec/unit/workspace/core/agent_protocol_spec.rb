@@ -35,6 +35,8 @@ RSpec.describe Workspace::AgentProtocol do
   it "builds every type with the type string first" do
     expect(JSON.generate(described_class.coordinator_restart)).to eq('{"type":"coordinator_restart"}')
     expect(described_class.sessions.keys).to eq(["type"])
+    expect(described_class.sessions(rescan: false).keys).to eq(["type"])
+    expect(described_class.sessions(rescan: true)).to eq("type" => "sessions", "rescan" => true)
   end
 
   it "returns frozen string-keyed hashes" do

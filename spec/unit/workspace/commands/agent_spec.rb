@@ -43,6 +43,12 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    it "answers a sessions message that asks for a rescan before the monitor exists" do
+      served.handle({"type" => "sessions", "workspace" => "myapp", "rescan" => true}, reply)
+
+      expect(replied).to include("workspace" => "myapp", "panes" => [])
+    end
+
     it "drops a message addressed to another workspace" do
       served.handle({"type" => "command", "workspace" => "other", "work_item_ref" => "WC-1", "body" => "do it"}, reply)
 

@@ -99,6 +99,26 @@ RSpec.describe Workspace::AgentSnapshotClient do
       expect(@request).to eq("type" => "sessions", "workspace" => "proj")
     end
 
+    it "asks the daemon to rescan only when told to" do
+      with_daemon { |conn| conn.puts(JSON.generate(snapshot)) }
+      expect(@request).to eq("type" => "sessions", "workspace" => "proj")
+
+      File.delete(socket_path)
+      server = UNIXServer.new(socket_path)
+      received = nil
+      listener = Thread.new do
+        conn = server.accept
+        received = JSON.parse(conn.gets)
+        conn.puts(JSON.generate(snapshot))
+        conn.close
+      end
+      expect(client.fetch("proj", rescan: true)).to eq(snapshot)
+      listener.join(2)
+      server.close
+
+      expect(received).to eq("type" => "sessions", "rescan" => true, "workspace" => "proj")
+    end
+
     it "reassembles a reply that arrives in pieces" do
       line = JSON.generate(snapshot)
       outcome = with_daemon do |conn|

@@ -201,15 +201,28 @@ module Workspace
     def rescan_pane(pane_id)
       detail = @scanner.pane_details.find { |d| d[:id] == pane_id }
       return unless detail
-      tree = @scanner.process_snapshot
-      now = @clock.now
-      @lock.synchronize do
-        @scanner.load_history
-        refresh_pane(detail, tree, now)
-      end
+      refresh_panes_now([detail])
       nil
     rescue Workspace::Error => e
       @logger.debug { "session monitor: pane rescan skipped: #{e.message}" }
+      nil
+    end
+
+    # Re-reads now every pane tmux lists that the monitor has not named a Claude Code agent in and that is no review
+    # pane, in one pass (one process listing), under no scan slot, for the reasons {#rescan_pane} gives. A caller
+    # about to refuse because no pane runs an agent asks for this first: the scan that would name a fresh pane's
+    # agent may wait for a slot for a long while. A failed tmux or process listing leaves the cache as it was.
+    #
+    # @return [void]
+    def rescan_unclassified
+      details = @scanner.pane_details.reject do |detail|
+        cached = @panes[detail[:id]]
+        cached && (cached[:kind] == "claude" || cached[:review])
+      end
+      refresh_panes_now(details)
+      nil
+    rescue Workspace::Error => e
+      @logger.debug { "session monitor: unclassified rescan skipped: #{e.message}" }
       nil
     end
 
@@ -572,6 +585,15 @@ module Workspace
       @logger.debug { "session monitor: alert failed (#{error.class}: #{error.message})" }
     rescue
       nil
+    end
+
+    def refresh_panes_now(details)
+      tree = @scanner.process_snapshot
+      now = @clock.now
+      @lock.synchronize do
+        @scanner.load_history
+        details.each { |detail| refresh_pane(detail, tree, now) }
+      end
     end
 
     def refresh_pane(detail, tree, now)

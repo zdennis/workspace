@@ -115,8 +115,10 @@ module Workspace
       build(PROMPT_INTERRUPT_SEND, workspace, {"pane_id" => pane_id, "text" => text}, keep: %w[pane_id text])
     end
 
-    def self.sessions(workspace: nil)
-      build(SESSIONS, workspace, {})
+    # @param rescan [Boolean, nil] true asks the daemon to re-read, before it answers, the panes it has not named a
+    #   coding agent in; written only when true
+    def self.sessions(workspace: nil, rescan: nil)
+      build(SESSIONS, workspace, {"rescan" => (true if rescan)})
     end
 
     def self.version(workspace: nil)
