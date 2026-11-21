@@ -40,6 +40,14 @@ RSpec.describe DemoCalculator::EvalReport do
     expect(lines[3]).to match(/\s1\s+3\s+1s/)
   end
 
+  it "shows person wait beside stopped, per row and in the total" do
+    lines = table_for([usage_row(stopped: 100, person_wait: 40), usage_row(stopped: 20, person_wait: 5)])
+    header = lines[0].split(/\s+/)
+    expect(header[header.index("stopped") + 1]).to eq("wait_p")
+    expect(lines[2].split(/\s{2,}/)[header.index("stopped")..header.index("wait_p")]).to eq(%w[1m40s 40s])
+    expect(lines.last.split(/\s{2,}/)).to include("2m00s", "45s")
+  end
+
   it "shows how many items completed and what became of the rest, and the acceptance total over its groups" do
     rows = [usage_row(state: "completed"), usage_row(state: "cancelled"), {workflow: "w3", ran: false, state: "not run"}]
     total = table_for(rows).last.split(/\s{2,}/)

@@ -43,7 +43,7 @@ module DemoCalculator
       queue = (workspace_json("work-queue", "list", "--json", *name_args)["queues"] || []).first || {}
       run_ids = run_ids(record, queue)
       loaded = record["items"].map { |item| load_run(run_ids[item["id"]], File.join(state_dir, ".workflows"), item["workflow"]) }
-      rows = EvalRows.rows(loaded.map { |l| l.slice(:workflow, :run, :events, :totals) })
+      rows = EvalRows.rows(loaded.map { |l| l.slice(:workflow, :run, :events, :totals) }, asks: read_asks(state_dir, @name || queue["workspace"]))
       rows.each_with_index do |row, index|
         row[:item] = index + 1
         row[:state] = "run file missing" if loaded[index][:missing]
@@ -126,6 +126,17 @@ module DemoCalculator
       end
       trace = workspace_json("workflow", "trace", run_id, "--json")
       {workflow: workflow, run: read_json(path), events: read_events(path.sub(/\.json\z/, ".events.jsonl")), totals: trace["totals"]}
+    end
+
+    # The workspace's asks (`<state dir>/<workspace>/asks.json`); empty when the file or the name is missing or unreadable.
+    def read_asks(state_dir, workspace)
+      return [] unless workspace
+      path = File.join(state_dir, workspace, "asks.json")
+      asks = JSON.parse(File.read(path))
+      asks.is_a?(Array) ? asks.grep(Hash) : []
+    rescue SystemCallError, JSON::ParserError
+      @err.puts "eval: no asks read from #{path}" if path && File.exist?(path)
+      []
     end
 
     def read_events(path)
