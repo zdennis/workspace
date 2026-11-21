@@ -996,7 +996,7 @@ module Workspace
         ]
       },
       "sweep" => {
-        usage: ["workflow sweep [RUN | --name WORKSPACE] [--budget-only] [--dry-run] [--json]", "workflow sweep --install | --uninstall [--dry-run] [--json]", "workflow sweep --installed [--json]"],
+        usage: ["workflow sweep [RUN | --name WORKSPACE] [--budget-only | --scheduled] [--dry-run] [--json]", "workflow sweep --install | --uninstall [--dry-run] [--json]", "workflow sweep --installed [--json]"],
         summary: "One pass over the runs going: act on the ones that have stopped",
         about: [
           "Looks at every run still going (or one RUN, or one workspace's) and, for a step an agent should be",

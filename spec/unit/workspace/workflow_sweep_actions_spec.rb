@@ -20,7 +20,7 @@ RSpec.describe Workspace::WorkflowSweepActions do
 
   it "is an empty array when nothing needs a person" do
     expect(call([])).to eq([])
-    expect(call([row("healthy"), row("backoff"), row("already_recorded")])).to eq([])
+    expect(call([row("healthy"), row("backoff"), row("already_recorded"), row("daemon_owns")])).to eq([])
   end
 
   it "resumes a held run" do

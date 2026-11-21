@@ -20,6 +20,17 @@ RSpec.describe Workspace::Commands::Workflow, "#sweep next_actions" do
 
     expect(command.sweep(name: "app")[:extra]).to eq({})
   end
+  describe "scheduled" do
+    it "passes the flag to the sweep, false by default" do
+      command = described_class.new(lint: nil, catalog: nil, engine: nil, status: nil, store: nil, panes: nil, files: nil, run_files: nil,
+        process_tree: nil, lock_holder: nil, sweep: sweep, sweep_actions: sweep_actions, output: StringIO.new)
+      command.sweep(name: "app", scheduled: true)
+      expect(sweep).to have_received(:call).with(hash_including(scheduled: true))
+      command.sweep(name: "app")
+      expect(sweep).to have_received(:call).with(hash_including(scheduled: false))
+    end
+  end
+
   describe "budget_only" do
     let(:output) { StringIO.new }
     let(:command) do

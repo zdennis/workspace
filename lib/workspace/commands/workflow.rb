@@ -835,10 +835,11 @@ module Workspace
       # @param json [Boolean] the caller prints the action document, so no count line is written
       # @param caller_pane [String, nil] the pane this command runs in (`$TMUX_PANE`)
       # @param budget_only [Boolean] look only at token budgets with `action: interrupt` ({WorkflowSweep#call})
+      # @param scheduled [Boolean] the launchd entry's pass: leave a run whose workspace's agent daemon is running to it ({WorkflowSweep#call})
       # @return [Hash{Symbol=>Object}] `exit_code` (1 when a result is `failed`: the action document turns that into 3 or 1),
       #   `results` (the rows) and, for a dry run, `status`
       # @raise [Workspace::Error] code `unknown_run`
-      def sweep(run: nil, name: nil, dry_run: false, json: false, caller_pane: nil, budget_only: false)
+      def sweep(run: nil, name: nil, dry_run: false, json: false, caller_pane: nil, budget_only: false, scheduled: false)
         raise Workspace::Error, "workflow sweep is not available: no sweep was wired" unless @sweep
         allow = lambda do |stored|
           refuse_caller!(WorkflowRun.from_h(stored), caller_pane, "workflow sweep", "A run is moved by a person or the sweep, not by its own agent")
@@ -847,7 +848,7 @@ module Workspace
           raise unless e.code == "bound_pane"
           e.message.lines.first.to_s.strip
         end
-        rows = @sweep.call(run: run, workspace: name, dry_run: dry_run, allow: allow, budget_only: budget_only)
+        rows = @sweep.call(run: run, workspace: name, dry_run: dry_run, allow: allow, budget_only: budget_only, scheduled: scheduled)
         print_sweep(rows, summary: !json, budget_only: budget_only)
         extra = json ? {"next_actions" => @sweep_actions.call(rows, run: run, name: name)} : {}
         extra["budget_only"] = true if json && budget_only

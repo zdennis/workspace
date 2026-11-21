@@ -91,6 +91,26 @@ RSpec.describe Workspace::CLI::Workflow do
     end
   end
 
+  describe "workflow sweep --scheduled" do
+    let(:command) { double("workflow command") }
+
+    before { allow(command).to receive(:sweep).and_return(exit_code: 0, results: [], status: nil, extra: {}) }
+
+    it "passes scheduled to the command, and false without the flag" do
+      run("sweep", "--scheduled", workflow_command: command)
+      expect(command).to have_received(:sweep).with(hash_including(scheduled: true))
+
+      run("sweep", workflow_command: command)
+      expect(command).to have_received(:sweep).with(hash_including(scheduled: false))
+    end
+
+    it "is refused for another subcommand and with the schedule flags or --budget-only" do
+      expect { run("status", "--scheduled") }.to raise_error(Workspace::UsageError, /--scheduled is for `workflow sweep`/)
+      expect { run("sweep", "--install", "--scheduled", workflow_command: command) }.to raise_error(Workspace::UsageError, /--scheduled does not go with --install/)
+      expect { run("sweep", "--budget-only", "--scheduled", workflow_command: command) }.to raise_error(Workspace::UsageError, /--scheduled does not go with/)
+    end
+  end
+
   describe "workflow sweep --budget-only" do
     let(:command) { double("workflow command") }
 

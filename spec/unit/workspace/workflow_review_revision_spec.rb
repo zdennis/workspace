@@ -174,4 +174,31 @@ RSpec.describe Workspace::WorkflowReviewRevision do
     expect(guard_reads + command).to be < Workspace::WorkflowTransitions::DELIVERY_WINDOW
     expect(described_class::TIMEOUT).to be >= 60
   end
+
+  describe "iCloud notes directory hint" do
+    let(:revision_command) { "workspace plan status --json" }
+    let(:icloud_dir) { File.join(Dir.home, "Library", "Mobile Documents", "x", "Notes", "app") }
+    let(:notes_dir) { ->(_ws) { icloud_dir } }
+    subject(:reader) { described_class.new(guard: guard, checker: checker, notes_dir: notes_dir) }
+
+    it "names the likely cause after a timeout, an error and a non-zero exit" do
+      [{exit_code: nil, timed_out: true}, {exit_code: nil, timed_out: false, error: "no such program"}, {exit_code: 1, timed_out: false}].each do |result|
+        checker.result = result
+
+        expect(revision[:problem]).to include("Likely cause: macOS privacy keeps launchd jobs", icloud_dir)
+      end
+    end
+
+    it "adds nothing for a notes dir elsewhere, none, a raising lookup, or a success" do
+      checker.result = {exit_code: 1, timed_out: false}
+      [->(_ws) { "/tmp/notes" }, ->(_ws) {}, ->(_ws) { raise Workspace::Error.new("no notes", code: "x") }, ->(_ws) { raise Errno::EACCES }].each do |lookup|
+        problem = described_class.new(guard: guard, checker: checker, notes_dir: lookup).call(run: run_hash, step: step)[:problem]
+
+        expect(problem).to include("exited 1")
+        expect(problem).not_to include("Likely cause")
+      end
+      checker.result = {exit_code: 0, timed_out: false}
+      expect(revision[:problem]).to be_nil
+    end
+  end
 end

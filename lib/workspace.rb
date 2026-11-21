@@ -1116,7 +1116,7 @@ module Workspace
     # Taken under a run's lock, so the inbox's flock is inside it. Nothing takes them the other way round.
     workflow_inbox_for = ->(workspace) { InboxStore.new(path: config.inbox_path("workspace", workspace), scope: "workspace:#{workspace}", error_output: error_output) }
     workflow_review_tally = WorkflowReviewTally.new(proof: ReviewVerdictProof.new(hook_dir: config.hook_events_dir))
-    workflow_review_revision = WorkflowReviewRevision.new(guard: workflow_guard, checker: workflow_checker)
+    workflow_review_revision = WorkflowReviewRevision.new(guard: workflow_guard, checker: workflow_checker, notes_dir: ->(ws) { notes_command.info(name: ws)["dir"] })
     # The process running the change delivers the round it starts, once the lock is given up.
     round_holder = WorkflowRoundHolder.new(lock_holder: lock_holder)
     review_shell = env["SHELL"].to_s
