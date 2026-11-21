@@ -4,7 +4,7 @@ require_relative "eval_rows"
 module DemoCalculator
   # The numbers and text of `eval`, built from rows and run hashes. Pure: reads nothing, spawns nothing.
   module EvalReport
-    TIME_KEYS = %w[wall active stopped person_wait].freeze
+    TIME_KEYS = %w[wall active stopped person_wait background deliver_wait].freeze
     COUNT_KEYS = %w[attempts retries review_rounds review_rounds_distinct manual manual_events manual_inputs manual_asks].freeze
     TOKEN_KEYS = Tokens::KINDS.keys.map(&:to_s).freeze
     DASH = "–".freeze

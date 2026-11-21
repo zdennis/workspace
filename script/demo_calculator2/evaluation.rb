@@ -77,7 +77,7 @@ module DemoCalculator2
     end
 
     DEMO = DemoCalculator2::DEMO_DIR
-    HEADER = %w[goal state att retry rnd 1st-pass a-loops manual wall active stopped wait_p lockw wall-lw act-lw gap in out cache_w cache_r cost accept].freeze
+    HEADER = %w[goal state att retry rnd 1st-pass a-loops manual wall active stopped wait_p bg redeliv lockw wall-lw act-lw gap in out cache_w cache_r cost accept].freeze
 
     # The per-item table and its totals row.
     def self.table(rows, totals)
@@ -89,6 +89,7 @@ module DemoCalculator2
         fmt.value(totals["review_rounds"]), "#{totals["first_pass"]}/#{totals["items_run"]}", fmt.value(totals["accept_loops"]),
         fmt.value(totals["manual"]), lower.call("wall", fmt.duration(totals["wall"])), lower.call("active", fmt.duration(totals["active"])),
         lower.call("stopped", fmt.duration(totals["stopped"])), lower.call("person_wait", fmt.duration(totals["person_wait"])),
+        lower.call("background", fmt.duration(totals["background"])), lower.call("deliver_wait", fmt.duration(totals["deliver_wait"])),
         lower.call("machine_wait", fmt.duration(totals["machine_wait"])), lower.call("machine_wait", fmt.duration(totals["wall_ex_wait"])),
         lower.call("machine_wait", fmt.duration(totals["active_ex_wait"])), "",
         lower.call("input", fmt.count(totals["input"])), lower.call("output", fmt.count(totals["output"])),
@@ -116,7 +117,7 @@ module DemoCalculator2
       end
       accept = row[:acceptance]
       [row[:goal], row[:state], row[:attempts], row[:retries], row[:review_rounds], first_pass_cell(row[:accept_first_pass], row[:accept_first_disagrees]), row[:accept_loops],
-        row[:manual], fmt.duration(row[:wall]), fmt.duration(row[:active]), fmt.duration(row[:stopped]), fmt.duration(row[:person_wait]),
+        row[:manual], fmt.duration(row[:wall]), fmt.duration(row[:active]), fmt.duration(row[:stopped]), fmt.duration(row[:person_wait]), fmt.duration(row[:background]), fmt.duration(row[:deliver_wait]),
         fmt.duration(row[:machine_wait]), fmt.duration(row[:wall_ex_wait]), fmt.duration(row[:active_ex_wait]), fmt.duration(row[:gap]), token.call(:input), token.call(:output), token.call(:cache_creation), token.call(:cache_read),
         fmt.total(fmt.dollars(row[:usage][:cost_usd]), row[:usage][:cost_partial]),
         if accept

@@ -74,7 +74,7 @@ module DemoCalculator
       return not_run(workflow) unless run
       attempts = attempts(run)
       rounds = attempts.flat_map { |attempt| Array(attempt["rounds"]) }.reject { |round| round["ended"] == "redelivered" }
-      totals ||= {}
+      totals = adjusted_totals(totals || {}, run, events)
       manual = manual_counts(run, attempts, events, asks)
       {
         workflow: workflow,
@@ -83,7 +83,7 @@ module DemoCalculator
         state: run["state"],
         features: features(run, events),
         attempts: attempts.size,
-        retries: (run["steps"] || {}).values.sum { |step| [Array(step["attempts"]).size - 1, 0].max },
+        retries: (run["steps"] || {}).values.sum { |step| [Array(step["attempts"]).count { |a| a["outcome"] != "not_delivered" } - 1, 0].max },
         review_rounds: rounds.size,
         review_rounds_distinct: rounds.map { |round| round["round"] }.uniq.size,
         guard_violations: events.count { |e| e["type"] == "step_failed" && e["cause"] == "guard" },
@@ -92,6 +92,8 @@ module DemoCalculator
         active: totals["active_seconds"],
         stopped: totals["stopped_seconds"],
         person_wait: person_wait(totals),
+        background: totals["background_seconds"],
+        deliver_wait: totals["deliver_wait_seconds"],
         **manual,
         manual: manual.values.sum,
         gap: gap(run, next_run),
@@ -117,13 +119,56 @@ module DemoCalculator
     end
 
     # Seconds the run waited on a person: the trace's waiting buckets whose reason is in PERSON_WAIT_CODES,
-    # never more than `stopped` (buckets can overlap). nil when the trace has no buckets.
+    # less the undelivered-dispatch wait (see adjusted_totals), never more than `stopped` (buckets can overlap).
+    # nil when the trace has no buckets.
     def self.person_wait(totals)
       buckets = totals["waiting_seconds"]
       return nil unless buckets.is_a?(Hash)
       sum = buckets.slice(*PERSON_WAIT_CODES).values.grep(Numeric).sum
+      sum = [sum - totals["undelivered_seconds"].to_f, 0].max
       stopped = totals["stopped_seconds"]
       stopped.is_a?(Numeric) ? [sum, stopped].min : sum
+    end
+
+    # The trace totals with what is not a person's or a stop corrected from the run's events and attempts:
+    # `background_seconds` (turn_ended_background: the agent's sub-agent is working) moves from stopped to active;
+    # `undelivered_seconds` (a dispatch the pane refused, redelivered by the sweep: the machine's wait, though
+    # the run reason says waiting_you) is the part of waiting_you that is not a person's; `deliver_wait_seconds`
+    # adds the review rounds' redelivery waits, which the trace has no span for.
+    def self.adjusted_totals(totals, run, events)
+      step_wait, review_wait = deliver_waits(run, events)
+      buckets = totals["waiting_seconds"]
+      return totals.merge("undelivered_seconds" => step_wait) unless buckets.is_a?(Hash)
+      stopped = totals["stopped_seconds"]
+      active = totals["active_seconds"]
+      background = buckets["turn_ended_background"]
+      background = background.is_a?(Numeric) ? background : 0.0
+      background = [background, stopped].min if background && stopped.is_a?(Numeric)
+      totals.merge("background_seconds" => background,
+        "stopped_seconds" => (stopped.is_a?(Numeric) && background) ? stopped - background : stopped,
+        "active_seconds" => (active.is_a?(Numeric) && background) ? active + background : active,
+        "undelivered_seconds" => [step_wait, buckets["waiting_you"].to_f].min,
+        "deliver_wait_seconds" => step_wait + review_wait)
+    end
+
+    # [seconds of step dispatches the pane refused until the sweep redelivered them, seconds of review rounds
+    # whose delivery failed until the round started again], from events: a `step_stalled` with cause `undelivered`
+    # counts from the end of the attempt it names; a `review_delivery_failed` counts to the next `review_started`
+    # of the same step and round.
+    def self.deliver_waits(run, events)
+      step_wait = events.select { |e| e["type"] == "step_stalled" && e["cause"] == "undelivered" }.sum do |event|
+        attempt = Array((run["steps"] || {}).dig(event["step"], "attempts")).find { |a| a["n"] == event["attempt"] }
+        from = parse(attempt && attempt["ended_at"])
+        to = parse(event["ts"])
+        (from && to) ? [to - from, 0].max : 0
+      end
+      review_wait = events.each_with_index.select { |e, _| e["type"] == "review_delivery_failed" }.sum do |event, index|
+        started = events[(index + 1)..].find { |e| e["type"] == "review_started" && e["step"] == event["step"] && e["round"] == event["round"] }
+        from = parse(event["ts"])
+        to = parse(started && started["ts"])
+        (from && to) ? [to - from, 0].max : 0
+      end
+      [step_wait, review_wait]
     end
 
     # Row for an item with no run (after the wait's stop point, or never started).
@@ -131,7 +176,7 @@ module DemoCalculator
       na = Fmt::NOT_RUN
       {workflow: workflow, run_id: nil, ran: false, state: na, features: {}, attempts: na, retries: na,
        review_rounds: na, review_rounds_distinct: na, guard_violations: na, denied: na, manual: na,
-       manual_events: na, manual_inputs: na, manual_asks: na, definition_sha256: nil, wall: na, active: na, stopped: na, person_wait: na, gap: na, head: na}
+       manual_events: na, manual_inputs: na, manual_asks: na, definition_sha256: nil, wall: na, active: na, stopped: na, person_wait: na, background: na, deliver_wait: na, gap: na, head: na}
     end
 
     # Rows for items in order. Each item: {workflow:, run:, events:, totals:}.
@@ -233,7 +278,7 @@ module DemoCalculator
       text && Time.parse(text)
     end
 
-    private_class_method :manual_counts, :person_wait, :step_state, :checked_without_proof?, :backoff_state, :run_level, :fan_out_state, :combine, :proofs,
+    private_class_method :manual_counts, :person_wait, :adjusted_totals, :deliver_waits, :step_state, :checked_without_proof?, :backoff_state, :run_level, :fan_out_state, :combine, :proofs,
       :expect_fail_proof?, :expect_fail?, :review?, :present?, :parse
   end
 end

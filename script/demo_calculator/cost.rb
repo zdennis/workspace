@@ -10,13 +10,14 @@ module DemoCalculator
       cache_read: "cache_read_input_tokens"
     }.freeze
 
-    # Adds every attempt's usage and every round's usage. A round that was delivered again has none and is skipped.
+    # Adds every attempt's usage and every round's usage. A round that was delivered again has none and is skipped, and so is an attempt that was not delivered (no turn ran).
     # Returns the four totals plus :partial (some usage was nil) and :shared
     # (some attempt's usage is shared and the attempt it points to is not among the attempts, so it may be uncounted).
     def self.sum(attempts)
       attempts = Array(attempts)
       total = KINDS.keys.to_h { |kind| [kind, 0] }.merge(partial: false, shared: false)
       attempts.each do |attempt|
+        next if attempt["outcome"] == "not_delivered"
         if attempt["usage_shared"]
           total[:shared] = true unless counted_elsewhere?(attempt["usage_shared"], attempts)
           next
