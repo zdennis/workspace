@@ -20,15 +20,23 @@ RSpec.describe DemoCalculator::Demo do
   let(:log) { File.join(tmp, "calls.log") }
   let(:queue_json) { '{"queues":[]}' }
   let(:sources) { "" }
+  let(:states) { File.join(tmp, "queue-states") }
+  let(:event_log) { File.join(tmp, "events.jsonl") }
+  let(:capabilities_json) { %({"version":"9.9.9","features":{"work_queue":2},"paths":{"event_log":"#{event_log}"}}) }
   let(:fake_workspace) do
     path = File.join(tmp, "fake-workspace")
     File.write(path, <<~SH)
       #!/bin/sh
       echo "$@" >> #{log}
-      if [ "$1 $2" = "work-queue list" ]; then echo '#{queue_json}'; fi
+      if [ "$1 $2" = "work-queue list" ]; then
+        if [ -f #{states} ]; then
+          n=$(grep -c '^work-queue list' #{log})
+          line=$(sed -n "${n}p" #{states}); [ -n "$line" ] || line=$(tail -n 1 #{states}); echo "$line"
+        else echo '#{queue_json}'; fi
+      fi
       if [ "$1 $2 $3" = "config get workflows.sources" ]; then echo '#{sources}'; fi
       if [ "$1 $2" = "work-queue add" ]; then echo '{"results":[{"id":"item-'"$4"'","outcome":"added"}]}'; fi
-      if [ "$1" = "capabilities" ]; then echo '{"version":"9.9.9"}'; fi
+      if [ "$1" = "capabilities" ]; then echo '#{capabilities_json}'; fi
     SH
     File.chmod(0o755, path)
     path
@@ -50,8 +58,8 @@ RSpec.describe DemoCalculator::Demo do
 
   let(:clock) { -> { Time.utc(2026, 11, 21, 4, 5, 6) } }
 
-  def demo(root: work_dir, dry_run: false, base: nil, out_dir: nil)
-    described_class.new(root: root, workspace: fake_workspace, name: "ws", dry_run: dry_run, out: out, base: base, out_dir: out_dir, clock: clock)
+  def demo(root: work_dir, dry_run: false, base: nil, out_dir: nil, **options)
+    described_class.new(root: root, workspace: fake_workspace, name: "ws", dry_run: dry_run, out: out, base: base, out_dir: out_dir, clock: clock, **options)
   end
 
   it "keeps the live files and the template in step, so a fresh checkout is already reset" do
@@ -226,6 +234,68 @@ RSpec.describe DemoCalculator::Demo do
           demo.run
           expect(sets).to be_empty
         end
+      end
+    end
+    describe "--wait" do
+      let(:now) { [Time.utc(2026, 11, 21, 4, 5, 6)] }
+      let(:clock) { -> { now.first } }
+      let(:sleeper) { ->(seconds) { now[0] += seconds } }
+      let(:record) { JSON.parse(File.read(record_path)) }
+
+      def queue(state, *items, daemon: false)
+        rows = items.map { |id, item_state| %({"id":"#{id}","state":"#{item_state}"}) }.join(",")
+        %({"queues":[{"state":"#{state}","daemon_running":#{daemon},"items":[#{rows}]}]})
+      end
+
+      def wait_demo(**options)
+        demo(wait: true, poll: 15, sleeper: sleeper, **options)
+      end
+
+      def calls = File.read(log).lines.map(&:strip)
+
+      def run_waiting(*lines, **options)
+        File.write(states, lines.join("\n") + "\n")
+        wait_demo(**options).run
+      end
+
+      it "advances by hand without auto-advance, until the queue is empty, and records why it stopped" do
+        run_waiting(queue("on", ["a", "queued"]), queue("on", ["a", "queued"]), queue("on", ["a", "active"]), queue("on"))
+        expect(calls.count("work-queue advance --name ws")).to be > 1
+        expect(record["wait"]).to eq("reason" => "empty", "item" => nil, "stopped_at" => now.first.utc.iso8601)
+      end
+
+      it "does not advance when the daemon does" do
+        run_waiting(queue("on", ["a", "queued"], daemon: true), queue("on", ["a", "active"], daemon: true), queue("on", daemon: true))
+        expect(calls.count("work-queue advance --name ws")).to eq(1)
+        expect(record["wait"]["reason"]).to eq("empty")
+      end
+
+      it "stops when the queue is paused" do
+        run_waiting(queue("paused", ["a", "held"], daemon: true))
+        expect(record["wait"]).to include("reason" => "paused", "item" => "a")
+      end
+
+      it "stops on an item held past the limit by the held event's time, not the first sighting" do
+        File.write(event_log, JSON.generate("timestamp" => "2026-11-21T03:30:00.000Z", "type" => "work_queue_item_held", "data" => {"id" => "a"}) + "\n")
+        run_waiting(queue("on", ["a", "held"], daemon: true))
+        expect(record["wait"]).to include("reason" => "held", "item" => "a")
+        expect(calls.grep(/work-queue list/).size).to eq(2)
+      end
+
+      it "falls back to the first sighting of a hold when there is no event" do
+        run_waiting(queue("on", ["a", "held"], daemon: true), held_limit: 60)
+        expect(record["wait"]).to include("reason" => "held", "item" => "a")
+        expect(calls.grep(/work-queue list/).size).to be > 2
+      end
+
+      it "stops on timeout" do
+        run_waiting(queue("on", ["a", "active"], daemon: true), timeout: 45)
+        expect(record["wait"]).to include("reason" => "timeout", "item" => nil)
+      end
+
+      it "only says it would wait under --dry-run" do
+        wait_demo(dry_run: true).run
+        expect(out.string).to include("would wait for the queue")
       end
     end
   end

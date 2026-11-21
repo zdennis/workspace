@@ -12,6 +12,7 @@ require "open3"
 require "optparse"
 
 require_relative "demo_calculator/run_record"
+require_relative "demo_calculator/wait"
 
 module DemoCalculator
   WORKFLOW_IDS = %w[
@@ -36,7 +37,13 @@ module DemoCalculator
     # @param base [String, nil] the ref `run` branches from; nil means HEAD, which a run branch refuses
     # @param out_dir [String, nil] where `run` writes run.json; nil means tmp/demo-calculator/runs/<stamp>
     # @param clock [#call] returns the current Time
-    def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout, base: nil, out_dir: nil, clock: -> { Time.now })
+    # @param wait [Boolean] after `run`, poll the queue until it stops (see Wait.stop_reason)
+    # @param held_limit [Numeric] seconds an item may stay held before `wait` stops
+    # @param timeout [Numeric] seconds `wait` may run in all
+    # @param poll [Numeric] seconds between polls
+    # @param sleeper [#call] sleeps for the given seconds
+    def initialize(root:, workspace:, name: nil, dry_run: false, out: $stdout, base: nil, out_dir: nil, clock: -> { Time.now },
+      wait: false, held_limit: 1200, timeout: 14_400, poll: 15, sleeper: ->(seconds) { sleep(seconds) })
       @root = File.expand_path(root)
       @workspace = workspace
       @name = name
@@ -45,6 +52,11 @@ module DemoCalculator
       @base = base
       @out_dir = out_dir
       @clock = clock
+      @wait = wait
+      @held_limit = held_limit
+      @timeout = timeout
+      @poll = poll
+      @sleeper = sleeper
     end
 
     # @return [Array<Array<String>>] the commands that empty a queue holding these items (rows of `wq list --json`):
@@ -100,10 +112,59 @@ module DemoCalculator
       configure
       items = queue_items
       self.class.starting(name_args: name_args).each { |argv| workspace(*argv) }
-      write_record(stamp, branch, base_sha, workspace_sha, items)
+      record = write_record(stamp, branch, base_sha, workspace_sha, items)
+      wait_for_queue(record) if @wait
+      record
     end
 
     private
+
+    # Polls the queue until Wait.stop_reason says stop, calling `work-queue advance` when the queue cannot advance
+    # itself, then records why it stopped in run.json.
+    def wait_for_queue(record)
+      if @dry_run
+        say "would wait for the queue (held limit #{@held_limit}s, timeout #{@timeout}s)"
+        return
+      end
+      capabilities = JSON.parse(workspace_stdout("capabilities", "--json"))
+      feature = capabilities.dig("features", "work_queue")
+      event_log = capabilities.dig("paths", "event_log")
+      started_at = @clock.call
+      first_seen = {}
+      loop do
+        row = read_queue_row
+        now = @clock.call
+        items = row["items"] || []
+        items.each { |item| first_seen[item["id"]] ||= now if item["state"] == "held" }
+        held_since = Wait.held_since(events: read_events(event_log), items: items, first_seen: first_seen)
+        stop = Wait.stop_reason(row, now: now, started_at: started_at, held_since: held_since, held_limit: @held_limit, timeout: @timeout)
+        return record_stop(record, stop, now) if stop
+        workspace("work-queue", "advance", *name_args) if Wait.advance?(row, work_queue_feature: feature)
+        @sleeper.call(@poll)
+      end
+    end
+
+    def record_stop(record, stop, now)
+      record["wait"] = {"reason" => stop["reason"], "item" => stop["item"], "stopped_at" => now.utc.iso8601}
+      File.write(@record_path, JSON.pretty_generate(record) + "\n")
+      say "stopped waiting: #{stop["reason"]}#{" (item #{stop["item"]})" if stop["item"]}"
+    end
+
+    def read_queue_row
+      out = workspace_stdout("work-queue", "list", "--json", *name_args)
+      (JSON.parse(out)["queues"] || []).first || {}
+    end
+
+    def read_events(path)
+      return [] unless path && File.file?(path)
+      File.foreach(path).filter_map do |line|
+        JSON.parse(line)
+      rescue JSON::ParserError
+        nil
+      end
+    rescue SystemCallError
+      []
+    end
 
     def name_args = @name ? ["--name", @name] : []
 
@@ -166,6 +227,7 @@ module DemoCalculator
         items: items,
         definitions: WORKFLOW_IDS.to_h { |id| [id, File.read(File.join(workflows, "#{id}.yml"))] }
       )
+      @record_path = path
       FileUtils.mkdir_p(dir)
       File.write(path, JSON.pretty_generate(record) + "\n")
       say "wrote #{path}"
@@ -258,18 +320,27 @@ module DemoCalculator
     end
   end
 
+  def self.duration(text)
+    Wait.parse_duration(text)
+  rescue ArgumentError => e
+    raise OptionParser::InvalidArgument, e.message
+  end
+
   def self.main(argv, out: $stdout, err: $stderr)
-    options = {dry_run: false, name: nil, base: nil, out_dir: nil}
+    options = {dry_run: false, name: nil, base: nil, out_dir: nil, wait: false, held_limit: 1200, timeout: 14_400}
     parser = OptionParser.new do |o|
-      o.banner = "Usage: script/demo-calculator reset|run [--name WORKSPACE] [--base REF] [--out DIR] [--dry-run]\n" \
+      o.banner = "Usage: script/demo-calculator reset|run [--name WORKSPACE] [--base REF] [--out DIR] [--wait] [--held-limit DUR] [--timeout DUR] [--dry-run]\n" \
         "  reset  put demo/calculator back to its stub and empty the workspace's work queue\n" \
         "  run    on a new calc-demo/<stamp> branch: empty the queue, drop the acceptance tests, reset the stub,\n" \
         "         install the demo workflows (adds them to the global workflows.sources), queue all seven,\n" \
-        "         start the first and write run.json\n" \
+        "         start the first and write run.json; with --wait, watch the queue until it stops\n" \
         "Run it from a clean worktree on a demo branch. WORKSPACE_BIN names another `workspace` program."
       o.on("--name WORKSPACE", "The demo workspace (default: detected from the current directory)") { |v| options[:name] = v }
       o.on("--base REF", "run: the ref to branch from (default HEAD; required on a calc-demo/* branch)") { |v| options[:base] = v }
       o.on("--out DIR", "run: where to write run.json (default tmp/demo-calculator/runs/<stamp>)") { |v| options[:out_dir] = v }
+      o.on("--wait", "run: watch the queue until it is empty, paused, has a held item past the limit or times out") { options[:wait] = true }
+      o.on("--held-limit DUR", "run --wait: stop when an item stays held this long, as Ns, Nm or Nh (default 20m)") { |v| options[:held_limit] = duration(v) }
+      o.on("--timeout DUR", "run --wait: stop after this long in all, as Ns, Nm or Nh (default 4h)") { |v| options[:timeout] = duration(v) }
       o.on("--dry-run", "Print the commands that change something instead of running them") { options[:dry_run] = true }
     end
     verb = parser.parse(argv).first
@@ -280,7 +351,8 @@ module DemoCalculator
     root = File.expand_path("..", __dir__)
     workspace = ENV["WORKSPACE_BIN"] || File.join(root, "bin", "workspace")
     Demo.new(root: root, workspace: workspace, name: options[:name], dry_run: options[:dry_run], out: out,
-      base: options[:base], out_dir: options[:out_dir]).public_send(verb)
+      base: options[:base], out_dir: options[:out_dir], wait: options[:wait],
+      held_limit: options[:held_limit], timeout: options[:timeout]).public_send(verb)
     0
   rescue Refused, OptionParser::ParseError => e
     err.puts "demo-calculator: #{e.message}"
