@@ -8,6 +8,7 @@ module DemoCalculator
     COUNT_KEYS = %w[attempts retries review_rounds].freeze
     TOKEN_KEYS = Tokens::KINDS.keys.map(&:to_s).freeze
     DASH = "–".freeze
+    SHARED = "shared".freeze
 
     # Tokens, cost, models and agent versions of one run.
     #
@@ -18,12 +19,16 @@ module DemoCalculator
     def self.usage(run, pricing)
       attempts = EvalRows.attempts(run)
       tokens = Tokens.sum(attempts)
-      tokens[:known] = !(tokens[:partial] && Tokens::KINDS.keys.all? { |kind| tokens[kind].zero? })
+      tokens[:all_shared] = !attempts.empty? && attempts.all? { |a| a["usage_shared"] }
+      tokens[:known] = !tokens[:all_shared] && !(tokens[:partial] && Tokens::KINDS.keys.all? { |kind| tokens[kind].zero? })
       cost = 0.0
       priced = false
       cost_partial = tokens[:partial] || tokens[:shared]
       attempts.each do |attempt|
-        next if attempt["usage_shared"] || attempt["usage"].nil?
+        next if attempt["usage_shared"]
+        round_usage = attempt["usage"].nil? && Array(attempt["rounds"]).any? { |round| round["usage"] }
+        next if attempt["usage"].nil? && !round_usage
+        cost_partial = true if round_usage
         dollars = Cost.dollars(Tokens.sum([attempt]), attempt.dig("agent", "model"), pricing)
         dollars ? (cost += dollars) && (priced = true) : cost_partial = true
       end
@@ -79,7 +84,10 @@ module DemoCalculator
 
     def self.ran_cells(row)
       tokens = row[:usage][:tokens]
-      token_cell = ->(kind) { tokens[:known] ? Fmt.total(Fmt.count(tokens[kind]), tokens[:partial] || tokens[:shared]) : Fmt::UNKNOWN }
+      token_cell = lambda do |kind|
+        next SHARED if tokens[:all_shared]
+        tokens[:known] ? Fmt.total(Fmt.count(tokens[kind]), tokens[:partial] || tokens[:shared]) : Fmt::UNKNOWN
+      end
       cost = Fmt.total(Fmt.dollars(row[:usage][:cost_usd]), row[:usage][:cost_partial])
       [row[:workflow], row[:state], features_cell(row[:features]), row[:attempts], row[:retries], row[:review_rounds],
         Fmt.duration(row[:wall]), Fmt.duration(row[:active]), Fmt.duration(row[:stopped]), Fmt.duration(row[:gap]),
@@ -106,7 +114,10 @@ module DemoCalculator
 
     def self.features_cell(features)
       return Fmt::UNKNOWN if features.empty?
-      "#{features.values.count(EvalRows::FIRED)}/#{features.size}"
+      counts = features.values.tally
+      [["f", EvalRows::FIRED], ["a", "armed"], ["m", "missed"], ["?", Fmt::UNKNOWN]].filter_map do |mark, state|
+        "#{counts[state]}#{mark}" if counts[state]
+      end.join(" ")
     end
 
     def self.acceptance_cell(acceptance, item)
