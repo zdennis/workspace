@@ -44,16 +44,25 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(composed_with[:workflow]).to eq("name" => "flow", "include" => ["commits"], "text" => "Run wr_1.")
       expect(composed_with[:step]["text"]).to eq("Plan the fix on topic in wr_1.\n\nThis step is finished when your turn ends and these files " \
         "exist, written during this attempt: #{File.join(@dir, ".workflow", "wr_1", "plan.md")}.\n\n" \
-        "#{described_class::STATUS_LINE_TEXT}")
+        "#{described_class::CHECKLIST_TEXT}\n\n#{described_class::STATUS_LINE_TEXT}")
     end
 
     it "ends a minimal step's text with the generated status line, naming the format and every state" do
       prompt.compose(run, {"id" => "plan", "prompt" => "Plan.", "produces" => []}, [])
 
       text = composed_with[:step]["text"]
-      expect(text).to eq("Plan.\n\n#{described_class::STATUS_LINE_TEXT}")
+      expect(text).to eq("Plan.\n\n#{described_class::CHECKLIST_TEXT}\n\n#{described_class::STATUS_LINE_TEXT}")
       expect(text).to include(Workspace::WorkflowReportedStatus::FORMAT)
       Workspace::WorkflowReportedStatus::STATES.each { |state| expect(text).to include(state) }
+    end
+
+    it "asks for a requirement checklist right before the status line, in words naming the evidence" do
+      prompt.compose(run, {"id" => "plan", "prompt" => "Plan.", "produces" => []}, [])
+
+      text = composed_with[:step]["text"]
+      expect(described_class::CHECKLIST_TEXT).to include("re-read this step's brief and instructions", "each requirement", "evidence", "file:line", "report stuck with what is missing", "needs_input only for a question", "instead of done")
+      expect(text).to include("#{described_class::CHECKLIST_TEXT}\n\n#{described_class::STATUS_LINE_TEXT}")
+      expect(described_class::CHECKLIST_TEXT.lines.size).to eq(1)
     end
 
     it "keeps the status line last when the attempt carries retry context" do
@@ -74,7 +83,7 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(context).to eq(["Fix it."])
       expect(composed_with[:skip]).to eq(["dev"])
       expect(composed_with[:step]["text"]).to include("exist as non-empty regular files (not links)")
-      expect(composed_with[:step]["text"]).to include("the runner checks the step with the project's own command; work until it would pass.\n\n#{described_class::STATUS_LINE_TEXT}")
+      expect(composed_with[:step]["text"]).to include("the runner checks the step with the project's own command; work until it would pass.\n\n#{described_class::CHECKLIST_TEXT}\n\n#{described_class::STATUS_LINE_TEXT}")
       expect(composed_with[:step]["text"]).to end_with(described_class::STATUS_LINE_TEXT)
     end
 

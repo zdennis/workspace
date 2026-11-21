@@ -12,6 +12,11 @@ module Workspace
       "Use done when the work is finished, running when your turn ends mid-work with background tasks or more to do, " \
       "needs_input when a decision or question blocks you (put the question in the detail), and " \
       "stuck when you are blocked (put the reason in the detail)."
+    # Asked of every step agent, never of a review round: a clause of the brief can be skipped and nothing notices.
+    CHECKLIST_TEXT = "Before reporting done, re-read this step's brief and instructions and list each requirement " \
+      "with the evidence that it is met (a test name, command output, or file:line). If one is not met, keep " \
+      "working; if you cannot meet it, report stuck with what is missing (needs_input only for a question " \
+      "a person must answer) instead of done."
     # @param composer [Workspace::InstructionComposer] builds a step's instructions from its packs
     # @param git [Workspace::Git] reads the checkout's branch for `{{branch}}`
     # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
@@ -328,7 +333,7 @@ module Workspace
         text += "\n\nThis step is finished when your turn ends and these files #{what}: #{files.join(", ")}."
       end
       text += "\n\nWhen your turn ends, the runner checks the step with the project's own command; work until it would pass." if step["status"]
-      text + "\n\n#{STATUS_LINE_TEXT}"
+      text + "\n\n#{CHECKLIST_TEXT}\n\n#{STATUS_LINE_TEXT}"
     end
   end
 end
