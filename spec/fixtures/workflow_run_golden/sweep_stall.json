@@ -14,7 +14,7 @@
     "instructions": null,
     "max_attempts": 6,
     "stall": 1200.0,
-    "redeliver": 3,
+    "redeliver": 10,
     "deny": [],
     "steps": [
       {

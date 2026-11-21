@@ -43,8 +43,8 @@ RSpec.describe Workspace::WorkflowDefinition do
   end
 
   describe "redeliver" do
-    it "defaults to 3 in a new definition, reads a number from 0 to 10, and reads 0 from a definition without the key" do
-      expect(parse(minimal).to_h["redeliver"]).to eq(3)
+    it "defaults to 10 in a new definition, reads a number from 0 to 10, and reads 0 from a definition without the key" do
+      expect(parse(minimal).to_h["redeliver"]).to eq(10)
       expect(parse("redeliver: 0\n#{minimal}").to_h["redeliver"]).to eq(0)
       expect(described_class.redeliver({"steps" => []})).to eq(0)
       expect(described_class.redeliver({"redeliver" => 99})).to eq(0)
@@ -381,7 +381,7 @@ RSpec.describe Workspace::WorkflowDefinition do
     expect(definition.sha256).to eq(Digest::SHA256.hexdigest(minimal))
     expect(definition.to_h).to eq(
       "id" => "demo", "title" => "demo", "description" => nil, "use_when" => nil, "applies_to" => [], "inputs" => {}, "include" => [], "instructions" => nil,
-      "max_attempts" => 6, "stall" => nil, "redeliver" => 3, "deny" => [],
+      "max_attempts" => 6, "stall" => nil, "redeliver" => 10, "deny" => [],
       "steps" => [{"id" => "build", "title" => "build", "prompt" => "Build it.", "include" => [], "produces" => [], "status" => nil,
                    "gate" => nil, "guard" => nil, "require" => [], "uses" => [], "on_fail" => nil, "context" => "fresh", "timeout" => nil, "on_timeout" => "warn", "max_attempts" => nil}]
     )
