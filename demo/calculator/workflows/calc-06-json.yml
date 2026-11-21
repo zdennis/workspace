@@ -1,0 +1,114 @@
+# Demonstrates: a `fan_out` group. After `fix`, the group `finish` runs two sibling steps together
+# as sub-agents of the run's pane: `tests` hardens the tests and `usage` updates USAGE.md, and
+# the run moves on when both pass. Siblings share one checkout, so each is held to its own paths:
+# `checkout: shared-edit` allows them to edit (validate warns `fan_out_edits_unverified`, because the
+# engine can't see which paths each touches), and their `produces` files differ.
+#
+# This file is written out in full instead of `extends: calc-05-mod-pow`: the engine does not yet
+# extend a workflow that declares a `fan_out` group, or add one in a child. Its steps use their real
+# names (plan, reproduce, fix), which calc-05 gets from the first-step id rule.
+schema_version: 0.1
+id: calc-06-json
+title: Calculator 6, JSON output
+description: Adds `calc --json "EXPR"`, then updates the tests and the usage notes as parallel siblings.
+
+instructions: |
+  You are building a small command-line calculator in demo/calculator/ of workspace {{workspace}}:
+  Ruby, standard library only, `bin/calc "EXPR"`, `lib/calc.rb`, and minitest in `test/calc_test.rb`.
+  Work only inside demo/calculator/. Change nothing else in the repository, except where a step
+  says to write a file under {{artifacts}}. When the step's work is done, commit it with git (do not
+  push). Run the tests from the repository root with `ruby demo/calculator/test/calc_test.rb`.
+  Build only this run's feature, nothing beyond it.
+
+  This run's feature: `calc --json "1 + 2"` prints {"expression":"1 + 2","result":3} and an error
+  prints {"expression":"1 / 0","error":"division by zero"} to standard output, exit status 1. Without
+  `--json` the output is as before.
+
+max_attempts: 16
+
+reviewers:
+  skeptic:
+    title: Skeptical review
+    prompt: |
+      You review {{review.subject}}. Assume it is wrong and try to prove it: precedence of
+      `-` and `/` (left to right), nested parentheses, unbalanced ones, and tests that pass
+      without checking anything. Approve only if you find no blocking problem. Do not edit any file.
+      If {{review.previous}} is set, read your earlier write-up there first.
+
+steps:
+  plan:
+    title: Plan (read-only)
+    prompt: |
+      Read demo/calculator/ and write a short plan for the brief to {{artifacts}}/plan.md: the
+      change, the tests to add, and the risks. Do not change or commit anything in the checkout.
+    produces: [plan.md]
+    guard: unchanged
+
+  reproduce:
+    title: Write the failing test first
+    prompt: |
+      Follow {{artifacts}}/plan.md. Write only the tests for the brief. Do not change lib/ or bin/.
+      The tests must fail now. Write one line of the failure text you expect to
+      {{artifacts}}/failure.txt. Commit the tests.
+    produces: [failure.txt]
+    require:
+      - commits: 1
+      - exec: "workspace step expect-fail --match-file {{artifacts}}/failure.txt --timeout 240 -- demo/calculator/test/calc_test.rb"
+        timeout: 5m
+
+  fix:
+    title: Make the test pass
+    prompt: |
+      The test from the previous step fails. Change lib/ and bin/ so it passes and the rest of the
+      tests keep passing. Do not weaken or delete the test. Commit.
+    require:
+      - commits: 1
+    review:
+      from: [skeptic]
+      need: 1
+      must: [skeptic]
+      subject: the changes under demo/calculator/ made for the brief (`git log -p` since the run began)
+      revision: git rev-parse HEAD
+      max_rounds: 3
+      timeout: 20m
+
+  verify:
+    title: Run the tests
+    prompt: |
+      Run the tests from the repository root. If they pass, there is nothing to change. Do not
+      edit any file.
+    guard: unchanged
+    status:
+      run: ruby demo/calculator/test/calc_test.rb
+      timeout: 5m
+    on_fail: {goto: fix, max: 3, backoff: 30s, log_tail: 40}
+
+  finish:
+    title: Tests and usage notes, in parallel
+    checkout: shared-edit
+    execution_mode: subagents
+    on_fail: stop
+    fan_out:
+      tests:
+        title: Harden the tests
+        prompt: |
+          Add tests to demo/calculator/test/calc_test.rb for the `--json` edge cases (errors,
+          decimals, spaces, nested parentheses). Touch no other file. Another agent is editing
+          demo/calculator/USAGE.md at the same time. Commit only your file:
+          `git add demo/calculator/test && git commit -m "..." -- demo/calculator/test`, and retry
+          after a moment if git reports an index lock. Write a line saying what you added to
+          {{artifacts}}/tests-done.md.
+        produces: [tests-done.md]
+        status:
+          run: ruby demo/calculator/test/calc_test.rb
+          timeout: 5m
+      usage:
+        title: Update the usage notes
+        prompt: |
+          Update demo/calculator/USAGE.md so it lists every operator the calculator supports and
+          documents `--json` with an example. Touch no other file. Another agent is editing the
+          tests at the same time. Commit only your file:
+          `git add demo/calculator/USAGE.md && git commit -m "..." -- demo/calculator/USAGE.md`,
+          and retry after a moment if git reports an index lock. Write a line saying what you changed
+          to {{artifacts}}/usage-done.md.
+        produces: [usage-done.md]

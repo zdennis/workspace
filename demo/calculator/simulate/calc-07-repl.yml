@@ -1,0 +1,12 @@
+steps:
+  plan:
+    - {}
+  reproduce:
+    - {}
+  fix:
+    - {reviews: {skeptic: approve}}
+  verify:
+    - {}
+  finish:
+    tests: [{tokens: 9000}]
+    usage: [{tokens: 4000}]

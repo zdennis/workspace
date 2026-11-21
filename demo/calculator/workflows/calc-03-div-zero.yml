@@ -1,0 +1,61 @@
+# Demonstrates: a fail-first proof and a retry with `backoff`. `implement` writes only the test and
+# must leave it failing (`workspace step expect-fail` passes only when the tests FAIL, and the
+# failure must hold the text in failure.txt). The new `fix` step then makes it pass, and when the new
+# `verify` step's check fails it goes back to `fix` after a 30 second wait with the check's last
+# lines in its instructions (`on_fail` with `backoff` and `log_tail`).
+#
+# Setup: `step expect-fail` runs the project's `commands.test` with the test files appended, so
+# the demo workspace needs `workspace config set commands.test ruby` (script/demo-calculator run
+# sets it). The id `implement` is kept for the first phase because `extends:` can only add steps
+# after an existing one.
+extends: calc-02-mul-div
+id: calc-03-div-zero
+title: Calculator 3, division by zero
+description: Makes `calc "1 / 0"` report a clear error, with the test written first and proved failing.
+
+instructions: |
+  You are building a small command-line calculator in demo/calculator/ of workspace {{workspace}}:
+  Ruby, standard library only, `bin/calc "EXPR"`, `lib/calc.rb`, and minitest in `test/calc_test.rb`.
+  Work only inside demo/calculator/. Change nothing else in the repository, except where a step
+  says to write a file under {{artifacts}}. When the step's work is done, commit it with git (do not
+  push). Run the tests from the repository root with `ruby demo/calculator/test/calc_test.rb`.
+  Build only this run's feature, nothing beyond it.
+
+  This run's feature: dividing by zero (`calc "1 / 0"`) prints the line "error: division by zero"
+  to standard error and exits with status 1, instead of raising or printing Infinity.
+
+max_attempts: 8
+
+replace:
+  implement:
+    title: Write the failing test first
+    prompt: |
+      Write only the tests for the brief. Do not change lib/ or bin/. The tests must fail now.
+      Write one line of the failure text you expect to see in the test output (for instance
+      "error: division by zero") to {{artifacts}}/failure.txt. Commit the tests.
+    produces: [failure.txt]
+    require:
+      - commits: 1
+      - exec: "workspace step expect-fail --match-file {{artifacts}}/failure.txt --timeout 240 -- demo/calculator/test/calc_test.rb"
+        timeout: 5m
+
+steps:
+  fix:
+    after: implement
+    title: Make the test pass
+    prompt: |
+      The test from the previous step fails. Change lib/ and bin/ so it passes and the rest of the
+      tests keep passing. Do not weaken or delete the test. Commit.
+    require:
+      - commits: 1
+
+  verify:
+    title: Run the tests
+    prompt: |
+      Run the tests from the repository root. If they pass, there is nothing to change. Do not
+      edit any file.
+    guard: unchanged
+    status:
+      run: ruby demo/calculator/test/calc_test.rb
+      timeout: 5m
+    on_fail: {goto: fix, max: 3, backoff: 30s, log_tail: 40}

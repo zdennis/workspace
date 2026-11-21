@@ -1,0 +1,46 @@
+# Demonstrates: agent review. The `reviewers:` block names a reviewer, and the `fix` step's
+# `review:` says that reviewer must approve before the step passes. The reviewer runs in its own
+# window and writes a verdict; a rejection runs `fix` again with the reasons.
+extends: calc-03-div-zero
+id: calc-04-precedence
+title: Calculator 4, precedence and parentheses
+description: Teaches demo/calculator operator precedence and parentheses, approved by an agent reviewer.
+
+instructions: |
+  You are building a small command-line calculator in demo/calculator/ of workspace {{workspace}}:
+  Ruby, standard library only, `bin/calc "EXPR"`, `lib/calc.rb`, and minitest in `test/calc_test.rb`.
+  Work only inside demo/calculator/. Change nothing else in the repository, except where a step
+  says to write a file under {{artifacts}}. When the step's work is done, commit it with git (do not
+  push). Run the tests from the repository root with `ruby demo/calculator/test/calc_test.rb`.
+  Build only this run's feature, nothing beyond it.
+
+  This run's feature: expressions with several operators follow precedence and parentheses, so
+  `calc "2 + 3 * 4"` prints 14 and `calc "(2 + 3) * 4"` prints 20. Keep the division-by-zero error.
+
+max_attempts: 16
+
+reviewers:
+  skeptic:
+    title: Skeptical review
+    prompt: |
+      You review {{review.subject}}. Assume it is wrong and try to prove it: precedence of
+      `-` and `/` (left to right), nested parentheses, unbalanced ones, and tests that pass
+      without checking anything. Approve only if you find no blocking problem. Do not edit any file.
+      If {{review.previous}} is set, read your earlier write-up there first.
+
+replace:
+  fix:
+    title: Make the test pass
+    prompt: |
+      The test from the previous step fails. Change lib/ and bin/ so it passes and the rest of the
+      tests keep passing. Do not weaken or delete the test. Commit.
+    require:
+      - commits: 1
+    review:
+      from: [skeptic]
+      need: 1
+      must: [skeptic]
+      subject: the changes under demo/calculator/ made for the brief (`git log -p` since the run began)
+      revision: git rev-parse HEAD
+      max_rounds: 3
+      timeout: 20m

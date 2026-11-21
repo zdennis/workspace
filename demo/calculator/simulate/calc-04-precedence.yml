@@ -1,0 +1,8 @@
+steps:
+  implement:
+    - {}
+  fix:
+    - {reviews: {skeptic: reject}}
+    - {reviews: {skeptic: approve}}
+  verify:
+    - {}
