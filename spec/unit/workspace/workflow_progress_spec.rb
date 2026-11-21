@@ -928,7 +928,7 @@ RSpec.describe Workspace::WorkflowProgress do
 
         expect(run.step("plan").last_attempt.to_h).to include("outcome" => "failed", "code" => "review_rejected",
           "review_outcome" => {"round" => 1, "approvals" => 1, "need" => 2, "must" => ["skeptic"], "passed" => false})
-        line = "Review round 1 of 6 rejected the plan step: need 2 of 2 with skeptic; got skeptic reject, tester approve. Address every reviewer's concern and say how."
+        line = "Review round 1 of 6 rejected the plan step: need 2 of 2 with skeptic; got skeptic reject, tester approve. Address every reviewer's blocking concern and say how; what a reviewer lists under \"Not blocking\" is optional."
         text = [line, "the write-up at /work/.workflow/wr_1/reviews/plan.1.r1/skeptic.md", "the write-up at /work/.workflow/wr_1/reviews/plan.1.r1/tester.md"].join("\n\n")
         expect(run.pending_context).to eq([text])
         expect(log_tail.calls).to eq([[:writeup, "/work/.workflow/wr_1/reviews/plan.1.r1/skeptic.md"], [:writeup, "/work/.workflow/wr_1/reviews/plan.1.r1/tester.md"]])

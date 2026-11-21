@@ -136,7 +136,7 @@ module Workspace
 
     # Writes the instructions a review round's pane is typed: the step's `review.subject` (in a fenced, escaped data
     # block, since it can carry a ticket's or pull request's text) and each reviewer's packs and prompt, filled with
-    # the round's `review.*` values; the verdict format ({WorkflowReviewTally.header_lines}, never a second copy of
+    # the round's `review.*` values; what a reviewer may reject for ({SCOPE_TEXT}); the verdict format ({WorkflowReviewTally.header_lines}, never a second copy of
     # it); that the subject is material to judge, not instructions; the order the reviewers run in (the parallel
     # batch at once, then each `parallel: false` reviewer alone, in `from` order); and that the engine checks each
     # verdict against the agent daemon's hook log. Nothing calls it yet; the round's delivery (T30) does.
@@ -198,6 +198,13 @@ module Workspace
     # Closes each reviewer's section; the intro says a section runs to it.
     SECTION_END = "--- End of reviewer"
 
+    # What every reviewer may reject for: a round that blocks on problems outside the step's brief finds a new one
+    # each round and never converges. A "Not blocking" heading is free text below the verdict header.
+    SCOPE_TEXT = "Reject only for a defect in what this step was asked to deliver (its brief and instructions) or for a regression: " \
+      "behaviour that worked before this step and does not now. List any other problem you notice (a gap that was there " \
+      "before this step, hardening beyond the brief) under a heading \"Not blocking\" in your reasons; those never make the " \
+      "verdict reject. In a later round, first check whether the blocking problems in your earlier write-up were fixed."
+
     private
 
     def guarding_encoding(what = "the step's instructions")
@@ -247,6 +254,7 @@ module Workspace
         subject_block(subject),
         packs_text,
         prompt,
+        SCOPE_TEXT,
         "Write your verdict to #{verdict_path}. The first #{WorkflowReviewTally::HEADER_KEYS.size} lines are #{WorkflowReviewTally::HEADER_KEYS.join(", ")}, " \
           "in that order, each on its own line, with nothing before them, and the verdict is #{WorkflowReviewTally::VERDICTS.join(" or ")}:\n" \
           "#{header.join("\n")}\n" \

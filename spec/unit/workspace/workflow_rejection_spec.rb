@@ -26,7 +26,7 @@ RSpec.describe Workspace::WorkflowRejection do
 
       expect(again).to eq("step" => "design", "attempt" => 2, "round" => 2, "context" => "continue",
         "text" => "Review round 2 of 6 rejected the design step: need 2 of 2 with skeptic; got skeptic reject, builder no counted verdict. " \
-                  "Address every reviewer's concern and say how.\n\nthe write-up at /work/.workflow/wr_1/reviews/design.2.r2/skeptic.md")
+                  "Address every reviewer's blocking concern and say how; what a reviewer lists under \"Not blocking\" is optional.\n\nthe write-up at /work/.workflow/wr_1/reviews/design.2.r2/skeptic.md")
       expect(log_tail.calls).to eq([[:writeup, "/work/.workflow/wr_1/reviews/design.2.r2/skeptic.md"]])
     end
 

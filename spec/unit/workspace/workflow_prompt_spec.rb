@@ -271,6 +271,15 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(text.scan("Write it with a file tool (Write or Edit), not a shell command: a verdict written by cat, tee or a redirect is not counted.").size).to eq(reviewers.size)
     end
 
+    it "gives every reviewer the scope rule, after its own prompt and before its verdict file" do
+      text = text_for(1)
+
+      expect(text.scan(described_class::SCOPE_TEXT).size).to eq(reviewers.size)
+      expect(described_class::SCOPE_TEXT).to include("Reject only for a defect in what this step was asked to deliver", "regression", "\"Not blocking\"", "never make the verdict reject", "earlier write-up were fixed")
+      expect(text.index("Be fair.")).to be < text.rindex(described_class::SCOPE_TEXT)
+      expect(text.rindex(described_class::SCOPE_TEXT)).to be < text.index("Write your verdict to #{artifacts}/reviews/plan.1.r1/fair.md")
+    end
+
     it "orders an all-parallel round as one batch and an all-serial one without a batch" do
       parallel = reviewers.transform_values { |each| each.merge("parallel" => true) }
       serial = reviewers.transform_values { |each| each.merge("parallel" => false) }
