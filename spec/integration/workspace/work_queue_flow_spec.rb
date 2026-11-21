@@ -120,7 +120,8 @@ RSpec.describe "a work queue from add to history over real runs" do
   end
   let(:queue_command) do
     Workspace::Commands::WorkQueue.new(store_factory: store_for, history_factory: history_for, advance: advance, decisions: engine, run_store: store,
-      checkout: checkout, go: go, status_scope: instance_double(Workspace::StatusScope), clock: queue_clock, working_dir: elsewhere, output: gate, error_output: err)
+      checkout: checkout, go: go, status_scope: instance_double(Workspace::StatusScope), agent_ensurer: ->(name:) { Workspace::Commands::EnsureAgent::Result.new(:running) },
+      agent_running: ->(_workspace) { false }, clock: queue_clock, working_dir: elsewhere, output: gate, error_output: err)
   end
   let(:cli) { Workspace::CLI::WorkQueue.new(work_queue_command: queue_command, common: Workspace::CLI::Common.new) }
 

@@ -2076,7 +2076,8 @@ module Workspace
         about: [
           "A `workflow` item starts a workflow run in the workspace's checkout; a `go` item runs `workspace go",
           "--here` there. It prints the item's id and position. #{WQ_POSITION}",
-          "The queue runs items only once it is on (`workspace work-queue enable`). Adding the same --dedupe-key",
+          "The queue runs items only once it is on (`workspace work-queue enable`); add starts the workspace's agent",
+          "daemon if none runs, since the daemon is what advances the queue. Adding the same --dedupe-key",
           "again changes nothing and says `unchanged`. Anything but `workflow` or `go` is a usage error."
         ],
         options: [NAME_OPT,
@@ -2106,8 +2107,9 @@ module Workspace
         summary: "Show the queue as a table",
         about: [
           "One row per item: position, id, state, kind, what it runs, headless and age. A footer says whether the",
-          "queue is on, off or paused (and why); an off queue says how to turn it on. --project reads every",
-          "workspace of a project and writes nothing."
+          "queue is on, off or paused (and why) and whether the workspace's agent daemon is up; an off queue says",
+          "how to turn it on, and an enabled one whose daemon is down gets a warning (`daemon_not_running`). --project",
+          "reads every workspace of a project and writes nothing."
         ],
         options: [NAME_OPT, WQ_PROJECT_OPT, JSON_OPT],
         examples: [
@@ -2185,12 +2187,14 @@ module Workspace
         usage: ["work-queue enable [--name WORKSPACE] [--json]"],
         summary: "Turn the workspace's queue on",
         about: [
-          "A queue is off until it is enabled; `work-queue add` alone does not run anything. Enable it, then",
-          "`work-queue advance` runs one pass by hand. The setting is kept in the queue file."
+          "A queue is off until it is enabled; `work-queue add` alone does not run anything. Enable it and the",
+          "workspace's agent daemon (started now if none runs) advances it: after each turn of an agent ends and on its",
+          "scan. The setting is kept in the queue file. A daemon that can't be started is a warning; then run",
+          "`workspace agentd --ensure` to try again, or `workspace work-queue advance` by hand."
         ],
         options: [NAME_OPT, JSON_OPT],
         examples: [
-          ["workspace work-queue enable", "turn the queue on, then run `workspace work-queue advance`"],
+          ["workspace work-queue enable", "turn the queue on; the agent daemon starts the first item"],
           ["workspace work-queue enable --name api.worktree-x", "turn on another workspace's queue"],
           ["workspace work-queue enable --json", "one JSON document: `enabled` or `unchanged`"]
         ]
@@ -2237,14 +2241,14 @@ module Workspace
         about: [
           "The pass reads the running item and finishes or holds it, or starts the next item when the queue is on, not",
           "paused and no workflow run is going in the workspace. It works in the workspace's own checkout. Turn the queue",
-          "on first with `workspace work-queue enable`; an off queue starts nothing. Only this verb moves a queue, so run it",
-          "again after each item ends. Each thing the pass did is printed as a sentence; the exit code is 1 when the pass",
-          "hit a failure (a start that failed, a lost claim, an interrupted, failed or cancelled run), 3 when only some",
-          "rows did, and 0 when an item is just held at a gate."
+          "on first with `workspace work-queue enable`; an off queue starts nothing. The agent daemon runs this same pass",
+          "for an enabled queue; run it by hand when the daemon is down (`work-queue status` says). Each thing the pass did",
+          "is printed as a sentence; the exit code is 1 when the pass hit a failure (a start that failed, a lost claim, an",
+          "interrupted, failed or cancelled run), 3 when only some rows did, and 0 when an item is just held at a gate."
         ],
         options: [NAME_OPT, JSON_OPT],
         examples: [
-          ["workspace work-queue advance", "after `workspace work-queue enable`: start the next item"],
+          ["workspace work-queue advance", "with the agent daemon down: start the next item by hand"],
           ["workspace work-queue advance --name api.worktree-x", "one pass for another workspace"],
           ["workspace work-queue advance --json", "for a script: one row per thing the pass did"]
         ]
@@ -2252,7 +2256,10 @@ module Workspace
       "status" => {
         usage: ["work-queue status [--name WORKSPACE | --project [NAME]] [--json]"],
         summary: "Show one line per queue: on or off, pause, active item",
-        about: ["The line says on, off or paused (and why), the active item and how many are queued."],
+        about: [
+          "The line says on, off or paused (and why), the active item, how many are queued and whether the agent",
+          "daemon is up; an enabled queue whose daemon is down gets a warning (`daemon_not_running`)."
+        ],
         options: [NAME_OPT, WQ_PROJECT_OPT, JSON_OPT],
         examples: [
           ["workspace work-queue status", "the queue of the workspace you are in"],

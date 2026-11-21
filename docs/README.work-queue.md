@@ -1,6 +1,6 @@
 # workspace work-queue
 
-Keep a queue of work for a workspace: items that run one at a time, each a workflow run or a `workspace go`. `wq` is another name for `work-queue`. A new queue is off, and in this version only `work-queue advance` moves a queue.
+Keep a queue of work for a workspace: items that run one at a time, each a workflow run or a `workspace go`. `wq` is another name for `work-queue`. A new queue is off; once it is enabled, the workspace's agent daemon advances it, and `work-queue advance` does the same by hand when the daemon is down.
 
 ## Usage
 
@@ -60,13 +60,19 @@ A verb takes only the flags its own usage line and the table name; a flag it doe
 
 Each workspace has its own queue, kept in its state directory, with a log of finished items next to it. Items run one at a time. `add` puts an item at the end (or where `--top`, `--after-current`, `--before` or `--after` say; give at most one) and prints its id and position. A queue holds a limited number of items; past it `add` fails with `queue_full`. Adding a `--dedupe-key` again changes nothing.
 
-### The queue is off, and only `advance` moves it
+### The queue is off until `enable`, then the agent daemon advances it
 
 A queue is off until `work-queue enable`; `add` alone runs nothing. `disable` stops new starts; the running item keeps going and a pass still reads it.
 
-In this version only `work-queue advance` moves a queue. A pass reads the running item and finishes or holds it, or starts the next one when the queue is on, not paused, and no workflow run is going in the workspace. Nothing runs a pass for you, so run `advance` again after each item ends. `advance` works in the workspace's own checkout and needs a branch. Each thing the pass did prints as a sentence. The exit code is 1 when every row of the pass ended badly, 3 when only some did, and 0 otherwise. A row ends badly when a start failed (`launch_failed`), a claim was lost, an item was `interrupted`, or a run `failed` or was `cancelled` and the queue paused for it; a failed or cancelled run under `--on-fail continue` does not count, and neither does an item that is just held. For `cancel --and-continue` the `cancelled` row is not counted. The outcomes and reasons are in [README.json.md](README.json.md#work-queue).
+A pass reads the running item and finishes or holds it, or starts the next one when the queue is on, not paused, and no workflow run is going in the workspace. The workspace's [agent daemon](README.agentd.md) runs a pass for a queue with items: after a coding agent's turn ends in the workspace (once the `workflow advance` that turn started has exited, since a run usually finishes there), and on its scan (`agentd.poll_interval`) whenever the queue file or the run it waits on changed, or at least once a minute while an item is current. It starts each pass as its own `workspace work-queue advance --name WORKSPACE` process, so it does exactly what a person's `advance` does, and writes the pass's output to the daemon's log. `enable` and `add` start the daemon when none answers; one that can't be started is a warning on the row (`daemon_not_started`), never a failure. `list` and `status` say whether the daemon is up and warn (`daemon_not_running`) for an enabled queue whose daemon does not answer.
+
+`work-queue advance` runs the same pass by hand, for when the daemon is down. `advance` works in the workspace's own checkout and needs a branch. Each thing the pass did prints as a sentence. The exit code is 1 when every row of the pass ended badly, 3 when only some did, and 0 otherwise. A row ends badly when a start failed (`launch_failed`), a claim was lost, an item was `interrupted`, or a run `failed` or was `cancelled` and the queue paused for it; a failed or cancelled run under `--on-fail continue` does not count, and neither does an item that is just held. For `cancel --and-continue` the `cancelled` row is not counted. The outcomes and reasons are in [README.json.md](README.json.md#work-queue).
 
 A pass that cannot start anything says why: the queue is `disabled`, `paused`, `empty`, or a workflow run is going (`run_going`).
+
+### Restarts and reboots
+
+A daemon that stops while an item is `starting` or `active` starts nothing twice and skips nothing. The next pass looks a `starting` item's run up by its claim before anything else starts: a run that was made is adopted and read, and none is `interrupted` (above). An `active` item is read again from its run, never started again. A run that is still going keeps the queue waiting even when its pane is gone (after a reboot, say): the queue does not start the next item, and [`workflow recover`](README.workflow.md) brings the run back.
 
 ### Item states
 
@@ -129,19 +135,14 @@ See [README.json.md](README.json.md#work-queue). Action verbs (`add`, `rm`, `mov
 # Two workflow items: run the first to its gate, approve it, then the second
 workspace work-queue add workflow rpiv --prompt "Add SSO login"
 workspace work-queue add workflow rpiv --prompt "Add audit log"
-workspace work-queue enable
-workspace work-queue advance       # starts the first item
-# ...once the run reaches its gate:
-workspace work-queue advance       # holds the item at the gate
+workspace work-queue enable       # the agent daemon starts the first item
+# ...once the run reaches its gate the daemon holds the item there:
 workspace work-queue active        # shows the run id and the next action, `workflow approve RUN`
 workspace workflow approve RUN     # RUN is the id `active` printed; see docs/README.workflow.md
-workspace work-queue advance       # the item is still active: the run is not finished yet
-# ...once `workspace workflow status RUN` says the run completed:
-workspace work-queue advance       # records it `succeeded`, and starts the second item
+# ...once the run completes the daemon records it `succeeded` and starts the second item
 
-# Queue an rpiv run, turn the queue on, and run the first pass
-workspace work-queue add workflow rpiv --prompt "Add SSO login"
-workspace work-queue enable
+# With the agent daemon down: run the passes by hand
+workspace work-queue status        # says `daemon down`
 workspace work-queue advance
 
 # Queue a ticket and run it before the others
@@ -154,9 +155,8 @@ workspace work-queue add go --text "Fix the flaky login spec" --on-fail continue
 workspace work-queue list
 workspace work-queue active
 
-# Give up on a held item, then run the next pass
+# Give up on a held item; the daemon starts the next one
 workspace work-queue skip
-workspace work-queue advance
 
 # After a failure: look at it, then let the queue go on
 workspace work-queue history list --state failed --since 2026-01-01
@@ -169,4 +169,4 @@ workspace work-queue move 3fa9 --bottom --if-revision 12 --json
 workspace wq status --project
 ```
 
-The first block is a walkthrough. `advance` right after `workflow approve` shows the item still `active` (or `held`, if the run is still at its gate), because the run has not finished yet. `advance` reads a run only when it is called, so an item is held at its gate only on the first pass after the run reaches it. The second item starts on the first pass after the first run completes, which records the first item `succeeded` and goes on to start the next in the same pass. See [workflow](README.workflow.md) for `approve` and the gates. `add go` needs a linked worktree workspace (see above).
+The first block is a walkthrough. Each step after `enable` happens when the daemon's next pass sees it: right after a turn ends, or on its next scan. A pass reads a run only when it runs, so the item shows `held` at the gate once a pass has seen the gate. The second item starts on the pass that records the first one `succeeded`. See [workflow](README.workflow.md) for `approve` and the gates. `add go` needs a linked worktree workspace (see above).

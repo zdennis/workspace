@@ -86,6 +86,6 @@ Examples:
   workspace work-queue rm 3fa9    # drop one queued item
   workspace work-queue move 3fa9 --top    # run this one next
   workspace work-queue cancel    # stop the running item and hold the queue
-  workspace work-queue enable    # turn the queue on, then run `workspace work-queue advance`
+  workspace work-queue enable    # turn the queue on; the agent daemon starts the first item
 --- stderr
 --- end

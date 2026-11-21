@@ -13,7 +13,7 @@ module Workspace
     # write, not even a pruned history.
     class WorkQueue
       # What a person is told when a queue is off, where it matters.
-      OFF_HINT = "The queue is off; run `workspace work-queue enable`, then `workspace work-queue advance`."
+      OFF_HINT = "The queue is off; run `workspace work-queue enable` and the agent daemon advances it."
 
       # Characters of an item's summary a list row shows.
       WHAT_LENGTH = 60
@@ -26,13 +26,16 @@ module Workspace
       # @param checkout [Workspace::WorkspaceCheckout] names a workspace and its checkout
       # @param go [Workspace::Commands::Go] says whether a checkout can run `go` in place
       # @param status_scope [Workspace::StatusScope] picks the workspaces of `--project`
+      # @param agent_ensurer [Workspace::Commands::EnsureAgent] starts the workspace's agent daemon (which advances an
+      #   enabled queue) for `add` and `enable`
+      # @param agent_running [#call] given a workspace, whether its agent daemon answers, for `list` and `status`
       # @param clock [#now] time source, for ages
       # @param working_dir [String] where the current workspace is looked for
       # @param output [IO] stream for the human result
       # @param error_output [IO] stream for warnings
       # @param input [IO, Workspace::PromptInput] where `history clear` reads its answer
       def initialize(store_factory:, history_factory:, advance:, decisions:, run_store:, checkout:, go:, status_scope:,
-        clock: Time, working_dir: Dir.pwd, output: $stdout, error_output: $stderr, input: $stdin)
+        agent_ensurer:, agent_running:, clock: Time, working_dir: Dir.pwd, output: $stdout, error_output: $stderr, input: $stdin)
         @store_factory = store_factory
         @history_factory = history_factory
         @advance = advance
@@ -41,6 +44,8 @@ module Workspace
         @checkout = checkout
         @go = go
         @status_scope = status_scope
+        @agent_ensurer = agent_ensurer
+        @agent_running = agent_running
         @clock = clock
         @working_dir = working_dir
         @output = output
@@ -55,12 +60,13 @@ module Workspace
         {"queue" => workspace, "revision" => @store_factory.call(workspace).snapshot["revision"]}
       end
 
-      # Appends an item.
+      # Appends an item, and makes sure the workspace's agent daemon runs, as {#enable} does.
       #
       # @param kind [String] `workflow` or `go`
       # @param spec [Hash] what to run, as {Workspace::WorkQueueStarters} reads it
       # @param position [Symbol, Hash] `:bottom`, `:top`, `:after_current`, `{before: ID}` or `{after: ID}`
-      # @return [Array<Hash>] one row: `added`, or `unchanged` for a repeated `dedupe_key`
+      # @return [Array<Hash>] one row: `added`, or `unchanged` for a repeated `dedupe_key`; with `warnings` when the
+      #   daemon could not be started
       # @raise [Workspace::Error] `go_here_unavailable` for a `go` item on a checkout that can't run in place,
       #   and the store's `queue_full`, `unknown_queue_item`, `ambiguous_queue_item` and `item_active`
       def add(kind:, spec:, name: nil, position: :bottom, headless: false, on_fail: "stop", dedupe_key: nil, added_by: "person")
@@ -74,7 +80,7 @@ module Workspace
           on_fail: on_fail, dedupe_key: dedupe_key, added_by: added_by)
         @output.puts((outcome == :added) ? "Queued #{item["id"]} (#{kind}) at position #{place} in '#{workspace}'." : "Item #{item["id"]} is already queued for that key.")
         @output.puts OFF_HINT unless @store_factory.call(workspace).snapshot["enabled"] == true
-        [row(outcome.to_s, item, place)]
+        [with_daemon(row(outcome.to_s, item, place), workspace)]
       end
 
       # Removes queued items, all or none.
@@ -106,11 +112,11 @@ module Workspace
         [row(outcome.to_s, item, place)]
       end
 
-      # Turns the queue on for a workspace.
+      # Turns the queue on for a workspace and makes sure its agent daemon runs, which then advances the queue.
       #
-      # @return [Array<Hash>] one row: `enabled` or `unchanged`
+      # @return [Array<Hash>] one row: `enabled` or `unchanged`; with `warnings` when the daemon could not be started
       def enable(name: nil)
-        toggle(name, true, "enabled")
+        [with_daemon(toggle(name, true, "enabled").first, workspace_of(name))]
       end
 
       # Turns the queue off for a workspace. The current item keeps being read by a pass.
@@ -192,7 +198,8 @@ module Workspace
       #
       # @param project [nil, true, String] as {Workspace::StatusScope#resolve}
       # @return [Hash] `"queues"`, one per workspace (`workspace`, `state` of on, off or paused, `enabled`,
-      #   `paused_reason`, `revision`, `items`, `next_actions`), and `"warnings"`
+      #   `paused_reason`, `daemon_running`, `revision`, `items`, `next_actions`), and `"warnings"`: one
+      #   `daemon_not_running` for each enabled queue whose agent daemon does not answer, also printed to the error stream
       def list(name: nil, project: nil)
         queues, warnings = read_queues(name, project)
         queues.each { |queue| print_list(queue) }
@@ -235,13 +242,13 @@ module Workspace
       # One line per queue: on, off or paused, the active item and the queued count.
       #
       # @param project [nil, true, String] as {Workspace::StatusScope#resolve}
-      # @return [Hash] `"queues"` (`workspace`, `state`, `paused_reason`, `active`, `queued`, `revision`,
-      #   `next_actions`) and `"warnings"`
+      # @return [Hash] `"queues"` (`workspace`, `state`, `paused_reason`, `daemon_running`, `active`, `queued`, `revision`,
+      #   `next_actions`) and `"warnings"`, as {#list} gives them
       def status(name: nil, project: nil)
         queues, warnings = read_queues(name, project)
         rows = queues.map do |queue|
           current = queue["items"].find { |i| WorkQueueStore::CURRENT_STATES.include?(i["state"]) }
-          line = queue.slice("workspace", "state", "paused_reason", "revision", "next_actions")
+          line = queue.slice("workspace", "state", "paused_reason", "daemon_running", "revision", "next_actions")
           line.merge("active" => current, "queued" => queue["items"].count { |i| i["state"] == "queued" })
         end
         rows.each { |r| @output.puts status_line(r) }
@@ -377,6 +384,21 @@ module Workspace
         [row(changed ? word : "unchanged", nil, nil)]
       end
 
+      # The daemon is what advances an enabled queue; one that can't be started is a warning on the row, never a failure.
+      def with_daemon(row, workspace)
+        result = begin
+          @agent_ensurer.call(name: workspace)
+        rescue Workspace::Error => e
+          EnsureAgent::Result.new(:failed, e.message.lines.first.to_s.strip)
+        end
+        return row if result.ok?
+        detail = (result.status == :invalid_config) ? "its pipeline config can't be used" : result.detail
+        message = "Could not start the agent daemon of '#{workspace}' (#{detail}); the queue moves only on " \
+          "`workspace work-queue advance` until `workspace agentd --ensure --name #{workspace}` starts it."
+        @error_output.puts "Warning: #{message}"
+        row.merge("warnings" => [{"code" => "daemon_not_started", "workspace" => workspace, "message" => message}])
+      end
+
       def row(outcome, item, position)
         {"outcome" => outcome, "id" => item&.dig("id"), "position" => position, "kind" => item&.dig("kind")}
       end
@@ -457,7 +479,15 @@ module Workspace
       end
 
       def read_queues(name, project)
-        [workspaces_for(name, project).map { |workspace| queue_doc(workspace) }, []]
+        queues = workspaces_for(name, project).map { |workspace| queue_doc(workspace) }
+        warnings = queues.select { |q| q["enabled"] && !q["daemon_running"] }.map do |q|
+          workspace = q["workspace"]
+          {"code" => "daemon_not_running", "workspace" => workspace,
+           "message" => "The agent daemon of '#{workspace}' is not answering, so its queue moves only on " \
+             "`workspace work-queue advance`; `workspace agentd --ensure --name #{workspace}` starts it."}
+        end
+        warnings.each { |w| @error_output.puts "Warning: #{w["message"]}" }
+        [queues, warnings]
       end
 
       def queue_doc(workspace)
@@ -474,10 +504,22 @@ module Workspace
         actions = []
         actions << NextAction.build("work-queue resume", *name) if paused
         actions << NextAction.build("work-queue enable", *name) if data["enabled"] != true
-        actions << NextAction.build("work-queue advance", *name) if data["enabled"] == true && !paused && data["items"].any?
+        running = daemon_running?(workspace)
+        # A running daemon advances an enabled queue itself; without one, a person does.
+        if data["enabled"] == true && !running
+          actions << NextAction.build("agentd --ensure", *name)
+          actions << NextAction.build("work-queue advance", *name) if !paused && data["items"].any?
+        end
         {"workspace" => workspace, "state" => state, "enabled" => data["enabled"] == true, "paused_reason" => paused&.dig("reason"),
-         "revision" => data["revision"],
+         "daemon_running" => running, "revision" => data["revision"],
          "items" => data["items"].each_with_index.map { |item, i| item_row(item, i + 1) }, "next_actions" => actions}
+      end
+
+      # A daemon whose socket path can't be made (a state dir too deep) can't be answering either.
+      def daemon_running?(workspace)
+        @agent_running.call(workspace) == true
+      rescue Workspace::Error
+        false
       end
 
       def item_row(item, position)
@@ -500,7 +542,7 @@ module Workspace
             @output.puts format("%-3d %-8s %-9s %-9s %-*s %-8s %s", i["position"], i["id"], i["state"], i["kind"], WHAT_LENGTH, i["what"], i["headless"] ? "yes" : "no", age(i["added_at"]))
           end
         end
-        @output.puts "#{queue["workspace"]}: #{queue["state"]}#{" (#{queue["paused_reason"]})" if queue["paused_reason"]}"
+        @output.puts "#{queue["workspace"]}: #{queue["state"]}#{" (#{queue["paused_reason"]})" if queue["paused_reason"]}, daemon #{queue["daemon_running"] ? "up" : "down"}"
         @output.puts OFF_HINT if queue["state"] == "off"
       end
 
@@ -517,7 +559,7 @@ module Workspace
         active = line["active"]
         text = "#{line["workspace"]}: #{line["state"]}#{" (#{line["paused_reason"]})" if line["paused_reason"]}"
         text += active ? ", active #{active["id"]} (#{active["state"]})" : ", nothing active"
-        "#{text}, #{line["queued"]} queued"
+        "#{text}, #{line["queued"]} queued, daemon #{line["daemon_running"] ? "up" : "down"}"
       end
 
       def age(time)

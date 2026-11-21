@@ -1500,7 +1500,7 @@ module Workspace
       lock_holder: lock_holder, status: workflow_status)
     work_queue_command = Commands::WorkQueue.new(store_factory: work_queue_store_for, history_factory: work_queue_history_for, advance: work_queue_advance,
       decisions: workflow_engine, run_store: workflow_store, checkout: workspace_checkout, go: go_command, status_scope: status_scope,
-      working_dir: working_dir, output: output, error_output: error_output, input: input)
+      agent_ensurer: ensure_agent_command, agent_running: config.method(:agent_running?), working_dir: working_dir, output: output, error_output: error_output, input: input)
 
     work_queue_family = CLI::WorkQueue.new(work_queue_command: work_queue_command, common: common)
 

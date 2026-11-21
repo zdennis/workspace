@@ -156,7 +156,7 @@ The same pane list carries `waits` per pane: every open wait as `agent_id`, `too
 `work-queue` (alias `wq`) action verbs (`add`, `rm`, `move`, `cancel`, `enable`, `disable`, `resume`, `skip`, `advance`, `history clear`) print an [action document](#actions) with two more top-level keys, `queue` (the workspace) and `revision` (the queue file's revision, which `move --if-revision` takes). Each row is `{"workspace","outcome","id","position","kind"}`; `id`, `position` and `kind` are null where no item applies (`enable`, `resume`, `history clear`, an `advance` refusal). There is no `message` key. Rows add keys where they apply:
 
 - `advance` rows (and the pass rows of `cancel --and-continue`) add `reason`, `run_id` and `next_actions`; `id` and `kind` are null on a refusal.
-- A `cancel` row adds `run_id`, and `skip` adds `run_id` and, while the run still goes, `warnings` (a list of `{code, message}`; the document's `warnings` carries them too) and `next_actions`.
+- An `add` or `enable` row adds `warnings` (`daemon_not_started`, with `workspace` and `message`) when the agent daemon could not be started; the change itself is made. A `cancel` row adds `run_id`, and `skip` adds `run_id` and, while the run still goes, `warnings` (a list of `{code, message}`; the document's `warnings` carries them too) and `next_actions`.
 - `history clear` adds `count`.
 
 `outcome` by verb: `add` gives `added` or `unchanged`; `rm` `removed`; `move` `moved` or `unchanged`; `enable` `enabled` or `unchanged`; `disable` `disabled` or `unchanged`; `resume` `resumed` or `unchanged`; `skip` `skipped`; `cancel` `cancelled`; `history clear` `cleared`, `unchanged` or `cancelled` (the question was answered no). For `advance`:
@@ -185,7 +185,7 @@ The reading verbs print a success document with a `warnings` list and their payl
 
 | Verb | Keys |
 |------|------|
-| `list`, `status` | `queues`: one per workspace, each with `workspace`, `state` (`on`, `off` or `paused`), `paused_reason`, `revision` and `next_actions`; `list` adds `enabled` and `items` (item rows), `status` adds `active` (an item row or null) and `queued` (a count) |
+| `list`, `status` | `queues`: one per workspace, each with `workspace`, `state` (`on`, `off` or `paused`), `paused_reason`, `daemon_running` (whether its agent daemon answers; `false` on an off queue is no fault), `revision` and `next_actions` (`agentd --ensure` and `work-queue advance` only for an enabled queue whose daemon is down); `warnings` has a `daemon_not_running` `{code, workspace, message}` for each such queue; `list` adds `enabled` and `items` (item rows), `status` adds `active` (an item row or null) and `queued` (a count) |
 | `show` | `workspace`, `item` (the full item: its `spec`, `result` and the rest, plus `position`, `what` and `run_id`) and `next_actions` |
 | `active` | `workspace`, `item` (an item row, or null when nothing is active), `waiting_on` (`on`, `reason`, `run_id`, `run_state`, `step`; null with no item) and `next_actions` |
 | `history list` | `entries`, each a finished item with `outcome`, `reason`, `finished_at` and `workspace`, and `next_actions` |
