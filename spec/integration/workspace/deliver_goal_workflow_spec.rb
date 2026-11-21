@@ -43,6 +43,19 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(File.read(path).gsub(%r{"\*(calculator2/acceptance/?\*?|refs/demo-calc2\*)"}, "")).not_to match(/calc|arithmetic/i)
   end
 
+  it "tells the implement step to keep hidden or denied paths out of shell command lines" do
+    composer = RecordingComposer.new
+    prompt = Workspace::WorkflowPrompt.new(composer: composer, git: FakeGit.new(worktree_branch: "topic"), excludes: RecordingGitExclude.new, prompt_writer: ->(*) {})
+    run = {"id" => "wr_1", "workspace" => "app", "worktree" => base, "artifacts_dir" => File.join(base, ".workflow", "wr_1"),
+           "inputs" => {"task" => "t", "goal" => "g.md", "acceptance" => "a"}, "definition" => definition.to_h}
+    step = definition.to_h["steps"].find { |each| each["id"] == "implement" }
+
+    prompt.compose(run, step, [])
+
+    text = composer.calls.last.last[:workflow]["text"].gsub(/\s+/, " ")
+    expect(text).to include("Shell commands that mention a hidden or denied path, even one you only saw in a log or error, inside quotes or an inline script, are blocked and reported; keep such paths out of shell command lines.")
+  end
+
   it "completes when acceptance passes first time" do
     result = play("happy")
     expect(result["outcome"]).to eq("completed")

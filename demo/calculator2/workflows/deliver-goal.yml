@@ -24,6 +24,9 @@ instructions: |
   The goal is written in {{inputs.goal}}. Read that document first and treat it as the brief:
   build what it asks and nothing beyond it. Do not read, run, or look for the program that
   accepts the work; it is not yours to see.
+  Shell commands that mention a hidden or denied path, even one you only saw in a log or error,
+  inside quotes or an inline script, are blocked and reported; keep such paths out of shell
+  command lines.
   Spec (may be empty): {{inputs.spec}}
   Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
   inputs; read them before you start.
