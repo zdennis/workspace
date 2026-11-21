@@ -250,7 +250,7 @@ module Workspace
         "Write your verdict to #{verdict_path}. The first #{WorkflowReviewTally::HEADER_KEYS.size} lines are #{WorkflowReviewTally::HEADER_KEYS.join(", ")}, " \
           "in that order, each on its own line, with nothing before them, and the verdict is #{WorkflowReviewTally::VERDICTS.join(" or ")}:\n" \
           "#{header.join("\n")}\n" \
-          "Then your reasons, as free text. Write that one file and no other.",
+          "Then your reasons, as free text. Write that one file and no other. Write it with a file tool (Write or Edit), not a shell command: a verdict written by cat, tee or a redirect is not counted.",
         "#{SECTION_END} #{name}"
       ].compact.reject(&:empty?).join("\n\n")
     end

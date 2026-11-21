@@ -83,7 +83,8 @@ module Workspace
     # The agent's turn ended in the run's pane: decides whether the current step is done. A step with a
     # `status:` check has it run here, outside the run's lock, so a long check never blocks a `cancel`.
     # On a step being reviewed only the round's review pane counts: its turn's end decides the round
-    # ({#review_ended}), and a turn's end in the author's pane changes nothing. A turn's end for an attempt whose line a
+    # ({#review_ended}) unless its Stop listed background tasks, and a turn's end in the author's pane changes
+    # nothing. A turn's end for an attempt whose line a
     # pause kept from being typed (`pause_hold` kind `delivery` naming it) changes nothing either: the agent never got
     # the step, so whatever turn ended (a person typing in the pane) is not the step's. A turn's end that is decided
     # drops a `pause --interrupt` continue mark (`paused.interrupt`, `continue_pending`): no continue line follows it.
@@ -119,6 +120,13 @@ module Workspace
         next if held_delivery?(stored, state)
         if state["state"] == "reviewing"
           next unless review_turn?(stored, state["review"], pane, turn_started, stopped_at)
+          # The reviewer's sub-agents (or other tasks) still running write verdicts later, and each one that ends
+          # wakes the reviewer for another turn: that turn's end, listing none, decides the round. A turn the sweep
+          # interrupted for a time limit is decided at once, on the verdicts already written.
+          if background.any? && !WorkflowTransitions.round_interrupted(state["review"], @clock.call)
+            event(stored, "review_turn_held", "step" => stored["current"], "attempt" => state["attempts"].last["n"], "round" => state["review"]["round"], "tasks" => background)
+            next
+          end
           judged = review_ended(read, ctx: ctx)
           follow = ctx
           next judged

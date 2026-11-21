@@ -265,6 +265,12 @@ RSpec.describe Workspace::WorkflowPrompt do
       expect(text).to include("records every Write and Edit a sub-agent of this pane makes")
     end
 
+    it "tells each reviewer to write its verdict with a file tool, since a shell write is never proved" do
+      text = text_for(1)
+
+      expect(text.scan("Write it with a file tool (Write or Edit), not a shell command: a verdict written by cat, tee or a redirect is not counted.").size).to eq(reviewers.size)
+    end
+
     it "orders an all-parallel round as one batch and an all-serial one without a batch" do
       parallel = reviewers.transform_values { |each| each.merge("parallel" => true) }
       serial = reviewers.transform_values { |each| each.merge("parallel" => false) }
