@@ -77,7 +77,7 @@ steps:
     prompt: |
       Run the tests from the repository root. If they pass, there is nothing to change. Do not
       edit any file.
-    guard: unchanged
+    guard: config
     status:
       run: ruby demo/calculator/test/calc_test.rb
       timeout: 5m
