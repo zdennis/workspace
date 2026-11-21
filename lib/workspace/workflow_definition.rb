@@ -264,7 +264,7 @@ module Workspace
       else
         []
       end
-      missing + idle + retry_warnings + step_attempt_warnings + WorkflowReviewSpec.round_warnings(steps, @data["max_attempts"]) + WorkflowFanOutSpec.warnings(@data["groups"]) + @notes + unused_action
+      missing + idle + retry_warnings + step_attempt_warnings + guard_after_commit_warnings + WorkflowReviewSpec.round_warnings(steps, @data["max_attempts"]) + WorkflowFanOutSpec.warnings(@data["groups"]) + @notes + unused_action
     end
 
     # Every project command a definition checks with: each step's `status: command:` and each `require: command:` not marked optional.
@@ -479,6 +479,40 @@ module Workspace
     end
 
     private
+
+    # `guard: unchanged` compares HEAD to the run's starting commit, so it passes only while no step has
+    # committed. A guarded step at or after the first step with `require: commits:` can never pass. A guarded
+    # step before it passes the first time, but fails with `head_moved` when a later step's failure sends the
+    # run back to it: through its `on_fail` goto, or the one-step-back loop a step with no `on_fail` takes.
+    # Only `require: commits:` counts as committing, so a step that merely may commit is not guessed at.
+    def guard_after_commit_warnings
+      first_commit = steps.index { |step| Array(step["require"]).any? { |entry| entry.is_a?(Hash) && entry.key?("commits") } }
+      return [] unless first_commit
+      committer = steps[first_commit]["id"]
+      ids = steps.map { |step| step["id"] }
+      steps.each_with_index.flat_map do |step, index|
+        next [] unless step["guard"] == "unchanged"
+        if index >= first_commit
+          why = (index == first_commit) ? "it also commits" : "step #{committer} commits before it"
+          [{"code" => "guard_unchanged_after_commit", "step" => step["id"],
+            "message" => "step #{step["id"]} sets guard: unchanged, but #{why}, and guard: unchanged compares the checkout to where the run started, so this step always fails with head_moved. Use guard: config (it allows commits and checks only the project's config files), or remove the guard."}]
+        else
+          loopers = steps.each_with_index.filter_map do |later, later_index|
+            next if later_index < first_commit
+            on_fail = later["on_fail"]
+            target = if on_fail.is_a?(Hash)
+              on_fail["goto"]
+            elsif on_fail.nil?
+              WorkflowTransitions.implicit_target(steps, later)
+            end
+            later["id"] if target && ids.index(target).to_i <= index
+          end
+          next [] if loopers.empty?
+          [{"code" => "guard_unchanged_loop_back", "step" => step["id"],
+            "message" => "step #{step["id"]} sets guard: unchanged, but #{loopers.join(", ")} (a step that commits, or follows one) can send the run back to it when #{(loopers.size > 1) ? "they fail" : "it fails"} after a commit, through on_fail goto or the default one-step-back loop. The guard then sees the earlier commit and stops the run with head_moved instead of retrying. Use guard: config on #{step["id"]}, or set on_fail: stop (or a goto to a step that may change the checkout) on #{loopers.join(", ")}."}]
+        end
+      end
+    end
 
     # Step caps that can't hold: the step an `on_fail` goes back to runs once and then once per
     # retry, so `max + 1` above its cap means a retry that can never start; and a step cap
