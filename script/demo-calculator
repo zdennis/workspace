@@ -130,7 +130,9 @@ module DemoCalculator
       source = File.join(@root, "demo", "calculator", "workflows")
       current = @dry_run ? "" : capture(@workspace, "config", "get", "workflows.sources", chdir: @root)
       listed = current.split(/[,\n]/).map(&:strip).reject(&:empty?)
-      workspace("config", "set", "workflows.sources", (listed | [source]).join(",")) unless listed.include?(source)
+      suffix = "/demo/calculator/workflows"
+      merged = listed.map { |entry| entry.sub(%r{/+\z}, "") }.reject { |entry| entry != source && entry.end_with?(suffix) } | [source]
+      workspace("config", "set", "workflows.sources", merged.join(",")) unless merged == listed
       workspace("workflow", "install")
       workspace("config", "set", "--scope", "workspace", *name_args, "commands.test", "ruby")
     end
