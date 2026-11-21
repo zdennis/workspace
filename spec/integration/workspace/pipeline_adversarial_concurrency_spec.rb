@@ -80,6 +80,10 @@ RSpec.describe "Pipeline reliability adversarial concurrency" do
       allow(c).to receive(:handoff_dir).and_return(File.join(tmpdir, "handoffs"))
       allow(c).to receive(:agent_socket_path).with("myapp").and_return(File.join(tmpdir, "workspace-myapp.sock"))
       allow(c).to receive(:prompt_queue_path).and_return(File.join(tmpdir, "prompt-queue.json"))
+      allow(c).to receive(:work_queue_path) { |name| File.join(tmpdir, "#{name}-work-queue.json") }
+      allow(c).to receive(:work_queue_history_path) { |name| File.join(tmpdir, "#{name}-work-queue-history.jsonl") }
+      allow(c).to receive(:workflow_runs_dir).and_return(File.join(tmpdir, "workflow-runs"))
+      allow(c).to receive(:workflow_archive_dir).and_return(File.join(tmpdir, "workflow-archive"))
     end
   end
   let(:pipeline_config) { Workspace::PipelineConfig.new(config: config) }

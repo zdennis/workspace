@@ -17,7 +17,7 @@ RSpec.shared_context "waking workflow runs" do
         @tick_logs = []
       end
 
-      def turn_ended(workspace, pane, turn_started: nil, background: nil, hook_log: nil, transcript_path: nil) = @turns << [workspace, pane, turn_started, background, transcript_path]
+      def turn_ended(workspace, pane, turn_started: nil, background: nil, hook_log: nil, transcript_path: nil, on_exit: nil) = @turns << [workspace, pane, turn_started, background, transcript_path]
 
       def tick(workspace, hook_log: nil)
         @tick_logs << hook_log

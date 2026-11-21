@@ -282,6 +282,7 @@ require_relative "workspace/work_queue_history"
 require_relative "workspace/work_queue_store"
 require_relative "workspace/work_queue_starters"
 require_relative "workspace/work_queue_advance"
+require_relative "workspace/work_queue_desk"
 require_relative "workspace/pane_locks"
 require_relative "workspace/prompt_queue_desk"
 require_relative "workspace/agent_recovery_store"
@@ -714,6 +715,9 @@ module Workspace
   #   {Workspace::SentinelPoller} that watches a pipeline stage; nil builds the real one
   # @param workflow_nudger [Workspace::WorkflowNudger, nil] the {Workspace::HookFanout} wakes a workflow run with it when a
   #   turn ends in the run's pane; nil wakes none
+  # @param workflow_store [Workspace::WorkflowRunStore, nil] the runs the work queue desk reads; nil builds one over the config's run dirs
+  # @param work_queue_desk_factory [#call, nil] given +workspace:+, builds the {Workspace::WorkQueueDesk} that starts the
+  #   work queue's pass; nil builds the real one
   # @param token_generator [#call] returns a fresh completion token for one stage dispatch
   # @param epoch_generator [#call] returns a fresh epoch for the pipeline desk's registration and each re-registration
   # @param clock [#call] returns the current Time, for stage deadlines and when a turn began
@@ -729,6 +733,7 @@ module Workspace
     plan_paused_for: nil, hook_event_log_factory: nil, plan_progress_watcher_factory: nil, spine_watcher_factory: nil,
     spine_owner_report_factory: nil, agent_recovery_desk_factory: nil, agent_status_desk_factory: nil, prompt_queue_desk_factory: nil,
     handoff_watcher_factory: nil, restart_runner_factory: nil, pipeline_state: nil, sentinel_poller_factory: nil, workflow_nudger: nil,
+    workflow_store: nil, work_queue_desk_factory: nil,
     token_generator: -> { SecureRandom.hex(4) }, epoch_generator: -> { "wa-#{Commands::Agent.ulid}" }, clock: -> { Time.now }, retry_backoff: 0.5,
     logger: Workspace::Logger.new, error_output: $stderr)
     sentinel_poller_factory ||= ->(session_name:, pane:, token:, deadline:) do
@@ -736,6 +741,12 @@ module Workspace
         clock: clock, logger: logger, error_output: error_output)
     end
     stage_marks = ->(timeout) { [token_generator.call, timeout && clock.call + timeout] }
+    work_queue_desk_factory ||= lambda do |workspace:|
+      store = WorkQueueStore.new(path: config.work_queue_path(workspace), history: WorkQueueHistory.new(path: config.work_queue_history_path(workspace)))
+      WorkQueueDesk.new(workspace: workspace, store: store,
+        run_store: workflow_store || WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir),
+        executable: File.expand_path("../bin/workspace", __dir__), log_path: ->(name) { config.agent_log_path(name) }, logger: logger)
+    end
     pipeline_desk_for = lambda do |workspace, session_name, delivery_lock|
       PipelineDesk.new(workspace: workspace, session_name: session_name, tmux: tmux, config: config, pipeline_config: pipeline_config,
         pipeline_state: pipeline_state || PipelineState.new(pipeline_config: pipeline_config, state_path: config.pipeline_state_path(workspace)),
@@ -816,12 +827,14 @@ module Workspace
       handoff_watcher = handoff_watcher_factory.call(workspace: workspace, session_name: session_name,
         session_monitor: monitor, delivery_lock: delivery_lock, event_log: event_log,
         restarting: ->(pane_id) { restarting.call(pane_id) || recovering.call(pane_id) })
+      work_queue_desk = work_queue_desk_factory.call(workspace: workspace)
       hook_fanout = HookFanout.new(workspace: workspace, monitor: monitor, hook_log: hook_event_log, handoff_watcher: handoff_watcher,
-        nudger: workflow_nudger, owner_report: spine_owner_report, desks: [queue_desk, recovery_desk], clock: clock, logger: logger)
+        nudger: workflow_nudger, owner_report: spine_owner_report, desks: [queue_desk, recovery_desk], work_queue_desk: work_queue_desk,
+        clock: clock, logger: logger)
       AgentdParts.new(hook_event_log: hook_event_log, monitor: monitor, restart_runner: restart_runner, restart_desk: restart_desk,
         plan_progress_watcher: plan_progress_watcher, spine_owner_report: spine_owner_report, spine_watcher: spine_watcher,
         status_desk: status_desk, queue_desk: queue_desk, recovery_desk: recovery_desk, handoff_watcher: handoff_watcher,
-        pipeline_desk: pipeline_desk, hook_fanout: hook_fanout).freeze
+        pipeline_desk: pipeline_desk, work_queue_desk: work_queue_desk, hook_fanout: hook_fanout).freeze
     end
   end
 
@@ -1396,6 +1409,7 @@ module Workspace
       spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: notes_dir_of, event_log: event_log, logger: logger) },
       hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
       workflow_nudger: workflow_nudger,
+      workflow_store: workflow_store,
       logger: logger,
       error_output: error_output
     )

@@ -333,21 +333,52 @@ class RecordingHandoffWatcher
   end
 end
 
-# Fake of Workspace::WorkflowNudger#turn_ended.
+# Fake of Workspace::WorkflowNudger#turn_ended. +woken+ is the run it answers (nil: none); with one, the
+# +on_exit+ it was given is kept in +exits+ for the example to call, as the advance's exit would.
 class RecordingNudger
+  CONTROL_METHODS = %i[calls exits].freeze
+
+  attr_reader :calls, :exits
+
+  def initialize(order: [], label: :nudger, woken: nil)
+    @order = order
+    @label = label
+    @woken = woken
+    @calls = []
+    @exits = []
+  end
+
+  def turn_ended(workspace, pane_id, turn_started: nil, background: nil, transcript_path: nil, hook_log: nil, on_exit: nil)
+    @calls << [:turn_ended, workspace, pane_id, {turn_started: turn_started, background: background, transcript_path: transcript_path, hook_log: hook_log}]
+    @order << [@label, :turn_ended]
+    @exits << on_exit if @woken && on_exit
+    @woken
+  end
+end
+
+# Fake of Workspace::WorkQueueDesk: +turn_ended+ and +scan+.
+class RecordingWorkQueueDesk
   CONTROL_METHODS = %i[calls].freeze
 
   attr_reader :calls
 
-  def initialize(order: [], label: :nudger)
+  def initialize(order: [], label: :work_queue_desk, fail_with: nil)
     @order = order
     @label = label
+    @fail_with = fail_with
     @calls = []
   end
 
-  def turn_ended(workspace, pane_id, turn_started: nil, background: nil, transcript_path: nil, hook_log: nil)
-    @calls << [:turn_ended, workspace, pane_id, {turn_started: turn_started, background: background, transcript_path: transcript_path, hook_log: hook_log}]
+  def turn_ended
+    @calls << :turn_ended
     @order << [@label, :turn_ended]
+    nil
+  end
+
+  def scan
+    @calls << :scan
+    @order << [@label, :scan]
+    raise @fail_with if @fail_with
     nil
   end
 end

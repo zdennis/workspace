@@ -319,6 +319,12 @@ RSpec.describe "fake contracts" do
     end
   end
 
+  describe RecordingWorkQueueDesk do
+    it "accepts every call WorkQueueDesk accepts" do
+      expect(FakeContract.problems(described_class, Workspace::WorkQueueDesk, control: described_class::CONTROL_METHODS)).to be_empty
+    end
+  end
+
   describe RecordingHookDesk do
     it "accepts every call PromptQueueDesk and AgentRecoveryDesk accept" do
       expect(FakeContract.problems(described_class, Workspace::PromptQueueDesk, control: described_class::CONTROL_METHODS)).to be_empty
