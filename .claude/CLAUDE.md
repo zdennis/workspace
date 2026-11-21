@@ -56,6 +56,7 @@ New per-file detail goes there, never here.
 - `lib/workspace/workflow_gate_note.rb` — The one resolver for a gate's note file.
 - `lib/workspace/shell_safe_path.rb` — Lists characters a path can't hold inside steps' shell commands.
 - `lib/workspace/workflow_deny.rb` — PreToolUse tripwire that blocks Bash commands a run's `deny` list matches.
+- `lib/workspace/bash_command_pieces.rb` — Cuts a Bash command into the pieces a policy matches, and tells substitutions and file redirections.
 - `lib/workspace/review_write_guard.rb` — PreToolUse tripwire that keeps review panes from writing outside the round directory.
 - `lib/workspace/review_round_path.rb` — The one derivation of a reviewer's round directory and its link-safe walk.
 - `lib/workspace/reflection_write_guard.rb` — PreToolUse tripwire that keeps a reflection pane to writing its run's `reflection.md`.

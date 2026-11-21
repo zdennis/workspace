@@ -376,6 +376,7 @@ require_relative "workspace/workflow_files"
 require_relative "workspace/workflow_project"
 require_relative "workspace/workflow_run"
 require_relative "workspace/workflow_run_store"
+require_relative "workspace/bash_command_pieces"
 require_relative "workspace/workflow_deny"
 require_relative "workspace/review_write_guard"
 require_relative "workspace/reflection_write_guard"
@@ -1047,7 +1048,7 @@ module Workspace
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
-    workflow_deny = WorkflowDeny.new(bound_run: bound_run, logger: logger, event_log: event_log,
+    workflow_deny = WorkflowDeny.new(bound_run: bound_run, command_pieces: BashCommandPieces.new, logger: logger, event_log: event_log,
       run_store: WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, event_errors_path: config.workflow_event_errors_path))
     review_write_guard = ReviewWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, env: env, event_log: event_log, logger: logger)
     reflection_write_guard = ReflectionWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, config: config, env: env, event_log: event_log, logger: logger)
