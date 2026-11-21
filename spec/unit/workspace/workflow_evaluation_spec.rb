@@ -415,6 +415,30 @@ RSpec.describe Workspace::WorkflowEvaluation do
       expect(run.reason["details"]["tasks"]).to eq([{"id" => "b1", "type" => "bash"}])
     end
 
+    it "holds a turn with background tasks whose produced files are written, before its require proofs are judged" do
+      produce
+      require_check = RecordingRequire.new(checks: [{"proof" => "plan_status", "code" => "require_plan_status", "detail" => "found active"}])
+      stored(run_hash(definition_step: step("require" => [{"plan_status" => "done"}])))
+
+      run = evaluation(require_check: require_check).turn_ended("wr_1", actor: "agent", background: [{"id" => "a1", "type" => "subagent"}])
+
+      expect(run.reason).to include("code" => "turn_ended_background", "seen_at" => "2026-11-10T12:00:00Z")
+      expect(run.reason["details"]).to include("missing" => [], "tasks" => [{"id" => "a1", "type" => "subagent"}])
+      expect(require_check.calls).to be_empty
+      expect(progress.calls).to be_empty
+    end
+
+    it "judges the require proofs of a turn with written files and no background tasks" do
+      produce
+      require_check = RecordingRequire.new(checks: [{"proof" => "plan_status", "code" => "require_plan_status", "detail" => "found active"}])
+      stored(run_hash(definition_step: step("require" => [{"plan_status" => "done"}])))
+
+      evaluation(require_check: require_check).turn_ended("wr_1", actor: "agent", background: [])
+
+      expect(require_check.calls).to eq([[:check, "plan", 1, {from: 0}]])
+      expect(progress.calls.first).to match([:fail_step, "plan", hash_including("cause" => "require", "code" => "require_plan_status")])
+    end
+
     it "fails the step with the agent's word when it reported fail" do
       stored(run_hash.tap { |run| run["steps"]["plan"]["attempts"].last["reported"] = {"status" => "fail", "summary" => "no", "code" => "flaky"} })
 
@@ -834,9 +858,24 @@ RSpec.describe Workspace::WorkflowEvaluation do
         expect(run.reason["details"]["tasks"]).to eq([{"id" => "b1", "type" => "bash"}])
       end
 
-      it "still passes a step whose checks pass" do
+      it "holds a step whose produced files are written, before its require proofs are judged" do
         produce
-        stored
+        require_check = RecordingRequire.new(checks: [{"proof" => "plan_status", "code" => "require_plan_status", "detail" => "found active"}])
+        stored(run_hash(definition_step: step("require" => [{"plan_status" => "done"}])))
+
+        run = end_turn(overrides: {require_check: require_check})
+
+        expect(run.reason).to include("code" => "turn_ended_background", "seen_at" => "2026-11-10T12:00:00Z")
+        expect(run.reason["details"]).to include("missing" => [], "stale" => [], "tasks" => [])
+        expect(run.state).to eq("waiting")
+        expect(run.step("plan").state).to eq("running")
+        expect(require_check.calls).to be_empty
+        expect(progress.calls).to be_empty
+      end
+
+      it "does not hold when the agent reported its outcome out of band" do
+        produce
+        stored(run_hash.tap { |run| run["steps"]["plan"]["attempts"].last["reported"] = {"status" => "pass"} })
 
         end_turn
 
@@ -862,6 +901,17 @@ RSpec.describe Workspace::WorkflowEvaluation do
         end_turn
 
         expect(progress.calls).to eq([[:pass_step, "plan"]])
+      end
+
+      it "judges the require proofs once the produced files are written" do
+        produce
+        require_check = RecordingRequire.new(checks: [{"proof" => "plan_status", "code" => "require_plan_status", "detail" => "found active"}])
+        stored(run_hash(definition_step: step("require" => [{"plan_status" => "done"}])))
+
+        end_turn(overrides: {require_check: require_check})
+
+        expect(require_check.calls).to eq([[:check, "plan", 1, {from: 0}]])
+        expect(progress.calls.first).to match([:fail_step, "plan", hash_including("cause" => "require", "code" => "require_plan_status")])
       end
 
       it "loses to an out-of-band reported fail" do
