@@ -17,14 +17,14 @@ RSpec.describe Workspace::Commands::SessionEvent do
     allow(tmux).to receive(:server_pid_for_pane).and_return(nil)
   end
 
-  def invoke(payload, workspace: nil, agent: nil)
+  def invoke(payload, workspace: nil, agent: nil, **options)
     command = described_class.new(config: config, tmux: tmux,
-      input: StringIO.new(payload.is_a?(String) ? payload : JSON.generate(payload)), env: env)
+      input: StringIO.new(payload.is_a?(String) ? payload : JSON.generate(payload)), env: env, **options)
     command.call(workspace: workspace, agent: agent)
   end
 
   # Stands up a listener, runs the hook, and returns what arrived.
-  def deliver(payload, agent = nil)
+  def deliver(payload, agent = nil, options = {})
     File.unlink(socket_path) if File.exist?(socket_path)
     server = UNIXServer.new(socket_path)
     received = nil
@@ -34,7 +34,7 @@ RSpec.describe Workspace::Commands::SessionEvent do
       client.puts(JSON.generate("ok" => true))
       client.close
     end
-    invoke(payload, agent: agent)
+    invoke(payload, agent: agent, **options)
     listener.join(2)
     received
   ensure
@@ -513,6 +513,213 @@ RSpec.describe Workspace::Commands::SessionEvent do
 
         expect(event["input"].bytesize).to be <= 300
         expect(event["input"]).to be_valid_encoding
+      end
+    end
+
+    describe "the permission policy" do
+      let(:output) { StringIO.new }
+      let(:error_output) { StringIO.new }
+      let(:policy_config) { instance_double(Workspace::PermissionPolicyConfig) }
+      let(:request) { {"hook_event_name" => "PermissionRequest", "tool_name" => "Bash", "cwd" => tmpdir, "tool_input" => {"command" => "ls"}} }
+      let(:allow_policy) { Workspace::PermissionPolicy.new(layers: [{source: "project", rules: [{"tool" => "Bash", "pattern" => "ls", "action" => "allow"}], default: nil}]) }
+      let(:deny_policy) { Workspace::PermissionPolicy.new(layers: [{source: "project", rules: [{"tool" => "Read", "action" => "allow"}, {"tool" => "Bash", "action" => "deny"}], default: nil}]) }
+      let(:ask_policy) { Workspace::PermissionPolicy.new(layers: [{source: "project", rules: [], default: "ask"}]) }
+
+      def decide(payload = request, agent: nil)
+        event = deliver(payload, agent, output: output, error_output: error_output, permission_policy_config: policy_config)
+        [event, output.string]
+      end
+
+      def reply
+        JSON.parse(output.string)
+      end
+
+      it "prints one allow line and forwards the decision and rule" do
+        allow(policy_config).to receive(:policy).with(workspace: "proj", project: nil).and_return(allow_policy)
+
+        event, out = decide
+
+        expect(out.lines.size).to eq(1)
+        expect(reply).to eq("hookSpecificOutput" => {"hookEventName" => "PermissionRequest", "decision" => {"behavior" => "allow"}})
+        expect(event).to include("event" => "permission_request", "tool" => "Bash", "decision" => "allow", "rule" => "project:rules[0]")
+      end
+
+      it "prints a deny line whose message names the rule" do
+        allow(policy_config).to receive(:policy).and_return(deny_policy)
+
+        event, out = decide
+
+        expect(out.lines.size).to eq(1)
+        expect(reply["hookSpecificOutput"]["decision"]).to eq("behavior" => "deny", "message" => "Denied by workspace permission policy (project:rules[1])")
+        expect(event).to include("decision" => "deny", "rule" => "project:rules[1]")
+      end
+
+      it "never prints reserved fields" do
+        allow(policy_config).to receive(:policy).and_return(deny_policy)
+
+        decide
+
+        expect(output.string).not_to match(/updatedInput|updatedPermissions|interrupt/)
+      end
+
+      it "prints nothing for an ask and forwards decision ask" do
+        allow(policy_config).to receive(:policy).and_return(ask_policy)
+
+        event, out = decide
+
+        expect(out).to eq("")
+        expect(event).to include("event" => "permission_request", "decision" => "ask", "rule" => "project:default")
+      end
+
+      it "prints nothing, and forwards no decision, when no policy is configured" do
+        allow(policy_config).to receive(:policy).and_return(nil)
+
+        event, out = decide
+
+        expect(out).to eq("")
+        expect(event).not_to have_key("decision")
+        expect(event).not_to have_key("rule")
+      end
+
+      it "prints nothing for a broken configuration (policy gives nil)" do
+        allow(policy_config).to receive(:policy).and_return(nil)
+
+        expect(decide.last).to eq("")
+      end
+
+      it "prints nothing, and still forwards the event, when building the policy raises" do
+        allow(policy_config).to receive(:policy).and_raise(Workspace::ConfigParseError, "boom")
+
+        event, out = decide
+
+        expect(out).to eq("")
+        expect(event).to include("event" => "permission_request")
+        expect(event).not_to have_key("decision")
+      end
+
+      it "prints nothing when the policy raises while deciding" do
+        broken = instance_double(Workspace::PermissionPolicy)
+        allow(broken).to receive(:decide).and_raise(RuntimeError, "boom")
+        allow(policy_config).to receive(:policy).and_return(broken)
+
+        event, out = decide
+
+        expect(out).to eq("")
+        expect(event).not_to have_key("decision")
+      end
+
+      it "decides before the daemon is reached, and exits 0 with no daemon" do
+        allow(policy_config).to receive(:policy).and_return(deny_policy)
+        File.unlink(socket_path) if File.exist?(socket_path)
+
+        result = invoke(request, output: output, permission_policy_config: policy_config)
+
+        expect(result).to eq(exit_code: 0)
+        expect(reply["hookSpecificOutput"]["decision"]["behavior"]).to eq("deny")
+      end
+
+      it "still exits 0 with the reply printed when delivery raises a workspace error" do
+        allow(policy_config).to receive(:policy).and_return(allow_policy)
+        allow(config).to receive(:agent_socket_path).and_raise(Workspace::Error, "socket dir is too deep")
+
+        result = invoke(request, output: output, permission_policy_config: policy_config)
+
+        expect(result).to eq(exit_code: 0)
+        expect(reply["hookSpecificOutput"]["decision"]["behavior"]).to eq("allow")
+      end
+
+      it "exits 0 on an ask when delivery raises a workspace error, and logs it to the delivery log" do
+        allow(policy_config).to receive(:policy).and_return(ask_policy)
+        allow(config).to receive(:agent_socket_path).and_raise(Workspace::Error, "socket dir is too deep")
+        log_path = File.join(tmpdir, "delivery2.log")
+
+        result = invoke(request, output: output, permission_policy_config: policy_config, delivery_log: Workspace::DeliveryLog.new(path: log_path))
+
+        expect(result).to eq(exit_code: 0)
+        expect(output.string).to eq("")
+        expect(File.read(log_path)).to include("undeliverable event=permission_request workspace=proj", "socket dir is too deep")
+      end
+
+      it "keeps today's failure for another hook when delivery raises a workspace error" do
+        allow(config).to receive(:agent_socket_path).and_raise(Workspace::Error, "socket dir is too deep")
+
+        expect { invoke({"hook_event_name" => "Stop"}) }.to raise_error(Workspace::Error)
+      end
+
+      it "makes no decision and prints nothing for an ambiguous session, but still forwards the request" do
+        expect(policy_config).not_to receive(:policy)
+
+        event = deliver(request, nil, output: output, permission_policy_config: policy_config, session_ambiguous: ->(session) { session == "proj" })
+
+        expect(output.string).to eq("")
+        expect(event).to include("event" => "permission_request")
+        expect(event).not_to have_key("decision")
+      end
+
+      it "decides for the payload's own cwd" do
+        policy = instance_double(Workspace::PermissionPolicy)
+        allow(policy_config).to receive(:policy).and_return(policy)
+        expect(policy).to receive(:decide).with(tool_name: "Bash", tool_input: {"command" => "ls"}, cwd: tmpdir).and_return({action: "ask", rule: "global:default"})
+
+        decide
+      end
+
+      it "writes nothing to stdout from the logger when debugging" do
+        allow(policy_config).to receive(:policy).and_raise("boom")
+        logger = Workspace::Logger.new(output: error_output, enabled: true)
+
+        deliver(request, nil, output: output, logger: logger, permission_policy_config: policy_config)
+
+        expect(output.string).to eq("")
+        expect(error_output.string).to include("permission decision")
+      end
+
+      it "records the decision and rule in the delivery log line when delivery fails" do
+        allow(policy_config).to receive(:policy).and_return(deny_policy)
+        log_path = File.join(tmpdir, "delivery.log")
+
+        invoke(request, output: output, permission_policy_config: policy_config, delivery_log: Workspace::DeliveryLog.new(path: log_path))
+
+        expect(File.read(log_path)).to match(/undeliverable event=permission_request workspace=proj pane=%2 decision=deny rule=project:rules\[1\] socket=/)
+      end
+
+      it "is not consulted for any other hook" do
+        expect(policy_config).not_to receive(:policy)
+
+        deliver({"hook_event_name" => "PreToolUse", "tool_name" => "Bash"}, nil, output: output, permission_policy_config: policy_config)
+      end
+
+      describe "for Codex" do
+        it "replies without reserved fields and forwards a decided request as permission_request" do
+          allow(policy_config).to receive(:policy).and_return(deny_policy)
+
+          event, out = decide(request, agent: "codex")
+
+          expect(out).not_to match(/updatedInput|updatedPermissions|interrupt/)
+          expect(reply["hookSpecificOutput"]["decision"].keys).to eq(%w[behavior message])
+          expect(event).to include("event" => "permission_request", "decision" => "deny", "rule" => "project:rules[1]", "tool" => "Bash", "agent_kind" => "codex")
+          expect(event).not_to have_key("notification_type")
+          expect(event).not_to have_key("message")
+        end
+
+        it "forwards an ask as the approval notification with tool, input, decision and rule" do
+          allow(policy_config).to receive(:policy).and_return(ask_policy)
+
+          event, out = decide(request, agent: "codex")
+
+          expect(out).to eq("")
+          expect(event).to include("event" => "notification", "notification_type" => "permission_request", "message" => "Approval requested for Bash",
+            "tool" => "Bash", "input" => "ls", "decision" => "ask", "rule" => "project:default")
+        end
+
+        it "keeps today's notification when no decision was made" do
+          allow(policy_config).to receive(:policy).and_return(nil)
+
+          event, = decide(request, agent: "codex")
+
+          expect(event).to include("event" => "notification", "notification_type" => "permission_request", "tool" => "Bash", "input" => "ls")
+          expect(event).not_to have_key("decision")
+        end
       end
     end
 

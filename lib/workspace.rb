@@ -1058,10 +1058,11 @@ module Workspace
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     recovery_stop_marker = RecoveryStopMarker.new(state_dir: config.state_dir)
     delivery_log = DeliveryLog.new(path: File.join(config.state_dir, "session-event.log"))
+    permission_policy_config = PermissionPolicyConfig.new(config_resolver: config_resolver, bound_run: bound_run, run_store: workflow_store, logger: logger)
     workspace_for_session = SessionWorkspace.new(tmux: tmux, project_config: project_config, config: config,
       on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
-      workspace_for_session: workspace_for_session, delivery_log: delivery_log,
+      workspace_for_session: workspace_for_session, delivery_log: delivery_log, permission_policy_config: permission_policy_config, session_ambiguous: workspace_for_session.method(:ambiguous?),
       lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, review_write_guard: review_write_guard, reflection_write_guard: reflection_write_guard, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
       dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), recovery_marker: recovery_stop_marker, logger: logger))
     process_group_terminator = ProcessGroupTerminator.new

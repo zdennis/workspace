@@ -141,16 +141,22 @@ module Workspace
       # @param workspace_for_session [#call] given the pane's tmux session name, returns the workspace
       #   whose agentd owns it (a worktree workspace's session is not named like the workspace), or nil
       #   for a session that is no workspace's, whose events are then dropped
+      # @param permission_policy_config [Workspace::PermissionPolicyConfig, nil] builds the permission policy a
+      #   PermissionRequest is decided by; nil decides nothing
+      # @param session_ambiguous [#call] given the pane's tmux session name, whether more than one workspace
+      #   claims it; no permission decision is made for such a session
       # @param delivery_log [Workspace::DeliveryLog, nil] records an event the daemon of a resolved workspace
       #   never got; nil records nothing beyond the debug log
       # @param connect_timeout [Numeric] seconds to wait for the daemon's socket to take the connection
       # @param reply_timeout [Numeric] seconds to wait for the daemon's reply
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
         lock_idle_tracker: nil, lock_enforcer: nil, workflow_deny: nil, review_write_guard: nil, reflection_write_guard: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
-        workspace_for_session: ->(session) { session }, delivery_log: nil,
+        workspace_for_session: ->(session) { session }, delivery_log: nil, permission_policy_config: nil, session_ambiguous: ->(_session) { false },
         connect_timeout: CONNECT_TIMEOUT, reply_timeout: REPLY_TIMEOUT)
         @workspace_for_session = workspace_for_session
         @delivery_log = delivery_log
+        @session_ambiguous = session_ambiguous
+        @permission_policy_config = permission_policy_config
         @connect_timeout = connect_timeout
         @reply_timeout = reply_timeout
         @dev_session_release = dev_session_release
@@ -212,20 +218,34 @@ module Workspace
         @reflection_write_guard&.release(pane_id: pane_id, hook: hook, reason: text_field(payload, "reason"))
 
         name = workspace
+        ambiguous = false
         unless name
           session = @tmux.session_name_for_pane(pane_id)
           return ok { "session-event: no session for #{pane_id}, dropped" } unless session
           name = @workspace_for_session.call(session)
           return ok { "session-event: session #{session} is no workspace's, dropped" } unless name
+          ambiguous = hook == "PermissionRequest" && @session_ambiguous.call(session)
         end
+
+        # Decided before anything else for this event, and before delivery, so the daemon can't delay or change it.
+        decision = (hook == "PermissionRequest" && !ambiguous) ? decide_permission(payload, name) : nil
 
         record_in_ledger(payload, pane_id, name)
         announce_binding(payload, pane_id)
 
-        event = translate(payload, pane_id, name)
+        event = translate(payload, pane_id, name, decision)
         return ok { "session-event: ignoring #{hook}" } unless event
 
-        deliver(name, event)
+        begin
+          deliver(name, event)
+        rescue => e
+          # A PermissionRequest never fails: with a reply already on stdout an error exit would void it, and without one it would
+          # stop the agent's own dialog from showing. The failure goes to the debug log and, for a resolved workspace, the delivery log.
+          raise unless hook == "PermissionRequest"
+
+          @logger.debug { "session-event: delivery failed on a PermissionRequest (#{e.class}: #{e.message})" }
+          record_undeliverable(name, event, nil, e)
+        end
         ok
       end
 
@@ -320,10 +340,13 @@ module Workspace
         nil
       end
 
-      def translate(payload, pane_id, workspace)
+      def translate(payload, pane_id, workspace, decision = nil)
         hook = payload["hook_event_name"]
         name = AGENT_EVENTS.fetch(@agent)[hook]
         return nil unless name
+
+        # Codex's approval prompt never shows for a call the policy decided, so it opens no wait.
+        name = "permission_request" if codex? && hook == "PermissionRequest" && decided?(decision)
 
         return nil if name == "turn_failed" && agent_id_for(payload)
 
@@ -341,13 +364,13 @@ module Workspace
           # tell its events from the main agent's.
           agent_id: agent_id_for(payload),
           agent: agent_for(payload),
-          message: message_for(payload),
-          notification_type: notification_type_for(payload),
+          message: message_for(payload, name),
+          notification_type: notification_type_for(payload, name),
           prompt: prompt_for(payload),
           stop_reason: stop_reason_for(payload),
           error: error_kind_for(payload),
           background_tasks: background_tasks_for(payload),
-          fields: tool_fields(payload).merge(session_fields(payload), codex_subagent_fields(payload))
+          fields: tool_fields(payload, decision).merge(session_fields(payload), codex_subagent_fields(payload))
         )
       end
 
@@ -382,9 +405,9 @@ module Workspace
       # a file tool's path, a short summary of its input ({ToolInputSummary}), and
       # once it has ended whether it worked. The rest of the input and the response
       # are read here and never forwarded.
-      def tool_fields(payload)
+      def tool_fields(payload, decision = nil)
         hook = payload["hook_event_name"]
-        return permission_fields(payload) if hook == "PermissionRequest"
+        return permission_fields(payload, decision) if hook == "PermissionRequest"
         return {} unless hook == "PreToolUse" || hook == "PostToolUse" || hook == "PostToolUseFailure"
 
         fields = {
@@ -427,11 +450,45 @@ module Workspace
         nil
       end
 
-      def permission_fields(payload)
+      def permission_fields(payload, decision)
         {
           "tool" => name_field(payload, "tool_name"),
-          "input" => ToolInputSummary.call(payload["tool_name"], payload["tool_input"])
+          "input" => ToolInputSummary.call(payload["tool_name"], payload["tool_input"]),
+          "decision" => decision&.fetch(:action),
+          "rule" => decision&.fetch(:rule)
         }
+      end
+
+      def decided?(decision)
+        !decision.nil? && %w[allow deny].include?(decision[:action])
+      end
+
+      # Asks the permission policy about one PermissionRequest and, for an allow or deny, prints the one-line reply
+      # the agent reads from stdout. Nothing else is written to stdout on this path (the logger writes to stderr),
+      # and the reply never carries `updatedInput`, `updatedPermissions` or `interrupt`, which Codex reserves.
+      # An ask, no policy and any error print nothing and give nil, so the agent's own dialog shows; this never exits 2.
+      #
+      # @return [Hash, nil] `{action:, rule:}` of the policy's decision, nil when none was made
+      def decide_permission(payload, workspace)
+        return nil unless @permission_policy_config
+
+        policy = @permission_policy_config.policy(workspace: workspace, project: nil)
+        return nil unless policy
+
+        input = payload["tool_input"]
+        result = policy.decide(tool_name: payload["tool_name"], tool_input: input.is_a?(Hash) ? input : {}, cwd: text_field(payload, "cwd"))
+        decision = {action: result.fetch(:action).to_s, rule: result.fetch(:rule).to_s}
+        return nil unless %w[allow ask deny].include?(decision[:action])
+        return decision unless decided?(decision)
+
+        reply = {"behavior" => decision[:action]}
+        reply["message"] = "Denied by workspace permission policy (#{decision[:rule]})" if decision[:action] == "deny"
+        @output.puts JSON.generate("hookSpecificOutput" => {"hookEventName" => "PermissionRequest", "decision" => reply})
+        @output.flush if @output.respond_to?(:flush)
+        decision
+      rescue => e
+        @logger.debug { "session-event: permission decision failed (#{e.class}: #{e.message})" }
+        nil
       end
 
       def session_fields(payload)
@@ -484,8 +541,9 @@ module Workspace
 
       # Codex's approval prompt carries the command it asks about in its tool
       # input, which is never forwarded; the wait is described by the tool's name.
-      def message_for(payload)
+      def message_for(payload, name = nil)
         if codex? && payload["hook_event_name"] == "PermissionRequest"
+          return nil if name == "permission_request"
           tool = name_field(payload, "tool_name")
           return tool ? "Approval requested for #{tool}" : "Approval requested"
         end
@@ -500,7 +558,8 @@ module Workspace
       # and `permission_request` for Codex's PermissionRequest, which reaches the
       # daemon as a notification so the monitor opens its wait, and which the
       # hook event log writes as `permission_requested`.
-      def notification_type_for(payload)
+      def notification_type_for(payload, name = nil)
+        return nil if name == "permission_request"
         return "permission_request" if codex? && payload["hook_event_name"] == "PermissionRequest"
         return nil unless claude? && payload["hook_event_name"] == "Notification"
 
@@ -598,9 +657,15 @@ module Workspace
       # name is recorded, and only once per workspace and event in a while.
       def record_undeliverable(workspace, event, path, error)
         @delivery_log&.record(
-          "undeliverable event=#{event["event"]} workspace=#{workspace} pane=#{event["pane_id"]} socket=#{path} (#{error.class}: #{error.message})",
+          "undeliverable event=#{event["event"]} workspace=#{workspace} pane=#{event["pane_id"]}#{decision_note(event)} socket=#{path} (#{error.class}: #{error.message})",
           key: "#{workspace}/#{event["event"]}"
         )
+      end
+
+      def decision_note(event)
+        return "" unless event["decision"]
+
+        " decision=#{event["decision"]} rule=#{event["rule"]}"
       end
 
       def now
