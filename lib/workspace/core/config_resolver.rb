@@ -23,9 +23,9 @@ module Workspace
     # @param project [String, nil] the parent project; defaults to the part of a worktree name before
     #   ".worktree-", else the workspace itself
     # @param upto [String, nil] "global" or "project" to drop the layers above it; nil keeps all
-    # @return [View]
     # @param strict_global [Boolean] read the global file strictly, raising {ConfigParseError} for one that can't be
     #   parsed, instead of reading it as empty
+    # @return [View]
     # @raise [ArgumentError] if `upto` is anything else
     def view(workspace:, project: nil, upto: nil, strict_global: false)
       ConfigLayering.check_upto(upto)
