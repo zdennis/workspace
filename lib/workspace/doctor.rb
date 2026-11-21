@@ -47,6 +47,7 @@ module Workspace
     #   version flag prints (empty without a flag)
     # @param app_probe [#call] given a bundle id, returns true when an application with it is installed
     # @param git [Workspace::Git, nil] lists worktrees to check for lock hooks; nil skips that check
+    # @param permission_policy_config [Workspace::PermissionPolicyConfig, nil] checks the project's permission settings; nil skips the row
     # @param pipeline_config [Workspace::PipelineConfig, nil] validates the current project's pipeline config
     # @param hooks_config [Workspace::HooksConfig, nil] reads `codex.hooks.install`; nil reads it as on
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether iTerm2 and
@@ -76,7 +77,7 @@ module Workspace
     # @param output [IO] output stream for results
     # @param env [Hash] the environment; a non-empty NO_COLOR turns color off
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, review_orphans: nil, tmux: nil, sweep_schedule: nil, sweep_last_path: nil, sweep_log_path: nil, clock: -> { Time.now }, working_dir: Dir.pwd, output: $stdout, env: ENV)
+      pipeline_config: nil, permission_policy_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, review_orphans: nil, tmux: nil, sweep_schedule: nil, sweep_last_path: nil, sweep_log_path: nil, clock: -> { Time.now }, working_dir: Dir.pwd, output: $stdout, env: ENV)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -87,6 +88,7 @@ module Workspace
       @command_probe = command_probe
       @app_probe = app_probe
       @git = git
+      @permission_policy_config = permission_policy_config
       @pipeline_config = pipeline_config || PipelineConfig.new(config: config)
       @project_settings = project_settings || ProjectSettings.new(config: config)
       @plan = plan
@@ -783,6 +785,7 @@ module Workspace
       check_statusline(capable, project)
       check_scraped_pane_context(project) if agent_running
       check_pipeline_config(project)
+      check_permission_policy(project)
       check_plans(project)
     end
 
@@ -909,6 +912,29 @@ module Workspace
       end
     rescue Workspace::Error => e
       add_row("pipeline-config", "fail", "pipeline config invalid for #{project}", hints: [e.message], project: project)
+    end
+
+    # The permission settings a policy is built from: ok when none are set or all parse, fail with the
+    # parse message when one doesn't (the policy then decides nothing), warn on `default: allow` with no `deny` rule.
+    def check_permission_policy(project)
+      return unless @permission_policy_config
+
+      found = @permission_policy_config.check(workspace: project, project: nil)
+      hints = []
+      hints << AgentProvider.find("codex").hook_trust_hint if @main_agent&.kind(project) == "codex"
+      if found[:error]
+        add_row("permission-policy", "fail", "permission policy invalid for #{project}: #{found[:error]}",
+          fix: "workspace config validate --name #{project}", fix_label: "check", hints: ["check: workspace config validate --name #{project}"] + hints, project: project)
+      elsif !found[:configured]
+        add_row("permission-policy", "ok", "no permission policy configured for #{project}", project: project)
+      elsif found[:allow_without_deny]
+        add_row("permission-policy", "warn", "permission policy for #{project} has default allow and no deny rule: every tool call no rule names is allowed",
+          hints: ["fix: add deny rules under agent.permissions.rules, or set agent.permissions.default to ask"] + hints, project: project)
+      else
+        add_row("permission-policy", "ok", "permission policy valid for #{project}", hints: hints, project: project)
+      end
+    rescue Workspace::Error, SystemCallError => e
+      add_row("permission-policy", "fail", "permission policy for #{project} can't be read: #{e.message}", hints: ["check: workspace config validate --name #{project}"], project: project)
     end
 
     # Warns, and adds nothing when all is well. Two states of a plan point at a session that

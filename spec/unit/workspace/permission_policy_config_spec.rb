@@ -330,4 +330,34 @@ RSpec.describe Workspace::PermissionPolicyConfig do
       expect(logger).to have_received(:debug)
     end
   end
+  describe "#check" do
+    def check = config.check(workspace: "app.worktree-x", project: "app")
+
+    it "reports nothing configured" do
+      expect(check).to eq(configured: false, error: nil, allow_without_deny: false)
+    end
+
+    it "reports valid settings, and allow with no deny" do
+      hits["agent.permissions.default"] = [hit("project", "allow")]
+      hits["agent.permissions.rules"] = [hit("project", [rule("Read", "allow")])]
+      expect(check).to eq(configured: true, error: nil, allow_without_deny: true)
+    end
+
+    it "is not allow_without_deny when a deny rule exists" do
+      hits["agent.permissions.default"] = [hit("project", "allow")]
+      hits["agent.permissions.rules"] = [hit("global", [rule("Bash", "deny")])]
+      expect(check[:allow_without_deny]).to be(false)
+    end
+
+    it "gives the parse message of a bad rule" do
+      hits["agent.permissions.rules"] = [hit("project", [rule("Bash", "maybe")])]
+      expect(check[:error]).to match(/project config: .*rules\[0\]\.action/)
+    end
+
+    it "calls an unknown key malformed" do
+      stub = {"project" => {"agent" => {"permissions" => {"rule" => []}}}}
+      allow(view).to receive(:data_by_layer).and_return(stub)
+      expect(check[:error]).to start_with("project config: agent.permissions must be a mapping")
+    end
+  end
 end

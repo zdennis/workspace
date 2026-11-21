@@ -371,13 +371,15 @@ Checks the files `config show --json` lists, without writing anything: YAML synt
 |---|---|---|
 | `yaml_syntax` | error | The file isn't valid YAML, isn't a mapping at the top level, or uses an alias or tag a config file may not use |
 | `invalid_value` | error | A key's value fails the check `config set` would make, or a section isn't a mapping |
-| `unknown_key` | warning | Nothing reads the key in this file; the message says when it is a setting of the other scope |
+| `unknown_key` | warning | Nothing reads the key in this file; the message says when it is a setting of the other scope. An unknown key under `agent.permissions` (e.g. `rule`, `defualt`) is also reported: the permission policy reads it as malformed and decides nothing |
 | `escaped_path` | warning | A path key (`notes.dir`, `notes.default_dir`) has a backslash before a space or `~`, as if typed for a shell; config values are used as written, so the directory name would contain the backslash |
 | `shared_notes_dir` | warning | `notes.default_dir` is an absolute path (or `~/…`) with no `{workspace}` or `{branch}`, in a project that has worktrees, so they would all share one notes directory |
 | `unknown_tmuxinator_template` | warning | `tmuxinator.template` or `tmuxinator.worktree_template` names no `template` library set, so a new config would fail with `unknown_template` |
 | `invalid_tmuxinator_template` | warning | The set that `tmuxinator.template` or `tmuxinator.worktree_template` names has errors (see `workspace template validate`), so a new config would be refused or wrong |
 | `unknown_spine_template` | warning | `spine.template` names no `spine` library entry, so `spine init` would answer `unknown_template` |
 | `unknown_default_workflow` | warning | `workflows.default` or a `workflows.by_ref.<kind>` names no workflow, so `workflow start` would refuse it with `unknown_workflow` |
+| `pattern_without_subject` | warning | A permission rule has a `pattern` but its `tool` glob matches none of Bash, Edit, Write, MultiEdit, NotebookEdit and Read (e.g. `mcp__*`), the only tools a pattern is matched against, so the rule never matches |
+| `allow_without_deny` | warning | `agent.permissions.default` is `allow` and no layer has a `deny` rule, so every tool call no rule names is allowed |
 | `not_read` | info | The key is set where no reader looks: a parent-scoped key in a worktree's file, or global `hooks` |
 
 New codes may be added; treat an unknown one by its `severity`.

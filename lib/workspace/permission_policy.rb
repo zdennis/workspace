@@ -32,6 +32,9 @@ module Workspace
     PATH_TOOLS = %w[Edit Write MultiEdit NotebookEdit Read].freeze
     MAX_LINK_DEPTH = 40
 
+    # The tools a rule's `pattern` can match against: Bash and the path tools.
+    SUBJECT_TOOLS = (%w[Bash] + PATH_TOOLS).freeze
+
     private_constant :ACTIONS, :PATH_TOOLS, :MAX_LINK_DEPTH
 
     # What the policy looks at in one tool call.

@@ -620,6 +620,67 @@ RSpec.describe Workspace::Doctor do
     end
   end
 
+  describe "permission policy check" do
+    let(:policy_config) { instance_double(Workspace::PermissionPolicyConfig) }
+    let(:main_agent) { instance_double(Workspace::MainAgent, kind: "claude") }
+    let(:found) { {configured: true, error: nil, allow_without_deny: false} }
+
+    before do
+      allow(project_detector).to receive(:detect).and_return("myapp")
+      allow(config).to receive(:agent_socket_path).with("myapp").and_return("/tmp/does-not-exist-workspace-myapp.sock")
+      allow(config).to receive(:project_config_path).with("myapp").and_return("/nonexistent/myapp.yml")
+      allow(policy_config).to receive(:check).with(workspace: "myapp", project: nil) { found }
+    end
+
+    def run_doctor
+      build_doctor(which: ->(_exe) { false }, permission_policy_config: policy_config, main_agent: main_agent).run
+    rescue Workspace::Error
+      # the unrelated hooks and agent checks of this scenario
+    end
+
+    it "is ok when nothing is configured" do
+      found[:configured] = false
+      run_doctor
+      expect(output.string).to include("no permission policy configured for myapp")
+    end
+
+    it "is ok when the settings are valid" do
+      run_doctor
+      expect(output.string).to include("permission policy valid for myapp")
+    end
+
+    it "fails with the parse message and a config validate hint" do
+      found[:error] = "project config: agent.permissions.rules[0].action must be one of allow, ask, deny"
+      run_doctor
+      expect(output.string).to include("permission policy invalid for myapp: project config: agent.permissions.rules[0].action")
+      expect(output.string).to include("workspace config validate --name myapp")
+    end
+
+    it "warns on default allow with no deny rule" do
+      found[:allow_without_deny] = true
+      run_doctor
+      expect(output.string).to include("default allow and no deny rule")
+    end
+
+    it "hints at trusting hooks for a Codex project" do
+      allow(main_agent).to receive(:kind).with("myapp").and_return("codex")
+      run_doctor
+      expect(output.string).to include("trust")
+    end
+
+    it "fails, without aborting doctor, when a config file can't be read" do
+      allow(policy_config).to receive(:check).and_raise(Errno::EACCES)
+      run_doctor
+      expect(output.string).to include("permission policy for myapp can't be read")
+    end
+
+    it "fails when a config file can't be parsed" do
+      allow(policy_config).to receive(:check).and_raise(Workspace::ConfigParseError.new("/x.yml", "bad"))
+      run_doctor
+      expect(output.string).to include("permission policy for myapp can't be read")
+    end
+  end
+
   describe "pipeline config check" do
     let(:tmpdir) { Dir.mktmpdir }
     let(:project_yml) { File.join(tmpdir, "myapp.yml") }

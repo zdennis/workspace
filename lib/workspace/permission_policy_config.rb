@@ -13,7 +13,8 @@ module Workspace
     DEFAULT_KEY = "agent.permissions.default"
     RULES_KEY = "agent.permissions.rules"
     FINISHED = %w[completed failed cancelled].freeze
-    private_constant :DEFAULT_KEY, :RULES_KEY, :FINISHED
+    MALFORMED_NODE = "agent.permissions must be a mapping holding only rules and default, not a dotted key or another key".freeze
+    private_constant :DEFAULT_KEY, :RULES_KEY, :FINISHED, :MALFORMED_NODE
 
     # @param config_resolver [Workspace::ConfigResolver] reads each layer's file
     # @param bound_run [Workspace::BoundRun] names the run the calling pane is bound to
@@ -63,6 +64,26 @@ module Workspace
       false
     end
 
+    # What a standing check finds in the permission settings: whether any is set, why they
+    # are broken, and whether `default: allow` stands with no `deny` rule anywhere.
+    #
+    # @return [Hash] `{configured:, error:, allow_without_deny:}`; error is nil when the settings parse
+    # @raise [Workspace::ConfigParseError] for a config file that can't be parsed
+    def check(workspace:, project:)
+      layers = scan(workspace, project)
+      from_run = begin
+        run_rules
+      rescue => e
+        return {configured: true, error: "the bound run's permissions: #{e.message}", allow_without_deny: false}
+      end
+      bad = layers.find { |layer| layer[:malformed] }
+      return {configured: true, error: "#{bad[:source]} config: #{bad[:error]}", allow_without_deny: false} if bad
+      configured = layers.any? { |layer| layer[:present] } || !from_run.empty?
+      rules = layers.flat_map { |layer| layer[:rules] } + from_run
+      default = PermissionRules.most_restrictive(layers.filter_map { |layer| layer[:default] })
+      {configured: configured, error: nil, allow_without_deny: default == "allow" && rules.none? { |rule| rule["action"] == "deny" }}
+    end
+
     private
 
     # Each layer's own file, highest first, read raw and strictly (the global file too).
@@ -80,7 +101,7 @@ module Workspace
     def scan_layer(layer, content)
       raise ArgumentError, "#{layer} config is not a mapping" unless content.is_a?(Hash)
       found = {source: layer, rules: [], default: nil, present: false, malformed: false}
-      return found.merge(present: true, malformed: true) if malformed_node?(content)
+      return found.merge(present: true, malformed: true, error: MALFORMED_NODE) if malformed_node?(content)
 
       permissions = (content["agent"] || {})["permissions"] || {}
       rules = permissions["rules"]
@@ -89,9 +110,9 @@ module Workspace
       found.merge(present: true,
         rules: rules.nil? ? [] : ConfigSchema.key(RULES_KEY).parse(rules),
         default: default.nil? ? nil : ConfigSchema.key(DEFAULT_KEY).parse(default))
-    rescue ArgumentError
+    rescue ArgumentError => e
       raise unless content.is_a?(Hash)
-      found.merge(present: true, malformed: true)
+      found.merge(present: true, malformed: true, error: e.message)
     end
 
     def malformed_node?(content)

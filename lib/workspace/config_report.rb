@@ -330,7 +330,7 @@ module Workspace
 
     def combined_effective(key, scan, own_problems)
       active = active_hits(key, hits(key, scan), own_problems)
-      return key.default if active.empty?
+      return (key.combine == :concat) ? [] : key.default if active.empty?
       return PermissionRules.most_restrictive(active.map(&:value)) if key.combine == :most_restrictive
       active.reverse.flat_map { |hit| key.parse(hit.value) }
     end
@@ -367,7 +367,7 @@ module Workspace
       scope = (file.layer == "global") ? :global : :project
       declared = declared_keys(file.layer, scope)
       read_here = declared.reject { |key| unread_here?(key, file) }
-      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + spine_template_problems(file, scan, read_here) + tmuxinator_template_problems(file, scan, read_here) + default_workflow_problems(file, read_here, scan) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
+      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + spine_template_problems(file, scan, read_here) + tmuxinator_template_problems(file, scan, read_here) + default_workflow_problems(file, read_here, scan) + permission_problems(file, scan, read_here) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
     end
 
     # The keys a file of this layer holds: those of its scope, plus any layered key that may be set in the layer.
@@ -481,6 +481,52 @@ module Workspace
         located(file, "warning", "unknown_default_workflow", key.name,
           "#{key.name} names '#{id}', and no workflow has that id. List them with: workspace workflow show")
       end
+    end
+
+    PERMISSION_KEYS = %w[rules default].freeze
+    private_constant :PERMISSION_KEYS
+
+    # Warnings about the permission policy this file holds: a key under `agent.permissions` the policy reads
+    # as malformed (so it decides nothing), a rule's `pattern` on a tool glob matching no tool with a subject
+    # to match it against, and `default: allow` with no `deny` rule in any layer.
+    def permission_problems(file, scan, declared)
+      return [] unless declared.any? { |key| key.name.start_with?("agent.permissions.") }
+      node = dig(file.data, %w[agent permissions])
+      return [] unless node.is_a?(Hash)
+      unknown_permission_keys(file, node) + subjectless_pattern_problems(file, node["rules"]) + allow_without_deny_problems(file, scan)
+    end
+
+    def unknown_permission_keys(file, node)
+      (node.keys.map(&:to_s) - PERMISSION_KEYS).map do |name|
+        located(file, "warning", "unknown_key", "agent.permissions.#{name}",
+          "agent.permissions.#{name} isn't a known config key. The permission policy treats the unknown key as a malformed setting and decides nothing. Allowed: #{PERMISSION_KEYS.join(", ")}.")
+      end
+    end
+
+    def subjectless_pattern_problems(file, stored)
+      rules = PermissionRules.parse(stored, label: "agent.permissions.rules")
+      rules.each_with_index.filter_map do |rule, index|
+        next unless rule.key?("pattern")
+        next if PermissionPolicy::SUBJECT_TOOLS.any? { |name| File.fnmatch(rule["tool"], name) }
+        located(file, "warning", "pattern_without_subject", "agent.permissions.rules",
+          "agent.permissions.rules[#{index}] has a pattern, but tool #{rule["tool"].inspect} matches no tool that has one to match it against (#{PermissionPolicy::SUBJECT_TOOLS.join(", ")}), so the rule never matches. Drop the pattern or name one of those tools.")
+      end
+    rescue ArgumentError
+      []
+    end
+
+    # Warns on the layer that wins the default, once.
+    def allow_without_deny_problems(file, scan)
+      default_hits = hits(ConfigSchema.key("agent.permissions.default"), scan).select { |hit| PermissionRules::RESTRICTIVENESS.include?(hit.value) }
+      return [] unless PermissionRules.most_restrictive(default_hits.map(&:value)) == "allow" && default_hits.first.layer == file.layer
+      denies = hits(ConfigSchema.key("agent.permissions.rules"), scan).any? do |hit|
+        PermissionRules.parse(hit.value, label: "agent.permissions.rules").any? { |rule| rule["action"] == "deny" }
+      rescue ArgumentError
+        false
+      end
+      return [] if denies
+      [located(file, "warning", "allow_without_deny", "agent.permissions.default",
+        "agent.permissions.default is allow and no config layer has a deny rule, so every tool call the rules don't name is allowed. Add deny rules for what must never run.")]
     end
 
     def worktrees?(scan)
