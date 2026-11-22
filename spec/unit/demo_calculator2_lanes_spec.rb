@@ -210,7 +210,7 @@ RSpec.describe DemoCalculator2::Lanes do
       on(/acceptance_runner\z/) { ["", true] }
     end
 
-    it "forks lane B at the head the fork goal's run ended on, not at lane A's HEAD, then queues 06 and 07 with lane B's prompt" do
+    it "forks lane B at the head the fork goal's run ended on, not at lane A's HEAD, then (an old record with no staged items) queues 06 and 07 with lane B's prompt" do
       finished("a1", "a2", "a3")
       lanes.wait_run(record_path)
       expect(calls).to include(["git", "checkout", "-B", branch, "2" * 40])
@@ -225,6 +225,35 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(saved["fork"]).to include("sha" => "2" * 40, "acceptance_base" => base, "goal" => "03-div-zero", "item" => "a3")
       expect(saved["fork"]["at"]).to match(/\A2026-11-21T/)
       expect(saved.dig("lanes", "b", "items").map { |item| item["goal"] }).to eq(%w[06-json 07-repl])
+    end
+
+    context "with lane B's items staged before the fork" do
+      before do
+        data = JSON.parse(File.read(record_path))
+        data["lanes"]["b"]["items"] = [{"workflow" => "deliver-goal-fast", "id" => "b-06", "goal" => "06-json"}, {"workflow" => "deliver-goal-fast", "id" => "b-07", "goal" => "07-repl"}]
+        File.write(record_path, JSON.generate(data))
+        finished("a1", "a2", "a3")
+      end
+
+      it "queues nothing and sets no commands at the fork, and enables lane B only after the fork check" do
+        lanes.wait_run(record_path)
+        expect(calls.select { |argv| argv[1, 2] == %w[work-queue add] }).to be_empty
+        expect(calls.select { |argv| argv[1, 2] == %w[config set] }).to be_empty
+        checkout = calls.index { |argv| argv[0, 2] == %w[git checkout] }
+        enable = calls.index { |argv| argv[1, 2] == %w[work-queue enable] && argv.last == "ws-b" }
+        advance = calls.index { |argv| argv[1, 2] == %w[work-queue advance] && argv.last == "ws-b" }
+        expect([checkout, enable, advance]).to eq([checkout, enable, advance].sort)
+        expect(saved.dig("lanes", "b", "items").map { |item| item["id"] }).to eq(%w[b-06 b-07])
+      end
+
+      it "leaves lane B's queue disabled, with its items still staged, when the fork check fails" do
+        on("git", "rev-parse", DemoCalculator2::ACCEPTANCE_REF) { ["#{"9" * 40}\n", true] }
+        record = lanes.wait_run(record_path)
+        expect(record["wait"]).to include("reason" => "fork_check")
+        expect(calls.select { |argv| argv[1, 2] == %w[work-queue enable] && argv.last == "ws-b" }).to be_empty
+        expect(calls.select { |argv| argv[1, 2] == %w[work-queue advance] && argv.last == "ws-b" }).to be_empty
+        expect(saved.dig("lanes", "b", "items").size).to eq(2)
+      end
     end
 
     it "keeps polling while the fork goal's item is unfinished, then forks" do
@@ -602,6 +631,8 @@ RSpec.describe DemoCalculator2::Lanes do
       on("git", "config", "--local", /\Amerge/) { ["", true] }
       on("ws-bin", "workflow", "status") { ["", true] }
       on("ws-bin", "config", "get") { ["", true] }
+      on("ws-bin", "config", "set") { ["", true] }
+      on("ws-bin", "work-queue", "add") { |argv| [JSON.generate("results" => [{"id" => "b-#{argv[argv.index("--dedupe-key") + 1][/\d\d/]}"}]), true] }
       allow(lanes).to receive(:prepare_lane_b).and_return(tmp)
     end
 
@@ -613,6 +644,28 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(driver).to be < enable
       expect(File.read(File.join(dir, "info", "attributes"))).to include("merge=calc-demo-tests")
       expect(at_enable["exclude"]).to include("/runs/w01/")
+    end
+
+    it "sets lane B's commands and queues its items before work-queue enable, and records them in lanes.b.items" do
+      lanes.run
+      enable = calls.index { |argv| argv[1, 2] == %w[work-queue enable] }
+      b_config = calls.each_index.select { |i| calls[i][1, 2] == %w[config set] && calls[i].include?("ws-b") }
+      b_adds = calls.each_index.select { |i| calls[i][1, 2] == %w[work-queue add] && calls[i].last == "ws-b" }
+      expect(b_config.size).to eq(2)
+      expect(b_adds.size).to eq(2)
+      expect(b_config + b_adds).to all(be < enable)
+      expect(calls.map { |argv| argv[1, 2] }).not_to include(%w[work-queue advance])
+      expect(calls.select { |argv| argv[0, 2] == %w[git checkout] }).to be_empty
+    end
+
+    it "passes the staged items to the run record" do
+      captured = nil
+      allow(DemoCalculator::Demo).to receive(:new) do |**kwargs|
+        captured = kwargs[:config].record_extras["lanes"]
+        demo
+      end
+      lanes.run
+      expect(captured.dig("b", "items").map { |item| item.values_at("id", "goal") }).to eq([%w[b-06 06-json], %w[b-07 07-repl]])
     end
 
     it "runs no work-queue enable when a foreign-live driver refuses" do

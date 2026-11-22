@@ -91,8 +91,9 @@ module DemoCalculator2
       stamp = started.utc.strftime("%Y%m%dT%H%M%SZ")
       branch_b = "#{DemoCalculator::RUN_BRANCH_PREFIX}#{stamp}-b"
       path_b = prepare_lane_b
+      items_b = stage_lane_b(b_goals)
       extras = {"lanes" => {"workflow" => @workflow, "started_at" => started.utc.iso8601, "fork_after" => fork_goal,
-                            "a" => {"workspace" => @name, "goals" => a_goals}, "b" => {"workspace" => @lane_b, "path" => path_b, "branch" => branch_b, "goals" => b_goals, "items" => []}}}
+                            "a" => {"workspace" => @name, "goals" => a_goals}, "b" => {"workspace" => @lane_b, "path" => path_b, "branch" => branch_b, "goals" => b_goals, "items" => items_b}}}
       config = DemoCalculator2.lane_config(:a, workflow_id: @workflow, stub_ref: @stub_ref, goals: @goals, extras: extras)
       demo = DemoCalculator::Demo.new(root: @root, workspace: @workspace, name: @name, dry_run: @dry_run, out: @out, err: @err, base: @base,
         out_dir: @out_dir, clock: -> { started }, config: config)
@@ -101,7 +102,8 @@ module DemoCalculator2
         write_out_exclude(demo.record_path)
       })
       if @dry_run
-        say "would wait for lane A's #{fork_goal}, then in lane B: git checkout -B #{branch_b} <#{fork_goal}'s final head>, queue #{b_goals.join(", ")} and enable its queue"
+        say "would set lane B's commands and queue #{b_goals.join(", ")} there now, its queue staying off"
+        say "would wait for lane A's #{fork_goal}, then in lane B: git checkout -B #{branch_b} <#{fork_goal}'s final head>, check the fork, enable its queue and advance it"
         say "would then merge #{branch_b} in lane A and run the tests, lint and the plain acceptance runner on 07-repl (groups 1..7)"
         return nil
       end
@@ -308,6 +310,23 @@ module DemoCalculator2
       path
     end
 
+    # Sets lane B's `commands.test` and `commands.lint` and queues its goals, ahead of the fork. Its queue is still off
+    # (see {#prepare_lane_b}), so adding starts nothing; `fork!` enables it only after the fork check passes.
+    #
+    # @param b_goals [Array<String>] lane B's goals
+    # @return [Array<Hash>] the queued items (`workflow`, `id`, `goal`); empty under dry_run
+    def stage_lane_b(b_goals)
+      return [] if @dry_run
+      b_name = name_args(@lane_b)
+      config = DemoCalculator2.lane_config(:b, workflow_id: @workflow, stub_ref: @stub_ref, goals: b_goals)
+      workspace_do("config", "set", "--scope", "workspace", *b_name, "commands.test", config.test_command)
+      workspace_do("config", "set", "--scope", "workspace", *b_name, "commands.lint", config.lint_command)
+      config.queue_items.call(b_name).zip(b_goals).map do |(workflow, argv), goal|
+        say "+ workspace #{argv.join(" ")}"
+        {"workflow" => workflow, "id" => workspace_json(*argv).dig("results", 0, "id"), "goal" => goal}
+      end
+    end
+
     private
 
     def say(line) = @out.puts(line)
@@ -507,7 +526,8 @@ module DemoCalculator2
     end
 
     # Forks lane B at the head lane A's fork goal ended on (never lane A's HEAD, which a later goal may have moved),
-    # checks the fork, sets lane B's commands, queues its goals and starts its queue.
+    # checks the fork, then starts lane B's queue. Its commands and items were staged by {#stage_lane_b}; a record without
+    # them (an older run) gets them here, before the queue is enabled.
     def fork!(record, entry)
       run_id = entry.dig("result", "run_id")
       raise ForkCheckFailed, "the fork goal's queue entry names no run" unless run_id
@@ -516,14 +536,8 @@ module DemoCalculator2
       record["fork"] = {"at" => @clock.call.utc.iso8601, "sha" => sha, "acceptance_base" => record.dig("acceptance_ref", "sha"),
         "goal" => record.dig("lanes", "fork_after"), "item" => entry["id"], "run_id" => run_id}
       b_name = name_args(@lane_b)
-      config = DemoCalculator2.lane_config(:b, workflow_id: @workflow, stub_ref: @stub_ref, goals: record.dig("lanes", "b", "goals"))
-      workspace_do("config", "set", "--scope", "workspace", *b_name, "commands.test", config.test_command)
-      workspace_do("config", "set", "--scope", "workspace", *b_name, "commands.lint", config.lint_command)
-      goals = record.dig("lanes", "b", "goals")
-      record.dig("lanes", "b")["items"] = config.queue_items.call(b_name).zip(goals).map do |(workflow, argv), goal|
-        say "+ workspace #{argv.join(" ")}"
-        {"workflow" => workflow, "id" => workspace_json(*argv).dig("results", 0, "id"), "goal" => goal}
-      end
+      # A record from before staging has no items: queue them now, still before the queue is enabled.
+      record.dig("lanes", "b")["items"] = stage_lane_b(record.dig("lanes", "b", "goals")) if Array(record.dig("lanes", "b", "items")).empty?
       save(record)
       DemoCalculator::Demo.starting(name_args: b_name).each { |argv| workspace_do(*argv) }
     end

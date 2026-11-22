@@ -295,9 +295,13 @@ RSpec.describe "script/demo-calculator2" do
 
     it "queues only 01-05 in lane A under the fast workflow and the lanes' runner, empties lane B's queue, adds the merge driver line and records the lanes" do
       expect(main(*lane_args)).to eq(0), err.string
-      adds = calls.grep(/\Awork-queue add workflow /)
+      all_adds = calls.grep(/\Awork-queue add workflow /)
+      adds, b_adds = all_adds.partition { |line| line.end_with?("--name ws") || line.include?("--name ws ") }
       expect(adds.map { |line| line[%r{goals/(0\d-[a-z-]+)\.md}, 1] }).to eq(DemoCalculator2::LANES[:a])
       expect(adds).to all(include("deliver-goal-fast", "acceptance=script/demo_calculator2/acceptance_runner_lanes", "--name ws"))
+      expect(b_adds.map { |line| line[%r{goals/(0\d-[a-z-]+)\.md}, 1] }).to eq(%w[06-json 07-repl])
+      expect(calls.index(b_adds.first)).to be < calls.index("work-queue enable --name ws")
+      expect(calls).not_to include("work-queue enable --name ws-b")
       expect(calls).to include("work-queue disable --name ws-b", "work-queue resume --name ws-b")
       expect(calls.grep(/\Aconfig set workflows.sources /).size).to eq(1)
       expect(File.read(info_attributes).lines.map(&:strip)).to include("demo/calculator2/test/calc_test.rb merge=calc-demo-tests")
@@ -308,7 +312,8 @@ RSpec.describe "script/demo-calculator2" do
       expect(File.read(record.dig("out_exclude", "path")).lines.map(&:strip)).to include(record.dig("out_exclude", "line"))
       expect(record["lanes"]).to include("workflow" => "deliver-goal-fast", "fork_after" => "03-div-zero")
       expect(record["lanes"]["a"]).to eq("workspace" => "ws", "goals" => DemoCalculator2::LANES[:a])
-      expect(record["lanes"]["b"]).to include("workspace" => "ws-b", "path" => lane_b_dir, "branch" => "#{branch}-b", "goals" => %w[06-json 07-repl], "items" => [])
+      expect(record["lanes"]["b"]).to include("workspace" => "ws-b", "path" => lane_b_dir, "branch" => "#{branch}-b", "goals" => %w[06-json 07-repl])
+      expect(record.dig("lanes", "b", "items").map { |item| item["goal"] }).to eq(%w[06-json 07-repl])
       expect(record["goals"]).to eq(DemoCalculator2::LANES[:a])
       expect(record["items"].map { |item| item["workflow"] }.uniq).to eq(["deliver-goal-fast"])
       expect(record).not_to have_key("fork")
