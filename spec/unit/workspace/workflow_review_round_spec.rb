@@ -260,7 +260,7 @@ RSpec.describe Workspace::WorkflowReviewRound do
         expect(round).to include("pane" => "%70", "window" => "@7", "delivery" => nil, "clear_from" => "2026-11-14T12:00:00.000Z")
         expect(store.runs["wr_1"]["steps"]["plan"]).not_to have_key("review_window")
         expect(change.events.last).to eq(["wr_1", "review_delivered", {"step" => "plan", "attempt" => 2, "round" => 2, "pane" => "%70", "window" => "@7",
-                                                                       "reused" => false, "cleared" => true}])
+                                                                       "reused" => false, "cleared" => true, "carried" => true}])
       end
 
       it "records the pane and the clear's start before the line (and its /clear) is typed, so a Stop meanwhile is judged against it" do

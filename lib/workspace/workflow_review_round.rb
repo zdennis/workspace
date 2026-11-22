@@ -332,7 +332,8 @@ module Workspace
         round.delete("uncleared")
         round["cleared_at"] = kick[:cleared_at] if window[:fresh] && kick[:cleared_at].is_a?(String)
         @change.event(hash, "review_delivered", pending.slice("step", "attempt", "round").merge("pane" => window[:pane], "window" => window[:window], "reused" => window[:reused])
-          .merge(window[:fresh] ? {"cleared" => true} : {}))
+          .merge(window[:fresh] ? {"cleared" => true} : {})
+          .merge(window[:carried] ? {"carried" => true} : {}))
         WorkflowRun.from_h(hash)
       end
       abandon(run, window) if moved
