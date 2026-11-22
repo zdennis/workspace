@@ -210,6 +210,7 @@ New per-file detail goes there, never here.
 
 - `bin/workspace` — Entry point; calls `Workspace.build_cli.run(ARGV)`.
 - `lib/workspace.rb` — Module root and the `build_cli` composition root, plus the public `build_agentd_parts`, `build_agent_daemon` and `build_workflow_engine` builders.
+- `lib/workspace/errors.rb` — `Workspace::Error` and its subclasses (`UsageError`, `ConfigParseError`, `UnsavedWorkError`), carrying the stable `code`, `details` and `retry` of the `--json` error envelope; loads alone.
 - `lib/workspace/cli.rb` — CLI dispatch, OptionParser definitions and simple command methods; routes verbs to family parsers.
 - `lib/workspace/cli/invocation.rb` — `CLI::Invocation`, the frozen value of one run (streams, exit handler, flags, env).
 - `lib/workspace/cli/common.rb` — `CLI::Common`, the shared output, exit, help, JSON-error and editor helpers.
