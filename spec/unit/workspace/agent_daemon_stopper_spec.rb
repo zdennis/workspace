@@ -260,6 +260,23 @@ RSpec.describe Workspace::AgentDaemonStopper do
     end
   end
 
+  describe Workspace::AgentDaemonStopper::Result do
+    it "gives a notice only for a stopped daemon" do
+      expect(described_class.new(:stopped, 42, "x").notice("api")).to eq("Stopped agent daemon for api (pid 42)")
+      expect(described_class.new(:not_running, nil, "x").notice("api")).to be_nil
+      expect(described_class.new(:refused, 42, "x").notice("api")).to be_nil
+    end
+
+    it "gives a warning naming daemon status for a refusal or timeout" do
+      %i[refused timed_out].each do |status|
+        expect(described_class.new(status, 42, "it would not go").warning("api"))
+          .to eq("Warning: it would not go. Check it with: workspace daemon status api")
+      end
+      expect(described_class.new(:stopped, 42, "x").warning("api")).to be_nil
+      expect(described_class.new(:not_running, nil, "x").warning("api")).to be_nil
+    end
+  end
+
   describe "#find_pid" do
     it "returns the one holder's pid" do
       run_daemon("api", 4242)

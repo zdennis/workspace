@@ -33,6 +33,7 @@ On confirmation, for each eligible project, in this order:
 - Removes the project settings file (`~/.config/workspace/projects/<name>.yml`)
 - Writes `worktree_finished` with outcome `pruned` to the [event log](README.event-log.md#state-and-lifecycle-events)
 - Removes the state entry and kills any live tmux session, last
+- Stops the workspace's agent daemon whether or not it was in state, printing `Stopped agent daemon for NAME (pid N)`; one that can't be stopped is a `Warning:` on stderr naming `workspace daemon status NAME`, and the prune still succeeds
 
 Requires the `gh` CLI to be installed and authenticated. If `gh` is unavailable, worktree projects are skipped with a warning. Directory-gone projects are always eligible regardless of `gh` availability.
 

@@ -47,7 +47,7 @@ Once the checks (and optional PR step) pass, `finish` removes the project the sa
 
 ### Running `finish` from inside the session it kills
 
-An agent typically runs `workspace finish` from inside the tmux pane that command is about to tear down. Killing that tmux session can terminate the very process running `finish` (SIGHUP), so order matters: the worktree, tmuxinator config, project settings and state entry are all removed, and the `post_kill` hook runs, *before* the tmux session is killed. Killing the session is the last step, so if it cuts the process off, nothing is left half-done. See "Order of steps" in [README.kill.md](README.kill.md).
+An agent typically runs `workspace finish` from inside the tmux pane that command is about to tear down. Killing that tmux session can terminate the very process running `finish` (SIGHUP), so order matters: the worktree, tmuxinator config, project settings and state entry are all removed, and the `post_kill` hook runs, *before* the tmux session is killed. Killing the session is the last step, so if it cuts the process off, nothing is left half-done. After it, `finish` stops the workspace's agent daemon as [`kill`](README.kill.md) does (step 9), whether or not the workspace was in state. See "Order of steps" in [README.kill.md](README.kill.md).
 
 Under `--json`, the `post_kill` hook doesn't run, so stdout carries only the JSON line.
 

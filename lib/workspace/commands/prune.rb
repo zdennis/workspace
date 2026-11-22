@@ -18,9 +18,11 @@ module Workspace
       # @param pull_requests [#usable?, #status_for] answers whether `gh` is authenticated and the `{number:, url:, state:}` (or nil) of a branch's pull request
       # @param locks [Workspace::NameMigration, nil] the config is deleted inside the workspace's startup lock
       #   ({NameMigration#hold_if_possible}), so `template apply` never writes it back; nil deletes without it
+      # @param daemon_stopper [#call, nil] `(name:)` stops the workspace's agent daemon, in state or not; nil skips
       # @param output [IO] output stream for user-facing messages
+      # @param error_output [IO] where a daemon that could not be stopped is warned about
       # @param input [IO] input stream for interactive prompts
-      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, pull_requests: GhPullRequests.new(git: git), locks: nil, output: $stdout, input: $stdin)
+      def initialize(state:, project_config:, project_settings:, git:, stop_command:, event_log: nil, tmux: nil, pull_requests: GhPullRequests.new(git: git), locks: nil, daemon_stopper: nil, output: $stdout, error_output: $stderr, input: $stdin)
         @pull_requests = pull_requests
         @tmux = tmux
         @locks = locks
@@ -30,7 +32,9 @@ module Workspace
         @git = git
         @stop_command = stop_command
         @event_log = event_log
+        @daemon_stopper = daemon_stopper
         @output = output
+        @error_output = error_output
         @input = input
       end
 
@@ -324,9 +328,21 @@ module Workspace
         # EventLog#record never raises.
         @event_log&.record(type: "worktree_finished", project: project, data: {"workspace" => project, "outcome" => "pruned"})
         @stop_command.call([project], session_names: {project => session_name}.compact, socket_arguments: {project => socket}.compact) if @state[project]
+        stop_agent_daemon(project)
         # Stop already removed a live entry; deleting again would log a second state_removed.
         @state.delete(project) if @state[project]
         {outcome: "removed"}
+      end
+
+      # Stops the workspace's agent daemon from its name, so it goes whether or not the workspace was in state.
+      # A refusal or timeout is a warning on the error stream, never a failure.
+      def stop_agent_daemon(project)
+        return unless @daemon_stopper
+        result = @daemon_stopper.call(name: project)
+        notice = result.notice(project)
+        @output.puts notice if notice
+        warning = result.warning(project)
+        Warn.puts(@error_output, warning) if warning
       end
 
       # @param candidate [Hash] the skipped candidate hash

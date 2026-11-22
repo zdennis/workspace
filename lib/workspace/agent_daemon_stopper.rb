@@ -24,6 +24,22 @@ module Workspace
       def ok?
         status == :stopped || status == :not_running
       end
+
+      # The line a teardown prints to its output for workspace +name+, nil
+      # unless a daemon was stopped.
+      #
+      # @return [String, nil]
+      def notice(name)
+        "Stopped agent daemon for #{name} (pid #{pid})" if status == :stopped
+      end
+
+      # The line a teardown prints to its error output for workspace +name+,
+      # nil unless the stop was refused or timed out.
+      #
+      # @return [String, nil]
+      def warning(name)
+        "Warning: #{message}. Check it with: workspace daemon status #{name}" if status == :refused || status == :timed_out
+      end
     end
 
     # What a socket holder's command line says. `refusal` is nil when it is

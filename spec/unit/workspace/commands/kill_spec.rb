@@ -1308,3 +1308,86 @@ RSpec.describe Workspace::Commands::Kill, "task archiving" do
     expect(task_store).not_to have_received(:archive)
   end
 end
+
+RSpec.describe Workspace::Commands::Kill, "stopping the agent daemon" do
+  let(:tmpdir) { Dir.mktmpdir }
+  let(:output) { StringIO.new }
+  let(:input) { StringIO.new }
+  let(:git) { double("git") }
+  let(:project_config) { double("project_config") }
+  let(:project_settings) { double("project_settings") }
+  let(:stop_command) { double("stop_command") }
+  let(:project_detector) { Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config) }
+  let(:config_path) { File.join(tmpdir, "workspace.myproject.worktree-PROJ-123.yml") }
+  let(:command) do
+    described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+      stop_command: stop_command, project_detector: project_detector, output: output, input: input)
+  end
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  let(:name) { "myproject.worktree-PROJ-123" }
+  let(:error_output) { StringIO.new }
+  let(:calls) { [] }
+  let(:result) { Workspace::AgentDaemonStopper::Result.new(:stopped, 4242, "stopped").freeze }
+  let(:daemon_stopper) do
+    calls = self.calls
+    result = self.result
+    ->(name:) {
+      calls << [:daemon, name]
+      result
+    }
+  end
+  let(:daemon_command) do
+    described_class.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command,
+      project_detector: project_detector, daemon_stopper: daemon_stopper, output: output, error_output: error_output, input: input)
+  end
+
+  before do
+    allow(project_config).to receive(:config_path_for).with(name).and_return(config_path)
+    File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
+    allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+    allow(git).to receive(:remove_worktree)
+    allow(project_config).to receive(:remove)
+    allow(project_settings).to receive(:remove)
+    allow(stop_command).to receive(:call) { calls << [:stop] }
+  end
+
+  it "stops the daemon by name after the stop command and says so" do
+    daemon_command.call(name, force: true)
+
+    expect(calls).to eq([[:stop], [:daemon, name]])
+    expect(output.string).to include("Stopped agent daemon for #{name} (pid 4242)")
+  end
+
+  it "keeps the stop line out of a quiet kill" do
+    daemon_command.call(name, force: true, quiet: true)
+
+    expect(calls).to eq([[:stop], [:daemon, name]])
+    expect(output.string).not_to include("Stopped agent daemon")
+  end
+
+  it "prints nothing when no daemon was running" do
+    allow(self).to receive(:result).and_return(Workspace::AgentDaemonStopper::Result.new(:not_running, nil, "none").freeze)
+
+    daemon_command.call(name, force: true)
+
+    expect(output.string).not_to include("agent daemon")
+    expect(error_output.string).to eq("")
+  end
+
+  %i[refused timed_out].each do |status|
+    it "warns on the error stream for #{status} and still returns the project" do
+      allow(self).to receive(:result).and_return(Workspace::AgentDaemonStopper::Result.new(status, 7, "it would not go").freeze)
+
+      expect(daemon_command.call(name, force: true)).to eq(name)
+      expect(error_output.string).to include("Warning: it would not go")
+      expect(error_output.string).to include("workspace daemon status #{name}")
+    end
+  end
+
+  it "skips the daemon when no stopper is given" do
+    expect(command.call(name, force: true)).to eq(name)
+    expect(calls).to eq([[:stop]])
+  end
+end

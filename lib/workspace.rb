@@ -908,7 +908,9 @@ module Workspace
       agent_commands: agent_commands, library: library, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
-    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), locks: name_migration, output: output, input: input)
+    daemon_process_tree = ProcessTree.new(logger: logger)
+    agent_daemon_stopper = AgentDaemonStopper.new(config: config, process_tree: daemon_process_tree)
+    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, daemon_stopper: agent_daemon_stopper, event_log: event_log, tmux: tmux, pull_requests: GhPullRequests.new(git: git), locks: name_migration, output: output, error_output: error_output, input: input)
     remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, locks: name_migration, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, agent_commands: agent_commands, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
@@ -1003,8 +1005,6 @@ module Workspace
     workflow_run_loader = WorkflowRunLoader.new(store: workflow_store)
     workflow_stats = WorkflowStats.new(store: workflow_store, loader: workflow_run_loader)
     workflow_compare = WorkflowCompare.new(loader: workflow_run_loader)
-    daemon_process_tree = ProcessTree.new(logger: logger)
-    agent_daemon_stopper = AgentDaemonStopper.new(config: config, process_tree: daemon_process_tree)
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client, stopper: agent_daemon_stopper,
       watch_factory: ->(workspace:, run:) { DaemonWatch.new(workspace: workspace, run: run, store: workflow_store, stream: EventStream.new(lifecycle_path: nil, hook_dir: config.hook_events_dir, workspace: workspace)) },
       process_tree: daemon_process_tree, output: output)
@@ -1159,7 +1159,7 @@ module Workspace
     )
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
       log_path: ->(workspace) { config.agent_log_path(workspace) }, holder_alive: round_holder.method(:alive?), downtime: workflow_downtime, logger: logger, error_output: error_output)
-    kill_command = Commands::Kill.new(git: git, pr_status: PullRequestStatus.new, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, tmux: tmux, locks: name_migration, output: output, input: input)
+    kill_command = Commands::Kill.new(git: git, pr_status: PullRequestStatus.new, project_config: project_config, project_settings: project_settings, stop_command: stop_command, daemon_stopper: agent_daemon_stopper, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, tmux: tmux, locks: name_migration, output: output, error_output: error_output, input: input)
     pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
     rebase_command = Commands::Rebase.new(git: git, checkout: workspace_checkout, output: output)
     push_command = Commands::Push.new(git: git, checkout: workspace_checkout, pr_status: PullRequestStatus.new, output: output)
