@@ -41,18 +41,18 @@ steps:
   merge:
     title: Merge
     prompt: |
-      Merge {{inputs.branch}} into this branch if it is not merged yet (check with
-      `git branch --merged`). Resolve every conflict so that both branches' behaviour is kept;
+      The caller may already have merged {{inputs.branch}} into this branch (check with
+      `git branch --merged`). If it is merged, do not make an empty commit; there is nothing to
+      merge. If not, merge it: resolve every conflict so that both branches' behaviour is kept;
       a test added on either side stays, and two tests with the same name must be renamed so
       both run. Commit the merge. Do not rebase or amend.
-      On a rerun (after a failed verify or acceptance), the branch is already merged: make a
-      new commit that fixes what failed and never amend or rebase, or run
-      `git commit --allow-empty -m '<why>'` if no change is needed.
+      On a rerun (after a failed verify or acceptance), fix the cause and commit the fix as a
+      new commit; never amend or rebase.
       Write {{artifacts}}/merge.md: whether there were conflicts, which files, and how you
       resolved each, and what a rerun fixed.
     produces: [merge.md]
     require:
-      - commits: 1
+      - exec: "/usr/bin/env git merge-base --is-ancestor {{inputs.branch}} HEAD"
     timeout: 45m
 
   verify:
