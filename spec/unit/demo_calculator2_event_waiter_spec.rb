@@ -54,6 +54,13 @@ RSpec.describe DemoCalculator2::EventWaiter do
       expect(argvs.size).to eq(1)
     end
 
+    it "starts the follower with the given workspace program as argv[0]" do
+      custom = described_class.new(workspaces: lanes, workspace: "/opt/bin/workspace", spawn: spawn, sleeper: ->(seconds) { slept << seconds })
+      custom.call(0.05)
+      expect(argvs.first.first).to eq("/opt/bin/workspace")
+      expect(argvs.first.drop(1)).to eq(%w[events --follow --json --types work_queue_item_started,work_queue_item_finished])
+    end
+
     it "returns on a matching line and keeps one that arrived between waits" do
       pipe[1].puts line("work_queue_item_finished", "lane-b")
       pipe[1].puts line("work_queue_item_started", "lane-a")

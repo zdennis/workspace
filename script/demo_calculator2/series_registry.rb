@@ -1,5 +1,6 @@
 require "fileutils"
 require "json"
+require "open3"
 require "socket"
 require "time"
 
@@ -29,7 +30,10 @@ module DemoCalculator2
     # @param pid [Integer] the pid recorded for a registered id
     # @param host [String] the host recorded for a registered id
     # @param alive [#call] `call(pid, started_at)` says whether that process still runs and started at that time
-    def initialize(path, read_only: false, clock: -> { Time.now }, pid: Process.pid, host: Socket.gethostname, alive: method(:process_alive?))
+    # @param process_started [#call] `call(pid)` returns the Time the process started, or nil when unknown
+    def initialize(path, read_only: false, clock: -> { Time.now }, pid: Process.pid, host: Socket.gethostname,
+      process_started: method(:ps_started), alive: method(:process_alive?))
+      @process_started = process_started
       @path = (File.extname(path.to_s) == ".json") ? path.to_s : File.join(path.to_s, "series.json")
       @read_only = read_only
       @clock = clock
@@ -38,10 +42,15 @@ module DemoCalculator2
       @alive = alive
     end
 
-    # Registers an id with its pid, start time and host. Registering again keeps the earlier entry.
+    # Registers an id with its pid, start time and host. Registering again from the same pid keeps the earlier entry.
     # @return [Hash] the entry
+    # @raise [Refusal] when the id is already registered by another pid
     def register(id, workspaces: [], branches: [], refs: [])
       modify do |data|
+        existing = data["series"][id]
+        if existing && existing["pid"] != @pid
+          raise Refusal, "series #{id} is already registered by pid #{existing["pid"]}"
+        end
         data["series"][id] ||= {
           "pid" => @pid, "started_at" => now, "host" => @host,
           "workspaces" => [], "branches" => [], "refs" => []
@@ -138,13 +147,32 @@ module DemoCalculator2
 
     private
 
-    def process_alive?(pid, _started_at)
-      Process.kill(0, pid)
-      true
-    rescue Errno::ESRCH
-      false
-    rescue Errno::EPERM
-      true
+    def process_alive?(pid, started_at)
+      exists = begin
+        Process.kill(0, pid)
+        true
+      rescue Errno::ESRCH
+        false
+      rescue Errno::EPERM
+        true
+      end
+      return false unless exists
+      started = begin
+        Time.iso8601(started_at.to_s)
+      rescue ArgumentError
+        nil
+      end
+      process_start = @process_started.call(pid)
+      return true unless started && process_start
+      process_start <= started
+    end
+
+    def ps_started(pid)
+      out, status = Open3.capture2("ps", "-o", "lstart=", "-p", pid.to_s, err: File::NULL)
+      return nil unless status.success? && !out.strip.empty?
+      Time.parse(out)
+    rescue ArgumentError, SystemCallError
+      nil
     end
 
     def now = @clock.call.utc.iso8601

@@ -190,6 +190,7 @@ module DemoCalculator2
     # @return [Integer] 0 when the run ends on `items=7/7`, 3 on a stop after step 2 began, 1 on a refusal before it. A dry run lists every
     #   refusal, prints the plan anyway and ends with 1 if there were any, else 0.
     def call
+      raise Refused, "--forget cannot be combined with --dry-run: forgetting copies evidence and deletes" if @options.forget && @options.dry_run
       return forget if @options.forget
       report = preflight
       say_report(report)
@@ -210,6 +211,7 @@ module DemoCalculator2
     def preflight
       @refusals = []
       collect { check_id }
+      collect { check_workflow }
       collect { check_unused }
       collect { check_base }
       collect { check_ci }
@@ -562,7 +564,11 @@ module DemoCalculator2
     # Step 2. The id is registered before the first start and each workspace is recorded as soon as its start answers, before the
     # next command runs.
     def start_lanes
-      @registry.register(id)
+      begin
+        @registry.register(id)
+      rescue SeriesRegistry::Refusal => e
+        raise Refused, e.message
+      end
       @concurrent = @registry.entries.size - 1
       @started = true
       [id, "#{id}-b"].each do |name|
@@ -688,6 +694,11 @@ module DemoCalculator2
       raise Refused, "id #{id.inspect} must be lowercase letters and digits starting with a letter, and not b"
     end
 
+    def check_workflow
+      return if GOAL_WORKFLOW_IDS.include?(@options.workflow)
+      raise Refused, "--workflow #{@options.workflow.inspect} must be one of #{GOAL_WORKFLOW_IDS.join(", ")}"
+    end
+
     def check_unused
       %W[#{id} #{id}-b].each do |name|
         _, found = read("git", "show-ref", "--verify", "--quiet", "refs/demo-calc2-runs/#{name}")
@@ -695,11 +706,11 @@ module DemoCalculator2
       end
       out = must_read("git", "worktree", "list", "--porcelain")
       paths = out.to_s.lines.filter_map { |line| line.chomp.delete_prefix("worktree ") if line.start_with?("worktree ") }
-      raise Refused, "id #{id} is used: a worktree calc2-demo-#{id} exists" if paths.any? { |path| File.basename(path).match?(/\Acalc2-demo-#{id}(-b)?\z/) }
+      raise Refused, "id #{id} is used: a worktree calc2-demo-#{id} exists" if paths.any? { |path| File.basename(path).match?(/\Acalc2-demo-#{Regexp.escape(id)}(-b)?\z/) }
       names = json(@workspace, "list", "--all", "--json")
       raise Refused, "`workspace list --all --json` did not print a list" unless names.is_a?(Array)
       names = names.map { |row| row.is_a?(Hash) ? row["name"].to_s : row.to_s }
-      raise Refused, "id #{id} is used: a workspace calc2-demo-#{id} exists" if names.any? { |name| name.match?(/(\A|\.worktree-|\.)calc2-demo-#{id}(-b)?\z/) }
+      raise Refused, "id #{id} is used: a workspace calc2-demo-#{id} exists" if names.any? { |name| name.match?(/(\A|\.worktree-|\.)calc2-demo-#{Regexp.escape(id)}(-b)?\z/) }
       raise Refused, "id #{id} is used: it is in the series registry (series --forget #{id})" if @registry.entries.key?(id)
     end
 

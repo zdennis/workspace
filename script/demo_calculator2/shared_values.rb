@@ -21,10 +21,9 @@ module DemoCalculator2
     # @param live [String, Array<String>, nil] the value now; for a sources key the entries ahead of and including ours (a comma list works too)
     # @param wanted [String] the value this checkout would write
     # @param path_exists [#call] `call(path)` says whether a checkout or directory still exists
-    # @param owner_running [#call, nil] carried for callers that decide a take-over; the state does not depend on it
     # @param same_definitions [#call, nil] `call(entry)` says whether an existing sources entry holds the same definitions as ours; nil means it differs
     # @return [Symbol] `:absent`, `:equal`, `:dangling` or `:foreign_live`
-    def self.classify(key, live:, wanted:, path_exists:, owner_running: nil, same_definitions: nil)
+    def self.classify(key, live:, wanted:, path_exists:, same_definitions: nil)
       return classify_sources(live, wanted, path_exists, same_definitions) if key.start_with?(SOURCES_PREFIX)
       return :absent if live.nil? || live.to_s.empty?
       return :equal if live == wanted

@@ -401,6 +401,35 @@ RSpec.describe DemoCalculator2::Series do
       expect(text).to include("drop the line again")
     end
 
+    it "lists the refusals of an id with regexp characters on a dry run, and returns 1 without a RegexpError" do
+      bad = described_class.new(root: root, options: described_class.parse(%w[--id a( --dry-run]), exec: exec, registry: registry, out: out, err: err,
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) })
+      expect(bad.call).to eq(1)
+      expect(out.string).to include("would refuse:", "must be lowercase")
+    end
+
+    it "refuses --forget with --dry-run before touching anything" do
+      forget = described_class.new(root: root, options: described_class.parse(%w[--forget s1 --dry-run]), exec: exec, registry: registry, out: out, err: err)
+      expect(forget.call).to eq(1)
+      expect(err.string).to match(/--forget cannot be combined with --dry-run/)
+      expect(exec.calls).to be_empty
+    end
+
+    it "lists a --workflow that is not a goal workflow as a refusal on a dry run" do
+      odd = described_class.new(root: root, options: described_class.parse(%w[--id s1 --workflow nope --dry-run]), exec: exec, registry: registry, out: out, err: err,
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) })
+      expect(odd.call).to eq(1)
+      expect(out.string).to match(/--workflow "nope" must be one of/)
+    end
+
+    it "refuses a --workflow that is not a goal workflow before any workspace starts" do
+      odd = described_class.new(root: root, options: described_class.parse(%w[--id s1 --workflow nope]), exec: exec, registry: registry, out: out, err: err,
+        read_file: ->(path) { files[path] }, path_exists: ->(path) { existing.include?(path) }, readable_dir: ->(path) { !unreadable.include?(path) })
+      expect(odd.call).to eq(1)
+      expect(err.string).to match(/series refused: --workflow "nope"/)
+      expect(exec.calls.select { |argv| argv[1] == "start" }).to be_empty
+    end
+
     it "prints the sonnet steps, the scoreboard target and the kept line when asked" do
       options = described_class.parse(%w[--id s1 --dry-run --sonnet --keep --scoreboard board.md])
       described_class.new(root: root, options: options, exec: exec, registry: registry, out: out, err: err,
@@ -656,6 +685,17 @@ RSpec.describe DemoCalculator2::Series do
         plain.call
         expect(calls("workspace", "config", "set", "--scope")).to be_empty
         expect(calls("workspace", "template")).to be_empty
+      end
+    end
+
+    describe "an id another process holds in the registry" do
+      before { allow(live_registry).to receive(:register).and_raise(DemoCalculator2::SeriesRegistry::Refusal, "s1 is held by pid 7") }
+
+      it "ends as a refusal with exit 1, starting and cleaning up nothing" do
+        expect(full.call).to eq(1)
+        expect(err.string).to match(/series refused: s1 is held by pid 7/)
+        expect(calls("workspace", "start")).to be_empty
+        expect(calls("workspace", "kill")).to be_empty
       end
     end
 

@@ -93,6 +93,49 @@ RSpec.describe DemoCalculator2::SeriesRegistry do
     expect(registry.stale).to eq(["b2"])
   end
 
+  it "refuses to register an id another pid already holds, leaving the file unchanged" do
+    registry.register("a")
+    before = File.read(File.join(dir, "series.json"))
+    other = described_class.new(dir, clock: clock, pid: 222, host: "h", alive: alive)
+    expect { other.register("a", workspaces: ["ws"]) }
+      .to raise_error(described_class::Refusal, /series a is already registered by pid 111/)
+    expect(File.read(File.join(dir, "series.json"))).to eq(before)
+  end
+
+  it "lets the same pid register an id again and append" do
+    registry.register("a", workspaces: ["w1"])
+    registry.register("a", workspaces: ["w2"])
+    expect(registry.entries["a"]["workspaces"]).to eq(["w1", "w2"])
+  end
+
+  describe "process start time" do
+    let(:started_at) { Time.utc(2026, 1, 2, 3, 4, 5) }
+
+    def registry_with(process_started)
+      described_class.new(dir, clock: clock, pid: 111, host: "h", process_started: process_started)
+    end
+
+    before { allow(Process).to receive(:kill).with(0, 111).and_return(1) }
+
+    it "counts an id stale when its pid was reused by a process started after registration" do
+      r = registry_with(->(_pid) { started_at + 3600 })
+      r.register("a")
+      expect(r.stale).to eq(["a"])
+    end
+
+    it "keeps an id whose process started before it was registered" do
+      r = registry_with(->(_pid) { started_at - 60 })
+      r.register("a")
+      expect(r.stale).to eq([])
+    end
+
+    it "keeps an id when the start time is unknown" do
+      r = registry_with(->(_pid) {})
+      r.register("a")
+      expect(r.stale).to eq([])
+    end
+  end
+
   it "writes no file or directory in read-only mode" do
     nested = File.join(dir, "nested", "demo-calc2")
     ro = described_class.new(nested, read_only: true)
