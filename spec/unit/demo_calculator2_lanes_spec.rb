@@ -273,6 +273,7 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(calls).to include(%w[git merge --abort])
       expect(saved["integration"]).to include("merge" => "conflict", "conflict" => true, "first_pass" => false)
       expect(saved["integration"]["integrate_run"]).to include("item" => "int1", "passed" => true, "outcome" => "succeeded")
+      expect(saved["integration"]).to include("repair_workflow" => "integrate-branch")
       queued = calls.find { |argv| argv[1, 4] == %w[work-queue add workflow integrate-branch] }
       expect(queued).to include("branch=#{branch}", "goal=demo/calculator2/goals/07-repl.md", "acceptance=script/demo_calculator2/acceptance_runner", "--name", "ws")
       expect(calls).not_to include(a_collection_starting_with("sh", "-c"))
@@ -288,16 +289,18 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(saved["integration"]).to include("merge" => "failed", "conflict" => false, "first_pass" => false)
     end
 
-    it "makes a failing acceptance run on a clean merge not a first pass, keeping the merge and queueing integrate-branch" do
+    it "makes a failing acceptance run on a clean merge not a first pass, keeping the merge and queueing integrate-merged" do
       on(/acceptance_runner\z/) { ["", false] }
       finished("int1")
       lanes.integrate_run(record_path)
       expect(calls).not_to include(%w[git merge --abort])
       expect(saved["integration"]).to include("merge" => "clean", "first_pass" => false, "test" => true, "lint" => true, "acceptance" => false)
-      expect(calls.any? { |argv| argv[1, 4] == %w[work-queue add workflow integrate-branch] }).to be(true)
+      expect(calls.any? { |argv| argv[1, 4] == %w[work-queue add workflow integrate-merged] }).to be(true)
+      expect(calls.any? { |argv| argv[1, 4] == %w[work-queue add workflow integrate-branch] }).to be(false)
+      expect(saved["integration"]).to include("repair_workflow" => "integrate-merged")
     end
 
-    it "prints the failing command and the last 40 lines of its output before queueing integrate-branch" do
+    it "prints the failing command and the last 40 lines of its output before queueing integrate-merged" do
       output = (1..60).map { |n| "line #{n}\n" }.join
       on(/acceptance_runner\z/) { [output, false] }
       finished("int1")
@@ -305,7 +308,7 @@ RSpec.describe DemoCalculator2::Lanes do
       expect(out.string).to match(/first-pass check acceptance failed: .*acceptance_runner .*07-repl\.md/)
       expect(out.string).to include("line 21\n", "line 60\n")
       expect(out.string).not_to include("line 20\n")
-      expect(out.string.index("first-pass check acceptance failed")).to be < out.string.index("+ workspace work-queue add workflow integrate-branch")
+      expect(out.string.index("first-pass check acceptance failed")).to be < out.string.index("+ workspace work-queue add workflow integrate-merged")
     end
 
     it "stops on the first failing check and runs no later one" do

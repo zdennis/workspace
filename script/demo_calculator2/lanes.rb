@@ -119,7 +119,7 @@ module DemoCalculator2
 
     # Merges lane B's branch in lane A and decides first pass: a clean merge, then the test command, lint and the plain
     # 07-repl acceptance run, one attempt each. A conflict (merge aborted) or a failure of any of them records
-    # `first_pass: false` and queues `integrate-branch` in lane A, then waits for it; its result is recorded apart.
+    # `first_pass: false` and queues `integrate-branch` (`integrate-merged` after a clean merge) in lane A, then waits for it; its result is recorded apart.
     #
     # @param record [Hash] the run record; gets an `integration` block and is written back
     # @return [Hash, nil] a stop (`reason`, `item`) when waiting for integrate-branch stopped early
@@ -140,7 +140,7 @@ module DemoCalculator2
         integration["first_pass"] = false
       end
       save(record)
-      # A clean merge whose checks failed stays committed on lane A's branch: integrate-branch starts from it and merges nothing more.
+      # A clean merge whose checks failed stays committed on lane A's branch: integrate-merged starts from it and merges nothing more.
       stop = integration["first_pass"] ? nil : repair(record, integration, branch)
       head, = git(@root, "rev-parse", "HEAD")
       integration["head"] = head.to_s.strip
@@ -513,9 +513,12 @@ module DemoCalculator2
       duplicates.empty?
     end
 
-    # Queues integrate-branch in lane A, waits for it and records its outcome apart from the first pass.
+    # Queues the repair in lane A, waits for it and records its outcome apart from the first pass: integrate-merged after a
+    # clean merge (nothing left to merge), integrate-branch after a conflict or a failed merge.
     def repair(record, integration, branch)
-      argv = DemoCalculator2.integrate_argv(branch, name_args(@name))
+      merged = integration["merge"] == "clean"
+      argv = DemoCalculator2.integrate_argv(branch, name_args(@name), merged: merged)
+      integration["repair_workflow"] = argv[3]
       say "+ workspace #{argv.join(" ")}"
       id = workspace_json(*argv).dig("results", 0, "id")
       integration["integrate_run"] = {"item" => id, "queued_at" => @clock.call.utc.iso8601}

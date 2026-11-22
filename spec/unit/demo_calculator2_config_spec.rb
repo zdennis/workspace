@@ -48,8 +48,9 @@ RSpec.describe DemoCalculator2 do
       expect(fast.queue_items.call([]).first.last).to start_with("work-queue", "add", "workflow", "deliver-goal-fast")
     end
 
-    it "lists the three definitions the run record hashes" do
-      expect(config.definition_ids).to eq(%w[deliver-goal deliver-goal-fast integrate-branch])
+    it "lists the four definitions the run record hashes" do
+      expect(config.definition_ids).to eq(%w[deliver-goal deliver-goal-fast integrate-branch integrate-merged])
+      expect(described_class::INTEGRATE_MERGED_WORKFLOW_ID).to eq("integrate-merged")
       expect(described_class::GOAL_WORKFLOW_IDS).to eq(%w[deliver-goal deliver-goal-fast])
     end
 
@@ -89,6 +90,12 @@ RSpec.describe DemoCalculator2 do
     it "keeps the integration run on the 07 goal name with the plain acceptance runner" do
       argv = described_class.integrate_argv("calc-demo/x-b", ["--name", "a"])
       expect(argv).to include("integrate-branch", "branch=calc-demo/x-b", "goal=demo/calculator2/goals/07-repl.md", "acceptance=script/demo_calculator2/acceptance_runner")
+    end
+
+    it "queues integrate-merged, with the same inputs, when the merge is already committed" do
+      argv = described_class.integrate_argv("calc-demo/x-b", ["--name", "a"], merged: true)
+      expect(argv[0, 4]).to eq(%w[work-queue add workflow integrate-merged])
+      expect(argv).to include("branch=calc-demo/x-b", "goal=demo/calculator2/goals/07-repl.md", "acceptance=script/demo_calculator2/acceptance_runner")
     end
 
     it "tells which groups no item's own check runs, so the plain 07 run after the merge is the only one to cover them" do

@@ -78,7 +78,7 @@ module DemoCalculator2
         "         --wait forks lane B from the head goal 03 ends on, waits for both queues, merges lane B here and ends with one `LOOP DONE: ...` line\n" \
         "         (`wall=... integration=clean|integrate first_pass=... items=N/7` and exit 0, or `stopped reason=timeout|paused|disabled|held|fork_check|integrate_failed|error` and exit 3;\n" \
         "         a refusal before the queues start prints no LOOP DONE and exits 1)\n" \
-        "  integrate  merge lane B's branch into this branch for a recorded lanes run, check it, and queue integrate-branch when it needs repair; prints LOOP DONE too\n" \
+        "  integrate  merge lane B's branch into this branch for a recorded lanes run, check it, and queue integrate-branch (integrate-merged after a clean merge) when it needs repair; prints LOOP DONE too\n" \
         "  eval   score a recorded run: per goal attempts, review rounds, first-pass acceptance, acceptance loops,\n" \
         "         time, tokens and cost, each step's wall time, lint and leaks; written to eval.json beside run.json;\n" \
         "         a lanes run reads both workspaces and adds the critical path and the integration\n" \

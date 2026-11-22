@@ -9,9 +9,10 @@ module DemoCalculator2
   LANES_ACCEPTANCE_RUNNER = "script/demo_calculator2/acceptance_runner_lanes".freeze
   WORKFLOW_ID = "deliver-goal".freeze
   INTEGRATE_WORKFLOW_ID = "integrate-branch".freeze
-  DEFINITION_IDS = [WORKFLOW_ID, "deliver-goal-fast", INTEGRATE_WORKFLOW_ID].freeze
-  # The workflows a goal's item may run as; integrate-branch is the lanes' merge repair, never a goal's.
-  GOAL_WORKFLOW_IDS = DEFINITION_IDS - [INTEGRATE_WORKFLOW_ID]
+  INTEGRATE_MERGED_WORKFLOW_ID = "integrate-merged".freeze
+  DEFINITION_IDS = [WORKFLOW_ID, "deliver-goal-fast", INTEGRATE_WORKFLOW_ID, INTEGRATE_MERGED_WORKFLOW_ID].freeze
+  # The workflows a goal's item may run as; integrate-branch and integrate-merged are the lanes' repairs, never a goal's.
+  GOAL_WORKFLOW_IDS = DEFINITION_IDS - [INTEGRATE_WORKFLOW_ID, INTEGRATE_MERGED_WORKFLOW_ID]
   # Lane A runs 01-05 and lane B 06 and 07, forked from lane A's head after goal 03 (`fork_after`).
   LANES = {a: %w[01-add-sub 02-mul-div 03-div-zero 04-precedence 05-mod-pow].freeze, b: %w[06-json 07-repl].freeze, fork_after: "03-div-zero"}.freeze
   # Lane B's prompt names the goals "earlier" means, since its branch holds only 01-03. The goal documents are unchanged.
@@ -39,10 +40,11 @@ module DemoCalculator2
   end
 
   # @param branch [String] the branch to merge, lane B's
-  # @return [Array<String>] the argv of `work-queue add` for the integrate-branch run in lane A: the plain acceptance
+  # @param merged [Boolean] true when the merge is already committed, so the run is integrate-merged rather than integrate-branch
+  # @return [Array<String>] the argv of `work-queue add` for the repair run in lane A: the plain acceptance
   #   runner on 07-repl, so groups 1..7 run
-  def self.integrate_argv(branch, name_args)
-    ["work-queue", "add", "workflow", INTEGRATE_WORKFLOW_ID, "--prompt", "Merge #{branch} into this branch and make the tests, lint and acceptance pass.",
+  def self.integrate_argv(branch, name_args, merged: false)
+    ["work-queue", "add", "workflow", merged ? INTEGRATE_MERGED_WORKFLOW_ID : INTEGRATE_WORKFLOW_ID, "--prompt", "Merge #{branch} into this branch and make the tests, lint and acceptance pass.",
       "--input", "branch=#{branch}", "--input", "goal=#{DEMO_DIR}/goals/07-repl.md", "--input", "acceptance=#{ACCEPTANCE_RUNNER}",
       "--dedupe-key", "calculator2-demo:integrate", "--json", *name_args]
   end
