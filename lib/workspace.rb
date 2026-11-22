@@ -457,6 +457,7 @@ require_relative "workspace/cli/pipeline"
 require_relative "workspace/cli/plan_spine"
 require_relative "workspace/cli/work_queue"
 require_relative "workspace/cli/template"
+require_relative "workspace/cli/session_event_wiring"
 require_relative "workspace/cli"
 
 module Workspace
@@ -948,23 +949,17 @@ module Workspace
     lock_holder = LockHolder.new(process_tree: process_tree, run_liveness: run_liveness, tmux: tmux)
     sessions_command = Commands::Sessions.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       project_config: project_config, snapshot_client: agent_snapshot_client, output: output, error_output: error_output)
-    lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
-    lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
-    workflow_deny = WorkflowDeny.new(bound_run: bound_run, command_pieces: BashCommandPieces.new, logger: logger, event_log: event_log,
-      run_store: WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir, event_errors_path: config.workflow_event_errors_path))
-    review_write_guard = ReviewWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, env: env, event_log: event_log, logger: logger)
-    reflection_write_guard = ReflectionWriteGuard.new(pane_bindings: pane_bindings, tmux: tmux, config: config, env: env, event_log: event_log, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     recovery_stop_marker = RecoveryStopMarker.new(state_dir: config.state_dir)
     delivery_log = DeliveryLog.new(path: File.join(config.state_dir, "session-event.log"))
     permission_policy_config = PermissionPolicyConfig.new(config_resolver: config_resolver, bound_run: bound_run, run_store: workflow_store, logger: logger)
     workspace_for_session = SessionWorkspace.new(tmux: tmux, project_config: project_config, config: config,
       on_ambiguous: ->(session, names) { delivery_log.record("ambiguous session=#{session} claimed by configs #{names.join(", ")}; using #{names.first}", key: "ambiguous/#{session}") })
-    session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
-      workspace_for_session: workspace_for_session, delivery_log: delivery_log, permission_policy_config: permission_policy_config, session_ambiguous: workspace_for_session.method(:ambiguous?),
-      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, workflow_deny: workflow_deny, review_write_guard: review_write_guard, reflection_write_guard: reflection_write_guard, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
-      dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), recovery_marker: recovery_stop_marker, logger: logger))
+    session_event_command = CLI::SessionEventWiring.build(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger, env: env,
+      event_log: event_log, permission_policy_config: permission_policy_config, instruction_composer: instruction_composer, executable: File.expand_path("../bin/workspace", __dir__),
+      pane_bindings: pane_bindings, lock_namespace: lock_namespace, lock_holder: lock_holder, bound_run: bound_run, session_ledger: session_ledger,
+      recovery_stop_marker: recovery_stop_marker, delivery_log: delivery_log, workspace_for_session: workspace_for_session)
     process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, lineage: lineage,
       terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, event_log: event_log,
