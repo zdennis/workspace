@@ -55,6 +55,15 @@ RSpec.describe "script/hook-latency" do
     expect(JSON.parse(out)).to include("n" => 1, "median" => 1.0, "tool" => "Bash")
   end
 
+  it "filters by pane" do
+    write_log(
+      line("tool_started", "a", "2026-11-21T10:00:00.000Z"), line("tool_finished", "a", "2026-11-21T10:00:00.100Z"),
+      line("tool_started", "b", "2026-11-21T10:00:01.000Z", pane: "%2"), line("tool_finished", "b", "2026-11-21T10:00:01.700Z", pane: "%2")
+    )
+    out, = run_script("--file", log, "--pane", "%2", "--json")
+    expect(JSON.parse(out)).to include("n" => 1, "median" => 0.7, "pane" => "%2")
+  end
+
   it "filters by --since on the start time" do
     write_log(
       line("tool_started", "a", "2026-11-21T09:00:00.000Z"), line("tool_finished", "a", "2026-11-21T09:00:00.900Z"),

@@ -7,7 +7,7 @@
 # `bin/workspace session-event` fed a PreToolUse Read payload N times and prints the median wall time. That mode runs
 # with TMUX_PANE unset and in a throwaway HOME, so it touches no real state and delivers to no daemon.
 #
-#   script/hook-latency --workspace NAME [--tool Read] [--since 2026-11-21T09:00:00Z] [--json]
+#   script/hook-latency --workspace NAME [--tool Read] [--pane %12] [--since 2026-11-21T09:00:00Z] [--json]
 #   script/hook-latency --file PATH [--tool Read] [--since TIME] [--json]
 #   script/hook-latency --process 20 [--bin PATH] [--json]
 
@@ -41,7 +41,7 @@ module HookLatency
   end
 
   # @return [Array<Float>] seconds from each tool_started to its tool_finished
-  def self.deltas(lines, tool: nil, since: nil)
+  def self.deltas(lines, tool: nil, since: nil, pane: nil)
     started = {}
     out = []
     lines.each do |line|
@@ -52,6 +52,7 @@ module HookLatency
       end
       next unless event.is_a?(Hash) && %w[tool_started tool_finished].include?(event["type"])
       next if tool && event["tool"] != tool
+      next if pane && event["pane_id"] != pane
       id = event["tool_use_id"]
       at = begin
         Time.iso8601(event["at"].to_s)
@@ -88,6 +89,7 @@ module HookLatency
       o.on("--workspace NAME", "Read ~/.local/state/workspace/.events/NAME.jsonl") { |v| opts[:workspace] = v }
       o.on("--file PATH", "Read this event log") { |v| opts[:file] = v }
       o.on("--tool NAME", "Only this tool (e.g. Read)") { |v| opts[:tool] = v }
+      o.on("--pane ID", "Only events from this tmux pane (e.g. %12)") { |v| opts[:pane] = v }
       o.on("--since TIME", "Only pairs started at or after this ISO8601 time") { |v| opts[:since] = Time.iso8601(v) }
       o.on("--process N", Integer, "Time `session-event` N times with a PreToolUse Read payload (TMUX_PANE unset, throwaway HOME: touches no real state)") { |v| opts[:process] = v }
       o.on("--bin PATH", "workspace executable for --process (default: this checkout's bin/workspace)") { |v| opts[:bin] = v }
@@ -106,7 +108,7 @@ module HookLatency
         return 2
       end
       lines = File.exist?(path) ? File.foreach(path).to_a : []
-      result = summary(deltas(lines, tool: opts[:tool], since: opts[:since])).merge("mode" => "log", "tool" => opts[:tool])
+      result = summary(deltas(lines, tool: opts[:tool], since: opts[:since], pane: opts[:pane])).merge("mode" => "log", "tool" => opts[:tool], "pane" => opts[:pane])
     end
 
     if opts[:json]
