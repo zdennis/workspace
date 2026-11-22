@@ -82,6 +82,7 @@ RSpec.describe Workspace::Commands::Agent do
 
         expect(tmux.sent_keys.last).to include(session: "myapp", pane: "0.0")
         expect(tmux.sent_keys.last[:text]).to start_with("/build add OAuth support\n\n")
+        wait_until { pipeline_state.current("WC-42") }
         expect(pipeline_state.current("WC-42")).to include(
           dispatch_id: "d-7a1", pane_index: 0, phase: "researcher", sentinel_token: "tok-1"
         )
@@ -262,6 +263,7 @@ RSpec.describe Workspace::Commands::Agent do
         wait_until { tmux.sent_keys.any? }
         expect(tmux.sent_keys.last).to include(pane: "0.0")
         expect(tmux.sent_keys.last[:text]).to start_with("/build add OAuth support")
+        wait_until { pipeline_state.current("WC-42") }
         expect(pipeline_state.current("WC-42")).to include(pane_index: 0, phase: "researcher")
       end
     end
