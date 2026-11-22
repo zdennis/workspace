@@ -150,7 +150,7 @@ module PermissionReplay
         return []
       end
       prefix = PermissionReplay.usable_prefix(logged)
-      cut = logged.end_with?("…")
+      cut = PermissionReplay.cut?(logged)
       return [] if PermissionReplay.cut?(logged) && prefix.length < MIN_PREFIX
       @entries[agent_id&.to_s].filter_map do |stamp, command|
         delta = time - stamp
@@ -160,7 +160,7 @@ module PermissionReplay
 
     private
 
-    # A complete logged line must equal the command's first line; only an ellipsis-cut one may be a prefix.
+    # A complete logged line must equal the command's first line; only a cut or redacted one may be a prefix.
     def first_line_matches?(command, prefix, cut)
       first = command.lines.first.to_s.chomp
       cut ? first.start_with?(prefix) : first == prefix
