@@ -106,6 +106,29 @@ module Workspace
       terminate(name, pid)
     end
 
+    # The workspace an `agentd` command line names: `--name NAME`, `--name=NAME`
+    # (any abbreviation OptionParser takes), else a trailing positional word.
+    # nil when it names none or can't be told.
+    #
+    # @param words [Array<String>, String] the command line, split or whole
+    # @return [String, nil]
+    def self.served_name(words)
+      words = words.split if words.is_a?(String)
+      start = words.index("agentd")
+      return nil unless start
+
+      args = words[(start + 1)..]
+      index = args.rindex { |word| word.start_with?("--") && word.split("=", 2).first.length >= 3 && "--name".start_with?(word.split("=", 2).first) }
+      if index
+        return args[index].include?("=") ? args[index].split("=", 2).last : args[index + 1]
+      end
+
+      last = args.last
+      return nil if last.nil? || last.start_with?("-")
+
+      VALUE_FLAGS.include?(args[-2]) ? nil : last
+    end
+
     # @return [Integer, nil] the pid of the one process holding the workspace's socket; nil when none, several, or lsof didn't answer
     def find_pid(name)
       pids = socket_pids(name)
@@ -131,7 +154,7 @@ module Workspace
         return Holder.new(words, :not_agentd, described).freeze
       end
 
-      served = served_name(words)
+      served = self.class.served_name(words)
       return Holder.new(words, :other_workspace, served).freeze if served && !WorkspaceName.same?(served, name)
 
       Holder.new(words, nil, nil).freeze
@@ -176,23 +199,6 @@ module Workspace
       when :other_workspace then "pid #{pid} holds the socket for #{name} but is the agentd for #{holder.detail}; not signalling it"
       else "couldn't confirm pid #{pid} is the daemon for #{name}: #{holder.detail}"
       end
-    end
-
-    # The workspace an `agentd` command line names: `--name NAME`, `--name=NAME`
-    # (any abbreviation OptionParser takes), else a trailing positional word.
-    # nil when it names none or can't be told.
-    def served_name(words)
-      start = words.index("agentd")
-      args = words[(start + 1)..]
-      index = args.rindex { |word| word.start_with?("--") && word.split("=", 2).first.length >= 3 && "--name".start_with?(word.split("=", 2).first) }
-      if index
-        return args[index].include?("=") ? args[index].split("=", 2).last : args[index + 1]
-      end
-
-      last = args.last
-      return nil if last.nil? || last.start_with?("-")
-
-      VALUE_FLAGS.include?(args[-2]) ? nil : last
     end
 
     def alive?(pid)

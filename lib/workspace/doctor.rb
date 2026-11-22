@@ -73,11 +73,13 @@ module Workspace
     # @param run_health [Workspace::WorkflowRunHealth, nil] reads orphaned workflow runs and leaked run locks; nil skips that check
     # @param review_orphans [Workspace::WorkflowReviewOrphans, nil] finds review windows no round uses; nil skips that check
     # @param tmux [Workspace::Tmux, nil] says whether tmux's `renumber-windows` is on; nil skips that check
+    # @param daemon_stopper [Workspace::AgentDaemonStopper, nil] stops an orphaned agent daemon by workspace name for `--fix`; nil skips the `agentd-orphans` check
+    # @param process_tree [Workspace::ProcessTree, nil] lists the running agent daemons for that check; nil skips it
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     # @param env [Hash] the environment; a non-empty NO_COLOR turns color off
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, command_probe: CommandProbe.new, app_probe: AppProbe.new, git: nil,
-      pipeline_config: nil, permission_policy_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, review_orphans: nil, tmux: nil, sweep_schedule: nil, sweep_last_path: nil, sweep_log_path: nil, clock: -> { Time.now }, working_dir: Dir.pwd, output: $stdout, env: ENV)
+      pipeline_config: nil, permission_policy_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, project_catalog: nil, agent_commands: nil, project_config: nil, main_agent: nil, file_backup: nil, writer: nil, event_log: nil, skills: nil, library: nil, template_validator: nil, template_status: nil, template_apply: nil, run_health: nil, review_orphans: nil, tmux: nil, daemon_stopper: nil, process_tree: nil, sweep_schedule: nil, sweep_last_path: nil, sweep_log_path: nil, clock: -> { Time.now }, working_dir: Dir.pwd, output: $stdout, env: ENV)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -102,6 +104,8 @@ module Workspace
       @run_health = run_health
       @review_orphans = review_orphans
       @tmux = tmux
+      @daemon_stopper = daemon_stopper
+      @process_tree = process_tree
       @library = library
       @template_validator = template_validator
       @template_status = template_status
@@ -157,6 +161,8 @@ module Workspace
       stale = stale_agent_panes
       fixed = fix ? fix_agent_panes(stale) : []
       skills_fixed = fix ? fix_skills : 0
+      orphans = orphan_daemons
+      fix_orphan_daemons(orphans) if fix
       apply_fixes(fixed.size + skills_fixed + templates_fixed) if fix
       mode = @launch_mode.resolve(headless)
 
@@ -172,6 +178,7 @@ module Workspace
       check_review_windows
       check_renumber_windows
       check_workflow_sweep
+      check_orphan_daemons(orphans, fixed: fix)
       # A failed --fix is a `fix` row, so `doctor --fix` still exits non-zero
       # when there was nothing it could actually do.
       issues = @rows.count { |row| row[:status] == "fail" }
@@ -494,6 +501,85 @@ module Workspace
       add_row("workflow-runs", "warn", "#{pending.size - ROW_LIMIT} more orphaned runs, unreadable run files or leaked run locks not shown") if pending.size > ROW_LIMIT
       found[:warnings].each { |text| add_row("workflow-runs", "warn", TerminalText.escape(text)) }
       add_row("workflow-runs", "ok", "workflow runs: none orphaned, no leaked run locks") if pending.empty? && found[:warnings].empty?
+    end
+
+    # The agent daemons (`workspace agentd`) running with no tmuxinator config for the workspace they serve,
+    # from one process table read. A process whose workspace name can't be read is left out, and so is this one.
+    #
+    # @return [Array<Hash>, nil] `:name` and `:pid` of each; nil when the check can't run
+    def orphan_daemons
+      return nil unless @daemon_stopper && @process_tree && @project_config
+
+      configured = @project_config.available_projects
+      found = @process_tree.snapshot.processes.filter_map do |process|
+        words = process[:args].to_s.split
+        next unless agentd_daemon_words?(words) && process[:pid] != Process.pid
+
+        name = AgentDaemonStopper.served_name(words)
+        next if name.nil? || name.empty?
+        next if configured.any? { |known| WorkspaceName.same?(known, name) }
+
+        {name: name, pid: process[:pid]}
+      end
+      found.each_with_object([]) { |orphan, kept| kept << orphan unless kept.any? { |k| WorkspaceName.same?(k[:name], orphan[:name]) } }
+    rescue Workspace::Error => e
+      @orphan_scan_error = e.message
+      nil
+    end
+
+    # Whether a command line is the daemon itself: the word before `agentd` is the `workspace` program,
+    # and it is neither `agentd restart` nor `agentd --ensure`, which run briefly.
+    def agentd_daemon_words?(words)
+      index = words.index("agentd")
+      return false unless index&.positive? && File.basename(words[index - 1]) == "workspace"
+
+      args = words[(index + 1)..]
+      return false if args.include?("--ensure")
+
+      first = args.each_with_index.find { |word, i| !word.start_with?("-") && !(i.positive? && AgentDaemonStopper::VALUE_FLAGS.include?(args[i - 1])) }&.first
+      !(first == "restart" && (args & %w[-f --force]).empty?)
+    end
+
+    # Stops each orphaned daemon through the stopper, one row per result. A refusal is a warning: the
+    # stopper signals only the process holding this HOME's socket, so a daemon from another HOME is refused.
+    #
+    # @return [void]
+    def fix_orphan_daemons(orphans)
+      return unless orphans
+
+      orphans.each do |orphan|
+        label = "#{TerminalText.escape(orphan[:name])} (pid #{orphan[:pid]})"
+        result = @daemon_stopper.call(name: orphan[:name])
+        case result.status
+        when :stopped
+          add_row("agentd-orphans", "ok", "stopped orphaned agent daemon #{TerminalText.escape(orphan[:name])} (pid #{result.pid || orphan[:pid]})")
+        when :not_running
+          add_row("agentd-orphans", "warn", "pid #{orphan[:pid]} runs agentd for #{TerminalText.escape(orphan[:name])} but holds no socket for it under this HOME, " \
+            "so it was not stopped (started under another HOME or a test run?)",
+            fix: "check it with `ps -p #{orphan[:pid]} -o args=`; stop it by hand if it is yours")
+        when :timed_out
+          add_row("agentd-orphans", "fail", "orphaned agent daemon #{label} did not exit: #{TerminalText.escape(result.message.to_s)}")
+        else
+          add_row("agentd-orphans", "warn", "refused to stop orphaned agent daemon #{label}: #{TerminalText.escape(result.message.to_s)} " \
+            "(a daemon started under another HOME has a socket this one doesn't own)")
+        end
+      end
+    end
+
+    # Warns about agent daemons whose workspace has no config, which `--fix` stops.
+    # With `--fix`, the rows {#fix_orphan_daemons} added already say what happened to each.
+    def check_orphan_daemons(orphans, fixed:)
+      if orphans.nil?
+        add_row("agentd-orphans", "skipped", "agent daemons: could not read the process table (#{TerminalText.escape(@orphan_scan_error)})") if @orphan_scan_error
+        return
+      end
+
+      if orphans.empty?
+        add_row("agentd-orphans", "ok", "agent daemons: none running without a workspace config")
+      elsif !fixed
+        listed = orphans.map { |orphan| "#{TerminalText.escape(orphan[:name])} (pid #{orphan[:pid]})" }.join(", ")
+        add_row("agentd-orphans", "warn", "#{orphans.size} agent daemon(s) running with no workspace config: #{listed}", fix: "workspace doctor --fix", fix_command: "workspace doctor --fix")
+      end
     end
 
     # Warns about review windows no round uses (the run is over or unknown, or its round does not record the

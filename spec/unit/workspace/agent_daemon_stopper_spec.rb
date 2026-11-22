@@ -313,3 +313,13 @@ RSpec.describe Workspace::AgentDaemonStopper do
     end
   end
 end
+
+RSpec.describe Workspace::AgentDaemonStopper, ".served_name" do
+  it "reads the name from a string or words, in every form" do
+    expect(described_class.served_name("ruby workspace agentd --name a")).to eq("a")
+    expect(described_class.served_name(%w[ruby workspace agentd --name=b])).to eq("b")
+    expect(described_class.served_name("ruby workspace agentd c")).to eq("c")
+    expect(described_class.served_name("ruby workspace agentd")).to be_nil
+    expect(described_class.served_name("vim notes")).to be_nil
+  end
+end
