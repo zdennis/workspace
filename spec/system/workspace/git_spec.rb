@@ -583,6 +583,24 @@ RSpec.describe Workspace::Git do
         expect(upstream_of(path)).to eq("")
       end
 
+      it "creates a new branch from origin/main with no upstream" do
+        path = create("brand-new", base: "origin/main")
+
+        expect(git.worktree_branch(path)).to eq("brand-new")
+        expect(upstream_of(path)).to eq("")
+      end
+
+      it "sends a push with no destination to the new branch, not main, under push.default upstream" do
+        path = create("brand-new", base: "origin/main")
+        run!("git", "config", "push.default", "upstream", chdir: @repo_dir)
+
+        stdout, stderr, status = Open3.capture3("git", "-C", path, "push", "--dry-run", "--porcelain", "origin", "brand-new")
+
+        expect(status).to be_success, stderr
+        expect(stdout).to include("refs/heads/brand-new:refs/heads/brand-new")
+        expect(stdout).not_to include("refs/heads/main")
+      end
+
       it "marks a new branch as created by workspace" do
         create("brand-new", base: "main")
 
