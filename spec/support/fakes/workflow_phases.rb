@@ -217,8 +217,8 @@ class RecordingWorkflowPrompt
     File.join(Workspace::WorkflowRun.from_h(run).artifacts_dir, "steps", "#{step["id"]}.#{attempt_number}.r#{round}#{tag}.review.md")
   end
 
-  def review_text(run, step, attempt_number, round, revision, only: nil, rerun: nil)
-    @calls << [:review_text, Workspace::WorkflowRun.from_h(run), step["id"], attempt_number, round, revision, {only: only, rerun: rerun}]
+  def review_text(run, step, attempt_number, round, revision, only: nil, rerun: nil, early_start: nil)
+    @calls << [:review_text, Workspace::WorkflowRun.from_h(run), step["id"], attempt_number, round, revision, {only: only, rerun: rerun}.merge(early_start ? {early_start: early_start} : {})]
     {"path" => review_path(run, step, attempt_number, round, rerun: only ? rerun : nil), "text" => "review prompt", "packs" => []}
   end
 

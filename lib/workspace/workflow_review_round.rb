@@ -235,7 +235,6 @@ module Workspace
         return failed(run, pending, nil, dir[:code], dir[:problem]) if dir
         round = run.steps[pending["step"]]&.review || {}
         rerun = round["rerun"].is_a?(Array) ? {only: round["rerun"], rerun: round["reruns"]} : {}
-        written = @prompt.review_text(run, step, pending["attempt"], pending["round"], answer[:revision], **rerun)
         model = round_model(run, step)
         direct = WorkflowDefinition.direct_review?(run.definition, step)
         agent = review_agent(run, step)
@@ -244,6 +243,9 @@ module Workspace
         return failed(run, pending, nil, "window_not_opened", "tmux could not open the review window") unless window
         # A window an earlier round left is cleared (`/clear`, as a `context: fresh` step is) as the line is typed.
         window[:fresh] = window[:carried]
+        # Written once the window is known: one that started before the round is told its start-up git state is stale.
+        written = @prompt.review_text(run, step, pending["attempt"], pending["round"], answer[:revision], **rerun,
+          early_start: early_start(run, pending, window))
         unready = present_window(run, pending, window, agent)
         return unready if unready
         # The pane's binding is replaced, whichever round of the run it held.
@@ -376,6 +378,44 @@ module Workspace
       return {pane: carried[:pane], window: carried[:window], reused: false, carried: true} if carried
       opened = open_review_window(session, run, pending["step"], pending["round"], agent)
       opened && {pane: opened[:pane], window: opened[:window], reused: false, carried: false}
+    end
+
+    # What the prompt is told of a window whose process started before it: a Time it started no later than, or true when
+    # the run file gives none; nil for a window opened for this delivery. A window an earlier round left (carried) takes
+    # {#carried_start}; one this round's earlier delivery left (reused) takes {#reused_start}.
+    def early_start(run, pending, window)
+      return carried_start(run, pending["step"], window[:window]) if window[:carried]
+      reused_start(run, pending, window[:window]) if window[:reused]
+    end
+
+    # The run file records no open time for a window, only when its rounds' lines were typed (`kick_at`), and a kick
+    # follows the open, so the earliest `kick_at` of the rounds delivered in that window is a bound the process started
+    # no later than. `started_at` is not: a window is opened during a delivery, after the round's `started_at`. True when
+    # no round of the window has a `kick_at`. Those of the step's earlier rounds are in `attempts[].rounds`.
+    def carried_start(run, step_id, window_id)
+      state = run.step(step_id)
+      rows = state ? state.attempts.flat_map { |attempt| Array(attempt.rounds) } : []
+      row_kicks(rows.select { |row| row.is_a?(Hash) && row["window"] == window_id }).min || true
+    end
+
+    # The same bound for a window this round's earlier delivery left: the earliest `kick_at` of this round's own records
+    # in it (the deliveries it lapsed or failed, kept in the attempts) or of the round standing, if it is in that window.
+    def reused_start(run, pending, window_id)
+      state = run.step(pending["step"])
+      rows = state ? state.attempts.flat_map { |attempt| Array(attempt.rounds) } : []
+      rows << state.review if state&.review.is_a?(Hash)
+      rows = rows.select { |row| row.is_a?(Hash) && row["round"] == pending["round"] && row["window"] == window_id }
+      row_kicks(rows).min || true
+    end
+
+    def row_kicks(rows)
+      rows.filter_map { |row| parse_time(row["kick_at"]) }
+    end
+
+    def parse_time(value)
+      Time.iso8601(value.to_s)
+    rescue ArgumentError
+      nil
     end
 
     # The window of the newest earlier round of the same step, with a pane to type into.
