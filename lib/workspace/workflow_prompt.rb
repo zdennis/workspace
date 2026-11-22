@@ -19,6 +19,13 @@ module Workspace
       "a person must answer) instead of done. If a test this run wrote earlier has a plainly wrong expectation " \
       "(arithmetic, a typo) that contradicts the brief, correct it (never loosen or delete an assertion to make it pass), commit, and say so in your status detail; " \
       "ask (needs_input) only when the brief itself is ambiguous."
+    # What replaces the brief re-read in {CHECKLIST_TEXT} once the run has a requirements.md to check against.
+    CHECKLIST_BRIEF = "re-read this step's brief and instructions and list each requirement"
+    # What replaces {CHECKLIST_TEXT}'s ask clause for a run no person gates, so an ambiguity is recorded instead of stalling it.
+    CHECKLIST_ASK = "ask (needs_input) only when the brief itself is ambiguous."
+    # Said in that clause's place: what to do with an ambiguity when no step of the definition has a gate.
+    UNATTENDED_TEXT = "record an ambiguity with `workspace ask \"<question>\" --default \"<what you did>\"` " \
+      "and carry on; ask (needs_input) only when no sensible default fits."
     # @param composer [Workspace::InstructionComposer] builds a step's instructions from its packs
     # @param git [Workspace::Git] reads the checkout's branch for `{{branch}}`
     # @param excludes [Workspace::GitExclude] keeps `.workflow/` out of `git status`
@@ -348,7 +355,16 @@ module Workspace
         text += "\n\nThis step is finished when your turn ends and these files #{what}: #{files.join(", ")}."
       end
       text += "\n\nWhen your turn ends, the runner checks the step with the project's own command; work until it would pass." if step["status"]
-      text + "\n\n#{CHECKLIST_TEXT}\n\n#{STATUS_LINE_TEXT}"
+      text + "\n\n#{checklist_text(run)}\n\n#{STATUS_LINE_TEXT}"
+    end
+
+    # {CHECKLIST_TEXT}, checking requirements.md when the run has one and, with no gate in the definition, asking instead of stalling.
+    def checklist_text(run)
+      text = CHECKLIST_TEXT
+      requirements = File.join(run.artifacts_dir, "requirements.md")
+      text = text.sub(CHECKLIST_BRIEF, "check each R in #{requirements} and list each requirement") if File.file?(requirements)
+      text = text.sub(CHECKLIST_ASK, "If the brief itself is ambiguous, #{UNATTENDED_TEXT}") if run.definition_steps.none? { |step| step["gate"] }
+      text
     end
   end
 end

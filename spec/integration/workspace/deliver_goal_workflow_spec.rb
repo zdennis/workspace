@@ -57,13 +57,33 @@ RSpec.describe "the deliver-goal workflow in the simulator" do
     expect(review.call(definition.to_h)["max_rounds"]).to eq(review.call(parent)["max_rounds"])
   end
 
-  it "runs the plan review on sonnet as a direct round, with the parent's skeptical prompt unchanged" do
-    parent = Workspace::WorkflowDefinition.parse(File.read(File.join(PROJECT_ROOT, "lib", "workflows", "rpiv-auto-approve-v2.yml")), id: "rpiv-auto-approve-v2", source: "builtin", path: "p", parent_lookup: lookup).to_h
+  it "runs the plan review on sonnet as a direct round, with a skeptical prompt that checks the requirements list" do
     skeptical = definition.to_h["reviewers"]["skeptical"]
     expect(skeptical["model"]).to eq("sonnet")
-    expect(skeptical.except("model")).to eq(parent["reviewers"]["skeptical"])
+    expect(skeptical["prompt"]).to include("any R in")
+    expect(skeptical["prompt"]).to include("{{artifacts}}/requirements.md with no task")
+    expect(skeptical["prompt"]).to include("any reading chosen there that the brief")
+    expect(skeptical["prompt"]).not_to match(/accept|calc/i)
     plan = definition.to_h["steps"].find { |each| each["id"] == "plan" }
     expect(Workspace::WorkflowDefinition.direct_review?(definition.to_h, plan)).to be(true)
+  end
+
+  it "guards plan with config, so a commit loop back to it can retry" do
+    plan = definition.to_h["steps"].find { |each| each["id"] == "plan" }
+    expect(plan["guard"]).to eq("config")
+  end
+
+  it "has deliver-goal-fast's research write requirements.md beside research.md" do
+    fast_path = File.join(PROJECT_ROOT, "demo", "calculator2", "workflows", "deliver-goal-fast.yml")
+    demo_lookup = lambda do |id, below: nil|
+      next {"text" => File.read(path), "path" => path, "source" => "global"} if id == "deliver-goal" && below.nil?
+      lookup.call(id, below: below)
+    end
+    fast = Workspace::WorkflowDefinition.parse(File.read(fast_path), id: "deliver-goal-fast", source: "global", path: fast_path, parent_lookup: demo_lookup).to_h
+    research = fast["steps"].find { |each| each["id"] == "research" }
+    expect(research["produces"]).to eq(%w[research.md requirements.md])
+    expect(research["prompt"]).to include("{{artifacts}}/requirements.md")
+    expect(research["prompt"]).not_to match(/accept|calc/i)
   end
 
   def fresh(result, id) = result["steps"].find { |each| each["id"] == id }["attempts"].map { |each| each["fresh"] }

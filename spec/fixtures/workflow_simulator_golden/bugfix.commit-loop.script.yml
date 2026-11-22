@@ -1,0 +1,12 @@
+# The script the bugfix commit-loop golden plays: the person approves the reproduce gate, then fix commits but fails
+# its status check twice, and each failure loops back to reproduce. reproduce (guard: config) runs again with the commit
+# standing, and the third fix attempt passes and the run finishes.
+steps:
+  reproduce:
+    - {gate: approve}
+    - {gate: approve}
+    - {gate: approve}
+  fix:
+    - {check: fail, log: "1 failure in spec/models"}
+    - {check: fail, log: "1 failure in spec/models"}
+    - {}

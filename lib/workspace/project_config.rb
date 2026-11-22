@@ -1,6 +1,7 @@
 require "digest"
 require "shellwords"
 require "yaml"
+require_relative "tmuxinator_config_names"
 
 module Workspace
   # Manages tmuxinator config file generation for projects and worktrees.
@@ -191,10 +192,7 @@ module Workspace
 
     # @return [Array<String>] sorted list of available project names
     def available_projects
-      Dir.glob(File.join(@config.tmuxinator_dir, "workspace.*.yml"))
-        .map { |f| File.basename(f, ".yml").delete_prefix("workspace.") }
-        .reject { |n| n.match?(/^project-.*template$/) }
-        .sort
+      TmuxinatorConfigNames.new(config: @config).call
     end
 
     # The name a new config is written under: lowercase. A config already on disk

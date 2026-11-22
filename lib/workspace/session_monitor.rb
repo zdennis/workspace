@@ -44,7 +44,7 @@ module Workspace
     DEFAULT_POLL_INTERVAL = 10
 
     # Longest waiting message kept. A long one is cut rather than dropped.
-    MAX_MESSAGE_LENGTH = 200
+    MAX_MESSAGE_LENGTH = AgentProtocol::MAX_MESSAGE_LENGTH
 
     # Scans in a row that can't read the process table before a warning is
     # printed. One or two failures are routine (a slow `ps`); a streak means

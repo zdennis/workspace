@@ -1,5 +1,3 @@
-require "digest"
-
 module Workspace
   # The one check of a file a workflow step `produces`, shared by the engine's
   # decision at a turn's end, `step status` and anything else that asks whether
@@ -62,6 +60,7 @@ module Workspace
         return nil unless stat.file?
         return nil if check && !check.call(io)
         return Content.new(nil, stat.size, true) if stat.size > max_bytes
+        require "digest"
         digest = Digest::SHA256.new
         remaining = stat.size
         read = 0

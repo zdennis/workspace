@@ -1,0 +1,127 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Times the tool_started -> tool_finished delta of a workspace's hook event log
+# (~/.local/state/workspace/.events/<workspace>.jsonl, one JSON line per event, `at` stamped by the daemon on
+# receipt), paired by tool_use_id, and prints n, median and p90 in seconds. With --process N it instead times
+# `bin/workspace session-event` fed a PreToolUse Read payload N times and prints the median wall time. That mode runs
+# with TMUX_PANE unset and in a throwaway HOME, so it touches no real state and delivers to no daemon.
+#
+#   script/hook-latency --workspace NAME [--tool Read] [--pane %12] [--since 2026-11-21T09:00:00Z] [--json]
+#   script/hook-latency --file PATH [--tool Read] [--since TIME] [--json]
+#   script/hook-latency --process 20 [--bin PATH] [--json]
+
+require "json"
+require "open3"
+require "optparse"
+require "time"
+require "tmpdir"
+
+module HookLatency
+  PAYLOAD = JSON.generate(
+    "hook_event_name" => "PreToolUse", "tool_name" => "Read", "tool_use_id" => "toolu_latency",
+    "session_id" => "latency", "cwd" => Dir.pwd, "tool_input" => {"file_path" => "/etc/hosts"}
+  )
+
+  def self.percentile(sorted, fraction)
+    return nil if sorted.empty?
+    sorted[((sorted.size - 1) * fraction).ceil]
+  end
+
+  def self.median(values)
+    sorted = values.sort
+    return nil if sorted.empty?
+    mid = sorted.size / 2
+    sorted.size.odd? ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0
+  end
+
+  def self.summary(values)
+    sorted = values.sort
+    {"n" => sorted.size, "median" => median(sorted)&.round(3), "p90" => percentile(sorted, 0.9)&.round(3)}
+  end
+
+  # @return [Array<Float>] seconds from each tool_started to its tool_finished
+  def self.deltas(lines, tool: nil, since: nil, pane: nil)
+    started = {}
+    out = []
+    lines.each do |line|
+      event = begin
+        JSON.parse(line)
+      rescue JSON::ParserError
+        next
+      end
+      next unless event.is_a?(Hash) && %w[tool_started tool_finished].include?(event["type"])
+      next if tool && event["tool"] != tool
+      next if pane && event["pane_id"] != pane
+      id = event["tool_use_id"]
+      at = begin
+        Time.iso8601(event["at"].to_s)
+      rescue ArgumentError
+        next
+      end
+      next unless id.is_a?(String)
+      key = [event["pane_id"], id]
+      if event["type"] == "tool_started"
+        started[key] = at
+      elsif (t0 = started.delete(key))
+        out << at - t0 if since.nil? || t0 >= since
+      end
+    end
+    out
+  end
+
+  def self.time_process(count, bin)
+    Dir.mktmpdir("hook-latency") do |home|
+      env = {"HOME" => home, "XDG_CONFIG_HOME" => "#{home}/.config", "XDG_STATE_HOME" => "#{home}/.local/state", "TMUX_PANE" => nil, "TMUX" => nil}
+      Array.new(count) do
+        t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        _, stderr, status = Open3.capture3(env, RbConfig.ruby, bin, "session-event", stdin_data: PAYLOAD)
+        raise ArgumentError, "#{bin} session-event exited #{status.exitstatus}: #{stderr.lines.first}" unless status.success?
+        Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+      end
+    end
+  end
+
+  def self.main(argv, out: $stdout, err: $stderr)
+    opts = {tool: nil, json: false, bin: File.expand_path("../bin/workspace", __dir__)}
+    parser = OptionParser.new do |o|
+      o.banner = "Usage: hook-latency (--workspace NAME | --file PATH | --process N) [options]"
+      o.on("--workspace NAME", "Read ~/.local/state/workspace/.events/NAME.jsonl") { |v| opts[:workspace] = v }
+      o.on("--file PATH", "Read this event log") { |v| opts[:file] = v }
+      o.on("--tool NAME", "Only this tool (e.g. Read)") { |v| opts[:tool] = v }
+      o.on("--pane ID", "Only events from this tmux pane (e.g. %12)") { |v| opts[:pane] = v }
+      o.on("--since TIME", "Only pairs started at or after this ISO8601 time") { |v| opts[:since] = Time.iso8601(v) }
+      o.on("--process N", Integer, "Time `session-event` N times with a PreToolUse Read payload (TMUX_PANE unset, throwaway HOME: touches no real state)") { |v| opts[:process] = v.positive? ? v : raise(OptionParser::InvalidArgument, "#{v}: N must be at least 1") }
+      o.on("--bin PATH", "workspace executable for --process (default: this checkout's bin/workspace)") { |v| opts[:bin] = v }
+      o.on("--json", "Print JSON") { opts[:json] = true }
+    end
+    parser.parse!(argv)
+
+    if opts[:process]
+      times = time_process(opts[:process], opts[:bin])
+      result = summary(times).merge("mode" => "process")
+      result.delete("p90") if times.size < 2
+    else
+      path = opts[:file] || (opts[:workspace] && File.join(File.expand_path(ENV.fetch("XDG_STATE_HOME", "~/.local/state")), "workspace/.events", "#{opts[:workspace]}.jsonl"))
+      unless path
+        err.puts parser.help
+        return 2
+      end
+      lines = File.exist?(path) ? File.foreach(path).to_a : []
+      result = summary(deltas(lines, tool: opts[:tool], since: opts[:since], pane: opts[:pane])).merge("mode" => "log", "tool" => opts[:tool], "pane" => opts[:pane])
+    end
+
+    if opts[:json]
+      out.puts JSON.generate(result)
+    else
+      fmt = ->(v) { v.nil? ? "-" : format("%.3fs", v) }
+      out.puts "n=#{result["n"]} median=#{fmt.call(result["median"])} p90=#{fmt.call(result["p90"])}"
+    end
+    0
+  rescue OptionParser::ParseError, ArgumentError, SystemCallError => e
+    err.puts e.message
+    2
+  end
+end
+
+exit HookLatency.main(ARGV) if $PROGRAM_NAME == __FILE__

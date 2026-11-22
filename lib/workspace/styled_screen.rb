@@ -21,20 +21,29 @@ module Workspace
 
     # Parses raw `capture-pane -e -p` output.
     #
-    # @param raw [String, nil] the captured screen
-    # @return [StyledScreen, nil] nil when +raw+ is nil
-    def self.parse(raw)
-      return nil if raw.nil?
+    # @param capture [String, #raw, nil] the captured screen; an object that
+    #   answers +raw+ and +history_rows+ (a capture with scrollback) is read
+    #   with its first +history_rows+ rows counted as history
+    # @return [StyledScreen, nil] nil when +capture+ is nil
+    def self.parse(capture)
+      return nil if capture.nil?
+      return new(capture) unless capture.respond_to?(:history_rows)
 
-      new(raw)
+      new(capture.raw, history_rows: capture.history_rows)
     end
 
     # @return [String] the plain screen: the same text `capture-pane -p`
     #   gives, with trailing spaces cut from every line
     attr_reader :text
 
+    # @return [Integer] how many leading rows of {#text} are scrollback
+    #   history rather than the visible screen
+    attr_reader :history_rows
+
     # @param raw [String] captured screen with escape sequences
-    def initialize(raw)
+    # @param history_rows [Integer] how many leading rows are history
+    def initialize(raw, history_rows: 0)
+      @history_rows = [history_rows.to_i, 0].max
       @faint = []
       @proven = []
       @text = +""
@@ -72,6 +81,33 @@ module Workspace
     # @return [Integer] the number of lines
     def size
       @faint.size
+    end
+
+    # The last match of a pattern in the plain screen, kept only when the
+    # row holding the match's last character is on the visible screen. The
+    # last match is the newest input box, so one found in history is not
+    # replaced by an earlier match.
+    #
+    # @param pattern [Regexp] what the input box looks like
+    # @return [MatchData, nil]
+    def input_box(pattern)
+      match = nil
+      offset = 0
+      while (found = pattern.match(@text, offset))
+        match = found
+        offset = (found.end(0) > found.begin(0)) ? found.end(0) : found.end(0) + 1
+        break if offset > @text.length
+      end
+      return nil if match.nil? || match.end(0).zero?
+
+      row = @text[0, match.end(0) - 1].count("\n")
+      (row >= @history_rows) ? match : nil
+    end
+
+    # @return [Array<String>] the rows of {#text} below the history rows;
+    #   the one row-splitting rule readers of the screen share
+    def visible_lines
+      @text.split("\n", -1).drop(@history_rows)
     end
 
     private

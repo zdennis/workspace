@@ -1,0 +1,11 @@
+# The script the rpiv-auto-approve-v2 commit-loop golden plays: all three plan reviewers approve each round, and
+# implement commits but leaves the plan open twice, so its retry fails its require too and the implicit loop goes back
+# to plan. plan (guard: config) runs again with the commit standing, then implement passes and the run finishes.
+steps:
+  plan:
+    - reviews: {supportive: approve, skeptical: approve, implementer: approve}
+    - reviews: {supportive: approve, skeptical: approve, implementer: approve}
+  implement:
+    - {require: {plan_status: fail}}
+    - {require: {plan_status: fail}}
+    - {}

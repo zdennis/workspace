@@ -1,6 +1,5 @@
 require "open3"
 require "fileutils"
-require "tmpdir"
 require "timeout"
 
 module Workspace
@@ -1093,6 +1092,7 @@ module Workspace
       index_file, _, status = capture_git("-C", path, "rev-parse", "--git-path", "index")
       return nil unless status.success?
       index_file = File.expand_path(index_file.chomp, path)
+      require "tmpdir"
       Dir.mktmpdir("workspace-snapshot") do |dir|
         env = {"GIT_INDEX_FILE" => File.join(dir, "index")}
         FileUtils.cp(index_file, env["GIT_INDEX_FILE"]) if File.file?(index_file)

@@ -576,8 +576,7 @@ module Workspace
     # +{"id" => ..., "state" => ...}+.
     Summary = Data.define(:id, :workflow, :title, :workspace, :worktree, :state, :step, :attempt, :pane, :step_states, :reads_plan_again)
 
-    private
-
+    # @return [Array<Hash>] the definition's step entries in order (fan_out siblings included), empty when it has none
     def definition_steps
       list = definition.is_a?(Hash) ? definition["steps"] : nil
       list.is_a?(Array) ? list.select { |each| each.is_a?(Hash) } : []

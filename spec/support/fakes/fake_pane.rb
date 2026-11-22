@@ -30,7 +30,7 @@ class FakePane
 
   def capture = @tmux.capture_screen(@id)
 
-  def capture_styled = @tmux.capture_screen_styled(@id)
+  def capture_styled = @tmux.capture_screen_scrollback(@id)
 
   def deliver(text, enter: true) = @tmux.deliver(@session_name, @id, text, enter: enter)
 

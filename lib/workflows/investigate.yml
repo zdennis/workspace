@@ -136,9 +136,11 @@ steps:
         `reproduced: yes|no|ci-only`, `ci_verdict: <verdict>` for a CI failure, `confidence:
         high|medium|low` with the one thing that would change it, and `If you approve: <the planned
         change, or "no code change: rerun CI | fix on the default branch | infrastructure">`.
+        When the question can be read more than one way, say which reading the answer takes.
       - `## Fix options`: each option, the recommended one marked `(recommended)` with the files it
         touches, any behavior change beyond the bug, and the regression test (and the existing test
-        file it moves into). Plain prose, no fenced blocks.
+        file it moves into), and the reading of an ambiguous question it assumes. Plain prose, no
+        fenced blocks.
       - `## Evidence`: the reproduction command and a redacted excerpt of its output, the log excerpt
         (at most 40 lines, fenced, redacted), the introducing commit if you found it, each marked
         observed or inferred.

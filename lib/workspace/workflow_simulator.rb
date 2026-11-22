@@ -94,7 +94,7 @@ module Workspace
       FileUtils.mkdir_p(checkout)
       engine = @engine_factory.call(store: store, resources: SimResources.new, composer: SimComposer.new, panes: panes, checker: SimChecker.new(script),
         commands_config: SimCommands.new, lineage: SimLineage.new, git: SimGit.new, guard: guard, excludes: SimExcludes.new, gate_note: SimGateNote.new,
-        attempt_record: records, require_check: SimRequire.new(script), exec_program: SimExecProgram.new, review_round: round_runner(store, script), review_closer: ->(_run_id, _round) {},
+        attempt_record: records, require_check: SimRequire.new(script, guard), exec_program: SimExecProgram.new, review_round: round_runner(store, script), review_closer: ->(_run_id, _round) {},
         review_tally: WorkflowReviewTally.new(proof: SimVerdictProof.new), review_revision: SimRevision.new(script), clock: clock)
       run = WorkflowRun.from_h(engine.start(definition: definition, workspace: WORKSPACE, worktree: checkout, inputs: inputs, pane: PANE, actor: "person"))
       actions, capped = drive(engine, store, run.id, definition.to_h, script, clock, records)
@@ -444,8 +444,17 @@ module Workspace
       end
     end
 
-    # Reads and checks nothing of a repository: there is none.
+    # Reads and checks nothing of a repository: there is none. Once a step's `commits:` proof has passed
+    # ({SimRequire}), a commit stands in the checkout, so a `guard: unchanged` step finds `head_moved`, in the shape
+    # {WorkflowGuard#check} gives it; `config` finds nothing, as the real one does with no hook or hidden-file change.
     class SimGuard
+      BASE_SHA = "simulated-base"
+      HEAD_SHA = "simulated-commit"
+
+      def committed!
+        @committed = true
+      end
+
       def base(_worktree, accept_tree: false)
         {"base_sha" => nil, "base_guard" => nil}
       end
@@ -454,8 +463,9 @@ module Workspace
         nil
       end
 
-      def check(*)
-        nil
+      def check(_worktree, _base, scope)
+        return nil unless @committed && scope == "unchanged"
+        {"code" => "head_moved", "paths" => [], "base_sha" => BASE_SHA, "head" => HEAD_SHA}
       end
 
       def config_change(*, **)
@@ -584,10 +594,12 @@ module Workspace
       end
     end
 
-    # `require:` proofs that do not run: the script says which fail.
+    # `require:` proofs that do not run: the script says which fail. A `commits:` proof that passes tells the
+    # {SimGuard} a commit now exists.
     class SimRequire
-      def initialize(script)
+      def initialize(script, guard)
         @script = script
+        @guard = guard
       end
 
       def check(step:, attempt:, from: 0, **)
@@ -602,7 +614,10 @@ module Workspace
             execs += 1
           end
           next if index < from
-          next unless result == "fail"
+          if result != "fail"
+            @guard.committed! if name == "commits"
+            next
+          end
           detail = (name == "exec") ? "the script says exec entry #{execs} of #{total} fails" : "the script says the #{name} proof fails"
           return {"proof" => name, "index" => index, "code" => "require_#{name}", "detail" => detail, "unproven" => false}
         end

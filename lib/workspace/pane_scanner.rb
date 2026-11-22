@@ -208,7 +208,7 @@ module Workspace
 
     # A failed capture proves nothing, so it reads as no screen.
     def question_capture(pane)
-      @tmux.capture_screen_styled(pane[:pane_id])
+      @tmux.capture_screen_scrollback(pane[:pane_id])
     rescue => e
       @logger.debug { "session monitor: question capture failed in #{pane[:pane_id]} (#{e.class}: #{e.message})" }
       nil

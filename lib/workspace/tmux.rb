@@ -1,8 +1,5 @@
 require "open3"
-require "securerandom"
 require "shellwords"
-require "tmpdir"
-require "yaml"
 
 module Workspace
   # Manages tmux session operations for the workspace CLI.
@@ -20,6 +17,17 @@ module Workspace
     REVIEW_STORE_OPTION = "@workspace-review-store"
     # What a tmux window id looks like.
     WINDOW_ID = /\A@\d+\z/
+
+    # How many rows of scrollback #capture_screen_scrollback adds above the visible screen.
+    SCROLLBACK_ROWS = 5
+
+    # A styled capture and how many of its leading rows are scrollback.
+    #
+    # @!attribute [r] raw
+    #   @return [String] the capture exactly as `capture-pane -e -p` printed it
+    # @!attribute [r] history_rows
+    #   @return [Integer] how many leading rows of +raw+ come from scrollback
+    StyledCapture = Struct.new(:raw, :history_rows)
     # What tmux says on stderr when a session, or the whole server, isn't there.
     SESSION_GONE = /can't find session|no server running|error connecting to .* \(No such file or directory\)/
 
@@ -216,6 +224,7 @@ module Workspace
       before = capture_screen(target)
       # tmux buffers are shared by every client of the server, so the name
       # must not repeat across processes or threads.
+      require "securerandom"
       buf = "ws_send_#{Process.pid}_#{SecureRandom.hex(8)}"
       begin
         return failed("tmux could not load the text into a paste buffer") unless tmux_load_buffer(buf, text)
@@ -376,6 +385,26 @@ module Workspace
     def capture_screen_styled(target)
       stdout, _, status = Open3.capture3("tmux", "capture-pane", "-e", "-p", "-t", target)
       status.success? ? stdout : nil
+    end
+
+    # Reads a pane like #capture_screen_styled with up to SCROLLBACK_ROWS rows of
+    # scrollback above the screen, in one tmux call, and says how many of them
+    # there are (fewer when the pane has less history).
+    #
+    # @param target [String] any tmux target: "session:0.1", a pane id ("%23")
+    # @return [StyledCapture, nil] the frozen capture, or nil if tmux reported
+    #   failure or did not answer the history size first
+    def capture_screen_scrollback(target)
+      stdout, _, status = Open3.capture3(
+        "tmux", "display-message", "-p", "-t", target, "\#{history_size}",
+        ";", "capture-pane", "-e", "-p", "-S", "-#{SCROLLBACK_ROWS}", "-t", target
+      )
+      return nil unless status.success?
+
+      size, raw = stdout.split("\n", 2)
+      return nil unless size.to_s.match?(/\A\d+\z/)
+
+      StyledCapture.new(raw.to_s, [SCROLLBACK_ROWS, size.to_i].min).freeze
     end
 
     private
@@ -1048,6 +1077,7 @@ module Workspace
     def start_headless(config_name)
       source = @config.config_path_for(config_name)
       content = File.read(source).gsub(/^tmux_options:(.*)$/) { without_control_mode(Regexp.last_match(1)) }
+      require "tmpdir"
       Dir.mktmpdir("workspace-headless") do |dir|
         path = File.join(dir, File.basename(source))
         File.write(path, content)
@@ -1127,6 +1157,7 @@ module Workspace
 
     # The value of a `name: ...` line read as YAML, else (an ERB tag, an unbalanced quote) the text after the key.
     def name_line_value(line)
+      require "yaml"
       value = YAML.safe_load(line)
       value = value["name"] if value.is_a?(Hash)
       return value.to_s if value.is_a?(String) || value.is_a?(Numeric)

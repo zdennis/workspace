@@ -132,7 +132,8 @@
       "step": "research",
       "attempt": 1,
       "wrote": [
-        "research.md"
+        "research.md",
+        "requirements.md"
       ]
     },
     {

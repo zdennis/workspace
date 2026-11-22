@@ -1,0 +1,264 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Times the hooks of a headless Claude Code session. It reads the hook sets of the user's and the project's settings,
+# wraps each command in a shim that logs its start and end, writes the result to a temporary settings file (the person's
+# own files are only read) and runs `claude -p --model haiku --setting-sources project,local --settings <tmp>` in a
+# scratch dir, asking for N Read calls. It prints each hook's median start, end and duration (seconds after the first
+# hook of the same event), X (the gap from the last PreToolUse end to the first PostToolUse start) and the Read delta
+# the barrier model predicts (see 2026-11-21-hook-barrier-findings.md). --parse LOG reads a saved log instead.
+#
+#   script/hook-timeline [-n 10] [--async cc-status] [--session-event /path/to/workspace] [--se-time 0.08]
+#   script/hook-timeline --parse LOG [--async NAME] [--se-time 0.08]
+
+require "fileutils"
+require "open3"
+require "optparse"
+require "rbconfig"
+require "shellwords"
+require "tmpdir"
+
+module HookTimeline
+  SHIM_SOURCE = <<~'RUBY'
+    log, event, label, async, command = ARGV
+    pid = Process.pid
+    note = command.gsub(/\s+/, " ")[0, 80]
+    write = lambda do |kind, status|
+      File.open(log, "a") do |f|
+        f.flock(File::LOCK_EX)
+        f.puts [kind, format("%.6f", Process.clock_gettime(Process::CLOCK_REALTIME)), event, label, pid, async, status, note].join("\t")
+      end
+    end
+    write.call("start", "")
+    system("/bin/sh", "-c", command)
+    status = $?.exitstatus || 128 + $?.termsig.to_i
+    write.call("end", status)
+    exit status
+  RUBY
+
+  Entry = Struct.new(:event, :label, :pid, :async, :command, :start, :finish, :status, keyword_init: true) do
+    def duration = finish - start
+  end
+
+  # Builds the wrapped settings from the hook sets of any number of settings hashes.
+  class SettingsBuilder
+    SESSION_EVENT = /\S*workspace(?=\s+session-event)/
+
+    def initialize(ruby:, shim:, log:, async: [], session_event: nil)
+      @ruby = ruby
+      @shim = shim
+      @log = log
+      @async = async
+      @session_event = session_event
+    end
+
+    # @param sources [Array<Hash>] parsed settings files; only their "hooks" are used
+    # @return [Hash] {"hooks" => ...}
+    def call(sources)
+      merged = Hash.new { |h, k| h[k] = [] }
+      sources.each do |settings|
+        hooks = settings.is_a?(Hash) ? settings["hooks"] : nil
+        next unless hooks.is_a?(Hash)
+        hooks.each { |event, groups| merged[event].concat(Array(groups)) if groups.is_a?(Array) }
+      end
+      {"hooks" => merged.to_h { |event, groups| [event, wrap_groups(event, groups)] }}
+    end
+
+    private
+
+    def wrap_groups(event, groups)
+      seen = Hash.new(0)
+      groups.map do |group|
+        next group unless group.is_a?(Hash) && group["hooks"].is_a?(Array)
+        group.merge("hooks" => group["hooks"].map { |hook| wrap_hook(event, hook, seen) })
+      end
+    end
+
+    def wrap_hook(event, hook, seen)
+      return hook unless hook.is_a?(Hash) && hook["type"] == "command" && hook["command"].is_a?(String)
+      original = hook["command"]
+      original = original.gsub(SESSION_EVENT) { @session_event } if @session_event
+      async = @async.any? { |name| original.include?(name) }
+      label = HookTimeline.label_for(original)
+      seen[label] += 1
+      label = "#{label}##{seen[label]}" if seen[label] > 1
+      command = [@ruby, "--disable-gems", @shim, @log, event, label, async.to_s, original].shelljoin
+      wrapped = hook.merge("command" => command)
+      async ? wrapped.merge("async" => true) : wrapped
+    end
+  end
+
+  def self.label_for(command)
+    word = command.strip.split(/\s+/).first.to_s
+    name = File.basename(word)
+    if name.empty? || %w[if case for while { (].include?(name) || name.include?("[")
+      return command.include?("orca") ? "orca-hook" : "inline-sh"
+    end
+    name
+  end
+
+  def self.parse(lines)
+    open = {}
+    entries = []
+    lines.each do |line|
+      kind, ts, event, label, pid, async, status, command = line.chomp.split("\t", 8)
+      next unless %w[start end].include?(kind) && ts && event && label && pid
+      key = [event, label, pid]
+      if kind == "start"
+        open[key] = Entry.new(event: event, label: label, pid: pid, async: async == "true", command: command.to_s, start: ts.to_f)
+      elsif (entry = open.delete(key))
+        entry.finish = ts.to_f
+        entry.status = status.to_i
+        entries << entry
+      end
+    end
+    entries.sort_by(&:start)
+  end
+
+  def self.median(values)
+    return nil if values.empty?
+    sorted = values.sort
+    mid = sorted.size / 2
+    sorted.size.odd? ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0
+  end
+
+  # Splits one event's entries into the hook sets of successive firings: a new set starts when a start is more than
+  # `gap` after the first start of the set before.
+  def self.firings(entries, gap: 0.5)
+    sets = []
+    entries.sort_by(&:start).each do |entry|
+      if sets.empty? || entry.start - sets.last.first.start > gap
+        sets << [entry]
+      else
+        sets.last << entry
+      end
+    end
+    sets
+  end
+
+  # @return [Hash] :hooks rows, :calls pairs of Pre/Post firings, :x, :predicted, :projected
+  def self.analyze(entries, async: [], se_time: 0.08)
+    by_event = entries.group_by(&:event)
+    hooks = by_event.flat_map do |event, list|
+      sets = firings(list)
+      per_label = Hash.new { |h, k| h[k] = {starts: [], ends: [], durations: [], async: false, n: 0} }
+      sets.each do |set|
+        t0 = set.map(&:start).min
+        set.each do |e|
+          row = per_label[e.label]
+          row[:starts] << e.start - t0
+          row[:ends] << e.finish - t0
+          row[:durations] << e.duration
+          row[:async] ||= e.async
+          row[:n] += 1
+        end
+      end
+      per_label.map do |label, row|
+        {event: event, label: label, n: row[:n], async: row[:async] || async.any? { |a| label.include?(a) || list.any? { |e| e.label == label && e.command.include?(a) } },
+         start: median(row[:starts]), end: median(row[:ends]), duration: median(row[:durations])}
+      end
+    end
+
+    pre = firings(by_event.fetch("PreToolUse", []))
+    post = firings(by_event.fetch("PostToolUse", []))
+    xs = []
+    post.each do |post_set|
+      before = pre.reverse.find { |set| set.first.start < post_set.first.start }
+      next unless before
+      xs << post_set.map(&:start).min - before.map(&:finish).max
+    end
+    x = median(xs)
+
+    {hooks: hooks, x: x, calls: xs.size, predicted: predict(hooks, x, nil), projected: predict(hooks, x, se_time, extra_async: async), se_time: se_time}
+  end
+
+  def self.predict(hooks, x, se_time, extra_async: [])
+    return nil unless x
+    pre = hooks.select { |h| h[:event] == "PreToolUse" }
+    post = hooks.find { |h| h[:event] == "PostToolUse" && h[:label].include?("workspace") }
+    se_pre = pre.find { |h| h[:label].include?("workspace") }
+    barrier = pre.reject { |h| h[:label].include?("workspace") || h[:async] || extra_async.any? { |a| h[:label].include?(a) } }
+    slowest = barrier.map { |h| h[:end] }.max || 0.0
+    se_pre_time = se_time || se_pre&.dig(:duration) || 0.0
+    se_post_time = se_time || post&.dig(:duration) || 0.0
+    {slowest_other_pre: slowest, session_event_pre: se_pre_time, session_event_post: se_post_time,
+     delta: [slowest - se_pre_time, 0].max + x + se_post_time}
+  end
+
+  def self.render(report)
+    out = []
+    out << ["event".ljust(18), "hook".ljust(22), "   n", "async", "   start", "     end", "     dur"].join(" ")
+    report[:hooks].sort_by { |h| [h[:event], h[:start]] }.each do |h|
+      out << format("%-18s %-22s %4d %-5s %8.3f %8.3f %8.3f", h[:event], h[:label][0, 22], h[:n], h[:async] ? "yes" : "", h[:start], h[:end], h[:duration])
+    end
+    out << ""
+    if report[:x]
+      out << format("X (last PreToolUse end -> PostToolUse start), median of %d calls: %.3fs", report[:calls], report[:x])
+      p = report[:predicted]
+      out << format("predicted Read delta as measured: %.3fs (slowest other pre %.3f, session-event pre %.3f, post %.3f)", p[:delta], p[:slowest_other_pre], p[:session_event_pre], p[:session_event_post])
+      q = report[:projected]
+      out << format("projected with session-event at %.3fs and async hooks off the barrier: %.3fs (slowest other pre %.3f)", report[:se_time], q[:delta], q[:slowest_other_pre])
+    else
+      out << "no PreToolUse followed by PostToolUse in the log: X and the delta are unknown"
+    end
+    out.join("\n")
+  end
+
+  def self.read_json(path)
+    return {} unless path && File.file?(path)
+    JSON.parse(File.read(path))
+  rescue JSON::ParserError
+    {}
+  end
+
+  def self.main(argv, out: $stdout, err: $stderr)
+    require "json"
+    opts = {n: 10, async: [], se_time: 0.08, user: File.expand_path("~/.claude/settings.json"), project_dir: Dir.pwd, claude: "claude"}
+    OptionParser.new do |o|
+      o.banner = "Usage: hook-timeline [-n N] [--async NAME] [--session-event CMD] [--parse LOG]"
+      o.on("-n N", Integer, "Read calls to ask for (default 10)") { |v| opts[:n] = v }
+      o.on("--async NAME", "mark hooks whose command contains NAME async (repeatable)") { |v| opts[:async] << v }
+      o.on("--session-event CMD", "replace the `workspace` of `workspace session-event` hooks") { |v| opts[:session_event] = v }
+      o.on("--parse LOG", "analyse a saved log without running claude") { |v| opts[:parse] = v }
+      o.on("--se-time SECONDS", Float, "session-event time for the projection (default 0.08)") { |v| opts[:se_time] = v }
+      o.on("--user-settings FILE", "user settings (default ~/.claude/settings.json)") { |v| opts[:user] = v }
+      o.on("--project-dir DIR", "project whose .claude/settings*.json are read (default cwd)") { |v| opts[:project_dir] = v }
+      o.on("--log FILE", "keep the log here") { |v| opts[:log] = v }
+      o.on("--claude PATH", "claude executable") { |v| opts[:claude] = v }
+    end.parse!(argv)
+
+    if opts[:parse]
+      lines = File.readlines(opts[:parse])
+      out.puts render(analyze(parse(lines), async: opts[:async], se_time: opts[:se_time]))
+      return 0
+    end
+
+    Dir.mktmpdir("hook-timeline") do |dir|
+      log = File.expand_path(opts[:log] || File.join(dir, "hooks.log"))
+      FileUtils.rm_f(log)
+      shim = File.join(dir, "shim.rb")
+      File.write(shim, SHIM_SOURCE)
+      sources = [opts[:user], File.join(opts[:project_dir], ".claude", "settings.json"), File.join(opts[:project_dir], ".claude", "settings.local.json")].map { |p| read_json(p) }
+      settings = SettingsBuilder.new(ruby: RbConfig.ruby, shim: shim, log: log, async: opts[:async], session_event: opts[:session_event]).call(sources)
+      if settings["hooks"].empty?
+        err.puts "hook-timeline: no hooks found in the user or project settings"
+        return 1
+      end
+      settings_file = File.join(dir, "settings.json")
+      File.write(settings_file, JSON.pretty_generate(settings))
+      scratch = File.join(dir, "scratch")
+      FileUtils.mkdir_p(scratch)
+      files = (1..opts[:n]).map { |i| File.join(scratch, "note#{i}.txt").tap { |f| File.write(f, "note #{i}\n") } }
+      prompt = "Use the Read tool on each of these files, one call at a time, in this order, then reply with the word done: #{files.join(" ")}"
+      _o, e, status = Open3.capture3(opts[:claude], "-p", "--model", "haiku", "--setting-sources", "project,local",
+        "--settings", settings_file, "--allowedTools", "Read", "--", prompt, chdir: scratch)
+      err.puts e unless status.success? || e.empty?
+      lines = File.file?(log) ? File.readlines(log) : []
+      out.puts "log: #{log}" if opts[:log]
+      out.puts render(analyze(parse(lines), async: [], se_time: opts[:se_time]))
+      status.success? ? 0 : 1
+    end
+  end
+end
+
+exit HookTimeline.main(ARGV) if $PROGRAM_NAME == __FILE__

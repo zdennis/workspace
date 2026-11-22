@@ -3,8 +3,8 @@ require "stringio"
 module Workspace
   module Commands
     # Stops workspace projects and their tmux sessions.
-    # Handles launcher window cleanup, only closing windows when
-    # all tracked projects within them are being stopped.
+    # Closes each stopped workspace's iTerm window after the kill, through the gateway closer, which
+    # only closes a window when every session in it belongs to a stopped project.
     # Projects can be restarted with Commands::Launch.
     class Stop
       # @param state [Workspace::State] state persistence
@@ -13,21 +13,27 @@ module Workspace
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param window_positions [Workspace::WindowPositions, nil] saves each stopped window's bounds for
       #   the next launch; nil saves nothing
+      # @param gateway_closer [Workspace::GatewayWindowCloser, nil] closes each stopped workspace's iTerm
+      #   window after its session is killed; nil closes no window
+      # @param launch_mode [Workspace::LaunchMode, nil] tells whether an entry with no recorded session uid
+      #   is headless; nil treats such an entry as having no window
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(state:, iterm:, window_manager:, tmux:, window_positions: nil, output: $stdout, error_output: $stderr)
+      def initialize(state:, iterm:, window_manager:, tmux:, window_positions: nil, gateway_closer: nil, launch_mode: nil, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
         @window_manager = window_manager
         @tmux = tmux
         @window_positions = window_positions
+        @gateway_closer = gateway_closer
+        @launch_mode = launch_mode
         @output = output
         @error_output = error_output
         @warnings = []
       end
 
-      # @return [Array<String>] sentences about what the latest {#call} could not
-      #   do (iTerm2 not answering in time, so its window was left open)
+      # @return [Array<String>] the gateway closer's sentences about what the latest {#call} could not
+      #   do (iTerm2 not answering in time, a window left open)
       attr_reader :warnings
 
       # Stops the specified projects (or all active projects if none specified).
@@ -46,9 +52,8 @@ module Workspace
       #   while the config still existed; a project not listed is looked up from its config
       # @param socket_arguments [Hash{String => Array<String>}] custom tmux socket flag and value (`["-L", "name"]`)
       #   per project, read the same way; a project not listed is looked up from its config
-      # @return [Array<String>] names of stopped projects. If iTerm2 does not
-      #   answer in time, the launcher windows are left open and {#warnings}
-      #   says so; the entries are still removed and saved.
+      # @return [Array<String>] names of stopped projects. If a window cannot be closed, it is left open
+      #   and {#warnings} says so; the entries are still removed and saved.
       def call(projects = [], quiet: false, warn_inactive: true, save_position: true, session_names: {}, socket_arguments: {})
         out = quiet ? StringIO.new : @output
         @warnings = []
@@ -68,14 +73,16 @@ module Workspace
 
         killed_projects = targets.dup
 
-        launcher_window_ids_to_close = find_launcher_windows_to_close(targets)
+        snapshot = @state.to_h.to_h { |k, v| [k, v.is_a?(Hash) ? v.dup : v] }
+        windowed = @gateway_closer ? windowed_targets(targets, snapshot) : {}
+        window_session_names = windowed.keys.to_h { |p| [p, session_name_for(p, session_names)] }
         save_window_positions(targets) if save_position
         remove_from_state(targets)
         @state.save
 
         out.puts "Stopped #{killed_projects.size} project(s): #{killed_projects.join(", ")}"
         kill_tmux_sessions(targets, out, session_names, socket_arguments)
-        close_launcher_windows(launcher_window_ids_to_close, out)
+        close_windows(windowed, snapshot, window_session_names, out) unless windowed.empty?
         killed_projects
       end
 
@@ -93,50 +100,30 @@ module Workspace
         end
       end
 
-      # Headless projects have no launcher pane, so iTerm2 is only asked about
-      # targets that have one: a headless-only stop never runs AppleScript.
-      def find_launcher_windows_to_close(targets)
-        return [] unless targets.any? { |p| @state[p].is_a?(Hash) && @state[p]["unique_id"] }
-
-        existing = @iterm.find_existing_sessions(@state)
-        timed_out = @iterm.last_call_timed_out?
-        launcher_uids = targets.filter_map { |p| existing[p] }
-        windows_to_close = []
-
-        if launcher_uids.any?
-          live_sessions = @iterm.session_map
-          timed_out ||= @iterm.last_call_timed_out?
-          candidate_window_ids = launcher_uids.filter_map { |uid| live_sessions[uid] }.uniq
-          candidate_window_ids.each do |wid|
-            sessions_in_window = live_sessions.select { |_, w| w == wid }.keys
-            tracked_project_names = []
-            @state.each do |project, info|
-              tracked_project_names << project if sessions_in_window.include?(info["unique_id"])
-            end
-            if (tracked_project_names - targets).empty?
-              windows_to_close << wid
-            end
+      # Windowed targets, project => session uid (nil when none is recorded). Headless entries are
+      # left out, so a headless-only stop never runs AppleScript.
+      def windowed_targets(targets, snapshot)
+        headless_default = nil
+        targets.each_with_object({}) do |p, found|
+          info = snapshot[p]
+          next unless info.is_a?(Hash) && info["headless"] != true
+          if info["unique_id"]
+            found[p] = info["unique_id"]
+          elsif @launch_mode
+            headless_default = @launch_mode.resolve.headless? if headless_default.nil?
+            found[p] = nil unless headless_default
           end
         end
-
-        warn_iterm_silent(targets) if timed_out
-        windows_to_close
       end
 
-      def warn_iterm_silent(targets)
-        seconds = format("%g", @iterm.applescript_timeout)
-        targets.each do |p|
-          next unless @state[p].is_a?(Hash) && @state[p]["unique_id"]
-          message = "iTerm did not answer in #{seconds}s; the window for #{p} was left open."
-          @warnings << message
-          @error_output.puts "Warning: #{message}"
-        end
+      def session_name_for(project, session_names)
+        session_names[project] || @tmux.session_name_for(project)
       end
 
       def kill_tmux_sessions(targets, out, session_names = {}, socket_arguments = {})
         active_sessions = @tmux.sessions
         targets.each do |project|
-          session_name = session_names[project] || @tmux.session_name_for(project)
+          session_name = session_name_for(project, session_names)
           # A session on a custom socket never shows in the default socket's list.
           socket = socket_arguments[project]
           if active_sessions.include?(session_name) || socket || @tmux.custom_socket_option(project)
@@ -146,11 +133,8 @@ module Workspace
         end
       end
 
-      def close_launcher_windows(window_ids, out)
-        window_ids.each do |wid|
-          out.puts "Closing launcher window #{wid}"
-          next if @window_manager.close_window(wid)
-          message = "iTerm did not close launcher window #{wid}; it was left open."
+      def close_windows(windowed, snapshot, session_names, out)
+        @gateway_closer.close(targets: windowed, state_snapshot: snapshot, session_names: session_names, output: out).each do |message|
           @warnings << message
           @error_output.puts "Warning: #{message}"
         end
